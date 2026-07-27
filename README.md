@@ -88,6 +88,7 @@ The kinds it indexes and the fields it reads from each (highest weight first):
 | **21 / 22** | video | title, content |
 | **1063** | file | summary, content |
 | **2003** | torrent | title, content |
+| **1301 / 33401** | workout record / exercise template | title, content |
 | **31337** | audio track | subject |
 | **36787** | music track | title, artist + album, content |
 | **34139** | music playlist | title, description, content |
@@ -95,7 +96,9 @@ The kinds it indexes and the fields it reads from each (highest weight first):
 | **30617** | git repository | name, description, content |
 | **1621 / 1618** | git issue / pull request | subject, content |
 | **1337** | code snippet | name, description, content |
+| **30817** | NIP-on-Nostr document | title, content |
 | **30311 / 1313** | live event / clip | title, summary, content |
+| **30296 / 30297** | interactive story prologue / scene | title, summary, content |
 | **31924 / 31922 / 31923** | calendar & slots | title, summary, content |
 | **30312 / 30313** | meeting space / room | room or title, summary, content |
 | **34550** | community | name, description + rules, content |
@@ -104,19 +107,24 @@ The kinds it indexes and the fields it reads from each (highest weight first):
 | **31990** | app handler | name + display name, about |
 | **32267** | software application | name, summary, content |
 | **15128 / 35128** | website | title, description |
+| **15129 / 35129 / 5129** | napplet root / named / snapshot | title, description |
 | **30009** | badge | name, description, content |
 | **30030** | emoji pack | title, description, content |
 | **9041** | zap goal | summary, content |
+| **33863** | fundraiser | title, content |
 | **30000 / 39089** | people list / follow pack | title, description |
+| **31890** | feed definition | title |
 | **10003 / 30001 / 30003** | bookmark lists | title, description |
 | **30015** | interest set | title, description + hashtags |
 | **30004 / 30005 / 30006 / 30063 / 30267** | article / video / picture / release / app curation sets | title, description |
 | **30002 / 39092 / 39701** | relay set / media starter pack / web bookmark | title, description |
 
-Dozens of other titled kinds (fundraisers, workouts, exercise templates, feeds,
-napplets, interactive stories, …) follow the same shape — a title or name as the
-primary field, the `content` as the body. Any remaining kind Quartz can parse is
-still indexed, by its full text content. The authoritative mapping is
+Every remaining kind Quartz can parse is still indexed, by its full text
+content. Plain-content kinds that carry no title — **kind 9** relay chats
+(NIP-C7), comments, patches, statuses, zaps — land their whole
+`indexableContent()` in the body tier, with no primary/secondary split. So every
+kind implementing Quartz's `SearchableEvent` is searchable; the table above only
+adds field-priority structure on top. The authoritative mapping is
 [`store/…/SearchExtractors.kt`](store/src/main/kotlin/com/vitorpamplona/quartz/eventstore/store/SearchExtractors.kt).
 
 ## Quick start
