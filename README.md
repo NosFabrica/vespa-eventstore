@@ -85,7 +85,7 @@ The kinds it indexes and the fields it reads from each (highest weight first):
 | **30402** | classified listing | title, summary, content |
 | **9802** | highlight | comment + context, content |
 | **20** | picture | title, content |
-| **21 / 22** | video | title, content |
+| **21 / 22 / 34235 / 34236** | video (normal / short / horizontal / vertical) | title, content |
 | **1063** | file | summary, content |
 | **2003** | torrent | title, content |
 | **1301 / 33401** | workout record / exercise template | title, content |
@@ -119,13 +119,52 @@ The kinds it indexes and the fields it reads from each (highest weight first):
 | **30004 / 30005 / 30006 / 30063 / 30267** | article / video / picture / release / app curation sets | title, description |
 | **30002 / 39092 / 39701** | relay set / media starter pack / web bookmark | title, description |
 
-Every remaining kind Quartz can parse is still indexed, by its full text
-content. Plain-content kinds that carry no title — **kind 9** relay chats
-(NIP-C7), comments, patches, statuses, zaps — land their whole
-`indexableContent()` in the body tier, with no primary/secondary split. So every
-kind implementing Quartz's `SearchableEvent` is searchable; the table above only
-adds field-priority structure on top. The authoritative mapping is
-[`store/…/SearchExtractors.kt`](store/src/main/kotlin/com/vitorpamplona/quartz/eventstore/store/SearchExtractors.kt).
+The remaining searchable kinds carry no title to split out, so their whole
+`indexableContent()` lands in the body tier (hashtags still fold into the
+secondary tier, `location` tags into the place column). These are indexed by
+full content:
+
+| Kind(s) | What it is |
+| --- | --- |
+| **9** | relay chat message (NIP-C7) |
+| **14** | private chat message (NIP-17) |
+| **24** | public message |
+| **42** | public-chat channel message (NIP-28) |
+| **1010** | note modification / edit |
+| **1065** | file-storage header |
+| **1068** | poll (NIP-88) |
+| **1111** | comment (NIP-22) |
+| **1163** | profile-gallery entry |
+| **1311** | live-stream chat message |
+| **1312** | live-stream raid |
+| **1617** | git patch |
+| **1622** | git reply |
+| **1630 / 1631 / 1632 / 1633** | git status (open / applied / closed / draft) |
+| **1808** | audio header |
+| **1985** | label (NIP-32) |
+| **2004** | torrent comment |
+| **2473** | bird detection (Birdstar) |
+| **6969** | zap poll |
+| **8333** | onchain zap (NIP-BC) |
+| **9002** | group-metadata edit (NIP-29) |
+| **9321** | nutzap (NIP-61) |
+| **9734 / 9735** | zap request / receipt (NIP-57) |
+| **11871 / 31873** | attestor proficiency / recommendation |
+| **12473** | Birdex species collection |
+| **30017 / 30018 / 30019 / 30020** | marketplace stall / product / config / auction (NIP-15) |
+| **30054 / 30055** | Podcasting-2.0 episode / trailer |
+| **30063** | software release (NIP-82) |
+| **30315** | user status (NIP-38) |
+| **30382** | contact card / relationship |
+| **31925** | calendar RSVP |
+| **38000** | mint recommendation |
+| **38192** | PlayStation-1 memory-card save |
+| **38383** | P2P order (NIP-69) |
+| **5050 / 5100 / 5250** | NIP-90 DVM job requests (text / image / speech generation) |
+
+Anything Quartz parses to a `SearchableEvent` is indexed, current or future; the
+first table only adds field-priority structure on top. The authoritative mapping
+is [`store/…/SearchExtractors.kt`](store/src/main/kotlin/com/vitorpamplona/quartz/eventstore/store/SearchExtractors.kt).
 
 ## Quick start
 
