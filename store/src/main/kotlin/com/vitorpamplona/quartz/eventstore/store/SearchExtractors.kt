@@ -20,6 +20,11 @@
  */
 package com.vitorpamplona.quartz.eventstore.store
 
+import com.vitorpamplona.quartz.buzz.agentProfiles.AgentProfileEvent
+import com.vitorpamplona.quartz.buzz.apPersonas.PersonaEvent
+import com.vitorpamplona.quartz.buzz.managedAgents.ManagedAgentEvent
+import com.vitorpamplona.quartz.buzz.teams.TeamEvent
+import com.vitorpamplona.quartz.buzz.workflow.WorkflowDefEvent
 import com.vitorpamplona.quartz.eventstore.vespa.doc.SearchFields
 import com.vitorpamplona.quartz.experimental.agora.FundraiserEvent
 import com.vitorpamplona.quartz.experimental.audio.track.AudioTrackEvent
@@ -408,6 +413,28 @@ object SearchExtractors {
 
             is AudioTrackEvent -> {
                 tiers(event.subject(), null, null)
+            }
+
+            // Buzz agent/workspace kinds carry their metadata as JSON in `content`;
+            // split each decoded object the way its indexableContent() concatenates it.
+            is AgentProfileEvent -> {
+                event.profileOrNull()?.let { tiers(join(it.name, it.displayName), null, null) } ?: SearchFields.NONE
+            }
+
+            is PersonaEvent -> {
+                event.personaOrNull()?.let { tiers(it.displayName, null, it.systemPrompt) } ?: SearchFields.NONE
+            }
+
+            is ManagedAgentEvent -> {
+                event.agentOrNull()?.let { tiers(it.name, null, it.systemPrompt) } ?: SearchFields.NONE
+            }
+
+            is TeamEvent -> {
+                event.teamOrNull()?.let { tiers(it.name, it.description, it.instructions) } ?: SearchFields.NONE
+            }
+
+            is WorkflowDefEvent -> {
+                tiers(event.name(), null, event.content)
             }
 
             // kind 31990 — the app handler's metadata IS a UserMetadata clone

@@ -88,6 +88,9 @@ place column:
 | **24** | public message | content |
 | **40 / 41** | public chat channel | name, about |
 | **42** | public-chat channel message (NIP-28) | content |
+| **3302** | chat message edit (Concord CORD-02) | content |
+| **40002** | Buzz stream chat message | content |
+| **45001 / 45003** | Buzz forum post / comment | content |
 | **1010** | note modification / edit | content |
 | **1068** | poll (NIP-88) | content |
 | **1111** | comment (NIP-22) | content |
@@ -126,6 +129,13 @@ place column:
 | **39000** | group | name, about |
 | **9002** | group-metadata edit (NIP-29) | content |
 | **31990** | app handler | name + display name, about |
+| **10100** | Buzz agent profile | name, display name |
+| **30175** | Buzz agent persona | display name, system prompt |
+| **30177** | Buzz managed agent | name, system prompt |
+| **30176** | Buzz agent team | name, description, instructions |
+| **30620** | Buzz workflow definition | name, content |
+| **40100** | Buzz channel canvas | content |
+| **48106** | Buzz huddle guidelines | content |
 | **15128 / 35128** | website | title, description |
 | **15129 / 35129 / 5129** | napplet root / named / snapshot | title, description |
 | **38192** | PlayStation-1 memory-card save | content |
@@ -139,6 +149,7 @@ place column:
 | **9321** | nutzap (NIP-61) | content |
 | **8333** | onchain zap (NIP-BC) | content |
 | **6969** | zap poll | content |
+| **9736 / 9737** | BOLT12 zap / intent (NIP-B1) | content |
 | **30315** | user status (NIP-38) | content |
 | **1985** | label (NIP-32) | content |
 | **30000 / 39089** | people list / follow pack | title, description |
@@ -151,10 +162,13 @@ place column:
 | **30296 / 30297** | interactive story prologue / scene | title, summary, content |
 | **1301 / 33401** | workout record / exercise template | title, content |
 | **5050 / 5100 / 5250** | NIP-90 DVM job requests (text / image / speech generation) | content |
+| **5302 / 5303** | NIP-90 content / people search request | content |
 | **11871 / 31873** | attestor proficiency / recommendation | content |
+| **31871 / 31872** | attestation / attestation request | content |
 | **38000** | mint recommendation | content |
 | **2473** | bird detection (Birdstar) | content |
 | **12473** | Birdex species collection | content |
+| **1315** | road event report (Roadstr) | content |
 
 Anything Quartz parses to a `SearchableEvent` is indexed, current or future. The
 authoritative mapping is
