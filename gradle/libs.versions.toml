@@ -7,7 +7,7 @@ mavenPublish = "0.37.0"
 # Quartz from JitPack (amethyst @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
 # 72b8df7f6d = amethyst PR #3663 "SQLite query scaling: FTS contentless, tag-merge,
 # pooled statements" (2026-07-21); prev 0d534a3149 (2026-07-18).
-quartz = "72b8df7f6d"
+quartz = "e9074aa2cb"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 sqlite = "2.7.0"
