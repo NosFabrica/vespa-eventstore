@@ -73,98 +73,92 @@ carry different weight: a **primary** field (a title or name) outweighs a
 name and identity fields. When you supply an observer, the matches are then
 ordered by that observer's web of trust.
 
-The kinds it indexes and the fields it reads from each (highest weight first):
+The kinds it indexes and the fields it reads from each (highest weight first).
+Kinds with no title to split out are indexed by their full `content`; on every
+kind, hashtags also fold into the secondary tier and `location` tags into the
+place column:
 
 | Kind(s) | What it is | Indexed fields |
 | --- | --- | --- |
 | **0** | profile | name, display name, about, NIP-05, lightning address, website |
 | **1** | note | subject, hashtags, content |
+| **9** | relay chat message (NIP-C7) | content |
 | **11** | thread | title, content |
-| **30023** | long-form article | title, summary + hashtags, content |
-| **30818** | wiki article | title, summary, content |
-| **30402** | classified listing | title, summary, content |
-| **9802** | highlight | comment + context, content |
+| **14** | private chat message (NIP-17) | content |
+| **24** | public message | content |
+| **40 / 41** | public chat channel | name, about |
+| **42** | public-chat channel message (NIP-28) | content |
+| **1010** | note modification / edit | content |
+| **1068** | poll (NIP-88) | content |
+| **1111** | comment (NIP-22) | content |
+| **1163** | profile-gallery entry | content |
 | **20** | picture | title, content |
 | **21 / 22 / 34235 / 34236** | video (normal / short / horizontal / vertical) | title, content |
 | **1063** | file | summary, content |
-| **2003** | torrent | title, content |
-| **1301 / 33401** | workout record / exercise template | title, content |
+| **1065** | file-storage header | content |
 | **31337** | audio track | subject |
+| **1808** | audio header | content |
 | **36787** | music track | title, artist + album, content |
 | **34139** | music playlist | title, description, content |
 | **54 / 10154** | podcast episode / show | title, description, content |
+| **30054 / 30055** | Podcasting-2.0 episode / trailer | content |
+| **2003** | torrent | title, content |
+| **2004** | torrent comment | content |
+| **9802** | highlight | comment + context, content |
+| **30311 / 1313** | live event / clip | title, summary, content |
+| **1311** | live-stream chat message | content |
+| **1312** | live-stream raid | content |
 | **30617** | git repository | name, description, content |
 | **1621 / 1618** | git issue / pull request | subject, content |
+| **1617** | git patch | content |
+| **1622** | git reply | content |
+| **1630 / 1631 / 1632 / 1633** | git status (open / applied / closed / draft) | content |
 | **1337** | code snippet | name, description, content |
 | **30817** | NIP-on-Nostr document | title, content |
-| **30311 / 1313** | live event / clip | title, summary, content |
-| **30296 / 30297** | interactive story prologue / scene | title, summary, content |
+| **32267** | software application | name, summary, content |
+| **30023** | long-form article | title, summary + hashtags, content |
+| **30818** | wiki article | title, summary, content |
+| **30402** | classified listing | title, summary, content |
 | **31924 / 31922 / 31923** | calendar & slots | title, summary, content |
+| **31925** | calendar RSVP | content |
 | **30312 / 30313** | meeting space / room | room or title, summary, content |
 | **34550** | community | name, description + rules, content |
 | **39000** | group | name, about |
-| **40 / 41** | public chat channel | name, about |
+| **9002** | group-metadata edit (NIP-29) | content |
 | **31990** | app handler | name + display name, about |
-| **32267** | software application | name, summary, content |
 | **15128 / 35128** | website | title, description |
 | **15129 / 35129 / 5129** | napplet root / named / snapshot | title, description |
+| **38192** | PlayStation-1 memory-card save | content |
 | **30009** | badge | name, description, content |
 | **30030** | emoji pack | title, description, content |
+| **30017 / 30018 / 30019 / 30020** | marketplace stall / product / config / auction (NIP-15) | content |
+| **38383** | P2P order (NIP-69) | content |
 | **9041** | zap goal | summary, content |
 | **33863** | fundraiser | title, content |
+| **9734 / 9735** | zap request / receipt (NIP-57) | content |
+| **9321** | nutzap (NIP-61) | content |
+| **8333** | onchain zap (NIP-BC) | content |
+| **6969** | zap poll | content |
+| **30315** | user status (NIP-38) | content |
+| **1985** | label (NIP-32) | content |
 | **30000 / 39089** | people list / follow pack | title, description |
-| **31890** | feed definition | title |
 | **10003 / 30001 / 30003** | bookmark lists | title, description |
 | **30015** | interest set | title, description + hashtags |
 | **30004 / 30005 / 30006 / 30063 / 30267** | article / video / picture / release / app curation sets | title, description |
 | **30002 / 39092 / 39701** | relay set / media starter pack / web bookmark | title, description |
+| **31890** | feed definition | title |
+| **30382** | contact card / relationship | content |
+| **30296 / 30297** | interactive story prologue / scene | title, summary, content |
+| **1301 / 33401** | workout record / exercise template | title, content |
+| **5050 / 5100 / 5250** | NIP-90 DVM job requests (text / image / speech generation) | content |
+| **11871 / 31873** | attestor proficiency / recommendation | content |
+| **38000** | mint recommendation | content |
+| **2473** | bird detection (Birdstar) | content |
+| **12473** | Birdex species collection | content |
 
-The remaining searchable kinds carry no title to split out, so their whole
-`indexableContent()` lands in the body tier (hashtags still fold into the
-secondary tier, `location` tags into the place column). These are indexed by
-full content:
-
-| Kind(s) | What it is |
-| --- | --- |
-| **9** | relay chat message (NIP-C7) |
-| **14** | private chat message (NIP-17) |
-| **24** | public message |
-| **42** | public-chat channel message (NIP-28) |
-| **1010** | note modification / edit |
-| **1065** | file-storage header |
-| **1068** | poll (NIP-88) |
-| **1111** | comment (NIP-22) |
-| **1163** | profile-gallery entry |
-| **1311** | live-stream chat message |
-| **1312** | live-stream raid |
-| **1617** | git patch |
-| **1622** | git reply |
-| **1630 / 1631 / 1632 / 1633** | git status (open / applied / closed / draft) |
-| **1808** | audio header |
-| **1985** | label (NIP-32) |
-| **2004** | torrent comment |
-| **2473** | bird detection (Birdstar) |
-| **6969** | zap poll |
-| **8333** | onchain zap (NIP-BC) |
-| **9002** | group-metadata edit (NIP-29) |
-| **9321** | nutzap (NIP-61) |
-| **9734 / 9735** | zap request / receipt (NIP-57) |
-| **11871 / 31873** | attestor proficiency / recommendation |
-| **12473** | Birdex species collection |
-| **30017 / 30018 / 30019 / 30020** | marketplace stall / product / config / auction (NIP-15) |
-| **30054 / 30055** | Podcasting-2.0 episode / trailer |
-| **30063** | software release (NIP-82) |
-| **30315** | user status (NIP-38) |
-| **30382** | contact card / relationship |
-| **31925** | calendar RSVP |
-| **38000** | mint recommendation |
-| **38192** | PlayStation-1 memory-card save |
-| **38383** | P2P order (NIP-69) |
-| **5050 / 5100 / 5250** | NIP-90 DVM job requests (text / image / speech generation) |
-
-Anything Quartz parses to a `SearchableEvent` is indexed, current or future; the
-first table only adds field-priority structure on top. The authoritative mapping
-is [`store/…/SearchExtractors.kt`](store/src/main/kotlin/com/vitorpamplona/quartz/eventstore/store/SearchExtractors.kt).
+Anything Quartz parses to a `SearchableEvent` is indexed, current or future. The
+authoritative mapping is
+[`store/…/SearchExtractors.kt`](store/src/main/kotlin/com/vitorpamplona/quartz/eventstore/store/SearchExtractors.kt).
 
 ## Quick start
 
