@@ -5,9 +5,10 @@ app = "1.0.0"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"
 # Quartz from JitPack (amethyst @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
-# 72b8df7f6d = amethyst PR #3663 "SQLite query scaling: FTS contentless, tag-merge,
-# pooled statements" (2026-07-21); prev 0d534a3149 (2026-07-18).
-quartz = "e9074aa2cb"
+# 4179a6312a = amethyst PR #3747 "harden negentropy window-splitting and error
+# classification" (2026-07-27); prev e9074aa2cb (2026-07-27). No SearchableEvent
+# changes in this range, so the store's search extractors are unaffected.
+quartz = "4179a6312a"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 sqlite = "2.7.0"
