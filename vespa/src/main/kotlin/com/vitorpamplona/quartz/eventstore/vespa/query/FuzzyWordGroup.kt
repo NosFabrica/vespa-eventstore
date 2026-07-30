@@ -32,7 +32,7 @@ package com.vitorpamplona.quartz.eventstore.vespa.query
  * queries: a joined-CamelCase variant for 2+ words ("John Carvalho" finds
  * @johncarvalho), and adjacent-pair concatenations for 3+ words.
  *
- * Words go out-of-band as @w0..@w5 / @wj / @wp0.. query parameters, never
+ * Words go out-of-band as @w0..@wN / @wj / @wp0.. query parameters, never
  * inlined, so no escaping is needed. The trigram literals are filtered to
  * alphanumeric characters, which makes them safe to embed.
  */

@@ -129,24 +129,22 @@ interface EventIndex : AutoCloseable {
     /**
      * The DISTINCT `pubkey`s (event authors) across [query]'s match set — the
      * actual author set, not just its size ([countDistinctAuthors]). The default
-     * rides [search] (exact only where uncapped, the in-memory reference); the
-     * real client overrides it with a server-side grouping over the full match
-     * set, so the orphan-score sweep gets the distinct 30382 authors out of
-     * millions of docs without reconstructing them (which times search out). A
-     * decorator MUST delegate to its inner index, not this default, or it would
-     * ride the capped search.
+     * rides [search]; the real client overrides it with a server-side grouping
+     * over the full match set, so the orphan-score sweep gets the distinct 30382
+     * authors out of millions of docs without reconstructing them (which times
+     * search out). A decorator MUST delegate to its inner index, not this
+     * default, or it loses that server-side aggregation.
      */
     suspend fun distinctAuthors(query: EventQuery): Set<String> = search(query).mapTo(HashSet()) { it.pubkey }
 
     /**
-     * Every distinct author of [query]'s match set, EXHAUSTIVELY — unlike
-     * [distinctAuthors], whose server-side grouping caps at
-     * `EventYql.MAX_AUTHOR_GROUPS`. The guard-owner preload needs completeness,
-     * not a sample: a missed author would be a false negative in the guard
-     * filter (a skipped-but-needed tombstone probe). The default rides the
-     * uncapped in-memory [distinctAuthors]; the real client overrides it with a
-     * continuation-paged visit so it never silently truncates. A decorator MUST
-     * delegate to its inner index, not this default.
+     * Every distinct author of [query]'s match set, STREAMED. Both this and
+     * [distinctAuthors] are complete (neither caps groups), but the grouping
+     * builds its whole answer in one engine response, while this pages a visit
+     * through continuations. The guard-owner preload runs over the entire corpus
+     * and needs completeness without that single-response peak — a missed author
+     * would be a false negative in the guard filter (a skipped-but-needed
+     * tombstone probe). A decorator MUST delegate to its inner index.
      */
     suspend fun scanAuthors(query: EventQuery): Set<String> = distinctAuthors(query)
 

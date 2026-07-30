@@ -507,10 +507,11 @@ class VespaEventIndex(
     }
 
     /**
-     * Complete author scan via the document-API visit (continuation-paged, no
-     * result cap), projecting only `pubkey`. Unlike [distinctAuthors]'s grouping
-     * this never truncates at `MAX_AUTHOR_GROUPS`, which is exactly what the
-     * guard-owner Bloom preload needs — a missed author would be a false negative.
+     * Complete author scan via the document-API visit (continuation-paged),
+     * projecting only `pubkey`. [distinctAuthors]'s grouping is complete too, but
+     * it materializes every group in one response; this streams, which is what
+     * the corpus-wide guard-owner Bloom preload needs — a missed author would be
+     * a false negative.
      */
     override suspend fun scanAuthors(query: EventQuery): Set<String> {
         val selection = EventSelection.build(query) ?: return super.scanAuthors(query)

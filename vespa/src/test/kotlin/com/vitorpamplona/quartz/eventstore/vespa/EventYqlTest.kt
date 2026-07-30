@@ -130,13 +130,28 @@ class EventYqlTest {
     }
 
     @Test
-    fun `three or more words add adjacent-pair variants and cap at six`() {
+    fun `three or more words add adjacent-pair variants and no word is dropped`() {
         val q = EventYql.build(EventQuery(search = "john carvalho dev one two three seven eight"))!!
         assertEquals("johncarvalho", q.params["wp0"])
         assertEquals("carvalhodev", q.params["wp1"])
-        assertEquals("johncarvalhodevonetwothree", q.params["wj"], "variants are built from the capped words")
-        assertEquals("three", q.params["w5"])
-        assertFalse("w6" in q.params, "words beyond ${EventYql.MAX_QUERY_WORDS} are dropped")
+        // Every word the caller typed reaches the query — the builder imposes no
+        // word cap, so the joined variant spans the whole term.
+        assertEquals("eight", q.params["w7"])
+        assertFalse("w8" in q.params, "exactly as many word params as words")
+        assertEquals("johncarvalhodevonetwothreeseveneight", q.params["wj"], "the joined variant covers every word")
+        assertEquals("seveneight", q.params["wp6"], "adjacent pairs run to the last word")
+    }
+
+    /** Aggregations must answer over the whole match set: Vespa defaults to TEN groups without these. */
+    @Test
+    fun `grouping queries disable the engine group ceilings`() {
+        for (q in listOf(EventYql.buildDistinctAuthors(EventQuery())!!, EventYql.buildKindHistogram(EventQuery())!!, EventYql.buildCount(EventQuery())!!)) {
+            assertEquals("-1", q.params["grouping.defaultMaxGroups"])
+            assertEquals("-1", q.params["grouping.defaultMaxHits"])
+            assertEquals("-1", q.params["grouping.globalMaxGroups"])
+        }
+        assertFalse("max(" in EventYql.buildDistinctAuthors(EventQuery())!!.yql, "no group cap in the pipeline")
+        assertFalse("max(" in EventYql.buildKindHistogram(EventQuery())!!.yql, "no group cap in the pipeline")
     }
 
     @Test
