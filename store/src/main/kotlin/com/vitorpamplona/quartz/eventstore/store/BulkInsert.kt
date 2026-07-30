@@ -314,11 +314,10 @@ internal class BulkInsert(
 
     /**
      * Every guard event of [kind] (deletion or vanish) for [owners], bucketed by
-     * author. One query per [CHECK_CHUNK] of owners rather than one per owner. A
-     * chunk that comes back at the page cap can't be trusted to carry every owner's
-     * full set (one prolific deleter could crowd the page), so it re-queries that
-     * chunk's owners one at a time — exact, and rare, since content authors seldom
-     * publish deletions.
+     * author. One query per [CHECK_CHUNK] of owners rather than one per owner.
+     * The chunking is purely about how wide one round trip is: no query here
+     * carries a limit, so a chunk always comes back whole and one prolific
+     * deleter cannot crowd out the other owners in its chunk.
      */
     private suspend fun guardDocs(
         owners: Collection<String>,

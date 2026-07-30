@@ -358,9 +358,9 @@ class VespaEventIndex(
 
     /**
      * The document-API visit: a streaming scan with a selection expression and
-     * continuation tokens. It has no result cap and no ranking, which is
-     * exactly what a full-corpus id walk needs. Queries a selection can't
-     * express fall back to the (capped) search default.
+     * continuation tokens. It STREAMS and does not rank, which is exactly what a
+     * full-corpus id walk needs. Queries a selection can't express fall back to
+     * the search default, which returns the same set in a single page.
      */
     override suspend fun visitIds(
         query: EventQuery,

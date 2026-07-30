@@ -657,7 +657,8 @@ class NostrEventStore(
         // worth the setup and stay on the per-event path.
         const val BULK_MIN = 16
 
-        // Ids/authors/d-tags per preload query — well under the engine's page cap.
+        // Ids/authors/d-tags per preload query. Not a result cap — these queries
+        // carry no limit — just how wide one round trip is built.
         const val PRELOAD_CHUNK = 500
         val NEWEST_FIRST = compareByDescending(EventDoc::createdAt).thenBy(EventDoc::id)
 

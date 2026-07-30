@@ -87,11 +87,12 @@ class TrustProjection(
     override suspend fun count(query: EventQuery): Int = inner.count(query)
 
     // The author/kind aggregates below MUST forward to inner, not ride the
-    // interface default: the default routes through this decorator's search()
-    // (the capped /search/ recall), so distinctAuthors/scanAuthors would silently
-    // truncate at the engine's grouping/page cap. scanAuthors in particular backs
-    // the guard-owner Bloom preload, where a missed author is a false negative
-    // (a skipped-but-needed tombstone probe).
+    // interface default: the default reconstructs the whole match set through
+    // this decorator's search() just to project one field, where the real client
+    // answers server-side (a grouping) or streams (a visit). scanAuthors in
+    // particular backs the guard-owner Bloom preload, which walks the ENTIRE
+    // corpus — materializing that as documents is the difference between a
+    // paged walk and an OOM.
     override suspend fun distinctAuthors(query: EventQuery): Set<String> = inner.distinctAuthors(query)
 
     override suspend fun scanAuthors(query: EventQuery): Set<String> = inner.scanAuthors(query)
