@@ -271,8 +271,9 @@ class TrustProjection(
      * One or more 10040s appeared or disappeared. The provider map changed, so
      * every subject their rank services have scored needs re-attribution. The
      * subjects are enumerated through the engine's VISIT walk (d tags projected),
-     * not a search: a provider with millions of stored scores is exactly where a
-     * 10k search page would silently miss most of them. The subjects are then
+     * not a search: a provider with millions of stored scores is exactly where
+     * pulling one giant response would blow up memory (and where any deployment
+     * that DID set a hit cap would silently miss most of them). The subjects are then
      * re-derived in batches, with empties removed (a re-attribution can empty a
      * parent). A BATCH of 10040s does ONE walk over the union of their services,
      * not one walk per list.
@@ -325,9 +326,10 @@ class TrustProjection(
     private companion object {
         // Subjects per batched score-fetch query. Sized for DENSE subjects: a
         // real NIP-85 corpus scores each subject from dozens of service keys
-        // (~50 observed), so 100 subjects already recall ~5k docs — a bigger
-        // chunk would cross the engine's 10k search page and silently truncate
-        // the derivation.
+        // (~50 observed), so 100 subjects already recall ~5k docs. Chunking
+        // keeps each response bounded, and keeps the derivation correct on a
+        // deployment that lowered the engine's hit cap (which truncates
+        // silently, with no error to notice).
         const val FETCH_CHUNK = 50
 
         // Subjects per recompute round in a full walk (memory-bounded batches).

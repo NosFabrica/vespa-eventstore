@@ -77,6 +77,12 @@ class VespaEventStore internal constructor(
          * load-balancer address. Empty (the default) = just [url]. See
          * docs/scaling.md; a multi-node deployment pairs this with
          * `autoDeploy = false` and an operator-owned application package.
+         *
+         * [maxHits] bounds a query that carries no `limit` of its own. Null (the
+         * default) means unbounded: the store returns every match rather than a
+         * page size it chose for you. Set it when a deployment would rather cap
+         * the cost of an unbounded recall — the decision is yours, not the
+         * library's. A filter's own `limit` always wins over it.
          */
         fun open(
             url: String = "http://localhost:8080",
@@ -84,9 +90,10 @@ class VespaEventStore internal constructor(
             autoDeploy: Boolean = true,
             configUrl: String = deriveConfigUrl(url),
             endpoints: List<String> = emptyList(),
+            maxHits: Int? = null,
         ): VespaEventStore {
             if (autoDeploy) SchemaDeployer(configUrl).deployIfAbsent(url)
-            val events = VespaEventIndex(url, endpoints = endpoints)
+            val events = VespaEventIndex(url, maxHits = maxHits, endpoints = endpoints)
             val store = NostrEventStore(TrustProjection(events, VespaReputationIndex(url)), relay = relay)
             return VespaEventStore(store, events)
         }

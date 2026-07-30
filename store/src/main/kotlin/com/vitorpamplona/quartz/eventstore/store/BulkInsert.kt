@@ -266,9 +266,10 @@ internal class BulkInsert(
                 // Addressables recall PER (kind, author), never across authors. A
                 // multi-author (authors x d-tags) query is a CROSS PRODUCT. In a
                 // dense corpus (dozens of service keys scoring the same subjects)
-                // that recalls authors×ds real docs, which runs past the 10k
-                // search page and silently misses existing versions. One author's
-                // d-set is bounded.
+                // that recalls authors×ds real docs — an unbounded response on
+                // the ingest hot path, and missed existing versions on any
+                // deployment that capped hits (it truncates silently). One
+                // author's d-set is bounded.
                 for ((ka, keys) in addressable.groupBy { it.first to it.second }) {
                     val (kind, author) = ka
                     keys.mapNotNull { it.third }.distinct().chunked(CHECK_CHUNK).forEach { ds ->

@@ -16,9 +16,14 @@ deployment, that invariant must survive:
   - `schemas/event.sd` and `schemas/reputation.sd` — every attribute,
     `match: cased`, `dictionary: hash`, the rank profiles. Never hand-edit;
     take them from the library version you run.
-  - `search/query-profiles/default.xml` — the 10k `maxHits`/`maxOffset` cap
-    the client pages against. Without it, queries silently cap at Vespa's
-    default 400 hits.
+  - `search/query-profiles/default.xml` — `maxHits`/`maxOffset` at
+    Int.MAX_VALUE, i.e. no engine-side hit ceiling. **Dropping this file does
+    not remove a limit, it imposes one**: queries then silently cap at Vespa's
+    default 400 hits. Lowering the numbers is a legitimate operator choice (a
+    policy cap on expensive queries) — just know that a query asking for more
+    is truncated without an error, so pair it with
+    `VespaEventStore.open(maxHits = ...)` on the client side. For dumping the
+    whole corpus, use a visit rather than a large search either way.
   - In `services.xml`: the **GC selection** on the event document
     (`selection="event.expires_at > now()"` + `garbage-collection="true"`) —
     NIP-40 expiry is enforced by the engine; dropping it silently disables

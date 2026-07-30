@@ -1,7 +1,16 @@
 <?xml version="1.0" encoding="UTF-8" ?>
-<!-- VespaEventIndex pages unlimited queries at up to 10k hits (Vespa's own
-     default cap is 400); a full-corpus walk should use a visit instead. -->
+<!-- No engine-side hit ceiling: a query returns what it asks for.
+
+     Vespa's own defaults (maxHits 400, maxOffset 1000) SILENTLY TRUNCATE a
+     larger request, so leaving these fields out is not "no limit" — it is a
+     400-hit limit. Int.MAX_VALUE is how you say "don't cap"; the only bound
+     left is the caller's own `limit` (and the host's memory).
+
+     Deciding a policy cap is the OPERATOR's call, not the library's: lower
+     these if you want the engine to refuse expensive queries. Note that a
+     full-corpus dump should use a document/v1 visit (VespaEventIndex.visitIds)
+     rather than a huge search — it streams instead of materializing. -->
 <query-profile id="default">
-    <field name="maxHits">10000</field>
-    <field name="maxOffset">10000</field>
+    <field name="maxHits">2147483647</field>
+    <field name="maxOffset">2147483647</field>
 </query-profile>

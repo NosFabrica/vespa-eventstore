@@ -421,10 +421,11 @@ class NostrEventStore(
 
     /**
      * Every distinct `d` tag (addressable subject) across [filter]'s matches, via
-     * an UNCAPPED document visit — for reading back a set the capped `search`
-     * (maxHits) would truncate, e.g. the hundreds of thousands of subjects one WoT
-     * provider scores. The sync uses it to find every scored author to fetch
-     * content for, not just the first page.
+     * a document visit — the STREAMING walk, for a set too big to want in one
+     * response, e.g. the hundreds of thousands of subjects one WoT provider
+     * scores. A `search` would return them all too (no hit cap by default), but
+     * materialized at once, and truncated outright if a deployment does set a
+     * cap. The sync uses this to find every scored author to fetch content for.
      */
     suspend fun distinctDTags(filter: Filter): Set<String> {
         val q = restoreSearches(listOf(filter)).single().toExpiryQuery() ?: return emptySet()

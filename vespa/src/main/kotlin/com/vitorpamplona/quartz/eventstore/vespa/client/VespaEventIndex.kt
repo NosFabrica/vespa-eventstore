@@ -75,9 +75,11 @@ import kotlin.coroutines.resumeWithException
  * document API (get) and `/search/` (query), non-blocking via the JDK client's
  * async sends on virtual threads.
  *
- * Unlimited queries are capped at [maxHits] (the app package's query profile
- * must allow it). A full-corpus walk goes through [visitIds] instead: the
- * document API's visit, which streams past any cap.
+ * Nothing here imposes a hit ceiling of its own: a query with a `limit` gets
+ * exactly that, and one without gets every match. [maxHits] exists only so a
+ * caller who WANTS a ceiling can set one. A full-corpus walk should still go
+ * through [visitIds] (the document API's visit), which streams rather than
+ * materializing the whole match set in one response.
  *
  * Counts use a grouping `count()` over the full match set (see
  * [EventYql.buildCount]) — NOT `root.totalCount`, which the recency `order by`'s
@@ -87,7 +89,21 @@ import kotlin.coroutines.resumeWithException
  */
 class VespaEventIndex(
     baseUrl: String = System.getenv("VESPA_URL") ?: "http://localhost:8080",
-    private val maxHits: Int = 10_000,
+    /**
+     * How many hits a query that carries NO `limit` of its own may return.
+     * `null` (the default) means no cap — the full match set comes back.
+     *
+     * This is a deliberate opt-in, not a safety net the library picks for you:
+     * an unbounded recall over a large corpus materializes every match, so a
+     * deployment that would rather bound that should say so here (and a
+     * full-corpus dump should use [visitIds], which streams). A query's own
+     * [EventQuery.limit] always wins over this value.
+     *
+     * The engine must also allow it: the bundled query profile sets `maxHits`
+     * to Int.MAX_VALUE, but an operator-owned application package that lowers
+     * it caps every query at that number, silently.
+     */
+    private val maxHits: Int? = null,
     /**
      * All container endpoints of the cluster; empty = just [baseUrl]. On a
      * multi-container deployment, naming every endpoint here beats a load
@@ -283,7 +299,7 @@ class VespaEventIndex(
         // directly instead of a JsonObject/JsonArray/JsonPrimitive wrapper per
         // field. This is the query hot path, so that saved garbage matters.
         return DECODER
-            .decodeFromString<SearchEnvelope>(queryBody(vq, hits = query.limit ?: maxHits))
+            .decodeFromString<SearchEnvelope>(queryBody(vq, hits = hitsFor(query)))
             .root.children
             .mapNotNull { it.fields?.toDoc() }
     }
@@ -300,10 +316,18 @@ class VespaEventIndex(
         if (query.isPureIdLookup()) return getByIds(query).map { it.toRawEvent() }
         val vq = EventYql.build(query) ?: return emptyList()
         return DECODER
-            .decodeFromString<SearchEnvelope>(queryBody(vq, hits = query.limit ?: maxHits))
+            .decodeFromString<SearchEnvelope>(queryBody(vq, hits = hitsFor(query)))
             .root.children
             .mapNotNull { it.fields?.toRaw() }
     }
+
+    /**
+     * The `hits` to ask Vespa for. The query's own [EventQuery.limit] first; else
+     * the caller-configured [maxHits]; else Int.MAX_VALUE, which the bundled query
+     * profile allows, so an unbounded query returns the whole match set instead of
+     * a silently truncated page.
+     */
+    private fun hitsFor(query: EventQuery): Int = query.limit ?: maxHits ?: Int.MAX_VALUE
 
     /**
      * Only ids constrain the query (an expiry guard may still ride along), and few
