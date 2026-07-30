@@ -43,6 +43,7 @@ import org.eclipse.jetty.server.Response
 import org.eclipse.jetty.server.Server
 import org.eclipse.jetty.server.ServerConnector
 import org.eclipse.jetty.util.Callback
+import java.io.IOException
 import java.net.URLDecoder
 import java.util.zip.GZIPInputStream
 
@@ -63,6 +64,19 @@ class MockVespaEngine {
     val inner = InMemoryEventIndex()
 
     val url: String get() = "http://127.0.0.1:$port"
+
+    /**
+     * Abort the next N response bodies mid-stream: send headers and a fragment of
+     * JSON, then fail the exchange so the client's body read throws *after* it has
+     * already accepted the response.
+     *
+     * This is the shape that a stalled engine produces, and it lands in a place
+     * ordinary error handling misses: the exception surfaces inside OkHttp's
+     * `onResponse` callback, which OkHttp only logs ("Callback failure for call
+     * to …") instead of routing to `onFailure`. A client that reads the body there
+     * without completing its continuation on the failure path hangs forever.
+     */
+    @Volatile var abortBodiesMidStream: Int = 0
 
     private class Reply(
         val status: Int,
@@ -85,6 +99,17 @@ class MockVespaEngine {
                         response: Response,
                         callback: Callback,
                     ): Boolean {
+                        if (abortBodiesMidStream > 0) {
+                            abortBodiesMidStream--
+                            response.status = 200
+                            response.headers.put(HttpHeader.CONTENT_TYPE, "application/json")
+                            // A length the fragment below will never satisfy, so the
+                            // client commits to reading more than will ever arrive.
+                            response.headers.put(HttpHeader.CONTENT_LENGTH, 4096L)
+                            Content.Sink.write(response, false, """{"root":{"children":[""", Callback.NOOP)
+                            callback.failed(IOException("simulated mid-body abort"))
+                            return true
+                        }
                         val reply =
                             try {
                                 // The feed client gzips its request bodies; real Vespa inflates them.
