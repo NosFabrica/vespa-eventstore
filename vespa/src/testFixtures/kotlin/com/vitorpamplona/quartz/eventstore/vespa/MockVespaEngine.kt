@@ -27,6 +27,7 @@ import com.vitorpamplona.quartz.eventstore.vespa.query.EventYql
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
@@ -77,6 +78,14 @@ class MockVespaEngine {
      * without completing its continuation on the failure path hangs forever.
      */
     @Volatile var abortBodiesMidStream: Int = 0
+
+    /**
+     * Answer every search with a DEGRADED coverage block naming this reason
+     * (`"timeout"`, `"match-phase"`, …) instead of a complete one. Real Vespa does
+     * this whenever it gives up on a query: HTTP 200, fewer hits, `full: false`.
+     * Null (the default) means full coverage.
+     */
+    @Volatile var degradeCoverage: String? = null
 
     private class Reply(
         val status: Int,
@@ -234,12 +243,33 @@ class MockVespaEngine {
                     "root",
                     buildJsonObject {
                         put("fields", buildJsonObject { put("totalCount", JsonPrimitive(matches.size)) })
+                        put("coverage", coverage(matches.size))
                         put("children", children)
                     },
                 )
             }
         return Reply(200, root.toString())
     }
+
+    /**
+     * The coverage block real Vespa puts on every search response. Complete unless
+     * a test asks for degradation via [degradeCoverage] — which is how a caller
+     * gets to prove it REFUSES a partial answer, the one thing that looks exactly
+     * like a small result set from the outside.
+     */
+    private fun coverage(documents: Int): JsonObject =
+        buildJsonObject {
+            val complete = degradeCoverage == null
+            put("coverage", JsonPrimitive(if (complete) 100 else 42))
+            put("documents", JsonPrimitive(documents))
+            put("full", JsonPrimitive(complete))
+            put("nodes", JsonPrimitive(1))
+            put("results", JsonPrimitive(1))
+            put("resultsFull", JsonPrimitive(if (complete) 1 else 0))
+            degradeCoverage?.let { reason ->
+                put("degraded", buildJsonObject { put(reason, JsonPrimitive(true)) })
+            }
+        }
 
     /** `all(output(count()))`: a single group:root node carrying the doc count() directly. */
     private fun countChildren(count: Int): JsonArray =

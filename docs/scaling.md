@@ -44,6 +44,18 @@ deployment, that invariant must survive:
     rejects a `max()`-less pipeline outright ("Cannot return unbounded number
     of groups"), so raising it back above `-1` breaks those paths rather than
     just capping them.
+
+    `timeout` / `ranking.softtimeout.enable`: a filter with no `limit` is a
+    request for the WHOLE match set, and it is allowed to take as long as that
+    takes — the caller sets `limit` when they want a fast query. Vespa's
+    default is the opposite: 500 ms, and because soft timeout is on it then
+    stops matching and returns what it has, HTTP 200, `coverage.full: false`.
+    So the deadline is at Vespa's maximum and soft timeout is off. Note
+    `Query.setTimeout` rejects anything >= 1000000000 ms — do not "max" this
+    field to 2147483647 the way `maxHits` is maxed, it fails every query.
+    `VespaEventIndex` checks `coverage.full` on every search response and
+    refuses a degraded one, so no other degradation source (node coverage,
+    match-phase) can pass a partial answer off as a complete one either.
   - In `services.xml`: the **GC selection** on the event document
     (`selection="event.expires_at > now()"` + `garbage-collection="true"`) —
     NIP-40 expiry is enforced by the engine; dropping it silently disables

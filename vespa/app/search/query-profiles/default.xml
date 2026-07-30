@@ -21,13 +21,29 @@
      per-request ceilings (defaultMaxGroups/defaultMaxHits) that DO travel as
      query parameters.
 
+     timeout + ranking.softtimeout.enable: Vespa gives a query 500 ms and then,
+     because soft timeout is ON by default, STOPS MATCHING AND RETURNS WHAT IT
+     HAS — HTTP 200, a short result, `coverage.full: false`. A caller asking for
+     everything would silently get part of it. A filter with no `limit` is a
+     request for the whole match set and is allowed to take as long as that
+     takes, so the deadline goes to Vespa's maximum (`Query.setTimeout` rejects
+     anything >= 1000000000 ms, so this is the largest legal value — do NOT
+     "max" it to 2147483647, that fails every query) and soft timeout is turned
+     off, making a deadline hit a loud error instead of a quiet half-answer.
+     VespaEventIndex checks `coverage.full` on every response, so degradation
+     from any other cause cannot pass as a complete answer either.
+
      Deciding a policy cap is the OPERATOR's call, not the library's: lower
      these if you want the engine to refuse expensive queries — but note that
-     lowering globalMaxGroups breaks the aggregation paths above. A full-corpus
-     dump should use a document/v1 visit (VespaEventIndex.visitIds) rather than
-     a huge search — it streams instead of materializing. -->
+     lowering globalMaxGroups breaks the aggregation paths above, and that
+     lowering the timeout while soft timeout is off turns slow queries into
+     errors. A full-corpus dump should use a document/v1 visit
+     (VespaEventIndex.visitIds) rather than a huge search — it streams instead
+     of materializing. -->
 <query-profile id="default">
     <field name="maxHits">2147483647</field>
     <field name="maxOffset">2147483647</field>
     <field name="grouping.globalMaxGroups">-1</field>
+    <field name="timeout">999999999ms</field>
+    <field name="ranking.softtimeout.enable">false</field>
 </query-profile>

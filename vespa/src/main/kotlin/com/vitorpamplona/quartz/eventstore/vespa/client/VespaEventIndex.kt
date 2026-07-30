@@ -152,12 +152,20 @@ class VespaEventIndex(
             .Builder()
             .protocols(listOf(Protocol.H2_PRIOR_KNOWLEDGE))
             .connectTimeout(Duration.ofSeconds(5))
-            .readTimeout(Duration.ofSeconds(60))
             .writeTimeout(Duration.ofSeconds(60))
-            // connect/read/write each bound one phase; none bounds the whole call.
-            // A call that keeps trickling bytes just under the read timeout could
-            // otherwise run indefinitely, holding a store write behind it.
-            .callTimeout(Duration.ofSeconds(QUERY_CALL_TIMEOUT_SECONDS))
+            // NO read or whole-call deadline. A query with no `limit` asks for the
+            // whole match set and is allowed to take as long as that takes — any
+            // finite deadline here is a duration cap on the CALLER's query, decided
+            // by the library, and OkHttp cannot tell "engine still matching" from
+            // "connection idle" (both are just no-bytes-yet on the socket).
+            //
+            // A dead peer is caught without capping duration: HTTP/2 PING frames.
+            // Unanswered pings fail the connection, so a black-holed socket still
+            // surfaces as a retryable IOException in seconds rather than hanging
+            // forever — which is what the deadlines were really there to catch.
+            .readTimeout(Duration.ZERO)
+            .callTimeout(Duration.ZERO)
+            .pingInterval(Duration.ofSeconds(PING_INTERVAL_SECONDS))
             // Vespa is local; never route through the egress proxy.
             .proxy(Proxy.NO_PROXY)
             .build()
@@ -193,9 +201,8 @@ class VespaEventIndex(
     /** One doc by its `id` attribute via the search stack — the id-lookup path under address-keying (no doc-API get, no [getByIds] recursion). */
     private suspend fun searchById(id: String): EventDoc? {
         val vq = EventYql.build(EventQuery(ids = listOf(id))) ?: return null
-        return DECODER
-            .decodeFromString<SearchEnvelope>(queryBody(vq, hits = 1))
-            .root.children
+        return searchRoot(vq, hits = 1)
+            .children
             .firstOrNull()
             ?.fields
             ?.toDoc()
@@ -284,9 +291,8 @@ class VespaEventIndex(
         // response is decoded into flat DTOs, allocating the target objects
         // directly instead of a JsonObject/JsonArray/JsonPrimitive wrapper per
         // field. This is the query hot path, so that saved garbage matters.
-        return DECODER
-            .decodeFromString<SearchEnvelope>(queryBody(vq, hits = hitsFor(query)))
-            .root.children
+        return searchRoot(vq, hits = hitsFor(query))
+            .children
             .mapNotNull { it.fields?.toDoc() }
     }
 
@@ -301,9 +307,8 @@ class VespaEventIndex(
     override suspend fun rawSearch(query: EventQuery): List<RawEvent> {
         if (query.isPureIdLookup()) return getByIds(query).map { it.toRawEvent() }
         val vq = EventYql.build(query) ?: return emptyList()
-        return DECODER
-            .decodeFromString<SearchEnvelope>(queryBody(vq, hits = hitsFor(query)))
-            .root.children
+        return searchRoot(vq, hits = hitsFor(query))
+            .children
             .mapNotNull { it.fields?.toRaw() }
     }
 
@@ -555,11 +560,46 @@ class VespaEventIndex(
         return resp.body()
     }
 
-    /** The grouping/count paths need the full tree; [search] does not (it decodes hits directly). */
+    /**
+     * The two funnels every `/search/` response passes through — this one for the
+     * recall paths (streamed straight into DTOs) and [queryRoot] for the
+     * grouping/count paths (which need the tree) — both verify coverage, so no
+     * caller can accidentally accept a degraded answer.
+     */
+    private suspend fun searchRoot(
+        vq: VespaQuery,
+        hits: Int,
+    ): SearchRoot =
+        DECODER
+            .decodeFromString<SearchEnvelope>(queryBody(vq, hits))
+            .root
+            .also { it.coverage.requireComplete() }
+
+    /** The grouping/count paths need the full tree; [searchRoot] does not (it decodes hits directly). */
     private suspend fun queryRoot(
         vq: VespaQuery,
         hits: Int,
-    ): JsonObject? = Json.parseToJsonElement(queryBody(vq, hits)).jsonObject["root"]?.jsonObject
+    ): JsonObject? =
+        Json
+            .parseToJsonElement(queryBody(vq, hits))
+            .jsonObject["root"]
+            ?.jsonObject
+            ?.also { root -> root["coverage"]?.let { DECODER.decodeFromJsonElement(SearchCoverage.serializer(), it) }?.requireComplete() }
+
+    /**
+     * A degraded response is a WRONG answer, not a slow one. Vespa does not fail a
+     * query it cannot finish — it returns HTTP 200 with however many hits it had
+     * when it gave up and `coverage.full: false`. That is indistinguishable, at
+     * every call site, from a filter that genuinely matched that few. On the read
+     * path it silently under-delivers; on a write path it is worse, because the
+     * dedup and NIP-09/62 guards decide by "did the query find it" and a partial
+     * answer resurrects a deleted event. So it fails loudly instead.
+     */
+    private fun SearchCoverage.requireComplete() =
+        require(full) {
+            "vespa searched only $coverage% of the corpus (degraded: ${degraded ?: "unspecified"}); " +
+                "the response is a PARTIAL answer, not a small one, so it is refused rather than returned"
+        }
 
     /**
      * Rebuild a doc from the decoded summary. `tags` is the one field still parsed
@@ -708,7 +748,7 @@ class VespaEventIndex(
 
     // --- streaming decode DTOs (avoid the JsonElement tree on the recall path) ---
 
-    /** `/search/` response: only the hit children are decoded; grouping/meta are ignored. */
+    /** `/search/` response: the hit children plus [SearchCoverage]; grouping/meta are ignored. */
     @Serializable
     private class SearchEnvelope(
         val root: SearchRoot = SearchRoot(),
@@ -717,6 +757,22 @@ class VespaEventIndex(
     @Serializable
     private class SearchRoot(
         val children: List<SearchHit> = emptyList(),
+        val coverage: SearchCoverage = SearchCoverage(),
+    )
+
+    /**
+     * How much of the corpus the engine actually searched. Vespa DEGRADES rather
+     * than failing — a query it gives up on comes back HTTP 200 with fewer hits
+     * and `full: false` — so this is the only thing separating "here is
+     * everything that matched" from "here is some of it". Defaults to complete:
+     * responses with no coverage block at all (document gets, the test double's
+     * older shapes) are not search results and have nothing to degrade.
+     */
+    @Serializable
+    private class SearchCoverage(
+        val full: Boolean = true,
+        val coverage: Int = 100,
+        val degraded: JsonObject? = null,
     )
 
     @Serializable
@@ -778,13 +834,14 @@ class VespaEventIndex(
         const val QUERY_RETRIES = 3
 
         /**
-         * Whole-call deadline for reads, above the 60s per-phase read timeout so a
-         * healthy-but-slow visit page still completes. Its job is to bound the case
-         * the phase timeouts cannot: bytes arriving steadily but too slowly to ever
-         * finish. Paired with the [sendRetrying] IOException retry, a call that hits
-         * this fails and is retried rather than hanging the caller.
+         * Liveness probe on the read connection, in place of the read/whole-call
+         * deadlines a query is no longer allowed to have. Unanswered HTTP/2 PINGs
+         * fail the connection with a ProtocolException, which [sendRetrying]
+         * retries — so a severed or black-holed socket is caught in seconds while a
+         * legitimately long query runs undisturbed. That distinction is the whole
+         * point: a deadline cannot make it, a ping can.
          */
-        const val QUERY_CALL_TIMEOUT_SECONDS = 180L
+        const val PING_INTERVAL_SECONDS = 15L
 
         /**
          * Per-operation feed deadline. The feed client's retry strategy handles

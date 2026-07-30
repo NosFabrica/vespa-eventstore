@@ -1,0 +1,117 @@
+/*
+ * Copyright (c) 2026 Vitor Pamplona
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of
+ * this software and associated documentation files (the "Software"), to deal in
+ * the Software without restriction, including without limitation the rights to use,
+ * copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the
+ * Software, and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+ * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+ * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+ * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+ * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+package com.vitorpamplona.quartz.eventstore.vespa
+
+import com.vitorpamplona.quartz.eventstore.vespa.client.VespaEventIndex
+import com.vitorpamplona.quartz.eventstore.vespa.doc.EventDoc
+import com.vitorpamplona.quartz.eventstore.vespa.query.EventQuery
+import kotlinx.coroutines.runBlocking
+import kotlin.test.AfterTest
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+import kotlin.test.fail
+
+/**
+ * A query with no `limit` asks for the whole match set, and the store's contract is
+ * that it gets it — however long that takes. The engine, left alone, does not
+ * honour that: Vespa DEGRADES instead of failing. A query it gives up on comes back
+ * HTTP 200 with however many hits it had at that moment and `coverage.full: false`,
+ * which at the call site is indistinguishable from a filter that genuinely matched
+ * that few.
+ *
+ * The deployed query profile makes that vanishingly rare (no 500 ms deadline, soft
+ * timeout off), but "rare" is not a contract — node coverage and match-phase can
+ * degrade a query too. So every search response is checked, and a partial one is
+ * refused. On a read path a silent partial under-delivers; on a write path it is
+ * worse, because dedup and the NIP-09/62 guards decide by "did the query find it"
+ * and a partial answer resurrects a deleted event.
+ */
+class VespaCoverageTest {
+    private val mock = MockVespaEngine()
+    private val index = VespaEventIndex(mock.url)
+
+    @AfterTest
+    fun tearDown() {
+        index.close()
+        mock.stop()
+    }
+
+    private fun doc(id: String) =
+        EventDoc(
+            id = id,
+            pubkey = "a1".repeat(32),
+            createdAt = 1_700_000_000L,
+            kind = 1,
+            tags = emptyList(),
+            content = "hello",
+            sig = "b2".repeat(32),
+        )
+
+    @Test
+    fun `a complete response is returned normally`() =
+        runBlocking {
+            index.put(doc("1".repeat(64)))
+
+            val hits = index.search(EventQuery(limit = 10))
+            assertEquals(1, hits.size, "full coverage must not be mistaken for degradation")
+        }
+
+    @Test
+    fun `a soft-timeout partial is refused, not returned as a short result`() =
+        runBlocking {
+            index.put(doc("1".repeat(64)))
+            mock.degradeCoverage = "timeout"
+
+            val failure = runCatching { index.search(EventQuery()) }.exceptionOrNull()
+
+            if (failure == null) fail("a partially-searched corpus was returned as if it were the whole answer")
+            assertTrue(
+                failure.message?.contains("PARTIAL") == true,
+                "the failure must name the cause, got: ${failure.message}",
+            )
+        }
+
+    @Test
+    fun `the raw recall path refuses a partial too`() =
+        runBlocking {
+            index.put(doc("1".repeat(64)))
+            mock.degradeCoverage = "match-phase"
+
+            assertTrue(
+                runCatching { index.rawSearch(EventQuery()) }.isFailure,
+                "rawSearch bypasses the EventDoc model, not the coverage check",
+            )
+        }
+
+    /** Counts degrade the same way, and a short count is a wrong number, not a small one. */
+    @Test
+    fun `the count path refuses a partial too`() =
+        runBlocking {
+            index.put(doc("1".repeat(64)))
+            mock.degradeCoverage = "timeout"
+
+            assertTrue(
+                runCatching { index.count(EventQuery()) }.isFailure,
+                "an aggregation over part of the corpus is not the aggregation that was asked for",
+            )
+        }
+}
