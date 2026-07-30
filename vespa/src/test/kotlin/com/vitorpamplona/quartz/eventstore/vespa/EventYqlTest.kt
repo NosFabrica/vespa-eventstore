@@ -21,9 +21,12 @@
 package com.vitorpamplona.quartz.eventstore.vespa
 import com.vitorpamplona.quartz.eventstore.vespa.query.EventQuery
 import com.vitorpamplona.quartz.eventstore.vespa.query.EventYql
+import java.io.ByteArrayInputStream
+import java.util.zip.ZipInputStream
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -142,16 +145,57 @@ class EventYqlTest {
         assertEquals("seveneight", q.params["wp6"], "adjacent pairs run to the last word")
     }
 
+    private fun groupingQueries() =
+        listOf(
+            EventYql.buildDistinctAuthors(EventQuery())!!,
+            EventYql.buildKindHistogram(EventQuery())!!,
+            EventYql.buildCount(EventQuery())!!,
+            EventYql.buildDistinctCount(EventQuery(), "pubkey")!!,
+        )
+
     /** Aggregations must answer over the whole match set: Vespa defaults to TEN groups without these. */
     @Test
-    fun `grouping queries disable the engine group ceilings`() {
-        for (q in listOf(EventYql.buildDistinctAuthors(EventQuery())!!, EventYql.buildKindHistogram(EventQuery())!!, EventYql.buildCount(EventQuery())!!)) {
-            assertEquals("-1", q.params["grouping.defaultMaxGroups"])
-            assertEquals("-1", q.params["grouping.defaultMaxHits"])
-            assertEquals("-1", q.params["grouping.globalMaxGroups"])
+    fun `grouping queries disable the per-request group ceilings`() {
+        for (q in groupingQueries()) {
+            assertEquals(EventYql.UNLIMITED_GROUPS, q.params["grouping.defaultMaxGroups"])
+            assertEquals(EventYql.UNLIMITED_GROUPS, q.params["grouping.defaultMaxHits"])
         }
         assertFalse("max(" in EventYql.buildDistinctAuthors(EventQuery())!!.yql, "no group cap in the pipeline")
         assertFalse("max(" in EventYql.buildKindHistogram(EventQuery())!!.yql, "no group cap in the pipeline")
+    }
+
+    /**
+     * Regression: Vespa's `GroupingQueryParser.validate` rejects ANY request that
+     * carries `grouping.globalMaxGroups` — "must be specified in a query profile"
+     * — with a 400. Sending it made every aggregation fail against a real Vespa
+     * (the parity IT's `count` checks) while the mock engine, which ignores query
+     * parameters, stayed green. It belongs in the bundled query profile only.
+     */
+    @Test
+    fun `grouping queries never send the global ceiling as a query parameter`() {
+        for (q in groupingQueries()) {
+            assertFalse(EventYql.GLOBAL_MAX_GROUPS in q.params, "${EventYql.GLOBAL_MAX_GROUPS} is a 400 when sent with the request")
+        }
+    }
+
+    /**
+     * …and the query profile — the only place Vespa accepts it — must actually
+     * disable it. Read out of the bundled zip, i.e. the bytes that get deployed,
+     * so an app package that drops the profile fails here and not in the parity IT.
+     */
+    @Test
+    fun `the deployed query profile disables the global group ceiling`() {
+        val profile =
+            ZipInputStream(ByteArrayInputStream(VespaApp.zipBytes())).use { zip ->
+                generateSequence { zip.nextEntry }
+                    .firstOrNull { it.name == "search/query-profiles/default.xml" }
+                    ?.let { zip.readBytes().decodeToString() }
+            }
+        assertNotNull(profile, "the application package ships no default query profile")
+        assertTrue(
+            """<field name="${EventYql.GLOBAL_MAX_GROUPS}">${EventYql.UNLIMITED_GROUPS}</field>""" in profile,
+            "the max()-less aggregation pipelines are rejected outright while this ceiling is on",
+        )
     }
 
     @Test
