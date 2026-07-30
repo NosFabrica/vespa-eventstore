@@ -24,6 +24,12 @@ deployment, that invariant must survive:
     is truncated without an error, so pair it with
     `VespaEventStore.open(maxHits = ...)` on the client side. For dumping the
     whole corpus, use a visit rather than a large search either way.
+
+    A client-side `maxHits` bounds CALLER recall only — the store's own
+    decision reads (dedup, NIP-09/62 guards, supersession) set
+    `EventQuery.requireComplete` and ignore it, so capping recall can never
+    corrupt a write. An engine-side cap has no such carve-out: it applies to
+    every query, which is the reason to leave the query profile alone.
   - In `services.xml`: the **GC selection** on the event document
     (`selection="event.expires_at > now()"` + `garbage-collection="true"`) —
     NIP-40 expiry is enforced by the engine; dropping it silently disables

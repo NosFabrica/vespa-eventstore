@@ -62,21 +62,20 @@ internal object Rejections {
  *  A. local checks (ephemeral accepted-not-stored, expired rejected, later
  *     copies of an id already in this run rejected as duplicates);
  *  B. one `id in (…)` duplicate query per [CHECK_CHUNK], fanned out bounded;
- *  C. per-owner tombstone/vanish guards (one query each; an owner with a guard
- *     set too large for one page falls back to the exact per-event [probe]);
+ *  C. per-owner tombstone/vanish guards (one query each);
  *  D. per-address supersession resolved IN RUN ORDER. Existing versions are
  *     fetched per (kind, author), and losers inside the run are
  *     Accepted-then-superseded exactly as sequential inserts would end up;
  *  E. one pipelined [EventIndex.putAll] of the survivors.
  *
- * [probe] runs the exact per-event deletion/vanish checks (throwing
- * [RejectedException] on a block) for the guard-page fallback in stage C.
+ * Every read a stage makes to DECIDE an outcome is
+ * [EventQuery.requireComplete]: batched I/O may not trade exactness for speed,
+ * so no client-side hit cap can apply to it.
  */
 internal class BulkInsert(
     private val index: EventIndex,
     private val relay: NormalizedRelayUrl?,
     private val guards: GuardOwners,
-    private val probe: suspend (Event) -> Unit,
 ) {
     /**
      * What [plan] resolved from its LOCK-FREE reads, handed to [commit] to
@@ -125,7 +124,7 @@ internal class BulkInsert(
             alive()
                 .map { events[it].id }
                 .chunked(CHECK_CHUNK)
-                .mapBounded(QUERY_FANOUT) { chunk -> index.search(EventQuery(ids = chunk)) }
+                .mapBounded(QUERY_FANOUT) { chunk -> index.search(EventQuery(ids = chunk, requireComplete = true)) }
                 .forEach { docs -> docs.forEach { stored += it.id } }
         }
         alive().forEach { i -> if (events[i].id in stored) outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.DUPLICATE) }
@@ -134,8 +133,9 @@ internal class BulkInsert(
         // and one vanish query per CHECK_CHUNK of owners (then bucketed by author),
         // NOT one pair per owner. A content batch touches ~500 owners; per-owner that
         // was ~1000 round trips at QUERY_FANOUT=4 — the ingest's real bottleneck —
-        // now it is a handful. (Downstream, an owner whose set still hits GUARD_PAGE
-        // falls back to the exact per-event probe, unchanged.)
+        // now it is a handful. The guard queries are requireComplete, so the batched
+        // view is exact by construction — there is no "the page may have cut this
+        // short" case left to fall back from.
         val owners = alive().groupBy { events[it].owner() }
         val guardSets =
             IngestStats.timed("guards") {
@@ -149,21 +149,6 @@ internal class BulkInsert(
             }
         for ((owner, idxs) in owners) {
             val (tombs, vanishes) = guardSets.getValue(owner)
-            if (tombs.size >= GUARD_PAGE || vanishes.size >= GUARD_PAGE) {
-                // Guard set larger than a page: the batched view could miss one.
-                // Exactness over speed — run these events through the per-event probes.
-                for (i in idxs) {
-                    outcome[i] =
-                        try {
-                            probe(events[i])
-                            null
-                        } catch (e: RejectedException) {
-                            // Semantic block only; a transient engine failure propagates.
-                            IEventStore.InsertOutcome.Rejected(e.message ?: "blocked")
-                        }
-                }
-                continue
-            }
             // target -> the newest guarding tombstone's created_at.
             val byId = HashMap<String, Long>()
             val byAddress = HashMap<String, Long>()
@@ -279,7 +264,9 @@ internal class BulkInsert(
             }
         IngestStats
             .timed("versions") {
-                versionQueries.mapBounded(QUERY_FANOUT) { q -> index.search(q) }
+                // Supersession decides which stored version a record replaces; a
+                // capped read here would overwrite a newer event with an older one.
+                versionQueries.mapBounded(QUERY_FANOUT) { q -> index.search(q.copy(requireComplete = true)) }
             }.forEach { docs ->
                 docs.forEach { doc ->
                     val d = if (doc.kind.isAddressable()) doc.dTagOrEmpty() else null
@@ -344,21 +331,13 @@ internal class BulkInsert(
             .toList()
             .chunked(CHECK_CHUNK)
             .mapBounded(QUERY_FANOUT) { chunk ->
-                val docs = index.search(EventQuery(kinds = listOf(kind), authors = chunk))
-                if (docs.size >= GUARD_PAGE) {
-                    chunk.mapBounded(QUERY_FANOUT) { o -> index.search(EventQuery(kinds = listOf(kind), authors = listOf(o))) }.flatten()
-                } else {
-                    docs
-                }
+                index.search(EventQuery(kinds = listOf(kind), authors = chunk, requireComplete = true))
             }.flatten()
             .groupBy { it.pubkey }
 
     private companion object {
-        // Ids/authors/d-tags per check query — well under the engine's page cap.
+        // Ids/authors/d-tags per check query. Not a result cap — every check
+        // query is requireComplete — just how wide one round trip is built.
         const val CHECK_CHUNK = 500
-
-        // A guard set this big may have been page-capped by the engine; those
-        // owners fall back to the exact per-event probes.
-        const val GUARD_PAGE = 10_000
     }
 }

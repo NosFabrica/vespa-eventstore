@@ -97,13 +97,7 @@ class NostrEventStore(
     // NIP-09/62 guard probes entirely (see GuardOwners for the safety argument).
     private val guards = GuardOwners(index)
 
-    // The bulk fast path shares this store's exact deletion/vanish probes for
-    // its guard-page fallback (the rare owner whose guard set overflows a page).
-    private val bulkInsert =
-        BulkInsert(index, relay, guards) { e ->
-            rejectIfDeleted(e)
-            rejectIfVanished(e)
-        }
+    private val bulkInsert = BulkInsert(index, relay, guards)
 
     override suspend fun insert(event: Event) = writes.withLock { insertLocked(event) }
 
@@ -249,7 +243,9 @@ class NostrEventStore(
             }
 
         com.vitorpamplona.quartz.eventstore.vespa.IngestStats.timed("preload") {
-            queries.mapBounded(QUERY_FANOUT) { index.search(it) }.forEach { page -> page.forEach { snapshot.put(it) } }
+            // Every preload query feeds a WRITE decision (dedup, guards, supersession,
+            // vanish scope), so none of them may be capped — see EventQuery.requireComplete.
+            queries.mapBounded(QUERY_FANOUT) { index.search(it.copy(requireComplete = true)) }.forEach { page -> page.forEach { snapshot.put(it) } }
         }
     }
 
@@ -525,15 +521,6 @@ class NostrEventStore(
     }
 
     // ---- Nostr semantics -------------------------------------------------------
-
-    /** Throwing guards for the bulk fast path's fallback (see [bulkInsert]); the per-event path uses the probes concurrently. */
-    private suspend fun rejectIfDeleted(event: Event) {
-        if (isDeleted(event)) throw RejectedException(Rejections.DELETED)
-    }
-
-    private suspend fun rejectIfVanished(event: Event) {
-        if (isVanished(event)) throw RejectedException(Rejections.VANISHED)
-    }
 
     /**
      * NIP-09: a kind 5 authored by this event's OWNER, e/a-tagging it, with

@@ -326,8 +326,15 @@ class VespaEventIndex(
      * the caller-configured [maxHits]; else Int.MAX_VALUE, which the bundled query
      * profile allows, so an unbounded query returns the whole match set instead of
      * a silently truncated page.
+     *
+     * [EventQuery.requireComplete] opts out of [maxHits] entirely: the store's
+     * decision queries (dedup, guards, supersession) must never be capped by a
+     * setting meant to bound the cost of caller recall.
      */
-    private fun hitsFor(query: EventQuery): Int = query.limit ?: maxHits ?: Int.MAX_VALUE
+    private fun hitsFor(query: EventQuery): Int {
+        val default = if (query.requireComplete) null else maxHits
+        return query.limit ?: default ?: Int.MAX_VALUE
+    }
 
     /**
      * Only ids constrain the query (an expiry guard may still ride along), and few
