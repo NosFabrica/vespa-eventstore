@@ -201,6 +201,9 @@ class MockVespaEngine {
     }
 
     private fun search(params: Map<String, String>): Reply {
+        PROFILE_ONLY_PARAMS.firstOrNull { it in params }?.let {
+            return Reply(400, """{"message":"$it must be specified in a query profile."}""")
+        }
         val yql = params["yql"] ?: return Reply(400, """{"message":"missing yql"}""")
         val hits = params["hits"]?.toIntOrNull() ?: 10
         // The exact-count query (EventYql.buildCount): "… limit 0 | all(output(count()))".
@@ -367,6 +370,16 @@ class MockVespaEngine {
     private companion object {
         /** Max docs per visit response — small enough that tests always cross a page boundary. */
         const val VISIT_PAGE_CAP = 7
+
+        /**
+         * Settings real Vespa REFUSES to take from a request — it fails the query
+         * with `<name> must be specified in a query profile.` rather than applying
+         * it (`DefaultProperties.requireNotPresentIn`, `GroupingQueryParser.validate`).
+         * Modelled here because a mock that quietly ignores query parameters made
+         * exactly this bug invisible: sending `grouping.globalMaxGroups` 400'd every
+         * aggregation against a real Vespa while these tests stayed green.
+         */
+        val PROFILE_ONLY_PARAMS = listOf("maxHits", "maxOffset", "grouping.globalMaxGroups")
     }
 }
 

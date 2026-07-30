@@ -17,19 +17,33 @@ deployment, that invariant must survive:
     `match: cased`, `dictionary: hash`, the rank profiles. Never hand-edit;
     take them from the library version you run.
   - `search/query-profiles/default.xml` — `maxHits`/`maxOffset` at
-    Int.MAX_VALUE, i.e. no engine-side hit ceiling. **Dropping this file does
-    not remove a limit, it imposes one**: queries then silently cap at Vespa's
-    default 400 hits. Lowering the numbers is a legitimate operator choice (a
-    policy cap on expensive queries) — just know that a query asking for more
-    is truncated without an error. For dumping the whole corpus, use a visit
-    rather than a large search either way.
+    Int.MAX_VALUE (no engine-side hit ceiling) and `grouping.globalMaxGroups`
+    at `-1` (no group ceiling). **Dropping this file does not remove limits, it
+    imposes them**: queries fall back to Vespa's defaults of 400 hits / 1000
+    offset, and every aggregation the store issues starts failing.
 
-    Think hard before lowering it. The library holds no result cap of its own —
-    a filter's `limit` is the only bound — so this number applies to EVERY
+    A query profile is the only place these can live at all — Vespa refuses to
+    take any of the three from a request, failing it with `… must be specified
+    in a query profile.` So the file is load-bearing, not a tuning file, and
+    every field has to be carried over verbatim.
+
+    `maxHits`/`maxOffset`: a query asking for more than the ceiling is
+    REJECTED (`N hits requested, configured limit: 400`), not trimmed.
+    Lowering them is a legitimate operator choice (a policy cap on expensive
+    queries), but think hard first. The library holds no result cap of its own
+    — a filter's `limit` is the only bound — so the number applies to EVERY
     query, including the store's own write decisions (dedup, NIP-09/62 guards,
-    supersession). A truncated guard read does not return a short page, it
-    resurrects a deleted event. If you need to bound query cost, bound it where
-    the filters are built, not here.
+    supersession). A guard read that errors out fails the write it was
+    guarding. If you need to bound query cost, bound it where the filters are
+    built, not here. For dumping the whole corpus, use a visit rather than a
+    large search either way.
+
+    `grouping.globalMaxGroups`: `count`, distinct-count, the kind histogram
+    and the distinct-author sweep are all deliberately `max()`-less so they
+    answer over the whole match set. While this ceiling is enabled, Vespa
+    rejects a `max()`-less pipeline outright ("Cannot return unbounded number
+    of groups"), so raising it back above `-1` breaks those paths rather than
+    just capping them.
   - In `services.xml`: the **GC selection** on the event document
     (`selection="event.expires_at > now()"` + `garbage-collection="true"`) —
     NIP-40 expiry is enforced by the engine; dropping it silently disables

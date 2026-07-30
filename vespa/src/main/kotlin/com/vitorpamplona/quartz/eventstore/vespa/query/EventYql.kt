@@ -136,10 +136,10 @@ object EventYql {
      * `each(output(count()))` gives each group a payload so Vespa emits it.)
      * Unlike [buildDistinctCount] this returns the author VALUES, not just a count.
      *
-     * No `max()`: EVERY distinct author comes back. [grouping] disables the
-     * engine's group ceilings so this stays complete however high the
-     * cardinality goes — a truncated author set would make the orphan-score
-     * sweep silently under-delete.
+     * No `max()`: EVERY distinct author comes back. [grouping] and the bundled
+     * query profile between them disable the engine's group ceilings so this
+     * stays complete however high the cardinality goes — a truncated author set
+     * would make the orphan-score sweep silently under-delete.
      */
     fun buildDistinctAuthors(q: EventQuery): VespaQuery? = grouping(q, "all(group(pubkey) each(output(count())))")
 
@@ -159,13 +159,20 @@ object EventYql {
      * attribute trips Vespa's match-phase on a large corpus and caps the reported
      * totals. Unranked. Null when the filter provably matches nothing.
      *
-     * Both group ceilings are disabled ([UNLIMITED_GROUPS]) so an aggregation
-     * answers over the WHOLE match set. These are not optional politeness: a
-     * pipeline with no `max()` otherwise returns `grouping.defaultMaxGroups`
-     * groups — TEN — and one that could exceed `grouping.globalMaxGroups` (10k)
-     * is failed outright by the container rather than truncated. Disabling the
-     * default without disabling the global is the one combination Vespa
-     * rejects, so they always travel together.
+     * The per-request group ceilings are disabled ([UNLIMITED_GROUPS]) so an
+     * aggregation answers over the WHOLE match set. These are not optional
+     * politeness: a pipeline with no `max()` otherwise returns
+     * `grouping.defaultMaxGroups` groups — TEN.
+     *
+     * The third ceiling, `grouping.globalMaxGroups`, must be disabled TOO —
+     * while it is on, Vespa fails a `max()`-less pipeline outright ("Cannot
+     * return unbounded number of groups") instead of truncating it. But it
+     * CANNOT be sent from here: Vespa's `GroupingQueryParser.validate` rejects
+     * any request carrying it with `grouping.globalMaxGroups must be specified
+     * in a query profile`, a 400 on every aggregation. So it lives in the
+     * bundled query profile (`vespa/app/search/query-profiles/default.xml`) —
+     * the only place the engine accepts it — and a deployment that replaces
+     * that profile must carry the field over.
      */
     private fun grouping(
         q: EventQuery,
@@ -179,7 +186,6 @@ object EventYql {
         val where = if (clauses.isEmpty()) "true" else clauses.joinToString(" and ")
         params["grouping.defaultMaxGroups"] = UNLIMITED_GROUPS
         params["grouping.defaultMaxHits"] = UNLIMITED_GROUPS
-        params["grouping.globalMaxGroups"] = UNLIMITED_GROUPS
         return VespaQuery(
             yql = "select * from event where $where limit 0 | $pipeline",
             params = params,
@@ -187,8 +193,15 @@ object EventYql {
         )
     }
 
-    /** Vespa's "disable this ceiling" sentinel for the `grouping.*Max*` query parameters. */
-    private const val UNLIMITED_GROUPS = "-1"
+    /** Vespa's "disable this ceiling" sentinel for the `grouping.*Max*` settings. */
+    const val UNLIMITED_GROUPS = "-1"
+
+    /**
+     * The one grouping ceiling Vespa refuses to take from a request: it must come
+     * from a query profile, so it is NOT in [grouping]'s params. Named here for
+     * the guard that keeps it out.
+     */
+    const val GLOBAL_MAX_GROUPS = "grouping.globalMaxGroups"
 
     /** The shared WHERE clauses (filters + optional search term); null when the filter provably matches nothing. */
     private fun filterClauses(
