@@ -186,11 +186,9 @@ class TrustProjection(
             .timed("proj.fetch") {
                 subjects
                     .chunked(FETCH_CHUNK)
-                    .mapBounded(QUERY_FANOUT) { chunk ->
-                        // A partial score set derives a WRONG parent card, so this
-                        // must not ride a caller-facing hit cap.
-                        inner.search(EventQuery(kinds = listOf(ContactCardEvent.KIND), tags = mapOf("d" to chunk), requireComplete = true))
-                    }
+                    // A partial score set derives a WRONG parent card, so this query
+                    // carries no limit.
+                    .mapBounded(QUERY_FANOUT) { chunk -> inner.search(EventQuery(kinds = listOf(ContactCardEvent.KIND), tags = mapOf("d" to chunk))) }
             }.forEach { docs ->
                 docs.forEach { doc ->
                     subjectOf(doc)?.takeIf { it in wanted }?.let { bySubject.getOrPut(it) { mutableListOf() } += doc }

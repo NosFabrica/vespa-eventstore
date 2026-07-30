@@ -46,22 +46,8 @@ data class EventQuery(
     val expiresBefore: Long? = null,
     /** Exclude docs already expired at this time (NIP-40: never serve expired events). */
     val notExpiredAt: Long? = null,
+    /** Max hits to return. Null = every match; nothing else caps a query. */
     val limit: Int? = null,
-    /**
-     * This query's answer must be COMPLETE — no client-side default may cap it.
-     *
-     * The store's own machinery reads the index to DECIDE something: is this id
-     * already stored, does a tombstone guard it, which version currently holds
-     * this address. For those, a short page is not a small answer, it is a wrong
-     * write — a missed tombstone resurrects a deleted event, a missed version
-     * breaks supersession. They set this so a deployment's
-     * [com.vitorpamplona.quartz.eventstore.vespa.client.VespaEventIndex.maxHits]
-     * cannot silently make them wrong.
-     *
-     * Caller-facing recall leaves it false: bounding what a REQ costs is exactly
-     * what that setting is for. [limit] still wins over both.
-     */
-    val requireComplete: Boolean = false,
     /** NIP-50 search term; null/blank = plain recall ordered by recency. */
     val search: String? = null,
     /**

@@ -21,15 +21,15 @@ deployment, that invariant must survive:
     not remove a limit, it imposes one**: queries then silently cap at Vespa's
     default 400 hits. Lowering the numbers is a legitimate operator choice (a
     policy cap on expensive queries) — just know that a query asking for more
-    is truncated without an error, so pair it with
-    `VespaEventStore.open(maxHits = ...)` on the client side. For dumping the
-    whole corpus, use a visit rather than a large search either way.
+    is truncated without an error. For dumping the whole corpus, use a visit
+    rather than a large search either way.
 
-    A client-side `maxHits` bounds CALLER recall only — the store's own
-    decision reads (dedup, NIP-09/62 guards, supersession) set
-    `EventQuery.requireComplete` and ignore it, so capping recall can never
-    corrupt a write. An engine-side cap has no such carve-out: it applies to
-    every query, which is the reason to leave the query profile alone.
+    Think hard before lowering it. The library holds no result cap of its own —
+    a filter's `limit` is the only bound — so this number applies to EVERY
+    query, including the store's own write decisions (dedup, NIP-09/62 guards,
+    supersession). A truncated guard read does not return a short page, it
+    resurrects a deleted event. If you need to bound query cost, bound it where
+    the filters are built, not here.
   - In `services.xml`: the **GC selection** on the event document
     (`selection="event.expires_at > now()"` + `garbage-collection="true"`) —
     NIP-40 expiry is enforced by the engine; dropping it silently disables

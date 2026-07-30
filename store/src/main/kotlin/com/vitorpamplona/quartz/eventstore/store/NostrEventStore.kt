@@ -244,8 +244,8 @@ class NostrEventStore(
 
         com.vitorpamplona.quartz.eventstore.vespa.IngestStats.timed("preload") {
             // Every preload query feeds a WRITE decision (dedup, guards, supersession,
-            // vanish scope), so none of them may be capped — see EventQuery.requireComplete.
-            queries.mapBounded(QUERY_FANOUT) { index.search(it.copy(requireComplete = true)) }.forEach { page -> page.forEach { snapshot.put(it) } }
+            // vanish scope), so none of them carries a limit.
+            queries.mapBounded(QUERY_FANOUT) { index.search(it) }.forEach { page -> page.forEach { snapshot.put(it) } }
         }
     }
 

@@ -229,23 +229,18 @@ class VespaEventIndexTest {
         }
 
     /**
-     * A query with no `limit` is unbounded by default — the client no longer
-     * picks a page size on the caller's behalf. [VespaEventIndex.maxHits] is the
-     * opt-in ceiling for callers who want one, and an explicit `limit` beats it.
+     * `limit` is the ONLY thing that bounds a result: absent, every match comes
+     * back. The client picks no page size on the caller's behalf.
      */
     @Test
-    fun `unlimited queries are uncapped by default and capped only when asked`() =
+    fun `a query without a limit returns every match`() =
         runBlocking {
             seed(*(1..5).map { doc(kind = 9) }.toTypedArray())
             val q = EventQuery(kinds = listOf(9))
 
-            assertEquals(5, index.search(q).size, "no limit and no maxHits: every match")
+            assertEquals(5, index.search(q).size, "no limit: every match")
             assertEquals(5, index.rawSearch(q).size, "the raw path agrees")
-
-            VespaEventIndex(mock.url, maxHits = 2).use { capped ->
-                assertEquals(2, capped.search(q).size, "maxHits bounds an unlimited query")
-                assertEquals(4, capped.search(q.copy(limit = 4)).size, "an explicit limit wins over maxHits")
-            }
+            assertEquals(4, index.search(q.copy(limit = 4)).size, "an explicit limit is honored")
         }
 
     @Test
