@@ -16,9 +16,20 @@ deployment, that invariant must survive:
   - `schemas/event.sd` and `schemas/reputation.sd` — every attribute,
     `match: cased`, `dictionary: hash`, the rank profiles. Never hand-edit;
     take them from the library version you run.
-  - `search/query-profiles/default.xml` — the 10k `maxHits`/`maxOffset` cap
-    the client pages against. Without it, queries silently cap at Vespa's
-    default 400 hits.
+  - `search/query-profiles/default.xml` — `maxHits`/`maxOffset` at
+    Int.MAX_VALUE, i.e. no engine-side hit ceiling. **Dropping this file does
+    not remove a limit, it imposes one**: queries then silently cap at Vespa's
+    default 400 hits. Lowering the numbers is a legitimate operator choice (a
+    policy cap on expensive queries) — just know that a query asking for more
+    is truncated without an error. For dumping the whole corpus, use a visit
+    rather than a large search either way.
+
+    Think hard before lowering it. The library holds no result cap of its own —
+    a filter's `limit` is the only bound — so this number applies to EVERY
+    query, including the store's own write decisions (dedup, NIP-09/62 guards,
+    supersession). A truncated guard read does not return a short page, it
+    resurrects a deleted event. If you need to bound query cost, bound it where
+    the filters are built, not here.
   - In `services.xml`: the **GC selection** on the event document
     (`selection="event.expires_at > now()"` + `garbage-collection="true"`) —
     NIP-40 expiry is enforced by the engine; dropping it silently disables

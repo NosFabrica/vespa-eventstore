@@ -20,7 +20,6 @@
  */
 package com.vitorpamplona.quartz.eventstore.vespa.doc
 import com.vitorpamplona.quartz.eventstore.vespa.WHITESPACE
-import com.vitorpamplona.quartz.eventstore.vespa.query.EventYql
 
 /**
  * The derived, kind-specific search surface of one event: what the store's
@@ -72,16 +71,16 @@ data class SearchFields(
 
     /**
      * Naive recall check for the in-memory reference index, following the
-     * word-group YQL's OR shape. ANY query word (capped like the YQL) that
-     * substring-matches ANY field recalls the doc; ranking, not recall, decides
-     * what floats. Fuzzy/gram recall is deliberately not modeled.
+     * word-group YQL's OR shape. ANY query word that substring-matches ANY field
+     * recalls the doc; ranking, not recall, decides what floats. Every word
+     * counts, exactly as the YQL builder now emits every word. Fuzzy/gram recall
+     * is deliberately not modeled.
      */
     fun matches(term: String): Boolean {
         val values = fields().values
         return term
             .split(WHITESPACE)
             .filter { it.isNotEmpty() }
-            .take(EventYql.MAX_QUERY_WORDS)
             .any { word -> values.any { it.contains(word, ignoreCase = true) } }
     }
 

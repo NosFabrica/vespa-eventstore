@@ -509,7 +509,7 @@ object MockYql {
 
                     // The word-group search clause (its first sub-clause is always a
                     // field-annotated userInput): reconstruct the term from the
-                    // per-word parameters (@w0..@w5 — @wj/@wp* are derived variants).
+                    // per-word parameters (@w0..@wN — @wj/@wp* are derived variants).
                     clause.startsWith("((({defaultIndex:") -> q.copy(search = searchWords(params))
 
                     clause.startsWith("(tag_index contains ") -> tagGroup(q, clause)
@@ -522,8 +522,14 @@ object MockYql {
         return q
     }
 
+    /** w0, w1, … until the first gap — the builder emits one per word, with no upper bound. */
     private fun searchWords(params: Map<String, String>): String {
-        val words = (0 until EventYql.MAX_QUERY_WORDS).mapNotNull { params["w$it"] }
+        val words =
+            generateSequence(0) { it + 1 }
+                .map { params["w$it"] }
+                .takeWhile { it != null }
+                .filterNotNull()
+                .toList()
         require(words.isNotEmpty()) { "search clause without w0.. parameters" }
         return words.joinToString(" ")
     }

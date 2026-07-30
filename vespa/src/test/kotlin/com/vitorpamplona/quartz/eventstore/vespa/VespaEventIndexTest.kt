@@ -228,6 +228,21 @@ class VespaEventIndexTest {
             assertEquals(mapOf(1 to 3, 30023 to 2), index.countByKind(EventQuery(notKinds = listOf(0))))
         }
 
+    /**
+     * `limit` is the ONLY thing that bounds a result: absent, every match comes
+     * back. The client picks no page size on the caller's behalf.
+     */
+    @Test
+    fun `a query without a limit returns every match`() =
+        runBlocking {
+            seed(*(1..5).map { doc(kind = 9) }.toTypedArray())
+            val q = EventQuery(kinds = listOf(9))
+
+            assertEquals(5, index.search(q).size, "no limit: every match")
+            assertEquals(5, index.rawSearch(q).size, "the raw path agrees")
+            assertEquals(4, index.search(q.copy(limit = 4)).size, "an explicit limit is honored")
+        }
+
     @Test
     fun `count returns the full match set past the hits page`() =
         runBlocking {

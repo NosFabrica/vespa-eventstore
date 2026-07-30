@@ -90,6 +90,17 @@ class NostrEventStore(
     private val index: EventIndex,
     override val relay: NormalizedRelayUrl? = null,
     private val nowSecs: () -> Long = { System.currentTimeMillis() / 1000 },
+    /**
+     * Events removed per round of a [sweep] (delete, NIP-40 expiry, NIP-62
+     * vanish). A sweep re-runs its query until it comes back empty, so this
+     * bounds how many matches are held at once, NOT how many get deleted.
+     *
+     * It is explicit because nothing else caps a query any more: without it a
+     * vanish over a prolific author, or an expiry pass on a large corpus, would
+     * materialize every doomed event in one list. Internal — a test seam, like
+     * [nowSecs]; 10k is the page size this path ran with historically.
+     */
+    internal val sweepPage: Int = 10_000,
 ) : IEventStore {
     private val writes = Mutex()
 
@@ -97,13 +108,7 @@ class NostrEventStore(
     // NIP-09/62 guard probes entirely (see GuardOwners for the safety argument).
     private val guards = GuardOwners(index)
 
-    // The bulk fast path shares this store's exact deletion/vanish probes for
-    // its guard-page fallback (the rare owner whose guard set overflows a page).
-    private val bulkInsert =
-        BulkInsert(index, relay, guards) { e ->
-            rejectIfDeleted(e)
-            rejectIfVanished(e)
-        }
+    private val bulkInsert = BulkInsert(index, relay, guards)
 
     override suspend fun insert(event: Event) = writes.withLock { insertLocked(event) }
 
@@ -249,6 +254,8 @@ class NostrEventStore(
             }
 
         com.vitorpamplona.quartz.eventstore.vespa.IngestStats.timed("preload") {
+            // Every preload query feeds a WRITE decision (dedup, guards, supersession,
+            // vanish scope), so none of them carries a limit.
             queries.mapBounded(QUERY_FANOUT) { index.search(it) }.forEach { page -> page.forEach { snapshot.put(it) } }
         }
     }
@@ -421,10 +428,11 @@ class NostrEventStore(
 
     /**
      * Every distinct `d` tag (addressable subject) across [filter]'s matches, via
-     * an UNCAPPED document visit — for reading back a set the capped `search`
-     * (maxHits) would truncate, e.g. the hundreds of thousands of subjects one WoT
-     * provider scores. The sync uses it to find every scored author to fetch
-     * content for, not just the first page.
+     * a document visit — the STREAMING walk, for a set too big to want in one
+     * response, e.g. the hundreds of thousands of subjects one WoT provider
+     * scores. A `search` would return them all too (no hit cap by default), but
+     * materialized at once, and truncated outright if a deployment does set a
+     * cap. The sync uses this to find every scored author to fetch content for.
      */
     suspend fun distinctDTags(filter: Filter): Set<String> {
         val q = restoreSearches(listOf(filter)).single().toExpiryQuery() ?: return emptySet()
@@ -511,11 +519,19 @@ class NostrEventStore(
         writes.withLock { sweep(EventQuery(expiresBefore = nowSecs() + 1)) }
     }
 
-    /** Remove every match, page by page, until the query comes back empty. */
+    /**
+     * Remove every match, [sweepPage] at a time, until the query comes back
+     * empty. No offset: each round re-runs the SAME query, and the removes
+     * shrink the match set, so the next round naturally sees the next batch.
+     * (Offset paging would be wrong here — deleting under an offset skips rows.)
+     */
     private suspend fun sweep(q: EventQuery) {
+        // The read is paged; the caller's own limit, if any, still decides
+        // whether one page is the whole job (below), so read q.limit, not this.
+        val paged = q.copy(limit = q.limit ?: sweepPage)
         var rounds = 0
         while (rounds++ < MAX_SWEEP_ROUNDS) {
-            val page = index.search(q)
+            val page = index.search(paged)
             if (page.isEmpty()) return
             index.removeAll(page.map { it.id })
             // A limit'd delete is satisfied by its first page.
@@ -524,15 +540,6 @@ class NostrEventStore(
     }
 
     // ---- Nostr semantics -------------------------------------------------------
-
-    /** Throwing guards for the bulk fast path's fallback (see [bulkInsert]); the per-event path uses the probes concurrently. */
-    private suspend fun rejectIfDeleted(event: Event) {
-        if (isDeleted(event)) throw RejectedException(Rejections.DELETED)
-    }
-
-    private suspend fun rejectIfVanished(event: Event) {
-        if (isVanished(event)) throw RejectedException(Rejections.VANISHED)
-    }
 
     /**
      * NIP-09: a kind 5 authored by this event's OWNER, e/a-tagging it, with
@@ -640,15 +647,18 @@ class NostrEventStore(
     override fun close() = index.close()
 
     private companion object {
-        // Page-sized rounds; a page of results per round means a runaway sweep
-        // still terminates loudly rather than spinning forever.
+        // Runaway guard, not a delete cap: a sweep whose removes stop shrinking
+        // the match set terminates loudly instead of spinning forever. Only
+        // meaningful because the rounds are page-sized (see sweepPage) — with an
+        // unbounded read the loop always finishes in one round and this is dead.
         const val MAX_SWEEP_ROUNDS = 10_000
 
         // Runs at least this long take the bulk path; smaller ones aren't
         // worth the setup and stay on the per-event path.
         const val BULK_MIN = 16
 
-        // Ids/authors/d-tags per preload query — well under the engine's page cap.
+        // Ids/authors/d-tags per preload query. Not a result cap — these queries
+        // carry no limit — just how wide one round trip is built.
         const val PRELOAD_CHUNK = 500
         val NEWEST_FIRST = compareByDescending(EventDoc::createdAt).thenBy(EventDoc::id)
 

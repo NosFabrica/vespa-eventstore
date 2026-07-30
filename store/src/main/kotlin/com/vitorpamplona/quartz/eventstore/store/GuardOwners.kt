@@ -50,8 +50,10 @@ import kotlinx.coroutines.sync.withLock
  *    relay with millions of distinct deleters costs a few MB and the guard-skip
  *    KEEPS WORKING. The Bloom's no-false-negative property is exactly the
  *    UNDER-flag prohibition above; a false positive is just the harmless
- *    over-flag (a wasted probe). The load must be EXHAUSTIVE — [EventIndex.scanAuthors]
- *    is the uncapped visit, not the grouping [distinctAuthors] that truncates.
+ *    over-flag (a wasted probe). The load must be EXHAUSTIVE and it walks the
+ *    WHOLE corpus, so it uses [EventIndex.scanAuthors] — the continuation-paged
+ *    visit — rather than [EventIndex.distinctAuthors], whose grouping is equally
+ *    complete but builds its entire answer in one response.
  *  - A FOREIGN feeder writing kind 5/62 directly to the engine still bypasses
  *    [noteGuardStored]; that deployment must set `GUARD_OWNERS_DISABLE=1` so
  *    every insert probes.

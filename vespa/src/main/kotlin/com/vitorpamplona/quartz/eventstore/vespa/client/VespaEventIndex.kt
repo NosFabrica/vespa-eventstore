@@ -75,9 +75,12 @@ import kotlin.coroutines.resumeWithException
  * document API (get) and `/search/` (query), non-blocking via the JDK client's
  * async sends on virtual threads.
  *
- * Unlimited queries are capped at [maxHits] (the app package's query profile
- * must allow it). A full-corpus walk goes through [visitIds] instead: the
- * document API's visit, which streams past any cap.
+ * There is no hit ceiling here, configurable or otherwise: a query with a
+ * `limit` gets exactly that, and one without gets every match. Bounding what a
+ * query costs is the caller's job, expressed per query through
+ * [EventQuery.limit]. A full-corpus walk should still go through [visitIds]
+ * (the document API's visit), which streams rather than materializing the whole
+ * match set in one response.
  *
  * Counts use a grouping `count()` over the full match set (see
  * [EventYql.buildCount]) — NOT `root.totalCount`, which the recency `order by`'s
@@ -87,7 +90,6 @@ import kotlin.coroutines.resumeWithException
  */
 class VespaEventIndex(
     baseUrl: String = System.getenv("VESPA_URL") ?: "http://localhost:8080",
-    private val maxHits: Int = 10_000,
     /**
      * All container endpoints of the cluster; empty = just [baseUrl]. On a
      * multi-container deployment, naming every endpoint here beats a load
@@ -283,7 +285,7 @@ class VespaEventIndex(
         // directly instead of a JsonObject/JsonArray/JsonPrimitive wrapper per
         // field. This is the query hot path, so that saved garbage matters.
         return DECODER
-            .decodeFromString<SearchEnvelope>(queryBody(vq, hits = query.limit ?: maxHits))
+            .decodeFromString<SearchEnvelope>(queryBody(vq, hits = hitsFor(query)))
             .root.children
             .mapNotNull { it.fields?.toDoc() }
     }
@@ -300,10 +302,18 @@ class VespaEventIndex(
         if (query.isPureIdLookup()) return getByIds(query).map { it.toRawEvent() }
         val vq = EventYql.build(query) ?: return emptyList()
         return DECODER
-            .decodeFromString<SearchEnvelope>(queryBody(vq, hits = query.limit ?: maxHits))
+            .decodeFromString<SearchEnvelope>(queryBody(vq, hits = hitsFor(query)))
             .root.children
             .mapNotNull { it.fields?.toRaw() }
     }
+
+    /**
+     * The `hits` to ask Vespa for: the query's own [EventQuery.limit], else
+     * everything. Int.MAX_VALUE is how "no limit" is spelled — Vespa's `hits`
+     * defaults to TEN when omitted, so an unbounded query has to name a number,
+     * and the bundled query profile raises `maxHits` to let it through.
+     */
+    private fun hitsFor(query: EventQuery): Int = query.limit ?: Int.MAX_VALUE
 
     /**
      * Only ids constrain the query (an expiry guard may still ride along), and few
@@ -348,9 +358,9 @@ class VespaEventIndex(
 
     /**
      * The document-API visit: a streaming scan with a selection expression and
-     * continuation tokens. It has no result cap and no ranking, which is
-     * exactly what a full-corpus id walk needs. Queries a selection can't
-     * express fall back to the (capped) search default.
+     * continuation tokens. It STREAMS and does not rank, which is exactly what a
+     * full-corpus id walk needs. Queries a selection can't express fall back to
+     * the search default, which returns the same set in a single page.
      */
     override suspend fun visitIds(
         query: EventQuery,
@@ -483,10 +493,11 @@ class VespaEventIndex(
     }
 
     /**
-     * Complete author scan via the document-API visit (continuation-paged, no
-     * result cap), projecting only `pubkey`. Unlike [distinctAuthors]'s grouping
-     * this never truncates at `MAX_AUTHOR_GROUPS`, which is exactly what the
-     * guard-owner Bloom preload needs — a missed author would be a false negative.
+     * Complete author scan via the document-API visit (continuation-paged),
+     * projecting only `pubkey`. [distinctAuthors]'s grouping is complete too, but
+     * it materializes every group in one response; this streams, which is what
+     * the corpus-wide guard-owner Bloom preload needs — a missed author would be
+     * a false negative.
      */
     override suspend fun scanAuthors(query: EventQuery): Set<String> {
         val selection = EventSelection.build(query) ?: return super.scanAuthors(query)

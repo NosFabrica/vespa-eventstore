@@ -58,9 +58,6 @@ object EventYql {
     /** Follower-count ranking (`sort:followers`). */
     const val RANK_FOLLOWERS = "sort_followers"
 
-    /** YQL caps at this many query words; the rest add nothing and are dropped. */
-    const val MAX_QUERY_WORDS = 6
-
     /**
      * The summary fields a hit actually needs to reconstruct its event
      * ([com.vitorpamplona.quartz.eventstore.vespa.doc.EventDoc.fromSummary]). Selecting these instead of `*`
@@ -71,10 +68,6 @@ object EventYql {
      * The omitted fields are index/ranking inputs, never part of the served event.
      */
     const val SUMMARY_FIELDS = "id, pubkey, created_at, kind, tags, content, sig, owner"
-
-    // The engine's default grouping.globalMaxGroups ceiling; the distinct-author
-    // grouping caps here (its cardinality — WoT service keys — is far below it).
-    const val MAX_AUTHOR_GROUPS = 10_000
 
     fun build(q: EventQuery): VespaQuery? {
         val params = LinkedHashMap<String, String>()
@@ -143,16 +136,12 @@ object EventYql {
      * `each(output(count()))` gives each group a payload so Vespa emits it.)
      * Unlike [buildDistinctCount] this returns the author VALUES, not just a count.
      *
-     * [MAX_AUTHOR_GROUPS] caps the returned groups at the engine's default
-     * `grouping.globalMaxGroups` ceiling (10k). The only caller — the orphan-score
-     * sweep — groups distinct 30382 authors, i.e. the WoT service keys, of which
-     * there are a handful; the cap is orders of magnitude above that. If it were
-     * ever hit, the sweep would just under-delete (safe), never over-delete.
+     * No `max()`: EVERY distinct author comes back. [grouping] disables the
+     * engine's group ceilings so this stays complete however high the
+     * cardinality goes — a truncated author set would make the orphan-score
+     * sweep silently under-delete.
      */
-    fun buildDistinctAuthors(q: EventQuery): VespaQuery? = grouping(q, "all(group(pubkey) max($MAX_AUTHOR_GROUPS) each(output(count())))")
-
-    /** A group cap high enough to hold every distinct kind — there are dozens, not thousands. */
-    const val KIND_GROUP_MAX = 1000
+    fun buildDistinctAuthors(q: EventQuery): VespaQuery? = grouping(q, "all(group(pubkey) each(output(count())))")
 
     /**
      * A per-KIND histogram: the same filters, grouped by kind with a `count()`
@@ -160,7 +149,7 @@ object EventYql {
      * Used by status/metrics callers to show the corpus shape (top kinds by
      * volume). Null when the filter provably matches nothing.
      */
-    fun buildKindHistogram(q: EventQuery): VespaQuery? = grouping(q, "all(group(kind) max($KIND_GROUP_MAX) each(output(count())))")
+    fun buildKindHistogram(q: EventQuery): VespaQuery? = grouping(q, "all(group(kind) each(output(count())))")
 
     /**
      * The shared shape of every aggregation query ([buildCount],
@@ -169,6 +158,14 @@ object EventYql {
      * given [pipeline] grouping expression, and NO `order by` — sorting by an
      * attribute trips Vespa's match-phase on a large corpus and caps the reported
      * totals. Unranked. Null when the filter provably matches nothing.
+     *
+     * Both group ceilings are disabled ([UNLIMITED_GROUPS]) so an aggregation
+     * answers over the WHOLE match set. These are not optional politeness: a
+     * pipeline with no `max()` otherwise returns `grouping.defaultMaxGroups`
+     * groups — TEN — and one that could exceed `grouping.globalMaxGroups` (10k)
+     * is failed outright by the container rather than truncated. Disabling the
+     * default without disabling the global is the one combination Vespa
+     * rejects, so they always travel together.
      */
     private fun grouping(
         q: EventQuery,
@@ -180,12 +177,18 @@ object EventYql {
         val params = LinkedHashMap<String, String>()
         val clauses = filterClauses(q, params) ?: return null
         val where = if (clauses.isEmpty()) "true" else clauses.joinToString(" and ")
+        params["grouping.defaultMaxGroups"] = UNLIMITED_GROUPS
+        params["grouping.defaultMaxHits"] = UNLIMITED_GROUPS
+        params["grouping.globalMaxGroups"] = UNLIMITED_GROUPS
         return VespaQuery(
             yql = "select * from event where $where limit 0 | $pipeline",
             params = params,
             ranking = RANK_UNRANKED,
         )
     }
+
+    /** Vespa's "disable this ceiling" sentinel for the `grouping.*Max*` query parameters. */
+    private const val UNLIMITED_GROUPS = "-1"
 
     /** The shared WHERE clauses (filters + optional search term); null when the filter provably matches nothing. */
     private fun filterClauses(
@@ -210,13 +213,15 @@ object EventYql {
         q.expiresBefore?.let { clauses += "expires_at < $it" }
         q.notExpiredAt?.let { clauses += "expires_at > $it" }
 
+        // Every word the caller typed goes into the query. A long search term is
+        // slower — that is the caller's call to make, not ours to silently make
+        // for them by dropping words and answering a question they didn't ask.
         val words =
             q.search
                 ?.trim()
                 .orEmpty()
                 .split(WHITESPACE)
                 .filter { it.isNotEmpty() }
-                .take(MAX_QUERY_WORDS)
         if (words.isNotEmpty()) {
             clauses += FuzzyWordGroup.clause(words, params)
             // Short queries lean harder on the trigram safety net.

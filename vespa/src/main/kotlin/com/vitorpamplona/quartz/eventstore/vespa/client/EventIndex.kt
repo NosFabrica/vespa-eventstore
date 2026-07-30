@@ -96,8 +96,9 @@ interface EventIndex : AutoCloseable {
      * [withDTag] also projects each doc's `d` tag, which is what an
      * addressable-corpus walk (rebuilding the trust projection) keys on.
      *
-     * This default rides [search], so it is only complete where search is
-     * uncapped (the in-memory reference).
+     * This default rides [search] and hands the caller ONE page containing
+     * everything — complete, but with none of the streaming that makes a
+     * corpus-sized walk affordable. Only the in-memory reference should use it.
      */
     suspend fun visitIds(
         query: EventQuery,
@@ -112,41 +113,39 @@ interface EventIndex : AutoCloseable {
     /**
      * The number of DISTINCT authors (pubkeys) among the matches — what a
      * status/metrics caller reports as "pubkeys with content". The default rides
-     * [search], so it is exact only where search is uncapped (the in-memory
-     * reference); the real client overrides it with a grouping count over the
-     * full match set.
+     * [search] — exact, but it reconstructs every matching doc to count their
+     * pubkeys; the real client overrides it with a server-side grouping count
+     * that never leaves the engine.
      */
     suspend fun countDistinctAuthors(query: EventQuery): Int = search(query).map { it.pubkey }.distinct().size
 
     /**
      * How many docs match [query] per kind (kind -> count) — the corpus shape a
      * status/metrics caller prints as "top kinds". The default rides [search]
-     * (exact only where uncapped, the in-memory reference); the real client
-     * overrides it with a grouping over the full match set.
+     * (exact, but it materializes every match to bucket them); the real client
+     * overrides it with a server-side grouping.
      */
     suspend fun countByKind(query: EventQuery): Map<Int, Int> = search(query).groupingBy { it.kind }.eachCount()
 
     /**
      * The DISTINCT `pubkey`s (event authors) across [query]'s match set — the
      * actual author set, not just its size ([countDistinctAuthors]). The default
-     * rides [search] (exact only where uncapped, the in-memory reference); the
-     * real client overrides it with a server-side grouping over the full match
-     * set, so the orphan-score sweep gets the distinct 30382 authors out of
-     * millions of docs without reconstructing them (which times search out). A
-     * decorator MUST delegate to its inner index, not this default, or it would
-     * ride the capped search.
+     * rides [search]; the real client overrides it with a server-side grouping
+     * over the full match set, so the orphan-score sweep gets the distinct 30382
+     * authors out of millions of docs without reconstructing them (which times
+     * search out). A decorator MUST delegate to its inner index, not this
+     * default, or it loses that server-side aggregation.
      */
     suspend fun distinctAuthors(query: EventQuery): Set<String> = search(query).mapTo(HashSet()) { it.pubkey }
 
     /**
-     * Every distinct author of [query]'s match set, EXHAUSTIVELY — unlike
-     * [distinctAuthors], whose server-side grouping caps at
-     * `EventYql.MAX_AUTHOR_GROUPS`. The guard-owner preload needs completeness,
-     * not a sample: a missed author would be a false negative in the guard
-     * filter (a skipped-but-needed tombstone probe). The default rides the
-     * uncapped in-memory [distinctAuthors]; the real client overrides it with a
-     * continuation-paged visit so it never silently truncates. A decorator MUST
-     * delegate to its inner index, not this default.
+     * Every distinct author of [query]'s match set, STREAMED. Both this and
+     * [distinctAuthors] are complete (neither caps groups), but the grouping
+     * builds its whole answer in one engine response, while this pages a visit
+     * through continuations. The guard-owner preload runs over the entire corpus
+     * and needs completeness without that single-response peak — a missed author
+     * would be a false negative in the guard filter (a skipped-but-needed
+     * tombstone probe). A decorator MUST delegate to its inner index.
      */
     suspend fun scanAuthors(query: EventQuery): Set<String> = distinctAuthors(query)
 

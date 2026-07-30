@@ -46,6 +46,7 @@ data class EventQuery(
     val expiresBefore: Long? = null,
     /** Exclude docs already expired at this time (NIP-40: never serve expired events). */
     val notExpiredAt: Long? = null,
+    /** Max hits to return. Null = every match; nothing else caps a query. */
     val limit: Int? = null,
     /** NIP-50 search term; null/blank = plain recall ordered by recency. */
     val search: String? = null,

@@ -77,6 +77,10 @@ class VespaEventStore internal constructor(
          * load-balancer address. Empty (the default) = just [url]. See
          * docs/scaling.md; a multi-node deployment pairs this with
          * `autoDeploy = false` and an operator-owned application package.
+         *
+         * The store imposes no result cap of its own: a filter with a `limit`
+         * gets that many events, one without gets every match. Bounding what a
+         * query costs belongs to whoever writes the filter.
          */
         fun open(
             url: String = "http://localhost:8080",
