@@ -152,6 +152,10 @@ class VespaEventIndex(
             .connectTimeout(Duration.ofSeconds(5))
             .readTimeout(Duration.ofSeconds(60))
             .writeTimeout(Duration.ofSeconds(60))
+            // connect/read/write each bound one phase; none bounds the whole call.
+            // A call that keeps trickling bytes just under the read timeout could
+            // otherwise run indefinitely, holding a store write behind it.
+            .callTimeout(Duration.ofSeconds(QUERY_CALL_TIMEOUT_SECONDS))
             // Vespa is local; never route through the egress proxy.
             .proxy(Proxy.NO_PROXY)
             .build()
@@ -593,15 +597,30 @@ class VespaEventIndex(
      * rejects past 256 enqueued requests — pushback, not failure). Shared by the
      * query, get, and visit paths. The full-corpus visit walk is exactly a place
      * where one 504/429 page must not abort the whole scan.
+     *
+     * Transport [IOException]s are retried on the same budget. A response body that
+     * stalls past the read timeout is the same class of transient overload as a 503
+     * — the engine was too busy to finish streaming — and it arrives as an exception
+     * rather than a status code, so treating it as fatal would abort a visit walk
+     * for a condition the next attempt usually clears.
      */
     private suspend fun sendRetrying(req: Request): HttpResp {
-        var resp = http.newCall(req).await()
         var attempt = 0
-        while ((resp.statusCode() in 500..599 || resp.statusCode() == 429) && attempt++ < QUERY_RETRIES) {
-            delay(500L * attempt)
-            resp = http.newCall(req).await()
+        while (true) {
+            val resp =
+                try {
+                    http.newCall(req).await()
+                } catch (e: IOException) {
+                    if (attempt++ >= QUERY_RETRIES) throw e
+                    delay(500L * attempt)
+                    continue
+                }
+            if ((resp.statusCode() in 500..599 || resp.statusCode() == 429) && attempt++ < QUERY_RETRIES) {
+                delay(500L * attempt)
+                continue
+            }
+            return resp
         }
-        return resp
     }
 
     /** Minimal response holder so the get/search/visit/count call sites keep their JDK-style statusCode()/body() shape. */
@@ -619,6 +638,15 @@ class VespaEventIndex(
      * read on OkHttp's callback thread (inside [Response.use] so the connection is
      * released), so the whole read stays non-blocking, exactly as the old
      * `sendAsync(...).await()` did.
+     *
+     * [onResponse] must complete the continuation on EVERY path, including a body
+     * read that throws. OkHttp sets its internal `signalledCallback` flag *before*
+     * invoking [onResponse], so anything thrown in here is only logged
+     * ("Callback failure for call to …", at INFO) and is NEVER routed to
+     * [onFailure]. An unguarded `body.string()` that times out mid-stream would
+     * therefore leave this coroutine suspended forever — the same
+     * hang-behind-the-single-writer-store deadlock that [feedParams] guards on the
+     * write path, reached by a different door.
      */
     private suspend fun Call.await(): HttpResp =
         suspendCancellableCoroutine { cont ->
@@ -636,7 +664,11 @@ class VespaEventIndex(
                         call: Call,
                         response: Response,
                     ) {
-                        response.use { cont.resume(HttpResp(it.code, it.body.string())) }
+                        val result = runCatching { response.use { HttpResp(it.code, it.body.string()) } }
+                        if (cont.isCancelled) return
+                        result
+                            .onSuccess { cont.resume(it) }
+                            .onFailure { cont.resumeWithException(it) }
                     }
                 },
             )
@@ -733,6 +765,15 @@ class VespaEventIndex(
 
         /** Brief 5xx retries per query (transient engine load-shedding, not correctness). */
         const val QUERY_RETRIES = 3
+
+        /**
+         * Whole-call deadline for reads, above the 60s per-phase read timeout so a
+         * healthy-but-slow visit page still completes. Its job is to bound the case
+         * the phase timeouts cannot: bytes arriving steadily but too slowly to ever
+         * finish. Paired with the [sendRetrying] IOException retry, a call that hits
+         * this fails and is retried rather than hanging the caller.
+         */
+        const val QUERY_CALL_TIMEOUT_SECONDS = 180L
 
         /**
          * Per-operation feed deadline. The feed client's retry strategy handles
