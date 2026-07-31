@@ -51,6 +51,11 @@ internal object Rejections {
     const val VANISHED = "blocked: a request to vanish event exists"
     const val REPLACED = "replaced: a newer version exists"
     const val INSERT_FAILED = "insert failed"
+
+    // One constant string, not one per field or code point: callers tally
+    // rejections by reason, and a reason that varies per event fragments that
+    // tally into thousands of singletons instead of naming the class once.
+    const val UNSTORABLE_TEXT = "blocked: text carries a code point the engine cannot store"
 }
 
 /**
@@ -104,13 +109,31 @@ internal class BulkInsert(
         fun alive() = events.indices.filter { outcome[it] == null }
 
         // Stage A — no I/O: ephemeral accepted-not-stored, expired rejected,
-        // later copies of an id already in this run rejected as duplicates.
+        // later copies of an id already in this run rejected as duplicates, and
+        // text the engine will not accept rejected before it can throw.
         val seen = HashSet<String>()
         events.forEachIndexed { i, e ->
             when {
-                e.kind.isEphemeral() -> outcome[i] = IEventStore.InsertOutcome.Accepted
-                e.isExpired() -> outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.EXPIRED)
-                !seen.add(e.id) -> outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.DUPLICATE)
+                e.kind.isEphemeral() -> {
+                    outcome[i] = IEventStore.InsertOutcome.Accepted
+                }
+
+                e.isExpired() -> {
+                    outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.EXPIRED)
+                }
+
+                !seen.add(e.id) -> {
+                    outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.DUPLICATE)
+                }
+
+                // Last of the free checks: it walks the content, where the others
+                // only read a field. Still cheap next to the round trip it saves —
+                // and far cheaper than the alternative, which is the feed client
+                // throwing mid-batch and taking every event beside it down. See
+                // [VespaText].
+                VespaText.firstIllegalField(e) != null -> {
+                    outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.UNSTORABLE_TEXT)
+                }
             }
         }
 
