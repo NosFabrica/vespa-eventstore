@@ -95,6 +95,33 @@ class TrustProjectionTest {
         }
 
     @Test
+    fun `an empty provider map is not cached, so a late corpus still projects`() =
+        runBlocking {
+            // The engine is cold, or the 10040s have not been mirrored yet. Either
+            // way, asking early must not poison the map: it is read once per
+            // reconcile pass, and a cached emptiness leaves a relay unrankable
+            // until it restarts. Observed live — 271 kind-10040s queryable at full
+            // coverage while ten minutes of retries all read the same cached
+            // nothing, because only a 10040 WRITE invalidates, and dedup drops a
+            // 10040 the store already holds before any write happens.
+            val index = InMemoryEventIndex()
+            val cold = TrustProjection(index, InMemoryReputationIndex())
+            val coldStore = NostrEventStore(cold, relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+
+            assertEquals(0, cold.reconcile().services, "nothing there yet")
+
+            // Written through a DIFFERENT store over the same index, so nothing
+            // invalidates the cold one's map — the dedup case, exactly.
+            val other = NostrEventStore(TrustProjection(index, InMemoryReputationIndex()), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+            other.insert(list10040())
+            other.insert(card())
+
+            assertEquals(1, cold.reconcile().services, "the next pass must look again, not replay a cached empty map")
+            coldStore.close()
+            other.close()
+        }
+
+    @Test
     fun `a 30382 arriving before its 10040 is attributed when the list shows up`() =
         runBlocking {
             store.insert(card())

@@ -44,10 +44,30 @@ internal class ProviderMap(
 ) {
     @Volatile private var cached: Map<String, String>? = null
 
-    suspend fun get(): Map<String, String> =
-        cached ?: rankProviders(inner.search(EventQuery(kinds = listOf(TrustProviderListEvent.KIND))))
-            .toMap()
-            .also { cached = it }
+    /**
+     * The map, rebuilding it once per pass.
+     *
+     * An EMPTY result is never cached, and that exception is the whole point. A
+     * relay with no 10040s and a relay whose engine has not finished serving its
+     * corpus return the identical empty list, and caching it makes the second
+     * one permanent: [invalidate] fires only on a 10040 WRITE, and a 10040 the
+     * store already holds is dropped by dedup before any write happens. A relay
+     * that mirrored its corpus before its 10040s — or simply asked one second too
+     * early — then serves empty rankings forever, with a cache that never looks
+     * again. Observed: 271 kind-10040s queryable at full coverage while ten
+     * minutes of reconcile retries all read the same cached emptiness.
+     *
+     * The cost of not caching it is one small query per pass on a relay that
+     * genuinely has no providers. The cost of caching it is a relay that can
+     * never rank anything until it restarts.
+     */
+    suspend fun get(): Map<String, String> {
+        cached?.let { return it }
+        val fresh =
+            rankProviders(inner.search(EventQuery(kinds = listOf(TrustProviderListEvent.KIND)))).toMap()
+        if (fresh.isNotEmpty()) cached = fresh
+        return fresh
+    }
 
     /** Drop the cache; the next [get] rebuilds. Call after any 10040 write/remove. */
     fun invalidate() {
