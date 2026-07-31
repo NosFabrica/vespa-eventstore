@@ -290,6 +290,10 @@ class NostrEventStore(
         // still broadcasts the insert to live subscribers.
         if (event.kind.isEphemeral()) return
         if (event.isExpired()) throw RejectedException(Rejections.EXPIRED)
+        // Text the engine refuses is a property of the event, so it is settled
+        // here with the other no-I/O checks rather than surfacing as a feed
+        // exception three round trips later. See [VespaText].
+        if (VespaText.firstIllegalField(event) != null) throw RejectedException(Rejections.UNSTORABLE_TEXT)
         // The three admission reads — dedup, NIP-09 tombstone, NIP-62 vanish — are
         // independent, so fire them together: a per-event insert pays ONE round
         // trip's latency for the guards, not three in series. The results are then
