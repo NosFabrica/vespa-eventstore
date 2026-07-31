@@ -285,7 +285,7 @@ object SearchExtractors {
                     event.snippetName(),
                     join(event.snippetDescription(), event.language(), event.extension(), event.runtime()),
                     event.content,
-                    website = event.repo(),
+                    website = clean(event.repo()),
                 )
             }
 
@@ -483,7 +483,15 @@ object SearchExtractors {
         website: String? = null,
     ) = SearchFields(primary = clean(primary), secondary = clean(secondary), text = clean(text), website = clean(website))
 
-    private fun clean(s: String?): String? = s?.trim()?.ifEmpty { null }
+    /**
+     * Trim, drop empties — and strip what the engine will not store.
+     *
+     * The scrub belongs here, at the single funnel every derived string passes
+     * through, rather than at each call site: `content` is JSON, so an illegal
+     * code point is invisible until it is parsed out of it, and one that reaches
+     * the feed costs the entire batch. See [VespaText.sanitize].
+     */
+    private fun clean(s: String?): String? = s?.let { VespaText.sanitize(it) }?.trim()?.ifEmpty { null }
 
     private fun join(vararg parts: String?): String? =
         parts

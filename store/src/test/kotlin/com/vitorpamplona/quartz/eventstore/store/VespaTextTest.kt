@@ -22,6 +22,7 @@ package com.vitorpamplona.quartz.eventstore.store
 
 import com.vitorpamplona.quartz.eventstore.vespa.InMemoryEventIndex
 import com.vitorpamplona.quartz.nip01Core.core.Event
+import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.normalizeRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import kotlinx.coroutines.runBlocking
@@ -29,6 +30,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /**
@@ -150,6 +152,46 @@ class VespaTextTest {
 
         assertNull(VespaText.firstIllegalField(profile("""{"name":"clean"}""")))
     }
+
+    // ---- escaped in content, illegal once derived ---------------------------
+
+    @Test
+    fun `an escaped control character clears content and would poison the field derived from it`() {
+        // The gap that checking only the verbatim fields misses. Inside `content`
+        // this is six ordinary characters — \\, u, 0, 0, 1, 6 — and every one of
+        // them is storable. U+0016 exists only after the JSON is parsed to build
+        // `about`, which is the string that actually reaches the feed.
+        val e = MetadataEvent(id(), alice, 1L, emptyArray(), """{"name":"alice","about":"line one\u0016line two"}""", "")
+
+        assertNull(VespaText.firstIllegalField(e), "content itself carries nothing illegal")
+
+        val about = SearchExtractors.extract(e).about!!
+        assertNull(VespaText.firstIllegalCodePoint(about), "the derived field must be scrubbed on the way out")
+        assertEquals("line oneline two", about)
+    }
+
+    @Test
+    fun `sanitize drops the unstorable code point and leaves everything else alone`() {
+        assertEquals("line oneline two", VespaText.sanitize("line one${SYN}line two"))
+        assertEquals("tab\there", VespaText.sanitize("tab\there"))
+        assertEquals("emoji \uD83D\uDE00 ok", VespaText.sanitize("emoji \uD83D\uDE00 ok"))
+    }
+
+    @Test
+    fun `clean text comes back as the very same instance`() {
+        // The fast path — this runs on every derived field of every event.
+        val s = "nothing to strip"
+        assertSame(s, VespaText.sanitize(s))
+    }
+
+    @Test
+    fun `a profile is scrubbed and stored, not rejected`() =
+        runBlocking {
+            val store = store()
+            val e = MetadataEvent(id(), alice, 1L, emptyArray(), """{"name":"alice","about":"bio\u0016here"}""", "")
+            assertEquals(listOf(IEventStore.InsertOutcome.Accepted), store.batchInsert(listOf(e)))
+            store.close()
+        }
 
     // ---- the store rejects rather than throwing -----------------------------
 

@@ -51,6 +51,19 @@ class VespaEventIndexTest {
     private var seq = 0
 
     @Test
+    fun `the feed client starts whatever number of endpoints the cluster names`() {
+        // The client sizes ONE Jetty pool at max(min(cores,64),8) + connections *
+        // endpoints, and Jetty refuses to start it unless that exceeds what the
+        // HTTP client leases. A connection budget applied per endpoint instead of
+        // per cluster therefore fails at some endpoint count — on a 12-core host,
+        // at two, with "Insufficient configured threads: required=76 < max=76".
+        // Naming a cluster's containers must not be what breaks the writer.
+        listOf(1, 2, 3, 5, 8, 16).forEach { n ->
+            VespaEventIndex(endpoints = List(n) { mock.url }).close()
+        }
+    }
+
+    @Test
     fun `multi-endpoint client round-robins reads and feeds every endpoint`() =
         runBlocking {
             // Two endpoint entries pointing at the same engine: every request must

@@ -40,16 +40,46 @@ import com.vitorpamplona.quartz.nip01Core.core.Event
  * client mid-batch, which costs the whole batch and says nothing useful. Catching
  * it here turns an engine-level crash into an ordinary counted rejection.
  *
- * ## Why this cannot simply be sanitized away
+ * ## Scrub the derived fields, reject on the verbatim ones
  *
- * The derived search fields (`name`, `about`, …) are lossy already and could be
- * scrubbed. `content` and `tags` cannot: they are the event *verbatim*, and the
- * signature covers them byte for byte. Altering one to make the engine happy
+ * The derived search fields (`name`, `about`, …) are a lossy projection already,
+ * so [sanitize] drops the offending code point and the profile is still stored
+ * and still searchable — losing one control character out of a bio is a far
+ * better outcome than losing the bio.
+ *
+ * `content` and `tags` get no such treatment: they are the event *verbatim*, and
+ * the signature covers them byte for byte. Altering one to make the engine happy
  * yields a stored event that fails its own signature check, which is worse than
  * not storing it. Storing the verbatim event in a `raw` field would lift the
- * restriction entirely — until then, rejection is the honest outcome.
+ * restriction entirely — until then, rejection is the honest outcome there.
+ *
+ * Both halves are needed. Neither implies the other: see [firstIllegalField] for
+ * why clean `content` does not mean clean `about`.
  */
 internal object VespaText {
+    /**
+     * [s] with every unstorable code point dropped.
+     *
+     * For the derived search fields only. They are a lossy projection already, so
+     * losing one control character out of a bio is a far better outcome than
+     * rejecting the profile — which is what happens if this text reaches the feed.
+     *
+     * Returns [s] itself when there is nothing to strip. That fast path is the
+     * common case by a wide margin (this runs on every derived field of every
+     * event) and keeps the whole thing allocation-free for clean text.
+     */
+    fun sanitize(s: String): String {
+        if (firstIllegalCodePoint(s) == null) return s
+        val out = StringBuilder(s.length)
+        var i = 0
+        while (i < s.length) {
+            val cp = s.codePointAt(i)
+            if (isStorable(cp)) out.appendCodePoint(cp)
+            i += Character.charCount(cp)
+        }
+        return out.toString()
+    }
+
     /**
      * The first code point [s] carries that Vespa will not store, or null when
      * all of it is storable.
@@ -71,9 +101,15 @@ internal object VespaText {
      * The first field of [event] the engine would reject, as `field to codePoint`.
      *
      * Only the fields stored verbatim are checked — the ones whose content the
-     * event's author controls and whose bytes we cannot alter. The derived search
-     * fields are extracted from these, so text that clears this check cannot
-     * reappear as an illegal code point downstream.
+     * event's author controls and whose bytes we cannot alter.
+     *
+     * This is NOT sufficient on its own, and the reason is worth stating because
+     * it looks like it should be. `content` holds JSON for every kind we derive
+     * search fields from, so an escape sequence sits in it as six ordinary,
+     * perfectly storable characters — `\`, `u`, `0`, `0`, `1`, `6` — and only
+     * becomes the illegal code point U+0016 once the JSON is parsed to extract
+     * `about`. Verbatim-clean therefore does not imply derived-clean. The derived
+     * fields are scrubbed by [sanitize] on the way out instead.
      */
     fun firstIllegalField(event: Event): Pair<String, Int>? {
         firstIllegalCodePoint(event.content)?.let { return "content" to it }
