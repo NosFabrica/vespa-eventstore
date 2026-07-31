@@ -167,6 +167,38 @@ class TrustProjectionTest {
             assertEquals(mapOf(observer to 87), reputations.get(subject)?.influenceScores)
         }
 
+    // ---- a 10040 carrying tags that are not service tags ---------------------
+
+    @Test
+    fun `a client tag in a provider list does not take down the provider map`() {
+        // From a live relay: 68 of 270 stored 10040s carried ["client","nostria"].
+        // serviceProviders() parses EVERY tag name as "<kind>:<type>", so a name
+        // with no colon split to a size-1 list and threw
+        // IndexOutOfBoundsException: Index: 1, Size: 1 — which killed
+        // ProviderMap, and with it every observer's trust graph. It also failed
+        // each bulk insert carrying such an event, costing all 1000 events in
+        // the batch. One legal tag from one client, and nothing ranked.
+        runBlocking {
+            val withClientTag =
+                TrustProviderListEvent(
+                    id(),
+                    observer,
+                    next(),
+                    arrayOf(
+                        arrayOf("30382:rank", service, "wss://scores.example.com/"),
+                        arrayOf("client", "nostria"),
+                    ),
+                    "",
+                    "",
+                )
+            store.insert(withClientTag)
+            store.insert(card())
+
+            // The service tag beside it still maps, and the score still derives.
+            assertEquals(mapOf(observer to 87), reputations.get(subject)?.influenceScores)
+        }
+    }
+
     // ---- reconcile: the repair for a projection no write can reach ----------
 
     @Test
