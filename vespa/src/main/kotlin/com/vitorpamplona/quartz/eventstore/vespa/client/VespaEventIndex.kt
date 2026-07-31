@@ -109,6 +109,33 @@ class VespaEventIndex(
     /** The endpoint for one HTTP read — round-robin across [urls]. */
     private fun endpoint(): String = urls[Math.floorMod(nextUrl.getAndIncrement(), urls.size)]
 
+    /**
+     * Connections the feed client opens to EACH endpoint.
+     *
+     * The tuned 32 is a budget for the cluster, not for one host, so it is split
+     * across [urls] rather than multiplied by them. That distinction is load
+     * bearing: the client sizes ONE shared Jetty pool at
+     * `max(min(cores, 64), 8) + connectionsPerEndpoint * endpoints`, and Jetty
+     * refuses to start unless that total is strictly greater than the threads the
+     * HTTP client leases from it. Two endpoints at 32 each on a 12-core host is
+     * `12 + 64 = 76` against a required 76 — one thread short, and the client
+     * throws from its constructor:
+     *
+     *     Insufficient configured threads: required=76 < max=76
+     *
+     * Splitting keeps the total parallelism (and therefore the pool) identical
+     * whether the cluster is named as one endpoint or five, which is what the
+     * figure was measured against in the first place.
+     *
+     * `VESPA_FEED_CONNECTIONS` overrides it per endpoint and is NOT divided —
+     * deployment tuning is explicit by definition, and the benchmark sweeps it.
+     * Setting it high across many endpoints can reach the same Jetty ceiling; it
+     * fails loudly at startup with the message above rather than degrading.
+     */
+    private val feedConnectionsPerEndpoint: Int =
+        System.getenv("VESPA_FEED_CONNECTIONS")?.toIntOrNull()
+            ?: (32 / urls.size).coerceAtLeast(1)
+
     private val feed: FeedClient =
         FeedClientBuilder
             .create(urls.map { URI.create(it) })
@@ -122,16 +149,16 @@ class VespaEventIndex(
             // HTTP/2 parallelism, so ingest drives the engine harder. The throttler
             // still adapts DOWN if Vespa pushes back (retries absorb any overshoot).
             //
-            // The client sizes its own Jetty pool at max(min(cores,64),8) + connections
-            // threads, so on a small-core host too many connections starve that pool
-            // (Jetty reserves 16). 32 keeps headroom. (The old reflective
+            // The client sizes its own Jetty pool from the connection count, so on a
+            // small-core host too many connections starve that pool; 32 across the
+            // cluster keeps headroom. See [feedConnectionsPerEndpoint]. (The old reflective
             // setInitialInflightFactor knob was dead: the 8.7 throttler ignores it —
             // the initial target is already maxInflight.)
             // Overridable for deployment tuning (and the benchmark's feed-window
             // grid): VESPA_FEED_CONNECTIONS / VESPA_FEED_STREAMS /
             // VESPA_FEED_INFLIGHT_FACTOR. Defaults are the measured sweet spot
             // for a small-core single-node host.
-            .setConnectionsPerEndpoint(System.getenv("VESPA_FEED_CONNECTIONS")?.toIntOrNull() ?: 32)
+            .setConnectionsPerEndpoint(feedConnectionsPerEndpoint)
             .setMaxStreamPerConnection(System.getenv("VESPA_FEED_STREAMS")?.toIntOrNull() ?: 128)
             .apply { System.getenv("VESPA_FEED_INFLIGHT_FACTOR")?.toIntOrNull()?.let { setInitialInflightFactor(it) } }
             .setRetryStrategy(
