@@ -28,6 +28,7 @@ import com.vitorpamplona.quartz.eventstore.vespa.client.ReputationIndex
 import com.vitorpamplona.quartz.eventstore.vespa.doc.EventDoc
 import com.vitorpamplona.quartz.eventstore.vespa.doc.ReputationCells
 import com.vitorpamplona.quartz.eventstore.vespa.doc.ReputationDoc
+import com.vitorpamplona.quartz.eventstore.vespa.forEachBounded
 import com.vitorpamplona.quartz.eventstore.vespa.mapBounded
 import com.vitorpamplona.quartz.eventstore.vespa.query.EventQuery
 import com.vitorpamplona.quartz.nip01Core.core.Event
@@ -181,28 +182,45 @@ class TrustProjection(
         serviceToObserver: Map<String, String>,
         removeEmpties: Boolean,
     ) {
-        val bySubject = HashMap<String, MutableList<EventDoc>>(subjects.size * 2)
-        val wanted = subjects.toHashSet()
-        IngestStats
-            .timed("proj.fetch") {
-                subjects
-                    .chunked(FETCH_CHUNK)
-                    // A partial score set derives a WRONG parent card, so this query
-                    // carries no limit.
-                    .mapBounded(QUERY_FANOUT) { chunk -> inner.search(EventQuery(kinds = listOf(ContactCardEvent.KIND), tags = mapOf("d" to chunk))) }
-            }.forEach { docs ->
+        // Derived per CHUNK, not per batch. A chunk's query returns every score
+        // for its 50 subjects — complete, since the query carries no limit — so a
+        // subject can be derived the moment its chunk lands, and those docs are
+        // then free.
+        //
+        // Collecting first is what the batch size looks like it bounds and does
+        // not: subjects are cheap (20k × 64 chars), while the docs they recall are
+        // ~75x more numerous and orders of magnitude larger. Holding a whole
+        // batch's recall meant ~1.5M docs live at once — hundreds of MB, on the
+        // ingest path. Per chunk it is `QUERY_FANOUT × FETCH_CHUNK × recall`,
+        // about a hundredth of that, and independent of the batch size.
+        //
+        // The derived docs DO accumulate across the batch, deliberately: they
+        // carry a cell per MAPPED service only (a handful, where the recall spans
+        // every service that ever scored the subject), so they are small, and one
+        // pipelined write per batch beats one per chunk.
+        val puts = ArrayList<ReputationDoc>(subjects.size)
+        val removes = ArrayList<String>()
+        IngestStats.timed("proj.fetch") {
+            subjects.chunked(FETCH_CHUNK).forEachBounded(
+                QUERY_FANOUT,
+                // A partial score set derives a WRONG parent card, so this query
+                // carries no limit.
+                produce = { chunk -> chunk to inner.search(EventQuery(kinds = listOf(ContactCardEvent.KIND), tags = mapOf("d" to chunk))) },
+            ) { (chunk, docs) ->
+                // Serialized by forEachBounded, so these plain lists need no lock.
+                val bySubject = HashMap<String, MutableList<EventDoc>>(chunk.size * 2)
+                val wanted = chunk.toHashSet()
                 docs.forEach { doc ->
                     subjectOf(doc)?.takeIf { it in wanted }?.let { bySubject.getOrPut(it) { mutableListOf() } += doc }
                 }
-            }
-        val puts = ArrayList<ReputationDoc>(subjects.size)
-        val removes = ArrayList<String>()
-        for (subject in subjects) {
-            val reputation = derive(subject, bySubject[subject].orEmpty(), serviceToObserver)
-            if (!reputation.isEmpty()) {
-                puts += reputation
-            } else if (removeEmpties) {
-                removes += subject
+                for (subject in chunk) {
+                    val reputation = derive(subject, bySubject[subject].orEmpty(), serviceToObserver)
+                    if (!reputation.isEmpty()) {
+                        puts += reputation
+                    } else if (removeEmpties) {
+                        removes += subject
+                    }
+                }
             }
         }
         IngestStats.timed("proj.write") {
@@ -292,6 +310,74 @@ class TrustProjection(
     /** Re-derive every parent doc from scratch (bootstrap over an existing index). */
     suspend fun rebuildAll() = recomputeWalk(EventQuery(kinds = listOf(ContactCardEvent.KIND)))
 
+    /** What [reconcile] found: services examined, and the ones it had to re-derive. */
+    data class Reconciliation(
+        val services: Int,
+        val rebuilt: List<String>,
+    ) {
+        fun isClean() = rebuilt.isEmpty()
+    }
+
+    /**
+     * Re-derive the services whose scores are not projected under the observer
+     * currently mapped to them.
+     *
+     * ## Why this is needed at all
+     *
+     * Derivation happens on WRITE: [putAll] projects the cards in the batch, and
+     * a 10040 arriving re-walks the services it names. Both are triggers, and a
+     * trigger only fires once. Dedup rejects an event the store already holds
+     * BEFORE the projection sees it, so once a corpus is stored neither trigger
+     * can fire again — a card skipped because its service had no 10040 yet stays
+     * unprojected for as long as both events remain in the store.
+     *
+     * A mirror hits this as a matter of course: scores outnumber provider lists
+     * by four orders of magnitude and arrive first, and the run that finally
+     * writes the 10040 may be one in which every score is already a duplicate.
+     * The result is a projection that is empty, correct-looking and unable to
+     * repair itself — every ranked search returns nothing, with no error anywhere.
+     *
+     * ## What it checks
+     *
+     * A service is projected when its subjects carry a cell for ITS observer. So
+     * for each mapped service this samples a few of its cards and asks whether
+     * any of their subjects has that observer's cell. Checking the observer
+     * rather than mere existence is what also catches a RE-MAPPED service: its
+     * subjects have docs, but the cells belong to the previous observer.
+     *
+     * Sampling, not counting, because the alternative is reading every card. A
+     * service whose sample happens to land on retracted subjects is re-derived
+     * needlessly, which costs one walk and is idempotent. The opposite error —
+     * calling an unprojected service clean — would need a sampled subject to be
+     * projected while the rest are not, which is not the shape this failure takes.
+     */
+    suspend fun reconcile(samplesPerService: Int = DEFAULT_RECONCILE_SAMPLES): Reconciliation {
+        val serviceToObserver = providers.get()
+        if (serviceToObserver.isEmpty()) return Reconciliation(0, emptyList())
+
+        val rebuilt = mutableListOf<String>()
+        var examined = 0
+        for ((service, observer) in serviceToObserver) {
+            val sample =
+                inner.search(
+                    EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service), limit = samplesPerService),
+                )
+            // A service that has published nothing we hold has nothing to project.
+            if (sample.isEmpty()) continue
+            examined++
+            val projected =
+                sample.any { card ->
+                    val subject = subjectOf(card) ?: return@any false
+                    reputations.get(subject)?.influenceScores?.containsKey(observer) == true
+                }
+            if (!projected) {
+                recomputeWalk(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service)))
+                rebuilt += service
+            }
+        }
+        return Reconciliation(examined, rebuilt)
+    }
+
     /**
      * Visit every score doc matching [query] and re-derive the subjects in
      * bounded batches, STREAMING. The subject buffer is flushed and cleared every
@@ -337,5 +423,11 @@ class TrustProjection(
 
         // Subjects per recompute round in a full walk (memory-bounded batches).
         const val RECOMPUTE_BATCH = 20_000
+
+        // Cards sampled per service by [reconcile]. The question it answers is
+        // "did this service's scores get projected at all", and the failure is
+        // all-or-nothing per service, so a handful settles it; the cost is one
+        // small query plus that many key lookups per mapped service.
+        const val DEFAULT_RECONCILE_SAMPLES = 3
     }
 }

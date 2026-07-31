@@ -23,7 +23,10 @@ package com.vitorpamplona.quartz.eventstore.vespa
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 
 /**
@@ -55,3 +58,35 @@ suspend fun <T, R> List<T>.mapBounded(
         val gate = Semaphore(concurrency.coerceAtLeast(1))
         map { item -> async { gate.withPermit { f(item) } } }.awaitAll()
     }
+
+/**
+ * Like [mapBounded], but folds each result into [consume] as it arrives and
+ * keeps none of them.
+ *
+ * For stages whose results are an intermediate: a fan-out that recalls tens of
+ * docs per item holds `items × docs` alive when the results are collected, and
+ * that product is what runs a heap out — not the item list the batch size was
+ * chosen to bound. Consuming as they land keeps only what is in flight,
+ * `concurrency × docs`.
+ *
+ * [consume] is serialized, so it may fold into an ordinary unsynchronized
+ * accumulator. Results arrive in completion order, not list order.
+ */
+suspend fun <T, R> List<T>.forEachBounded(
+    concurrency: Int,
+    produce: suspend (T) -> R,
+    consume: suspend (R) -> Unit,
+) {
+    val gate = Semaphore(concurrency.coerceAtLeast(1))
+    val lock = Mutex()
+    coroutineScope {
+        forEach { item ->
+            launch {
+                gate.withPermit {
+                    val result = produce(item)
+                    lock.withLock { consume(result) }
+                }
+            }
+        }
+    }
+}

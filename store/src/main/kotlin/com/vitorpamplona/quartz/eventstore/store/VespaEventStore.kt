@@ -53,9 +53,32 @@ class VespaEventStore internal constructor(
      * only count and never mutate trust data.
      */
     val events: VespaEventIndex,
+    /**
+     * The trust view over [events]. Exposed because it is derived on WRITE and
+     * therefore cannot always repair itself: see [reconcileTrust].
+     */
+    private val trust: TrustProjection,
 ) : IEventStore by store {
     /** The engine's feed-health status line (bulk-ingest backpressure), for progress/status output. */
     fun feedGauge(): String = events.feedGauge()
+
+    /**
+     * Re-derive the trust view for any service whose scores are not projected
+     * under the observer currently mapped to it, and report what it had to fix.
+     *
+     * Worth running at startup. The projection is maintained by write triggers,
+     * and dedup means an event already in the store never reaches them again —
+     * so a corpus that was mirrored before its provider lists arrived stays
+     * unprojected, silently, and every ranked search comes back empty.
+     */
+    suspend fun reconcileTrust(): TrustProjection.Reconciliation = trust.reconcile()
+
+    /**
+     * Re-derive the WHOLE trust view from the stored scores. Bounded only by the
+     * corpus, so this is the operator's hammer — [reconcileTrust] does the same
+     * repair per affected service and normally finds nothing to do.
+     */
+    suspend fun rebuildTrust() = trust.rebuildAll()
 
     companion object {
         /**
@@ -91,8 +114,9 @@ class VespaEventStore internal constructor(
         ): VespaEventStore {
             if (autoDeploy) SchemaDeployer(configUrl).deployIfAbsent(url)
             val events = VespaEventIndex(url, endpoints = endpoints)
-            val store = NostrEventStore(TrustProjection(events, VespaReputationIndex(url)), relay = relay)
-            return VespaEventStore(store, events)
+            val trust = TrustProjection(events, VespaReputationIndex(url))
+            val store = NostrEventStore(trust, relay = relay)
+            return VespaEventStore(store, events, trust)
         }
 
         /** The config server sits on :19071 by convention, on the same host as the :8080 query endpoint. */
