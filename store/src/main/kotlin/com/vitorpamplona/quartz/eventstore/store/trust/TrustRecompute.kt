@@ -89,6 +89,23 @@ internal class TrustRecompute(
         serviceToObservers: Map<String, Set<String>>,
         removeEmpties: Boolean,
     ) {
+        val derived = deriveBatch(subjects, serviceToObservers)
+        IngestStats.timed("proj.write") {
+            reputations.putAll(derived.values.toList())
+            if (removeEmpties) subjects.filter { it !in derived }.mapBounded(QUERY_FANOUT) { reputations.remove(it) }
+        }
+    }
+
+    /**
+     * The read side of [recomputeBatch], alone: what each subject's parent doc
+     * SHOULD be, derived from the stored records — no writes. Subjects whose
+     * derivation is empty are simply absent from the result. This is also what
+     * [TrustReconciler]'s verify audits against.
+     */
+    suspend fun deriveBatch(
+        subjects: List<String>,
+        serviceToObservers: Map<String, Set<String>>,
+    ): Map<String, ReputationDoc> {
         // Derived per CHUNK, not per batch. A chunk's query returns every score
         // for its 50 subjects — complete, since the query carries no limit — so a
         // subject can be derived the moment its chunk lands, and those docs are
@@ -105,8 +122,7 @@ internal class TrustRecompute(
         // carry a cell per MAPPED observer only (a handful, where the recall spans
         // every service that ever scored the subject), so they are small, and one
         // pipelined write per batch beats one per chunk.
-        val puts = ArrayList<ReputationDoc>(subjects.size)
-        val removes = ArrayList<String>()
+        val derived = LinkedHashMap<String, ReputationDoc>(subjects.size * 2)
         val cutoff = nowSecs()
         IngestStats.timed("proj.fetch") {
             subjects.chunked(FETCH_CHUNK).forEachBounded(
@@ -115,7 +131,7 @@ internal class TrustRecompute(
                 // carries no limit.
                 produce = { chunk -> chunk to inner.search(EventQuery(kinds = listOf(ContactCardEvent.KIND), tags = mapOf("d" to chunk), notExpiredAt = cutoff)) },
             ) { (chunk, docs) ->
-                // Serialized by forEachBounded, so these plain lists need no lock.
+                // Serialized by forEachBounded, so this plain map needs no lock.
                 val bySubject = HashMap<String, MutableList<EventDoc>>(chunk.size * 2)
                 val wanted = chunk.toHashSet()
                 docs.forEach { doc ->
@@ -123,18 +139,11 @@ internal class TrustRecompute(
                 }
                 for (subject in chunk) {
                     val reputation = derive(subject, bySubject[subject].orEmpty(), serviceToObservers)
-                    if (!reputation.isEmpty()) {
-                        puts += reputation
-                    } else if (removeEmpties) {
-                        removes += subject
-                    }
+                    if (!reputation.isEmpty()) derived[subject] = reputation
                 }
             }
         }
-        IngestStats.timed("proj.write") {
-            reputations.putAll(puts)
-            removes.mapBounded(QUERY_FANOUT) { reputations.remove(it) }
-        }
+        return derived
     }
 
     /**

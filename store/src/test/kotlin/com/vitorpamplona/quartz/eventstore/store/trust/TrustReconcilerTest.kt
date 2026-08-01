@@ -267,6 +267,96 @@ class TrustReconcilerTest {
             assertEquals(marker, reputations.get(DirtLedger.MARKER_KEY), "the dirt marker is not a subject")
         }
 
+    // ---- verify: the full derive-vs-stored audit ------------------------------
+
+    @Test
+    fun `verify calls a faithful projection clean`() =
+        runBlocking {
+            store.insert(list10040())
+            store.insert(card())
+            val audit = reconciler.verify()
+            assertTrue(audit.isClean(), "stored doc matches the records")
+            assertEquals(1, audit.subjectsChecked)
+            assertEquals(1, audit.parentsChecked)
+        }
+
+    @Test
+    fun `verify reports stale cells, missing docs and orphans, and repairs exactly them`() =
+        runBlocking {
+            store.insert(list10040())
+            store.insert(card()) // subject: the healthy baseline, then tampered stale
+            val gone = "e3".repeat(32)
+            store.insert(card(about = gone, rank = 60)) // will lose its doc entirely
+            val orphan = "e4".repeat(32) // a doc with no records behind it
+
+            reputations.put(ReputationDoc(subject, mapOf(observer to 1), mapOf(observer to 1.0))) // stale
+            reputations.docs.remove(gone) // missing
+            reputations.put(ReputationDoc(orphan, mapOf(observer to 99), emptyMap())) // orphan
+
+            val audit = reconciler.verify()
+            assertEquals(3, audit.driftCount)
+            assertEquals(2, audit.subjectsChecked, "both scored subjects compared")
+            val bySubject = audit.drift.associateBy { it.subject }
+            assertEquals(
+                87,
+                bySubject
+                    .getValue(subject)
+                    .expected
+                    ?.influenceScores
+                    ?.get(observer),
+                "stale: records say 87",
+            )
+            assertEquals(
+                1,
+                bySubject
+                    .getValue(subject)
+                    .actual
+                    ?.influenceScores
+                    ?.get(observer),
+                "stale: doc says 1",
+            )
+            assertNull(bySubject.getValue(gone).actual, "missing: records score it, no doc")
+            assertNull(bySubject.getValue(orphan).expected, "orphan: doc without records")
+
+            val repaired = reconciler.verify(repair = true)
+            assertEquals(3, repaired.driftCount, "the same drift, now repaired in place")
+            assertTrue(reconciler.verify().isClean(), "repair converged")
+            assertEquals(mapOf(observer to 87), reputations.get(subject)?.influenceScores)
+            assertEquals(mapOf(observer to 60), reputations.get(gone)?.influenceScores)
+            assertNull(reputations.get(orphan))
+        }
+
+    /** A fully retracted subject legitimately has NO doc — the audit must not call that drift. */
+    @Test
+    fun `verify accepts a retracted subject with no parent doc`() =
+        runBlocking {
+            store.insert(list10040())
+            store.insert(card(rank = 87, at = 100))
+            store.insert(card(rank = null, followers = null, at = 200))
+            assertNull(reputations.get(subject))
+            val audit = reconciler.verify()
+            assertTrue(audit.isClean(), "empty derivation == no doc")
+            assertEquals(1, audit.subjectsChecked, "the retracted subject was still checked")
+        }
+
+    /** Deferred-mode queued work is LAG, not drift: verify drains it first and then finds nothing. */
+    @Test
+    fun `verify drains deferred work before judging`() =
+        runBlocking {
+            val reps = InMemoryReputationIndex()
+            val idx = InMemoryEventIndex()
+            val proj = TrustProjection(idx, reps)
+            proj.dirt.deferTo { }
+            val st = NostrSemanticsStore(proj, relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+            st.insert(list10040())
+            st.insert(card())
+            assertNull(reps.get(subject), "still queued")
+
+            val audit = TrustReconciler(idx, reps, proj.recompute, proj.dirt).verify()
+            assertTrue(audit.isClean(), "the queue was settled, not reported")
+            assertEquals(mapOf(observer to 87), reps.get(subject)?.influenceScores)
+        }
+
     /** Every mutating reconciler batch must run inside the gate (the store's writer lock). */
     @Test
     fun `reconcile and rebuildAll mutate only under the gate`() =

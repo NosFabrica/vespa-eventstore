@@ -20,9 +20,11 @@
  */
 package com.vitorpamplona.quartz.eventstore.store.trust
 
+import com.vitorpamplona.quartz.eventstore.store.ingest.GuardBloom
 import com.vitorpamplona.quartz.eventstore.vespa.QUERY_FANOUT
 import com.vitorpamplona.quartz.eventstore.vespa.client.EventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.client.ReputationIndex
+import com.vitorpamplona.quartz.eventstore.vespa.doc.ReputationDoc
 import com.vitorpamplona.quartz.eventstore.vespa.mapBounded
 import com.vitorpamplona.quartz.eventstore.vespa.query.EventQuery
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
@@ -55,6 +57,125 @@ class TrustReconciler internal constructor(
         val rebuilt: List<String>,
     ) {
         fun isClean() = rebuilt.isEmpty()
+    }
+
+    /**
+     * One subject whose stored parent doc does not match what the 10040+30382
+     * records derive: [actual] null = MISSING (records score it, no doc);
+     * [expected] null = ORPHAN or leftover (a doc with no records behind it);
+     * both present = STALE cells.
+     */
+    data class TrustDrift(
+        val subject: String,
+        val expected: ReputationDoc?,
+        val actual: ReputationDoc?,
+    )
+
+    /** What [verify] found across BOTH corpora. [drift] holds the first examples; [driftCount] is complete. */
+    data class TrustAudit(
+        /** Subjects with stored 30382s whose expected-vs-actual doc was compared. */
+        val subjectsChecked: Int,
+        /** Stored reputation parents examined for the orphan check. */
+        val parentsChecked: Int,
+        /** Every mismatch found (complete count; [drift] samples the first [VERIFY_DRIFT_SAMPLES]). */
+        val driftCount: Int,
+        val drift: List<TrustDrift>,
+        /** Whether the drifted subjects were re-derived in place. */
+        val repaired: Boolean,
+    ) {
+        fun isClean() = driftCount == 0
+    }
+
+    /**
+     * FULL audit: does every reputation doc match its 10040+30382 counterparts?
+     *
+     * Answers it from both directions. First the queued deferred work is
+     * drained — that is lag, not drift, and auditing through it would report
+     * every in-flight subject. Then:
+     *
+     *  1. COMPLETENESS: every subject with stored 30382s is re-derived from the
+     *     records ([TrustRecompute.deriveBatch] — the same pure derivation the
+     *     projection writes, including the current 10040 attribution) and
+     *     compared against the stored parent, in gated batches so each
+     *     comparison is atomic against live writers. Catches missing docs,
+     *     stale cells, wrong observers, and leftovers for retracted subjects.
+     *  2. ORPHANS: every stored parent's pubkey is streamed
+     *     ([ReputationIndex.visitPubkeys]) and checked against a Bloom filter
+     *     of the subjects phase 1 saw. [GuardBloom] has NO false negatives, so
+     *     "not seen" is PROOF the doc has no records behind it. (A false
+     *     positive can only HIDE an orphan — at the configured 1e-6 rate —
+     *     never invent drift; the same filter also dedups subjects whose cards
+     *     span visit pages.)
+     *
+     * Follower cells are compared at float32 precision — that is how the engine
+     * stores them, and comparing doubles would report storage rounding as drift.
+     *
+     * [repair] re-derives exactly the drifted subjects in place (gated), the
+     * targeted alternative to [rebuildAll]. Cost of the audit itself: one read
+     * of every 30382 plus one get per scored subject — no writes beyond the
+     * initial drain (and the repairs, when asked). On a store taking live
+     * writes the answer is per-batch consistent; run against a quiet store for
+     * a single point-in-time answer.
+     */
+    suspend fun verify(
+        repair: Boolean = false,
+        onProgress: ((subjectsChecked: Int) -> Unit)? = null,
+    ): TrustAudit {
+        dirt.drain(gate)
+        val seen = GuardBloom(expectedInsertions = index.count(EventQuery(kinds = listOf(ContactCardEvent.KIND))).coerceAtLeast(1024), fpp = 1e-6)
+        val samples = ArrayList<TrustDrift>()
+        var driftCount = 0
+        var subjectsChecked = 0
+
+        // Phase 1 — completeness: expected (from the records) vs actual (stored),
+        // per batch of subjects streamed off the 30382 corpus.
+        val buffer = LinkedHashSet<String>()
+
+        suspend fun checkBatch() {
+            val batch = buffer.filter { !seen.mightContain(it) }
+            buffer.clear()
+            if (batch.isEmpty()) return
+            batch.forEach(seen::add)
+            gate {
+                val expected = recompute.deriveBatch(batch, recompute.providerMap())
+                val drifted = ArrayList<String>()
+                batch
+                    .mapBounded(QUERY_FANOUT) { it to reputations.get(it) }
+                    .forEach { (subject, actual) ->
+                        if (!matches(expected[subject], actual)) {
+                            driftCount++
+                            drifted += subject
+                            if (samples.size < VERIFY_DRIFT_SAMPLES) samples += TrustDrift(subject, expected[subject], actual)
+                        }
+                    }
+                if (repair && drifted.isNotEmpty()) recompute.recomputeBatch(drifted, recompute.providerMap(), removeEmpties = true)
+            }
+            subjectsChecked += batch.size
+            onProgress?.invoke(subjectsChecked)
+        }
+        index.visitIds(EventQuery(kinds = listOf(ContactCardEvent.KIND)), withDTag = true) { page ->
+            page.forEach { it.dTag?.takeIf(Hex::isHex64)?.let(buffer::add) }
+            if (buffer.size >= VERIFY_BATCH) checkBatch()
+            true
+        }
+        checkBatch()
+
+        // Phase 2 — orphans: stored parents phase 1 never derived. The non-hex
+        // filter keeps the ledger's dirt marker out of the audit.
+        var parentsChecked = 0
+        reputations.visitPubkeys { page ->
+            val orphans = page.filter { Hex.isHex64(it) && !seen.mightContain(it) }
+            parentsChecked += page.count { Hex.isHex64(it) }
+            for (subject in orphans) {
+                driftCount++
+                if (samples.size < VERIFY_DRIFT_SAMPLES) samples += TrustDrift(subject, null, reputations.get(subject))
+            }
+            if (repair && orphans.isNotEmpty()) {
+                gate { recompute.recomputeBatch(orphans, recompute.providerMap(), removeEmpties = true) }
+            }
+            true
+        }
+        return TrustAudit(subjectsChecked, parentsChecked, driftCount, samples, repair)
     }
 
     /**
@@ -202,5 +323,28 @@ class TrustReconciler internal constructor(
         // Subjects per orphan-sweep re-derive round (memory-bounded, like
         // TrustRecompute's walk batches).
         const val ORPHAN_BATCH = 20_000
+
+        // Subjects compared per gated [verify] batch (memory- and lock-hold-bounded).
+        const val VERIFY_BATCH = 20_000
+
+        // Drift examples carried in the [TrustAudit] report; the COUNT is always complete.
+        const val VERIFY_DRIFT_SAMPLES = 100
+
+        /**
+         * Expected-vs-stored equality for [verify]. Influence cells are int8 —
+         * exact. Follower cells are stored as float32, so they are compared at
+         * that precision; a double-precision compare would call the engine's
+         * own rounding "drift". A subject whose derivation is EMPTY matches
+         * exactly a missing doc.
+         */
+        fun matches(
+            expected: ReputationDoc?,
+            actual: ReputationDoc?,
+        ): Boolean {
+            if (expected == null || actual == null) return (expected == null) && (actual == null)
+            return expected.influenceScores == actual.influenceScores &&
+                expected.followerCounts.keys == actual.followerCounts.keys &&
+                expected.followerCounts.all { (observer, count) -> actual.followerCounts[observer]?.toFloat() == count.toFloat() }
+        }
     }
 }

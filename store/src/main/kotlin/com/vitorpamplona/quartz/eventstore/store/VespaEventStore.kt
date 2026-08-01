@@ -98,6 +98,21 @@ class VespaEventStore internal constructor(
     suspend fun rebuildTrust() = reconciler.rebuildAll()
 
     /**
+     * FULL audit: does every reputation doc match its 10040+30382 records?
+     * Drains any queued deferred work (lag, not drift), then compares the
+     * stored parent of every scored subject against a fresh derivation from the
+     * records, and sweeps the reputation corpus for orphan docs with no records
+     * behind them. Read-only beyond that drain; with [repair] the drifted
+     * subjects are re-derived in place — the targeted alternative to
+     * [rebuildTrust]. The report carries complete counts and the first examples
+     * of each mismatch. See [TrustReconciler.verify] for the full contract.
+     */
+    suspend fun verifyTrust(
+        repair: Boolean = false,
+        onProgress: ((subjectsChecked: Int) -> Unit)? = null,
+    ): TrustReconciler.TrustAudit = reconciler.verify(repair, onProgress)
+
+    /**
      * The deferred-projection BARRIER: drain every queued trust reaction before
      * returning, so ranking reflects all inserts acked so far — the
      * read-your-writes moment a caller occasionally needs (a test, a "publish
