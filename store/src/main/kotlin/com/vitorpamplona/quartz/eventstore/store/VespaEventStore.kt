@@ -120,6 +120,9 @@ class VespaEventStore internal constructor(
      * no-op when the queue is empty, and safe alongside the background drainer
      * (draining is idempotent; both take the writer lock per batch). With
      * deferral off this returns immediately — inline settles leave no queue.
+     * Note the barrier chases the queue: under a sustained stream of trust
+     * writes it keeps draining until a pass finds nothing new, so it bounds
+     * "everything acked BEFORE the call", not the writes racing it.
      */
     suspend fun awaitTrustProjection() = trust.dirt.drain { store.withWriteLock(it) }
 

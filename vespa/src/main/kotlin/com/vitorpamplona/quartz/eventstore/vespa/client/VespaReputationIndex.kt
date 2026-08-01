@@ -113,7 +113,8 @@ class VespaReputationIndex(
                 "?selection=${URLEncoder.encode(DOCTYPE, "UTF-8")}" +
                 "&wantedDocumentCount=$VISIT_PAGE" +
                 "&fieldSet=${URLEncoder.encode("$DOCTYPE:pubkey", "UTF-8")}" +
-                "&timeout=$VISIT_SERVER_TIMEOUT_SECONDS"
+                "&timeout=$VISIT_SERVER_TIMEOUT_SECONDS" +
+                "&concurrency=$VISIT_CONCURRENCY"
         var continuation: String? = null
         while (true) {
             val resp = http.getVisit(continuation?.let { "$base&continuation=$it" } ?: base)
@@ -143,6 +144,9 @@ class VespaReputationIndex(
 
         /** Server-side visit timeout, strictly under VespaHttp's visit read deadline (see VespaEventIndex.pagedWalk). */
         const val VISIT_SERVER_TIMEOUT_SECONDS = 90L
+
+        /** Backend buckets read in parallel per visit page — the event walk's measured default. */
+        const val VISIT_CONCURRENCY = 8
 
         /** Per-op deadline so a half-dead HTTP/2 connection fails instead of hanging the writer forever (see VespaEventIndex). */
         fun feedParams(): OperationParameters = OperationParameters.empty().timeout(Duration.ofSeconds(30))

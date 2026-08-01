@@ -96,26 +96,31 @@ class TrustReconciler internal constructor(
      *  1. COMPLETENESS: every subject with stored 30382s is re-derived from the
      *     records ([TrustRecompute.deriveBatch] — the same pure derivation the
      *     projection writes, including the current 10040 attribution) and
-     *     compared against the stored parent, in gated batches so each
-     *     comparison is atomic against live writers. Catches missing docs,
-     *     stale cells, wrong observers, and leftovers for retracted subjects.
+     *     compared against the stored parent. Catches missing docs, stale
+     *     cells, wrong observers, and leftovers for retracted subjects.
      *  2. ORPHANS: every stored parent's pubkey is streamed
      *     ([ReputationIndex.visitPubkeys]) and checked against a Bloom filter
      *     of the subjects phase 1 saw. [GuardBloom] has NO false negatives, so
-     *     "not seen" is PROOF the doc has no records behind it. (A false
-     *     positive can only HIDE an orphan — at the configured 1e-6 rate —
-     *     never invent drift; the same filter also dedups subjects whose cards
-     *     span visit pages.)
+     *     "not seen" proves the doc had no records when phase 1 passed. (A
+     *     false positive can only HIDE an orphan — at the configured 1e-6 rate
+     *     — never invent drift; the same filter also dedups subjects whose
+     *     cards span visit pages.)
+     *
+     * Both phases SCREEN lock-free — millions of clean subjects must not take
+     * the writer lock at all — and only the suspects are re-judged under the
+     * gate ([confirm]): queued work is drained first (a write racing the
+     * screen is lag, not drift), then the suspect is re-derived and re-read
+     * atomically against writers. Only confirmed drift is counted, so a live
+     * store cannot produce false positives; the cost is a short lock hold per
+     * suspect batch, zero on a clean store.
      *
      * Follower cells are compared at float32 precision — that is how the engine
      * stores them, and comparing doubles would report storage rounding as drift.
      *
-     * [repair] re-derives exactly the drifted subjects in place (gated), the
-     * targeted alternative to [rebuildAll]. Cost of the audit itself: one read
-     * of every 30382 plus one get per scored subject — no writes beyond the
-     * initial drain (and the repairs, when asked). On a store taking live
-     * writes the answer is per-batch consistent; run against a quiet store for
-     * a single point-in-time answer.
+     * [repair] re-derives exactly the confirmed subjects in place (same gate),
+     * the targeted alternative to [rebuildAll]. Cost of the audit itself: one
+     * read of every 30382 plus one get per scored subject — no writes beyond
+     * the drains (and the repairs, when asked).
      */
     suspend fun verify(
         repair: Boolean = false,
@@ -127,19 +132,14 @@ class TrustReconciler internal constructor(
         var driftCount = 0
         var subjectsChecked = 0
 
-        // Phase 1 — completeness: expected (from the records) vs actual (stored),
-        // per batch of subjects streamed off the 30382 corpus.
-        val buffer = LinkedHashSet<String>()
-
-        suspend fun checkBatch() {
-            val batch = buffer.filter { !seen.mightContain(it) }
-            buffer.clear()
-            if (batch.isEmpty()) return
-            batch.forEach(seen::add)
+        // The gated re-judgement of screened suspects; also repairs, when asked.
+        suspend fun confirm(suspects: List<String>) {
+            if (suspects.isEmpty()) return
+            dirt.drain(gate) // settle work queued since the last drain before judging it
             gate {
-                val expected = recompute.deriveBatch(batch, recompute.providerMap())
+                val expected = recompute.deriveBatch(suspects, recompute.providerMap())
                 val drifted = ArrayList<String>()
-                batch
+                suspects
                     .mapBounded(QUERY_FANOUT) { it to reputations.get(it) }
                     .forEach { (subject, actual) ->
                         if (!matches(expected[subject], actual)) {
@@ -150,29 +150,43 @@ class TrustReconciler internal constructor(
                     }
                 if (repair && drifted.isNotEmpty()) recompute.recomputeBatch(drifted, recompute.providerMap(), removeEmpties = true)
             }
+        }
+
+        // Phase 1 — completeness: expected (from the records) vs actual (stored),
+        // per batch of subjects streamed off the 30382 corpus.
+        val buffer = LinkedHashSet<String>()
+
+        suspend fun screenBatch() {
+            val batch = buffer.filter { !seen.mightContain(it) }
+            buffer.clear()
+            if (batch.isEmpty()) return
+            batch.forEach(seen::add)
+            val expected = recompute.deriveBatch(batch, recompute.providerMap())
+            val suspects =
+                batch
+                    .mapBounded(QUERY_FANOUT) { it to reputations.get(it) }
+                    .filter { (subject, actual) -> !matches(expected[subject], actual) }
+                    .map { it.first }
+            confirm(suspects)
             subjectsChecked += batch.size
             onProgress?.invoke(subjectsChecked)
         }
         index.visitIds(EventQuery(kinds = listOf(ContactCardEvent.KIND)), withDTag = true) { page ->
             page.forEach { it.dTag?.takeIf(Hex::isHex64)?.let(buffer::add) }
-            if (buffer.size >= VERIFY_BATCH) checkBatch()
+            if (buffer.size >= VERIFY_BATCH) screenBatch()
             true
         }
-        checkBatch()
+        screenBatch()
 
         // Phase 2 — orphans: stored parents phase 1 never derived. The non-hex
-        // filter keeps the ledger's dirt marker out of the audit.
+        // filter keeps the ledger's dirt marker out of the audit. Candidates go
+        // through the same gated confirm — a subject whose first records landed
+        // mid-audit re-derives non-empty there and is judged like any other,
+        // not miscalled an orphan.
         var parentsChecked = 0
         reputations.visitPubkeys { page ->
-            val orphans = page.filter { Hex.isHex64(it) && !seen.mightContain(it) }
             parentsChecked += page.count { Hex.isHex64(it) }
-            for (subject in orphans) {
-                driftCount++
-                if (samples.size < VERIFY_DRIFT_SAMPLES) samples += TrustDrift(subject, null, reputations.get(subject))
-            }
-            if (repair && orphans.isNotEmpty()) {
-                gate { recompute.recomputeBatch(orphans, recompute.providerMap(), removeEmpties = true) }
-            }
+            confirm(page.filter { Hex.isHex64(it) && !seen.mightContain(it) })
             true
         }
         return TrustAudit(subjectsChecked, parentsChecked, driftCount, samples, repair)

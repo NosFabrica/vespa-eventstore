@@ -654,6 +654,48 @@ class TrustProjectionTest {
             decorated.visitDocsPage(EventQuery(), null, 8)
             assertTrue(forwarded, "the reindex walk must reach the engine's visit, not the search-per-page default")
         }
+
+    /**
+     * The write-ahead marker must be priced to the op: per-cell adds for the
+     * small dirt of live traffic, ONE doc put for a bulk batch — per-subject
+     * feed ops at batch size would rival the event writes they insure.
+     */
+    @Test
+    fun `the marker write-ahead is one doc put for a bulk batch and cell adds for singles`() =
+        runBlocking {
+            val counting = MarkerCountingReputationIndex(InMemoryReputationIndex())
+            val st = NostrSemanticsStore(TrustProjection(InMemoryEventIndex(), counting), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+            st.insert(list10040())
+            assertEquals(1, counting.markerCellAdds, "a single's dirt is one pipelined cell add")
+            assertEquals(0, counting.markerPuts)
+
+            val subjects = (1..100).map { it.toString(16).padStart(64, 'c') }
+            st.batchInsert(subjects.map { s -> card(about = s) })
+            assertEquals(1, counting.markerCellAdds, "a bulk batch must not pay per-subject marker ops")
+            assertEquals(1, counting.markerPuts, "its write-ahead is one marker-doc put")
+
+            st.insert(card())
+            assertEquals(2, counting.markerCellAdds, "back to a single cell add for a single insert")
+            assertEquals(1, counting.markerPuts)
+        }
+}
+
+/** Counts marker-doc traffic, separating pipelined cell adds from whole-doc puts. */
+private class MarkerCountingReputationIndex(
+    private val inner: InMemoryReputationIndex,
+) : ReputationIndex by inner {
+    var markerCellAdds = 0
+    var markerPuts = 0
+
+    override suspend fun updateCells(updates: List<ReputationCells>) {
+        markerCellAdds += updates.count { it.subject == DirtLedger.MARKER_KEY }
+        inner.updateCells(updates)
+    }
+
+    override suspend fun put(reputation: ReputationDoc) {
+        if (reputation.pubkey == DirtLedger.MARKER_KEY) markerPuts++
+        inner.put(reputation)
+    }
 }
 
 /**

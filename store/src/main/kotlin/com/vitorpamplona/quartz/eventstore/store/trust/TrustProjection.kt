@@ -210,7 +210,9 @@ class TrustProjection(
         val doc = inner.get(id)
         val work = removeDirt(listOfNotNull(doc))
         dirt.guarded(work) {
-            inner.remove(id)
+            // With the doc in hand, remove THROUGH it: the address-keyed client
+            // resolves the docid locally instead of re-reading it per id.
+            if (doc != null) inner.removeDocs(listOf(doc)) else inner.remove(id)
             if (doc?.kind == TrustProviderListEvent.KIND) recompute.invalidateProviders()
             Unit to work
         }

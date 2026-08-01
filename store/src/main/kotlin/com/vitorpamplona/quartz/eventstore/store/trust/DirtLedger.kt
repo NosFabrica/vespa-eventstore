@@ -59,9 +59,11 @@ import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
  *
  * The marker is one [ReputationDoc] under [MARKER_KEY] — a non-hex id no card
  * can collide with, since [subjectOf] admits only 64-hex subjects. Dirty
- * subjects ride the influence cells, dirty services the follower cells, and
- * the write-ahead persist is a pipelined tensor-cell ADD (no read, no doc
- * rewrite), so an op whose dirt is already pending persists NOTHING.
+ * subjects ride the influence cells, dirty services the follower cells. The
+ * write-ahead persist is sized to the delta: small dirt (live traffic) goes as
+ * pipelined tensor-cell ADDs — no read, no doc rewrite, and an op whose dirt
+ * is already pending persists NOTHING — while a bulk batch's dirt goes as one
+ * marker-doc put (see [DELTA_ADD_MAX]).
  *
  * Every entry point except the gated parts of [drain] runs under the store's
  * single writer lock, which is what makes the plain fields here safe; [drain]
@@ -119,22 +121,33 @@ internal class DirtLedger(
      * Run [block] — the event write plus any cheap inline projection — bracketed
      * by the ledger. [insurance] is everything the op COULD leave stale if it
      * dies partway (persisted write-ahead); [block] returns the WORK actually
-     * left to do, which must be a subset of the insurance: nothing in sync mode
-     * beyond what it chose not to run inline, the expensive reactions in
-     * deferred mode. On success the marker narrows from insurance to the
-     * remaining pending work; on failure the whole insurance becomes pending —
-     * the failed op's retry is all-duplicates and can never repair it, so the
-     * next settle or [drain] must.
+     * left to do, which the insurance must COVER: each work subject is either
+     * named directly, or reachable through an insurance service's walk (the
+     * capped-batch case — every retracted subject has a batch card, so its
+     * author's walk re-derives it). On failure the whole insurance becomes
+     * pending — the failed op's retry is all-duplicates and can never repair
+     * it, so the next settle or [drain] must.
+     *
+     * The persisted marker may transiently OVER-cover: it holds insurance the
+     * op finished inline, until the next [drain]'s final rewrite shrinks it to
+     * exactly the pending work. Deliberate — narrowing it here would cost a
+     * doc-sized write per batch, while over-coverage only costs a crash some
+     * redundant (idempotent) re-derives.
      */
     suspend fun <T> guarded(
         insurance: Dirt,
         block: suspend () -> Pair<T, Dirt>,
     ): T {
         val before = load()
-        // Write-ahead, as pipelined cell ADDs: only the delta beyond what is
-        // already pending costs anything — a storm about the same subjects
-        // persists once.
-        persistDelta(insurance - before)
+        val delta = insurance - before
+        if (!delta.isEmpty()) {
+            // Write-ahead. A small delta (a single, a removal) is pipelined cell
+            // ADDs — no read, no doc rewrite, and a storm about the same
+            // subjects persists once. A large one (a bulk batch's subjects) is
+            // ONE marker-doc put: cell-adds are one feed op per entry, which at
+            // batch size would rival the event writes they insure.
+            if (delta.subjects.size + delta.services.size <= DELTA_ADD_MAX) persistDelta(delta) else persist(before + insurance)
+        }
         val work: Dirt
         val result: T
         try {
@@ -149,15 +162,13 @@ internal class DirtLedger(
             signal?.invoke()
             throw t
         }
-        pending = before + work
+        val queued = before + work
+        pending = queued
         val deferred = signal
         if (deferred == null) {
             drain { it() } // settle inline: the caller holds the writer lock
-        } else {
-            // Narrow the marker from insurance to the real pending work — skipped
-            // in the common case where they are identical (singles, removals).
-            if (work != insurance) persist(before + work)
-            if (!(before + work).isEmpty()) deferred()
+        } else if (!queued.isEmpty()) {
+            deferred()
         }
         return result
     }
@@ -231,6 +242,14 @@ internal class DirtLedger(
 
         /** Subjects re-derived per gated drain batch (memory- and lock-hold-bounded). */
         private const val DRAIN_BATCH = 20_000
+
+        /**
+         * Largest write-ahead delta persisted as per-cell feed ADDs; anything
+         * bigger takes one marker-doc put instead. Adds win for the small dirt
+         * of live traffic (usually one cell, often zero); a doc put wins for a
+         * bulk batch, where per-entry ops would rival the event writes.
+         */
+        private const val DELTA_ADD_MAX = 64
 
         /** The persisted form: subjects ride the influence cells, services the follower cells (values are ignored). */
         private fun marker(dirt: Dirt): ReputationDoc = ReputationDoc(MARKER_KEY, dirt.subjects.associateWith { 1 }, dirt.services.associateWith { 1.0 })
