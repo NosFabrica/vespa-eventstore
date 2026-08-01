@@ -395,6 +395,54 @@ class VespaEventIndexTest {
             }
         }
 
+    /**
+     * The engine sorts by created_at ONLY (the id tiebreak cost UCA collation
+     * over the whole match set); the client restores exact
+     * `created_at desc, id asc` order — INCLUDING boundary-tie membership
+     * under a limit — from the overfetched page. The mock's scrambled tie
+     * order is the adversarial engine: reversed ids within each timestamp, cut
+     * arbitrarily at the limit.
+     */
+    @Test
+    fun `boundary ties under a limit resolve to exact id-asc membership`() =
+        runBlocking {
+            // 10 docs on one timestamp (the boundary group), newer singles above.
+            seed(*(1..10).map { doc(kind = 1, at = 7_000) }.toTypedArray())
+            seed(*(1..3).map { doc(kind = 1, at = 8_000L + it) }.toTypedArray())
+            mock.scrambleTieOrder = true
+            try {
+                // limit=7 cuts INSIDE the tie group: 3 newer + 4 of the 10 tied.
+                val q = EventQuery(kinds = listOf(1), limit = 7)
+                assertEquals(
+                    reference.search(q).map { it.id },
+                    index.search(q).map { it.id },
+                    "the 4 tied survivors must be the LOWEST ids, in asc order",
+                )
+            } finally {
+                mock.scrambleTieOrder = false
+            }
+        }
+
+    /** A boundary tie group WIDER than the overfetch slack takes the [t,t] follow-up query and is still exact. */
+    @Test
+    fun `a tie group wider than the slack resolves through the tie-window query`() =
+        runBlocking {
+            val wide = 84 // TIE_SLACK (64) + 20 — must exceed the overfetch slack
+            seed(*(1..wide).map { doc(kind = 1, at = 7_000) }.toTypedArray())
+            seed(doc(kind = 1, at = 9_000))
+            mock.scrambleTieOrder = true
+            try {
+                val q = EventQuery(kinds = listOf(1), limit = 5)
+                assertEquals(
+                    reference.search(q).map { it.id },
+                    index.search(q).map { it.id },
+                    "beyond-slack ties must be fetched via the [t,t] window and tiebroken exactly",
+                )
+            } finally {
+                mock.scrambleTieOrder = false
+            }
+        }
+
     /** Deep-past until anchors (old-history pagination) skip the recency profile — the planner windows them instead. */
     @Test
     fun `deep-past until skips the recency profile`() {

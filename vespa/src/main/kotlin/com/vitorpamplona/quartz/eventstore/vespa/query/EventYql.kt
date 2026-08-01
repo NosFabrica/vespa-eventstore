@@ -150,7 +150,15 @@ object EventYql {
         // The id tiebreak makes a limit's cut deterministic when it falls inside
         // a created_at tie — the same (created_at desc, id asc) order the
         // EventIndex contract promises and the client-side sorts apply.
-        val order = if (ranking == RANK_UNRANKED || ranking == RANK_RECENCY) " order by created_at desc, id asc" else ""
+        // created_at ONLY — no engine-side id tiebreak. Compound-sorting by the
+        // id STRING attribute made every full-scan recall pay UCA collation
+        // over the whole match set (measured 0.22s -> 1.3s on 2M matches). The
+        // client restores the exact `created_at desc, id asc` contract from
+        // the RETURNED page instead: it overfetches a small slack so the
+        // boundary timestamp's tie group arrives complete, resolves the rare
+        // overflow with a [t,t] window query, and sorts the page in memory —
+        // see VespaEventIndex.recallSummaries.
+        val order = if (ranking == RANK_UNRANKED || ranking == RANK_RECENCY) " order by created_at desc" else ""
         val limit = q.limit?.let { if (it <= 0) return null else " limit $it" } ?: ""
         return VespaQuery(
             // Only the reconstruction fields, not `*`: the returned summary skips the

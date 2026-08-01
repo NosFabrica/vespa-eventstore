@@ -119,6 +119,16 @@ class MockVespaEngine {
     @Volatile var matchPhaseNodes: Int = 1
 
     /**
+     * Serve recall hits with the id order REVERSED within each equal-created_at
+     * group — the engine's single-key sort leaves tie order ARBITRARY, and the
+     * client must restore `id asc` (and exact boundary membership under a
+     * limit) itself. Reversal is the adversarial arbitrary order: any client
+     * that leans on the mock's naturally sorted ties passes by accident; one
+     * that resolves them works against real Vespa too.
+     */
+    @Volatile var scrambleTieOrder: Boolean = false
+
+    /**
      * Cut the NEXT streamed visit response after this many put lines,
      * mid-bucket and without a final marker — a broken connection. The client
      * must resume from the last continuation token it saw and deliver the
@@ -271,7 +281,21 @@ class MockVespaEngine {
         val isKindHistogram = yql.contains("group(kind)")
         val grouped = isCount || isDistinct || isKindHistogram
         val query = MockYql.parse(yql.substringBefore("|").trim(), params).let { if (grouped) it.copy(limit = null) else it }
-        val matches = runBlocking { inner.search(query) }
+        // The limit cut must be applied AFTER any tie scrambling: real Vespa's
+        // single-key sort picks boundary-tie MEMBERSHIP arbitrarily, and a cut
+        // inside the reference's tiebroken order would hide exactly the bug
+        // [scrambleTieOrder] exists to surface.
+        val matches =
+            runBlocking { inner.search(query.copy(limit = null)) }
+                .let { sorted ->
+                    if (scrambleTieOrder && !grouped) {
+                        // created_at groups stay newest-first; ids within each
+                        // group flip — see [scrambleTieOrder].
+                        sorted.groupBy { it.createdAt }.values.flatMap { it.reversed() }
+                    } else {
+                        sorted
+                    }
+                }.let { ordered -> query.limit?.let { ordered.take(it) } ?: ordered }
         // Simulated match-phase under-delivery: fewer hits than the limit, with
         // ONLY the match-phase degradation flag set (see [matchPhaseUnderdeliver]).
         val underdeliver = matchPhaseUnderdeliver > 0 && !grouped && params["ranking"] == "recency"
@@ -675,7 +699,7 @@ object MockYql {
             limit = it.groupValues[1].toInt()
             rest = rest.removeRange(it.range)
         }
-        rest = rest.removeSuffix(" order by created_at desc, id asc")
+        rest = rest.removeSuffix(" order by created_at desc")
 
         var q = EventQuery(limit = limit)
         if (rest == "true") return q

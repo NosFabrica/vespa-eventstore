@@ -124,13 +124,19 @@ class VespaCoverageTest {
     @Test
     fun `match-phase degradation is accepted for the limit'd recency shape`() =
         runBlocking {
-            index.put(doc("1".repeat(64)))
+            // The client overfetches limit + TIE_SLACK (65 here), so "full
+            // degraded page" means the OVERFETCHED page: seed past it, with
+            // unique timestamps so no boundary tie demotes the acceptance.
+            repeat(70) { i ->
+                index.put(doc(i.toString(16).padStart(64, '0')).copy(createdAt = 1_700_000_000L + i))
+            }
             mock.degradeCoverage = "match-phase"
 
-            // limit == page: a FULL degraded page is provably the exact top-limit
-            // and is served as-is (a SHORT one is rerun exact — separate test).
+            // A FULL degraded page is provably the exact top-limit and is
+            // served as-is (a SHORT one is rerun exact — separate test).
             val hits = index.search(EventQuery(limit = 1))
             assertEquals(1, hits.size, "the opted-in match-phase cut must be served, not refused")
+            assertEquals(1_700_000_069L, hits.single().createdAt, "and it must be the newest doc")
         }
 
     /** The carve-out is match-phase ONLY — a timeout on the same limit'd shape is still a partial answer. */
