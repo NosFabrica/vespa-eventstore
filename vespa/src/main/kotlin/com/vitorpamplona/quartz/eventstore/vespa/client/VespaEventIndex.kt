@@ -33,8 +33,12 @@ import com.vitorpamplona.quartz.eventstore.vespa.query.EventYql
 import com.vitorpamplona.quartz.eventstore.vespa.query.VespaQuery
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import com.vitorpamplona.quartz.utils.Hex
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.future.await
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -198,6 +202,31 @@ class VespaEventIndex(
             .build()
 
     private val jsonMedia = "application/json; charset=utf-8".toMediaType()
+
+    /**
+     * Independent slices a full-corpus visit is split into (document-API
+     * `slices`/`sliceId`), each advanced concurrently through its own
+     * continuation chain. A serial walk pays one round trip per
+     * [VISIT_PAGE]-doc page — ~27k sequential round trips on a 28M corpus, i.e.
+     * minutes of wall clock spent mostly waiting — and slicing divides that
+     * latency chain by this count. `VESPA_VISIT_SLICES` overrides for
+     * deployment tuning (1 restores the serial walk).
+     */
+    private val visitSlices: Int =
+        (System.getenv("VESPA_VISIT_SLICES")?.toIntOrNull() ?: VISIT_SLICES)
+            .coerceAtLeast(1)
+
+    /**
+     * Backend bucket parallelism WITHIN each visit request (document-API
+     * `concurrency`). Distribution buckets hold only a few hundred docs each on
+     * a large corpus, so filling a 1024-doc page at the default of 1 reads
+     * several buckets back-to-back; this reads them in parallel instead.
+     * Response size stays bounded by wantedDocumentCount either way.
+     * `VESPA_VISIT_CONCURRENCY` overrides (Vespa accepts 1..100).
+     */
+    private val visitConcurrency: Int =
+        (System.getenv("VESPA_VISIT_CONCURRENCY")?.toIntOrNull() ?: VISIT_CONCURRENCY)
+            .coerceIn(1, 100)
 
     // ADDRESS-KEYED mode (VESPA_ADDRESS_KEYED=1): replaceable/addressable events
     // are stored under their NIP-01 address as the document id, so the engine
@@ -393,6 +422,11 @@ class VespaEventIndex(
      * continuation tokens. It STREAMS and does not rank, which is exactly what a
      * full-corpus id walk needs. Queries a selection can't express fall back to
      * the search default, which returns the same set in a single page.
+     *
+     * The walk is SLICED ([visitSlices] parallel continuation chains, see
+     * [visitPages]); [onPage] is still invoked serially, and returning false
+     * still stops the whole walk. Cross-page order is arbitrary — which the
+     * [EventIndex.visitIds] contract already grants.
      */
     override suspend fun visitIds(
         query: EventQuery,
@@ -403,17 +437,9 @@ class VespaEventIndex(
         // Vespa fieldSet syntax is "<doctype>:<field>,<field>,…" — the doctype
         // prefixes the list ONCE, not each field (else: ILLEGAL_PARAMETERS).
         val fieldSet = "$DOCTYPE:created_at" + if (withDTag) ",tag_index" else ""
-        val base =
-            "${endpoint()}/document/v1/$NAMESPACE/$DOCTYPE/docid" +
-                "?selection=${URLEncoder.encode(selection, "UTF-8")}" +
-                "&wantedDocumentCount=$VISIT_PAGE&fieldSet=${URLEncoder.encode(fieldSet, "UTF-8")}"
-        var continuation: String? = null
-        while (true) {
-            val resp = send(continuation?.let { "$base&continuation=$it" } ?: base)
-            require(resp.statusCode() < 400) { "vespa visit ${resp.statusCode()}: ${resp.body().take(300)}" }
-            val json = Json.parseToJsonElement(resp.body()).jsonObject
+        visitPages(selection, fieldSet) { documents ->
             val page =
-                json["documents"]?.jsonArray?.mapNotNull { d ->
+                documents.mapNotNull { d ->
                     val obj = d.jsonObject
                     val id = obj["id"]?.jsonPrimitive?.content?.substringAfterLast(":") ?: return@mapNotNull null
                     val fields = obj["fields"]?.jsonObject
@@ -431,11 +457,69 @@ class VespaEventIndex(
                             null
                         }
                     DocRef(id, at, dTag)
-                } ?: emptyList()
-            if (page.isNotEmpty() && !onPage(page)) return
-            continuation = json["continuation"]?.jsonPrimitive?.content ?: return
+                }
+            page.isEmpty() || onPage(page)
         }
     }
+
+    /**
+     * Page every match of [selection] out of the document-API visit, calling
+     * [onDocuments] with each response's raw `documents` array; a false return
+     * stops the walk. The shared engine behind [visitIds] and [scanAuthors].
+     *
+     * PARALLEL under the hood: the corpus is split into [visitSlices]
+     * independent slices (`slices`/`sliceId`), each walking its own
+     * continuation chain against a round-robin endpoint, and each request asks
+     * the backend to read [visitConcurrency] buckets at once. What made the
+     * serial walk slow was never the engine — it was ~27k sequential HTTP round
+     * trips on a 28M corpus; slicing divides that chain by the slice count.
+     * Producer pages meet a single consumer through a channel, so
+     * [onDocuments] runs strictly serially (callers mutate plain collections)
+     * and an early stop cancels every in-flight slice.
+     */
+    private suspend fun visitPages(
+        selection: String,
+        fieldSet: String,
+        onDocuments: suspend (JsonArray) -> Boolean,
+    ): Unit =
+        coroutineScope {
+            val query =
+                "?selection=${URLEncoder.encode(selection, "UTF-8")}" +
+                    "&wantedDocumentCount=$VISIT_PAGE" +
+                    "&fieldSet=${URLEncoder.encode(fieldSet, "UTF-8")}" +
+                    "&concurrency=$visitConcurrency&slices=$visitSlices"
+            val pages = Channel<JsonArray>(visitSlices)
+            val producers =
+                launch {
+                    try {
+                        coroutineScope {
+                            repeat(visitSlices) { sliceId ->
+                                launch {
+                                    val base = "${endpoint()}/document/v1/$NAMESPACE/$DOCTYPE/docid$query&sliceId=$sliceId"
+                                    var continuation: String? = null
+                                    while (true) {
+                                        val resp = send(continuation?.let { "$base&continuation=$it" } ?: base)
+                                        require(resp.statusCode() < 400) { "vespa visit ${resp.statusCode()}: ${resp.body().take(300)}" }
+                                        val json = Json.parseToJsonElement(resp.body()).jsonObject
+                                        json["documents"]?.jsonArray?.takeIf { it.isNotEmpty() }?.let { pages.send(it) }
+                                        continuation = json["continuation"]?.jsonPrimitive?.content ?: break
+                                    }
+                                }
+                            }
+                        }
+                    } finally {
+                        // Close on completion AND failure: a stuck-open channel
+                        // would leave the consumer below suspended forever.
+                        pages.close()
+                    }
+                }
+            for (page in pages) {
+                if (!onDocuments(page)) {
+                    producers.cancelAndJoin()
+                    break
+                }
+            }
+        }
 
     override suspend fun count(query: EventQuery): Int {
         // A grouping count() over the full match set — NOT root.totalCount, which
@@ -525,26 +609,18 @@ class VespaEventIndex(
     }
 
     /**
-     * Complete author scan via the document-API visit (continuation-paged),
-     * projecting only `pubkey`. [distinctAuthors]'s grouping is complete too, but
-     * it materializes every group in one response; this streams, which is what
-     * the corpus-wide guard-owner Bloom preload needs — a missed author would be
-     * a false negative.
+     * Complete author scan via the document-API visit (sliced and
+     * continuation-paged, see [visitPages]), projecting only `pubkey`.
+     * [distinctAuthors]'s grouping is complete too, but it materializes every
+     * group in one response; this streams, which is what the corpus-wide
+     * guard-owner Bloom preload needs — a missed author would be a false
+     * negative.
      */
     override suspend fun scanAuthors(query: EventQuery): Set<String> {
         val selection = EventSelection.build(query) ?: return super.scanAuthors(query)
-        val fieldSet = "$DOCTYPE:pubkey"
-        val base =
-            "${endpoint()}/document/v1/$NAMESPACE/$DOCTYPE/docid" +
-                "?selection=${URLEncoder.encode(selection, "UTF-8")}" +
-                "&wantedDocumentCount=$VISIT_PAGE&fieldSet=${URLEncoder.encode(fieldSet, "UTF-8")}"
         val authors = HashSet<String>()
-        var continuation: String? = null
-        while (true) {
-            val resp = send(continuation?.let { "$base&continuation=$it" } ?: base)
-            require(resp.statusCode() < 400) { "vespa visit ${resp.statusCode()}: ${resp.body().take(300)}" }
-            val json = Json.parseToJsonElement(resp.body()).jsonObject
-            json["documents"]?.jsonArray?.forEach { d ->
+        visitPages(selection, "$DOCTYPE:pubkey") { documents ->
+            documents.forEach { d ->
                 d.jsonObject["fields"]
                     ?.jsonObject
                     ?.get("pubkey")
@@ -552,8 +628,9 @@ class VespaEventIndex(
                     ?.content
                     ?.let { authors += it }
             }
-            continuation = json["continuation"]?.jsonPrimitive?.content ?: return authors
+            true
         }
+        return authors
     }
 
     /**
@@ -856,6 +933,12 @@ class VespaEventIndex(
 
         /** Docs asked for per visit response (Vespa's per-request ceiling is 1024). */
         const val VISIT_PAGE = 1024
+
+        /** Default parallel visit slices — see [visitSlices] for why and the env override. */
+        const val VISIT_SLICES = 8
+
+        /** Default per-request visit bucket concurrency — see [visitConcurrency]. */
+        const val VISIT_CONCURRENCY = 8
 
         /** Brief 5xx retries per query (transient engine load-shedding, not correctness). */
         const val QUERY_RETRIES = 3

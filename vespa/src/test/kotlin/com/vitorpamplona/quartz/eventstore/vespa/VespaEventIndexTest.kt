@@ -273,23 +273,39 @@ class VespaEventIndexTest {
             assertEquals(0, index.count(EventQuery(limit = 0)))
         }
 
-    /** The visit walk: the complete match set, across MULTIPLE continuation pages. */
+    /** The visit walk: the complete match set, across slices AND continuation pages. */
     @Test
-    fun `visitIds streams every match through continuation tokens`() =
+    fun `visitIds streams every match through sliced continuation walks`() =
         runBlocking {
             val bob = "b2".repeat(32)
-            seed(*(1..20).map { doc(kind = 30382, pubkey = bob) }.toTypedArray())
+            // 100 docs across the client's 8 default slices: by pigeonhole some
+            // slice holds >7 (the mock's page cap), so at least one slice MUST
+            // follow a continuation token — and the union must still be complete.
+            seed(*(1..100).map { doc(kind = 30382, pubkey = bob) }.toTypedArray())
             seed(doc(kind = 1, pubkey = bob), doc(kind = 30382)) // outside the selection
             val pages = ArrayList<List<DocRef>>()
             index.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(bob))) {
                 pages += it
                 true
             }
-            // The mock caps pages far below the requested size, so a full walk
-            // proves the client actually follows continuation tokens.
             assertEquals(true, pages.size > 1, "expected a multi-page walk, got ${pages.size} page(s)")
             val expected = reference.search(EventQuery(kinds = listOf(30382), authors = listOf(bob))).map { DocRef(it.id, it.createdAt) }
             assertEquals(expected.sortedBy { it.id }, pages.flatten().sortedBy { it.id })
+        }
+
+    /** onPage returning false stops the sliced walk early instead of scanning the whole corpus. */
+    @Test
+    fun `visitIds stops when the page callback declines to continue`() =
+        runBlocking {
+            seed(*(1..100).map { doc(kind = 30382) }.toTypedArray())
+            val got = ArrayList<DocRef>()
+            index.visitIds(EventQuery(kinds = listOf(30382))) {
+                got += it
+                false // first page is enough — a capped snapshot stopping early
+            }
+            // Exactly the one page the callback accepted; the cancelled slices
+            // must not deliver more after the stop.
+            assertEquals(true, got.isNotEmpty() && got.size < 100, "expected a partial walk, got ${got.size} of 100")
         }
 
     /** The projection's rebuild walk: d tags stream out with the ids. */

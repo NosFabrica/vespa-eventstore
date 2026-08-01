@@ -358,7 +358,18 @@ class MockVespaEngine {
         }
         val withTagIndex = fieldSet.contains("tag_index")
         val query = MockSelection.parse(selection)
-        val all = runBlocking { inner.search(query) }
+        // Sliced visiting (`slices`/`sliceId`): each slice sees a disjoint
+        // partition of the match set, so the union across all slices is exactly
+        // the whole set — the property the parallel client walk depends on.
+        // Real Vespa partitions by bucket; a stable id hash models that here.
+        val slices = params["slices"]?.toIntOrNull() ?: 1
+        val sliceId = params["sliceId"]?.toIntOrNull() ?: 0
+        if (slices < 1 || sliceId !in 0 until slices) {
+            return Reply(400, """{"message":"ILLEGAL_PARAMETERS: sliceId $sliceId of $slices slices"}""")
+        }
+        val all =
+            runBlocking { inner.search(query) }
+                .filter { Math.floorMod(it.id.hashCode(), slices) == sliceId }
         val offset = params["continuation"]?.toIntOrNull() ?: 0
         val wanted = params["wantedDocumentCount"]?.toIntOrNull() ?: 1
         val page = all.drop(offset).take(minOf(wanted, VISIT_PAGE_CAP))
