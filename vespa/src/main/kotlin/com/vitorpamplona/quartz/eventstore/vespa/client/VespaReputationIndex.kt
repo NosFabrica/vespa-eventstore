@@ -20,8 +20,6 @@
  */
 package com.vitorpamplona.quartz.eventstore.vespa.client
 import ai.vespa.feed.client.DocumentId
-import ai.vespa.feed.client.FeedClient
-import ai.vespa.feed.client.FeedClientBuilder
 import ai.vespa.feed.client.OperationParameters
 import com.vitorpamplona.quartz.eventstore.vespa.doc.ReputationCells
 import com.vitorpamplona.quartz.eventstore.vespa.doc.ReputationDoc
@@ -30,47 +28,22 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
-import java.net.URI
-import java.net.http.HttpClient
-import java.net.http.HttpRequest
-import java.net.http.HttpResponse
 import java.time.Duration
-import java.util.concurrent.Executors
 
-/** The real [ReputationIndex]: the `reputation` document type over Vespa HTTP (same wiring as [VespaEventIndex]). */
+/**
+ * The real [ReputationIndex]: the `reputation` document type over Vespa HTTP —
+ * literally the same wiring as [VespaEventIndex]: writes through [VespaFeed],
+ * reads through [VespaHttp].
+ */
 class VespaReputationIndex(
     private val baseUrl: String = System.getenv("VESPA_URL") ?: "http://localhost:8080",
 ) : ReputationIndex {
-    private val feed: FeedClient =
-        FeedClientBuilder
-            .create(URI.create(baseUrl))
-            // Bulk ingest keeps thousands of puts in flight; the defaults
-            // (one connection, a slow-ramping throttle window) cap effective
-            // concurrency in the single digits and starve a local engine.
-            .setConnectionsPerEndpoint(8)
-            .setMaxStreamPerConnection(256)
-            .setRetryStrategy(
-                object : FeedClient.RetryStrategy {
-                    override fun retries() = 5
-                },
-            ).build()
+    private val feed = VespaFeed(listOf(baseUrl))
 
-    private val http =
-        HttpClient
-            .newBuilder()
-            .connectTimeout(Duration.ofSeconds(5))
-            .proxy(java.net.ProxySelector.of(null))
-            .executor(Executors.newVirtualThreadPerTaskExecutor())
-            .build()
+    private val http = VespaHttp()
 
     override suspend fun get(pubkey: String): ReputationDoc? {
-        val req =
-            HttpRequest
-                .newBuilder(URI.create("$baseUrl/document/v1/$NAMESPACE/$DOCTYPE/docid/$pubkey"))
-                .timeout(Duration.ofSeconds(30))
-                .GET()
-                .build()
-        val resp = http.sendAsync(req, HttpResponse.BodyHandlers.ofString()).await()
+        val resp = http.get("$baseUrl/document/v1/$NAMESPACE/$DOCTYPE/docid/$pubkey")
         if (resp.statusCode() == 404) return null
         require(resp.statusCode() < 400) { "vespa reputation get ${resp.statusCode()}: ${resp.body().take(300)}" }
         val fields = Json.parseToJsonElement(resp.body()).jsonObject["fields"]?.jsonObject ?: return null
@@ -78,7 +51,7 @@ class VespaReputationIndex(
     }
 
     private fun putOp(reputation: ReputationDoc) =
-        feed.put(
+        feed.client.put(
             DocumentId.of(NAMESPACE, DOCTYPE, reputation.pubkey),
             buildJsonObject { put("fields", reputation.indexFields()) }.toString(),
             feedParams(),
@@ -112,7 +85,7 @@ class VespaReputationIndex(
                             put("follower_counts", buildJsonObject { put("add", buildJsonObject { put("cells", buildJsonObject { put(u.observer, f) }) }) })
                         }
                     }
-                feed.update(
+                feed.client.update(
                     DocumentId.of(NAMESPACE, DOCTYPE, u.subject),
                     buildJsonObject { put("fields", fields) }.toString(),
                     feedParams().createIfNonExistent(true),
@@ -121,10 +94,10 @@ class VespaReputationIndex(
     }
 
     override suspend fun remove(pubkey: String) {
-        feed.remove(DocumentId.of(NAMESPACE, DOCTYPE, pubkey), feedParams()).await()
+        feed.client.remove(DocumentId.of(NAMESPACE, DOCTYPE, pubkey), feedParams()).await()
     }
 
-    override fun close() = feed.close(true)
+    override fun close() = feed.close()
 
     private companion object {
         const val NAMESPACE = "reputation"
