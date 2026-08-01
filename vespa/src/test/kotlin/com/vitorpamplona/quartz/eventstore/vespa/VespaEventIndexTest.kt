@@ -316,6 +316,29 @@ class VespaEventIndexTest {
         }
 
     /**
+     * Vespa documents that a match-phase-limited query can return FEWER hits
+     * than requested on an unevenly distributed corpus, with no automatic
+     * re-run. A short match-phase page silently served would under-deliver a
+     * REQ — the client must rerun it unranked and serve the exact answer.
+     */
+    @Test
+    fun `match-phase under-delivery is rerun exact, not served short`() =
+        runBlocking {
+            seed(*(1..8).map { doc(kind = 1) }.toTypedArray())
+            mock.matchPhaseUnderdeliver = 2 // recency answers 2 hits, degraded
+            try {
+                val hits = index.search(EventQuery(kinds = listOf(1), limit = 6))
+                assertEquals(
+                    reference.search(EventQuery(kinds = listOf(1), limit = 6)).map { it.id },
+                    hits.map { it.id },
+                    "a short degraded page must be rerun exact, not served",
+                )
+            } finally {
+                mock.matchPhaseUnderdeliver = 0
+            }
+        }
+
+    /**
      * A serving schema that predates the `recency` profile answers 400 to it —
      * the client must demote that query to unranked, serve the REQ, and
      * remember (no second 400), never fail the caller.

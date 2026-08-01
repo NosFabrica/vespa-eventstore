@@ -433,8 +433,12 @@ class VespaEventIndex(
             attempt(demoteRecency(q))
         } catch (e: IllegalArgumentException) {
             // queryBody's status guard is a require(), hence IllegalArgument.
+            // No flag check here: an attempt that actually ran demoted was
+            // unranked and can never 400 naming the profile, so this match
+            // already proves the attempt used it — and re-reading the flag
+            // would race a concurrent query's flip into a spurious failure.
             val missingProfile = e.message?.contains("400") == true && e.message?.contains(EventYql.RANK_RECENCY) == true
-            if (!recencyProfileAvailable || !EventYql.usesRecencyProfile(q) || !missingProfile) throw e
+            if (!EventYql.usesRecencyProfile(q) || !missingProfile) throw e
             recencyProfileAvailable = false
             attempt(demoteRecency(q))
         }
@@ -448,15 +452,37 @@ class VespaEventIndex(
         // results are identical to the search path.
         if (query.isPureIdLookup()) return getByIds(query)
         return recencySafe(planRecency(query)) { q ->
-            val vq = EventYql.build(q) ?: return@recencySafe emptyList()
             // Stream the hits straight into docs (no full JsonElement tree): the
             // response is decoded into flat DTOs, allocating the target objects
             // directly instead of a JsonObject/JsonArray/JsonPrimitive wrapper per
             // field. This is the query hot path, so that saved garbage matters.
-            searchRoot(vq, hits = hitsFor(q))
-                .children
-                .mapNotNull { it.fields?.toDoc() }
+            recallRoot(q)?.children?.mapNotNull { it.fields?.toDoc() } ?: emptyList()
         }
+    }
+
+    /**
+     * The recall query, guarded against match-phase UNDER-DELIVERY. Vespa
+     * documents that a match-phase-limited query "risk[s] sometimes getting
+     * less than the configured hits back" on unevenly distributed corpora, and
+     * it does NOT re-run on its own — so a `recency`-profile response that is
+     * match-phase-degraded AND short of the limit is rerun `unranked` (exact).
+     * A degraded response with a FULL page needs no rerun: everything the cut
+     * excluded is older than everything returned, so a full page IS the exact
+     * top-`limit`. This is what makes accepting match-phase degradation sound
+     * for every filter shape, skewed ones included — the degradation can cost
+     * a second query, never a result.
+     */
+    private suspend fun recallRoot(q: EventQuery): SearchRoot? {
+        val vq = EventYql.build(q) ?: return null
+        val root = searchRoot(vq, hits = hitsFor(q))
+        if (vq.ranking == EventYql.RANK_RECENCY &&
+            root.coverage.matchPhaseDegraded &&
+            root.children.size < (q.limit ?: 0)
+        ) {
+            val exact = EventYql.build(q.copy(ranking = EventYql.RANK_UNRANKED)) ?: return root
+            return searchRoot(exact, hits = hitsFor(q))
+        }
+        return root
     }
 
     /**
@@ -470,10 +496,7 @@ class VespaEventIndex(
     override suspend fun rawSearch(query: EventQuery): List<RawEvent> {
         if (query.isPureIdLookup()) return getByIds(query).map { it.toRawEvent() }
         return recencySafe(planRecency(query)) { q ->
-            val vq = EventYql.build(q) ?: return@recencySafe emptyList()
-            searchRoot(vq, hits = hitsFor(q))
-                .children
-                .mapNotNull { it.fields?.toRaw() }
+            recallRoot(q)?.children?.mapNotNull { it.fields?.toRaw() } ?: emptyList()
         }
     }
 
@@ -526,8 +549,17 @@ class VespaEventIndex(
             if (q.since != null && since <= q.since) return q
             // A failed probe (degraded coverage, transient error) just means
             // "don't window" — planning is an optimization, and the real query
-            // still carries its own guarantees.
-            val matches = runCatching { count(q.copy(since = since, limit = null)) }.getOrNull() ?: return q
+            // still carries its own guarantees. Cancellation is NOT a failed
+            // probe: swallowing it would enqueue one more engine request on a
+            // job that is already dead.
+            val matches =
+                try {
+                    count(q.copy(since = since, limit = null))
+                } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    return q
+                }
             if (matches >= q.limit!!) return q.copy(since = since)
         }
         return q
@@ -766,27 +798,42 @@ class VespaEventIndex(
         while (true) {
             val url = token?.let { "$base&continuation=$it" } ?: base
             uncertified.clear()
+            var thrown: IOException? = null
             val end =
                 try {
                     streamOnce(url, into = uncertified, onContinuation = { certify(it) })
                 } catch (e: IOException) {
                     currentCoroutineContext().ensureActive()
-                    if (++failures > QUERY_RETRIES) throw e
-                    delay(500L * failures)
+                    thrown = e
                     StreamEnd.INTERRUPTED
                 }
             when (end) {
                 StreamEnd.COMPLETE -> {
+                    // A conforming stream has nothing uncertified after its
+                    // final marker; if put lines ever trail it, deliver them
+                    // rather than silently dropping real docs.
+                    certify(null)
                     return true
                 }
 
-                // Loop again: the next request resumes from the last certified token.
-                StreamEnd.INTERRUPTED -> {}
+                // Resume from the last certified token — but on a BUDGET even
+                // when the stream ended without an exception (a clean close or
+                // truncated line before the final marker): with no token
+                // advance, an unbudgeted loop would replay the identical
+                // request forever against a server that keeps doing it.
+                // Progress resets the count (see [certify]).
+                StreamEnd.INTERRUPTED -> {
+                    if (++failures > QUERY_RETRIES) {
+                        throw thrown ?: IOException("vespa streamed visit slice $sliceId kept ending without progress")
+                    }
+                    delay(500L * failures)
+                }
 
                 StreamEnd.NOT_JSONL -> {
                     // Only a fallback signal while nothing has been consumed;
-                    // mid-walk it is a server misbehaving, not a version gap.
-                    require(token == null && !delivered) { "vespa streamed visit stopped answering JSON Lines mid-walk" }
+                    // mid-walk it is a server misbehaving (or a refused resume
+                    // request), not a version gap.
+                    check(token == null && !delivered) { "vespa streamed visit refused mid-walk (400 or non-JSONL answer after progress)" }
                     return false
                 }
             }
@@ -819,9 +866,13 @@ class VespaEventIndex(
                 )
             // The guard aborts the blocking read when this coroutine is
             // cancelled (early stop, sibling failure) — after normal completion
-            // its cancel() is a no-op on the finished call.
+            // its cancel() is a no-op on the finished call. UNCONFINED, not the
+            // surrounding IO dispatcher: the abort must not wait for an IO
+            // thread when every IO thread is exactly what's parked in these
+            // blocking reads (many slices, wedged node) — unconfined runs the
+            // finally on the cancelling thread immediately.
             val guard =
-                launch(start = CoroutineStart.UNDISPATCHED) {
+                launch(Dispatchers.Unconfined, start = CoroutineStart.UNDISPATCHED) {
                     try {
                         awaitCancellation()
                     } finally {
@@ -1261,7 +1312,11 @@ class VespaEventIndex(
         val full: Boolean = true,
         val coverage: Int = 100,
         val degraded: JsonObject? = null,
-    )
+    ) {
+        /** The engine cut the match phase — the one degradation [recallRoot] may act on rather than refuse. */
+        val matchPhaseDegraded: Boolean
+            get() = (degraded?.get("match-phase") as? JsonPrimitive)?.content == "true"
+    }
 
     @Serializable
     private class SearchHit(

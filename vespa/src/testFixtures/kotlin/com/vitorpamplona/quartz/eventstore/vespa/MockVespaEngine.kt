@@ -102,6 +102,16 @@ class MockVespaEngine {
     @Volatile var rejectRecencyProfile: Boolean = false
 
     /**
+     * Answer `ranking=recency` queries with only this many hits, marked
+     * match-phase-degraded — real Vespa's documented under-delivery on an
+     * unevenly distributed corpus ("you risk sometimes getting less than the
+     * configured hits back", with no automatic re-run). The client must rerun
+     * the query unranked instead of serving the short page. Unranked queries
+     * are untouched, so the rerun sees the true answer. 0 = off.
+     */
+    @Volatile var matchPhaseUnderdeliver: Int = 0
+
+    /**
      * Cut the NEXT streamed visit response after this many put lines,
      * mid-bucket and without a final marker — a broken connection. The client
      * must resume from the last continuation token it saw and deliver the
@@ -255,6 +265,10 @@ class MockVespaEngine {
         val grouped = isCount || isDistinct || isKindHistogram
         val query = MockYql.parse(yql.substringBefore("|").trim(), params).let { if (grouped) it.copy(limit = null) else it }
         val matches = runBlocking { inner.search(query) }
+        // Simulated match-phase under-delivery: fewer hits than the limit, with
+        // ONLY the match-phase degradation flag set (see [matchPhaseUnderdeliver]).
+        val underdeliver = matchPhaseUnderdeliver > 0 && !grouped && params["ranking"] == "recency"
+        val served = if (underdeliver) minOf(matchPhaseUnderdeliver, hits) else hits
         val children =
             when {
                 // Nest count() under the group list, exactly where real Vespa's
@@ -265,7 +279,7 @@ class MockVespaEngine {
 
                 isCount -> countChildren(matches.size)
 
-                else -> JsonArray(matches.take(hits).map { doc -> buildJsonObject { put("fields", doc.indexFields()) } })
+                else -> JsonArray(matches.take(served).map { doc -> buildJsonObject { put("fields", doc.indexFields()) } })
             }
         val root =
             buildJsonObject {
@@ -273,13 +287,33 @@ class MockVespaEngine {
                     "root",
                     buildJsonObject {
                         put("fields", buildJsonObject { put("totalCount", JsonPrimitive(matches.size)) })
-                        put("coverage", coverage(matches.size))
+                        put("coverage", if (underdeliver) matchPhaseCoverage(matches.size) else coverage(matches.size))
                         put("children", children)
                     },
                 )
             }
         return Reply(200, root.toString())
     }
+
+    /** Real Vespa's match-phase coverage: full=false, all flags listed, only match-phase set. */
+    private fun matchPhaseCoverage(documents: Int): JsonObject =
+        buildJsonObject {
+            put("coverage", JsonPrimitive(1))
+            put("documents", JsonPrimitive(documents))
+            put("full", JsonPrimitive(false))
+            put("nodes", JsonPrimitive(1))
+            put("results", JsonPrimitive(1))
+            put("resultsFull", JsonPrimitive(0))
+            put(
+                "degraded",
+                buildJsonObject {
+                    put("match-phase", JsonPrimitive(true))
+                    put("timeout", JsonPrimitive(false))
+                    put("adaptive-timeout", JsonPrimitive(false))
+                    put("non-ideal-state", JsonPrimitive(false))
+                },
+            )
+        }
 
     /**
      * The coverage block real Vespa puts on every search response. Complete unless

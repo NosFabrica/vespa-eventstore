@@ -127,7 +127,9 @@ class VespaCoverageTest {
             index.put(doc("1".repeat(64)))
             mock.degradeCoverage = "match-phase"
 
-            val hits = index.search(EventQuery(limit = 10))
+            // limit == page: a FULL degraded page is provably the exact top-limit
+            // and is served as-is (a SHORT one is rerun exact — separate test).
+            val hits = index.search(EventQuery(limit = 1))
             assertEquals(1, hits.size, "the opted-in match-phase cut must be served, not refused")
         }
 
