@@ -484,7 +484,11 @@ class VespaEventIndex(
             // An existing `since` at least this tight makes the rung (and any
             // wider one) pointless — the query is already windowed.
             if (q.since != null && since <= q.since) return q
-            if (count(q.copy(since = since, limit = null)) >= q.limit!!) return q.copy(since = since)
+            // A failed probe (degraded coverage, transient error) just means
+            // "don't window" — planning is an optimization, and the real query
+            // still carries its own guarantees.
+            val matches = runCatching { count(q.copy(since = since, limit = null)) }.getOrNull() ?: return q
+            if (matches >= q.limit!!) return q.copy(since = since)
         }
         return q
     }
@@ -989,7 +993,7 @@ class VespaEventIndex(
         DECODER
             .decodeFromString<SearchEnvelope>(queryBody(vq, hits))
             .root
-            .also { it.coverage.requireComplete() }
+            .also { it.coverage.requireComplete(allowMatchPhase = vq.ranking == EventYql.RANK_RECENCY) }
 
     /** The grouping/count paths need the full tree; [searchRoot] does not (it decodes hits directly). */
     private suspend fun queryRoot(
@@ -1010,12 +1014,26 @@ class VespaEventIndex(
      * path it silently under-delivers; on a write path it is worse, because the
      * dedup and NIP-09/62 guards decide by "did the query find it" and a partial
      * answer resurrects a deleted event. So it fails loudly instead.
+     *
+     * ONE deliberate exception: [allowMatchPhase]. The `recency` profile ASKS
+     * the engine to cut the match phase to the newest ~max-hits candidates
+     * (see [EventYql.RANK_RECENCY]) — for that profile, match-phase degradation
+     * is the optimization working as designed, with a 10x limit-to-max-hits
+     * margin keeping the returned top-`limit` intact. Any OTHER degradation
+     * (timeout, non-ideal-state), or match-phase on a query that didn't opt in,
+     * is still refused.
      */
-    private fun SearchCoverage.requireComplete() =
-        require(full) {
+    private fun SearchCoverage.requireComplete(allowMatchPhase: Boolean = false) {
+        if (full) return
+        // Vespa lists every degradation flag, false ones included — judge by
+        // the flags that are actually SET, not by key presence.
+        val set = degraded?.mapValues { (it.value as? JsonPrimitive)?.content == "true" }.orEmpty()
+        val onlyMatchPhase = set["match-phase"] == true && set.none { (flag, on) -> on && flag != "match-phase" }
+        require(allowMatchPhase && onlyMatchPhase) {
             "vespa searched only $coverage% of the corpus (degraded: ${degraded ?: "unspecified"}); " +
                 "the response is a PARTIAL answer, not a small one, so it is refused rather than returned"
         }
+    }
 
     /**
      * Rebuild a doc from the decoded summary. `tags` is the one field still parsed

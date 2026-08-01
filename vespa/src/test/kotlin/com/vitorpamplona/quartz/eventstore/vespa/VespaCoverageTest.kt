@@ -114,4 +114,33 @@ class VespaCoverageTest {
                 "an aggregation over part of the corpus is not the aggregation that was asked for",
             )
         }
+
+    /**
+     * The ONE accepted degradation: a limit'd unranked query rides the
+     * `recency` match-phase profile, which ASKS the engine to cut the match
+     * phase — that cut arriving as match-phase-degraded coverage is the
+     * optimization working, not a partial answer.
+     */
+    @Test
+    fun `match-phase degradation is accepted for the limit'd recency shape`() =
+        runBlocking {
+            index.put(doc("1".repeat(64)))
+            mock.degradeCoverage = "match-phase"
+
+            val hits = index.search(EventQuery(limit = 10))
+            assertEquals(1, hits.size, "the opted-in match-phase cut must be served, not refused")
+        }
+
+    /** The carve-out is match-phase ONLY — a timeout on the same limit'd shape is still a partial answer. */
+    @Test
+    fun `a timeout partial is refused even on the limit'd recency shape`() =
+        runBlocking {
+            index.put(doc("1".repeat(64)))
+            mock.degradeCoverage = "timeout"
+
+            assertTrue(
+                runCatching { index.search(EventQuery(limit = 10)) }.isFailure,
+                "timeout degradation must not slip through the match-phase carve-out",
+            )
+        }
 }

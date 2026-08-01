@@ -620,4 +620,24 @@ schema event {
             rerank-count: 1000
         }
     }
+
+    # Bare recency scans (limit'd, unranked, no selective term) that the
+    # count-guarded query planner could not window: instead of ranking EVERY
+    # posting the kinds match (~100ms per million) to keep the newest few,
+    # match-phase keeps only the ~max-hits newest candidates DURING matching.
+    # The client sends this profile only when limit is far below max-hits
+    # (10x margin), so the requested top-`limit` survives the cut; the
+    # response is marked match-phase-degraded, which the client accepts for
+    # exactly this profile and refuses everywhere else. Counts and guards
+    # never use it — they keep exact coverage.
+    rank-profile recency {
+        match-phase {
+            attribute: created_at
+            order: descending
+            max-hits: 20000
+        }
+        first-phase {
+            expression: attribute(created_at)
+        }
+    }
 }
