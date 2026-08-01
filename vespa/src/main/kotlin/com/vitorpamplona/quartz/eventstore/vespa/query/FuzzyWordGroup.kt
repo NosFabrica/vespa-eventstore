@@ -20,6 +20,8 @@
  */
 package com.vitorpamplona.quartz.eventstore.vespa.query
 
+import com.vitorpamplona.quartz.eventstore.vespa.NearText
+
 /**
  * Per-word recall, extended with the generic tier fields. This is the
  * drift-prone half of [EventYql]. It must stay in lockstep with the schema's
@@ -32,9 +34,13 @@ package com.vitorpamplona.quartz.eventstore.vespa.query
  * queries: a joined-CamelCase variant for 2+ words ("John Carvalho" finds
  * @johncarvalho), and adjacent-pair concatenations for 3+ words.
  *
- * Words go out-of-band as @w0..@wN / @wj / @wp0.. query parameters, never
- * inlined, so no escaping is needed. The trigram literals are filtered to
- * alphanumeric characters, which makes them safe to embed.
+ * Words go out-of-band as query parameters, never inlined, so no escaping is
+ * needed: @w0..@wN carry the words AS TYPED (for the exact clauses, whose
+ * index fields run Vespa's own linguistic folding) and @f0..@fN carry the
+ * [NearText.foldWord]-folded forms (for the near clauses, whose ATTRIBUTE
+ * fields match raw bytes — the fold must match the feed's, or "jose" can
+ * never reach "josé"). The trigram literals are filtered to alphanumeric
+ * characters, which makes them safe to embed.
  *
  * PREFIX / FUZZY are DIRECT terms against the schema's *_parts / *_tokens
  * attribute fields — never annotations on `userInput()`. Ported from
@@ -50,19 +56,31 @@ package com.vitorpamplona.quartz.eventstore.vespa.query
  *
  * Cause 1 masked cause 2 by turning it into a no-op, which is why "Ode" and
  * "Odel" could never find "ODELL" and nothing ever surfaced. Fields without an
- * attribute sibling (about/website/nip05/lud16, the secondary tiers) stay
- * exact-only: a prefix or fuzzy term against them is an ERROR, not a no-op.
+ * attribute sibling (about/website/nip05/lud16) stay exact-only: a prefix or
+ * fuzzy term against them is an ERROR, not a no-op.
  */
 internal object FuzzyWordGroup {
     /**
-     * The attribute fields prefix/fuzzy terms match against (see event.sd).
-     * name_parts/name_tokens merge name + display_name; the search_primary
-     * pair is the generic-tier twin (titles/subjects). Both granularities are
-     * load-bearing: *_parts splits at every word start ("meme" finds
-     * "BitcoinMemeTreasury"), *_tokens keeps whole tokens ("vitorp" still
-     * prefixes "vitorpamplona", which *_parts alone regresses).
+     * The attribute fields prefix AND fuzzy terms match against (see
+     * event.sd; fed by NearText). name_parts/name_tokens merge name +
+     * display_name; the search_primary pair is the generic-tier twin. Both
+     * granularities are load-bearing: *_parts splits at every word start
+     * ("meme" finds "BitcoinMemeTreasury"), *_tokens keeps whole tokens plus
+     * their joined variants ("vitorp" prefixes "vitorpamplona" for
+     * "VitorPamplona", "Vitor-Pamplona" and "Vitor Pamplona" alike).
      */
     val NEAR_FIELDS = listOf("name_parts", "name_tokens", "search_primary_parts", "search_primary_tokens")
+
+    /**
+     * Prefix-ONLY attribute fields: hashtag/summary tokens ("bitco" ->
+     * #bitcoin). No fuzzy — secondary text builds a much larger dictionary
+     * than names do, and a typo'd hashtag is not a query shape worth the
+     * dictionary walk. Scored by the schema's WEAK tier, not the near tier.
+     */
+    val PREFIX_ONLY_FIELDS = listOf("search_secondary_tokens")
+
+    /** Every attribute field the near/weak clauses can reference — the client's compatibility net matches 400s against these names. */
+    val ALL_NEAR_FIELDS = NEAR_FIELDS + PREFIX_ONLY_FIELDS
 
     /**
      * Hard ceiling on typos: a hit needing more edits is not matched at all.
@@ -88,32 +106,24 @@ internal object FuzzyWordGroup {
     const val MIN_PREFIX_LEN_NON_ASCII = 2
 
     /**
-     * Trigram recall on the NAME-side OR nets — OFF, following upstream.
-     *
-     * [orGramClause] ORs every trigram of a word, so ANY doc sharing a single
-     * 3-character sequence matched: "ode" recalled "model" and "code". It was
-     * the one matcher with NO bound on how different a hit could be, and no
-     * typo budget can constrain it — it existed to paper over prefix/fuzzy
-     * being broken. TRADE-OFF: this drops INFIX matching ("dell" no longer
-     * finds "ODELL"); prefix anchors at the start and fuzzy keeps
-     * prefixLength:2. Flip back to true to trade the edit-distance bound for
-     * that recall — the *_gram fields stay in the schema either way, and the
-     * profiles' bm25(*_gram) terms simply read 0 while this is off.
-     *
-     * The AND nets (about_gram/search_secondary_gram) are unaffected: those
-     * fields have no prefix/fuzzy path, and their clause ANDs every trigram —
-     * far tighter than this OR — gated by [MIN_AND_GRAMS].
+     * Minimum AND'd trigrams for the NAME-side infix nets (word >= 4 chars).
+     * AND-of-trigrams is a near-substring test whose selectivity grows with
+     * the query — "dell" (del ∧ ell) reaches ODELL without the unbounded OR
+     * net's noise ("ode" pulled in "model" and "code"; the OR net is gone).
+     * 2 is the floor that keeps "dell"-length infixes reachable; the schema
+     * scores these hits in the WEAK tier, under every anchored match.
      */
-    const val NAME_GRAM_RECALL = false
+    const val MIN_AND_GRAMS_NAME = 2
 
     /**
-     * Minimum trigrams before an AND net is worth emitting (a word of length L
-     * yields L-2 trigrams, so this is "word >= 5 chars"). At one or two
-     * trigrams the AND degenerates into a bare substring test with no bound at
-     * all — upstream measured "ode" reaching a bio reading "hosted by ODELL".
-     * Short words still reach those fields through their exact clause.
+     * Minimum AND'd trigrams for the long-TEXT nets (about_gram /
+     * search_secondary_gram; word >= 5 chars). Long fields contain far more
+     * trigrams, so at one or two the AND degenerates into a bare substring
+     * test — upstream measured "ode" reaching a bio reading "hosted by
+     * ODELL". Short words still reach those fields through their exact
+     * clause.
      */
-    const val MIN_AND_GRAMS = 3
+    const val MIN_AND_GRAMS_TEXT = 3
 
     /** All word groups OR'd into one parenthesized clause, filling [params] with the out-of-band words. */
     fun clause(
@@ -124,18 +134,18 @@ internal object FuzzyWordGroup {
         val groups = ArrayList<String>()
         words.forEachIndexed { i, word ->
             params["w$i"] = word
-            groups += wordGroup("@w$i", word, synthetic = false, nearFields = nearFields)
+            groups += wordGroup("w$i", word, params, synthetic = false, nearFields = nearFields)
         }
         if (words.size >= 2) {
             val joined = words.joinToString("")
             params["wj"] = joined
-            groups += wordGroup("@wj", joined, synthetic = true, nearFields = nearFields)
+            groups += wordGroup("wj", joined, params, synthetic = true, nearFields = nearFields)
         }
         if (words.size >= 3) {
             for (i in 0 until words.size - 1) {
                 val pair = words[i] + words[i + 1]
                 params["wp$i"] = pair
-                groups += wordGroup("@wp$i", pair, synthetic = true, nearFields = nearFields)
+                groups += wordGroup("wp$i", pair, params, synthetic = true, nearFields = nearFields)
             }
         }
         return "(${groups.joinToString(" or ")})"
@@ -146,7 +156,8 @@ internal object FuzzyWordGroup {
 
     /**
      * One word's match clauses: the exact clause per search field, the direct
-     * prefix/fuzzy terms against [NEAR_FIELDS], and the AND-gram nets.
+     * prefix/fuzzy terms against the near attributes, the prefix-only
+     * hashtag/summary clause, and the AND-gram nets.
      *
      * [synthetic] marks the joined / adjacent-pair CONCATENATIONS built in
      * [clause], not words the user typed. They get exact + prefix but NO fuzzy
@@ -157,25 +168,36 @@ internal object FuzzyWordGroup {
      * → @vitorpamplona), so it stays. The concatenation's trigrams are a
      * superset of the words' own, so the nets would add noise without reach.
      *
-     * [nearFields] off drops the prefix/fuzzy clauses entirely — the
-     * compatibility demotion for a serving schema that predates the *_parts/
-     * *_tokens attributes, where any reference to them is HTTP 400 (see
-     * VespaEventIndex.nearSafe).
+     * [nearFields] off drops every clause that references the near/weak
+     * attribute fields — the compatibility demotion for a serving schema that
+     * predates them, where any reference is HTTP 400 (see
+     * VespaEventIndex.nearSafe). The gram nets are NOT gated: the *_gram
+     * fields predate the near tier and exist on every deployed schema.
      */
     private fun wordGroup(
-        param: String,
+        name: String,
         literal: String,
+        params: MutableMap<String, String>,
         synthetic: Boolean,
         nearFields: Boolean,
     ): String {
         val clauses = ArrayList<String>()
-        for (field in SEARCH_FIELDS) clauses += exactClause(field, param, roleOf(field))
-        if (nearFields) clauses += nearClauses(param, literal, allowFuzzy = !synthetic)
+        for (field in SEARCH_FIELDS) clauses += exactClause(field, "@$name", roleOf(field))
+        if (nearFields) {
+            // The folded twin rides out-of-band too, under the f-prefixed name.
+            // Floors and budgets are computed on the FOLDED form — that is the
+            // string the attribute dictionaries actually hold.
+            val folded = NearText.foldWord(literal)
+            params["f$name"] = folded
+            clauses += nearClauses("@f$name", folded, allowFuzzy = !synthetic)
+        }
         if (!synthetic) {
-            if (NAME_GRAM_RECALL) {
-                for (gramField in OR_GRAM_FIELDS) orGramClause(literal, gramField)?.let { clauses += it }
+            for (gramField in INFIX_GRAM_FIELDS) {
+                andGramClause(literal, gramField, MIN_AND_GRAMS_NAME)?.let { clauses += it }
             }
-            for (gramField in AND_GRAM_FIELDS) andGramClause(literal, gramField)?.let { clauses += it }
+            for (gramField in TEXT_GRAM_FIELDS) {
+                andGramClause(literal, gramField, MIN_AND_GRAMS_TEXT)?.let { clauses += it }
+            }
         }
         return "(${clauses.joinToString(" or ")})"
     }
@@ -203,11 +225,13 @@ internal object FuzzyWordGroup {
     }
 
     /**
-     * The direct prefix + fuzzy terms for one word, against [NEAR_FIELDS].
-     * Emitted ONCE per word (not per source field) because the attribute
-     * fields already merge their sources. These feed matchCount(name_parts)/…,
-     * i.e. the schema's near tier — which is how an exact hit still ranks
-     * above a prefix or typo hit.
+     * The direct prefix + fuzzy terms for one FOLDED word, against the near
+     * attributes. Emitted ONCE per word (not per source field) because the
+     * attribute fields already merge their sources. These feed
+     * matchCount(name_parts)/…, i.e. the schema's near tier — which is how an
+     * exact hit still ranks above a prefix or typo hit. The prefix-only
+     * hashtag/summary field feeds matchCount(search_secondary_tokens), the
+     * schema's weak tier.
      *
      * prefixLength:2 — the first two characters must match exactly, which also
      * bounds how much of the attribute dictionary the fuzzy matcher walks.
@@ -218,14 +242,15 @@ internal object FuzzyWordGroup {
      */
     private fun nearClauses(
         param: String,
-        literal: String,
+        folded: String,
         allowFuzzy: Boolean,
     ): List<String> {
         val clauses = ArrayList<String>()
-        if (literal.length >= minPrefixLen(literal)) {
+        if (folded.length >= minPrefixLen(folded)) {
             for (field in NEAR_FIELDS) clauses += "($field contains ({prefix:true}$param))"
+            for (field in PREFIX_ONLY_FIELDS) clauses += "($field contains ({prefix:true}$param))"
         }
-        val edits = if (allowFuzzy) wordMaxEdits(literal) else 0
+        val edits = if (allowFuzzy) wordMaxEdits(folded) else 0
         if (edits > 0) {
             for (field in NEAR_FIELDS) clauses += "($field contains ({maxEditDistance:$edits,prefixLength:2}fuzzy($param)))"
         }
@@ -234,33 +259,22 @@ internal object FuzzyWordGroup {
 
     private fun minPrefixLen(word: String): Int = if (word.all { it.code < 128 }) MIN_PREFIX_LEN else MIN_PREFIX_LEN_NON_ASCII
 
-    /** OR of the word's trigrams against a gram field — unbounded infix recall, kept behind [NAME_GRAM_RECALL]. */
-    private fun orGramClause(
-        word: String,
-        gramField: String,
-    ): String? {
-        val grams = trigrams(word.lowercase()).distinct().sorted()
-        if (grams.isEmpty()) return null
-        return grams.joinToString(" or ", prefix = "(", postfix = ")") { "$gramField contains \"$it\"" }
-    }
-
     /**
-     * AND of the word's trigrams against a discriminative gram field (every
-     * trigram must be present, unlike the OR nets). Used for the long
-     * free-text fields — `about` and the generic `search_secondary` — where an
-     * OR net would recall too much noise. Gated by [MIN_AND_GRAMS]: fewer
-     * trigrams than that and the AND is a bare substring test.
+     * AND of the word's trigrams against a gram field — every trigram must be
+     * present, a bounded near-substring test. [minGrams] separates the tight
+     * name-side infix nets ([MIN_AND_GRAMS_NAME]) from the long-text nets
+     * ([MIN_AND_GRAMS_TEXT]); below the floor no clause is emitted at all.
      */
     private fun andGramClause(
         word: String,
         gramField: String,
+        minGrams: Int,
     ): String? {
-        // Lowercase like every other gram net (orGramClause): the *_gram fields
-        // are lowercase-indexed, so uppercased trigrams from a capitalized query
-        // word ("Vitor") would never match and this discriminative net would go
-        // silently dead for mixed-case input — the common case for names.
+        // Lowercase: the *_gram fields are lowercase-indexed, so uppercased
+        // trigrams from a capitalized query word ("Vitor") would never match
+        // and the net would go silently dead for mixed-case input.
         val grams = trigrams(word.lowercase())
-        if (grams.size < MIN_AND_GRAMS) return null
+        if (grams.size < minGrams) return null
         return grams.joinToString(" and ", prefix = "(", postfix = ")") { "$gramField contains \"$it\"" }
     }
 
@@ -317,7 +331,13 @@ internal object FuzzyWordGroup {
     private val SEARCH_FIELDS =
         listOf("name", "display_name", "about", "nip05", "lud16", "website", "search_primary", "search_secondary", "search_text", "search_location")
 
-    private val OR_GRAM_FIELDS = listOf("name_gram", "display_name_gram", "search_primary_gram")
+    /**
+     * The name-side gram fields, now matched ONLY by the tight AND net (the
+     * unbounded OR net — anything sharing one trigram — is gone for good;
+     * "ode" recalled "model" and "code" through it). matchCount on these
+     * feeds the schema's weak tier via infix_gram_match().
+     */
+    private val INFIX_GRAM_FIELDS = listOf("name_gram", "display_name_gram", "search_primary_gram")
 
-    private val AND_GRAM_FIELDS = listOf("about_gram", "search_secondary_gram")
+    private val TEXT_GRAM_FIELDS = listOf("about_gram", "search_secondary_gram")
 }

@@ -19,6 +19,7 @@
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 package com.vitorpamplona.quartz.eventstore.vespa.doc
+import com.vitorpamplona.quartz.eventstore.vespa.NearText
 import com.vitorpamplona.quartz.eventstore.vespa.WHITESPACE
 
 /**
@@ -54,20 +55,11 @@ data class SearchFields(
     val text: String? = null,
     val location: String? = null,
 ) {
-    /**
-     * Schema field name -> value, for the doc field map. Nulls are omitted —
-     * EXCEPT that name and display_name are written as a PAIR: the schema's
-     * derived name_parts/name_tokens attributes concatenate both
-     * (`input name . " " . input display_name`), and a null input nulls the
-     * whole expression, which would silently drop the doc from prefix/fuzzy
-     * matching. Whenever either is present, the missing sibling is fed as "".
-     */
+    /** Schema field name -> value, for the doc field map. Nulls are omitted. */
     fun fields(): Map<String, String> =
         buildMap {
-            if (name != null || displayName != null) {
-                put("name", name.orEmpty())
-                put("display_name", displayName.orEmpty())
-            }
+            name?.let { put("name", it) }
+            displayName?.let { put("display_name", it) }
             about?.let { put("about", it) }
             nip05?.let { put("nip05", it) }
             lud16?.let { put("lud16", it) }
@@ -102,9 +94,33 @@ data class SearchFields(
     }
 
     /**
-     * "" and absent are the same state (see [fields]/[fromFields]): fold empty
-     * strings back to null so decoded docs compare equal to what was fed,
-     * whether the engine served the "" (the mock) or omitted it (real Vespa).
+     * The near-tier attribute arrays (event.sd: prefix/fuzzy match targets),
+     * derived from the searchable text via [NearText] — folded, split at two
+     * granularities, merged across the fields nothing downstream needs to
+     * tell apart. name+display_name share one pair (a near hit is a near hit
+     * whichever carried it); search_primary gets the generic-tier pair;
+     * search_secondary gets a TOKENS-only column ("bitco" -> #bitcoin —
+     * hashtags and summaries deserve prefix reach, but parts-splitting prose
+     * would flood the dictionary for no query shape anyone types).
+     */
+    fun nearFields(): Map<String, List<String>> =
+        buildMap {
+            val names = listOfNotNull(name, displayName)
+            if (names.isNotEmpty()) {
+                put("name_parts", NearText.merge(*names.map(NearText::parts).toTypedArray()))
+                put("name_tokens", NearText.merge(*names.map(NearText::tokens).toTypedArray()))
+            }
+            primary?.let {
+                put("search_primary_parts", NearText.parts(it))
+                put("search_primary_tokens", NearText.tokens(it))
+            }
+            secondary?.let { put("search_secondary_tokens", NearText.tokens(it)) }
+        }
+
+    /**
+     * "" and absent are the same state: real Vespa omits empty-string fields
+     * from summaries while the mock serves them — fold "" back to null so
+     * decoded docs compare equal to what was fed either way.
      */
     fun normalized(): SearchFields =
         SearchFields(

@@ -43,6 +43,16 @@ application {
     mainClass.set("com.vitorpamplona.quartz.eventstore.benchmark.EventStoreBenchmark")
 }
 
+// Search-ranking A/B harness (see RankAb.kt): runs the fixed rank_cases.json
+// against a live Vespa with per-request query() knob overrides — no deploy, no
+// reindex. `./gradlew :benchmark:rankAb --args="--vespa http://localhost:8080"`.
+tasks.register<JavaExec>("rankAb") {
+    group = "verification"
+    description = "A/B Vespa ranking knobs against the fixed regression case set"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.vitorpamplona.quartz.eventstore.benchmark.RankAb")
+}
+
 // Large corpora need heap: a BENCH_SIZE=1M run holds the generated Event list
 // (~2 GB) plus the SQLite stores' native memory. BENCH_HEAP sets -Xmx for the
 // benchmark JVM (default 2g keeps the everyday 30k run lean).

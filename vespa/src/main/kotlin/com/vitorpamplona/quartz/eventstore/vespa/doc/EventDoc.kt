@@ -137,6 +137,14 @@ data class EventDoc(
             // here rather than by an extractor.
             put("author_ref", "id:reputation:reputation::$pubkey")
             for ((field, value) in search.fields()) put(field, value)
+            // The near-tier attribute arrays (prefix/fuzzy targets), derived
+            // HERE rather than by a schema-side indexing expression so doc and
+            // query share NearText's one normalization (diacritic folding —
+            // string attributes match raw bytes) — see NearText for the full
+            // rationale. Existing corpora need a RE-FEED to populate these.
+            for ((field, elements) in search.nearFields()) {
+                if (elements.isNotEmpty()) put(field, JsonArray(elements.map(::JsonPrimitive)))
+            }
             // Always written. An absent numeric attribute reads as 0 in Vespa,
             // which would make "not yet expired" range queries impossible.
             put("expires_at", expiresAt() ?: NO_EXPIRATION)

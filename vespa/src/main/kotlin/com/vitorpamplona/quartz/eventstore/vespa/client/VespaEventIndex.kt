@@ -367,7 +367,7 @@ class VespaEventIndex(
             // The message check proves the attempt ran WITH the near clauses
             // (a demoted attempt cannot 400 naming a field it never sent), so
             // no flag re-read — same reasoning as recencySafe.
-            val missingField = e.message?.contains("400") == true && FuzzyWordGroup.NEAR_FIELDS.any { e.message?.contains(it) == true }
+            val missingField = e.message?.contains("400") == true && FuzzyWordGroup.ALL_NEAR_FIELDS.any { e.message?.contains(it) == true }
             if (q.search.isNullOrBlank() || !q.nearMatching || !missingField) throw e
             nearFieldsAvailable = false
             attempt(demoteNear(q))
@@ -512,6 +512,39 @@ class VespaEventIndex(
             }
         }
         return root
+    }
+
+    /**
+     * [search] plus the WHY: each hit carries the engine's relevance score and
+     * the match TIER it arrived through (exact name > near > weak > identity >
+     * affiliation > gram), derived from the rank profile's declared
+     * match-features. This is the inspector/harness surface — "which band did
+     * this hit come from" is the first question of every ranking
+     * investigation, and without it every partial match reads as noise. Tier
+     * is null when the profile declares no match-features (unranked/recency)
+     * or the serving schema predates them.
+     */
+    suspend fun searchScored(query: EventQuery): List<ScoredHit> =
+        nearSafe(query) { q ->
+            val vq = EventYql.build(q) ?: return@nearSafe emptyList()
+            searchRoot(vq, hits = q.limit ?: DEFAULT_SCORED_HITS)
+                .children
+                .mapNotNull { hit -> hit.fields?.let { f -> f.toDoc()?.let { ScoredHit(it, hit.relevance, tierOf(f.matchfeatures)) } } }
+        }
+
+    /** The rank band a hit arrived through, from the profile's match-features; null when none were served. */
+    private fun tierOf(mf: JsonObject?): String? {
+        if (mf == null) return null
+
+        fun on(feature: String): Boolean = ((mf[feature] as? JsonPrimitive)?.content?.toDoubleOrNull() ?: 0.0) > 0.0
+        return when {
+            on("any_token_match") || on("name_match") || on("has_token_match") -> "name"
+            on("any_near_match") || on("near_name_match") -> "near"
+            on("weak_match") -> "weak"
+            on("identity_match") -> "identity"
+            on("affiliation_match_text") || on("affiliation_match") -> "affiliation"
+            else -> "gram"
+        }
     }
 
     /**
@@ -1279,6 +1312,7 @@ class VespaEventIndex(
     @Serializable
     private class SearchHit(
         val fields: VespaSummary? = null,
+        val relevance: Double = 0.0,
     )
 
     /** `/document/v1/…` get response. */
@@ -1372,6 +1406,8 @@ class VespaEventIndex(
         @SerialName("search_secondary") val secondary: String? = null,
         @SerialName("search_text") val text: String? = null,
         @SerialName("search_location") val location: String? = null,
+        /** The rank profile's declared match-features, when the profile has any (see event.sd). */
+        val matchfeatures: JsonObject? = null,
     )
 
     private companion object {
@@ -1433,6 +1469,9 @@ class VespaEventIndex(
 
         /** Brief 5xx retries per query (transient engine load-shedding, not correctness). */
         const val QUERY_RETRIES = 3
+
+        /** Hits a [searchScored] call fetches when the query names no limit — an inspection surface, not a recall path. */
+        const val DEFAULT_SCORED_HITS = 100
 
         /**
          * Per-operation feed deadline. The feed client's retry strategy handles

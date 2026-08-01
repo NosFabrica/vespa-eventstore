@@ -126,10 +126,12 @@ class EventYqlTest {
     @Test
     fun `prefix is a direct term on the near fields, never a userInput annotation`() {
         val q = EventYql.build(EventQuery(search = "odell"))!!
-        assertTrue("(name_parts contains ({prefix:true}@w0))" in q.yql, q.yql)
-        assertTrue("(name_tokens contains ({prefix:true}@w0))" in q.yql)
-        assertTrue("(search_primary_parts contains ({prefix:true}@w0))" in q.yql)
-        assertTrue("(search_primary_tokens contains ({prefix:true}@w0))" in q.yql)
+        assertTrue("(name_parts contains ({prefix:true}@fw0))" in q.yql, q.yql)
+        assertTrue("(name_tokens contains ({prefix:true}@fw0))" in q.yql)
+        assertTrue("(search_primary_parts contains ({prefix:true}@fw0))" in q.yql)
+        assertTrue("(search_primary_tokens contains ({prefix:true}@fw0))" in q.yql)
+        // Hashtag/summary tokens get prefix reach too ("bitco" -> #bitcoin)…
+        assertTrue("(search_secondary_tokens contains ({prefix:true}@fw0))" in q.yql)
         // The form that parses, runs, and does nothing.
         assertFalse("prefix:true}userInput" in q.yql)
     }
@@ -137,9 +139,22 @@ class EventYqlTest {
     @Test
     fun `fuzzy is a direct term on the near fields, never a userInput annotation`() {
         val q = EventYql.build(EventQuery(search = "odelling"))!!
-        assertTrue("(name_parts contains ({maxEditDistance:1,prefixLength:2}fuzzy(@w0)))" in q.yql, q.yql)
-        assertTrue("(name_tokens contains ({maxEditDistance:1,prefixLength:2}fuzzy(@w0)))" in q.yql)
+        assertTrue("(name_parts contains ({maxEditDistance:1,prefixLength:2}fuzzy(@fw0)))" in q.yql, q.yql)
+        assertTrue("(name_tokens contains ({maxEditDistance:1,prefixLength:2}fuzzy(@fw0)))" in q.yql)
         assertFalse("fuzzy:{maxEditDistance" in q.yql)
+        // …but never fuzzy: a typo'd hashtag is not worth walking that dictionary.
+        assertFalse("search_secondary_tokens contains ({maxEditDistance" in q.yql)
+    }
+
+    @Test
+    fun `near clauses carry the FOLDED word out-of-band, exact clauses the original`() {
+        // The near attributes match raw bytes (no linguistic folding), so the
+        // near params must be diacritic-folded to reach "josé"; the exact
+        // clauses keep the typed form for the index fields' own linguistics.
+        val q = EventYql.build(EventQuery(search = "José"))!!
+        assertEquals("José", q.params["w0"])
+        assertEquals("jose", q.params["fw0"])
+        assertTrue("({prefix:true}@fw0)" in q.yql)
     }
 
     @Test
@@ -181,16 +196,21 @@ class EventYqlTest {
     }
 
     @Test
-    fun `name-side trigram recall is off and the AND nets need enough grams`() {
-        // The OR net was the one matcher with no bound on how different a hit
-        // could be: anything sharing a single trigram matched ("ode" -> "model").
-        val q = EventYql.build(EventQuery(search = "ode"))!!
-        assertFalse("name_gram contains" in q.yql)
-        assertFalse("display_name_gram contains" in q.yql)
-        assertFalse("search_primary_gram contains" in q.yql)
-        // At 1-2 trigrams an AND net degenerates into a bare substring test —
-        // "ode" reached a bio reading "hosted by ODELL". >=3 only (word >= 5).
-        assertFalse("about_gram contains" in q.yql)
+    fun `name-side grams are a bounded AND infix net, never the unbounded OR`() {
+        // The OR net (anything sharing a single trigram: "ode" -> "model") is
+        // gone. In its place, an AND of every trigram — a near-substring test
+        // — restores "dell" -> ODELL with a bound, from 2 trigrams (4 chars).
+        val short = EventYql.build(EventQuery(search = "ode"))!!
+        assertFalse("name_gram contains" in short.yql, "1 trigram is a bare substring probe")
+        val dell = EventYql.build(EventQuery(search = "dell"))!!
+        assertTrue("(name_gram contains \"del\" and name_gram contains \"ell\")" in dell.yql, dell.yql)
+        assertTrue("(display_name_gram contains \"del\" and display_name_gram contains \"ell\")" in dell.yql)
+        assertTrue("(search_primary_gram contains \"del\" and search_primary_gram contains \"ell\")" in dell.yql)
+        assertFalse("name_gram contains \"del\" or" in dell.yql, "no OR form anywhere")
+        // The long-text nets keep the higher floor: at 1-2 trigrams they
+        // degenerate into substring tests — "ode" reached a bio reading
+        // "hosted by ODELL". >=3 only (word >= 5).
+        assertFalse("about_gram contains" in dell.yql)
         assertFalse("about_gram contains" in EventYql.build(EventQuery(search = "odel"))!!.yql)
         assertTrue("about_gram contains" in EventYql.build(EventQuery(search = "odell"))!!.yql)
     }
@@ -202,9 +222,9 @@ class EventYqlTest {
         // expensive matcher, six times over on a 3-word query. Prefix on them
         // is cheap and does the useful work ("vitor pamplona" -> @vitorpamplona).
         val q = EventYql.build(EventQuery(search = "satoshi nakamoto bitcoin"))!!
-        assertTrue("prefix:true}@wj" in q.yql)
-        assertTrue("prefix:true}@wp0" in q.yql)
-        for (v in listOf("@wj", "@wp0", "@wp1")) {
+        assertTrue("prefix:true}@fwj" in q.yql)
+        assertTrue("prefix:true}@fwp0" in q.yql)
+        for (v in listOf("@fwj", "@fwp0", "@fwp1")) {
             assertFalse("fuzzy($v)" in q.yql, v)
         }
         // One fuzzy clause per real word per near field, nothing more.
@@ -221,10 +241,13 @@ class EventYqlTest {
         assertFalse("name_parts" in q.yql)
         assertFalse("name_tokens" in q.yql)
         assertFalse("search_primary_parts" in q.yql)
+        assertFalse("search_secondary_tokens" in q.yql)
         assertFalse("prefix:true" in q.yql)
         assertFalse("fuzzy(" in q.yql)
-        // The exact clauses and AND nets stay — recall degrades, it doesn't die.
+        // The exact clauses and gram nets stay — those fields predate the near
+        // tier on every deployed schema. Recall degrades, it doesn't die.
         assertTrue("({defaultIndex:\"name\",label:\"mtch_exact\"}userInput(@w0))" in q.yql)
+        assertTrue("name_gram contains" in q.yql)
         assertTrue("about_gram contains" in q.yql)
     }
 

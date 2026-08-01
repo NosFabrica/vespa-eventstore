@@ -153,8 +153,20 @@
         <td class="ok">✓ via <code>name_parts</code></td></tr>
     <tr><td>"dell" → <b>ODELL</b></td><td>infix</td><td class="meh">△ gram band</td>
         <td>trigram OR recalls it (as noise)</td>
-        <td class="bad">✗ dropped — the one regression: their port turns name-side gram recall off
-            (<code>NAME_GRAM_RECALL=False</code>); prefix anchors at the start</td></tr>
+        <td class="ok">✓ weak tier — an AND of every query trigram (a bounded near-substring test)
+            replaces the unbounded OR; scored between near and affiliation</td></tr>
+    <tr><td>"jose" → <b>José</b></td><td>diacritics</td><td class="bad">✗ attribute bytes don't fold</td>
+        <td>string attributes match raw bytes; Vespa's linguistic folding applies to index fields only</td>
+        <td class="ok">✓ NearText folds doc + query symmetrically (NFKD, strip marks, lowercase)</td></tr>
+    <tr><td>"vitorp" → <b>Vitor Pamplona / Vitor-Pamplona</b></td><td>spaced/hyphenated compound</td><td class="meh">△ fuzzy rescue only</td>
+        <td>tokens keep separators; only the 1-edit fuzzy budget catches it</td>
+        <td class="ok">✓ tokens also index alnum-stripped + whole-name-joined variants</td></tr>
+    <tr><td>"太郎" → <b>中村太郎</b></td><td>CJK given name</td><td class="bad">✗ unreachable</td>
+        <td>no spaces to split, prefix anchors at the run start</td>
+        <td class="ok">✓ CJK runs index their suffixes (runs ≤ 8 chars)</td></tr>
+    <tr><td>"bitco" → <b>#bitcoin</b> note</td><td>hashtag prefix</td><td class="bad">✗ exact-token only</td>
+        <td>search_secondary has no partial path</td>
+        <td class="ok">✓ <code>search_secondary_tokens</code>, prefix-only, weak tier</td></tr>
     <tr><td>"中村" → profile</td><td>2-char CJK</td><td class="meh">△ fragile</td>
         <td>below the 3-char trigram floor; only an exact token hit works</td>
         <td class="ok">✓ script-aware prefix floor (2 for non-ASCII)</td></tr>
@@ -199,15 +211,17 @@
      <code>w_name_tier</code>=2000: a max-trust bio mention ((550+130)×5.6 ≈ 3800) beat a floor-trust exact
      name match (~2100) — searching "coffee" put 126 bio-only accounts above the account literally named
      "coffee". Their re-derivation:</p>
-  <pre><code>bio ceiling   (550 + 130) × 5.6 ≈  3 808
-near floor    w_near_tier        =  4 000   &gt; 3 808  ✓
-near ceiling  (4000 + 80) × 5.6  = 22 848
-exact floor   w_name_tier + 100  = 23 100   &gt; 22 848 ✓   → w_name_tier = 23 000</code></pre>
+  <pre><code>bio ceiling   (550 + 130) × 5.6  ≈   3 808
+weak floor    w_weak_tier        =   4 000   &gt;   3 808 ✓   (infix + hashtag prefix)
+weak ceiling  (4000 + 80) × 5.6  =  22 848
+near floor    w_near_tier        =  23 000   &gt;  22 848 ✓
+near ceiling  (23000 + 80) × 5.6 = 129 248
+exact floor   w_name_tier + 100  = 130 100   &gt; 129 248 ✓   → w_name_tier = 130 000</code></pre>
   <p class="note">The invariant to re-derive on any weight change:
      <code>w_name_tier + 100 &gt; (w_near_tier + gram_cap) × max(wot_mult)</code> and
-     <code>w_near_tier &gt; (w_affil_tier_text + ~130) × max(wot_mult)</code>.
-     Our <code>event.sd</code> still has the pre-fix 2000, so the same "coffee" inversion is live here
-     for any observer whose trust spread reaches the multiplier ceiling.</p>
+     <code>w_near_tier &gt; (w_affil_tier_text + ~130) × max(wot_mult)</code> — and one more rung down for
+     <code>w_weak_tier</code>. This branch ships the four-rung values above; the deployed pre-branch schema
+     still has 2000, where the "coffee" inversion is live.</p>
 
   <h3>The other profiles</h3>
   <div class="scroll"><table>
@@ -229,11 +243,13 @@ exact floor   w_name_tier + 100  = 23 100   &gt; 22 848 ✓   → w_name_tier = 
 
   <h2>5 · Every knob, in one table</h2>
   <div class="scroll"><table>
-    <tr><th>query() input</th><th>before</th><th>this branch (= upstream PR#3)</th><th>role</th></tr>
-    <tr><td><code>w_name_tier</code></td><td>2000</td><td><b>23000</b></td><td>exact-name band offset inside text_score</td></tr>
-    <tr><td><code>w_near_tier</code></td><td>—</td><td><b>4000</b></td><td>prefix/fuzzy name band (new)</td></tr>
-    <tr><td><code>w_near_tier_text</code></td><td>—</td><td><b>700</b></td><td>same band for pure-text relevance() (exact 1100 &gt; near 700 &gt; affil 550)</td></tr>
-    <tr><td><code>w_pop_near_tier</code></td><td>—</td><td><b>1e8</b></td><td>near tier for the trust-sorted profiles (between 1e9 and 1e7)</td></tr>
+    <tr><th>query() input</th><th>before</th><th>this branch</th><th>role</th></tr>
+    <tr><td><code>w_name_tier</code></td><td>2000</td><td><b>130000</b></td><td>exact-name band offset inside text_score (each rung ×5.6 the one below — see §4)</td></tr>
+    <tr><td><code>w_near_tier</code></td><td>—</td><td><b>23000</b></td><td>prefix/fuzzy name band (new)</td></tr>
+    <tr><td><code>w_weak_tier</code></td><td>—</td><td><b>4000</b></td><td>bounded infix (AND-gram) + hashtag prefix band (new)</td></tr>
+    <tr><td><code>w_near_tier_text</code> / <code>w_weak_tier_text</code></td><td>—</td><td><b>700 / 620</b></td><td>same bands for pure-text relevance() (exact 1100 &gt; near 700 &gt; weak 620 &gt; affil 550)</td></tr>
+    <tr><td><code>w_pop_near_tier</code> / <code>w_pop_weak_tier</code></td><td>—</td><td><b>1e8 / 3e7</b></td><td>near/weak tiers for the trust-sorted profiles (between 1e9 and 1e7)</td></tr>
+    <tr><td><code>w_words</code> / <code>w_exactness</code></td><td>—</td><td><b>60 / 40</b></td><td>second-phase precision: Meilisearch's "words" rule (query coverage) + whole-field exactness; bounded under the smallest band gap, in-band only</td></tr>
     <tr><td><code>text_score_cutoff</code></td><td>50</td><td><b>100</b></td><td>pre-multiply noise gate; 100 sits above the gram ceiling (~93) and below every real tier</td></tr>
     <tr><td><code>w_identity</code></td><td>50</td><td>50</td><td>IDF-scaled nip05/lud16 ("primal flood" fix)</td></tr>
     <tr><td><code>w_affil_tier_text</code> / <code>w_affil_tier</code></td><td>550 / 1e7</td><td>550 / 1e7</td><td>bio/website affiliation band (text / popularity)</td></tr>
@@ -270,14 +286,15 @@ exact floor   w_name_tier + 100  = 23 100   &gt; 22 848 ✓   → w_name_tier = 
   </ul>
 
   <h3>Port checklist for this library — beyond copy-paste</h3>
-  <p><b>Status: items 1–5 are implemented in this branch.</b> The near fields landed as two pairs —
-     <code>name_parts</code>/<code>name_tokens</code> (merged name + display_name, with the feed writing an
-     empty-string sibling so the concatenation can't null out) and <code>search_primary_parts</code>/<code>_tokens</code>
-     (single-input, null-safe) — the recall contract keeps the substring reference as a documented looser superset
-     (NIP-50 was already excluded from strict parity), and the schema-version gate is <code>nearSafe</code> in
-     <code>VespaEventIndex</code>: a 400 naming a near field demotes the query to exact + gram matching and
-     remembers, mirroring the <code>recency</code>-profile net. Item 6 — measuring the shipped weights against a
-     real corpus and watching fuzzy latency — remains, and needs a deployed schema plus a reindex first.</p>
+  <p><b>Status: items 1–5 are implemented in this branch</b> (and superseded in part by Round 2 below). The near
+     fields landed as <code>name_parts</code>/<code>name_tokens</code> (merged name + display_name),
+     <code>search_primary_parts</code>/<code>_tokens</code>, and <code>search_secondary_tokens</code> — all
+     computed at FEED time by <code>NearText</code> (see Round 2), which also settled the recall contract: the
+     substring reference stays a documented looser superset (NIP-50 was already excluded from strict parity).
+     The schema-version gate is <code>nearSafe</code> in <code>VespaEventIndex</code>: a 400 naming a near field
+     demotes the query to exact + gram matching and remembers, mirroring the <code>recency</code>-profile net.
+     Item 6 — measuring the shipped weights against a real corpus and watching fuzzy latency — needs a deployed
+     schema plus a re-feed first; the IT and rankAb harness below are the vehicles.</p>
   <div class="scroll"><table>
     <tr><th>#</th><th>adaptation</th><th>why it differs here</th></tr>
     <tr><td>1</td><td>Add <code>name_parts</code>/<code>name_tokens</code> to <code>event.sd</code>; extend the same
@@ -304,6 +321,34 @@ exact floor   w_name_tier + 100  = 23 100   &gt; 22 848 ✓   → w_name_tier = 
         <td>the 23000/4000/700/100 values encode <em>their</em> bm25 statistics; the invariants (§4) transfer,
             the constants may not — and <code>text_score_cutoff</code> is explicitly corpus-dependent</td></tr>
   </table></div>
+
+  <h3>Round 2 — beyond the upstream port</h3>
+  <p>A second pass took the algorithm past what Brainstorm shipped:</p>
+  <ul>
+    <li><b>Feed-side derivation (<code>NearText</code>)</b> replaces the schema-side split: doc and query now
+        share one normalization (NFKD diacritic fold + lowercase), so "jose" reaches "José" — string attributes
+        match raw bytes and Vespa's linguistics never applied to them. Tokens also index alnum-stripped and
+        whole-name-joined variants ("vitorp" → "Vitor Pamplona"), and CJK runs index their suffixes
+        ("太郎" → "中村太郎"). <b>Deploy consequence: populating these needs a RE-FEED, not a reindex</b> —
+        feed-computed fields can't be rebuilt from Vespa's document store.</li>
+    <li><b>The weak tier</b> restores bounded infix ("dell" → ODELL via an AND of every query trigram — the
+        regression the upstream port accepted) and adds hashtag/summary prefix reach
+        (<code>search_secondary_tokens</code>, prefix-only). The ladder re-derives to
+        130000 / 23000 / 4000 / 550 so all four rungs survive the ×5.6 trust multiply.</li>
+    <li><b>Second-phase precision</b> on <code>sort_followers</code>/<code>text2</code>: the words rule
+        (query coverage) and exactness (whole-field match), computed over the top 1000 hits only and bounded to
+        reorder within a band. A within-near ordering by <em>character</em> coverage ("Ode"→"Ode" above
+        "Ode"→"Odessa") is deliberately absent — fieldMatch/elementCompleteness are token-granular, so that
+        signal needs a custom searcher, not a rank expression.</li>
+    <li><b>Measurement</b>: <code>searchScored</code> labels every hit with its tier;
+        <code>RankRegressionIT</code> asserts the whole canonical corpus (positions + tiers) against a real
+        Docker Vespa — including that the second-phase fieldMatch features deploy — and
+        <code>:benchmark:rankAb</code> A/Bs any knob against <code>rank_cases.json</code> live, with no
+        deploy/reindex/re-feed. Add a case every time someone reports a bad search.</li>
+  </ul>
+  <p class="note">Not yet verified here (no Docker in this environment): run
+     <code>./gradlew :benchmark:test -Pintegration</code> where Docker is available before deploying — it is
+     both the ranking regression gate and the schema deploy check.</p>
 
   <p class="note">Sources: <code>vespa/app/schemas/event.sd</code>, <code>query/FuzzyWordGroup.kt</code>,
      <code>query/EventYql.kt</code>, <code>store/mapping/FilterMapping.kt</code> (this repo);
