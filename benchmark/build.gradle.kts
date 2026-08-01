@@ -81,6 +81,14 @@ tasks.register<JavaExec>("queryBench") {
     maxHeapSize = System.getenv("BENCH_HEAP") ?: "3g"
 }
 
+tasks.register<JavaExec>("corpusLoad") {
+    group = "verification"
+    description = "Load the deterministic NostrCorpus into a live store (setup for the workload benches)"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.vitorpamplona.quartz.eventstore.benchmark.CorpusLoad")
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "2g"
+}
+
 tasks.register<JavaExec>("multiFilterBench") {
     group = "verification"
     description = "Store-level multi-filter REQ latency vs the serialized single-filter sum (A/B VESPA_QUERY_FANOUT)"
