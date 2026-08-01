@@ -33,6 +33,26 @@ measures what the emitted query actually does:
   ./gradlew :benchmark:rankAb --args="--vespa http://localhost:8080"
   ./gradlew :benchmark:rankAb --args="--configs baseline,near_off --profile text"
   ```
+## Targeted benches (gradle tasks against a live Vespa)
+
+Beyond the head-to-head suite (`:benchmark:run`), these tasks each own one
+performance surface, expect `VESPA_URL` (default `http://localhost:8080`), and
+carry their own CORRECTNESS gates — a wrong result set fails the run, so every
+timing is also a proof:
+
+| task | surface | corpus | gate |
+|---|---|---|---|
+| `visitBench` | full-corpus visit transports (paged serial / streamed slices) — the negentropy walk | feeds 2M synthetic docs once (`BENCH_VISIT_DOCS`) | every transport walks the identical doc set |
+| `queryBench` | filter recall + count shapes: limit sweeps, since/until windows, authors, exact counts, the recency planner A/B | reuses visitBench's corpus (its linear layout makes every expectation exact) | window widths, orderings, and counts must match closed-form values |
+| `multiFilterBench` | store-level multi-filter REQs vs the serialized sum (A/B `VESPA_QUERY_FANOUT`) | reuses visitBench's corpus | multi-filter result equals the deduped single-filter union |
+| `searchBench` | NIP-50: rare/common terms, multi-word, trigram/fuzzy, search+filters, profile directory, `text` vs `text2` rerank sweep | feeds its own 200k-doc zipfian text band once (`BENCH_SEARCH_DOCS`) | 37 planted sentinel docs must be recalled exactly |
+| `corpusLoad` | setup: loads the deterministic `NostrCorpus` a workload bench samples its filters from | 30k mixed events (`BENCH_SIZE`) | — |
+
+The workload benches (`corpusLoad`, `BENCH_MIXED`, `BENCH_THROUGHPUT`,
+`BENCH_CONDPUT`, ingest sweeps) WRITE into the store. The exactness benches
+(`queryBench`, `visitBench`, `multiFilterBench`) assume the pristine visit
+corpus; snapshot the engine before dirtying it (`docker commit vespa
+vespa-2m-snapshot`) and restore to re-run them.
 
 ## Did Quartz already have a benchmark to copy?
 

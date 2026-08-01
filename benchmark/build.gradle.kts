@@ -81,6 +81,14 @@ tasks.register<JavaExec>("queryBench") {
     maxHeapSize = System.getenv("BENCH_HEAP") ?: "3g"
 }
 
+tasks.register<JavaExec>("searchBench") {
+    group = "verification"
+    description = "NIP-50 search latency: term shapes, trigram/fuzzy, filters, profiles, text vs text2 (self-feeding corpus)"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.vitorpamplona.quartz.eventstore.benchmark.SearchBench")
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "3g"
+}
+
 tasks.register<JavaExec>("corpusLoad") {
     group = "verification"
     description = "Load the deterministic NostrCorpus into a live store (setup for the workload benches)"
