@@ -164,6 +164,40 @@ object QueryBench {
                     byKind.values.sum()
                 }
 
+                // --- recency-planner A/B: same shapes, planner on vs off, ---
+                // --- results must be byte-identical --------------------------
+                println()
+                println("recency planner A/B (planned vs unplanned, identical results asserted)")
+                println(String.format("%-32s %12s %12s %9s", "shape", "planned p50", "baseline p50", "speedup"))
+                val unplanned = VespaEventIndex(url, queryPlanning = false)
+                try {
+                    val shapes =
+                        listOf(
+                            "kind=1 limit=500 until=top" to EventQuery(kinds = listOf(1), limit = 500, until = top),
+                            "kind=1 limit=10000 until=top" to EventQuery(kinds = listOf(1), limit = 10_000, until = top),
+                            "no-kind limit=100 until=top" to EventQuery(limit = 100, until = top),
+                            "kind=1 limit=500 (no until)" to EventQuery(kinds = listOf(1), limit = 500),
+                        )
+                    for ((label, q) in shapes) {
+                        val a = index.search(q).map { it.id }
+                        val b = unplanned.search(q).map { it.id }
+                        expect(a == b) { "$label: planned and unplanned results DIFFER (${a.size} vs ${b.size} hits)" }
+                        val planned = medianNanos(reps) { index.search(q).size }
+                        val baseline = medianNanos(reps) { unplanned.search(q).size }
+                        println(
+                            String.format(
+                                "%-32s %10.2fms %10.2fms %8.1fx",
+                                label,
+                                planned / 1e6,
+                                baseline / 1e6,
+                                baseline.toDouble() / planned,
+                            ),
+                        )
+                    }
+                } finally {
+                    unplanned.close()
+                }
+
                 println()
                 if (failures == 0) {
                     println("all shapes returned EXACTLY the expected sets/counts")
@@ -187,6 +221,16 @@ object QueryBench {
 
     /** Fewer reps for shapes that move six figures of docs per call. */
     private fun Int.forSize(size: Int): Int = if (size >= 100_000) (this / 4).coerceAtLeast(3) else this
+
+    private inline fun medianNanos(
+        reps: Int,
+        crossinline op: suspend () -> Int,
+    ): Long =
+        runBlocking {
+            val lat = LongArray(reps) { measureNanoTime { op() } }
+            lat.sort()
+            lat[reps / 2]
+        }
 
     private inline fun expect(
         ok: Boolean,

@@ -273,6 +273,37 @@ class VespaEventIndexTest {
             assertEquals(0, index.count(EventQuery(limit = 0)))
         }
 
+    /**
+     * The recency planner must be INVISIBLE in results: a dense live-shaped
+     * corpus (events within the last hour) takes the windowed path, a sparse or
+     * ancient corpus falls through to the unbounded query — both must return
+     * exactly what a planner-off index returns, top-of-corpus order included.
+     */
+    @Test
+    fun `recency planner returns exactly the unplanned results`() =
+        runBlocking {
+            val now = System.currentTimeMillis() / 1000
+            // Dense: 30 docs inside the planner's first (one-hour) rung.
+            seed(*(1..30).map { doc(kind = 1, at = now - it) }.toTypedArray())
+            // Ancient: outside every rung — only the fall-through can see it.
+            seed(doc(kind = 7, at = 1000))
+            val unplanned = VespaEventIndex(mock.url, queryPlanning = false)
+            try {
+                for (q in listOf(
+                    EventQuery(kinds = listOf(1), limit = 10), // dense -> windowed
+                    EventQuery(kinds = listOf(1), limit = 30), // exactly the window's population
+                    EventQuery(kinds = listOf(7), limit = 5), // sparse+ancient -> fall-through, still found
+                    EventQuery(limit = 500), // limit past the corpus -> everything
+                )) {
+                    assertEquals(unplanned.search(q).map { it.id }, index.search(q).map { it.id }, "planned vs unplanned: $q")
+                }
+                // The dense query must actually return the newest docs, not a hole.
+                assertEquals(now - 1, index.search(EventQuery(kinds = listOf(1), limit = 1)).single().createdAt)
+            } finally {
+                unplanned.close()
+            }
+        }
+
     /** The visit walk: the complete match set, across slices AND continuation pages. */
     @Test
     fun `visitIds streams every match through sliced continuation walks`() =

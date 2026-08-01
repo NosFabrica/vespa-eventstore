@@ -156,6 +156,16 @@ class VespaEventIndex(
      */
     private val visitStreaming: Boolean =
         System.getenv("VESPA_VISIT_STREAM")?.let { it != "0" && !it.equals("false", ignoreCase = true) } ?: true,
+    /**
+     * Window-plan bare recency scans ([planRecency]): a limit'd query with no
+     * selective dimension pays the engine's match phase over EVERY posting the
+     * kinds match (measured ~100ms per million) just to keep the newest few.
+     * The planner probes exact [count]s (~5ms) to find a `since` window proven
+     * to hold >= limit matches, then runs the query windowed — same result set,
+     * ~10x less match work on a live corpus. `VESPA_QUERY_PLANNER=0` disables.
+     */
+    private val queryPlanning: Boolean =
+        System.getenv("VESPA_QUERY_PLANNER")?.let { it != "0" && !it.equals("false", ignoreCase = true) } ?: true,
 ) : EventIndex {
     private val urls: List<String> = endpoints.ifEmpty { listOf(baseUrl) }.map { it.trimEnd('/') }
 
@@ -404,6 +414,8 @@ class VespaEventIndex(
         // expiry filter and newest-first order are applied exactly as YQL would, so
         // results are identical to the search path.
         if (query.isPureIdLookup()) return getByIds(query)
+        @Suppress("NAME_SHADOWING")
+        val query = planRecency(query)
         val vq = EventYql.build(query) ?: return emptyList()
         // Stream the hits straight into docs (no full JsonElement tree): the
         // response is decoded into flat DTOs, allocating the target objects
@@ -424,10 +436,57 @@ class VespaEventIndex(
      */
     override suspend fun rawSearch(query: EventQuery): List<RawEvent> {
         if (query.isPureIdLookup()) return getByIds(query).map { it.toRawEvent() }
+        @Suppress("NAME_SHADOWING")
+        val query = planRecency(query)
         val vq = EventYql.build(query) ?: return emptyList()
         return searchRoot(vq, hits = hitsFor(query))
             .children
             .mapNotNull { it.fields?.toRaw() }
+    }
+
+    /**
+     * A bare recency scan: limit'd, unranked, and with no selective dimension —
+     * the REQ shape that makes the engine's match phase visit EVERY posting its
+     * kinds have (measured ~100ms per million) just to keep the newest few.
+     * Everything selective (ids, authors, tags, search) already prunes the
+     * match phase and is measured in single-digit milliseconds.
+     */
+    private fun EventQuery.isBareRecencyScan(): Boolean =
+        (limit ?: 0) > 0 &&
+            search == null &&
+            ids.isEmpty() &&
+            authors.isEmpty() &&
+            owners.isEmpty() &&
+            tags.isEmpty() &&
+            tagsAll.isEmpty() &&
+            expiresBefore == null
+
+    /**
+     * Query planning for bare recency scans: find a `since` window PROVEN (by
+     * an exact [count] probe, ~5ms) to hold at least `limit` matches, and run
+     * the query inside it. Correctness is structural, not statistical: the
+     * window is anchored at the query's newest end (`until`, else now), so
+     * every event outside it is strictly older than every event inside — the
+     * top-`limit` of a full window IS the top-`limit` of the unbounded query,
+     * the same events in the same order. A window is only used when its probe
+     * says >= limit, so no result can be lost; if no ladder rung is provably
+     * full, the query runs unchanged. The ladder is geometric (hour, day,
+     * month): a rung that overshoots still visits at most a fraction of what
+     * the unbounded scan would, and probes on a dead or sparse corpus cost
+     * three counts (~15ms) before falling through — the live-relay case this
+     * exists for anchors near now and exits on the first rung.
+     */
+    private suspend fun planRecency(q: EventQuery): EventQuery {
+        if (!queryPlanning || !q.isBareRecencyScan()) return q
+        val anchor = q.until ?: (System.currentTimeMillis() / 1000)
+        for (window in PLANNER_WINDOWS) {
+            val since = anchor - window
+            // An existing `since` at least this tight makes the rung (and any
+            // wider one) pointless — the query is already windowed.
+            if (q.since != null && since <= q.since) return q
+            if (count(q.copy(since = since, limit = null)) >= q.limit!!) return q.copy(since = since)
+        }
+        return q
     }
 
     /**
@@ -1233,6 +1292,14 @@ class VespaEventIndex(
          * node's worst honest page.
          */
         const val VISIT_READ_TIMEOUT_SECONDS = 120L
+
+        /**
+         * The [planRecency] probe ladder, in seconds before the query's anchor:
+         * an hour, a day, a month. Geometric so a live corpus exits on the
+         * first rung that fits its event rate, and a probe miss costs one more
+         * ~5ms count, not a rescan.
+         */
+        val PLANNER_WINDOWS = longArrayOf(3_600L, 86_400L, 2_592_000L)
 
         /** Brief 5xx retries per query (transient engine load-shedding, not correctness). */
         const val QUERY_RETRIES = 3
