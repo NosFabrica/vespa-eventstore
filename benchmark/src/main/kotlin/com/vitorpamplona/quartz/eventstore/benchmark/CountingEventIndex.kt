@@ -31,7 +31,7 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * Against a real Vespa each of these is a network round-trip; against SQLite each
  * is a prepared-statement execution. Either way the COUNT is engine-independent —
- * it is a property of [NostrEventStore]'s own logic — so it is the cleanest way
+ * it is a property of [NostrSemanticsStore]'s own logic — so it is the cleanest way
  * to see the store layer's I/O amplification (the code comments claim "3-5 index
  * round-trips per event"; this measures the real figure per corpus) and to prove
  * the bulk path collapses that fan-out. That makes it the right lens for

@@ -18,8 +18,14 @@
  * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package com.vitorpamplona.quartz.eventstore.store
+package com.vitorpamplona.quartz.eventstore.store.ingest
 
+import com.vitorpamplona.quartz.eventstore.store.Rejections
+import com.vitorpamplona.quartz.eventstore.store.mapping.VespaText
+import com.vitorpamplona.quartz.eventstore.store.mapping.addressOrNull
+import com.vitorpamplona.quartz.eventstore.store.mapping.owner
+import com.vitorpamplona.quartz.eventstore.store.mapping.toDoc
+import com.vitorpamplona.quartz.eventstore.store.mapping.toEvent
 import com.vitorpamplona.quartz.eventstore.vespa.IngestStats
 import com.vitorpamplona.quartz.eventstore.vespa.PUT_FANOUT
 import com.vitorpamplona.quartz.eventstore.vespa.QUERY_FANOUT
@@ -38,36 +44,22 @@ import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
 import com.vitorpamplona.quartz.nip40Expiration.isExpired
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 
-/** A SEMANTIC insert rejection (duplicate, replaced, or blocked). Transient engine failures are NOT this; they propagate. */
-class RejectedException(
-    message: String,
-) : Exception(message)
-
-/** The insert-rejection reasons, shared by the per-event and bulk paths so the two can never drift. */
-internal object Rejections {
-    const val EXPIRED = "blocked: Cannot insert an expired event"
-    const val DUPLICATE = "duplicate: already have this event"
-    const val DELETED = "blocked: a deletion event exists"
-    const val VANISHED = "blocked: a request to vanish event exists"
-    const val REPLACED = "replaced: a newer version exists"
-    const val INSERT_FAILED = "insert failed"
-
-    // One constant string, not one per field or code point: callers tally
-    // rejections by reason, and a reason that varies per event fragments that
-    // tally into thousands of singletons instead of naming the class once.
-    const val UNSTORABLE_TEXT = "blocked: text carries a code point the engine cannot store"
-}
-
 /**
- * The bulk insert fast path for one run of plain events (no kind 5/62). It
- * enforces the same Nostr rules as the per-event [NostrEventStore] path, but
+ * The bulk insert fast path for one run of plain events (no kind 5/62) —
+ * batches that CONTAIN deletions/vanishes take [BulkMixedInsert] instead. It
+ * enforces the same Nostr rules as the per-event [NostrSemanticsStore] path, but
  * with BATCHED I/O. The per-event path costs 3–5 engine round trips per event,
  * which is useless against a million-event sync. Stages:
  *
  *  A. local checks (ephemeral accepted-not-stored, expired rejected, later
  *     copies of an id already in this run rejected as duplicates);
  *  B. one `id in (…)` duplicate query per [CHECK_CHUNK], fanned out bounded;
- *  C. per-owner tombstone/vanish guards (one query each);
+ *  C. per-owner tombstone/vanish guards (one query per owner chunk) — read in
+ *     [commit], UNDER the writer lock, never in [plan]: a kind 5/62 committed
+ *     by a neighbouring batch between a lock-free guard read and this batch's
+ *     writes would resurrect the events it covers. The [GuardOwners] gate
+ *     keeps the locked cost at zero for the common batch with no flagged
+ *     owners;
  *  D. per-address supersession resolved IN RUN ORDER. Existing versions are
  *     fetched per (kind, author), and losers inside the run are
  *     Accepted-then-superseded exactly as sequential inserts would end up;
@@ -76,32 +68,30 @@ internal object Rejections {
  * Every stage read is unbounded — batched I/O may not trade exactness for
  * speed, and a short page here would be a wrong write, not a small answer.
  */
-internal class BulkInsert(
+internal class BulkRecordInsert(
     private val index: EventIndex,
     private val relay: NormalizedRelayUrl?,
     private val guards: GuardOwners,
 ) {
     /**
-     * What [plan] resolved from its LOCK-FREE reads, handed to [commit] to
-     * finish under the single writer lock. Stages A–C and the grouping are all
-     * read-only work that never needed the lock; only the supersession read
-     * (atomic with its own write) and the writes themselves stay inside it.
+     * What [plan] resolved from its LOCK-FREE reads (stages A–B), handed to
+     * [commit] to finish under the single writer lock. Dedup can race here —
+     * a duplicate that slips past is an idempotent re-put of identical bytes.
+     * The guard and supersession reads canNOT race: both decide against the
+     * store's current state, so they run in [commit], atomic with the writes.
      */
     internal class Plan(
         val events: List<Event>,
         val outcome: Array<IEventStore.InsertOutcome?>,
-        val toPut: LinkedHashMap<String, Event>,
-        val groups: LinkedHashMap<Triple<Int, String, String?>, MutableList<Int>>,
     )
 
     /** Plan then commit in one call, for callers that already hold the writer lock across both. */
     suspend fun run(events: List<Event>): List<IEventStore.InsertOutcome> = commit(plan(events))
 
     /**
-     * The LOCK-FREE half: stages A–C (local checks, dedup, tombstone/vanish
-     * guards) plus the address grouping — reads that only observe the store,
-     * never mutate it. Two plans racing here is fine; [commit] does the one
-     * read that must be atomic with its write (supersession) under the lock.
+     * The LOCK-FREE half: stages A–B (local checks, dedup) — reads whose staleness
+     * is harmless (see [Plan]) — so parallel relays' batches overlap them. The
+     * guard and supersession reads belong to [commit], under the lock.
      */
     suspend fun plan(events: List<Event>): Plan {
         val outcome = arrayOfNulls<IEventStore.InsertOutcome>(events.size)
@@ -150,6 +140,21 @@ internal class BulkInsert(
                 .forEach { docs -> docs.forEach { stored += it.id } }
         }
         alive().forEach { i -> if (events[i].id in stored) outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.DUPLICATE) }
+        return Plan(events, outcome)
+    }
+
+    /**
+     * The LOCKED half: the tombstone/vanish guards and the supersession
+     * read+resolve — both must see every prior commit's writes, so they run
+     * under the single writer lock — then the pipelined writes. Kept as short
+     * as the semantics allow: the guard queries vanish for unflagged owners
+     * (the common batch), and an empty remove or put set skips its round trip.
+     */
+    suspend fun commit(plan: Plan): List<IEventStore.InsertOutcome> {
+        val events = plan.events
+        val outcome = plan.outcome
+
+        fun alive() = events.indices.filter { outcome[it] == null }
 
         // Stage C — tombstone + vanish guards, BATCHED by owner: one deletion query
         // and one vanish query per CHECK_CHUNK of owners (then bucketed by author),
@@ -161,12 +166,15 @@ internal class BulkInsert(
         val owners = alive().groupBy { events[it].owner() }
         val guardSets =
             IngestStats.timed("guards") {
-                // Only owners with any stored tombstone/vanish can have guard
+                // Only owners with a stored tombstone/vanish can have guard
                 // docs at all (GuardOwners); everyone else's sets are provably
                 // empty — usually ALL of a content batch, skipping both queries.
-                val flagged = guards.filterFlagged(owners.keys)
-                val tombs = if (flagged.isEmpty()) emptyMap() else guardDocs(flagged, DeletionEvent.KIND)
-                val vanishes = if (flagged.isEmpty()) emptyMap() else guardDocs(flagged, RequestToVanishEvent.KIND)
+                // Gated independently: deleters vastly outnumber vanishers, so
+                // the vanish query usually disappears even in a flagged batch.
+                val flaggedDeleters = guards.filterFlaggedDeleters(owners.keys)
+                val flaggedVanishers = guards.filterFlaggedVanishers(owners.keys)
+                val tombs = if (flaggedDeleters.isEmpty()) emptyMap() else guardDocs(flaggedDeleters, DeletionEvent.KIND)
+                val vanishes = if (flaggedVanishers.isEmpty()) emptyMap() else guardDocs(flaggedVanishers, RequestToVanishEvent.KIND)
                 owners.keys.associateWith { (tombs[it].orEmpty() to vanishes[it].orEmpty()) }
             }
         for ((owner, idxs) in owners) {
@@ -186,7 +194,7 @@ internal class BulkInsert(
             }
             val vanishAt =
                 vanishes
-                    .mapNotNull { doc -> (Event.fromJsonOrNull(doc.toEventJson()) as? RequestToVanishEvent)?.takeIf { it.shouldVanishFrom(relay) }?.createdAt }
+                    .mapNotNull { doc -> (doc.toEvent() as? RequestToVanishEvent)?.takeIf { it.shouldVanishFrom(relay) }?.createdAt }
                     .maxOrNull() ?: Long.MIN_VALUE
             for (i in idxs) {
                 val e = events[i]
@@ -199,36 +207,22 @@ internal class BulkInsert(
             }
         }
 
-        // Stage D-setup (local): group survivors by replaceable address; plain
-        // events go straight to toPut. The version READ + resolution runs in
-        // commit(), under the lock, so it stays atomic with the write.
+        // Group survivors by replaceable address; plain events go straight to
+        // toPut. Local work — after stage C, so a guard-rejected event can
+        // never reach the writes below.
         val toPut = LinkedHashMap<String, Event>() // id -> event scheduled for storage
         val groups = LinkedHashMap<Triple<Int, String, String?>, MutableList<Int>>()
         alive().forEach { i ->
             val e = events[i]
             if (e.kind.isReplaceable() || e.kind.isAddressable()) {
-                val d = if (e.kind.isAddressable()) e.tags.dTag() else null
+                // Missing d normalizes to "" (one address per NIP-01), matching
+                // the doc-side dTagOrEmpty() bucketing below.
+                val d = if (e.kind.isAddressable()) e.tags.dTag().orEmpty() else null
                 groups.getOrPut(Triple(e.kind, e.pubKey, d)) { mutableListOf() } += i
             } else {
                 toPut[e.id] = e
             }
         }
-        return Plan(events, outcome, toPut, groups)
-    }
-
-    /**
-     * The LOCKED half: the supersession read+resolve (which must see every
-     * prior commit's writes, so it runs under the single writer lock) and the
-     * pipelined writes. Kept as short as the semantics allow — an empty remove
-     * or put set skips its round trip.
-     */
-    suspend fun commit(plan: Plan): List<IEventStore.InsertOutcome> {
-        val events = plan.events
-        val outcome = plan.outcome
-        val toPut = plan.toPut
-        val groups = plan.groups
-
-        fun alive() = events.indices.filter { outcome[it] == null }
 
         // Stage D — supersession per replaceable address.
         if (index.supersedesViaPut) {
@@ -279,9 +273,16 @@ internal class BulkInsert(
                 // author's d-set is bounded.
                 for ((ka, keys) in addressable.groupBy { it.first to it.second }) {
                     val (kind, author) = ka
-                    keys.mapNotNull { it.third }.distinct().chunked(CHECK_CHUNK).forEach { ds ->
-                        add(EventQuery(kinds = listOf(kind), authors = listOf(author), tags = mapOf("d" to ds)))
+                    val ds = keys.mapNotNull { it.third }.filter { it.isNotEmpty() }.distinct()
+                    ds.chunked(CHECK_CHUNK).forEach { chunk ->
+                        add(EventQuery(kinds = listOf(kind), authors = listOf(author), tags = mapOf("d" to chunk)))
                     }
+                    // Empty d: a stored version with NO d tag at all carries no
+                    // "d:" pair in tag_index, so the d-keyed query above can never
+                    // recall it. Go broad by (kind, author) — the same fallback
+                    // the per-event path (EventIndex.putIfNewer) and the mixed
+                    // preload apply. Bounded: one author's docs of one kind.
+                    if (keys.any { it.third.isNullOrEmpty() }) add(EventQuery(kinds = listOf(kind), authors = listOf(author)))
                 }
             }
         IngestStats
@@ -293,12 +294,17 @@ internal class BulkInsert(
                     existing.getOrPut(Triple(doc.kind, doc.pubkey, d)) { mutableListOf() } += doc
                 }
             }
-        val removeFromStore = ArrayList<String>()
+        val removeFromStore = ArrayList<EventDoc>()
+        val removeIds = HashSet<String>()
+
+        fun scheduleRemove(doc: EventDoc) {
+            if (removeIds.add(doc.id)) removeFromStore += doc
+        }
         for ((key, idxs) in groups) {
             val versions = existing[key].orEmpty()
             // The run competes against the store's best. Every stored version
             // strictly older than the final winner is swept.
-            var bestDocId: String? = versions.maxWithOrNull(compareBy<EventDoc> { it.createdAt }.thenByDescending { it.id })?.id
+            var bestDoc: EventDoc? = versions.maxWithOrNull(compareBy<EventDoc> { it.createdAt }.thenByDescending { it.id })
             var bestAt = versions.maxOfOrNull { it.createdAt } ?: Long.MIN_VALUE
             var bestId = versions.filter { it.createdAt == bestAt }.minOfOrNull { it.id }
             var bestInRun: Int? = null
@@ -311,8 +317,8 @@ internal class BulkInsert(
                     // The previous best is superseded. An in-run best stays
                     // Accepted but never lands; a stored best is removed.
                     bestInRun?.let { toPut.remove(events[it].id) }
-                    bestDocId?.let { removeFromStore += it }
-                    bestDocId = null
+                    bestDoc?.let { scheduleRemove(it) }
+                    bestDoc = null
                     bestInRun = i
                     bestAt = e.createdAt
                     bestId = e.id
@@ -320,12 +326,12 @@ internal class BulkInsert(
                 }
             }
             // Older stored versions beyond the single best also fall (drift repair).
-            versions.forEach { doc -> if (doc.id != bestDocId && doc.id !in removeFromStore) removeFromStore += doc.id }
+            versions.forEach { doc -> if (doc.id != bestDoc?.id && doc.id !in removeIds) scheduleRemove(doc) }
         }
         // Skip the round trip when nothing supersedes — the common case for a
-        // fresh corpus (first-seen addresses remove nothing).
-        val toRemove = removeFromStore.distinct()
-        if (toRemove.isNotEmpty()) index.removeAll(toRemove)
+        // fresh corpus (first-seen addresses remove nothing). The docs are in
+        // hand, so removeDocs lets the projection react without a get per id.
+        if (removeFromStore.isNotEmpty()) index.removeDocs(removeFromStore)
 
         // Stage E — one pipelined write for everything that survived. (Timing
         // is booked by the layers below: the projection decorator splits it

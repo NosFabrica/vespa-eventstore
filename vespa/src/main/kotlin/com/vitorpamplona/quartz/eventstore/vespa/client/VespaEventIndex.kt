@@ -20,8 +20,6 @@
  */
 package com.vitorpamplona.quartz.eventstore.vespa.client
 import ai.vespa.feed.client.DocumentId
-import ai.vespa.feed.client.FeedClient
-import ai.vespa.feed.client.FeedClientBuilder
 import ai.vespa.feed.client.OperationParameters
 import ai.vespa.feed.client.Result
 import com.vitorpamplona.quartz.eventstore.vespa.doc.EventDoc
@@ -46,7 +44,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -61,32 +58,20 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.long
 import kotlinx.serialization.json.put
-import okhttp3.Call
-import okhttp3.Callback
-import okhttp3.Dispatcher
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Protocol
 import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
-import okhttp3.Response
 import java.io.IOException
-import java.net.Proxy
-import java.net.URI
 import java.net.URLEncoder
 import java.time.Duration
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 
 /**
  * The real [EventIndex]: Vespa over HTTP. Writes go through Vespa's official
  * feed client (HTTP/2 multiplexed, per-doc ordering, retries built in) and are
  * AWAITED before returning. The store's read-your-writes contract needs the
  * ack, and proton makes an acked write visible to search. Reads use the plain
- * document API (get) and `/search/` (query), non-blocking via the JDK client's
- * async sends on virtual threads.
+ * document API (get) and `/search/` (query). Transport concerns live beside
+ * this class: [VespaFeed] builds and tunes the feed client, [VespaHttp] owns
+ * the read connections' protocol, liveness, deadlines and retry behavior.
  *
  * There is no hit ceiling here, configurable or otherwise: a query with a
  * `limit` gets exactly that, and one without gets every match. Bounding what a
@@ -139,8 +124,9 @@ class VespaEventIndex(
      * back-to-back; 8 halved the fallback's wall clock in the A/B. Streamed
      * visits do NOT use it — they pin bucket concurrency to 1, which is what
      * makes their resume exactly-once (see [streamedSlice]). Total visitor
-     * pressure is what wedges a small node's document API (see [visitHttp]),
-     * so keep the product of concurrent visits and this figure modest.
+     * pressure is what wedges a small node's document API (see VespaHttp's visit client),
+     * so keep the product of concurrent visits and this figure modest
+     * (the read-deadline rationale lives on VespaHttp's visit client).
      * `VESPA_VISIT_CONCURRENCY` overrides (Vespa accepts 1..100).
      */
     private val visitConcurrency: Int =
@@ -176,129 +162,14 @@ class VespaEventIndex(
     /** The endpoint for one HTTP read — round-robin across [urls]. */
     private fun endpoint(): String = urls[Math.floorMod(nextUrl.getAndIncrement(), urls.size)]
 
-    /**
-     * Connections the feed client opens to EACH endpoint.
-     *
-     * The tuned 32 is a budget for the cluster, not for one host, so it is split
-     * across [urls] rather than multiplied by them. That distinction is load
-     * bearing: the client sizes ONE shared Jetty pool at
-     * `max(min(cores, 64), 8) + connectionsPerEndpoint * endpoints`, and Jetty
-     * refuses to start unless that total is strictly greater than the threads the
-     * HTTP client leases from it. Two endpoints at 32 each on a 12-core host is
-     * `12 + 64 = 76` against a required 76 — one thread short, and the client
-     * throws from its constructor:
-     *
-     *     Insufficient configured threads: required=76 < max=76
-     *
-     * Splitting keeps the total parallelism (and therefore the pool) identical
-     * whether the cluster is named as one endpoint or five, which is what the
-     * figure was measured against in the first place.
-     *
-     * `VESPA_FEED_CONNECTIONS` overrides it per endpoint and is NOT divided —
-     * deployment tuning is explicit by definition, and the benchmark sweeps it.
-     * Setting it high across many endpoints can reach the same Jetty ceiling; it
-     * fails loudly at startup with the message above rather than degrading.
-     */
-    private val feedConnectionsPerEndpoint: Int =
-        System.getenv("VESPA_FEED_CONNECTIONS")?.toIntOrNull()
-            ?: (32 / urls.size).coerceAtLeast(1)
+    // Feed-client construction and tuning (connection budget, throttle floor,
+    // retry strategy) live in [VespaFeed]; operations below go through its client.
+    private val feed = VespaFeed(urls)
 
-    private val feed: FeedClient =
-        FeedClientBuilder
-            .create(urls.map { URI.create(it) })
-            // The throttle FLOOR is what pins bulk ingest, and it is hard-wired to
-            // minInflight = 2 x connectionsPerEndpoint. Under our bursty batched
-            // writes (putAll bursts, then a gap while the next chunk dedups) the
-            // dynamic throttler never sustains its upward probe, so it idles at that
-            // floor. At the old 8 connections that floor was ~16 in flight — about
-            // 1.2k docs/s while the engine sat at ~2.4 of 12 cores, ~5x idle. Raising
-            // the connection count raises the floor (64 in flight here) AND the real
-            // HTTP/2 parallelism, so ingest drives the engine harder. The throttler
-            // still adapts DOWN if Vespa pushes back (retries absorb any overshoot).
-            //
-            // The client sizes its own Jetty pool from the connection count, so on a
-            // small-core host too many connections starve that pool; 32 across the
-            // cluster keeps headroom. See [feedConnectionsPerEndpoint]. (The old reflective
-            // setInitialInflightFactor knob was dead: the 8.7 throttler ignores it —
-            // the initial target is already maxInflight.)
-            // Overridable for deployment tuning (and the benchmark's feed-window
-            // grid): VESPA_FEED_CONNECTIONS / VESPA_FEED_STREAMS /
-            // VESPA_FEED_INFLIGHT_FACTOR. Defaults are the measured sweet spot
-            // for a small-core single-node host.
-            .setConnectionsPerEndpoint(feedConnectionsPerEndpoint)
-            .setMaxStreamPerConnection(System.getenv("VESPA_FEED_STREAMS")?.toIntOrNull() ?: 128)
-            .apply { System.getenv("VESPA_FEED_INFLIGHT_FACTOR")?.toIntOrNull()?.let { setInitialInflightFactor(it) } }
-            .setRetryStrategy(
-                object : FeedClient.RetryStrategy {
-                    // Bounded: a dead Vespa should surface as failed ops, not a hang.
-                    override fun retries() = 5
-                },
-            ).build()
-
-    // Read client. OkHttp pinned to clear-text HTTP/2 by PRIOR KNOWLEDGE: Vespa's
-    // container serves h2c only via prior knowledge, not the `Upgrade: h2c`
-    // handshake the JDK HttpClient uses — so the JDK client silently ran every
-    // query on HTTP/1.1 (one TCP connection per in-flight read). Prior-knowledge
-    // h2c makes concurrent reads multiplex over a single connection, matching the
-    // feed client's write path. No fallback list: every endpoint here is Vespa.
-    private val http =
-        OkHttpClient
-            .Builder()
-            // Every request this client makes goes to ONE host, so OkHttp's
-            // per-host default of 5 is the real ceiling — not maxRequests. The
-            // whole store was capped at five concurrent engine requests, shared
-            // by every snapshot visit, every search and every count.
-            //
-            // With no read deadline (below), five requests that never return
-            // wedge the store permanently. Observed: three snapshots frozen at
-            // 94k, 2.5M and 3.1M ids with zero visit requests reaching the
-            // engine for minutes, the relay idle at 2.5% CPU.
-            .dispatcher(
-                Dispatcher().apply {
-                    maxRequests = MAX_CONCURRENT_REQUESTS
-                    maxRequestsPerHost = MAX_CONCURRENT_REQUESTS
-                },
-            ).protocols(listOf(Protocol.H2_PRIOR_KNOWLEDGE))
-            .connectTimeout(Duration.ofSeconds(5))
-            .writeTimeout(Duration.ofSeconds(60))
-            // NO read or whole-call deadline. A query with no `limit` asks for the
-            // whole match set and is allowed to take as long as that takes — any
-            // finite deadline here is a duration cap on the CALLER's query, decided
-            // by the library, and OkHttp cannot tell "engine still matching" from
-            // "connection idle" (both are just no-bytes-yet on the socket).
-            //
-            // A dead peer is caught without capping duration: HTTP/2 PING frames.
-            // Unanswered pings fail the connection, so a black-holed socket still
-            // surfaces as a retryable IOException in seconds rather than hanging
-            // forever — which is what the deadlines were really there to catch.
-            .readTimeout(Duration.ZERO)
-            .callTimeout(Duration.ZERO)
-            .pingInterval(Duration.ofSeconds(PING_INTERVAL_SECONDS))
-            // Vespa is local; never route through the egress proxy.
-            .proxy(Proxy.NO_PROXY)
-            .build()
-
-    /**
-     * The visit walk's client: [http] plus a READ timeout, which visits need
-     * and queries must not have. A query is one response that may legitimately
-     * take minutes of engine time before its first byte, so [http] carries no
-     * read deadline. A visit is the opposite shape: page responses are small
-     * and continuous, and a streamed slice delivers lines steadily — silence
-     * means a wedged visitor session, not a hard-working engine. Measured live:
-     * enough concurrent visitor sessions wedge a small node's document API
-     * mid-response, HTTP/2 pings keep the connection "alive" (they are
-     * answered; it is the response that never comes), and without a read
-     * deadline the walk hangs FOREVER. With one, the wedge surfaces as an
-     * IOException that the paged retry / streamed resume machinery handles —
-     * recover or fail loudly, never hang.
-     */
-    private val visitHttp =
-        http
-            .newBuilder()
-            .readTimeout(Duration.ofSeconds(VISIT_READ_TIMEOUT_SECONDS))
-            .build()
-
-    private val jsonMedia = "application/json; charset=utf-8".toMediaType()
+    // Read transport (h2c prior knowledge, ping liveness, the visit client's
+    // read deadline, transient-overload retries) lives in [VespaHttp]; the
+    // read paths below only build URLs/bodies.
+    private val http = VespaHttp()
 
     // ADDRESS-KEYED mode (VESPA_ADDRESS_KEYED=1): replaceable/addressable events
     // are stored under their NIP-01 address as the document id, so the engine
@@ -307,7 +178,10 @@ class VespaEventIndex(
     // — the whole scheme is opt-in until measured. When ON, id lookups can no
     // longer ride the document-API get (replaceables live under an address docid),
     // so they route through the `id`-attribute search, which finds both.
-    private val addressKeyed = System.getenv("VESPA_ADDRESS_KEYED")?.toBooleanStrictOrNull() ?: false
+    // Accepts "1" as well as "true" — the comment above prescribes =1, and the
+    // multi-writer deployment that needs engine-side supersession for
+    // correctness must not silently run without it.
+    private val addressKeyed = System.getenv("VESPA_ADDRESS_KEYED").let { it == "1" || it?.toBooleanStrictOrNull() == true }
 
     // Under address-keying the engine enforces newest-wins (conditional put), so
     // the bulk path skips its version-read stage and calls putIfNewer instead.
@@ -320,7 +194,7 @@ class VespaEventIndex(
         // Address-keyed replaceables aren't at the id docid; resolve by the id
         // attribute instead (finds regular AND replaceable, no doc-API get).
         if (addressKeyed) return searchById(id)
-        val resp = send("${endpoint()}/document/v1/$NAMESPACE/$DOCTYPE/docid/$id")
+        val resp = http.get("${endpoint()}/document/v1/$NAMESPACE/$DOCTYPE/docid/$id")
         if (resp.statusCode() == 404) return null
         require(resp.statusCode() < 400) { "vespa get ${resp.statusCode()}: ${resp.body().take(300)}" }
         return DECODER.decodeFromString<DocEnvelope>(resp.body()).fields?.toDoc()
@@ -337,13 +211,13 @@ class VespaEventIndex(
     }
 
     private fun putOp(doc: EventDoc) =
-        feed.put(
+        feed.client.put(
             DocumentId.of(NAMESPACE, DOCTYPE, docIdOf(doc)),
             buildJsonObject { put("fields", doc.indexFields()) }.toString(),
             feedParams(),
         )
 
-    private fun removeOp(id: String) = feed.remove(DocumentId.of(NAMESPACE, DOCTYPE, id), feedParams())
+    private fun removeOp(id: String) = feed.client.remove(DocumentId.of(NAMESPACE, DOCTYPE, id), feedParams())
 
     override suspend fun put(doc: EventDoc) {
         putOp(doc).await()
@@ -365,11 +239,17 @@ class VespaEventIndex(
     override suspend fun putIfNewer(doc: EventDoc): Boolean {
         val address = doc.addressOrNull()
         if (!addressKeyed || address == null) return super.putIfNewer(doc)
+        // The id is interpolated into the engine condition below, so it obeys
+        // the module's injection rule (64-hex before it reaches an expression —
+        // see EventYql.hexIn). Store-built docs always pass; a non-hex id from
+        // a direct caller falls back to the read-then-supersede default, which
+        // builds no expression from it.
+        if (!Hex.isHex64(doc.id)) return super.putIfNewer(doc)
         val condition =
             "event.created_at < ${doc.createdAt} or " +
                 "(event.created_at == ${doc.createdAt} and event.id > \"${doc.id}\")"
         val result =
-            feed
+            feed.client
                 .put(
                     DocumentId.of(NAMESPACE, DOCTYPE, address),
                     buildJsonObject { put("fields", doc.indexFields()) }.toString(),
@@ -390,7 +270,7 @@ class VespaEventIndex(
         // Under address-keying the doc may live at an address docid, so resolve it
         // (regular -> id docid, replaceable -> address docid) before removing.
         val docId = if (addressKeyed) get(id)?.let { docIdOf(it) } ?: id else id
-        feed.remove(DocumentId.of(NAMESPACE, DOCTYPE, docId), feedParams()).await()
+        feed.client.remove(DocumentId.of(NAMESPACE, DOCTYPE, docId), feedParams()).await()
     }
 
     /** All removes in flight together over HTTP/2, like [putAll]. */
@@ -404,6 +284,15 @@ class VespaEventIndex(
             return
         }
         ids.map { removeOp(it) }.forEach { it.await() }
+    }
+
+    /**
+     * Bulk remove with the docs in hand: the docid comes straight from each doc
+     * ([docIdOf]), so the address-keyed resolve-by-get that [removeAll] must do
+     * per id disappears. Same pipelining as [putAll].
+     */
+    override suspend fun removeDocs(docs: List<EventDoc>) {
+        docs.map { feed.client.remove(DocumentId.of(NAMESPACE, DOCTYPE, docIdOf(it)), feedParams()) }.forEach { it.await() }
     }
 
     /**
@@ -480,10 +369,43 @@ class VespaEventIndex(
             // is per node and each node picks its own cut threshold, so with
             // several nodes one node's overshoot can drop mid-page docs while
             // the others fill the page. Short page anywhere, or full page on a
-            // multi-node cluster -> rerun exact.
-            val provablyExact = root.children.size >= (q.limit ?: 0) && root.coverage.nodes <= 1
+            // multi-node cluster -> rerun exact. A boundary TIE also demotes:
+            // the match-phase keeps candidates by created_at alone, so a tie
+            // straddling the cut can drop a lower-id member while a higher-id
+            // one fills the page — if the page's oldest timestamp appears more
+            // than once, ties at the boundary provably exist. (A dropped tie
+            // behind a UNIQUE returned boundary needs the estimator to cut
+            // inside a tiny tie group 10x under max-hits — residual, accepted.)
+            val timestamps = root.children.mapNotNull { it.fields?.createdAt }
+            val oldest = timestamps.minOrNull()
+            val boundaryTied = oldest != null && timestamps.count { it == oldest } > 1
+            val provablyExact = root.children.size >= (q.limit ?: 0) && root.coverage.nodes <= 1 && !boundaryTied
             if (!provablyExact) {
-                val exact = EventYql.build(q.copy(ranking = EventYql.RANK_UNRANKED)) ?: return root
+                val unranked = q.copy(ranking = EventYql.RANK_UNRANKED)
+                // The rerun must be exact but need not be UNBOUNDED — a full
+                // corpus-order scan here would make the profile a net loss on
+                // every cluster where degradation is routine:
+                //  - FULL page: any true top-`limit` doc the cut excluded is
+                //    newer than at least one returned doc, so `since = oldest
+                //    returned created_at` (inclusive — ties included) bounds
+                //    the rerun to a page-sized window, provably lossless.
+                //  - SHORT page: nothing returned bounds the miss, so route
+                //    through the count-probe ladder the profile normally skips.
+                val rerun =
+                    when {
+                        root.children.size >= (q.limit ?: 0) && oldest != null -> {
+                            unranked.copy(since = maxOf(q.since ?: Long.MIN_VALUE, oldest))
+                        }
+
+                        queryPlanning && unranked.isBareRecencyScan() -> {
+                            planWindow(unranked)
+                        }
+
+                        else -> {
+                            unranked
+                        }
+                    }
+                val exact = EventYql.build(rerun) ?: return root
                 return searchRoot(exact, hits = hitsFor(q))
             }
         }
@@ -514,6 +436,14 @@ class VespaEventIndex(
      */
     private fun EventQuery.isBareRecencyScan(): Boolean =
         (limit ?: 0) > 0 &&
+            // An explicit rank profile (sort:rank / filter:rank extensions) is
+            // ordered by TRUST SCORE, not recency — the planner's "everything
+            // outside the window is older than everything inside" argument does
+            // not apply, and windowing one silently drops every higher-ranked
+            // older hit. Only ranking-free queries are recency scans. (This is
+            // also the opt-out: internal reads stamp RANK_UNRANKED to skip the
+            // planner — see NostrSemanticsStore.sweep.)
+            ranking == null &&
             search == null &&
             ids.isEmpty() &&
             authors.isEmpty() &&
@@ -546,6 +476,22 @@ class VespaEventIndex(
         // gate), and takes everything back when the serving schema lacks the
         // profile.
         if (recencyProfileAvailable && EventYql.usesRecencyProfile(q)) return q
+        return planWindow(q)
+    }
+
+    /**
+     * The count-probe ladder itself, shared by [planRecency] and [recallRoot]'s
+     * short-page rerun (which windows queries [usesRecencyProfile] told
+     * [planRecency] to skip). Requires an unranked, limit'd [q].
+     *
+     * The window is proven >= limit at PROBE time; a deletion committing
+     * between the probe and the windowed query can transiently shrink it below
+     * the limit while older matches survive outside — one short page on a rare
+     * interleaving, which a paginating client's next `until` request recovers.
+     * Accepted: reads never hold the writer lock, so no probe can be atomic
+     * with its query.
+     */
+    private suspend fun planWindow(q: EventQuery): EventQuery {
         val anchor = q.until ?: (System.currentTimeMillis() / 1000)
         for (window in PLANNER_WINDOWS) {
             val since = anchor - window
@@ -587,6 +533,10 @@ class VespaEventIndex(
      */
     private fun EventQuery.isPureIdLookup(): Boolean =
         !addressKeyed && // address-keyed replaceables aren't at the id docid — route ids through search
+            // A present limit <= 0 is the "matches nothing" sentinel; only the
+            // search path implements it (EventYql.build -> null), so it must not
+            // take this shortcut (List.take(-1) throws).
+            (limit == null || limit > 0) &&
             ids.isNotEmpty() && ids.size <= ID_GET_FANOUT &&
             kinds.isEmpty() && notKinds.isEmpty() && authors.isEmpty() && owners.isEmpty() &&
             tags.isEmpty() && tagsAll.isEmpty() &&
@@ -642,23 +592,15 @@ class VespaEventIndex(
         visitPages(selection, fieldSet) { documents ->
             val page =
                 documents.mapNotNull { d ->
-                    val obj = d.jsonObject
-                    val id = obj["id"]?.jsonPrimitive?.content?.substringAfterLast(":") ?: return@mapNotNull null
-                    val fields = obj["fields"]?.jsonObject
-                    val at = fields?.get("created_at")?.jsonPrimitive?.long ?: return@mapNotNull null
+                    if (d.id.isEmpty()) return@mapNotNull null
+                    val at = d.fields?.createdAt ?: return@mapNotNull null
                     val dTag =
                         if (withDTag) {
-                            fields["tag_index"]
-                                ?.jsonArray
-                                ?.firstNotNullOfOrNull { t ->
-                                    t.jsonPrimitive.content
-                                        .takeIf { it.startsWith("d:") }
-                                        ?.substring(2)
-                                }
+                            d.fields.tagIndex?.firstNotNullOfOrNull { t -> t.takeIf { it.startsWith("d:") }?.substring(2) }
                         } else {
                             null
                         }
-                    DocRef(id, at, dTag)
+                    DocRef(d.id.substringAfterLast(":"), at, dTag)
                 }
             page.isEmpty() || onPage(page)
         }
@@ -666,7 +608,8 @@ class VespaEventIndex(
 
     /**
      * Page every match of [selection] out of the document-API visit, calling
-     * [onDocuments] with lists of raw document objects (`{"id": …, "fields": …}`);
+     * [onDocuments] with lists of lean [VisitedDoc]s (typed line/page decode —
+     * no JsonElement tree per doc on a path that walks whole corpora);
      * a false return stops the walk. The shared engine behind [visitIds] and
      * [scanAuthors].
      *
@@ -685,10 +628,10 @@ class VespaEventIndex(
     private suspend fun visitPages(
         selection: String,
         fieldSet: String,
-        onDocuments: suspend (List<JsonElement>) -> Boolean,
+        onDocuments: suspend (List<VisitedDoc>) -> Boolean,
     ): Unit =
         coroutineScope {
-            val pages = Channel<List<JsonElement>>(visitSlices)
+            val pages = Channel<List<VisitedDoc>>(visitSlices)
             val producers =
                 launch {
                     try {
@@ -729,14 +672,14 @@ class VespaEventIndex(
     private suspend fun pagedWalk(
         selection: String,
         fieldSet: String,
-        emit: suspend (List<JsonElement>) -> Unit,
+        emit: suspend (List<VisitedDoc>) -> Unit,
     ) {
         val base =
             "${endpoint()}/document/v1/$NAMESPACE/$DOCTYPE/docid" +
                 "?selection=${URLEncoder.encode(selection, "UTF-8")}" +
                 "&wantedDocumentCount=$VISIT_PAGE" +
                 "&fieldSet=${URLEncoder.encode(fieldSet, "UTF-8")}" +
-                // UNDER the client's read deadline (see [visitHttp]): a sparse
+                // UNDER the client's read deadline (VespaHttp's visit client): a sparse
                 // selection can honestly spend ages filling a page, and the
                 // server's default (180s) outlives the 120s read timeout — the
                 // client would kill and retry the identical request forever.
@@ -746,11 +689,11 @@ class VespaEventIndex(
                 "&concurrency=$visitConcurrency"
         var continuation: String? = null
         while (true) {
-            val resp = sendVisit(continuation?.let { "$base&continuation=$it" } ?: base)
+            val resp = http.getVisit(continuation?.let { "$base&continuation=$it" } ?: base)
             require(resp.statusCode() < 400) { "vespa visit ${resp.statusCode()}: ${resp.body().take(300)}" }
-            val json = Json.parseToJsonElement(resp.body()).jsonObject
-            json["documents"]?.jsonArray?.takeIf { it.isNotEmpty() }?.let { emit(it) }
-            continuation = json["continuation"]?.jsonPrimitive?.content ?: return
+            val env = DECODER.decodeFromString<PagedVisitEnvelope>(resp.body())
+            if (env.documents.isNotEmpty()) emit(env.documents.map { VisitedDoc(it.id, it.fields) })
+            continuation = env.continuation ?: return
         }
     }
 
@@ -781,7 +724,7 @@ class VespaEventIndex(
         selection: String,
         fieldSet: String,
         sliceId: Int,
-        emit: suspend (List<JsonElement>) -> Unit,
+        emit: suspend (List<VisitedDoc>) -> Unit,
     ): Boolean {
         val base =
             "${endpoint()}/document/v1/$NAMESPACE/$DOCTYPE/docid" +
@@ -793,7 +736,7 @@ class VespaEventIndex(
         var failures = 0
         // Docs since the last continuation line: certain to be exactly the one
         // in-flight bucket (concurrency=1), so at most a few hundred docs.
-        val uncertified = ArrayList<JsonElement>()
+        val uncertified = ArrayList<VisitedDoc>()
 
         suspend fun certify(upToToken: String?) {
             if (uncertified.isNotEmpty()) {
@@ -854,8 +797,8 @@ class VespaEventIndex(
 
     /**
      * One streamed request: open, read JSON-Lines until the stream ends, and
-     * classify how it ended. Put lines land in [into] (adapted to the paged
-     * walk's `{"id": …, "fields": …}` document shape); each continuation line
+     * classify how it ended. Put lines land in [into] as lean [VisitedDoc]s
+     * (typed decode, no JsonElement tree per doc); each continuation line
      * fires [onContinuation] with its token (null on the final 100% marker,
      * which certifies the tail). Blocking reads run on [Dispatchers.IO]; a
      * cancelled coroutine aborts the in-flight call via the guard child, which
@@ -863,12 +806,12 @@ class VespaEventIndex(
      */
     private suspend fun streamOnce(
         url: String,
-        into: MutableList<JsonElement>,
+        into: MutableList<VisitedDoc>,
         onContinuation: suspend (String?) -> Unit,
     ): StreamEnd =
         withContext(Dispatchers.IO) {
             val call =
-                visitHttp.newCall(
+                http.newVisitCall(
                     Request
                         .Builder()
                         .url(url)
@@ -909,24 +852,21 @@ class VespaEventIndex(
                         // A stream cut mid-line leaves a truncated tail that no
                         // longer parses — that is an interruption to resume
                         // from, not a fatal decode error.
-                        val obj = runCatching { Json.parseToJsonElement(line).jsonObject }.getOrNull() ?: break
+                        val obj = runCatching { DECODER.decodeFromString<StreamLine>(line) }.getOrNull() ?: break
                         when {
-                            "put" in obj -> {
-                                val fields = obj["fields"] ?: continue
-                                into += JsonObject(mapOf("id" to (obj["put"] ?: continue), "fields" to fields))
+                            obj.put != null -> {
+                                into += VisitedDoc(obj.put, obj.fields ?: continue)
                             }
 
-                            "continuation" in obj -> {
-                                val c = obj["continuation"]?.jsonObject
-                                val t = c?.get("token")?.jsonPrimitive?.content
+                            obj.continuation != null -> {
+                                val t = obj.continuation.token
                                 onContinuation(t)
                                 if (t == null) complete = true // the final 100% marker carries no token
                             }
 
-                            "message" in obj -> {
-                                val m = obj["message"]?.jsonObject
-                                if (m?.get("severity")?.jsonPrimitive?.content == "error") {
-                                    throw IOException("vespa streamed visit error: ${m["text"]?.jsonPrimitive?.content}")
+                            obj.message != null -> {
+                                if (obj.message.severity == "error") {
+                                    throw IOException("vespa streamed visit error: ${obj.message.text}")
                                 }
                             }
 
@@ -939,6 +879,33 @@ class VespaEventIndex(
                 guard.cancel()
             }
         }
+
+    /**
+     * One page of FULL docs through the document API's visit — the reindex
+     * primitive. `[document]` selects every real document field (the search
+     * columns included: they are stored fields, written by [putOp]), so the
+     * page decodes through the same [VespaSummary] a get returns. The
+     * continuation token rides in [DocsPage.continuation], opaque to callers.
+     * Server timeout and bucket concurrency follow [pagedWalk]'s reasoning.
+     */
+    override suspend fun visitDocsPage(
+        query: EventQuery,
+        resumeFrom: String?,
+        maxDocs: Int,
+    ): DocsPage {
+        val selection = EventSelection.build(query) ?: return super.visitDocsPage(query, resumeFrom, maxDocs)
+        val base =
+            "${endpoint()}/document/v1/$NAMESPACE/$DOCTYPE/docid" +
+                "?selection=${URLEncoder.encode(selection, "UTF-8")}" +
+                "&wantedDocumentCount=${maxDocs.coerceIn(1, VISIT_PAGE)}" +
+                "&fieldSet=${URLEncoder.encode("[document]", "UTF-8")}" +
+                "&timeout=$VISIT_SERVER_TIMEOUT_SECONDS" +
+                "&concurrency=$visitConcurrency"
+        val resp = http.getVisit(resumeFrom?.let { "$base&continuation=$it" } ?: base)
+        require(resp.statusCode() < 400) { "vespa visit ${resp.statusCode()}: ${resp.body().take(300)}" }
+        val env = DECODER.decodeFromString<DocVisitEnvelope>(resp.body())
+        return DocsPage(env.documents.mapNotNull { it.fields?.toDoc() }, env.continuation)
+    }
 
     override suspend fun count(query: EventQuery): Int {
         // A grouping count() over the full match set — NOT root.totalCount, which
@@ -1039,14 +1006,7 @@ class VespaEventIndex(
         val selection = EventSelection.build(query) ?: return super.scanAuthors(query)
         val authors = HashSet<String>()
         visitPages(selection, "$DOCTYPE:pubkey") { documents ->
-            documents.forEach { d ->
-                d.jsonObject["fields"]
-                    ?.jsonObject
-                    ?.get("pubkey")
-                    ?.jsonPrimitive
-                    ?.content
-                    ?.let { authors += it }
-            }
+            documents.forEach { d -> d.fields?.pubkey?.let { authors += it } }
             true
         }
         return authors
@@ -1069,16 +1029,11 @@ class VespaEventIndex(
                 put("ranking", vq.ranking)
                 vq.params.forEach { (k, v) -> put(k, v) }
             }.toString()
-        val req =
-            Request
-                .Builder()
-                .url("${endpoint()}/search/")
-                .post(body.toRequestBody(jsonMedia))
-                .build()
         // A busy engine sheds load transiently (504 "Summary data is
         // incomplete" under heavy concurrent summary fills). One failed page
-        // must not kill a whole multi-hour sync, so 5xx gets brief retries.
-        val resp = sendRetrying(req)
+        // must not kill a whole multi-hour sync, so 5xx gets brief retries
+        // (inside VespaHttp).
+        val resp = http.postJson("${endpoint()}/search/", body)
         require(resp.statusCode() < 400) { "vespa search ${resp.statusCode()}: ${resp.body().take(300)}" }
         return resp.body()
     }
@@ -1170,132 +1125,11 @@ class VespaEventIndex(
         return RawEvent(id, pubkey, createdAt, kind, tags, content, sig)
     }
 
-    private suspend fun send(url: String): HttpResp =
-        sendRetrying(
-            Request
-                .Builder()
-                .url(url)
-                .get()
-                .build(),
-        )
-
-    /** [send] on the [visitHttp] client — visit page requests carry a read deadline (see [visitHttp]). */
-    private suspend fun sendVisit(url: String): HttpResp =
-        sendRetrying(
-            Request
-                .Builder()
-                .url(url)
-                .get()
-                .build(),
-            visitHttp,
-        )
-
-    /**
-     * Send [req], briefly retrying transient overload: 5xx (the engine sheds
-     * load under heavy concurrent summary fills) AND 429 (the document API
-     * rejects past 256 enqueued requests — pushback, not failure). Shared by the
-     * query, get, and visit paths. The full-corpus visit walk is exactly a place
-     * where one 504/429 page must not abort the whole scan.
-     *
-     * Transport [IOException]s are retried on the same budget. A response body that
-     * stalls past the read timeout is the same class of transient overload as a 503
-     * — the engine was too busy to finish streaming — and it arrives as an exception
-     * rather than a status code, so treating it as fatal would abort a visit walk
-     * for a condition the next attempt usually clears.
-     */
-    private suspend fun sendRetrying(
-        req: Request,
-        client: OkHttpClient = http,
-    ): HttpResp {
-        var attempt = 0
-        while (true) {
-            val resp =
-                try {
-                    client.newCall(req).await()
-                } catch (e: IOException) {
-                    if (attempt++ >= QUERY_RETRIES) throw e
-                    delay(500L * attempt)
-                    continue
-                }
-            if ((resp.statusCode() in 500..599 || resp.statusCode() == 429) && attempt++ < QUERY_RETRIES) {
-                delay(500L * attempt)
-                continue
-            }
-            return resp
-        }
-    }
-
-    /** Minimal response holder so the get/search/visit/count call sites keep their JDK-style statusCode()/body() shape. */
-    private class HttpResp(
-        private val code: Int,
-        private val bodyText: String,
-    ) {
-        fun statusCode() = code
-
-        fun body() = bodyText
-    }
-
-    /**
-     * Bridge OkHttp's async [Call.enqueue] to a cancellable suspend. The body is
-     * read on OkHttp's callback thread (inside [Response.use] so the connection is
-     * released), so the whole read stays non-blocking, exactly as the old
-     * `sendAsync(...).await()` did.
-     *
-     * [onResponse] must complete the continuation on EVERY path, including a body
-     * read that throws. OkHttp sets its internal `signalledCallback` flag *before*
-     * invoking [onResponse], so anything thrown in here is only logged
-     * ("Callback failure for call to …", at INFO) and is NEVER routed to
-     * [onFailure]. An unguarded `body.string()` that times out mid-stream would
-     * therefore leave this coroutine suspended forever — the same
-     * hang-behind-the-single-writer-store deadlock that [feedParams] guards on the
-     * write path, reached by a different door.
-     */
-    private suspend fun Call.await(): HttpResp =
-        suspendCancellableCoroutine { cont ->
-            cont.invokeOnCancellation { runCatching { cancel() } }
-            enqueue(
-                object : Callback {
-                    override fun onFailure(
-                        call: Call,
-                        e: IOException,
-                    ) {
-                        if (!cont.isCancelled) cont.resumeWithException(e)
-                    }
-
-                    override fun onResponse(
-                        call: Call,
-                        response: Response,
-                    ) {
-                        val result = runCatching { response.use { HttpResp(it.code, it.body.string()) } }
-                        if (cont.isCancelled) return
-                        result
-                            .onSuccess { cont.resume(it) }
-                            .onFailure { cont.resumeWithException(it) }
-                    }
-                },
-            )
-        }
-
-    /**
-     * One-line feed-client health for status lines: cumulative acks, the LIVE
-     * in-flight window, and per-request HTTP latency. Together these tell "the
-     * engine is slow" apart from "the client isn't pushing" at a glance. A
-     * starved window shows tiny inflight at low latency; a saturated engine
-     * shows a big window at high latency.
-     */
-    fun feedGauge(): String {
-        val s = feed.stats()
-        // Non-2xx responses get retried and usually succeed: pushback, not
-        // loss (a big window ramping down shows a burst of 429s here). Only
-        // transport exceptions are worth shouting about.
-        val retried = s.responses() - s.successes()
-        return "feed ok ${s.successes()} inflight ${s.inflight()} lat ${s.averageLatencyMillis()}ms" +
-            (if (retried > 0) " retry $retried" else "") +
-            if (s.exceptions() > 0) " EXC ${s.exceptions()}" else ""
-    }
+    /** One-line feed-client health for status lines; see [VespaFeed.gauge]. */
+    fun feedGauge(): String = feed.gauge()
 
     /** Graceful: waits for in-flight feed operations before closing the connections. */
-    override fun close() = feed.close(true)
+    override fun close() = feed.close()
 
     // --- streaming decode DTOs (avoid the JsonElement tree on the recall path) ---
 
@@ -1342,6 +1176,65 @@ class VespaEventIndex(
         val fields: VespaSummary? = null,
     )
 
+    /** One projected doc off a visit page or stream — the lean carrier [visitPages] hands its consumer. */
+    private class VisitedDoc(
+        val id: String,
+        val fields: VisitFields?,
+    )
+
+    /** The projected fields the walks ask for (`created_at[,tag_index]` / `pubkey`); everything else is server-trimmed. */
+    @Serializable
+    private class VisitFields(
+        @SerialName("created_at") val createdAt: Long? = null,
+        @SerialName("tag_index") val tagIndex: List<String>? = null,
+        val pubkey: String? = null,
+    )
+
+    /** A paged visit response: projected docs plus the continuation. */
+    @Serializable
+    private class PagedVisitEnvelope(
+        val documents: List<PagedVisitDoc> = emptyList(),
+        val continuation: String? = null,
+    )
+
+    @Serializable
+    private class PagedVisitDoc(
+        val id: String = "",
+        val fields: VisitFields? = null,
+    )
+
+    /** One JSON-Lines stream line: exactly one of put/continuation/message is set; anything else (sessionStats) decodes all-null. */
+    @Serializable
+    private class StreamLine(
+        val put: String? = null,
+        val fields: VisitFields? = null,
+        val continuation: StreamContinuation? = null,
+        val message: StreamMessage? = null,
+    )
+
+    @Serializable
+    private class StreamContinuation(
+        val token: String? = null,
+    )
+
+    @Serializable
+    private class StreamMessage(
+        val severity: String? = null,
+        val text: String? = null,
+    )
+
+    /** A `[document]` visit page: full summaries plus the continuation ([visitDocsPage]). */
+    @Serializable
+    private class DocVisitEnvelope(
+        val documents: List<DocVisitDoc> = emptyList(),
+        val continuation: String? = null,
+    )
+
+    @Serializable
+    private class DocVisitDoc(
+        val fields: VespaSummary? = null,
+    )
+
     /**
      * The summary a hit/doc carries (unknown keys ignored by [DECODER]). The
      * recall path's trimmed select returns only the NIP-01 fields, so the search
@@ -1383,13 +1276,6 @@ class VespaEventIndex(
         /** Newest first (created_at desc, id asc tiebreak) — the same order the search path and the store apply. */
         val NEWEST_FIRST = compareByDescending(EventDoc::createdAt).thenBy(EventDoc::id)
 
-        /**
-         * Concurrent requests to the engine, total and per host — the same
-         * number, because every request goes to the same host and the per-host
-         * limit is therefore the only one that binds.
-         */
-        const val MAX_CONCURRENT_REQUESTS = 1024
-
         /** Docs asked for per visit response (Vespa's per-request ceiling is 1024). */
         const val VISIT_PAGE = 1024
 
@@ -1411,15 +1297,7 @@ class VespaEventIndex(
          */
         const val VISIT_CONCURRENCY = 8
 
-        /**
-         * Read deadline for visit requests ([visitHttp]): pages are small and
-         * streams deliver continuously, so this much silence means a wedged
-         * visitor session, not a busy engine. Generous enough for a loaded
-         * node's worst honest page.
-         */
-        const val VISIT_READ_TIMEOUT_SECONDS = 120L
-
-        /** Server-side timeout on paged visit requests — strictly under [VISIT_READ_TIMEOUT_SECONDS], see [pagedWalk]. */
+        /** Server-side timeout on paged visit requests — strictly under VespaHttp's visit read deadline, see [pagedWalk]. */
         const val VISIT_SERVER_TIMEOUT_SECONDS = 90L
 
         /**
@@ -1432,16 +1310,6 @@ class VespaEventIndex(
 
         /** Brief 5xx retries per query (transient engine load-shedding, not correctness). */
         const val QUERY_RETRIES = 3
-
-        /**
-         * Liveness probe on the read connection, in place of the read/whole-call
-         * deadlines a query is no longer allowed to have. Unanswered HTTP/2 PINGs
-         * fail the connection with a ProtocolException, which [sendRetrying]
-         * retries — so a severed or black-holed socket is caught in seconds while a
-         * legitimately long query runs undisturbed. That distinction is the whole
-         * point: a deadline cannot make it, a ping can.
-         */
-        const val PING_INTERVAL_SECONDS = 15L
 
         /**
          * Per-operation feed deadline. The feed client's retry strategy handles

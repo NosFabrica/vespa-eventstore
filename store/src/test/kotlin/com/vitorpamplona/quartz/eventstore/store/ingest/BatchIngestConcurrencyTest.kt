@@ -18,8 +18,9 @@
  * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package com.vitorpamplona.quartz.eventstore.store
+package com.vitorpamplona.quartz.eventstore.store.ingest
 
+import com.vitorpamplona.quartz.eventstore.store.NostrSemanticsStore
 import com.vitorpamplona.quartz.eventstore.vespa.InMemoryEventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.client.EventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.doc.EventDoc
@@ -130,7 +131,7 @@ class BatchIngestConcurrencyTest {
         runTest {
             for (c in listOf(1, 2, 4, 8)) {
                 seq = 0
-                val store = NostrEventStore(LatencyEventIndex(InMemoryEventIndex(), lat), relay = relayUrl)
+                val store = NostrSemanticsStore(LatencyEventIndex(InMemoryEventIndex(), lat), relay = relayUrl)
                 val batches = (0 until c).map { p -> scoreBatch(provider(p), count = 20) }
                 val start = testScheduler.currentTime
                 val jobs = batches.map { b -> launch { store.batchInsert(b) } }
@@ -154,14 +155,14 @@ class BatchIngestConcurrencyTest {
             val n = 60
 
             seq = 0
-            val cleanStore = NostrEventStore(LatencyEventIndex(InMemoryEventIndex(), lat), relay = relayUrl)
+            val cleanStore = NostrSemanticsStore(LatencyEventIndex(InMemoryEventIndex(), lat), relay = relayUrl)
             val cleanBatch = scoreBatch(provider(1), count = n)
             val t0 = testScheduler.currentTime
             cleanStore.batchInsert(cleanBatch)
             val cleanMs = testScheduler.currentTime - t0
 
             seq = 0
-            val mixedStore = NostrEventStore(LatencyEventIndex(InMemoryEventIndex(), lat), relay = relayUrl)
+            val mixedStore = NostrSemanticsStore(LatencyEventIndex(InMemoryEventIndex(), lat), relay = relayUrl)
             // Every other event is a kind-5 deletion of an id we don't hold —
             // exactly the outbox stream's shape, and the worst case for run-splitting.
             val mixed =
@@ -187,21 +188,23 @@ class BatchIngestConcurrencyTest {
 
     /**
      * The throughput target: batches from DISTINCT providers touch disjoint
-     * addresses, so their read checks have no reason to serialize. Once the
-     * reads run outside the write lock, 8 concurrent batches must cost far less
-     * than 8x a single batch — here, under 3x. Fails while reads are locked.
+     * addresses, so their dedup reads have no reason to serialize. The
+     * one-time guard-bloom load is warmed OUT of both measurements — it is a
+     * per-process constant, not per-batch behavior.
      */
     @Test
     fun `concurrent batches over disjoint addresses overlap their reads`() =
         runTest {
             seq = 0
-            val one = NostrEventStore(LatencyEventIndex(InMemoryEventIndex(), lat), relay = relayUrl)
+            val one = NostrSemanticsStore(LatencyEventIndex(InMemoryEventIndex(), lat), relay = relayUrl)
+            one.batchInsert(scoreBatch(provider(9), count = 20))
             val t0 = testScheduler.currentTime
             one.batchInsert(scoreBatch(provider(0), count = 20)).let { }
             val single = testScheduler.currentTime - t0
 
             seq = 0
-            val many = NostrEventStore(LatencyEventIndex(InMemoryEventIndex(), lat), relay = relayUrl)
+            val many = NostrSemanticsStore(LatencyEventIndex(InMemoryEventIndex(), lat), relay = relayUrl)
+            many.batchInsert(scoreBatch(provider(9), count = 20))
             val c = 8
             val batches = (0 until c).map { p -> scoreBatch(provider(p), count = 20) }
             val t1 = testScheduler.currentTime
@@ -209,14 +212,17 @@ class BatchIngestConcurrencyTest {
             val concurrent = testScheduler.currentTime - t1
 
             println("[ingest] single=$single  x${c}concurrent=$concurrent  ratio=${concurrent.toDouble() / single}")
-            // Fully serialized would be 8x (ratio 8.0). With dedup + guards moved
-            // out of the writer lock, the reads overlap and only the supersession
-            // read + write serialize, so 8 disjoint batches must land well under
-            // linear. (Pushing supersession off the lock too — engine-side
-            // conditional puts — is the follow-up that would approach ~2x.)
+            // Fully serialized would be 8x. The dedup read overlaps; the guard
+            // stage costs ZERO queries for unflagged owners but sits under the
+            // lock BY DESIGN (a lock-free guard read lets a racing deletion be
+            // overlooked — see BulkRecordInsert), as do supersession and the
+            // write. With one of a batch's three round trips overlapped, 8
+            // disjoint batches land near (1 + 8*2)/3 = 5.7x; assert well under
+            // serialized with headroom. (Engine-side conditional puts are the
+            // follow-up that would shrink the locked share further.)
             assertTrue(
-                concurrent < single * 4,
-                "8 disjoint-provider batches took ${concurrent}ms vs ${single}ms for one (ratio ${concurrent.toDouble() / single}) - reads still serializing under the write lock (expected < ${single * 4})",
+                concurrent < single * 6.5,
+                "8 disjoint-provider batches took ${concurrent}ms vs ${single}ms for one (ratio ${concurrent.toDouble() / single}) - dedup reads serializing under the write lock (expected < ${single * 6.5})",
             )
         }
 
@@ -232,7 +238,7 @@ class BatchIngestConcurrencyTest {
         runTest {
             seq = 0
             val index = InMemoryEventIndex()
-            val store = NostrEventStore(LatencyEventIndex(index, lat), relay = relayUrl)
+            val store = NostrSemanticsStore(LatencyEventIndex(index, lat), relay = relayUrl)
             val subject = "%064x".format(7)
 
             fun cardBatch(at: Long) =

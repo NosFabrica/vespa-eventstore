@@ -20,6 +20,7 @@
  */
 package com.vitorpamplona.quartz.eventstore.store
 
+import com.vitorpamplona.quartz.eventstore.store.mapping.addressOrNull
 import com.vitorpamplona.quartz.eventstore.vespa.InMemoryEventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.client.EventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.doc.EventDoc
@@ -45,7 +46,7 @@ import kotlin.test.assertTrue
  * each test names the sqlite ...Module.kt rule it mirrors. Events are unsigned
  * fixtures: like the SQLite store, verification is the ingest path's job.
  */
-open class NostrEventStoreTest {
+open class NostrSemanticsStoreTest {
     private val alice = "a1".repeat(32)
     private val bob = "b2".repeat(32)
 
@@ -57,11 +58,11 @@ open class NostrEventStoreTest {
 
     private fun id() = (++seq).toString(16).padStart(64, '0')
 
-    /** Override to run the WHOLE semantics suite against another engine (see NostrEventStoreWireTest). */
+    /** Override to run the WHOLE semantics suite against another engine (see NostrSemanticsStoreWireTest). */
     protected open fun newIndex(): EventIndex = InMemoryEventIndex()
 
     protected val index: EventIndex by lazy { newIndex() }
-    private val store by lazy { NostrEventStore(index, relay = "wss://sot.test/".normalizeRelayUrl()) }
+    private val store by lazy { NostrSemanticsStore(index, relay = "wss://sot.test/".normalizeRelayUrl()) }
 
     private fun storedDocs() = runBlocking { index.count(EventQuery()) }
 
@@ -232,7 +233,7 @@ open class NostrEventStoreTest {
                 store.insert(note(tags = arrayOf(arrayOf("expiration", "${realNow - 10}"))))
             }
 
-            val lateStore = NostrEventStore(index, nowSecs = { realNow + 100_000 })
+            val lateStore = NostrSemanticsStore(index, nowSecs = { realNow + 100_000 })
             val expiring = note(tags = arrayOf(arrayOf("expiration", "${realNow + 50_000}")))
             val keeper = note()
             store.insert(expiring)
@@ -358,7 +359,7 @@ open class NostrEventStoreTest {
             store.insert(keeper)
 
             // Same index, clock past the expiration, no sweep has run:
-            val lateStore = NostrEventStore(index, nowSecs = { realNow + 100_000 })
+            val lateStore = NostrSemanticsStore(index, nowSecs = { realNow + 100_000 })
             assertEquals(setOf(keeper.id), lateStore.query<Event>(Filter(kinds = listOf(1))).map { it.id }.toSet())
             assertEquals(1, lateStore.count(Filter(kinds = listOf(1))))
             // The doc is still stored (the sweep hasn't run) — only serving is guarded.
@@ -414,5 +415,40 @@ open class NostrEventStoreTest {
                 cursor = progress.cursor
             } while (!progress.done)
             assertEquals(1, store.count(Filter(search = "satoshi")))
+        }
+
+    /** A present limit <= 0 is the "matches nothing" sentinel on EVERY recall path — never an exception, never a full result. */
+    @Test
+    fun `a non-positive limit matches nothing instead of throwing`() =
+        runBlocking {
+            val n = note(at = 100)
+            store.insert(n)
+            assertEquals(0, store.query<Event>(Filter(ids = listOf(n.id), limit = -1)).size, "pure-id fast path")
+            assertEquals(0, store.query<Event>(Filter(kinds = listOf(1), limit = 0)).size, "search path")
+            assertEquals(0, store.count(Filter(kinds = listOf(1), limit = -1)))
+            assertEquals(0, store.count(listOf(Filter(kinds = listOf(1), limit = -1), Filter(kinds = listOf(999)))))
+        }
+
+    /**
+     * NIP-45: COUNT == the REQ's feed, EXACTLY — same limits, same gates, same
+     * cross-filter dedup. The number a client could verify by running the REQ.
+     */
+    @Test
+    fun `count equals the REQ feed exactly`() =
+        runBlocking {
+            (1..5).forEach { store.insert(note(at = 100L + it, content = "hello world $it")) }
+            val limited = Filter(kinds = listOf(1), limit = 2)
+            val all = Filter(kinds = listOf(1))
+            val searching = Filter(kinds = listOf(1), search = "hello")
+            assertEquals(store.query<Event>(limited).size, store.count(limited), "limited")
+            assertEquals(2, store.count(limited), "the feed caps at the limit, so the count does")
+            assertEquals(store.query<Event>(all).size, store.count(all), "unbounded")
+            assertEquals(5, store.count(all))
+            assertEquals(store.query<Event>(searching).size, store.count(searching), "searching")
+            // Multi-filter: the union of the SERVED pages, deduped — filters
+            // overlap, so the count is the feed's size, not the sum.
+            val filters = listOf(limited, all)
+            assertEquals(store.query<Event>(filters).size, store.count(filters), "multi-filter dedup")
+            assertEquals(5, store.count(filters))
         }
 }

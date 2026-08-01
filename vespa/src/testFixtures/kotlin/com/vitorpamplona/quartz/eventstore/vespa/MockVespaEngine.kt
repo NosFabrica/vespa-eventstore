@@ -421,7 +421,8 @@ class MockVespaEngine {
         // doctype prefixes the list ONCE. A repeated "event:" on a later field (the
         // classic bug) is ILLEGAL_PARAMETERS, so reject it here too instead of
         // leniently matching `.contains("tag_index")`.
-        if (fieldSet.isNotEmpty()) {
+        val fullDocument = fieldSet == "[document]" // every real document field, like a doc-API get
+        if (fieldSet.isNotEmpty() && !fullDocument) {
             val fields = fieldSet.substringAfter(":", "").split(",")
             if (!fieldSet.contains(":") || fields.any { ":" in it }) {
                 return Reply(400, """{"message":"ILLEGAL_PARAMETERS: bad fieldSet '$fieldSet'"}""")
@@ -458,9 +459,13 @@ class MockVespaEngine {
                                 put("id", JsonPrimitive("id:event:event::${doc.id}"))
                                 put(
                                     "fields",
-                                    buildJsonObject {
-                                        put("created_at", JsonPrimitive(doc.createdAt))
-                                        if (withTagIndex) put("tag_index", JsonArray(doc.tagIndex().map(::JsonPrimitive)))
+                                    if (fullDocument) {
+                                        doc.indexFields()
+                                    } else {
+                                        buildJsonObject {
+                                            put("created_at", JsonPrimitive(doc.createdAt))
+                                            if (withTagIndex) put("tag_index", JsonArray(doc.tagIndex().map(::JsonPrimitive)))
+                                        }
                                     },
                                 )
                             }
@@ -569,6 +574,10 @@ object MockSelection {
                     q = q.copy(kinds = orGroup(clause, "event.kind==").map { it.toInt() })
                 }
 
+                clause.startsWith("(event.kind!=") -> {
+                    q = q.copy(notKinds = clause.removeSurrounding("(", ")").split(" and ").map { it.removePrefix("event.kind!=").toInt() })
+                }
+
                 clause.startsWith("(event.pubkey==") -> {
                     q = q.copy(authors = orGroup(clause, "event.pubkey==").map(::unquote))
                 }
@@ -666,7 +675,7 @@ object MockYql {
             limit = it.groupValues[1].toInt()
             rest = rest.removeRange(it.range)
         }
-        rest = rest.removeSuffix(" order by created_at desc")
+        rest = rest.removeSuffix(" order by created_at desc, id asc")
 
         var q = EventQuery(limit = limit)
         if (rest == "true") return q

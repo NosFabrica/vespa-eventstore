@@ -30,6 +30,7 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
  * [VespaEventIndex] against [MockVespaEngine]: every operation goes over real
@@ -272,6 +273,36 @@ class VespaEventIndexTest {
             seed(doc())
             assertEquals(emptyList(), index.search(EventQuery(authors = listOf("not-hex"))))
             assertEquals(0, index.count(EventQuery(limit = 0)))
+        }
+
+    /**
+     * A trust-ranked match-all (`sort:rank` — ranking set, no search terms) is
+     * ordered by SCORE, not recency: the planner must never window it, or every
+     * hit older than the probe window silently disappears from "who does my
+     * observer rank highest".
+     */
+    @Test
+    fun `recency planner never windows a ranked query`() =
+        runBlocking {
+            val now = System.currentTimeMillis() / 1000
+            // Dense enough that the one-hour probe rung would "prove" a window.
+            seed(*(1..30).map { doc(kind = 1, at = now - it) }.toTypedArray())
+            val ancient = doc(kind = 1, at = 1000) // the hit a window would drop
+            seed(ancient)
+            val planned = VespaEventIndex(mock.url)
+            val unplanned = VespaEventIndex(mock.url, queryPlanning = false)
+            try {
+                val q = EventQuery(kinds = listOf(1), ranking = EventYql.RANK_DESC, limit = 40)
+                assertEquals(
+                    unplanned.search(q).map { it.id }.toSet(),
+                    planned.search(q).map { it.id }.toSet(),
+                    "a ranked query must not be recency-windowed",
+                )
+                assertTrue(planned.search(q).any { it.id == ancient.id }, "ranked recall must include hits older than the probe window")
+            } finally {
+                planned.close()
+                unplanned.close()
+            }
         }
 
     /**

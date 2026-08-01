@@ -18,8 +18,11 @@
  * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package com.vitorpamplona.quartz.eventstore.store
+package com.vitorpamplona.quartz.eventstore.store.mapping
 
+import com.vitorpamplona.quartz.eventstore.store.NostrSemanticsStore
+import com.vitorpamplona.quartz.eventstore.store.RejectedException
+import com.vitorpamplona.quartz.eventstore.store.Rejections
 import com.vitorpamplona.quartz.eventstore.vespa.InMemoryEventIndex
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
@@ -178,6 +181,19 @@ class VespaTextTest {
     }
 
     @Test
+    fun `a lone surrogate is illegal but a paired one is a character`() {
+        // Unpaired halves have no UTF-8 encoding: past this gate they either
+        // corrupt the signed content ('?' substitution) or throw mid-batch.
+        assertEquals(0xD800, VespaText.firstIllegalCodePoint("a\uD800b"))
+        assertEquals(0xDFFF, VespaText.firstIllegalCodePoint("\uDFFF"))
+        assertEquals("ab", VespaText.sanitize("a\uD800b"))
+        // A proper pair decodes to one astral character and stays legal.
+        val emoji = "\uD83D\uDE00"
+        assertNull(VespaText.firstIllegalCodePoint(emoji))
+        assertSame(emoji, VespaText.sanitize(emoji))
+    }
+
+    @Test
     fun `clean text comes back as the very same instance`() {
         // The fast path — this runs on every derived field of every event.
         val s = "nothing to strip"
@@ -195,7 +211,7 @@ class VespaTextTest {
 
     // ---- the store rejects rather than throwing -----------------------------
 
-    private fun store() = NostrEventStore(InMemoryEventIndex(), relay = relayUrl)
+    private fun store() = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
 
     @Test
     fun `bulk insert rejects the bad event and stores the rest of the batch`() =

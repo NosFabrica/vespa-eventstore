@@ -29,7 +29,7 @@ import kotlinx.coroutines.runBlocking
  * `BENCH_ADDR_SMOKE=1` (run with `VESPA_ADDRESS_KEYED=1`): a LIVE end-to-end
  * check of the address-keyed store path the in-memory suite can't exercise —
  * per-event replaceable newest-wins, addressability by BOTH id and address, and
- * stale rejection, straight through NostrEventStore against a real Vespa.
+ * stale rejection, straight through NostrSemanticsStore against a real Vespa.
  */
 object AddrSmokeProbe {
     fun run(url: String) =

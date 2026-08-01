@@ -18,7 +18,7 @@
  * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package com.vitorpamplona.quartz.eventstore.store
+package com.vitorpamplona.quartz.eventstore.store.mapping
 
 import com.vitorpamplona.quartz.eventstore.vespa.doc.EventDoc
 import com.vitorpamplona.quartz.nip01Core.core.Address
@@ -27,12 +27,13 @@ import com.vitorpamplona.quartz.nip01Core.core.isAddressable
 import com.vitorpamplona.quartz.nip01Core.core.isReplaceable
 import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
 import com.vitorpamplona.quartz.nip59Giftwrap.wraps.GiftWrapEvent
+import com.vitorpamplona.quartz.utils.EventFactory
 
 /*
- * Event <-> EventDoc and derived-field helpers. Covers the exact stored form
- * plus the owner (gift-wrap recipient or author), the NIP-01
- * replaceable/addressable address, and the doc-side d-tag reader. Pure, with no
- * store state.
+ * Event <-> EventDoc, both directions, plus the derived-field helpers: the
+ * exact stored form ([toDoc]), the typed reconstruction ([toEvent]), the owner
+ * (gift-wrap recipient or author), and the NIP-01 replaceable/addressable
+ * address. Pure, with no store state.
  */
 
 /**
@@ -67,3 +68,26 @@ internal fun Event.addressOrNull(): String? =
         kind.isAddressable() -> Address.assemble(kind, pubKey, tags.dTag())
         else -> null
     }
+
+/**
+ * Rebuild a stored [EventDoc] into its typed Quartz [Event] — the query result path.
+ *
+ * The obvious `Event.fromJson(toEventJson())` reconstructs by SERIALIZING the doc
+ * to a JSON string and PARSING it back, once per returned event — and on a hot
+ * query path that string + parse is the single biggest source of garbage
+ * (measured ~8x slower and ~5x more allocation per event than building it
+ * directly).
+ *
+ * [EventFactory.create] is Quartz's OWN by-kind dispatch — the same registry
+ * `fromJson` uses to pick the subclass (kind 1 -> TextNoteEvent, 0 ->
+ * MetadataEvent, …) — but invoked straight from the stored fields, with no JSON
+ * in the middle. It covers every known kind and returns a base [Event] for the
+ * rest, so this is both faster AND complete: no hand-maintained kind table, and
+ * the result is identical to what `fromJson` would have produced (pinned by
+ * `EventDocConversionTest`). Those subclass constructors only store the seven
+ * NIP-01 fields; every derived view is computed lazily, so a directly-built
+ * instance is indistinguishable from a parsed one.
+ */
+internal fun EventDoc.toEvent(): Event = EventFactory.create(id, pubkey, createdAt, kind, tagsAsArray(), content, sig)
+
+private fun EventDoc.tagsAsArray(): Array<Array<String>> = Array(tags.size) { tags[it].toTypedArray() }

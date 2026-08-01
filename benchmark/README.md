@@ -23,7 +23,7 @@ against both stores through the shared `IEventStore` interface.
 ## What it measures
 
 1. **Round-trip amplification** — how many engine calls (`get`/`search`/`count`
-   reads, `put`/`remove` writes) `NostrEventStore` makes per event, for the
+   reads, `put`/`remove` writes) `NostrSemanticsStore` makes per event, for the
    per-event `insert()` path vs the bulk `batchInsert()` path. This count is
    **engine-independent** (a property of the store's own logic — each call is one
    Vespa network round-trip or one SQLite statement), so it is the cleanest lens
@@ -704,7 +704,7 @@ Two optimizations roughly **halved per-event allocation on bulk reads**
   fields — no JSON — which covers every kind and returns a base `Event` for
   unknown ones. Reconstruction alone, microbenchmarked over 40k events:
   **313 ns / 120 bytes per event, vs 5,317 ns / 3,892 bytes for the round trip
-  (~17× faster, ~32× less garbage)**. `EventReconstructionTest` pins the factory
+  (~17× faster, ~32× less garbage)**. `EventDocConversionTest` pins the factory
   to `fromJson`'s exact subclass and serialization across kinds. This cut
   kind-scan end-to-end from ~9,200 toward ~6,000 bytes/event.
 - **Streaming response decode** (applied): the recall path parsed each response
@@ -889,7 +889,7 @@ Building this harness turned up a spec-compliance difference. NIP-09 says:
 Given N (note), D1 (kind 5 deleting N), D2 (kind 5 deleting D1):
 
 - **This store keeps `[D1, D2]`** — D2 targeting the deletion D1 is a no-op, per
-  spec. (`NostrEventStore.applyDeletion` skips kind-5/kind-62 targets.)
+  spec. (`NostrSemanticsStore.applyDeletion` skips kind-5/kind-62 targets.)
 - **Quartz's SQLite store keeps `[D2]`** — it has no such guard and erases D1,
   **violating NIP-09**. (Confirmed in `sqlite/DeletionRequestModule.kt`: the
   delete-by-id path has no kind-5/62 exclusion.)

@@ -18,7 +18,7 @@
  * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package com.vitorpamplona.quartz.eventstore.store
+package com.vitorpamplona.quartz.eventstore.store.mapping
 
 import com.vitorpamplona.quartz.nip01Core.core.Event
 
@@ -144,6 +144,13 @@ internal object VespaText {
         when {
             // C0: only tab, newline and carriage return survive.
             cp < 0x20 -> cp == 0x9 || cp == 0xA || cp == 0xD
+
+            // Lone surrogates: codePointAt hands an UNPAIRED half back as-is.
+            // It has no UTF-8 encoding, so it can never reach the engine — the
+            // encoder either mangles it to '?' (the stored content no longer
+            // matches the signature) or throws mid-batch. JSON escapes like
+            // \ud800 produce exactly this shape from ordinary parsers.
+            cp in 0xD800..0xDFFF -> false
 
             // Noncharacters. Verified boundary: 0xFDCF and 0xFDE0 both pass.
             cp in 0xFDD0..0xFDDF -> false

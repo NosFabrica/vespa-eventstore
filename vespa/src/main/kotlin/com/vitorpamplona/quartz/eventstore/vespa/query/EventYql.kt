@@ -147,7 +147,10 @@ object EventYql {
         // No text and no rank profile = plain relay REQ semantics: newest
         // first, no scoring. Anything ranked keeps Vespa's score order.
         // (RANK_RECENCY is unranked-with-match-phase: same order contract.)
-        val order = if (ranking == RANK_UNRANKED || ranking == RANK_RECENCY) " order by created_at desc" else ""
+        // The id tiebreak makes a limit's cut deterministic when it falls inside
+        // a created_at tie — the same (created_at desc, id asc) order the
+        // EventIndex contract promises and the client-side sorts apply.
+        val order = if (ranking == RANK_UNRANKED || ranking == RANK_RECENCY) " order by created_at desc, id asc" else ""
         val limit = q.limit?.let { if (it <= 0) return null else " limit $it" } ?: ""
         return VespaQuery(
             // Only the reconstruction fields, not `*`: the returned summary skips the

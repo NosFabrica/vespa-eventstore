@@ -20,13 +20,22 @@
  */
 package com.vitorpamplona.quartz.eventstore.store
 
-import com.vitorpamplona.quartz.eventstore.vespa.InMemoryEventIndex
+import com.vitorpamplona.quartz.eventstore.store.ingest.BulkMixedInsert
+import com.vitorpamplona.quartz.eventstore.store.ingest.BulkRecordInsert
+import com.vitorpamplona.quartz.eventstore.store.ingest.GuardOwners
+import com.vitorpamplona.quartz.eventstore.store.mapping.SearchExtractors
+import com.vitorpamplona.quartz.eventstore.store.mapping.VespaText
+import com.vitorpamplona.quartz.eventstore.store.mapping.addressOrNull
+import com.vitorpamplona.quartz.eventstore.store.mapping.owner
+import com.vitorpamplona.quartz.eventstore.store.mapping.toDoc
+import com.vitorpamplona.quartz.eventstore.store.mapping.toEvent
+import com.vitorpamplona.quartz.eventstore.store.mapping.toEventQuery
 import com.vitorpamplona.quartz.eventstore.vespa.QUERY_FANOUT
 import com.vitorpamplona.quartz.eventstore.vespa.client.EventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.doc.EventDoc
-import com.vitorpamplona.quartz.eventstore.vespa.doc.SearchFields
 import com.vitorpamplona.quartz.eventstore.vespa.mapBounded
 import com.vitorpamplona.quartz.eventstore.vespa.query.EventQuery
+import com.vitorpamplona.quartz.eventstore.vespa.query.EventYql
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.core.HexKey
 import com.vitorpamplona.quartz.nip01Core.core.isAddressable
@@ -38,7 +47,7 @@ import com.vitorpamplona.quartz.nip01Core.store.FtsReindexProgress
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
-import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
+import com.vitorpamplona.quartz.nip01Core.store.StoreQueryContext
 import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
 import com.vitorpamplona.quartz.nip40Expiration.isExpired
 import com.vitorpamplona.quartz.nip50Search.SearchableEvent
@@ -50,9 +59,11 @@ import kotlinx.coroutines.sync.withLock
 import kotlin.coroutines.coroutineContext
 
 /**
- * Quartz [IEventStore] backed by the search engine itself: ONE copy of the
- * data, queryable with full NIP-01 filters plus NIP-50 search, and wrappable in
- * `ObservableEventStore` like any other store.
+ * The Nostr-semantics layer: a Quartz [IEventStore] backed by the search engine
+ * itself — ONE copy of the data, queryable with full NIP-01 filters plus NIP-50
+ * search, and wrappable in `ObservableEventStore` like any other store. It is
+ * engine-agnostic (any [EventIndex] works, including the in-memory one);
+ * [VespaEventStore.open] is the front door that assembles it over Vespa.
  *
  * It enforces Nostr semantics in [insertLocked]:
  *
@@ -75,7 +86,10 @@ import kotlin.coroutines.coroutineContext
  *  - NIP-50: only kinds implementing [SearchableEvent] are searchable, via
  *    [SearchExtractors], which decomposes each kind's indexable content into the
  *    schema's per-kind search fields. [reindexFullTextSearch] re-derives them
- *    after extractor/Quartz upgrades.
+ *    after extractor/Quartz upgrades. Per the [IEventStore] contract, filters
+ *    arrive with `search` VERBATIM — this store interprets the
+ *    `sort:`/`filter:rank:`/`include:spam`/`observer:` extensions itself and
+ *    ignores ones it doesn't know.
  *
  * Correctness rests on two properties. First, all writes serialize behind one
  * [Mutex], so query-then-write is atomic against other writers in this process.
@@ -86,7 +100,7 @@ import kotlin.coroutines.coroutineContext
  * Events are NOT verified here. Verification is the ingest path's job
  * (syncer/relay), once, before insert.
  */
-class NostrEventStore(
+class NostrSemanticsStore(
     private val index: EventIndex,
     override val relay: NormalizedRelayUrl? = null,
     private val nowSecs: () -> Long = { System.currentTimeMillis() / 1000 },
@@ -108,7 +122,9 @@ class NostrEventStore(
     // NIP-09/62 guard probes entirely (see GuardOwners for the safety argument).
     private val guards = GuardOwners(index)
 
-    private val bulkInsert = BulkInsert(index, relay, guards)
+    private val bulkRecords = BulkRecordInsert(index, relay, guards)
+
+    private val bulkMixed = BulkMixedInsert(index, relay, nowSecs, guards)
 
     override suspend fun insert(event: Event) = writes.withLock { insertLocked(event) }
 
@@ -118,10 +134,10 @@ class NostrEventStore(
      * ingest in the low thousands per second, useless against a million-event
      * sync. Two shapes, by whether the batch mutates via deletions:
      *
-     *  - PURE RECORDS: [BulkInsert] chunks the read checks and pipelines one
-     *    [EventIndex.putAll]; its dedup + guard reads run outside the writer lock
-     *    so parallel relays overlap them.
-     *  - CONTAINS kind 5/62: [bulkMixedInsert] batch-reads the working set and
+     *  - PURE RECORDS: [BulkRecordInsert] chunks the read checks and pipelines
+     *    one [EventIndex.putAll]; its dedup reads run outside the writer lock
+     *    so parallel relays overlap them (guards and supersession stay under it).
+     *  - CONTAINS kind 5/62: [BulkMixedInsert] batch-reads the working set and
      *    replays the per-event rules in memory (order against neighbours — a
      *    deletion targeting an earlier event — preserved), then writes the diff.
      *    A per-event fallback here would collapse ingest on the deletion-heavy
@@ -132,131 +148,15 @@ class NostrEventStore(
     override suspend fun batchInsert(events: List<Event>): List<IEventStore.InsertOutcome> {
         if (events.size < BULK_MIN) return writes.withLock { events.map { tryInsertLocked(it) } }
         return if (events.any { it is DeletionEvent || it is RequestToVanishEvent }) {
-            // A batch that CONTAINS deletions/vanishes. Run-splitting on every
-            // kind 5/62 would leave nothing to batch (an outbox stream is ~98%
-            // kind 5), collapsing ingest to per-event speed. Instead: batch-read
-            // the working set, replay the exact per-event rules in memory, then
-            // write the net diff back in bulk.
-            writes.withLock { bulkMixedInsert(events) }
+            writes.withLock { bulkMixed.run(events) }
         } else {
-            // Pure records. The read checks (dedup + guards) run OUTSIDE the
-            // writer lock so parallel relays' batches overlap them; only the
-            // supersession read+resolve and the writes take the lock
-            // (query-then-write stays atomic — commit sees every prior commit).
-            val plan = bulkInsert.plan(events)
-            writes.withLock { bulkInsert.commit(plan) }
-        }
-    }
-
-    /**
-     * The bulk path for a batch that contains deletions/vanishes: batch-read the
-     * working set those events touch, REPLAY the sequential [insertLocked] rules
-     * against an in-memory snapshot (zero I/O, so intra-batch ordering — a
-     * deletion targeting an earlier event, a tombstone blocking a later one — is
-     * preserved for free), then write the net diff back in bulk. Correct BY
-     * CONSTRUCTION: the replay runs the same code the per-event path does.
-     *
-     * Turns the per-event path's O(events × round trips) into O(working-set
-     * reads) + one pipelined write — the difference between weeks and hours on a
-     * deletion-heavy sync. Runs under the writer lock (query-then-write stays
-     * atomic); moving the preload reads out of it is a further refinement.
-     */
-    private suspend fun bulkMixedInsert(events: List<Event>): List<IEventStore.InsertOutcome> {
-        val snapshot = InMemoryEventIndex()
-        preloadWorkingSet(snapshot, events)
-        val before = snapshot.search(EventQuery()).mapTo(HashSet()) { it.id }
-        // A throwaway store over the snapshot replays the exact per-event rules.
-        val replay = NostrEventStore(snapshot, relay, nowSecs)
-        val outcomes =
-            events.map { e ->
-                try {
-                    replay.insert(e)
-                    IEventStore.InsertOutcome.Accepted
-                } catch (ex: RejectedException) {
-                    IEventStore.InsertOutcome.Rejected(ex.message ?: Rejections.INSERT_FAILED)
-                }
-            }
-        val after = snapshot.search(EventQuery())
-        val afterIds = after.mapTo(HashSet()) { it.id }
-        val removed = before.filter { it !in afterIds }
-        val added = after.filter { it.id !in before }
-        if (removed.isNotEmpty()) index.removeAll(removed)
-        if (added.isNotEmpty()) index.putAll(added)
-        added.forEach { if (it.kind == DeletionEvent.KIND || it.kind == RequestToVanishEvent.KIND) guards.noteGuardStored(it.pubkey) }
-        return outcomes
-    }
-
-    /**
-     * Load every stored doc [bulkMixedInsert]'s replay could read — a SUPERSET
-     * of what [insertLocked]'s queries touch for this batch: existing ids (dup +
-     * deletion e-tag targets), the owners' tombstones/vanishes (guards +
-     * immunity), the records' address versions (supersession), each deletion's
-     * a-tag targets, and each vanish owner's history (the sweep). All fanned out
-     * as independent reads; the replay then needs no further I/O.
-     */
-    private suspend fun preloadWorkingSet(
-        snapshot: InMemoryEventIndex,
-        events: List<Event>,
-    ) {
-        val deletions = events.filterIsInstance<DeletionEvent>()
-        val vanishes = events.filterIsInstance<RequestToVanishEvent>()
-        val owners = events.map { it.owner() }.distinct()
-        val batchIds = events.map { it.id }
-        val batchAddresses = events.mapNotNull { it.addressOrNull() }.distinct()
-        val records = events.filter { it !is DeletionEvent && it !is RequestToVanishEvent }
-        // Only owners that provably HAVE a stored tombstone/vanish can guard this
-        // batch (GuardOwners) — for everyone else both probes come back empty, so
-        // skip them. A content batch touches ~500 owners but almost none are
-        // flagged, turning ~3 heavy queries/owner-chunk into zero. This is the same
-        // gate the per-event path (insertLocked) and the pure-record bulk path
-        // (BulkInsert.plan) already apply; the mixed path was missing it.
-        val guardedOwners = guards.filterFlagged(owners)
-
-        val queries =
-            buildList {
-                // Existing docs by id: batch ids + every deletion's e-tag targets.
-                (batchIds + deletions.flatMap { it.deleteEventIds() }).distinct().chunked(PRELOAD_CHUNK).forEach { add(EventQuery(ids = it)) }
-
-                // Guards + immunity: the owners' stored tombstones (targeting this
-                // batch's ids/addresses) and their vanishes — only for flagged owners.
-                guardedOwners.chunked(PRELOAD_CHUNK).forEach { auth ->
-                    if (batchIds.isNotEmpty()) add(EventQuery(kinds = listOf(DeletionEvent.KIND), authors = auth, tags = mapOf("e" to batchIds)))
-                    if (batchAddresses.isNotEmpty()) add(EventQuery(kinds = listOf(DeletionEvent.KIND), authors = auth, tags = mapOf("a" to batchAddresses)))
-                    add(EventQuery(kinds = listOf(RequestToVanishEvent.KIND), authors = auth))
-                }
-
-                // Supersession: existing versions of every record address (same
-                // shapes as currentVersions — replaceable by (kind, authors),
-                // addressable by (kind, author, d-tags), empty-d stays broad).
-                for ((kind, evs) in records.filter { it.kind.isReplaceable() && !it.kind.isAddressable() }.groupBy { it.kind }) {
-                    evs
-                        .map { it.pubKey }
-                        .distinct()
-                        .chunked(PRELOAD_CHUNK)
-                        .forEach { add(EventQuery(kinds = listOf(kind), authors = it)) }
-                }
-                for ((ka, evs) in records.filter { it.kind.isAddressable() }.groupBy { it.kind to it.pubKey }) {
-                    val ds = evs.mapNotNull { it.tags.dTag() }.distinct()
-                    ds.chunked(PRELOAD_CHUNK).forEach { add(EventQuery(kinds = listOf(ka.first), authors = listOf(ka.second), tags = mapOf("d" to it))) }
-                    if (evs.any { it.tags.dTag().isNullOrEmpty() }) add(EventQuery(kinds = listOf(ka.first), authors = listOf(ka.second)))
-                }
-
-                // Deletion a-tag targets: the author's events of that kind.
-                deletions
-                    .flatMap { it.deleteAddresses() }
-                    .filter { it.kind.isAddressable() || it.kind.isReplaceable() }
-                    .map { it.kind to it.pubKeyHex }
-                    .distinct()
-                    .forEach { (kind, author) -> add(EventQuery(kinds = listOf(kind), authors = listOf(author))) }
-
-                // Vanish sweep: the owner's whole history (the replay filters by until).
-                vanishes.map { it.pubKey }.distinct().forEach { add(EventQuery(owners = listOf(it))) }
-            }
-
-        com.vitorpamplona.quartz.eventstore.vespa.IngestStats.timed("preload") {
-            // Every preload query feeds a WRITE decision (dedup, guards, supersession,
-            // vanish scope), so none of them carries a limit.
-            queries.mapBounded(QUERY_FANOUT) { index.search(it) }.forEach { page -> page.forEach { snapshot.put(it) } }
+            // Pure records. The dedup reads run OUTSIDE the writer lock so
+            // parallel relays' batches overlap them (a raced duplicate is an
+            // idempotent re-put); the guard and supersession reads take the
+            // lock with the writes — query-then-write stays atomic, so a
+            // deletion committed by a neighbouring batch still blocks this one.
+            val plan = bulkRecords.plan(events)
+            writes.withLock { bulkRecords.commit(plan) }
         }
     }
 
@@ -307,29 +207,38 @@ class NostrEventStore(
         // conditional writes pay a read-for-write check) and ~35% slower on
         // duplicates, which lose this wave's 1-round-trip early exit and pay a
         // full write attempt instead. See docs/server-side-constraints.md.
-        coroutineScope {
-            val existing = async { index.get(event.id) }
-            // Guard probes run only when this owner HAS a stored tombstone or
-            // vanish (GuardOwners) — for everyone else both probes provably
-            // come back empty, so the common-case insert reads just the dup get.
-            val probeGuards = guards.mightHaveGuards(event.owner())
-            val deleted = if (probeGuards) async { isDeleted(event) } else null
-            val vanished = if (probeGuards) async { isVanished(event) } else null
-            if (existing.await() != null) throw RejectedException(Rejections.DUPLICATE)
-            if (deleted?.await() == true) throw RejectedException(Rejections.DELETED)
-            if (vanished?.await() == true) throw RejectedException(Rejections.VANISHED)
+        // Guard probes run only when this owner HAS a stored tombstone (NIP-09)
+        // or vanish (NIP-62) — gated INDEPENDENTLY (GuardOwners): a prolific
+        // deleter's events skip the vanish probe unless they also vanished.
+        val owner = event.owner()
+        val probeDeleted = guards.mightBeDeleted(owner)
+        val probeVanished = guards.mightHaveVanished(owner)
+        if (!probeDeleted && !probeVanished) {
+            // The common-case insert reads just the dup get — skip the fan-out
+            // machinery (coroutineScope + async allocate per call; the same
+            // shortcut the client's single-id read path takes).
+            if (index.get(event.id) != null) throw RejectedException(Rejections.DUPLICATE)
+        } else {
+            coroutineScope {
+                val existing = async { index.get(event.id) }
+                val deleted = if (probeDeleted) async { isDeleted(event) } else null
+                val vanished = if (probeVanished) async { isVanished(event) } else null
+                if (existing.await() != null) throw RejectedException(Rejections.DUPLICATE)
+                if (deleted?.await() == true) throw RejectedException(Rejections.DELETED)
+                if (vanished?.await() == true) throw RejectedException(Rejections.VANISHED)
+            }
         }
         when {
             event is DeletionEvent -> {
                 applyDeletion(event)
                 index.put(event.toDoc())
-                guards.noteGuardStored(event.pubKey)
+                guards.noteDeletionStored(event.pubKey)
             }
 
             event is RequestToVanishEvent -> {
                 applyVanish(event)
                 index.put(event.toDoc())
-                guards.noteGuardStored(event.pubKey)
+                guards.noteVanishStored(event.pubKey)
             }
 
             // Replaceable/addressable newest-wins in ONE call: address-keyed Vespa
@@ -350,39 +259,65 @@ class NostrEventStore(
     // ---- queries ------------------------------------------------------------
 
     /**
-     * Map a filter to an [EventQuery] stamped with the current expiry cutoff
-     * (NIP-40) and, for searches, the ranking observer. An explicit `observer:`
-     * search token wins over the connection [observer] — a client may ask to
-     * rank through any lens (scores are public), so the query's own choice takes
-     * precedence over the authenticated default.
+     * Map a filter to an [EventQuery] stamped with the request's expiry cutoff
+     * (NIP-40 — one [cutoffSecs] per request, so sibling filters can't disagree
+     * about an event expiring on the boundary) and, for searches, the ranking
+     * observer. An explicit `observer:` search token wins over the connection
+     * [observer] — a client may ask to rank through any lens (scores are
+     * public), so the query's own choice takes precedence over the
+     * authenticated default.
      */
-    private fun Filter.toExpiryQuery(observer: String? = null): EventQuery? = toEventQuery()?.let { it.copy(notExpiredAt = nowSecs(), observer = it.observer ?: observer) }
+    private fun Filter.toExpiryQuery(
+        cutoffSecs: Long,
+        observer: String? = null,
+    ): EventQuery? = toEventQuery()?.let { it.copy(notExpiredAt = cutoffSecs, observer = it.observer ?: observer) }
+
+    /** Whether this query's results carry engine ranking order (NIP-50) instead of NIP-01 recency. */
+    private fun EventQuery.isRanked(): Boolean = search != null || ranking != null
 
     override suspend fun <T : Event> query(filter: Filter): List<T> = query(listOf(filter))
 
     @Suppress("UNCHECKED_CAST")
     override suspend fun <T : Event> query(filters: List<Filter>): List<T> {
-        val observer = coroutineContext[ObserverContext]?.pubkey
-        val queries = restoreSearches(filters).mapNotNull { it.toExpiryQuery(observer) }
-        val docs = searchDocs(queries)
-        // NIP-50: a searching query's results stay in the engine's RELEVANCE
-        // order "instead of the usual created_at ordering" — re-sorting here
-        // would undo the rank profile. Plain filters keep NIP-01 recency.
-        val ranked = queries.any { it.search != null || it.ranking != null }
-        val ordered = if (ranked) docs else docs.sortedWith(NEWEST_FIRST)
+        val observer = coroutineContext[StoreQueryContext]?.observer
+        val cutoff = nowSecs()
+        val queries = filters.mapNotNull { it.toExpiryQuery(cutoff, observer) }
+        val ordered = recallOrdered(queries, NEWEST_FIRST, EventDoc::id) { index.search(it) }
         // Reconstruct via Quartz's by-kind factory straight from the stored fields,
         // skipping the toEventJson()->fromJson() serialize+parse round trip that was
         // the hot path's biggest allocator; see [toEvent].
         return ordered.map { it.toEvent() } as List<T>
     }
 
-    /** Search every query concurrently (bounded), deduped by id — the shared recall for query and multi-filter count. */
-    private suspend fun searchDocs(queries: List<EventQuery>): List<EventDoc> =
-        when (queries.size) {
-            0 -> emptyList()
-            1 -> index.search(queries[0])
-            else -> queries.mapBounded(QUERY_FANOUT) { index.search(it) }.flatten().distinctBy { it.id }
+    /**
+     * Recall every query concurrently (bounded), dedup across queries, and
+     * order the result. NIP-50: a searching query's hits stay in the engine's
+     * RELEVANCE order "instead of the usual created_at ordering" — re-sorting
+     * would undo the rank profile. Plain queries keep NIP-01 recency — PER
+     * QUERY, so a plain filter riding beside a searching one in the same REQ
+     * is still served newest-first (an all-plain request keeps the combined
+     * newest-first order it always had).
+     */
+    private suspend fun <R> recallOrdered(
+        queries: List<EventQuery>,
+        newestFirst: Comparator<R>,
+        idOf: (R) -> String,
+        searchOne: suspend (EventQuery) -> List<R>,
+    ): List<R> {
+        val results =
+            when (queries.size) {
+                0 -> return emptyList()
+                1 -> listOf(searchOne(queries[0]))
+                else -> queries.mapBounded(QUERY_FANOUT) { searchOne(it) }
+            }
+        if (queries.none { it.isRanked() }) {
+            val combined = results.flatten()
+            val unique = if (queries.size > 1) combined.distinctBy(idOf) else combined
+            return unique.sortedWith(newestFirst)
         }
+        val ordered = queries.zip(results).flatMap { (q, hits) -> if (q.isRanked()) hits else hits.sortedWith(newestFirst) }
+        return if (queries.size > 1) ordered.distinctBy(idOf) else ordered
+    }
 
     /**
      * Raw read path: recall matches as Quartz [RawEvent]s, skipping the per-hit
@@ -396,18 +331,11 @@ class NostrEventStore(
         filters: List<Filter>,
         onEach: (RawEvent) -> Unit,
     ) {
-        val observer = coroutineContext[ObserverContext]?.pubkey
-        val queries = restoreSearches(filters).mapNotNull { it.toExpiryQuery(observer) }
-        val raw =
-            when (queries.size) {
-                0 -> return
-                1 -> index.rawSearch(queries[0])
-                else -> queries.mapBounded(QUERY_FANOUT) { index.rawSearch(it) }.flatten().distinctBy { it.id }
-            }
-        // NIP-50 relevance order is preserved for searching queries, exactly as in [query].
-        val ranked = queries.any { it.search != null || it.ranking != null }
-        val ordered = if (ranked) raw else raw.sortedWith(RAW_NEWEST_FIRST)
-        ordered.forEach(onEach)
+        val observer = coroutineContext[StoreQueryContext]?.observer
+        val cutoff = nowSecs()
+        val queries = filters.mapNotNull { it.toExpiryQuery(cutoff, observer) }
+        // Same recall, dedup and (per-query, NIP-50-aware) ordering as [query].
+        recallOrdered(queries, RAW_NEWEST_FIRST, RawEvent::id) { index.rawSearch(it) }.forEach(onEach)
     }
 
     override suspend fun <T : Event> query(
@@ -420,7 +348,57 @@ class NostrEventStore(
         onEach: (T) -> Unit,
     ) = query<T>(filters).forEach(onEach)
 
-    override suspend fun count(filter: Filter): Int = restoreSearches(listOf(filter)).single().toExpiryQuery()?.let { index.count(it) } ?: 0
+    /**
+     * NIP-45 COUNT == the REQ's feed, EXACTLY: the same observer (ranking
+     * gates included), the same per-filter limits, the same cross-filter id
+     * dedup — the number a client could verify by running the REQ and counting
+     * what arrives. Anything else makes COUNT lie about the feed it summarizes.
+     */
+    override suspend fun count(filter: Filter): Int = count(listOf(filter))
+
+    override suspend fun count(filters: List<Filter>): Int {
+        val observer = coroutineContext[StoreQueryContext]?.observer
+        val cutoff = nowSecs()
+        val queries =
+            filters
+                .mapNotNull { it.toExpiryQuery(cutoff, observer) }
+                // A present limit <= 0 is the "matches nothing" sentinel on the
+                // feed, so it contributes nothing to the count either.
+                .filterNot { (it.limit ?: 1) <= 0 }
+        if (queries.isEmpty()) return 0
+        if (queries.size == 1) {
+            val q = queries[0]
+            return when {
+                // Ranked/searching: only the search path applies the observer's
+                // trust floor and spam gate, so the count must recall what the
+                // feed would serve (bounded by the same limit the feed honors).
+                q.isRanked() -> index.rawSearch(q).size
+
+                // Plain with a limit: the feed caps at the limit, so the count
+                // does too — the cheap exact engine count, clamped.
+                q.limit != null -> minOf(index.count(q.copy(limit = null)), q.limit ?: 0)
+
+                // Plain, unbounded: the engine's exact grouping count.
+                else -> index.count(q)
+            }
+        }
+        // Multi-filter: the feed dedups across filters, so collect each
+        // filter's SERVED ids and count the union. Plain unbounded filters
+        // stream ids through the visit (no doc materialization); limit'd and
+        // ranked filters recall exactly the page the feed would serve.
+        val ids = HashSet<String>()
+        for (q in queries) {
+            if (!q.isRanked() && q.limit == null) {
+                index.visitIds(q) { page ->
+                    page.forEach { ids += it.id }
+                    true
+                }
+            } else {
+                index.rawSearch(q).forEach { ids += it.id }
+            }
+        }
+        return ids.size
+    }
 
     /**
      * The distinct authors (pubkeys) matching [filter], via a server-side grouping
@@ -428,7 +406,7 @@ class NostrEventStore(
      * out of a huge match set without reconstructing every event (the orphan-score
      * sweep over millions of 30382s). Honors expiry like [count].
      */
-    suspend fun distinctAuthors(filter: Filter): Set<HexKey> = restoreSearches(listOf(filter)).single().toExpiryQuery()?.let { index.distinctAuthors(it) } ?: emptySet()
+    suspend fun distinctAuthors(filter: Filter): Set<HexKey> = filter.toExpiryQuery(nowSecs())?.let { index.distinctAuthors(it) } ?: emptySet()
 
     /**
      * Every distinct `d` tag (addressable subject) across [filter]'s matches, via
@@ -439,41 +417,13 @@ class NostrEventStore(
      * cap. The sync uses this to find every scored author to fetch content for.
      */
     suspend fun distinctDTags(filter: Filter): Set<String> {
-        val q = restoreSearches(listOf(filter)).single().toExpiryQuery() ?: return emptySet()
+        val q = filter.toExpiryQuery(nowSecs()) ?: return emptySet()
         val out = HashSet<String>()
         index.visitIds(q, withDTag = true) { page ->
             page.forEach { it.dTag?.takeIf(String::isNotEmpty)?.let(out::add) }
             true
         }
         return out
-    }
-
-    override suspend fun count(filters: List<Filter>): Int {
-        // Multi-filter counts need cross-filter id dedup (engine count can't),
-        // but they don't need the events materialized — recall the docs and
-        // count distinct ids, skipping the per-doc Event reconstruction.
-        if (filters.size == 1) return count(filters[0])
-        val queries = restoreSearches(filters).mapNotNull { it.toExpiryQuery() }
-        return searchDocs(queries).size
-    }
-
-    /**
-     * Undo Quartz's relay-side NIP-50 extension stripping. `LiveEventStore`
-     * strips `key:value` tokens from every REQ's search before the store sees
-     * it. That is the right default for stores that would match them as text,
-     * but THIS store honors `sort:`/`filter:rank:`/`include:spam`. The relay
-     * backend carries the pre-strip filters in [OriginalFilters] — the same list
-     * in the same order, only `search` differs — so each filter's original
-     * search string is restored before mapping. Direct callers (no context
-     * element) are untouched.
-     */
-    private suspend fun restoreSearches(filters: List<Filter>): List<Filter> {
-        val originals = coroutineContext[OriginalFilters]?.filters ?: return filters
-        if (originals.size != filters.size) return filters
-        return filters.mapIndexed { i, f ->
-            val original = originals[i].search
-            if (original != null && original != f.search) f.copy(search = original) else f
-        }
     }
 
     /**
@@ -483,30 +433,15 @@ class NostrEventStore(
      * session (or a sync reconcile diff) sees the COMPLETE match set even when it
      * dwarfs the search page limit. Searching or limit'd filters keep the search
      * path, since their semantics live there.
+     *
+     * [onProgress] (now on the [IEventStore] contract) fires after every page:
+     * the walk is the longest silent phase a mirror has — minutes of visit
+     * requests on a large corpus — and the page loop already knows the count.
      */
     override suspend fun snapshotIdsForNegentropy(
         filters: List<Filter>,
         maxEntries: Int?,
-    ): List<IdAndTime> = snapshotIdsForNegentropy(filters, maxEntries, null)
-
-    /**
-     * The same walk, reporting the running count after every page.
-     *
-     * An overload rather than a parameter on the interface method: the contract
-     * lives in quartz and nobody else needs this, so widening it there would make
-     * every implementation carry a hook only a mirror uses.
-     *
-     * The walk is the longest silent phase a mirror has: on a 25M-event corpus it
-     * is minutes of visit requests during which the caller can report neither
-     * what it is doing nor whether it is moving, because the only signal is the
-     * finished list. The page loop already knows the count — it was simply thrown
-     * away. Optional, and called on the walking coroutine, so a caller that does
-     * not want it pays nothing and one that does must keep the callback cheap.
-     */
-    suspend fun snapshotIdsForNegentropy(
-        filters: List<Filter>,
-        maxEntries: Int? = null,
-        onProgress: ((collected: Int) -> Unit)? = null,
+        onProgress: ((collected: Int) -> Unit)?,
     ): List<IdAndTime> {
         val all = ArrayList<IdAndTime>()
         // A single-filter cap can stop the walk early: the caller only needs to
@@ -516,7 +451,8 @@ class NostrEventStore(
         // Exclude already-expired events (NIP-40), exactly as query/count do.
         // Otherwise the negentropy set offers ids a plain REQ would never serve,
         // and a peer keeps trying to reconcile events we refuse to return.
-        for (q in filters.mapNotNull { it.toExpiryQuery() }) {
+        val cutoff = nowSecs()
+        for (q in filters.mapNotNull { it.toExpiryQuery(cutoff) }) {
             if (q.search == null && q.limit == null) {
                 index.visitIds(q) { page ->
                     page.forEach { all += IdAndTime(it.createdAt, it.id) }
@@ -554,15 +490,39 @@ class NostrEventStore(
     private suspend fun sweep(q: EventQuery) {
         // The read is paged; the caller's own limit, if any, still decides
         // whether one page is the whole job (below), so read q.limit, not this.
-        val paged = q.copy(limit = q.limit ?: sweepPage)
+        // Plain sweeps stamp RANK_UNRANKED: a sweep wants ANY page, so the
+        // recency planner's count probes (up to 3 per round, serial under the
+        // writer lock) answer a question it never asked — the explicit ranking
+        // opts out of isBareRecencyScan while compiling to identical YQL.
+        val paged =
+            if (q.search == null && q.ranking == null) {
+                q.copy(limit = q.limit ?: sweepPage, ranking = EventYql.RANK_UNRANKED)
+            } else {
+                q.copy(limit = q.limit ?: sweepPage)
+            }
         var rounds = 0
+        var lastPage: Set<String>? = null
         while (rounds++ < MAX_SWEEP_ROUNDS) {
             val page = index.search(paged)
             if (page.isEmpty()) return
-            index.removeAll(page.map { it.id })
+            val ids = page.mapTo(HashSet()) { it.id }
+            // An acked remove is visible to search (the EventIndex contract), so
+            // a page identical to the one just removed means the deletes are not
+            // landing. Fail NOW: silently returning would report a vanish/delete
+            // as enforced while the events are still stored and served.
+            check(ids != lastPage) { "sweep is not shrinking: ${ids.size} matches for $q survived their own removal" }
+            // The docs are already in hand — removeDocs lets the projection
+            // react without a get per id (see TrustProjection.removeDocs).
+            index.removeDocs(page)
             // A limit'd delete is satisfied by its first page.
             if (q.limit != null) return
+            lastPage = ids
         }
+        // The backstop for a set that shrinks but never drains (or a query
+        // matching more than MAX_SWEEP_ROUNDS pages). Loud, not silent: the
+        // caller (a vanish, an expiry pass, an admin delete) must not believe
+        // the sweep completed.
+        error("sweep did not drain after $MAX_SWEEP_ROUNDS rounds of ${paged.limit} for $q")
     }
 
     // ---- Nostr semantics -------------------------------------------------------
@@ -590,9 +550,7 @@ class NostrEventStore(
     /** NIP-62: a stored vanish request by this event's OWNER covering [relay] blocks their events up to its time. */
     private suspend fun isVanished(event: Event): Boolean {
         val vanishes = index.search(EventQuery(kinds = listOf(RequestToVanishEvent.KIND), authors = listOf(event.owner()), since = event.createdAt))
-        return vanishes.any { doc ->
-            (Event.fromJsonOrNull(doc.toEventJson()) as? RequestToVanishEvent)?.shouldVanishFrom(relay) == true
-        }
+        return vanishes.any { doc -> (doc.toEvent() as? RequestToVanishEvent)?.shouldVanishFrom(relay) == true }
     }
 
     /**
@@ -603,20 +561,29 @@ class NostrEventStore(
      * after, as the tombstone.
      */
     private suspend fun applyDeletion(ev: DeletionEvent) {
-        for (id in ev.deleteEventIds()) {
-            val doc = index.get(id) ?: continue
-            // NIP-09/NIP-62: kind 5 against a kind 5 or a kind 62 has no effect.
-            if (doc.kind == DeletionEvent.KIND || doc.kind == RequestToVanishEvent.KIND) continue
-            if (doc.owner == ev.pubKey) index.remove(id)
-        }
+        // Deletions routinely carry dozens of e-tags: resolve them with
+        // bounded-concurrent gets (light doc-API reads) and remove the victims
+        // in ONE pipelined removeDocs — which also hands the trust projection
+        // its batch react instead of a re-read per id.
+        val byId =
+            ev
+                .deleteEventIds()
+                .distinct()
+                .mapBounded(TARGET_GET_FANOUT) { index.get(it) }
+                .filterNotNull()
+                // NIP-09/NIP-62: kind 5 against a kind 5 or a kind 62 has no effect.
+                .filter { it.kind != DeletionEvent.KIND && it.kind != RequestToVanishEvent.KIND }
+                .filter { it.owner == ev.pubKey }
+        if (byId.isNotEmpty()) index.removeDocs(byId)
         for (address in ev.deleteAddresses()) {
             if (address.pubKeyHex != ev.pubKey) continue
             if (!address.kind.isAddressable() && !address.kind.isReplaceable()) continue
-            index
-                .search(EventQuery(kinds = listOf(address.kind), authors = listOf(address.pubKeyHex), until = ev.createdAt))
-                // Replaceable kinds have ONE address regardless of the a-tag's d part.
-                .filter { !address.kind.isAddressable() || it.dTagOrEmpty() == address.dTag }
-                .forEach { index.remove(it.id) }
+            val victims =
+                index
+                    .search(EventQuery(kinds = listOf(address.kind), authors = listOf(address.pubKeyHex), until = ev.createdAt))
+                    // Replaceable kinds have ONE address regardless of the a-tag's d part.
+                    .filter { !address.kind.isAddressable() || it.dTagOrEmpty() == address.dTag }
+            if (victims.isNotEmpty()) index.removeDocs(victims)
         }
     }
 
@@ -648,34 +615,37 @@ class NostrEventStore(
     }
 
     /**
-     * Resumable batch: docs are walked in id order from [resumeFrom]
-     * (exclusive). This is reference-grade paging: each call re-lists the ids
-     * through [EventIndex.search]. The real Vespa client will page with a visit.
+     * Resumable batch: one page of the engine's document walk
+     * ([EventIndex.visitDocsPage]), with the walk's continuation carried in the
+     * opaque [FtsReindexProgress.cursor]. O(page) memory and O(corpus) total —
+     * the previous shape re-listed the ENTIRE corpus per batch (one unbounded
+     * search response, sorted), which cannot finish on a large index.
      */
     override suspend fun reindexFullTextSearch(
         resumeFrom: String?,
         batchSize: Int,
     ): FtsReindexProgress =
         writes.withLock {
-            val batch =
-                index
-                    .search(EventQuery())
-                    .sortedBy { it.id }
-                    .filter { resumeFrom == null || it.id > resumeFrom }
-                    .take(batchSize)
-            for (doc in batch) {
-                val fields = Event.fromJsonOrNull(doc.toEventJson())?.let(SearchExtractors::extract) ?: SearchFields.NONE
-                if (fields != doc.search) index.put(doc.copy(search = fields))
+            val page = index.visitDocsPage(EventQuery(), resumeFrom, batchSize)
+            // ONE pipelined write per page: serial awaited puts pay per-op ack
+            // latency — on a churny reindex (extractor upgrade touching most
+            // docs) that is hours of pure latency the feed client exists to hide.
+            val changed = ArrayList<EventDoc>()
+            for (doc in page.docs) {
+                val fields = SearchExtractors.extract(doc.toEvent())
+                if (fields != doc.search) changed += doc.copy(search = fields)
             }
-            FtsReindexProgress(cursor = batch.lastOrNull()?.id, processedThisBatch = batch.size, done = batch.size < batchSize)
+            if (changed.isNotEmpty()) index.putAll(changed)
+            FtsReindexProgress(cursor = page.continuation, processedThisBatch = page.docs.size, done = page.continuation == null)
         }
 
     override fun close() = index.close()
 
     private companion object {
-        // Runaway guard, not a delete cap: a sweep whose removes stop shrinking
-        // the match set terminates loudly instead of spinning forever. Only
-        // meaningful because the rounds are page-sized (see sweepPage) — with an
+        // Runaway backstop, not a delete cap: a sweep that spins this long
+        // throws (see sweep) instead of looping forever — the non-shrinking
+        // case is caught earlier, after ONE repeated page. Only meaningful
+        // because the rounds are page-sized (see sweepPage) — with an
         // unbounded read the loop always finishes in one round and this is dead.
         const val MAX_SWEEP_ROUNDS = 10_000
 
@@ -683,9 +653,11 @@ class NostrEventStore(
         // worth the setup and stay on the per-event path.
         const val BULK_MIN = 16
 
-        // Ids/authors/d-tags per preload query. Not a result cap — these queries
-        // carry no limit — just how wide one round trip is built.
-        const val PRELOAD_CHUNK = 500
+        // Concurrent doc-API gets when resolving a kind 5's e-tag targets.
+        // Gets are light (no summary stage to overrun), so this floats above
+        // QUERY_FANOUT; the real client's own id fan-out uses 32.
+        const val TARGET_GET_FANOUT = 16
+
         val NEWEST_FIRST = compareByDescending(EventDoc::createdAt).thenBy(EventDoc::id)
 
         /** [NEWEST_FIRST] for the raw read path — the same created_at desc, id asc order over [RawEvent]s. */

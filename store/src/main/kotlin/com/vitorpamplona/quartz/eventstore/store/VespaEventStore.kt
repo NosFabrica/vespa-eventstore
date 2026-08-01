@@ -20,17 +20,17 @@
  */
 package com.vitorpamplona.quartz.eventstore.store
 
+import com.vitorpamplona.quartz.eventstore.store.trust.TrustProjection
+import com.vitorpamplona.quartz.eventstore.store.trust.TrustReconciler
 import com.vitorpamplona.quartz.eventstore.vespa.client.VespaEventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.client.VespaReputationIndex
-import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
-import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
 import java.net.URI
 
 /**
  * The library's public handle AND front door: a ready [IEventStore] backed by
- * Vespa. [open] wires the whole NostrEventStore(TrustProjection(VespaEventIndex,
+ * Vespa. [open] wires the whole NostrSemanticsStore(TrustProjection(VespaEventIndex,
  * VespaReputationIndex)) stack over a running Vespa in one call (plus, by default,
  * a first-run schema deploy), and this handle delegates the entire [IEventStore]
  * surface to it — so a consumer programs against the Quartz interface and never
@@ -48,7 +48,7 @@ class VespaEventStore internal constructor(
      * `distinctDTags`, used by trust-graph walks). Most consumers can ignore it
      * and use this handle directly as an [IEventStore].
      */
-    val store: NostrEventStore,
+    val store: NostrSemanticsStore,
     /**
      * The raw engine index, NOT trust-projected. Reads through it skip the
      * projection decorator — status/health metrics query it directly, since they
@@ -56,26 +56,14 @@ class VespaEventStore internal constructor(
      */
     val events: VespaEventIndex,
     /**
-     * The trust view over [events]. Exposed because it is derived on WRITE and
-     * therefore cannot always repair itself: see [reconcileTrust].
+     * The repair tool for the trust view over [events]. Held here because the
+     * view is derived on WRITE and therefore cannot always repair itself: see
+     * [reconcileTrust].
      */
-    private val trust: TrustProjection,
+    private val reconciler: TrustReconciler,
 ) : IEventStore by store {
     /** The engine's feed-health status line (bulk-ingest backpressure), for progress/status output. */
     fun feedGauge(): String = events.feedGauge()
-
-    /**
-     * The negentropy id set, reporting the running count after every page.
-     *
-     * Exposed on the handle because the walk is the longest silent phase a mirror
-     * has — minutes on a large corpus — and a caller that cannot see inside it
-     * cannot tell a working snapshot from a hung one. See [NostrEventStore].
-     */
-    suspend fun snapshotIdsForNegentropy(
-        filters: List<Filter>,
-        maxEntries: Int? = null,
-        onProgress: ((collected: Int) -> Unit)? = null,
-    ): List<IdAndTime> = store.snapshotIdsForNegentropy(filters, maxEntries, onProgress)
 
     /**
      * Re-derive the trust view for any service whose scores are not projected
@@ -86,14 +74,14 @@ class VespaEventStore internal constructor(
      * so a corpus that was mirrored before its provider lists arrived stays
      * unprojected, silently, and every ranked search comes back empty.
      */
-    suspend fun reconcileTrust(onProgress: ((inspected: Int, total: Int, rebuilt: Int, derivedInService: Int) -> Unit)? = null): TrustProjection.Reconciliation = trust.reconcile(onProgress = onProgress)
+    suspend fun reconcileTrust(onProgress: ((inspected: Int, total: Int, rebuilt: Int, derivedInService: Int) -> Unit)? = null): TrustReconciler.Reconciliation = reconciler.reconcile(onProgress = onProgress)
 
     /**
      * Re-derive the WHOLE trust view from the stored scores. Bounded only by the
      * corpus, so this is the operator's hammer — [reconcileTrust] does the same
      * repair per affected service and normally finds nothing to do.
      */
-    suspend fun rebuildTrust() = trust.rebuildAll()
+    suspend fun rebuildTrust() = reconciler.rebuildAll()
 
     companion object {
         /**
@@ -129,9 +117,10 @@ class VespaEventStore internal constructor(
         ): VespaEventStore {
             if (autoDeploy) SchemaDeployer(configUrl).deployIfAbsent(url)
             val events = VespaEventIndex(url, endpoints = endpoints)
-            val trust = TrustProjection(events, VespaReputationIndex(url))
-            val store = NostrEventStore(trust, relay = relay)
-            return VespaEventStore(store, events, trust)
+            val reputations = VespaReputationIndex(url)
+            val trust = TrustProjection(events, reputations)
+            val store = NostrSemanticsStore(trust, relay = relay)
+            return VespaEventStore(store, events, TrustReconciler(events, reputations, trust.recompute))
         }
 
         /** The config server sits on :19071 by convention, on the same host as the :8080 query endpoint. */
