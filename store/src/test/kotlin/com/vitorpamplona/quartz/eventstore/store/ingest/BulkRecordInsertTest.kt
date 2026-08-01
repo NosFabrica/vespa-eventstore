@@ -21,12 +21,14 @@
 package com.vitorpamplona.quartz.eventstore.store.ingest
 
 import com.vitorpamplona.quartz.eventstore.store.NostrSemanticsStore
+import com.vitorpamplona.quartz.eventstore.store.Rejections
 import com.vitorpamplona.quartz.eventstore.vespa.InMemoryEventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.query.EventQuery
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.normalizeRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
+import com.vitorpamplona.quartz.nip23LongContent.LongTextNoteEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import kotlinx.coroutines.runBlocking
@@ -217,4 +219,56 @@ class BulkRecordInsertTest {
                 padding(6)
         assertBulkMatchesSequential(prelude = stored, batch = batch)
     }
+
+    /** Kind 30023 with NO d tag: one address per NIP-01 ("30023:pk:"), the shape the d-keyed version query cannot recall. */
+    private fun dlessArticle(
+        at: Long = next(),
+        eventId: String = id(),
+    ) = LongTextNoteEvent(eventId, alice, at, emptyArray(), "body", "")
+
+    /**
+     * Empty-d addressables: a stored version with NO d tag carries no "d:" pair
+     * in tag_index, so the bulk version read needs its broad (kind, author)
+     * fallback — without it the batch accumulates a second live version and
+     * accepts stale ones.
+     */
+    @Test
+    fun `bulk supersession sees stored addressable versions that have no d tag`() {
+        val current = dlessArticle(at = 1_000_000_000)
+        assertBulkMatchesSequential(
+            prelude = listOf(current),
+            // A newer version must supersede the stored one; an older one must
+            // be REJECTED as replaced — both require recalling the d-less doc.
+            batch = padding(20) + dlessArticle(at = 1_000_000_100) + dlessArticle(at = 999_999_900),
+        )
+    }
+
+    /**
+     * The resurrection race: a kind 5 committed by a neighbouring writer BETWEEN
+     * this batch's lock-free plan() and its locked commit() must still block the
+     * covered event — the guard reads belong to commit, under the lock.
+     */
+    @Test
+    fun `a deletion committed between plan and commit still blocks the batch`() =
+        runBlocking {
+            val index = InMemoryEventIndex()
+            val store = NostrSemanticsStore(index, relay = relayUrl)
+            val bulk = BulkRecordInsert(index, relayUrl, GuardOwners(index))
+
+            val target = note(at = 1_000_000_000)
+            val batch = padding(20) + target
+            val plan = bulk.plan(batch)
+
+            // A neighbouring batch wins the writer lock first and commits a
+            // newer tombstone covering the target.
+            store.insert(deletion(target.id, at = 1_000_000_500))
+
+            val outcomes = bulk.commit(plan)
+            val outcome = outcomes[batch.indexOf(target)]
+            assertTrue(
+                outcome is IEventStore.InsertOutcome.Rejected && outcome.reason == Rejections.DELETED,
+                "a just-deleted event must not be resurrected by a racing batch, got $outcome",
+            )
+            assertEquals(null, index.get(target.id), "the covered event must not be stored")
+        }
 }

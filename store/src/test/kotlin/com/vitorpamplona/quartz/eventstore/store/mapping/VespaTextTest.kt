@@ -181,6 +181,19 @@ class VespaTextTest {
     }
 
     @Test
+    fun `a lone surrogate is illegal but a paired one is a character`() {
+        // Unpaired halves have no UTF-8 encoding: past this gate they either
+        // corrupt the signed content ('?' substitution) or throw mid-batch.
+        assertEquals(0xD800, VespaText.firstIllegalCodePoint("a\uD800b"))
+        assertEquals(0xDFFF, VespaText.firstIllegalCodePoint("\uDFFF"))
+        assertEquals("ab", VespaText.sanitize("a\uD800b"))
+        // A proper pair decodes to one astral character and stays legal.
+        val emoji = "\uD83D\uDE00"
+        assertNull(VespaText.firstIllegalCodePoint(emoji))
+        assertSame(emoji, VespaText.sanitize(emoji))
+    }
+
+    @Test
     fun `clean text comes back as the very same instance`() {
         // The fast path — this runs on every derived field of every event.
         val s = "nothing to strip"

@@ -45,13 +45,14 @@ class SearchOrderTest {
         createdAt: Long,
     ) = EventDoc(id = id, pubkey = "a".repeat(64), createdAt = createdAt, kind = 1, tags = emptyList(), content = "hello", sig = "")
 
-    /** An engine stub that answers every query with a FIXED hit order. */
+    /** An engine stub that answers every query with a FIXED hit order (searching queries may answer differently). */
     private class FixedOrderIndex(
         private val hits: List<EventDoc>,
+        private val searchingHits: List<EventDoc> = hits,
     ) : EventIndex {
         override suspend fun get(id: String): EventDoc? = hits.find { it.id == id }
 
-        override suspend fun search(query: EventQuery): List<EventDoc> = hits
+        override suspend fun search(query: EventQuery): List<EventDoc> = if (query.search != null) searchingHits else hits
 
         override suspend fun count(query: EventQuery): Int = hits.size
 
@@ -78,6 +79,19 @@ class SearchOrderTest {
         runBlocking {
             val ids = store().query<Event>(Filter(search = "sort:rank")).map { it.id }
             assertEquals(listOf(older.id, newer.id), ids)
+        }
+
+    /**
+     * A plain filter riding beside a searching one in the SAME REQ still gets
+     * NIP-01 recency for ITS hits — the search's relevance order never leaks
+     * onto the sibling's results.
+     */
+    @Test
+    fun `a plain filter beside a search keeps recency order`() =
+        runBlocking {
+            val store = NostrSemanticsStore(FixedOrderIndex(hits = listOf(older, newer), searchingHits = emptyList()))
+            val ids = store.query<Event>(listOf(Filter(search = "nomatch"), Filter(kinds = listOf(1)))).map { it.id }
+            assertEquals(listOf(newer.id, older.id), ids, "the plain filter's hits stay newest-first")
         }
 
     @Test

@@ -37,7 +37,7 @@ class EventYqlTest {
     @Test
     fun `no constraints is a match-all ordered by recency`() {
         val q = EventYql.build(EventQuery())!!
-        assertEquals("select ${EventYql.SUMMARY_FIELDS} from event where true order by created_at desc", q.yql)
+        assertEquals("select ${EventYql.SUMMARY_FIELDS} from event where true order by created_at desc, id asc", q.yql)
         assertEquals(EventYql.RANK_UNRANKED, q.ranking)
         assertTrue(q.params.isEmpty())
     }
@@ -58,7 +58,7 @@ class EventYqlTest {
         assertEquals(
             "select ${EventYql.SUMMARY_FIELDS} from event where kind in (0, 30382) and pubkey in (\"$hexA\") " +
                 "and (tag_index contains \"p:$hexB\") and created_at >= 100 and created_at <= 200 " +
-                "order by created_at desc limit 50",
+                "order by created_at desc, id asc limit 50",
             q.yql,
         )
     }
@@ -229,7 +229,7 @@ class EventYqlTest {
     @Test
     fun `owners and expiry map to their attributes`() {
         val q = EventYql.build(EventQuery(owners = listOf(hexA), expiresBefore = 500))!!
-        assertEquals("select ${EventYql.SUMMARY_FIELDS} from event where owner in (\"$hexA\") and expires_at < 500 order by created_at desc", q.yql)
+        assertEquals("select ${EventYql.SUMMARY_FIELDS} from event where owner in (\"$hexA\") and expires_at < 500 order by created_at desc, id asc", q.yql)
         assertNull(EventYql.build(EventQuery(owners = listOf("not-hex"))), "no valid owner")
     }
 
@@ -237,7 +237,7 @@ class EventYqlTest {
     fun `tagsAll requires every value`() {
         val q = EventYql.build(EventQuery(tagsAll = mapOf("t" to listOf("a", "b"))))!!
         assertEquals(
-            "select ${EventYql.SUMMARY_FIELDS} from event where (tag_index contains \"t:a\" and tag_index contains \"t:b\") order by created_at desc",
+            "select ${EventYql.SUMMARY_FIELDS} from event where (tag_index contains \"t:a\" and tag_index contains \"t:b\") order by created_at desc, id asc",
             q.yql,
         )
     }
@@ -249,7 +249,7 @@ class EventYqlTest {
         val q = EventYql.build(EventQuery(tags = mapOf("p" to listOf(hexA, hexB), "t" to listOf("nostr"))))!!
         assertEquals(
             "select ${EventYql.SUMMARY_FIELDS} from event where tag_index in (\"p:$hexA\", \"p:$hexB\") " +
-                "and (tag_index contains \"t:nostr\") order by created_at desc",
+                "and (tag_index contains \"t:nostr\") order by created_at desc, id asc",
             q.yql,
         )
     }
@@ -258,7 +258,7 @@ class EventYqlTest {
     fun `a wide tag list compiles to one in-list, values escaped`() {
         val q = EventYql.build(EventQuery(tags = mapOf("e" to listOf("v1", "v\"2", "v3"))))!!
         assertEquals(
-            "select ${EventYql.SUMMARY_FIELDS} from event where tag_index in (\"e:v1\", \"e:v\\\"2\", \"e:v3\") order by created_at desc",
+            "select ${EventYql.SUMMARY_FIELDS} from event where tag_index in (\"e:v1\", \"e:v\\\"2\", \"e:v3\") order by created_at desc, id asc",
             q.yql,
         )
     }
@@ -266,7 +266,7 @@ class EventYqlTest {
     @Test
     fun `invalid hex entries are dropped but valid ones survive`() {
         val q = EventYql.build(EventQuery(ids = listOf("nope", hexA, hexA.uppercase())))!!
-        assertEquals("select ${EventYql.SUMMARY_FIELDS} from event where id in (\"$hexA\") order by created_at desc", q.yql)
+        assertEquals("select ${EventYql.SUMMARY_FIELDS} from event where id in (\"$hexA\") order by created_at desc, id asc", q.yql)
     }
 
     @Test
@@ -284,7 +284,7 @@ class EventYqlTest {
         val q = EventYql.build(EventQuery(tags = mapOf("t" to listOf("""x" or true or tag_index contains "y"""))))!!
         assertEquals(
             "select ${EventYql.SUMMARY_FIELDS} from event where (tag_index contains \"t:x\\\" or true or tag_index contains \\\"y\") " +
-                "order by created_at desc",
+                "order by created_at desc, id asc",
             q.yql,
         )
         val newline = EventYql.build(EventQuery(tags = mapOf("t" to listOf("a\nb\\c"))))!!

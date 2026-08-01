@@ -416,4 +416,26 @@ open class NostrSemanticsStoreTest {
             } while (!progress.done)
             assertEquals(1, store.count(Filter(search = "satoshi")))
         }
+
+    /** A present limit <= 0 is the "matches nothing" sentinel on EVERY recall path — never an exception, never a full result. */
+    @Test
+    fun `a non-positive limit matches nothing instead of throwing`() =
+        runBlocking {
+            val n = note(at = 100)
+            store.insert(n)
+            assertEquals(0, store.query<Event>(Filter(ids = listOf(n.id), limit = -1)).size, "pure-id fast path")
+            assertEquals(0, store.query<Event>(Filter(kinds = listOf(1), limit = 0)).size, "search path")
+            assertEquals(0, store.count(Filter(kinds = listOf(1), limit = -1)))
+            assertEquals(0, store.count(listOf(Filter(kinds = listOf(1), limit = -1), Filter(kinds = listOf(999)))))
+        }
+
+    /** NIP-45: a COUNT means the same thing alone and beside a sibling filter — limits cap hits, never counts. */
+    @Test
+    fun `multi-filter count matches single-filter count under a limit`() =
+        runBlocking {
+            (1..5).forEach { store.insert(note(at = 100L + it)) }
+            val limited = Filter(kinds = listOf(1), limit = 2)
+            assertEquals(5, store.count(limited), "engine count ignores a positive limit")
+            assertEquals(5, store.count(listOf(limited, Filter(kinds = listOf(999)))), "the same filter must count the same with a sibling")
+        }
 }

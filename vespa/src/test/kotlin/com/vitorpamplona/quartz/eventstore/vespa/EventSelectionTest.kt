@@ -52,6 +52,9 @@ class EventSelectionTest {
             ),
         )
         assertEquals("(event.owner==\"$bob\")", EventSelection.build(EventQuery(owners = listOf(bob))))
+        // notKinds is translated, never silently dropped (a missing exclusion
+        // would stream excluded kinds into a walk that asked to skip them).
+        assertEquals("(event.kind!=5 and event.kind!=62)", EventSelection.build(EventQuery(notKinds = listOf(5, 62))))
     }
 
     @Test
@@ -60,6 +63,7 @@ class EventSelectionTest {
         roundTrips(EventQuery(kinds = listOf(30382)))
         roundTrips(EventQuery(kinds = listOf(0, 1, 30382), authors = listOf(alice, bob)))
         roundTrips(EventQuery(owners = listOf(alice), since = 5, until = 9, notExpiredAt = 7))
+        roundTrips(EventQuery(notKinds = listOf(5, 62)))
     }
 
     @Test

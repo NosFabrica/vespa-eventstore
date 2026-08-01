@@ -108,7 +108,10 @@ class VespaEventIndex(
     // — the whole scheme is opt-in until measured. When ON, id lookups can no
     // longer ride the document-API get (replaceables live under an address docid),
     // so they route through the `id`-attribute search, which finds both.
-    private val addressKeyed = System.getenv("VESPA_ADDRESS_KEYED")?.toBooleanStrictOrNull() ?: false
+    // Accepts "1" as well as "true" — the comment above prescribes =1, and the
+    // multi-writer deployment that needs engine-side supersession for
+    // correctness must not silently run without it.
+    private val addressKeyed = System.getenv("VESPA_ADDRESS_KEYED").let { it == "1" || it?.toBooleanStrictOrNull() == true }
 
     // Under address-keying the engine enforces newest-wins (conditional put), so
     // the bulk path skips its version-read stage and calls putIfNewer instead.
@@ -166,6 +169,12 @@ class VespaEventIndex(
     override suspend fun putIfNewer(doc: EventDoc): Boolean {
         val address = doc.addressOrNull()
         if (!addressKeyed || address == null) return super.putIfNewer(doc)
+        // The id is interpolated into the engine condition below, so it obeys
+        // the module's injection rule (64-hex before it reaches an expression —
+        // see EventYql.hexIn). Store-built docs always pass; a non-hex id from
+        // a direct caller falls back to the read-then-supersede default, which
+        // builds no expression from it.
+        if (!Hex.isHex64(doc.id)) return super.putIfNewer(doc)
         val condition =
             "event.created_at < ${doc.createdAt} or " +
                 "(event.created_at == ${doc.createdAt} and event.id > \"${doc.id}\")"
@@ -258,6 +267,10 @@ class VespaEventIndex(
      */
     private fun EventQuery.isPureIdLookup(): Boolean =
         !addressKeyed && // address-keyed replaceables aren't at the id docid — route ids through search
+            // A present limit <= 0 is the "matches nothing" sentinel; only the
+            // search path implements it (EventYql.build -> null), so it must not
+            // take this shortcut (List.take(-1) throws).
+            (limit == null || limit > 0) &&
             ids.isNotEmpty() && ids.size <= ID_GET_FANOUT &&
             kinds.isEmpty() && notKinds.isEmpty() && authors.isEmpty() && owners.isEmpty() &&
             tags.isEmpty() && tagsAll.isEmpty() &&

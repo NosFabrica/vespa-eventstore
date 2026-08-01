@@ -29,6 +29,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /**
@@ -114,6 +115,26 @@ class SweepPagingTest {
 
             assertEquals(CORPUS - 2, stored(), "only the first page's worth was removed")
         }
+
+    /**
+     * A sweep whose removes do not land must FAIL, not return: an acked remove
+     * is visible to search (the EventIndex contract), so a repeated page means
+     * the deletes are being dropped — reporting the vanish/delete as enforced
+     * would leave the events stored and served with no diagnostic.
+     */
+    @Test
+    fun `a sweep whose removes do not land fails loudly`() {
+        val inner = InMemoryEventIndex()
+        val broken =
+            object : EventIndex by inner {
+                override suspend fun removeAll(ids: List<String>) {} // acked, never applied
+            }
+        val store = NostrSemanticsStore(broken, sweepPage = PAGE)
+        runBlocking {
+            store.batchInsert((1..CORPUS).map { note(at = 3_000L + it) })
+            assertFailsWith<IllegalStateException> { store.delete(Filter(kinds = listOf(1))) }
+        }
+    }
 
     private companion object {
         const val PAGE = 4

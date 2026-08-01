@@ -23,6 +23,7 @@ import com.vitorpamplona.quartz.eventstore.vespa.client.EventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.doc.EventDoc
 import com.vitorpamplona.quartz.eventstore.vespa.query.EventQuery
 import com.vitorpamplona.quartz.eventstore.vespa.query.EventYql
+import com.vitorpamplona.quartz.utils.Hex
 
 /**
  * The in-memory reference [EventIndex]: a map of docs plus a direct
@@ -40,37 +41,47 @@ class InMemoryEventIndex(
     // the read-based default — so outcomes must match the read-then-supersede path.
     override val supersedesViaPut: Boolean = false,
 ) : EventIndex {
+    // Guarded by synchronized(docs): the store deliberately runs its lock-free
+    // dedup reads beside locked writes, so the reference must survive a reader
+    // scanning while a writer mutates — exactly as the real engine does.
     private val docs = LinkedHashMap<String, EventDoc>()
 
-    override suspend fun get(id: String): EventDoc? = docs[id]
+    override suspend fun get(id: String): EventDoc? = synchronized(docs) { docs[id] }
 
     override suspend fun put(doc: EventDoc) {
-        docs[doc.id] = doc
+        synchronized(docs) { docs[doc.id] = doc }
     }
 
     override suspend fun remove(id: String) {
-        docs.remove(id)
+        synchronized(docs) { docs.remove(id) }
     }
 
     override suspend fun search(query: EventQuery): List<EventDoc> {
+        // A present limit <= 0 is the "matches nothing" sentinel, as in
+        // EventYql.build (which returns null for it, never a negative take).
+        if ((query.limit ?: 1) <= 0) return emptyList()
         val c = Compiled(query)
-        val hits = docs.values.filter { c.matches(it) }.sortedWith(NEWEST_FIRST)
+        val hits = synchronized(docs) { docs.values.filter { c.matches(it) } }.sortedWith(NEWEST_FIRST)
         return query.limit?.let(hits::take) ?: hits
     }
 
     override suspend fun count(query: EventQuery): Int {
+        // Sentinel as in EventYql.grouping: limit <= 0 matches nothing; a
+        // positive limit is about hits, not the count, and is ignored.
+        if ((query.limit ?: 1) <= 0) return 0
         val c = Compiled(query)
-        return docs.values.count { c.matches(it) }
+        return synchronized(docs) { docs.values.count { c.matches(it) } }
     }
 
     override suspend fun distinctAuthors(query: EventQuery): Set<String> {
+        if ((query.limit ?: 1) <= 0) return emptySet()
         val c = Compiled(query)
-        return docs.values.filter { c.matches(it) }.mapTo(HashSet()) { it.pubkey }
+        return synchronized(docs) { docs.values.filter { c.matches(it) } }.mapTo(HashSet()) { it.pubkey }
     }
 
     override fun close() {}
 
-    fun size(): Int = docs.size
+    fun size(): Int = synchronized(docs) { docs.size }
 
     /**
      * The query's list constraints, compiled to hash sets ONCE per scan. Matching
@@ -82,11 +93,21 @@ class InMemoryEventIndex(
     private class Compiled(
         private val q: EventQuery,
     ) {
-        private val ids = q.ids.toHashSet()
+        // Key constraints normalize exactly as EventYql.hexIn: lowercase, valid
+        // 64-hex only — an uppercase-hex filter must match here iff it matches
+        // on the real engine. A constraint whose values are ALL invalid is
+        // unsatisfiable (hexIn returns null), not unconstrained.
+        private val ids = q.ids.normHex()
         private val kinds = q.kinds.toHashSet()
         private val notKinds = q.notKinds.toHashSet()
-        private val authors = q.authors.toHashSet()
-        private val owners = q.owners.toHashSet()
+        private val authors = q.authors.normHex()
+        private val owners = q.owners.normHex()
+        private val unsatisfiable =
+            (q.ids.isNotEmpty() && ids.isEmpty()) ||
+                (q.authors.isNotEmpty() && authors.isEmpty()) ||
+                (q.owners.isNotEmpty() && owners.isEmpty())
+
+        private fun List<String>.normHex(): HashSet<String> = mapTo(HashSet()) { it.lowercase() }.apply { retainAll { Hex.isHex64(it) } }
 
         /** One set of `name:value` pairs per OR-tag constraint: the doc matches if any of ITS pairs is in the set. */
         private val tagAny: List<HashSet<String>> = q.tags.map { (name, values) -> values.mapTo(HashSet()) { "$name:$it" } }
@@ -95,6 +116,7 @@ class InMemoryEventIndex(
         private val tagAll: List<List<String>> = q.tagsAll.map { (name, values) -> values.map { "$name:$it" } }
 
         fun matches(d: EventDoc): Boolean {
+            if (unsatisfiable) return false
             val pairs = if (tagAny.isEmpty() && tagAll.isEmpty()) emptyList() else d.tagIndex()
             return (ids.isEmpty() || d.id in ids) &&
                 (kinds.isEmpty() || d.kind in kinds) &&

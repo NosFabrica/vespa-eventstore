@@ -131,8 +131,8 @@ class NostrSemanticsStore(
      * sync. Two shapes, by whether the batch mutates via deletions:
      *
      *  - PURE RECORDS: [BulkRecordInsert] chunks the read checks and pipelines
-     *    one [EventIndex.putAll]; its dedup + guard reads run outside the writer
-     *    lock so parallel relays overlap them.
+     *    one [EventIndex.putAll]; its dedup reads run outside the writer lock
+     *    so parallel relays overlap them (guards and supersession stay under it).
      *  - CONTAINS kind 5/62: [BulkMixedInsert] batch-reads the working set and
      *    replays the per-event rules in memory (order against neighbours — a
      *    deletion targeting an earlier event — preserved), then writes the diff.
@@ -146,10 +146,11 @@ class NostrSemanticsStore(
         return if (events.any { it is DeletionEvent || it is RequestToVanishEvent }) {
             writes.withLock { bulkMixed.run(events) }
         } else {
-            // Pure records. The read checks (dedup + guards) run OUTSIDE the
-            // writer lock so parallel relays' batches overlap them; only the
-            // supersession read+resolve and the writes take the lock
-            // (query-then-write stays atomic — commit sees every prior commit).
+            // Pure records. The dedup reads run OUTSIDE the writer lock so
+            // parallel relays' batches overlap them (a raced duplicate is an
+            // idempotent re-put); the guard and supersession reads take the
+            // lock with the writes — query-then-write stays atomic, so a
+            // deletion committed by a neighbouring batch still blocks this one.
             val plan = bulkRecords.plan(events)
             writes.withLock { bulkRecords.commit(plan) }
         }
@@ -245,39 +246,65 @@ class NostrSemanticsStore(
     // ---- queries ------------------------------------------------------------
 
     /**
-     * Map a filter to an [EventQuery] stamped with the current expiry cutoff
-     * (NIP-40) and, for searches, the ranking observer. An explicit `observer:`
-     * search token wins over the connection [observer] — a client may ask to
-     * rank through any lens (scores are public), so the query's own choice takes
-     * precedence over the authenticated default.
+     * Map a filter to an [EventQuery] stamped with the request's expiry cutoff
+     * (NIP-40 — one [cutoffSecs] per request, so sibling filters can't disagree
+     * about an event expiring on the boundary) and, for searches, the ranking
+     * observer. An explicit `observer:` search token wins over the connection
+     * [observer] — a client may ask to rank through any lens (scores are
+     * public), so the query's own choice takes precedence over the
+     * authenticated default.
      */
-    private fun Filter.toExpiryQuery(observer: String? = null): EventQuery? = toEventQuery()?.let { it.copy(notExpiredAt = nowSecs(), observer = it.observer ?: observer) }
+    private fun Filter.toExpiryQuery(
+        cutoffSecs: Long,
+        observer: String? = null,
+    ): EventQuery? = toEventQuery()?.let { it.copy(notExpiredAt = cutoffSecs, observer = it.observer ?: observer) }
+
+    /** Whether this query's results carry engine ranking order (NIP-50) instead of NIP-01 recency. */
+    private fun EventQuery.isRanked(): Boolean = search != null || ranking != null
 
     override suspend fun <T : Event> query(filter: Filter): List<T> = query(listOf(filter))
 
     @Suppress("UNCHECKED_CAST")
     override suspend fun <T : Event> query(filters: List<Filter>): List<T> {
         val observer = coroutineContext[ObserverContext]?.pubkey
-        val queries = restoreSearches(filters).mapNotNull { it.toExpiryQuery(observer) }
-        val docs = searchDocs(queries)
-        // NIP-50: a searching query's results stay in the engine's RELEVANCE
-        // order "instead of the usual created_at ordering" — re-sorting here
-        // would undo the rank profile. Plain filters keep NIP-01 recency.
-        val ranked = queries.any { it.search != null || it.ranking != null }
-        val ordered = if (ranked) docs else docs.sortedWith(NEWEST_FIRST)
+        val cutoff = nowSecs()
+        val queries = restoreSearches(filters).mapNotNull { it.toExpiryQuery(cutoff, observer) }
+        val ordered = recallOrdered(queries, NEWEST_FIRST, EventDoc::id) { index.search(it) }
         // Reconstruct via Quartz's by-kind factory straight from the stored fields,
         // skipping the toEventJson()->fromJson() serialize+parse round trip that was
         // the hot path's biggest allocator; see [toEvent].
         return ordered.map { it.toEvent() } as List<T>
     }
 
-    /** Search every query concurrently (bounded), deduped by id — the shared recall for query and multi-filter count. */
-    private suspend fun searchDocs(queries: List<EventQuery>): List<EventDoc> =
-        when (queries.size) {
-            0 -> emptyList()
-            1 -> index.search(queries[0])
-            else -> queries.mapBounded(QUERY_FANOUT) { index.search(it) }.flatten().distinctBy { it.id }
+    /**
+     * Recall every query concurrently (bounded), dedup across queries, and
+     * order the result. NIP-50: a searching query's hits stay in the engine's
+     * RELEVANCE order "instead of the usual created_at ordering" — re-sorting
+     * would undo the rank profile. Plain queries keep NIP-01 recency — PER
+     * QUERY, so a plain filter riding beside a searching one in the same REQ
+     * is still served newest-first (an all-plain request keeps the combined
+     * newest-first order it always had).
+     */
+    private suspend fun <R> recallOrdered(
+        queries: List<EventQuery>,
+        newestFirst: Comparator<R>,
+        idOf: (R) -> String,
+        searchOne: suspend (EventQuery) -> List<R>,
+    ): List<R> {
+        val results =
+            when (queries.size) {
+                0 -> return emptyList()
+                1 -> listOf(searchOne(queries[0]))
+                else -> queries.mapBounded(QUERY_FANOUT) { searchOne(it) }
+            }
+        if (queries.none { it.isRanked() }) {
+            val combined = results.flatten()
+            val unique = if (queries.size > 1) combined.distinctBy(idOf) else combined
+            return unique.sortedWith(newestFirst)
         }
+        val ordered = queries.zip(results).flatMap { (q, hits) -> if (q.isRanked()) hits else hits.sortedWith(newestFirst) }
+        return if (queries.size > 1) ordered.distinctBy(idOf) else ordered
+    }
 
     /**
      * Raw read path: recall matches as Quartz [RawEvent]s, skipping the per-hit
@@ -292,17 +319,10 @@ class NostrSemanticsStore(
         onEach: (RawEvent) -> Unit,
     ) {
         val observer = coroutineContext[ObserverContext]?.pubkey
-        val queries = restoreSearches(filters).mapNotNull { it.toExpiryQuery(observer) }
-        val raw =
-            when (queries.size) {
-                0 -> return
-                1 -> index.rawSearch(queries[0])
-                else -> queries.mapBounded(QUERY_FANOUT) { index.rawSearch(it) }.flatten().distinctBy { it.id }
-            }
-        // NIP-50 relevance order is preserved for searching queries, exactly as in [query].
-        val ranked = queries.any { it.search != null || it.ranking != null }
-        val ordered = if (ranked) raw else raw.sortedWith(RAW_NEWEST_FIRST)
-        ordered.forEach(onEach)
+        val cutoff = nowSecs()
+        val queries = restoreSearches(filters).mapNotNull { it.toExpiryQuery(cutoff, observer) }
+        // Same recall, dedup and (per-query, NIP-50-aware) ordering as [query].
+        recallOrdered(queries, RAW_NEWEST_FIRST, RawEvent::id) { index.rawSearch(it) }.forEach(onEach)
     }
 
     override suspend fun <T : Event> query(
@@ -315,7 +335,7 @@ class NostrSemanticsStore(
         onEach: (T) -> Unit,
     ) = query<T>(filters).forEach(onEach)
 
-    override suspend fun count(filter: Filter): Int = restoreSearches(listOf(filter)).single().toExpiryQuery()?.let { index.count(it) } ?: 0
+    override suspend fun count(filter: Filter): Int = restoreSearches(listOf(filter)).single().toExpiryQuery(nowSecs())?.let { index.count(it) } ?: 0
 
     /**
      * The distinct authors (pubkeys) matching [filter], via a server-side grouping
@@ -323,7 +343,7 @@ class NostrSemanticsStore(
      * out of a huge match set without reconstructing every event (the orphan-score
      * sweep over millions of 30382s). Honors expiry like [count].
      */
-    suspend fun distinctAuthors(filter: Filter): Set<HexKey> = restoreSearches(listOf(filter)).single().toExpiryQuery()?.let { index.distinctAuthors(it) } ?: emptySet()
+    suspend fun distinctAuthors(filter: Filter): Set<HexKey> = restoreSearches(listOf(filter)).single().toExpiryQuery(nowSecs())?.let { index.distinctAuthors(it) } ?: emptySet()
 
     /**
      * Every distinct `d` tag (addressable subject) across [filter]'s matches, via
@@ -334,7 +354,7 @@ class NostrSemanticsStore(
      * cap. The sync uses this to find every scored author to fetch content for.
      */
     suspend fun distinctDTags(filter: Filter): Set<String> {
-        val q = restoreSearches(listOf(filter)).single().toExpiryQuery() ?: return emptySet()
+        val q = restoreSearches(listOf(filter)).single().toExpiryQuery(nowSecs()) ?: return emptySet()
         val out = HashSet<String>()
         index.visitIds(q, withDTag = true) { page ->
             page.forEach { it.dTag?.takeIf(String::isNotEmpty)?.let(out::add) }
@@ -345,11 +365,36 @@ class NostrSemanticsStore(
 
     override suspend fun count(filters: List<Filter>): Int {
         // Multi-filter counts need cross-filter id dedup (engine count can't),
-        // but they don't need the events materialized — recall the docs and
-        // count distinct ids, skipping the per-doc Event reconstruction.
+        // but they don't need the events materialized — collect ids only.
         if (filters.size == 1) return count(filters[0])
-        val queries = restoreSearches(filters).mapNotNull { it.toExpiryQuery() }
-        return searchDocs(queries).size
+        val cutoff = nowSecs()
+        // Mirror the single-filter engine-count semantics per filter, so the
+        // same filter counts the same alone or beside a sibling: a present
+        // limit <= 0 is the "matches nothing" sentinel; a positive limit is
+        // about hits, not counts, and is ignored.
+        val queries =
+            restoreSearches(filters)
+                .mapNotNull { it.toExpiryQuery(cutoff) }
+                .filterNot { (it.limit ?: 1) <= 0 }
+                .map { if (it.limit != null) it.copy(limit = null) else it }
+        val ids = HashSet<String>()
+        for (q in queries) {
+            if (q.isRanked()) {
+                // Searching filters carry ranking semantics (rank floor, spam
+                // gate) that only the search path applies; rawSearch recalls
+                // them without the per-hit tag parse.
+                index.rawSearch(q).forEach { ids += it.id }
+            } else {
+                // Plain filters stream ids through the engine's visit — no doc
+                // materialization, no summary-stage load, complete however
+                // large the match set.
+                index.visitIds(q) { page ->
+                    page.forEach { ids += it.id }
+                    true
+                }
+            }
+        }
+        return ids.size
     }
 
     /**
@@ -411,7 +456,8 @@ class NostrSemanticsStore(
         // Exclude already-expired events (NIP-40), exactly as query/count do.
         // Otherwise the negentropy set offers ids a plain REQ would never serve,
         // and a peer keeps trying to reconcile events we refuse to return.
-        for (q in filters.mapNotNull { it.toExpiryQuery() }) {
+        val cutoff = nowSecs()
+        for (q in filters.mapNotNull { it.toExpiryQuery(cutoff) }) {
             if (q.search == null && q.limit == null) {
                 index.visitIds(q) { page ->
                     page.forEach { all += IdAndTime(it.createdAt, it.id) }
@@ -451,13 +497,26 @@ class NostrSemanticsStore(
         // whether one page is the whole job (below), so read q.limit, not this.
         val paged = q.copy(limit = q.limit ?: sweepPage)
         var rounds = 0
+        var lastPage: Set<String>? = null
         while (rounds++ < MAX_SWEEP_ROUNDS) {
             val page = index.search(paged)
             if (page.isEmpty()) return
+            val ids = page.mapTo(HashSet()) { it.id }
+            // An acked remove is visible to search (the EventIndex contract), so
+            // a page identical to the one just removed means the deletes are not
+            // landing. Fail NOW: silently returning would report a vanish/delete
+            // as enforced while the events are still stored and served.
+            check(ids != lastPage) { "sweep is not shrinking: ${ids.size} matches for $q survived their own removal" }
             index.removeAll(page.map { it.id })
             // A limit'd delete is satisfied by its first page.
             if (q.limit != null) return
+            lastPage = ids
         }
+        // The backstop for a set that shrinks but never drains (or a query
+        // matching more than MAX_SWEEP_ROUNDS pages). Loud, not silent: the
+        // caller (a vanish, an expiry pass, an admin delete) must not believe
+        // the sweep completed.
+        error("sweep did not drain after $MAX_SWEEP_ROUNDS rounds of ${paged.limit} for $q")
     }
 
     // ---- Nostr semantics -------------------------------------------------------
@@ -568,9 +627,10 @@ class NostrSemanticsStore(
     override fun close() = index.close()
 
     private companion object {
-        // Runaway guard, not a delete cap: a sweep whose removes stop shrinking
-        // the match set terminates loudly instead of spinning forever. Only
-        // meaningful because the rounds are page-sized (see sweepPage) — with an
+        // Runaway backstop, not a delete cap: a sweep that spins this long
+        // throws (see sweep) instead of looping forever — the non-shrinking
+        // case is caught earlier, after ONE repeated page. Only meaningful
+        // because the rounds are page-sized (see sweepPage) — with an
         // unbounded read the loop always finishes in one round and this is dead.
         const val MAX_SWEEP_ROUNDS = 10_000
 

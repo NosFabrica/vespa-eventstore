@@ -66,8 +66,10 @@ internal class GuardOwners(
 
     // Config-only now (a foreign direct-feeder deployment). No longer tripped by
     // deleter cardinality — the Bloom scales where the old exact set gave up.
+    // Accepts "1" as well as "true": the docs above prescribe =1, and a kill
+    // switch that silently ignores its documented value re-accepts deleted events.
     @Volatile
-    private var disabled = System.getenv("GUARD_OWNERS_DISABLE")?.toBooleanStrictOrNull() ?: false
+    private var disabled = System.getenv("GUARD_OWNERS_DISABLE").let { it == "1" || it?.toBooleanStrictOrNull() == true }
 
     private val loadLock = Mutex()
 

@@ -428,6 +428,10 @@ object MockSelection {
                     q = q.copy(kinds = orGroup(clause, "event.kind==").map { it.toInt() })
                 }
 
+                clause.startsWith("(event.kind!=") -> {
+                    q = q.copy(notKinds = clause.removeSurrounding("(", ")").split(" and ").map { it.removePrefix("event.kind!=").toInt() })
+                }
+
                 clause.startsWith("(event.pubkey==") -> {
                     q = q.copy(authors = orGroup(clause, "event.pubkey==").map(::unquote))
                 }
@@ -525,7 +529,7 @@ object MockYql {
             limit = it.groupValues[1].toInt()
             rest = rest.removeRange(it.range)
         }
-        rest = rest.removeSuffix(" order by created_at desc")
+        rest = rest.removeSuffix(" order by created_at desc, id asc")
 
         var q = EventQuery(limit = limit)
         if (rest == "true") return q
