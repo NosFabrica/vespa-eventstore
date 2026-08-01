@@ -51,7 +51,9 @@ object QueryBench {
             try {
                 val n = index.count(EventQuery(kinds = listOf(1)))
                 println("query/count bench @ $url over $n docs (reps=$reps per shape)")
-                check(n >= 1_000_000) { "corpus too small ($n docs) — run :benchmark:visitBench first to feed it" }
+                // 1.4M floor: the count(window=1000k) expectation anchors at
+                // BASE + n/4 and needs the full window inside the corpus.
+                check(n >= 1_400_000) { "corpus too small ($n docs) — run :benchmark:visitBench first to feed it" }
                 val top = BASE + n - 1 // newest created_at in the corpus
 
                 println()

@@ -112,6 +112,13 @@ class MockVespaEngine {
     @Volatile var matchPhaseUnderdeliver: Int = 0
 
     /**
+     * Nodes reported in [matchPhaseUnderdeliver]'s coverage block. max-hits is
+     * per content node, so a FULL degraded page proves exactness only on ONE
+     * node — with more, the client must rerun exact even when the page is full.
+     */
+    @Volatile var matchPhaseNodes: Int = 1
+
+    /**
      * Cut the NEXT streamed visit response after this many put lines,
      * mid-bucket and without a final marker — a broken connection. The client
      * must resume from the last continuation token it saw and deliver the
@@ -301,7 +308,7 @@ class MockVespaEngine {
             put("coverage", JsonPrimitive(1))
             put("documents", JsonPrimitive(documents))
             put("full", JsonPrimitive(false))
-            put("nodes", JsonPrimitive(1))
+            put("nodes", JsonPrimitive(matchPhaseNodes))
             put("results", JsonPrimitive(1))
             put("resultsFull", JsonPrimitive(0))
             put(

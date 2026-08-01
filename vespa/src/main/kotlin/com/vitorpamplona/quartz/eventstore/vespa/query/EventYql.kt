@@ -92,11 +92,23 @@ object EventYql {
      * keys two behaviors on this: skipping the count-probe planner (match-phase
      * already owns these limits) and demoting to [RANK_UNRANKED] against a
      * serving schema that predates the profile.
+     *
+     * A deep-past `until` (until-based REQ pagination reaching old history) is
+     * EXCLUDED: it is exactly the anchor a newest-first match-phase cut is
+     * hostile to — the cut lands above the wanted window, the page comes back
+     * short, and the client's exactness rerun pays the full scan the profile
+     * was meant to avoid. Left out of the profile, those shapes fall to the
+     * count-probe planner, whose windows anchor at `until` and work at any
+     * depth.
      */
     fun usesRecencyProfile(q: EventQuery): Boolean =
         q.ranking == null &&
             q.search.isNullOrBlank() &&
-            (q.limit ?: 0) in 1..(MATCH_PHASE_MAX_HITS / MATCH_PHASE_HEADROOM)
+            (q.limit ?: 0) in 1..(MATCH_PHASE_MAX_HITS / MATCH_PHASE_HEADROOM) &&
+            (q.until == null || q.until >= System.currentTimeMillis() / 1000 - RECENT_UNTIL_HORIZON)
+
+    /** How far back an `until` may sit and still ride [RANK_RECENCY] — beyond it, pagination anchors take the planner path. */
+    const val RECENT_UNTIL_HORIZON = 2_592_000L
 
     fun build(q: EventQuery): VespaQuery? {
         val params = LinkedHashMap<String, String>()

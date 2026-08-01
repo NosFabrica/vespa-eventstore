@@ -24,6 +24,7 @@ import com.vitorpamplona.quartz.eventstore.vespa.client.VespaEventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.doc.EventDoc
 import com.vitorpamplona.quartz.eventstore.vespa.doc.SearchFields
 import com.vitorpamplona.quartz.eventstore.vespa.query.EventQuery
+import com.vitorpamplona.quartz.eventstore.vespa.query.EventYql
 import kotlinx.coroutines.runBlocking
 import kotlin.test.AfterTest
 import kotlin.test.Test
@@ -337,6 +338,41 @@ class VespaEventIndexTest {
                 mock.matchPhaseUnderdeliver = 0
             }
         }
+
+    /**
+     * max-hits is PER CONTENT NODE: on a multi-node cluster each node cuts at
+     * its own threshold, so even a FULL degraded page can silently omit
+     * mid-page docs. Full-page acceptance is single-node only — a multi-node
+     * degraded page must be rerun exact regardless of fill.
+     */
+    @Test
+    fun `a full match-phase page from a multi-node cluster is rerun exact`() =
+        runBlocking {
+            seed(*(1..8).map { doc(kind = 1) }.toTypedArray())
+            mock.matchPhaseUnderdeliver = 6 // page LOOKS full (== limit)...
+            mock.matchPhaseNodes = 2 // ...but two nodes cut independently
+            try {
+                val hits = index.search(EventQuery(kinds = listOf(1), limit = 6))
+                assertEquals(
+                    reference.search(EventQuery(kinds = listOf(1), limit = 6)).map { it.id },
+                    hits.map { it.id },
+                    "a multi-node degraded page proves nothing — must be rerun exact",
+                )
+            } finally {
+                mock.matchPhaseUnderdeliver = 0
+                mock.matchPhaseNodes = 1
+            }
+        }
+
+    /** Deep-past until anchors (old-history pagination) skip the recency profile — the planner windows them instead. */
+    @Test
+    fun `deep-past until skips the recency profile`() {
+        val recent = System.currentTimeMillis() / 1000 - 60
+        val ancient = System.currentTimeMillis() / 1000 - 90 * 86_400L
+        assertEquals(true, EventYql.usesRecencyProfile(EventQuery(kinds = listOf(1), limit = 10)))
+        assertEquals(true, EventYql.usesRecencyProfile(EventQuery(kinds = listOf(1), limit = 10, until = recent)))
+        assertEquals(false, EventYql.usesRecencyProfile(EventQuery(kinds = listOf(1), limit = 10, until = ancient)))
+    }
 
     /**
      * A serving schema that predates the `recency` profile answers 400 to it —

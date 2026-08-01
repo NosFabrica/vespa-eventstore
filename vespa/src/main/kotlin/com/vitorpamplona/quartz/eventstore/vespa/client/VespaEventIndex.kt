@@ -475,12 +475,17 @@ class VespaEventIndex(
     private suspend fun recallRoot(q: EventQuery): SearchRoot? {
         val vq = EventYql.build(q) ?: return null
         val root = searchRoot(vq, hits = hitsFor(q))
-        if (vq.ranking == EventYql.RANK_RECENCY &&
-            root.coverage.matchPhaseDegraded &&
-            root.children.size < (q.limit ?: 0)
-        ) {
-            val exact = EventYql.build(q.copy(ranking = EventYql.RANK_UNRANKED)) ?: return root
-            return searchRoot(exact, hits = hitsFor(q))
+        if (vq.ranking == EventYql.RANK_RECENCY && root.coverage.matchPhaseDegraded) {
+            // A FULL page proves exactness only on ONE content node: max-hits
+            // is per node and each node picks its own cut threshold, so with
+            // several nodes one node's overshoot can drop mid-page docs while
+            // the others fill the page. Short page anywhere, or full page on a
+            // multi-node cluster -> rerun exact.
+            val provablyExact = root.children.size >= (q.limit ?: 0) && root.coverage.nodes <= 1
+            if (!provablyExact) {
+                val exact = EventYql.build(q.copy(ranking = EventYql.RANK_UNRANKED)) ?: return root
+                return searchRoot(exact, hits = hitsFor(q))
+            }
         }
         return root
     }
@@ -731,6 +736,13 @@ class VespaEventIndex(
                 "?selection=${URLEncoder.encode(selection, "UTF-8")}" +
                 "&wantedDocumentCount=$VISIT_PAGE" +
                 "&fieldSet=${URLEncoder.encode(fieldSet, "UTF-8")}" +
+                // UNDER the client's read deadline (see [visitHttp]): a sparse
+                // selection can honestly spend ages filling a page, and the
+                // server's default (180s) outlives the 120s read timeout — the
+                // client would kill and retry the identical request forever.
+                // With the server timing out first, it returns a partial page
+                // plus a continuation and the walk keeps moving.
+                "&timeout=$VISIT_SERVER_TIMEOUT_SECONDS" +
                 "&concurrency=$visitConcurrency"
         var continuation: String? = null
         while (true) {
@@ -1311,6 +1323,7 @@ class VespaEventIndex(
     private class SearchCoverage(
         val full: Boolean = true,
         val coverage: Int = 100,
+        val nodes: Int = 1,
         val degraded: JsonObject? = null,
     ) {
         /** The engine cut the match phase — the one degradation [recallRoot] may act on rather than refuse. */
@@ -1405,6 +1418,9 @@ class VespaEventIndex(
          * node's worst honest page.
          */
         const val VISIT_READ_TIMEOUT_SECONDS = 120L
+
+        /** Server-side timeout on paged visit requests — strictly under [VISIT_READ_TIMEOUT_SECONDS], see [pagedWalk]. */
+        const val VISIT_SERVER_TIMEOUT_SECONDS = 90L
 
         /**
          * The [planRecency] probe ladder, in seconds before the query's anchor:
