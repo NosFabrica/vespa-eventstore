@@ -59,12 +59,16 @@ object VisitBench {
             awaitServing(url)
             feedUpTo(url, target, batch)
 
+            // NOTE: no high slices x concurrency paged configs. Total visitor
+            // pressure is the product, and ~64 concurrent visitor sessions
+            // wedged this node's document API mid-response, indefinitely —
+            // which is why VespaEventIndex defaults paged concurrency to 1 and
+            // carries a visit read deadline.
             val configs =
                 listOf(
                     Config("paged serial (original)", slices = 1, concurrency = 1, streaming = false),
                     Config("paged serial, conc=8", slices = 1, concurrency = 8, streaming = false),
-                    Config("paged 8 slices, conc=8", slices = 8, concurrency = 8, streaming = false),
-                    Config("paged 16 slices, conc=8", slices = 16, concurrency = 8, streaming = false),
+                    Config("paged 8 slices", slices = 8, concurrency = 1, streaming = false),
                     Config("streamed 1 slice", slices = 1, concurrency = 1, streaming = true),
                     Config("streamed 4 slices", slices = 4, concurrency = 1, streaming = true),
                     Config("streamed 8 slices", slices = 8, concurrency = 1, streaming = true),

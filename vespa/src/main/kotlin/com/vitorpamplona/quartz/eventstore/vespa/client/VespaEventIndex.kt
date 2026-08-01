@@ -240,6 +240,38 @@ class VespaEventIndex(
             .pingInterval(Duration.ofSeconds(PING_INTERVAL_SECONDS))
             // Vespa is local; never route through the egress proxy.
             .proxy(Proxy.NO_PROXY)
+            .apply {
+                // OkHttp's dispatcher defaults cap ASYNC calls at 5 per host —
+                // measured live throttling a sliced visit walk to 5 of its 8
+                // slices (and squeezing every other concurrent read with them).
+                // Sync execute() calls bypass the dispatcher, so this only
+                // widens the async paths.
+                dispatcher(
+                    okhttp3.Dispatcher().apply {
+                        maxRequests = 128
+                        maxRequestsPerHost = 64
+                    },
+                )
+            }.build()
+
+    /**
+     * The visit walk's client: [http] plus a READ timeout, which visits need
+     * and queries must not have. A query is one response that may legitimately
+     * take minutes of engine time before its first byte, so [http] carries no
+     * read deadline. A visit is the opposite shape: page responses are small
+     * and continuous, and a streamed slice delivers lines steadily — silence
+     * means a wedged visitor session, not a hard-working engine. Measured live:
+     * enough concurrent visitor sessions wedge a small node's document API
+     * mid-response, HTTP/2 pings keep the connection "alive" (they are
+     * answered; it is the response that never comes), and without a read
+     * deadline the walk hangs FOREVER. With one, the wedge surfaces as an
+     * IOException that the paged retry / streamed resume machinery handles —
+     * recover or fail loudly, never hang.
+     */
+    private val visitHttp =
+        http
+            .newBuilder()
+            .readTimeout(Duration.ofSeconds(VISIT_READ_TIMEOUT_SECONDS))
             .build()
 
     private val jsonMedia = "application/json; charset=utf-8".toMediaType()
@@ -547,7 +579,7 @@ class VespaEventIndex(
                 "&concurrency=$visitConcurrency&slices=$visitSlices&sliceId=$sliceId"
         var continuation: String? = null
         while (true) {
-            val resp = send(continuation?.let { "$base&continuation=$it" } ?: base)
+            val resp = sendVisit(continuation?.let { "$base&continuation=$it" } ?: base)
             require(resp.statusCode() < 400) { "vespa visit ${resp.statusCode()}: ${resp.body().take(300)}" }
             val json = Json.parseToJsonElement(resp.body()).jsonObject
             json["documents"]?.jsonArray?.takeIf { it.isNotEmpty() }?.let { emit(it) }
@@ -654,7 +686,7 @@ class VespaEventIndex(
     ): StreamEnd =
         withContext(Dispatchers.IO) {
             val call =
-                http.newCall(
+                visitHttp.newCall(
                     Request
                         .Builder()
                         .url(url)
@@ -947,6 +979,17 @@ class VespaEventIndex(
                 .build(),
         )
 
+    /** [send] on the [visitHttp] client — visit page requests carry a read deadline (see [visitHttp]). */
+    private suspend fun sendVisit(url: String): HttpResp =
+        sendRetrying(
+            Request
+                .Builder()
+                .url(url)
+                .get()
+                .build(),
+            visitHttp,
+        )
+
     /**
      * Send [req], briefly retrying transient overload: 5xx (the engine sheds
      * load under heavy concurrent summary fills) AND 429 (the document API
@@ -960,12 +1003,15 @@ class VespaEventIndex(
      * rather than a status code, so treating it as fatal would abort a visit walk
      * for a condition the next attempt usually clears.
      */
-    private suspend fun sendRetrying(req: Request): HttpResp {
+    private suspend fun sendRetrying(
+        req: Request,
+        client: OkHttpClient = http,
+    ): HttpResp {
         var attempt = 0
         while (true) {
             val resp =
                 try {
-                    http.newCall(req).await()
+                    client.newCall(req).await()
                 } catch (e: IOException) {
                     if (attempt++ >= QUERY_RETRIES) throw e
                     delay(500L * attempt)
@@ -1138,8 +1184,22 @@ class VespaEventIndex(
         /** Default parallel visit slices — see [visitSlices] for why and the env override. */
         const val VISIT_SLICES = 8
 
-        /** Default per-request visit bucket concurrency — see [visitConcurrency]. */
-        const val VISIT_CONCURRENCY = 8
+        /**
+         * Default per-request visit bucket concurrency — see [visitConcurrency].
+         * Deliberately 1: total visitor pressure is slices x concurrency, and
+         * measured live, driving it to ~64 wedged a small node's document API
+         * mid-response (silent, indefinite). The slice count already provides
+         * the parallelism; raise this only on hardware measured to take it.
+         */
+        const val VISIT_CONCURRENCY = 1
+
+        /**
+         * Read deadline for visit requests ([visitHttp]): pages are small and
+         * streams deliver continuously, so this much silence means a wedged
+         * visitor session, not a busy engine. Generous enough for a loaded
+         * node's worst honest page.
+         */
+        const val VISIT_READ_TIMEOUT_SECONDS = 120L
 
         /** Brief 5xx retries per query (transient engine load-shedding, not correctness). */
         const val QUERY_RETRIES = 3
