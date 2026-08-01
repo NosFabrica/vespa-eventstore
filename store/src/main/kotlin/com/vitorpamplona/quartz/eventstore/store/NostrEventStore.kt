@@ -487,6 +487,26 @@ class NostrEventStore(
     override suspend fun snapshotIdsForNegentropy(
         filters: List<Filter>,
         maxEntries: Int?,
+    ): List<IdAndTime> = snapshotIdsForNegentropy(filters, maxEntries, null)
+
+    /**
+     * The same walk, reporting the running count after every page.
+     *
+     * An overload rather than a parameter on the interface method: the contract
+     * lives in quartz and nobody else needs this, so widening it there would make
+     * every implementation carry a hook only a mirror uses.
+     *
+     * The walk is the longest silent phase a mirror has: on a 25M-event corpus it
+     * is minutes of visit requests during which the caller can report neither
+     * what it is doing nor whether it is moving, because the only signal is the
+     * finished list. The page loop already knows the count — it was simply thrown
+     * away. Optional, and called on the walking coroutine, so a caller that does
+     * not want it pays nothing and one that does must keep the callback cheap.
+     */
+    suspend fun snapshotIdsForNegentropy(
+        filters: List<Filter>,
+        maxEntries: Int? = null,
+        onProgress: ((collected: Int) -> Unit)? = null,
     ): List<IdAndTime> {
         val all = ArrayList<IdAndTime>()
         // A single-filter cap can stop the walk early: the caller only needs to
@@ -500,10 +520,12 @@ class NostrEventStore(
             if (q.search == null && q.limit == null) {
                 index.visitIds(q) { page ->
                     page.forEach { all += IdAndTime(it.createdAt, it.id) }
+                    onProgress?.invoke(all.size)
                     cap == null || all.size < cap
                 }
             } else {
                 index.search(q).forEach { all += IdAndTime(it.createdAt, it.id) }
+                onProgress?.invoke(all.size)
             }
         }
         val unique = if (filters.size > 1) all.distinctBy { it.id } else all
