@@ -525,11 +525,15 @@ class VespaEventIndex(
      * or the serving schema predates them.
      */
     suspend fun searchScored(query: EventQuery): List<ScoredHit> =
-        nearSafe(query) { q ->
-            val vq = EventYql.build(q) ?: return@nearSafe emptyList()
-            searchRoot(vq, hits = q.limit ?: DEFAULT_SCORED_HITS)
-                .children
-                .mapNotNull { hit -> hit.fields?.let { f -> f.toDoc()?.let { ScoredHit(it, hit.relevance, tierOf(f.matchfeatures)) } } }
+        nearSafe(query) { qn ->
+            // recencySafe: a term-less scored query auto-selects the recency
+            // profile, which an old serving schema 400s — same net as search().
+            recencySafe(qn) { q ->
+                val vq = EventYql.build(q) ?: return@recencySafe emptyList()
+                searchRoot(vq, hits = q.limit ?: DEFAULT_SCORED_HITS)
+                    .children
+                    .mapNotNull { hit -> hit.fields?.let { f -> f.toDoc()?.let { ScoredHit(it, hit.relevance, tierOf(f.matchfeatures)) } } }
+            }
         }
 
     /** The rank band a hit arrived through, from the profile's match-features; null when none were served. */

@@ -51,6 +51,11 @@ tasks.register<JavaExec>("rankAb") {
     description = "A/B Vespa ranking knobs against the fixed regression case set"
     classpath = sourceSets["main"].runtimeClasspath
     mainClass.set("com.vitorpamplona.quartz.eventstore.benchmark.RankAb")
+    // JavaExec's default working dir is THIS subproject (benchmark/), where the
+    // documented default --cases path 'benchmark/rank_cases.json' would resolve
+    // to benchmark/benchmark/... and NoSuchFile. Run from the repo root so the
+    // README's invocations work verbatim.
+    workingDir = rootDir
 }
 
 // Large corpora need heap: a BENCH_SIZE=1M run holds the generated Event list

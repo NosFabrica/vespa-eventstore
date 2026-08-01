@@ -415,9 +415,12 @@ schema event {
             # per-hit positional analysis, and elementCompleteness walks the
             # matched elements; neither belongs in a first phase that scores
             # every match. The SUM of these weights must stay UNDER the
-            # smallest tier gap (exact floor 130100 - near ceiling 129248 =
-            # 852; the shipped 60+40 = 100 is well clear), so precision
-            # reorders hits WITHIN a band and can never cross bands.
+            # smallest inter-band gap so precision reorders hits WITHIN a band
+            # and can never cross bands. The tightest gap is near floor 23000
+            # minus weak ceiling (4000+80)*5.6 = 22848 -> 152; the shipped
+            # 60+40 = 100 fits (worst case: a boosted weak-ceiling hit reaches
+            # 22948, still under an unboosted near floor). Re-check this gap
+            # if any tier weight moves.
             #     w_words       reward for matching MORE of a multi-word query
             #                   (fieldMatch queryCompleteness, 0..1) —
             #                   Meilisearch's #1 "words" rule

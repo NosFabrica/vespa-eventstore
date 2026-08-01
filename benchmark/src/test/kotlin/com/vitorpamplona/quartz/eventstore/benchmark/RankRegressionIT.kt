@@ -135,11 +135,30 @@ class RankRegressionIT {
                         )
                         assertEquals("affiliation", odell.first { nameOf(it.doc) == "podcaster" }.tier)
 
-                        // --- exactness (second phase): the whole-field match wins its band ---
+                        // --- exactness: the whole-field match wins its band. Under the
+                        // single-phase `text` profile this follows from the fieldLength
+                        // division in name_text(); the point of asserting it is the
+                        // ordering contract, not the mechanism. ---
                         val ode = search("Ode").map { nameOf(it.doc) }
                         assertTrue(
                             ode.indexOf("Ode") < ode.indexOf("Ode Fan Club"),
                             "exact whole-name must beat the longer name in the same band: $ode",
+                        )
+
+                        // --- the default profile + its SECOND PHASE actually execute ---
+                        // sort_followers is the only profile whose second phase computes
+                        // the fieldMatch precision features at query time; a broken
+                        // feature reference would surface HERE, not at deploy. No
+                        // reputation docs are fed, so trust is a constant multiplier
+                        // and the tier ladder alone must produce this order.
+                        val followers = searchWith("Ode", EventYql.RANK_FOLLOWERS)
+                        val fnames = followers.map { nameOf(it.doc) }
+                        assertEquals("Ode", fnames.first(), "exact match on top under sort_followers: $fnames")
+                        assertTrue("ODELL" in fnames, "the near hit must survive text_score_cutoff: $fnames")
+                        assertEquals("near", followers.first { nameOf(it.doc) == "ODELL" }.tier)
+                        assertTrue(
+                            fnames.indexOf("Ode") < fnames.indexOf("Ode Fan Club"),
+                            "second-phase exactness keeps the whole-field match on top: $fnames",
                         )
 
                         // --- typo bound: over-budget hits never match ---
@@ -163,7 +182,12 @@ class RankRegressionIT {
         error("corpus never became searchable")
     }
 
-    private suspend fun search(text: String) = indexRef.searchScored(EventQuery(search = text, ranking = EventYql.RANK_TEXT))
+    private suspend fun search(text: String) = searchWith(text, EventYql.RANK_TEXT)
+
+    private suspend fun searchWith(
+        text: String,
+        ranking: String,
+    ) = indexRef.searchScored(EventQuery(search = text, ranking = ranking))
 
     private suspend fun expect(
         query: String,
