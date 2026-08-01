@@ -151,6 +151,12 @@ interface EventIndex : AutoCloseable {
      * [search] — exact, but it reconstructs every matching doc to count their
      * pubkeys; the real client overrides it with a server-side grouping count
      * that never leaves the engine.
+     *
+     * The real client's answer is an ESTIMATE: Vespa's `count()` over a group
+     * list is sketch-based, measured ~3% high against a known author set
+     * (510 for 496 true). Fine for the metrics this feeds; a caller that needs
+     * the exact figure should size [scanAuthors]'s set instead (a corpus walk —
+     * exact, but seconds-to-minutes where this is milliseconds).
      */
     suspend fun countDistinctAuthors(query: EventQuery): Int = search(query).map { it.pubkey }.distinct().size
 

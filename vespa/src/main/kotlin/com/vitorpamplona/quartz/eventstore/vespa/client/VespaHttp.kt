@@ -96,9 +96,29 @@ internal class VespaHttp {
             .proxy(Proxy.NO_PROXY)
             .build()
 
+    /**
+     * The visit walk's client: the query client plus a READ timeout, which
+     * visits need and queries must not have. A query is one response that may
+     * legitimately take minutes of engine time before its first byte, so the
+     * query client carries no read deadline. A visit is the opposite shape:
+     * page responses are small and continuous, and a streamed slice delivers
+     * lines steadily — silence means a wedged visitor session, not a
+     * hard-working engine. Measured live: enough concurrent visitor sessions
+     * wedge a small node's document API mid-response, HTTP/2 pings keep the
+     * connection "alive" (they are answered; it is the response that never
+     * comes), and without a read deadline the walk hangs FOREVER. With one,
+     * the wedge surfaces as an IOException that the paged retry / streamed
+     * resume machinery handles — recover or fail loudly, never hang.
+     */
+    private val visitHttp =
+        http
+            .newBuilder()
+            .readTimeout(Duration.ofSeconds(VISIT_READ_TIMEOUT_SECONDS))
+            .build()
+
     private val jsonMedia = "application/json; charset=utf-8".toMediaType()
 
-    /** GET [url], retrying transient overload — the document-API get and visit paths. */
+    /** GET [url], retrying transient overload — the document-API get path. */
     suspend fun get(url: String): HttpResp =
         send(
             Request
@@ -107,6 +127,24 @@ internal class VespaHttp {
                 .get()
                 .build(),
         )
+
+    /** [get] on the visit client — visit page requests carry a read deadline (see [visitHttp]). */
+    suspend fun getVisit(url: String): HttpResp =
+        send(
+            Request
+                .Builder()
+                .url(url)
+                .get()
+                .build(),
+            visitHttp,
+        )
+
+    /**
+     * A raw call on the visit client, for the streamed JSON-Lines walk: the
+     * caller runs the blocking read loop and owns the call's lifecycle
+     * (cancel on coroutine cancellation). Same read deadline as [getVisit].
+     */
+    fun newVisitCall(req: Request): Call = visitHttp.newCall(req)
 
     /** POST [body] as JSON to [url], retrying transient overload — the `/search/` query path. */
     suspend fun postJson(
@@ -134,12 +172,15 @@ internal class VespaHttp {
      * rather than a status code, so treating it as fatal would abort a visit walk
      * for a condition the next attempt usually clears.
      */
-    private suspend fun send(req: Request): HttpResp {
+    private suspend fun send(
+        req: Request,
+        client: OkHttpClient = http,
+    ): HttpResp {
         var attempt = 0
         while (true) {
             val resp =
                 try {
-                    http.newCall(req).await()
+                    client.newCall(req).await()
                 } catch (e: IOException) {
                     if (attempt++ >= QUERY_RETRIES) throw e
                     delay(500L * attempt)
@@ -214,6 +255,14 @@ internal class VespaHttp {
 
         /** Brief 5xx retries per query (transient engine load-shedding, not correctness). */
         const val QUERY_RETRIES = 3
+
+        /**
+         * Read deadline for visit requests ([visitHttp]): pages are small and
+         * streams deliver continuously, so this much silence means a wedged
+         * visitor session, not a busy engine. Generous enough for a loaded
+         * node's worst honest page.
+         */
+        const val VISIT_READ_TIMEOUT_SECONDS = 120L
 
         /**
          * Liveness probe on the read connection, in place of the read/whole-call
