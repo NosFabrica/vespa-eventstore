@@ -81,6 +81,14 @@ tasks.register<JavaExec>("queryBench") {
     maxHeapSize = System.getenv("BENCH_HEAP") ?: "3g"
 }
 
+tasks.register<JavaExec>("multiFilterBench") {
+    group = "verification"
+    description = "Store-level multi-filter REQ latency vs the serialized single-filter sum (A/B VESPA_QUERY_FANOUT)"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.vitorpamplona.quartz.eventstore.benchmark.MultiFilterBench")
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "3g"
+}
+
 tasks.register<JavaExec>("traceProbe") {
     group = "verification"
     description = "Dump Vespa query-execution plans (trace.explainLevel) for the named REQ shapes"

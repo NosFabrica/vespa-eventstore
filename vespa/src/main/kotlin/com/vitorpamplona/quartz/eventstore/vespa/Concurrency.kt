@@ -33,9 +33,12 @@ import kotlinx.coroutines.sync.withPermit
  * How many engine queries a batch stage keeps in flight. Serialized round trips
  * starve a batch, but UNBOUNDED fan-out is worse: a dozen concurrent
  * multi-thousand-summary queries time out proton's summary stage (`504 Summary
- * data is incomplete`). This is measured, not hypothetical.
+ * data is incomplete`). This is measured, not hypothetical — but it was
+ * measured on heavy bulk-stage queries; a multi-filter REQ's per-filter
+ * queries are far lighter, so `VESPA_QUERY_FANOUT` lets a deployment raise it
+ * for its own hardware.
  */
-const val QUERY_FANOUT = 4
+val QUERY_FANOUT: Int = System.getenv("VESPA_QUERY_FANOUT")?.toIntOrNull()?.coerceAtLeast(1) ?: 4
 
 /**
  * Fan-out for address-keyed conditional PUTs ([EventIndex.putIfNewer]) in the
