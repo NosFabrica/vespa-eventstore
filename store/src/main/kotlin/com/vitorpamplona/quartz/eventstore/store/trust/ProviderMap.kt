@@ -28,24 +28,37 @@ import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEve
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.tags.ProviderTypes
 
 /**
- * The NIP-85 observer-attribution map: `service key -> observer`, derived from
+ * The NIP-85 observer-attribution map: `service key -> observers`, derived from
  * every stored kind-10040's `30382:rank` entries. A 30382 is SIGNED by a service
- * key, but its score is credited to the OBSERVER: the 10040 author who named that
- * service. This is the one place that link is resolved.
+ * key, but its score is credited to the OBSERVERS: every 10040 author who named
+ * that service. This is the one place that link is resolved.
+ *
+ * The value is a SET, not one observer. Popular providers are the norm on
+ * NIP-85 — many users' 10040s name the same rank service — and each of those
+ * users must see the service's scores under their own key. (A `toMap()` here
+ * once kept a single arbitrary winner per service, which silently unranked
+ * every other user trusting that provider.)
  *
  * [get] is CACHED across a pass. The map only changes when a 10040 is written or
  * removed, so a run of single-30382 publishes (each re-deriving its subject) pays
  * the full 10040 scan ONCE, not per event. Every mutation path that touches a
  * 10040 [invalidate]s it. It is safe as a plain @Volatile field because every
- * caller runs under [TrustProjection]'s store single-writer lock.
+ * caller that can observe a stale value runs under [TrustProjection]'s store
+ * single-writer lock (the reconciler's mutating passes take the same lock
+ * through its gate).
  */
 internal class ProviderMap(
     private val inner: EventIndex,
+    private val nowSecs: () -> Long,
 ) {
-    @Volatile private var cached: Map<String, String>? = null
+    @Volatile private var cached: Map<String, Set<String>>? = null
 
     /**
-     * The map, rebuilding it once per pass.
+     * The map, rebuilding it once per pass. Already-expired 10040s (NIP-40) are
+     * excluded, matching what every read path would serve — a mapping the store
+     * refuses to return as a record must not keep attributing scores. (The cells
+     * it produced still stand until the expiry sweep removes the list and fires
+     * the projection's react.)
      *
      * An EMPTY result is never cached, and that exception is the whole point. A
      * relay with no 10040s and a relay whose engine has not finished serving its
@@ -61,10 +74,12 @@ internal class ProviderMap(
      * genuinely has no providers. The cost of caching it is a relay that can
      * never rank anything until it restarts.
      */
-    suspend fun get(): Map<String, String> {
+    suspend fun get(): Map<String, Set<String>> {
         cached?.let { return it }
         val fresh =
-            rankProviders(inner.search(EventQuery(kinds = listOf(TrustProviderListEvent.KIND)))).toMap()
+            rankProviders(inner.search(EventQuery(kinds = listOf(TrustProviderListEvent.KIND), notExpiredAt = nowSecs())))
+                .groupBy({ it.first }, { it.second })
+                .mapValues { it.value.toSet() }
         if (fresh.isNotEmpty()) cached = fresh
         return fresh
     }

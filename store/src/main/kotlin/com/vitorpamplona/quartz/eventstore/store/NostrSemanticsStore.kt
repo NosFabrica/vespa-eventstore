@@ -129,6 +129,16 @@ class NostrSemanticsStore(
     override suspend fun insert(event: Event) = writes.withLock { insertLocked(event) }
 
     /**
+     * Run [body] under this store's single writer lock. For the trust
+     * reconciler's mutating batches: its repairs derive from a read of the
+     * corpus, and racing a live insert would let a derivation from PRE-write
+     * state land AFTER the insert's own recompute — stale cells with nothing
+     * left to trigger a fix. NOT reentrant (a plain [Mutex]): never call from a
+     * path that already holds the lock.
+     */
+    internal suspend fun <T> withWriteLock(body: suspend () -> T): T = writes.withLock { body() }
+
+    /**
      * Batches take a BULK path — the per-event path costs 3–5 index round-trips
      * each (dup probe, tombstone probe, vanish probe, supersession), which caps
      * ingest in the low thousands per second, useless against a million-event

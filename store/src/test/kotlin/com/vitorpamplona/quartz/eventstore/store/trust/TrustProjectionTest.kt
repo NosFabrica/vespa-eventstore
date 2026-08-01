@@ -25,6 +25,8 @@ import com.vitorpamplona.quartz.eventstore.vespa.InMemoryEventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.InMemoryReputationIndex
 import com.vitorpamplona.quartz.eventstore.vespa.client.DocsPage
 import com.vitorpamplona.quartz.eventstore.vespa.client.EventIndex
+import com.vitorpamplona.quartz.eventstore.vespa.client.ReputationIndex
+import com.vitorpamplona.quartz.eventstore.vespa.doc.ReputationCells
 import com.vitorpamplona.quartz.eventstore.vespa.doc.ReputationDoc
 import com.vitorpamplona.quartz.eventstore.vespa.query.EventQuery
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
@@ -36,6 +38,7 @@ import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -76,12 +79,14 @@ class TrustProjectionTest {
         followers: Int? = 120,
         at: Long = next(),
         eventId: String = id(),
+        expires: Long? = null,
     ): ContactCardEvent {
         val tags =
             buildList {
                 add(arrayOf("d", about))
                 rank?.let { add(arrayOf("rank", it.toString())) }
                 followers?.let { add(arrayOf("followers", it.toString())) }
+                expires?.let { add(arrayOf("expiration", it.toString())) }
             }.toTypedArray()
         return ContactCardEvent(eventId, signer, at, tags, "", "")
     }
@@ -289,6 +294,158 @@ class TrustProjectionTest {
             assertNull(bulkReputations.docs[subjectB], "subjectB was retracted")
         }
 
+    // ---- a provider shared by several observers (the NIP-85 norm) ------------
+
+    /**
+     * Popular providers are named by MANY users' 10040s. Every one of those
+     * observers must get the service's scores under their own key — a
+     * single-winner map silently unranked everyone else trusting that provider.
+     */
+    @Test
+    fun `a provider shared by two observers scores both`() =
+        runBlocking {
+            store.insert(list10040(author = observer, serviceKey = service))
+            store.insert(list10040(author = observer2, serviceKey = service))
+            store.insert(card())
+            assertEquals(
+                mapOf(observer to 87, observer2 to 87),
+                reputations.get(subject)?.influenceScores,
+                "both users trusting the provider see its score",
+            )
+        }
+
+    /** The same fan-out on the BULK zero-read cell path. */
+    @Test
+    fun `a shared provider fans out on the bulk path too`() =
+        runBlocking {
+            store.insert(list10040(author = observer, serviceKey = service))
+            store.insert(list10040(author = observer2, serviceKey = service))
+            val subjects = (1..20).map { it.toString(16).padStart(64, 'f') }
+            val outcomes = store.batchInsert(subjects.map { s -> card(about = s) })
+            assertEquals(20, outcomes.count { it is IEventStore.InsertOutcome.Accepted })
+            subjects.forEach { s ->
+                assertEquals(mapOf(observer to 87, observer2 to 87), reputations.docs.getValue(s).influenceScores, "subject $s")
+            }
+        }
+
+    /** One observer un-naming the shared provider drops only THEIR cells. */
+    @Test
+    fun `dropping a shared provider detaches only that observer`() =
+        runBlocking {
+            store.insert(list10040(author = observer, serviceKey = service))
+            store.insert(list10040(author = observer2, serviceKey = service))
+            store.insert(card())
+            assertEquals(mapOf(observer to 87, observer2 to 87), reputations.get(subject)?.influenceScores)
+
+            // observer2's NEW 10040 picks service2 instead: their cell moves off
+            // the shared provider; observer's stays.
+            store.insert(list10040(author = observer2, serviceKey = service2))
+            assertEquals(mapOf(observer to 87), reputations.get(subject)?.influenceScores)
+        }
+
+    // ---- crash safety: the dirty marker ---------------------------------------
+
+    /**
+     * The event write and the projection write are separate acks. A failure
+     * between them stores the events, and the retry comes back all-duplicates —
+     * which never reaches the projection. The persisted dirt marker must repair
+     * that at the NEXT trust write.
+     */
+    @Test
+    fun `a projection failure after the event write heals at the next trust write`() =
+        runBlocking {
+            val inner = InMemoryEventIndex()
+            val reps = InMemoryReputationIndex()
+            val failing = FailingCellsReputationIndex(reps)
+            val proj = TrustProjection(inner, failing)
+            val st = NostrSemanticsStore(proj, relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+            st.insert(list10040())
+
+            val subjects = (1..20).map { it.toString(16).padStart(64, 'e') }
+            val batch = subjects.map { s -> card(about = s) }
+            failing.failNext = true
+            assertFailsWith<RuntimeException> { st.batchInsert(batch) }
+
+            // Events landed, cells did not — the exact drift, named by the marker.
+            assertEquals(20, inner.search(EventQuery(kinds = listOf(ContactCardEvent.KIND))).count { subjectOf(it) in subjects })
+            subjects.forEach { assertNull(reps.get(it), "cells must be missing after the failure") }
+            assertEquals(subjects.toSet(), reps.get(DirtLedger.MARKER_KEY)?.influenceScores?.keys, "the marker names the dirty subjects")
+
+            // A retry is all duplicates and never reaches the projection; the
+            // next NEW trust write heals first.
+            st.batchInsert(batch)
+            subjects.forEach { assertNull(reps.get(it), "duplicates alone cannot repair") }
+            st.insert(card(about = "9a".repeat(32)))
+            subjects.forEach { s -> assertEquals(mapOf(observer to 87), reps.get(s)?.influenceScores, "healed subject $s") }
+            assertNull(reps.get(DirtLedger.MARKER_KEY), "marker cleared after the heal")
+        }
+
+    /** A crafted card cannot collide with the marker: subjects must be 64-hex. */
+    @Test
+    fun `a card whose d tag is the marker id projects nothing and breaks nothing`() =
+        runBlocking {
+            store.insert(list10040())
+            store.insert(ContactCardEvent(id(), service, next(), arrayOf(arrayOf("d", DirtLedger.MARKER_KEY), arrayOf("rank", "87")), "", ""))
+            assertNull(reputations.get(DirtLedger.MARKER_KEY))
+            // And ordinary projection still works beside it.
+            store.insert(card())
+            assertEquals(mapOf(observer to 87), reputations.get(subject)?.influenceScores)
+        }
+
+    // ---- expiry (NIP-40) ------------------------------------------------------
+
+    /** An expired card must stop scoring the moment its subject is re-derived, not only when swept. */
+    @Test
+    fun `an expired card contributes nothing to a re-derivation`() =
+        runBlocking {
+            var now = System.currentTimeMillis() / 1000
+            val inner = InMemoryEventIndex()
+            val reps = InMemoryReputationIndex()
+            val st = NostrSemanticsStore(TrustProjection(inner, reps, nowSecs = { now }), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+            st.insert(list10040(author = observer, serviceKey = service))
+            st.insert(list10040(author = observer2, serviceKey = service2))
+            st.insert(card(signer = service, rank = 87, expires = now + 500))
+            assertEquals(mapOf(observer to 87), reps.get(subject)?.influenceScores)
+
+            now += 1_000 // the card is now past its NIP-40 expiration
+            st.insert(card(signer = service2, rank = 15, followers = 3))
+            assertEquals(
+                mapOf(observer2 to 15),
+                reps.get(subject)?.influenceScores,
+                "the expired card's cell must drop with the re-derive",
+            )
+        }
+
+    // ---- deterministic derivation --------------------------------------------
+
+    /** Two services of ONE observer: the NEWEST card wins the cell, regardless of arrival order. */
+    @Test
+    fun `derivation is deterministic across arrival orders`() =
+        runBlocking {
+            val twoServices =
+                TrustProviderListEvent(
+                    id(),
+                    observer,
+                    next(),
+                    arrayOf(
+                        arrayOf("30382:rank", service, "wss://scores.example.com/"),
+                        arrayOf("30382:rank", service2, "wss://scores.example.com/"),
+                    ),
+                    "",
+                    "",
+                )
+            val newer = card(signer = service, rank = 30, at = 2_000_000)
+            val older = card(signer = service2, rank = 71, at = 1_500_000)
+
+            for (order in listOf(listOf(older, newer), listOf(newer, older))) {
+                val reps = InMemoryReputationIndex()
+                val st = NostrSemanticsStore(TrustProjection(InMemoryEventIndex(), reps), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+                st.insert(twoServices)
+                order.forEach { st.insert(it) }
+                assertEquals(mapOf(observer to 30), reps.get(subject)?.influenceScores, "newest card wins for order $order")
+            }
+        }
+
     /**
      * The decorator must forward visitDocsPage to the inner client's
      * implementation — the interface default re-lists the whole corpus through
@@ -314,4 +471,19 @@ class TrustProjectionTest {
             decorated.visitDocsPage(EventQuery(), null, 8)
             assertTrue(forwarded, "the reindex walk must reach the engine's visit, not the search-per-page default")
         }
+}
+
+/** Fails ONE updateCells on demand — the "engine hiccup after the event write" the dirt marker exists for. */
+private class FailingCellsReputationIndex(
+    private val inner: InMemoryReputationIndex,
+) : ReputationIndex by inner {
+    var failNext = false
+
+    override suspend fun updateCells(updates: List<ReputationCells>) {
+        if (failNext) {
+            failNext = false
+            throw RuntimeException("simulated projection failure")
+        }
+        inner.updateCells(updates)
+    }
 }

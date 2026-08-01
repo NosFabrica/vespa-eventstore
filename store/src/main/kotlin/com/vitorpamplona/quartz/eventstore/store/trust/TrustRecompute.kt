@@ -31,11 +31,12 @@ import com.vitorpamplona.quartz.eventstore.vespa.forEachBounded
 import com.vitorpamplona.quartz.eventstore.vespa.mapBounded
 import com.vitorpamplona.quartz.eventstore.vespa.query.EventQuery
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import com.vitorpamplona.quartz.utils.Hex
 
 /**
  * HOW a reputation parent doc is (re)derived — the engine [TrustProjection]'s
  * write triggers and [TrustReconciler]'s repairs both drive. It owns the
- * service->observer attribution map ([ProviderMap]) and the three shapes of
+ * service->observers attribution map ([ProviderMap]) and the three shapes of
  * recompute: one subject, a batch of subjects, and a streaming walk over a
  * whole score corpus.
  *
@@ -43,33 +44,47 @@ import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
  * [ReputationDoc] from the stored kind-30382s about them —
  *
  *   subject's 30382s (d = subject) -> signer is a SERVICE key
- *   -> observer = the kind-10040 author whose `30382:rank` entry lists that
- *      service key (NIP-85: cells are keyed by the OBSERVER, never the signer)
+ *   -> observers = EVERY kind-10040 author whose `30382:rank` entry lists that
+ *      service key (NIP-85: cells are keyed by the OBSERVER, never the signer;
+ *      a popular provider is named by many observers and scores every one)
  *   -> influence_scores{observer} = rank tag, follower_counts{observer} =
  *      followers tag; a version without a rank tag contributes nothing
  *      (the provider retracted the score).
+ *
+ * Already-expired cards (NIP-40) contribute nothing: the store never serves
+ * them as records, so they must not keep scoring — the derive queries carry
+ * the same expiry cutoff every read path applies.
  *
  * Idempotent and self-healing; when no cells are left the parent doc is removed.
  */
 internal class TrustRecompute(
     private val inner: EventIndex,
     private val reputations: ReputationIndex,
+    private val nowSecs: () -> Long = { System.currentTimeMillis() / 1000 },
 ) {
-    /** service key -> observer (NIP-85 attribution), cached across a pass; see [ProviderMap]. */
-    private val providers = ProviderMap(inner)
+    /** service key -> observers (NIP-85 attribution), cached across a pass; see [ProviderMap]. */
+    private val providers = ProviderMap(inner, nowSecs)
 
     /** The current attribution map, rebuilding it once per pass (see [ProviderMap.get]). */
-    suspend fun providerMap(): Map<String, String> = providers.get()
+    suspend fun providerMap(): Map<String, Set<String>> = providers.get()
+
+    /**
+     * Drop the cached attribution map. The write path invalidates through
+     * [recomputeSubjectsOf]; this direct handle is for the crash repair
+     * ([DirtLedger.heal]), whose whole premise is that the op that should have
+     * invalidated died before doing so.
+     */
+    fun invalidateProviders() = providers.invalidate()
 
     /** Re-derive [subject]'s whole parent doc from the stored 30382s about them. */
     suspend fun recompute(subject: String) = recompute(subject, providers.get())
 
     private suspend fun recompute(
         subject: String,
-        serviceToObserver: Map<String, String>,
+        serviceToObservers: Map<String, Set<String>>,
     ) {
-        val docs = inner.search(EventQuery(kinds = listOf(ContactCardEvent.KIND), tags = mapOf("d" to listOf(subject))))
-        val reputation = derive(subject, docs, serviceToObserver)
+        val docs = inner.search(EventQuery(kinds = listOf(ContactCardEvent.KIND), tags = mapOf("d" to listOf(subject)), notExpiredAt = nowSecs()))
+        val reputation = derive(subject, docs, serviceToObservers)
         if (reputation.isEmpty()) reputations.remove(subject) else reputations.put(reputation)
     }
 
@@ -83,7 +98,7 @@ internal class TrustRecompute(
      */
     suspend fun recomputeBatch(
         subjects: List<String>,
-        serviceToObserver: Map<String, String>,
+        serviceToObservers: Map<String, Set<String>>,
         removeEmpties: Boolean,
     ) {
         // Derived per CHUNK, not per batch. A chunk's query returns every score
@@ -99,17 +114,18 @@ internal class TrustRecompute(
         // about a hundredth of that, and independent of the batch size.
         //
         // The derived docs DO accumulate across the batch, deliberately: they
-        // carry a cell per MAPPED service only (a handful, where the recall spans
+        // carry a cell per MAPPED observer only (a handful, where the recall spans
         // every service that ever scored the subject), so they are small, and one
         // pipelined write per batch beats one per chunk.
         val puts = ArrayList<ReputationDoc>(subjects.size)
         val removes = ArrayList<String>()
+        val cutoff = nowSecs()
         IngestStats.timed("proj.fetch") {
             subjects.chunked(FETCH_CHUNK).forEachBounded(
                 QUERY_FANOUT,
                 // A partial score set derives a WRONG parent card, so this query
                 // carries no limit.
-                produce = { chunk -> chunk to inner.search(EventQuery(kinds = listOf(ContactCardEvent.KIND), tags = mapOf("d" to chunk))) },
+                produce = { chunk -> chunk to inner.search(EventQuery(kinds = listOf(ContactCardEvent.KIND), tags = mapOf("d" to chunk), notExpiredAt = cutoff)) },
             ) { (chunk, docs) ->
                 // Serialized by forEachBounded, so these plain lists need no lock.
                 val bySubject = HashMap<String, MutableList<EventDoc>>(chunk.size * 2)
@@ -118,7 +134,7 @@ internal class TrustRecompute(
                     subjectOf(doc)?.takeIf { it in wanted }?.let { bySubject.getOrPut(it) { mutableListOf() } += doc }
                 }
                 for (subject in chunk) {
-                    val reputation = derive(subject, bySubject[subject].orEmpty(), serviceToObserver)
+                    val reputation = derive(subject, bySubject[subject].orEmpty(), serviceToObservers)
                     if (!reputation.isEmpty()) {
                         puts += reputation
                     } else if (removeEmpties) {
@@ -160,18 +176,30 @@ internal class TrustRecompute(
      * would hold millions of subject strings in memory (an OOM on the exact
      * "scale-safe" path). A subject whose cards span a batch boundary is
      * re-derived (idempotent), which is cheaper than an unbounded dedup set.
+     *
+     * The enumeration deliberately carries NO expiry cutoff: an expired card's
+     * subject must still be re-derived so its stale cells DROP (the derive
+     * fetch applies the cutoff — see [recomputeBatch]).
+     *
+     * [gate] wraps each mutating flush — identity for the write path, which
+     * already holds the store's writer lock; [TrustReconciler] passes the real
+     * lock so a minutes-long walk mutates in short locked bursts instead of
+     * racing live inserts. The provider map is re-read INSIDE the gate on every
+     * flush (cached, so it costs nothing when unchanged): a 10040 committed
+     * mid-walk by a concurrent writer must not be overwritten by derivations
+     * from a walk-start snapshot of the map.
      */
     suspend fun recomputeWalk(
         query: EventQuery,
         onSubjects: ((Int) -> Unit)? = null,
+        gate: suspend (suspend () -> Unit) -> Unit = { it() },
     ) {
-        val map = providers.get()
         val buffer = LinkedHashSet<String>()
         var derived = 0
 
         suspend fun flush() {
             if (buffer.isNotEmpty()) {
-                recomputeBatch(buffer.toList(), map, removeEmpties = true)
+                gate { recomputeBatch(buffer.toList(), providers.get(), removeEmpties = true) }
                 derived += buffer.size
                 buffer.clear()
                 // After the batch, not after the page: a subject is only actually
@@ -181,7 +209,7 @@ internal class TrustRecompute(
             }
         }
         inner.visitIds(query, withDTag = true) { page ->
-            page.forEach { ref -> ref.dTag?.let(buffer::add) }
+            page.forEach { ref -> ref.dTag?.takeIf { Hex.isHex64(it) }?.let(buffer::add) }
             if (buffer.size >= RECOMPUTE_BATCH) flush()
             true // walk the whole corpus
         }
@@ -192,17 +220,28 @@ internal class TrustRecompute(
     private fun derive(
         subject: String,
         docs: List<EventDoc>,
-        serviceToObserver: Map<String, String>,
+        serviceToObservers: Map<String, Set<String>>,
     ): ReputationDoc {
         val influence = LinkedHashMap<String, Int>()
         val followers = LinkedHashMap<String, Double>()
-        for (doc in docs) {
+        // Folded OLDEST-first so the NEWEST card wins each (observer, dimension)
+        // cell — deterministic, where the previous engine-order fold made a
+        // rebuild able to change served scores with no event changing. Ties go
+        // to the LOWEST id (sorted after it, so it overwrites), matching the
+        // store's replaceable-winner rule.
+        for (doc in docs.sortedWith(DERIVE_ORDER)) {
             // Direct by-kind reconstruction — no toEventJson()/fromJson round
             // trip; this runs once per fetched card across every recompute walk.
             val card = doc.toEvent() as? ContactCardEvent ?: continue
-            val observer = serviceToObserver[card.pubKey] ?: continue
-            card.rank()?.let { influence[observer] = it }
-            card.followerCount()?.let { followers[observer] = it.toDouble() }
+            val observers = serviceToObservers[card.pubKey] ?: continue
+            val rank = card.rank()
+            val followerCount = card.followerCount()?.toDouble()
+            // EVERY observer naming the service gets the cell — a shared
+            // provider scores each of the users who trust it, not one winner.
+            for (observer in observers) {
+                rank?.let { influence[observer] = it }
+                followerCount?.let { followers[observer] = it }
+            }
         }
         return ReputationDoc(subject, influence, followers)
     }
@@ -218,12 +257,21 @@ internal class TrustRecompute(
 
         // Subjects per recompute round in a full walk (memory-bounded batches).
         const val RECOMPUTE_BATCH = 20_000
+
+        /** Oldest first, ties iterated highest-id first — so the last (winning) write per cell is (newest, lowest id). */
+        val DERIVE_ORDER: Comparator<EventDoc> = compareBy<EventDoc> { it.createdAt }.thenByDescending { it.id }
     }
 }
 
-/** The 30382's d tag is the SUBJECT the score is about. */
+/**
+ * The 30382's d tag is the SUBJECT the score is about — a pubkey, so only a
+ * 64-hex value counts. Anything else can never join an event author in ranking
+ * (the reputation import matches the author's hex pubkey exactly), and
+ * admitting arbitrary strings would let a crafted card collide with the
+ * projection's own bookkeeping ids ([DirtLedger]).
+ */
 internal fun subjectOf(doc: EventDoc): String? =
     doc.tags
         .firstOrNull { it.size >= 2 && it[0] == "d" }
         ?.get(1)
-        ?.takeIf { it.isNotEmpty() }
+        ?.takeIf { Hex.isHex64(it) }

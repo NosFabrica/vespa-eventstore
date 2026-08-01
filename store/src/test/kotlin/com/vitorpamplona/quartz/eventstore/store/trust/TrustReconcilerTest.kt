@@ -21,9 +21,12 @@
 package com.vitorpamplona.quartz.eventstore.store.trust
 
 import com.vitorpamplona.quartz.eventstore.store.NostrSemanticsStore
+import com.vitorpamplona.quartz.eventstore.store.mapping.toDoc
 import com.vitorpamplona.quartz.eventstore.vespa.InMemoryEventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.InMemoryReputationIndex
+import com.vitorpamplona.quartz.eventstore.vespa.client.ReputationIndex
 import com.vitorpamplona.quartz.eventstore.vespa.doc.ReputationCells
+import com.vitorpamplona.quartz.eventstore.vespa.doc.ReputationDoc
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
@@ -43,7 +46,7 @@ class TrustReconcilerTest {
     private val index = InMemoryEventIndex()
     private val reputations = InMemoryReputationIndex()
     private val projection = TrustProjection(index, reputations)
-    private val reconciler = TrustReconciler(index, reputations, projection.recompute)
+    private val reconciler = TrustReconciler(index, reputations, projection.recompute, projection.dirt)
     private val store = NostrSemanticsStore(projection, relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
 
     private var t = 1_000_000L
@@ -101,7 +104,7 @@ class TrustReconcilerTest {
             val coldIndex = InMemoryEventIndex()
             val coldReputations = InMemoryReputationIndex()
             val cold = TrustProjection(coldIndex, coldReputations)
-            val coldReconciler = TrustReconciler(coldIndex, coldReputations, cold.recompute)
+            val coldReconciler = TrustReconciler(coldIndex, coldReputations, cold.recompute, cold.dirt)
             val coldStore = NostrSemanticsStore(cold, relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
 
             assertEquals(0, coldReconciler.reconcile().services, "nothing there yet")
@@ -181,5 +184,121 @@ class TrustReconcilerTest {
             val report = reconciler.reconcile()
             assertEquals(0, report.services)
             assertTrue(report.isClean())
+        }
+
+    /**
+     * A crashed trust write leaves the persisted dirt marker. A RESTARTED
+     * process's reconcile must repair exactly what it names — including drift
+     * the sampling can never see (subjects mid-corpus while the newest cards
+     * are healthy).
+     */
+    @Test
+    fun `reconcile heals the dirty marker a crashed write left behind`() =
+        runBlocking {
+            store.insert(list10040())
+            store.insert(card()) // healthy, and the newest card the sample will hit
+            val lost = "e1".repeat(32)
+            index.put(card(about = lost, at = 100).toDoc()) // stored BEHIND the projection: the crash shape
+            reputations.put(ReputationDoc(DirtLedger.MARKER_KEY, mapOf(lost to 1), emptyMap()))
+            assertNull(reputations.get(lost))
+
+            // A fresh projection + reconciler — the restart. The service samples
+            // clean (its newest card is projected), so ONLY the marker heal can
+            // repair the lost subject.
+            val restarted = TrustProjection(index, reputations)
+            val report = TrustReconciler(index, reputations, restarted.recompute, restarted.dirt).reconcile()
+            assertEquals(mapOf(observer to 87), reputations.get(lost)?.influenceScores, "the marker-named subject is re-derived")
+            assertNull(reputations.get(DirtLedger.MARKER_KEY), "marker cleared")
+            assertTrue(report.isClean(), "nothing left for sampling to find")
+        }
+
+    /**
+     * A provider shared by two observers where only ONE observer's cells exist —
+     * the drift a single-winner map used to create. The per-observer check must
+     * flag and repair it.
+     */
+    @Test
+    fun `reconcile catches a shared provider missing one observer's cells`() =
+        runBlocking {
+            store.insert(list10040(author = observer, serviceKey = service))
+            store.insert(list10040(author = observer2, serviceKey = service))
+            store.insert(card())
+            assertEquals(mapOf(observer to 87, observer2 to 87), reputations.get(subject)?.influenceScores)
+
+            // Strip observer2's cell, as the old single-winner projection left it.
+            reputations.put(ReputationDoc(subject, mapOf(observer to 87), mapOf(observer to 120.0)))
+
+            val report = reconciler.reconcile()
+            assertEquals(listOf(service), report.rebuilt, "one observer unprojected = the service is dirty")
+            assertEquals(mapOf(observer to 87, observer2 to 87), reputations.get(subject)?.influenceScores)
+        }
+
+    /** A followers-only corpus IS projected — either tensor counts, so no rebuild loop on every startup. */
+    @Test
+    fun `reconcile accepts a followers-only service as projected`() =
+        runBlocking {
+            store.insert(list10040())
+            store.insert(card(rank = null, followers = 42))
+            assertEquals(mapOf(observer to 42.0), reputations.get(subject)?.followerCounts)
+
+            val report = reconciler.reconcile()
+            assertTrue(report.isClean(), "follower cells are projection too")
+        }
+
+    /**
+     * A parent whose subject has no stored cards left (its last card's removal
+     * crashed before the recompute) is unreachable from any card walk. The
+     * hammer must still remove it — from the REPUTATION corpus.
+     */
+    @Test
+    fun `rebuildAll removes an orphan parent no card walk can reach`() =
+        runBlocking {
+            store.insert(list10040())
+            store.insert(card())
+            val orphan = "e2".repeat(32)
+            reputations.put(ReputationDoc(orphan, mapOf(observer to 50), emptyMap()))
+            // The projection's own bookkeeping must survive the sweep untouched.
+            val marker = ReputationDoc(DirtLedger.MARKER_KEY, emptyMap(), mapOf(service to 1.0))
+            reputations.put(marker)
+
+            reconciler.rebuildAll()
+            assertNull(reputations.get(orphan), "no cards -> no parent")
+            assertEquals(mapOf(observer to 87), reputations.get(subject)?.influenceScores, "real subjects survive the sweep")
+            assertEquals(marker, reputations.get(DirtLedger.MARKER_KEY), "the dirt marker is not a subject")
+        }
+
+    /** Every mutating reconciler batch must run inside the gate (the store's writer lock). */
+    @Test
+    fun `reconcile and rebuildAll mutate only under the gate`() =
+        runBlocking {
+            store.insert(card()) // stored before its 10040 — reconcile will rebuild
+            store.insert(list10040())
+            reputations.docs.clear()
+
+            var inGate = false
+            var gated = 0
+            val guarded =
+                object : ReputationIndex by reputations {
+                    override suspend fun putAll(reputations: List<ReputationDoc>) {
+                        check(inGate) { "projection write outside the writer lock" }
+                        this@TrustReconcilerTest.reputations.putAll(reputations)
+                    }
+                }
+            val proj = TrustProjection(index, guarded)
+            val gatedReconciler =
+                TrustReconciler(index, guarded, proj.recompute, proj.dirt, gate = { body ->
+                    inGate = true
+                    gated++
+                    try {
+                        body()
+                    } finally {
+                        inGate = false
+                    }
+                })
+
+            gatedReconciler.reconcile()
+            gatedReconciler.rebuildAll()
+            assertTrue(gated > 0, "the gate was exercised")
+            assertEquals(mapOf(observer to 87), reputations.get(subject)?.influenceScores)
         }
 }

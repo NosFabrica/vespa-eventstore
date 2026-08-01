@@ -66,8 +66,10 @@ class VespaEventStore internal constructor(
     fun feedGauge(): String = events.feedGauge()
 
     /**
-     * Re-derive the trust view for any service whose scores are not projected
-     * under the observer currently mapped to it, and report what it had to fix.
+     * Repair the trust view: heal any dirt marker a crashed trust write left
+     * (see DirtLedger), then re-derive any service whose scores are not
+     * projected under EVERY observer currently naming it, and report what it
+     * had to fix.
      *
      * Worth running at startup. The projection is maintained by write triggers,
      * and dedup means an event already in the store never reaches them again —
@@ -120,7 +122,10 @@ class VespaEventStore internal constructor(
             val reputations = VespaReputationIndex(url)
             val trust = TrustProjection(events, reputations)
             val store = NostrSemanticsStore(trust, relay = relay)
-            return VespaEventStore(store, events, TrustReconciler(events, reputations, trust.recompute))
+            // The reconciler's mutating batches take the store's writer lock
+            // (the gate): its repairs must not race live inserts' recomputes.
+            val reconciler = TrustReconciler(events, reputations, trust.recompute, trust.dirt, gate = { store.withWriteLock(it) })
+            return VespaEventStore(store, events, reconciler)
         }
 
         /** The config server sits on :19071 by convention, on the same host as the :8080 query endpoint. */
