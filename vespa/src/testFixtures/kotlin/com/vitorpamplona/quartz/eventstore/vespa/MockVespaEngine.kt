@@ -87,9 +87,26 @@ class MockVespaEngine {
      */
     @Volatile var degradeCoverage: String? = null
 
+    /**
+     * Serve streamed visits (`stream=true`) the paged JSON shape instead of
+     * JSON Lines — an older Vespa that doesn't speak the streamed protocol.
+     * The client must detect the content type and fall back to the paged walk.
+     */
+    @Volatile var ignoreStreamedVisits: Boolean = false
+
+    /**
+     * Cut the NEXT streamed visit response after this many put lines,
+     * mid-bucket and without a final marker — a broken connection. The client
+     * must resume from the last continuation token it saw and deliver the
+     * complete set exactly once (the cut bucket re-streams in full; its
+     * pre-cut docs were never certified). One-shot: resets to 0 when it fires.
+     */
+    @Volatile var cutStreamedVisitAfterDocs: Int = 0
+
     private class Reply(
         val status: Int,
         val body: String,
+        val contentType: String = "application/json",
     )
 
     private val server =
@@ -134,7 +151,7 @@ class MockVespaEngine {
                                 Reply(500, buildJsonObject { put("message", e.toString()) }.toString())
                             }
                         response.status = reply.status
-                        response.headers.put(HttpHeader.CONTENT_TYPE, "application/json")
+                        response.headers.put(HttpHeader.CONTENT_TYPE, reply.contentType)
                         Content.Sink.write(response, true, reply.body, callback)
                         return true
                     }
@@ -371,6 +388,9 @@ class MockVespaEngine {
             runBlocking { inner.search(query) }
                 .filter { Math.floorMod(it.id.hashCode(), slices) == sliceId }
         val offset = params["continuation"]?.toIntOrNull() ?: 0
+        if (params["stream"] == "true" && !ignoreStreamedVisits) {
+            return streamedVisit(all, offset, withTagIndex)
+        }
         val wanted = params["wantedDocumentCount"]?.toIntOrNull() ?: 1
         val page = all.drop(offset).take(minOf(wanted, VISIT_PAGE_CAP))
         val body =
@@ -398,6 +418,59 @@ class MockVespaEngine {
         return Reply(200, body.toString())
     }
 
+    /**
+     * The streamed visit (`stream=true` + JSON Lines): put lines as the backend
+     * "visits", a continuation line after every completed [STREAM_BUCKET]-doc
+     * bucket (mirroring real Vespa's per-bucket tokens), and a final marker
+     * with `percentFinished: 100` and NO token. [cutStreamedVisitAfterDocs]
+     * simulates a broken connection: the response just stops mid-bucket, so the
+     * client must resume from the last token — and because the cut bucket never
+     * got its continuation line, resuming re-streams it IN FULL, which is
+     * exactly the duplicate-delivery hazard the client's certification buffer
+     * must absorb.
+     */
+    private fun streamedVisit(
+        all: List<EventDoc>,
+        offset: Int,
+        withTagIndex: Boolean,
+    ): Reply {
+        val out = StringBuilder()
+        val cut = cutStreamedVisitAfterDocs
+        var emitted = 0
+        var pos = offset
+        for (bucket in all.drop(offset).chunked(STREAM_BUCKET)) {
+            for (doc in bucket) {
+                if (cut > 0 && emitted == cut) {
+                    cutStreamedVisitAfterDocs = 0
+                    return Reply(200, out.toString(), "application/jsonl")
+                }
+                out.append(putLine(doc, withTagIndex)).append('\n')
+                emitted++
+            }
+            pos += bucket.size
+            val pct = pos * 100.0 / all.size
+            out.append("""{"continuation":{"token":"$pos","percentFinished":$pct}}""").append('\n')
+        }
+        out.append("""{"continuation":{"percentFinished":100.0}}""").append('\n')
+        out.append("""{"sessionStats":{"documentCount":$emitted}}""").append('\n')
+        return Reply(200, out.toString(), "application/jsonl")
+    }
+
+    private fun putLine(
+        doc: EventDoc,
+        withTagIndex: Boolean,
+    ): String =
+        buildJsonObject {
+            put("put", JsonPrimitive("id:event:event::${doc.id}"))
+            put(
+                "fields",
+                buildJsonObject {
+                    put("created_at", JsonPrimitive(doc.createdAt))
+                    if (withTagIndex) put("tag_index", JsonArray(doc.tagIndex().map(::JsonPrimitive)))
+                },
+            )
+        }.toString()
+
     private fun params(rawQuery: String): Map<String, String> =
         rawQuery
             .split("&")
@@ -411,6 +484,9 @@ class MockVespaEngine {
     private companion object {
         /** Max docs per visit response — small enough that tests always cross a page boundary. */
         const val VISIT_PAGE_CAP = 7
+
+        /** Docs per simulated backend bucket in a STREAMED visit — small so tests cross several continuation tokens. */
+        const val STREAM_BUCKET = 5
 
         /**
          * Settings real Vespa REFUSES to take from a request — it fails the query

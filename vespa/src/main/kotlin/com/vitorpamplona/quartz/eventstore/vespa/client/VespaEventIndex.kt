@@ -33,13 +33,19 @@ import com.vitorpamplona.quartz.eventstore.vespa.query.EventYql
 import com.vitorpamplona.quartz.eventstore.vespa.query.VespaQuery
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import com.vitorpamplona.quartz.utils.Hex
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
@@ -103,6 +109,41 @@ class VespaEventIndex(
      * balancer also works — this is the more direct option, not the only one.
      */
     endpoints: List<String> = emptyList(),
+    /**
+     * Independent slices a full-corpus visit is split into (document-API
+     * `slices`/`sliceId`), each advanced concurrently through its own walk. A
+     * serial walk pays one round trip per [VISIT_PAGE]-doc page — ~27k
+     * sequential round trips on a 28M corpus, i.e. minutes of wall clock spent
+     * mostly waiting — and slicing divides that latency chain by this count.
+     * `VESPA_VISIT_SLICES` overrides for deployment tuning (1 restores the
+     * serial walk).
+     */
+    private val visitSlices: Int =
+        (System.getenv("VESPA_VISIT_SLICES")?.toIntOrNull() ?: VISIT_SLICES)
+            .coerceAtLeast(1),
+    /**
+     * Backend bucket parallelism WITHIN each paged visit request (document-API
+     * `concurrency`). Distribution buckets hold only a few hundred docs each on
+     * a large corpus, so filling a 1024-doc page at the default of 1 reads
+     * several buckets back-to-back; this reads them in parallel instead.
+     * Response size stays bounded by wantedDocumentCount either way. Streamed
+     * visits do NOT use it — they pin bucket concurrency to 1, which is what
+     * makes their resume exactly-once (see [streamedSlice]).
+     * `VESPA_VISIT_CONCURRENCY` overrides (Vespa accepts 1..100).
+     */
+    private val visitConcurrency: Int =
+        (System.getenv("VESPA_VISIT_CONCURRENCY")?.toIntOrNull() ?: VISIT_CONCURRENCY)
+            .coerceIn(1, 100),
+    /**
+     * Stream each visit slice as one long JSON-Lines response
+     * ([streamedSlice]) instead of paging it through continuation round trips
+     * ([pagedSlice]). Streaming removes the per-page round trip entirely — the
+     * dominant cost of a corpus-sized walk. Falls back to the paged walk
+     * per-slice when the server doesn't answer in JSON Lines (an older Vespa).
+     * `VESPA_VISIT_STREAM=0` disables.
+     */
+    private val visitStreaming: Boolean =
+        System.getenv("VESPA_VISIT_STREAM")?.let { it != "0" && !it.equals("false", ignoreCase = true) } ?: true,
 ) : EventIndex {
     private val urls: List<String> = endpoints.ifEmpty { listOf(baseUrl) }.map { it.trimEnd('/') }
 
@@ -202,31 +243,6 @@ class VespaEventIndex(
             .build()
 
     private val jsonMedia = "application/json; charset=utf-8".toMediaType()
-
-    /**
-     * Independent slices a full-corpus visit is split into (document-API
-     * `slices`/`sliceId`), each advanced concurrently through its own
-     * continuation chain. A serial walk pays one round trip per
-     * [VISIT_PAGE]-doc page — ~27k sequential round trips on a 28M corpus, i.e.
-     * minutes of wall clock spent mostly waiting — and slicing divides that
-     * latency chain by this count. `VESPA_VISIT_SLICES` overrides for
-     * deployment tuning (1 restores the serial walk).
-     */
-    private val visitSlices: Int =
-        (System.getenv("VESPA_VISIT_SLICES")?.toIntOrNull() ?: VISIT_SLICES)
-            .coerceAtLeast(1)
-
-    /**
-     * Backend bucket parallelism WITHIN each visit request (document-API
-     * `concurrency`). Distribution buckets hold only a few hundred docs each on
-     * a large corpus, so filling a 1024-doc page at the default of 1 reads
-     * several buckets back-to-back; this reads them in parallel instead.
-     * Response size stays bounded by wantedDocumentCount either way.
-     * `VESPA_VISIT_CONCURRENCY` overrides (Vespa accepts 1..100).
-     */
-    private val visitConcurrency: Int =
-        (System.getenv("VESPA_VISIT_CONCURRENCY")?.toIntOrNull() ?: VISIT_CONCURRENCY)
-            .coerceIn(1, 100)
 
     // ADDRESS-KEYED mode (VESPA_ADDRESS_KEYED=1): replaceable/addressable events
     // are stored under their NIP-01 address as the document id, so the engine
@@ -464,46 +480,37 @@ class VespaEventIndex(
 
     /**
      * Page every match of [selection] out of the document-API visit, calling
-     * [onDocuments] with each response's raw `documents` array; a false return
-     * stops the walk. The shared engine behind [visitIds] and [scanAuthors].
+     * [onDocuments] with lists of raw document objects (`{"id": …, "fields": …}`);
+     * a false return stops the walk. The shared engine behind [visitIds] and
+     * [scanAuthors].
      *
      * PARALLEL under the hood: the corpus is split into [visitSlices]
-     * independent slices (`slices`/`sliceId`), each walking its own
-     * continuation chain against a round-robin endpoint, and each request asks
-     * the backend to read [visitConcurrency] buckets at once. What made the
-     * serial walk slow was never the engine — it was ~27k sequential HTTP round
-     * trips on a 28M corpus; slicing divides that chain by the slice count.
-     * Producer pages meet a single consumer through a channel, so
-     * [onDocuments] runs strictly serially (callers mutate plain collections)
-     * and an early stop cancels every in-flight slice.
+     * independent slices (`slices`/`sliceId`), each walked concurrently against
+     * a round-robin endpoint — streamed as one JSON-Lines response
+     * ([streamedSlice], the default) or paged through continuation round trips
+     * ([pagedSlice], the fallback and the `VESPA_VISIT_STREAM=0` path). What
+     * made the serial walk slow was never the engine — it was ~27k sequential
+     * HTTP round trips on a 28M corpus; slicing divides that chain by the slice
+     * count and streaming removes the per-page round trip entirely. Producer
+     * pages meet a single consumer through a channel, so [onDocuments] runs
+     * strictly serially (callers mutate plain collections) and an early stop
+     * cancels every in-flight slice.
      */
     private suspend fun visitPages(
         selection: String,
         fieldSet: String,
-        onDocuments: suspend (JsonArray) -> Boolean,
+        onDocuments: suspend (List<JsonElement>) -> Boolean,
     ): Unit =
         coroutineScope {
-            val query =
-                "?selection=${URLEncoder.encode(selection, "UTF-8")}" +
-                    "&wantedDocumentCount=$VISIT_PAGE" +
-                    "&fieldSet=${URLEncoder.encode(fieldSet, "UTF-8")}" +
-                    "&concurrency=$visitConcurrency&slices=$visitSlices"
-            val pages = Channel<JsonArray>(visitSlices)
+            val pages = Channel<List<JsonElement>>(visitSlices)
             val producers =
                 launch {
                     try {
                         coroutineScope {
                             repeat(visitSlices) { sliceId ->
                                 launch {
-                                    val base = "${endpoint()}/document/v1/$NAMESPACE/$DOCTYPE/docid$query&sliceId=$sliceId"
-                                    var continuation: String? = null
-                                    while (true) {
-                                        val resp = send(continuation?.let { "$base&continuation=$it" } ?: base)
-                                        require(resp.statusCode() < 400) { "vespa visit ${resp.statusCode()}: ${resp.body().take(300)}" }
-                                        val json = Json.parseToJsonElement(resp.body()).jsonObject
-                                        json["documents"]?.jsonArray?.takeIf { it.isNotEmpty() }?.let { pages.send(it) }
-                                        continuation = json["continuation"]?.jsonPrimitive?.content ?: break
-                                    }
+                                    val streamed = visitStreaming && streamedSlice(selection, fieldSet, sliceId) { pages.send(it) }
+                                    if (!streamed) pagedSlice(selection, fieldSet, sliceId) { pages.send(it) }
                                 }
                             }
                         }
@@ -518,6 +525,200 @@ class VespaEventIndex(
                     producers.cancelAndJoin()
                     break
                 }
+            }
+        }
+
+    /**
+     * Walk one slice through paged visit requests: each round trip returns up
+     * to [VISIT_PAGE] docs plus a continuation token for the next. Each request
+     * also asks the backend to read [visitConcurrency] buckets at once.
+     */
+    private suspend fun pagedSlice(
+        selection: String,
+        fieldSet: String,
+        sliceId: Int,
+        emit: suspend (List<JsonElement>) -> Unit,
+    ) {
+        val base =
+            "${endpoint()}/document/v1/$NAMESPACE/$DOCTYPE/docid" +
+                "?selection=${URLEncoder.encode(selection, "UTF-8")}" +
+                "&wantedDocumentCount=$VISIT_PAGE" +
+                "&fieldSet=${URLEncoder.encode(fieldSet, "UTF-8")}" +
+                "&concurrency=$visitConcurrency&slices=$visitSlices&sliceId=$sliceId"
+        var continuation: String? = null
+        while (true) {
+            val resp = send(continuation?.let { "$base&continuation=$it" } ?: base)
+            require(resp.statusCode() < 400) { "vespa visit ${resp.statusCode()}: ${resp.body().take(300)}" }
+            val json = Json.parseToJsonElement(resp.body()).jsonObject
+            json["documents"]?.jsonArray?.takeIf { it.isNotEmpty() }?.let { emit(it) }
+            continuation = json["continuation"]?.jsonPrimitive?.content ?: return
+        }
+    }
+
+    /** How one streamed response ended — see [streamedSlice] for what each means to the resume loop. */
+    private enum class StreamEnd { COMPLETE, INTERRUPTED, NOT_JSONL }
+
+    /**
+     * Walk one slice as a single streamed JSON-Lines response (`stream=true` +
+     * `Accept: application/jsonl`): put lines arrive as the backend visits,
+     * with NO per-page round trip — the cost that dominates a paged walk of a
+     * large corpus. Returns false (nothing consumed, nothing emitted) when the
+     * server doesn't answer in JSON Lines, so the caller can fall back to the
+     * paged walk against an older Vespa.
+     *
+     * EXACTLY-ONCE across broken streams. Vespa emits a `continuation` line
+     * whenever a backend bucket completes, and resuming from a token re-streams
+     * every bucket still ACTIVE when the stream broke. Bucket concurrency is
+     * pinned to 1 here precisely so "active" is at most ONE bucket: docs are
+     * buffered until their bucket's continuation line certifies them and only
+     * then delivered, so a broken stream (transport error, server timeout,
+     * error-severity message) drops the uncertified buffer and resumes from the
+     * last token — which re-streams exactly the dropped docs. Nothing delivered
+     * twice, nothing lost. The retry budget counts CONSECUTIVE failures
+     * (progress resets it): a long walk may hit many transient drops, but a
+     * dead engine still fails loudly instead of looping.
+     */
+    private suspend fun streamedSlice(
+        selection: String,
+        fieldSet: String,
+        sliceId: Int,
+        emit: suspend (List<JsonElement>) -> Unit,
+    ): Boolean {
+        val base =
+            "${endpoint()}/document/v1/$NAMESPACE/$DOCTYPE/docid" +
+                "?selection=${URLEncoder.encode(selection, "UTF-8")}" +
+                "&fieldSet=${URLEncoder.encode(fieldSet, "UTF-8")}" +
+                "&stream=true&concurrency=1&slices=$visitSlices&sliceId=$sliceId"
+        var token: String? = null
+        var delivered = false
+        var failures = 0
+        // Docs since the last continuation line: certain to be exactly the one
+        // in-flight bucket (concurrency=1), so at most a few hundred docs.
+        val uncertified = ArrayList<JsonElement>()
+
+        suspend fun certify(upToToken: String?) {
+            if (uncertified.isNotEmpty()) {
+                uncertified.chunked(VISIT_PAGE).forEach { emit(it) }
+                uncertified.clear()
+                delivered = true
+            }
+            if (upToToken != null) {
+                token = upToToken
+                failures = 0
+            }
+        }
+
+        while (true) {
+            val url = token?.let { "$base&continuation=$it" } ?: base
+            uncertified.clear()
+            val end =
+                try {
+                    streamOnce(url, into = uncertified, onContinuation = { certify(it) })
+                } catch (e: IOException) {
+                    currentCoroutineContext().ensureActive()
+                    if (++failures > QUERY_RETRIES) throw e
+                    delay(500L * failures)
+                    StreamEnd.INTERRUPTED
+                }
+            when (end) {
+                StreamEnd.COMPLETE -> {
+                    return true
+                }
+
+                // Loop again: the next request resumes from the last certified token.
+                StreamEnd.INTERRUPTED -> {}
+
+                StreamEnd.NOT_JSONL -> {
+                    // Only a fallback signal while nothing has been consumed;
+                    // mid-walk it is a server misbehaving, not a version gap.
+                    require(token == null && !delivered) { "vespa streamed visit stopped answering JSON Lines mid-walk" }
+                    return false
+                }
+            }
+        }
+    }
+
+    /**
+     * One streamed request: open, read JSON-Lines until the stream ends, and
+     * classify how it ended. Put lines land in [into] (adapted to the paged
+     * walk's `{"id": …, "fields": …}` document shape); each continuation line
+     * fires [onContinuation] with its token (null on the final 100% marker,
+     * which certifies the tail). Blocking reads run on [Dispatchers.IO]; a
+     * cancelled coroutine aborts the in-flight call via the guard child, which
+     * is the only thing that unblocks a socket read.
+     */
+    private suspend fun streamOnce(
+        url: String,
+        into: MutableList<JsonElement>,
+        onContinuation: suspend (String?) -> Unit,
+    ): StreamEnd =
+        withContext(Dispatchers.IO) {
+            val call =
+                http.newCall(
+                    Request
+                        .Builder()
+                        .url(url)
+                        .header("Accept", "application/jsonl")
+                        .get()
+                        .build(),
+                )
+            // The guard aborts the blocking read when this coroutine is
+            // cancelled (early stop, sibling failure) — after normal completion
+            // its cancel() is a no-op on the finished call.
+            val guard =
+                launch(start = CoroutineStart.UNDISPATCHED) {
+                    try {
+                        awaitCancellation()
+                    } finally {
+                        call.cancel()
+                    }
+                }
+            try {
+                call.execute().use { resp ->
+                    if (resp.code >= 400) {
+                        val preview = runCatching { resp.body.string().take(300) }.getOrDefault("")
+                        // 400 = the server refused the request shape (no
+                        // stream support) -> fall back; 5xx/429 = transient.
+                        if (resp.code == 400) return@use StreamEnd.NOT_JSONL
+                        throw IOException("vespa streamed visit ${resp.code}: $preview")
+                    }
+                    if (resp.header("Content-Type")?.contains("jsonl") != true) return@use StreamEnd.NOT_JSONL
+                    val source = resp.body.source()
+                    var complete = false
+                    while (true) {
+                        val line = source.readUtf8Line() ?: break
+                        if (line.isEmpty()) continue
+                        // A stream cut mid-line leaves a truncated tail that no
+                        // longer parses — that is an interruption to resume
+                        // from, not a fatal decode error.
+                        val obj = runCatching { Json.parseToJsonElement(line).jsonObject }.getOrNull() ?: break
+                        when {
+                            "put" in obj -> {
+                                val fields = obj["fields"] ?: continue
+                                into += JsonObject(mapOf("id" to (obj["put"] ?: continue), "fields" to fields))
+                            }
+
+                            "continuation" in obj -> {
+                                val c = obj["continuation"]?.jsonObject
+                                val t = c?.get("token")?.jsonPrimitive?.content
+                                onContinuation(t)
+                                if (t == null) complete = true // the final 100% marker carries no token
+                            }
+
+                            "message" in obj -> {
+                                val m = obj["message"]?.jsonObject
+                                if (m?.get("severity")?.jsonPrimitive?.content == "error") {
+                                    throw IOException("vespa streamed visit error: ${m["text"]?.jsonPrimitive?.content}")
+                                }
+                            }
+
+                            else -> {} // sessionStats and friends
+                        }
+                    }
+                    if (complete) StreamEnd.COMPLETE else StreamEnd.INTERRUPTED
+                }
+            } finally {
+                guard.cancel()
             }
         }
 

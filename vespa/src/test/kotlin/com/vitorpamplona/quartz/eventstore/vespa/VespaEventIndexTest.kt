@@ -279,8 +279,9 @@ class VespaEventIndexTest {
         runBlocking {
             val bob = "b2".repeat(32)
             // 100 docs across the client's 8 default slices: by pigeonhole some
-            // slice holds >7 (the mock's page cap), so at least one slice MUST
-            // follow a continuation token — and the union must still be complete.
+            // slice holds more than one mock bucket (streamed) or page (paged),
+            // so the walk MUST cross continuation boundaries — and the union
+            // across slices must still be complete.
             seed(*(1..100).map { doc(kind = 30382, pubkey = bob) }.toTypedArray())
             seed(doc(kind = 1, pubkey = bob), doc(kind = 30382)) // outside the selection
             val pages = ArrayList<List<DocRef>>()
@@ -291,6 +292,70 @@ class VespaEventIndexTest {
             assertEquals(true, pages.size > 1, "expected a multi-page walk, got ${pages.size} page(s)")
             val expected = reference.search(EventQuery(kinds = listOf(30382), authors = listOf(bob))).map { DocRef(it.id, it.createdAt) }
             assertEquals(expected.sortedBy { it.id }, pages.flatten().sortedBy { it.id })
+        }
+
+    /**
+     * A broken streamed visit must resume from the last per-bucket continuation
+     * token and still deliver EXACTLY the match set: the cut bucket re-streams
+     * in full on resume, so its pre-cut (uncertified) docs must not have been
+     * delivered — a duplicate here would corrupt a negentropy snapshot.
+     */
+    @Test
+    fun `streamed visit resumes a broken stream exactly once`() =
+        runBlocking {
+            seed(*(1..23).map { doc(kind = 30382) }.toTypedArray())
+            // One slice so the one-shot cut deterministically hits the walk.
+            val single = VespaEventIndex(mock.url, visitSlices = 1)
+            try {
+                mock.cutStreamedVisitAfterDocs = 12 // mid-bucket (buckets of 5), after two certified tokens
+                val got = ArrayList<DocRef>()
+                single.visitIds(EventQuery(kinds = listOf(30382))) {
+                    got += it
+                    true
+                }
+                val expected = reference.search(EventQuery(kinds = listOf(30382))).map { DocRef(it.id, it.createdAt) }
+                assertEquals(expected.sortedBy { it.id }, got.sortedBy { it.id }, "resume must lose nothing and deliver nothing twice")
+            } finally {
+                single.close()
+            }
+        }
+
+    /** A server that answers a streamed visit in plain JSON (an older Vespa) still gets the complete set via the paged fallback. */
+    @Test
+    fun `streamed visit falls back to paging when the server ignores streaming`() =
+        runBlocking {
+            seed(*(1..30).map { doc(kind = 30382) }.toTypedArray())
+            mock.ignoreStreamedVisits = true
+            try {
+                val got = ArrayList<DocRef>()
+                index.visitIds(EventQuery(kinds = listOf(30382))) {
+                    got += it
+                    true
+                }
+                val expected = reference.search(EventQuery(kinds = listOf(30382))).map { DocRef(it.id, it.createdAt) }
+                assertEquals(expected.sortedBy { it.id }, got.sortedBy { it.id })
+            } finally {
+                mock.ignoreStreamedVisits = false
+            }
+        }
+
+    /** VESPA_VISIT_STREAM=0 (visitStreaming=false) walks the paged path directly and is still complete. */
+    @Test
+    fun `paged visit configuration streams every match too`() =
+        runBlocking {
+            seed(*(1..30).map { doc(kind = 30382) }.toTypedArray())
+            val paged = VespaEventIndex(mock.url, visitStreaming = false)
+            try {
+                val got = ArrayList<DocRef>()
+                paged.visitIds(EventQuery(kinds = listOf(30382))) {
+                    got += it
+                    true
+                }
+                val expected = reference.search(EventQuery(kinds = listOf(30382))).map { DocRef(it.id, it.createdAt) }
+                assertEquals(expected.sortedBy { it.id }, got.sortedBy { it.id })
+            } finally {
+                paged.close()
+            }
         }
 
     /** onPage returning false stops the sliced walk early instead of scanning the whole corpus. */
