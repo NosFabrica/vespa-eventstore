@@ -86,7 +86,7 @@ class VespaEventStore internal constructor(
      * so a corpus that was mirrored before its provider lists arrived stays
      * unprojected, silently, and every ranked search comes back empty.
      */
-    suspend fun reconcileTrust(): TrustProjection.Reconciliation = trust.reconcile()
+    suspend fun reconcileTrust(onProgress: ((inspected: Int, total: Int, rebuilt: Int, derivedInService: Int) -> Unit)? = null): TrustProjection.Reconciliation = trust.reconcile(onProgress = onProgress)
 
     /**
      * Re-derive the WHOLE trust view from the stored scores. Bounded only by the

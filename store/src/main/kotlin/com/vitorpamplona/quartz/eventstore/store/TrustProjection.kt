@@ -350,14 +350,34 @@ class TrustProjection(
      * needlessly, which costs one walk and is idempotent. The opposite error —
      * calling an unprojected service clean — would need a sampled subject to be
      * projected while the rest are not, which is not the shape this failure takes.
+     *
+     * ## Progress
+     *
+     * [onProgress] reports `(inspected, total, rebuilt, derivedInService)` before
+     * each service, and again inside a rebuild as its subjects are re-derived.
+     * This runs at startup over every provider list the store holds, and one
+     * service can cost a full walk of six figures of documents — minutes during
+     * which ranked search does not work and the caller could say only that it had
+     * begun. `total` is known up front, so a caller can show a real fraction
+     * rather than a spinner.
      */
-    suspend fun reconcile(samplesPerService: Int = DEFAULT_RECONCILE_SAMPLES): Reconciliation {
+    suspend fun reconcile(
+        samplesPerService: Int = DEFAULT_RECONCILE_SAMPLES,
+        onProgress: ((inspected: Int, total: Int, rebuilt: Int, derivedInService: Int) -> Unit)? = null,
+    ): Reconciliation {
         val serviceToObserver = providers.get()
         if (serviceToObserver.isEmpty()) return Reconciliation(0, emptyList())
 
         val rebuilt = mutableListOf<String>()
         var examined = 0
+        var inspected = 0
+        val total = serviceToObserver.size
         for ((service, observer) in serviceToObserver) {
+            // Before, not after: the expensive part of a service is the walk that
+            // may follow, so a caller reporting "inspected 47 of 124" after the
+            // fact would sit silent through exactly the slow one.
+            onProgress?.invoke(inspected, total, rebuilt.size, 0)
+            inspected++
             val sample =
                 inner.search(
                     EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service), limit = samplesPerService),
@@ -371,10 +391,17 @@ class TrustProjection(
                     reputations.get(subject)?.influenceScores?.containsKey(observer) == true
                 }
             if (!projected) {
-                recomputeWalk(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service)))
+                // The expensive case, and the reason a caller needs progress at
+                // all: one provider can hold six figures of scores, so this walk
+                // is most of the time reconcile takes. Reporting only between
+                // services would sit still through exactly the slow part.
+                recomputeWalk(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service))) { derived ->
+                    onProgress?.invoke(inspected - 1, total, rebuilt.size, derived)
+                }
                 rebuilt += service
             }
         }
+        onProgress?.invoke(inspected, total, rebuilt.size, 0)
         return Reconciliation(examined, rebuilt)
     }
 
@@ -387,14 +414,23 @@ class TrustProjection(
      * "scale-safe" path). A subject whose cards span a batch boundary is
      * re-derived (idempotent), which is cheaper than an unbounded dedup set.
      */
-    private suspend fun recomputeWalk(query: EventQuery) {
+    private suspend fun recomputeWalk(
+        query: EventQuery,
+        onSubjects: ((Int) -> Unit)? = null,
+    ) {
         val map = providers.get()
         val buffer = LinkedHashSet<String>()
+        var derived = 0
 
         suspend fun flush() {
             if (buffer.isNotEmpty()) {
                 recomputeBatch(buffer.toList(), map, removeEmpties = true)
+                derived += buffer.size
                 buffer.clear()
+                // After the batch, not after the page: a subject is only actually
+                // re-derived once its batch is written, and reporting on the page
+                // would run ahead of the work.
+                onSubjects?.invoke(derived)
             }
         }
         inner.visitIds(query, withDTag = true) { page ->
