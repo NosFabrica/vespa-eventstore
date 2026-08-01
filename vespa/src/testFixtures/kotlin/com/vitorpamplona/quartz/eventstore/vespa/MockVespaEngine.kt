@@ -95,6 +95,13 @@ class MockVespaEngine {
     @Volatile var ignoreStreamedVisits: Boolean = false
 
     /**
+     * Refuse `ranking=recency` queries the way a schema deployed before the
+     * match-phase profile does (HTTP 400 naming the profile). The client must
+     * demote the query to `unranked` and remember, not fail the REQ.
+     */
+    @Volatile var rejectRecencyProfile: Boolean = false
+
+    /**
      * Cut the NEXT streamed visit response after this many put lines,
      * mid-bucket and without a final marker — a broken connection. The client
      * must resume from the last continuation token it saw and deliver the
@@ -229,6 +236,12 @@ class MockVespaEngine {
     private fun search(params: Map<String, String>): Reply {
         PROFILE_ONLY_PARAMS.firstOrNull { it in params }?.let {
             return Reply(400, """{"message":"$it must be specified in a query profile."}""")
+        }
+        // A schema deployed before the `recency` match-phase profile: real
+        // Vespa 400s the query naming the missing profile, and the client must
+        // demote to unranked instead of failing the REQ.
+        if (rejectRecencyProfile && params["ranking"] == "recency") {
+            return Reply(400, """{"message":"Requested rank profile 'recency' is undefined for document type 'event'"}""")
         }
         val yql = params["yql"] ?: return Reply(400, """{"message":"missing yql"}""")
         val hits = params["hits"]?.toIntOrNull() ?: 10

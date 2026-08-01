@@ -406,6 +406,39 @@ class VespaEventIndex(
         ids.map { removeOp(it) }.forEach { it.await() }
     }
 
+    /**
+     * False from the first 400 naming the `recency` rank profile: the serving
+     * schema predates it (deployIfAbsent never redeploys onto a serving
+     * cluster), so limit'd recall demotes to `unranked` — the pre-profile
+     * behavior — and the count-probe planner takes the small limits back
+     * (see [planRecency]). One failed query flips it for the life of this
+     * client; a schema redeploy plus restart restores the profile path.
+     */
+    @Volatile private var recencyProfileAvailable = true
+
+    /** [q] rebuilt for a schema without the `recency` profile — a no-op while the profile serves. */
+    private fun demoteRecency(q: EventQuery): EventQuery = if (!recencyProfileAvailable && EventYql.usesRecencyProfile(q)) q.copy(ranking = EventYql.RANK_UNRANKED) else q
+
+    /**
+     * Run [attempt] with the recency-profile compatibility net: a 400 naming
+     * the profile means the serving schema predates it — flip
+     * [recencyProfileAvailable] and rerun the demoted query instead of failing
+     * the REQ. Any other failure propagates untouched.
+     */
+    private suspend fun <T> recencySafe(
+        q: EventQuery,
+        attempt: suspend (EventQuery) -> T,
+    ): T =
+        try {
+            attempt(demoteRecency(q))
+        } catch (e: IllegalArgumentException) {
+            // queryBody's status guard is a require(), hence IllegalArgument.
+            val missingProfile = e.message?.contains("400") == true && e.message?.contains(EventYql.RANK_RECENCY) == true
+            if (!recencyProfileAvailable || !EventYql.usesRecencyProfile(q) || !missingProfile) throw e
+            recencyProfileAvailable = false
+            attempt(demoteRecency(q))
+        }
+
     override suspend fun search(query: EventQuery): List<EventDoc> {
         // Pure-id recall bypasses /search/: each id is a direct document-API key
         // lookup (~35% faster than a search over the id attribute here), which is
@@ -414,16 +447,16 @@ class VespaEventIndex(
         // expiry filter and newest-first order are applied exactly as YQL would, so
         // results are identical to the search path.
         if (query.isPureIdLookup()) return getByIds(query)
-        @Suppress("NAME_SHADOWING")
-        val query = planRecency(query)
-        val vq = EventYql.build(query) ?: return emptyList()
-        // Stream the hits straight into docs (no full JsonElement tree): the
-        // response is decoded into flat DTOs, allocating the target objects
-        // directly instead of a JsonObject/JsonArray/JsonPrimitive wrapper per
-        // field. This is the query hot path, so that saved garbage matters.
-        return searchRoot(vq, hits = hitsFor(query))
-            .children
-            .mapNotNull { it.fields?.toDoc() }
+        return recencySafe(planRecency(query)) { q ->
+            val vq = EventYql.build(q) ?: return@recencySafe emptyList()
+            // Stream the hits straight into docs (no full JsonElement tree): the
+            // response is decoded into flat DTOs, allocating the target objects
+            // directly instead of a JsonObject/JsonArray/JsonPrimitive wrapper per
+            // field. This is the query hot path, so that saved garbage matters.
+            searchRoot(vq, hits = hitsFor(q))
+                .children
+                .mapNotNull { it.fields?.toDoc() }
+        }
     }
 
     /**
@@ -436,12 +469,12 @@ class VespaEventIndex(
      */
     override suspend fun rawSearch(query: EventQuery): List<RawEvent> {
         if (query.isPureIdLookup()) return getByIds(query).map { it.toRawEvent() }
-        @Suppress("NAME_SHADOWING")
-        val query = planRecency(query)
-        val vq = EventYql.build(query) ?: return emptyList()
-        return searchRoot(vq, hits = hitsFor(query))
-            .children
-            .mapNotNull { it.fields?.toRaw() }
+        return recencySafe(planRecency(query)) { q ->
+            val vq = EventYql.build(q) ?: return@recencySafe emptyList()
+            searchRoot(vq, hits = hitsFor(q))
+                .children
+                .mapNotNull { it.fields?.toRaw() }
+        }
     }
 
     /**
@@ -478,6 +511,13 @@ class VespaEventIndex(
      */
     private suspend fun planRecency(q: EventQuery): EventQuery {
         if (!queryPlanning || !q.isBareRecencyScan()) return q
+        // Division of labor with the match-phase `recency` profile: the profile
+        // owns the small limits it covers — probing there costs more than it
+        // saves (measured 0.6x on a shape match-phase serves in 15ms). The
+        // planner windows what match-phase can't (limits past the 10x-headroom
+        // gate), and takes everything back when the serving schema lacks the
+        // profile.
+        if (recencyProfileAvailable && EventYql.usesRecencyProfile(q)) return q
         val anchor = q.until ?: (System.currentTimeMillis() / 1000)
         for (window in PLANNER_WINDOWS) {
             val since = anchor - window

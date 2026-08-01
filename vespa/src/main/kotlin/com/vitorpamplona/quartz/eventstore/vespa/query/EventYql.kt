@@ -87,6 +87,17 @@ object EventYql {
      */
     const val SUMMARY_FIELDS = "id, pubkey, created_at, kind, tags, content, sig, owner"
 
+    /**
+     * True when [build] would auto-select [RANK_RECENCY] for [q]. The index
+     * keys two behaviors on this: skipping the count-probe planner (match-phase
+     * already owns these limits) and demoting to [RANK_UNRANKED] against a
+     * serving schema that predates the profile.
+     */
+    fun usesRecencyProfile(q: EventQuery): Boolean =
+        q.ranking == null &&
+            q.search.isNullOrBlank() &&
+            (q.limit ?: 0) in 1..(MATCH_PHASE_MAX_HITS / MATCH_PHASE_HEADROOM)
+
     fun build(q: EventQuery): VespaQuery? {
         val params = LinkedHashMap<String, String>()
         val clauses = filterClauses(q, params) ?: return null
@@ -104,8 +115,8 @@ object EventYql {
                 // `order by`, but the engine keeps only the newest candidates
                 // during matching instead of ranking every posting. Gated to
                 // limits with 10x headroom under the profile's max-hits so the
-                // top-`limit` always survives.
-                q.search.isNullOrBlank() && (q.limit ?: 0) in 1..(MATCH_PHASE_MAX_HITS / MATCH_PHASE_HEADROOM) -> RANK_RECENCY
+                // top-`limit` always survives. (Keep in sync with [usesRecencyProfile].)
+                usesRecencyProfile(q) -> RANK_RECENCY
 
                 q.search.isNullOrBlank() -> RANK_UNRANKED
 

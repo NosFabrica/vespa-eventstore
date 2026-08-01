@@ -278,6 +278,9 @@ class VespaEventIndexTest {
      * corpus (events within the last hour) takes the windowed path, a sparse or
      * ancient corpus falls through to the unbounded query — both must return
      * exactly what a planner-off index returns, top-of-corpus order included.
+     * Run against a schema WITHOUT the match-phase profile, because that is
+     * when the planner owns small limits (with the profile serving, it stands
+     * down for them — see the fallback test for that division).
      */
     @Test
     fun `recency planner returns exactly the unplanned results`() =
@@ -287,20 +290,49 @@ class VespaEventIndexTest {
             seed(*(1..30).map { doc(kind = 1, at = now - it) }.toTypedArray())
             // Ancient: outside every rung — only the fall-through can see it.
             seed(doc(kind = 7, at = 1000))
+            mock.rejectRecencyProfile = true
+            val planned = VespaEventIndex(mock.url)
             val unplanned = VespaEventIndex(mock.url, queryPlanning = false)
             try {
+                // First query flips each client's profile-missing flag (400 ->
+                // demote); from then on the planner owns the small limits.
+                planned.search(EventQuery(kinds = listOf(1), limit = 1))
+                unplanned.search(EventQuery(kinds = listOf(1), limit = 1))
                 for (q in listOf(
                     EventQuery(kinds = listOf(1), limit = 10), // dense -> windowed
                     EventQuery(kinds = listOf(1), limit = 30), // exactly the window's population
                     EventQuery(kinds = listOf(7), limit = 5), // sparse+ancient -> fall-through, still found
                     EventQuery(limit = 500), // limit past the corpus -> everything
                 )) {
-                    assertEquals(unplanned.search(q).map { it.id }, index.search(q).map { it.id }, "planned vs unplanned: $q")
+                    assertEquals(unplanned.search(q).map { it.id }, planned.search(q).map { it.id }, "planned vs unplanned: $q")
                 }
                 // The dense query must actually return the newest docs, not a hole.
-                assertEquals(now - 1, index.search(EventQuery(kinds = listOf(1), limit = 1)).single().createdAt)
+                assertEquals(now - 1, planned.search(EventQuery(kinds = listOf(1), limit = 1)).single().createdAt)
             } finally {
+                mock.rejectRecencyProfile = false
+                planned.close()
                 unplanned.close()
+            }
+        }
+
+    /**
+     * A serving schema that predates the `recency` profile answers 400 to it —
+     * the client must demote that query to unranked, serve the REQ, and
+     * remember (no second 400), never fail the caller.
+     */
+    @Test
+    fun `a missing recency profile demotes to unranked instead of failing`() =
+        runBlocking {
+            seed(*(1..5).map { doc(kind = 1) }.toTypedArray())
+            mock.rejectRecencyProfile = true
+            val fresh = VespaEventIndex(mock.url)
+            try {
+                val expected = reference.search(EventQuery(kinds = listOf(1), limit = 3)).map { it.id }
+                assertEquals(expected, fresh.search(EventQuery(kinds = listOf(1), limit = 3)).map { it.id }, "first query (flips the flag)")
+                assertEquals(expected, fresh.search(EventQuery(kinds = listOf(1), limit = 3)).map { it.id }, "second query (already demoted)")
+            } finally {
+                mock.rejectRecencyProfile = false
+                fresh.close()
             }
         }
 
