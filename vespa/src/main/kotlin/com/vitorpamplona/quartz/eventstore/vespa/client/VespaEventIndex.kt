@@ -28,6 +28,7 @@ import com.vitorpamplona.quartz.eventstore.vespa.mapBounded
 import com.vitorpamplona.quartz.eventstore.vespa.query.EventQuery
 import com.vitorpamplona.quartz.eventstore.vespa.query.EventSelection
 import com.vitorpamplona.quartz.eventstore.vespa.query.EventYql
+import com.vitorpamplona.quartz.eventstore.vespa.query.FuzzyWordGroup
 import com.vitorpamplona.quartz.eventstore.vespa.query.VespaQuery
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import com.vitorpamplona.quartz.utils.Hex
@@ -332,6 +333,46 @@ class VespaEventIndex(
             attempt(demoteRecency(q))
         }
 
+    /**
+     * False from the first 400 naming a near attribute field (name_parts/…):
+     * the serving schema predates the prefix/fuzzy fields (deployIfAbsent
+     * never redeploys onto a serving cluster), so search queries demote to
+     * exact + gram matching — the pre-near behavior — instead of failing
+     * every REQ. One failed query flips it for the life of this client; a
+     * schema redeploy plus restart restores the near tier. Same shape as
+     * [recencyProfileAvailable].
+     */
+    @Volatile private var nearFieldsAvailable = true
+
+    /** [q] rebuilt for a schema without the near attribute fields — a no-op while they serve. */
+    private fun demoteNear(q: EventQuery): EventQuery = if (!nearFieldsAvailable && q.nearMatching) q.copy(nearMatching = false) else q
+
+    /**
+     * Run [attempt] with the near-fields compatibility net: a 400 naming one
+     * of [FuzzyWordGroup.NEAR_FIELDS] means the serving schema predates them —
+     * flip [nearFieldsAvailable] and rerun the demoted query instead of
+     * failing the REQ. Any other failure propagates untouched. Only queries
+     * that actually carry a search term can hit this (near clauses are only
+     * emitted for search words), but the net wraps every path that routes a
+     * term: search, rawSearch, and the count/grouping family.
+     */
+    private suspend fun <T> nearSafe(
+        q: EventQuery,
+        attempt: suspend (EventQuery) -> T,
+    ): T =
+        try {
+            attempt(demoteNear(q))
+        } catch (e: IllegalArgumentException) {
+            // queryBody's status guard is a require(), hence IllegalArgument.
+            // The message check proves the attempt ran WITH the near clauses
+            // (a demoted attempt cannot 400 naming a field it never sent), so
+            // no flag re-read — same reasoning as recencySafe.
+            val missingField = e.message?.contains("400") == true && FuzzyWordGroup.NEAR_FIELDS.any { e.message?.contains(it) == true }
+            if (q.search.isNullOrBlank() || !q.nearMatching || !missingField) throw e
+            nearFieldsAvailable = false
+            attempt(demoteNear(q))
+        }
+
     override suspend fun search(query: EventQuery): List<EventDoc> {
         // Pure-id recall bypasses /search/: each id is a direct document-API key
         // lookup (~35% faster than a search over the id attribute here), which is
@@ -340,12 +381,14 @@ class VespaEventIndex(
         // expiry filter and newest-first order are applied exactly as YQL would, so
         // results are identical to the search path.
         if (query.isPureIdLookup()) return getByIds(query)
-        return recencySafe(planRecency(query)) { q ->
-            // Stream the hits straight into docs (no full JsonElement tree): the
-            // response is decoded into flat DTOs, allocating the target objects
-            // directly instead of a JsonObject/JsonArray/JsonPrimitive wrapper per
-            // field. This is the query hot path, so that saved garbage matters.
-            recallSummaries(q).mapNotNull { it.toDoc() }
+        return nearSafe(query) { qn ->
+            recencySafe(planRecency(qn)) { q ->
+                // Stream the hits straight into docs (no full JsonElement tree): the
+                // response is decoded into flat DTOs, allocating the target objects
+                // directly instead of a JsonObject/JsonArray/JsonPrimitive wrapper per
+                // field. This is the query hot path, so that saved garbage matters.
+                recallSummaries(q).mapNotNull { it.toDoc() }
+            }
         }
     }
 
@@ -481,8 +524,10 @@ class VespaEventIndex(
      */
     override suspend fun rawSearch(query: EventQuery): List<RawEvent> {
         if (query.isPureIdLookup()) return getByIds(query).map { it.toRawEvent() }
-        return recencySafe(planRecency(query)) { q ->
-            recallSummaries(q).mapNotNull { it.toRaw() }
+        return nearSafe(query) { qn ->
+            recencySafe(planRecency(qn)) { q ->
+                recallSummaries(q).mapNotNull { it.toRaw() }
+            }
         }
     }
 
@@ -966,31 +1011,34 @@ class VespaEventIndex(
         return DocsPage(env.documents.mapNotNull { it.fields?.toDoc() }, env.continuation)
     }
 
-    override suspend fun count(query: EventQuery): Int {
-        // A grouping count() over the full match set — NOT root.totalCount, which
-        // Vespa caps under the recency `order by`'s match-phase (a 10x+ undercount
-        // on large kinds). See [EventYql.buildCount].
-        val root = queryRoot(EventYql.buildCount(query) ?: return 0, hits = 0) ?: return 0
-        return countIn(root) ?: 0
-    }
+    override suspend fun count(query: EventQuery): Int =
+        nearSafe(query) { q ->
+            // A grouping count() over the full match set — NOT root.totalCount, which
+            // Vespa caps under the recency `order by`'s match-phase (a 10x+ undercount
+            // on large kinds). See [EventYql.buildCount].
+            val root = EventYql.buildCount(q)?.let { queryRoot(it, hits = 0) }
+            root?.let { countIn(it) } ?: 0
+        }
 
-    override suspend fun countDistinctAuthors(query: EventQuery): Int {
-        // `all(group(pubkey) output(count()))` counts the GROUPS — i.e. the
-        // distinct pubkeys — not the docs. The count() lands one level deeper
-        // than [count]'s (inside the group list), so both share [countIn]'s
-        // recursive scan. See [EventYql.buildDistinctCount].
-        val root = queryRoot(EventYql.buildDistinctCount(query, "pubkey") ?: return 0, hits = 0) ?: return 0
-        return countIn(root) ?: 0
-    }
+    override suspend fun countDistinctAuthors(query: EventQuery): Int =
+        nearSafe(query) { q ->
+            // `all(group(pubkey) output(count()))` counts the GROUPS — i.e. the
+            // distinct pubkeys — not the docs. The count() lands one level deeper
+            // than [count]'s (inside the group list), so both share [countIn]'s
+            // recursive scan. See [EventYql.buildDistinctCount].
+            val root = EventYql.buildDistinctCount(q, "pubkey")?.let { queryRoot(it, hits = 0) }
+            root?.let { countIn(it) } ?: 0
+        }
 
-    override suspend fun countByKind(query: EventQuery): Map<Int, Int> {
-        // `all(group(kind) each(output(count())))` yields one leaf group per kind,
-        // each carrying its `value` (the kind) and a `count()`. See [EventYql.buildKindHistogram].
-        val root = queryRoot(EventYql.buildKindHistogram(query) ?: return emptyMap(), hits = 0) ?: return emptyMap()
-        val out = LinkedHashMap<Int, Int>()
-        kindCountsInto(root, out)
-        return out
-    }
+    override suspend fun countByKind(query: EventQuery): Map<Int, Int> =
+        nearSafe(query) { q ->
+            // `all(group(kind) each(output(count())))` yields one leaf group per kind,
+            // each carrying its `value` (the kind) and a `count()`. See [EventYql.buildKindHistogram].
+            val root = EventYql.buildKindHistogram(q)?.let { queryRoot(it, hits = 0) }
+            val out = LinkedHashMap<Int, Int>()
+            root?.let { kindCountsInto(it, out) }
+            out
+        }
 
     /** Collect every leaf group's (value -> count()) pair anywhere under this node. */
     private fun kindCountsInto(
@@ -1040,17 +1088,19 @@ class VespaEventIndex(
         }
 
     override suspend fun distinctAuthors(query: EventQuery): Set<String> {
-        val root = queryRoot(EventYql.buildDistinctAuthors(query) ?: return emptySet(), hits = 0) ?: return emptySet()
-        // group(pubkey) nests a grouplist whose leaf `group:` nodes each carry a
-        // pubkey as `value`. Walk the tree and collect every group value.
-        val authors = LinkedHashSet<String>()
+        return nearSafe(query) { q ->
+            val root = EventYql.buildDistinctAuthors(q)?.let { queryRoot(it, hits = 0) } ?: return@nearSafe emptySet()
+            // group(pubkey) nests a grouplist whose leaf `group:` nodes each carry a
+            // pubkey as `value`. Walk the tree and collect every group value.
+            val authors = LinkedHashSet<String>()
 
-        fun collect(node: JsonObject) {
-            (node["value"] as? JsonPrimitive)?.let { if (node["id"]?.jsonPrimitive?.content?.startsWith("group:") == true) authors += it.content }
-            node["children"]?.jsonArray?.forEach { collect(it.jsonObject) }
+            fun collect(node: JsonObject) {
+                (node["value"] as? JsonPrimitive)?.let { if (node["id"]?.jsonPrimitive?.content?.startsWith("group:") == true) authors += it.content }
+                node["children"]?.jsonArray?.forEach { collect(it.jsonObject) }
+            }
+            collect(root)
+            authors
         }
-        collect(root)
-        return authors
     }
 
     /**
@@ -1169,7 +1219,9 @@ class VespaEventIndex(
             content = content,
             sig = sig,
             owner = owner ?: pubkey,
-            search = SearchFields(name, displayName, about, nip05, lud16, website, primary, secondary, text, location),
+            // normalized(): the feed writes "" for an absent name/display_name
+            // sibling (SearchFields.fields), so fold it back to null on decode.
+            search = SearchFields(name, displayName, about, nip05, lud16, website, primary, secondary, text, location).normalized(),
         )
     }
 

@@ -298,7 +298,7 @@ object EventYql {
                 .split(WHITESPACE)
                 .filter { it.isNotEmpty() }
         if (words.isNotEmpty()) {
-            clauses += FuzzyWordGroup.clause(words, params)
+            clauses += FuzzyWordGroup.clause(words, params, nearFields = q.nearMatching)
             // Short queries lean harder on the trigram safety net.
             params["ranking.features.query(w_gram)"] = if (FuzzyWordGroup.leansOnGrams(words)) "8.0" else "2.0"
         }

@@ -82,6 +82,14 @@ data class EventQuery(
      * should trust the profile.
      */
     val rerankCount: Int? = null,
+    /**
+     * Emit the direct prefix/fuzzy terms against the schema's *_parts /
+     * *_tokens attribute fields (the near tier). On by default; the client
+     * flips it off ONLY as a compatibility demotion when the serving schema
+     * predates those fields — any query referencing them is then HTTP 400 on
+     * every search (see VespaEventIndex.nearSafe). Not a caller-facing knob.
+     */
+    val nearMatching: Boolean = true,
 )
 
 /** A ready-to-send Vespa query: the YQL, its query parameters, and the rank profile. */

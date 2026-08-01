@@ -60,9 +60,12 @@
 <div class="viz-root">
   <h1>NIP-50 search — how matching and ranking actually work</h1>
   <p class="sub">The full pipeline from a search term to a ranked page, what each knob weighs, and — the honest part —
-     which match paths are <em>silently inert</em> today. Findings cross-checked against Brainstorm's 2026-07-30
-     root-cause (NosFabrica/brainstorm-k8s#3 + brainstorm_server#64), whose schema and query builder this library's
-     profile group is a verbatim port of.</p>
+     which match paths were <em>silently inert</em> before this branch. Root cause from Brainstorm's 2026-07-30
+     fix (NosFabrica/brainstorm-k8s#3 + brainstorm_server#64), whose schema and query builder this library's
+     profile group is a port of. <b>The fix is now ported here</b>: the *_parts/*_tokens attribute fields, direct
+     prefix/fuzzy terms, the near tier in every profile, and the re-derived weights all land in this branch —
+     "today"/"before" below describes the pre-branch (and currently deployed) behavior, "after" is what this
+     branch does once a deploy + reindex lands.</p>
 
   <h2>1 · The pipeline</h2>
   <div class="flow">
@@ -226,7 +229,7 @@ exact floor   w_name_tier + 100  = 23 100   &gt; 22 848 ✓   → w_name_tier = 
 
   <h2>5 · Every knob, in one table</h2>
   <div class="scroll"><table>
-    <tr><th>query() input</th><th>ours</th><th>upstream after PR#3</th><th>role</th></tr>
+    <tr><th>query() input</th><th>before</th><th>this branch (= upstream PR#3)</th><th>role</th></tr>
     <tr><td><code>w_name_tier</code></td><td>2000</td><td><b>23000</b></td><td>exact-name band offset inside text_score</td></tr>
     <tr><td><code>w_near_tier</code></td><td>—</td><td><b>4000</b></td><td>prefix/fuzzy name band (new)</td></tr>
     <tr><td><code>w_near_tier_text</code></td><td>—</td><td><b>700</b></td><td>same band for pure-text relevance() (exact 1100 &gt; near 700 &gt; affil 550)</td></tr>
@@ -267,6 +270,14 @@ exact floor   w_name_tier + 100  = 23 100   &gt; 22 848 ✓   → w_name_tier = 
   </ul>
 
   <h3>Port checklist for this library — beyond copy-paste</h3>
+  <p><b>Status: items 1–5 are implemented in this branch.</b> The near fields landed as two pairs —
+     <code>name_parts</code>/<code>name_tokens</code> (merged name + display_name, with the feed writing an
+     empty-string sibling so the concatenation can't null out) and <code>search_primary_parts</code>/<code>_tokens</code>
+     (single-input, null-safe) — the recall contract keeps the substring reference as a documented looser superset
+     (NIP-50 was already excluded from strict parity), and the schema-version gate is <code>nearSafe</code> in
+     <code>VespaEventIndex</code>: a 400 naming a near field demotes the query to exact + gram matching and
+     remembers, mirroring the <code>recency</code>-profile net. Item 6 — measuring the shipped weights against a
+     real corpus and watching fuzzy latency — remains, and needs a deployed schema plus a reindex first.</p>
   <div class="scroll"><table>
     <tr><th>#</th><th>adaptation</th><th>why it differs here</th></tr>
     <tr><td>1</td><td>Add <code>name_parts</code>/<code>name_tokens</code> to <code>event.sd</code>; extend the same
