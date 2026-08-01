@@ -345,8 +345,67 @@ class VespaEventIndex(
             // response is decoded into flat DTOs, allocating the target objects
             // directly instead of a JsonObject/JsonArray/JsonPrimitive wrapper per
             // field. This is the query hot path, so that saved garbage matters.
-            recallRoot(q)?.children?.mapNotNull { it.fields?.toDoc() } ?: emptyList()
+            recallSummaries(q).mapNotNull { it.toDoc() }
         }
+    }
+
+    /**
+     * Recency-ordered recall with the id tiebreak applied CLIENT-SIDE. The
+     * engine sorts by `created_at desc` alone — compound-sorting by the id
+     * string attribute paid UCA collation over the whole match set (0.22s ->
+     * 1.3s on a 2M-match scan) — and this restores the exact
+     * `created_at desc, id asc` contract from the page:
+     *
+     * With a single-key sort, every doc STRICTLY newer than the boundary
+     * timestamp T (the limit-th hit's created_at) is guaranteed present; only
+     * membership among the docs AT T is engine-arbitrary. So the query
+     * overfetches [TIE_SLACK] extra hits — if anything older than T arrived,
+     * or the engine ran out of matches, the whole T tie group is in hand and
+     * an in-memory sort resolves the boundary exactly. Only a tie group wider
+     * than the slack (more than TIE_SLACK same-second matches at the boundary)
+     * pays one extra `[T,T]` window query, which recalls just that second.
+     *
+     * Ranked queries (search terms, trust sorts) keep the engine's score
+     * order untouched. Unlimited recency queries have no boundary to resolve
+     * — the sort alone restores the contract.
+     */
+    private suspend fun recallSummaries(q: EventQuery): List<VespaSummary> {
+        val recencyOrdered =
+            (q.ranking == null && q.search.isNullOrBlank()) ||
+                q.ranking == EventYql.RANK_UNRANKED ||
+                q.ranking == EventYql.RANK_RECENCY
+        if (!recencyOrdered) {
+            return recallRoot(q)?.children?.mapNotNull { it.fields }?.filter { it.id.isNotEmpty() } ?: emptyList()
+        }
+        val limit = q.limit
+        if (limit == null) {
+            val all = recallRoot(q)?.children?.mapNotNull { it.fields }?.filter { it.id.isNotEmpty() } ?: emptyList()
+            return all.sortedWith(SUMMARY_NEWEST_FIRST)
+        }
+        // A non-positive limit matches nothing (EventYql.build's contract) —
+        // the overfetch must not resurrect it into a real query.
+        if (limit <= 0) return emptyList()
+        val fetch = q.copy(limit = limit + TIE_SLACK)
+        var hits =
+            recallRoot(fetch)?.children?.mapNotNull { it.fields }?.filter { it.id.isNotEmpty() }
+                ?: return emptyList()
+        if (hits.size > limit) {
+            val t = hits[limit - 1].createdAt
+            // The tie group at T arrived complete if the engine either ran out
+            // of matches before the overfetch limit or already emitted a doc
+            // strictly older than T (all ==T docs sort before any <T doc).
+            val complete = hits.size < fetch.limit!! || hits.last().createdAt < t
+            if (!complete) {
+                val ties =
+                    recallRoot(q.copy(since = t, until = t, limit = null, ranking = EventYql.RANK_UNRANKED))
+                        ?.children
+                        ?.mapNotNull { it.fields }
+                        ?.filter { it.id.isNotEmpty() }
+                        ?: emptyList()
+                hits = hits.filter { it.createdAt > t } + ties
+            }
+        }
+        return hits.sortedWith(SUMMARY_NEWEST_FIRST).take(limit)
     }
 
     /**
@@ -423,7 +482,7 @@ class VespaEventIndex(
     override suspend fun rawSearch(query: EventQuery): List<RawEvent> {
         if (query.isPureIdLookup()) return getByIds(query).map { it.toRawEvent() }
         return recencySafe(planRecency(query)) { q ->
-            recallRoot(q)?.children?.mapNotNull { it.fields?.toRaw() } ?: emptyList()
+            recallSummaries(q).mapNotNull { it.toRaw() }
         }
     }
 
@@ -1275,6 +1334,18 @@ class VespaEventIndex(
 
         /** Newest first (created_at desc, id asc tiebreak) — the same order the search path and the store apply. */
         val NEWEST_FIRST = compareByDescending(EventDoc::createdAt).thenBy(EventDoc::id)
+
+        /** [NEWEST_FIRST] over raw summaries — [recallSummaries] applies the id tiebreak here, not in the engine. */
+        val SUMMARY_NEWEST_FIRST = compareByDescending(VespaSummary::createdAt).thenBy(VespaSummary::id)
+
+        /**
+         * Extra hits a limit'd recency recall asks for beyond its limit, so the
+         * boundary timestamp's tie group usually arrives complete and the id
+         * tiebreak resolves in memory ([recallSummaries]). Costs ~1ms of extra
+         * summaries; only a boundary second with MORE matching events than this
+         * pays the [t,t] follow-up query.
+         */
+        const val TIE_SLACK = 64
 
         /** Docs asked for per visit response (Vespa's per-request ceiling is 1024). */
         const val VISIT_PAGE = 1024
