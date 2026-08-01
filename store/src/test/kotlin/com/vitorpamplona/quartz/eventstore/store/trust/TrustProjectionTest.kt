@@ -39,6 +39,7 @@ import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -446,6 +447,89 @@ class TrustProjectionTest {
             }
         }
 
+    // ---- deferred (async) projection -----------------------------------------
+
+    /**
+     * Deferred mode: the expensive reactions leave the insert as PENDING work —
+     * signalled, persisted, and invisible to ranking until a drain. The drain
+     * then settles everything and clears the marker.
+     */
+    @Test
+    fun `deferred mode queues reactions and drains them on demand`() =
+        runBlocking {
+            val reps = InMemoryReputationIndex()
+            val proj = TrustProjection(InMemoryEventIndex(), reps)
+            var signals = 0
+            proj.dirt.deferTo { signals++ }
+            val st = NostrSemanticsStore(proj, relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+
+            st.insert(list10040())
+            st.insert(card())
+            assertNull(reps.get(subject), "reactions are queued, not applied")
+            assertTrue(signals >= 2, "each trust write signals the drainer")
+            assertNotNull(reps.get(DirtLedger.MARKER_KEY), "the queue is persisted — a crash loses nothing")
+
+            proj.dirt.drain { it() }
+            assertEquals(mapOf(observer to 87), reps.get(subject)?.influenceScores, "drained")
+            assertNull(reps.get(DirtLedger.MARKER_KEY), "queue empty, marker gone")
+        }
+
+    /** The bulk zero-read cell path stays INLINE in deferred mode — mirror ingest keeps immediate ranking. */
+    @Test
+    fun `deferred mode keeps the bulk cell path inline`() =
+        runBlocking {
+            val reps = InMemoryReputationIndex()
+            val proj = TrustProjection(InMemoryEventIndex(), reps)
+            proj.dirt.deferTo { }
+            val st = NostrSemanticsStore(proj, relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+
+            st.insert(list10040())
+            proj.dirt.drain { it() } // attribute the 10040 so the map is live
+            val subjects = (1..20).map { it.toString(16).padStart(64, 'f') }
+            st.batchInsert(subjects.map { s -> card(about = s) })
+            subjects.forEach { s ->
+                assertEquals(mapOf(observer to 87), reps.docs.getValue(s).influenceScores, "bulk cells land without a drain")
+            }
+        }
+
+    /**
+     * The parity net for deferral: the same sequence — shared observers,
+     * supersession, a provider switch, a retraction, a kind-5 deletion, a bulk
+     * batch — lands the SAME tensors whether settled inline per write or
+     * queued and drained at arbitrary points. Deferral needs no event ordering
+     * because every drain re-derives from the store's current state.
+     */
+    @Test
+    fun `deferred drains converge to the sync tensors`() =
+        runBlocking {
+            val deleted = card(signer = service2, about = "cd".repeat(32), rank = 44, at = 500)
+            val script: suspend (IEventStore) -> Unit = { st ->
+                st.insert(list10040(author = observer, serviceKey = service, at = 10))
+                st.insert(list10040(author = observer2, serviceKey = service, at = 11)) // shared provider
+                st.insert(card(rank = 20, at = 100))
+                st.insert(card(rank = 55, at = 200)) // supersedes
+                st.batchInsert((1..20).map { card(about = it.toString(16).padStart(64, 'a'), rank = 10) })
+                st.insert(list10040(author = observer2, serviceKey = service2, at = 12)) // observer2 switches provider
+                st.insert(deleted)
+                st.insert(DeletionEvent(id(), service2, 600, arrayOf(arrayOf("e", deleted.id)), "", ""))
+                st.insert(card(about = "ef".repeat(32), rank = 30, at = 300))
+                st.insert(card(about = "ef".repeat(32), rank = null, followers = null, at = 400)) // retraction
+            }
+
+            val syncReps = InMemoryReputationIndex()
+            script(NostrSemanticsStore(TrustProjection(InMemoryEventIndex(), syncReps), relay = RelayUrlNormalizer.normalize("ws://localhost:7777")))
+
+            val defReps = InMemoryReputationIndex()
+            val defProj = TrustProjection(InMemoryEventIndex(), defReps)
+            defProj.dirt.deferTo { }
+            script(NostrSemanticsStore(defProj, relay = RelayUrlNormalizer.normalize("ws://localhost:7777")))
+            defProj.dirt.drain { it() }
+
+            assertEquals(syncReps.docs, defReps.docs, "any drain schedule must converge to the inline tensors")
+            // And they are the values we expect, not coincidentally-equal emptiness.
+            assertEquals(mapOf(observer to 55), syncReps.docs.getValue(subject).influenceScores)
+        }
+
     /**
      * The decorator must forward visitDocsPage to the inner client's
      * implementation — the interface default re-lists the whole corpus through
@@ -473,14 +557,19 @@ class TrustProjectionTest {
         }
 }
 
-/** Fails ONE updateCells on demand — the "engine hiccup after the event write" the dirt marker exists for. */
+/**
+ * Fails ONE projection cell write on demand — the "engine hiccup after the
+ * event write" the dirt marker exists for. The ledger's write-ahead marker
+ * persist ALSO rides updateCells (and runs before the event write), so the
+ * failure targets only updates that touch real subjects.
+ */
 private class FailingCellsReputationIndex(
     private val inner: InMemoryReputationIndex,
 ) : ReputationIndex by inner {
     var failNext = false
 
     override suspend fun updateCells(updates: List<ReputationCells>) {
-        if (failNext) {
+        if (failNext && updates.any { it.subject != DirtLedger.MARKER_KEY }) {
             failNext = false
             throw RuntimeException("simulated projection failure")
         }

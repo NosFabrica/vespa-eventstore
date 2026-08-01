@@ -59,10 +59,10 @@ class TrustReconciler internal constructor(
 
     /**
      * Re-derive the services whose scores are not projected under every observer
-     * currently mapped to them. Runs [DirtLedger.heal] first: a marker left by a
-     * crashed trust write names drift EXACTLY, and repairing it here means a
-     * restart heals before ranked search serves stale cells — without waiting
-     * for the next trust write to trip the lazy heal.
+     * currently mapped to them. Drains the [DirtLedger] first: a marker left by
+     * a crashed process — or by a deferred-mode shutdown with work still
+     * queued — names drift EXACTLY, and repairing it here means a restart heals
+     * before ranked search serves stale cells.
      *
      * ## Why this is needed at all
      *
@@ -98,7 +98,7 @@ class TrustReconciler internal constructor(
      * projected while the rest are not. The never-triggered failure this hunts
      * is all-or-nothing per (service, observer), so the sample settles it;
      * PARTIAL drift (a batch that failed mid-corpus) is not left to sampling at
-     * all — the dirty marker names it and [DirtLedger.heal] repairs it exactly.
+     * all — the dirty marker names it and [DirtLedger.drain] repairs it exactly.
      *
      * ## Progress
      *
@@ -114,7 +114,7 @@ class TrustReconciler internal constructor(
         samplesPerService: Int = DEFAULT_RECONCILE_SAMPLES,
         onProgress: ((inspected: Int, total: Int, rebuilt: Int, derivedInService: Int) -> Unit)? = null,
     ): Reconciliation {
-        gate { dirt.heal() }
+        dirt.drain(gate)
         val serviceToObservers = recompute.providerMap()
         if (serviceToObservers.isEmpty()) return Reconciliation(0, emptyList())
         val total = serviceToObservers.size

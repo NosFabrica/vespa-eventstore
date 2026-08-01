@@ -69,30 +69,18 @@ internal class TrustRecompute(
     suspend fun providerMap(): Map<String, Set<String>> = providers.get()
 
     /**
-     * Drop the cached attribution map. The write path invalidates through
-     * [recomputeSubjectsOf]; this direct handle is for the crash repair
-     * ([DirtLedger.heal]), whose whole premise is that the op that should have
-     * invalidated died before doing so.
+     * Drop the cached attribution map. Call after ANY 10040 write or removal —
+     * the write paths do it inline (even when the service walk itself is
+     * deferred), and [DirtLedger.drain] does it again for dirt inherited from a
+     * crashed process, whose dying op may never have gotten this far.
      */
     fun invalidateProviders() = providers.invalidate()
 
-    /** Re-derive [subject]'s whole parent doc from the stored 30382s about them. */
-    suspend fun recompute(subject: String) = recompute(subject, providers.get())
-
-    private suspend fun recompute(
-        subject: String,
-        serviceToObservers: Map<String, Set<String>>,
-    ) {
-        val docs = inner.search(EventQuery(kinds = listOf(ContactCardEvent.KIND), tags = mapOf("d" to listOf(subject)), notExpiredAt = nowSecs()))
-        val reputation = derive(subject, docs, serviceToObservers)
-        if (reputation.isEmpty()) reputations.remove(subject) else reputations.put(reputation)
-    }
-
     /**
-     * The batched recompute behind [TrustProjection.putAll], [recomputeSubjectsOf]
-     * and the walks. The touched subjects' score docs are fetched back in
-     * CHUNKED, concurrency-BOUNDED queries: hundreds of subjects per round trip,
-     * a few round trips in flight (unbounded fan-out measurably times the engine
+     * The batched recompute behind every [DirtLedger] drain and the walks. The
+     * touched subjects' score docs are fetched back in CHUNKED,
+     * concurrency-BOUNDED queries: hundreds of subjects per round trip, a few
+     * round trips in flight (unbounded fan-out measurably times the engine
      * out). Every parent is derived locally, and the results are written through
      * one pipelined [ReputationIndex.putAll].
      */
@@ -147,25 +135,6 @@ internal class TrustRecompute(
             reputations.putAll(puts)
             removes.mapBounded(QUERY_FANOUT) { reputations.remove(it) }
         }
-    }
-
-    /**
-     * One or more 10040s appeared or disappeared. The provider map changed, so
-     * every subject their rank services have scored needs re-attribution. The
-     * subjects are enumerated through the engine's VISIT walk (d tags projected),
-     * not a search: a provider with millions of stored scores is exactly where
-     * pulling one giant response would blow up memory (and where any deployment
-     * that DID set a hit cap would silently miss most of them). The subjects are then
-     * re-derived in batches, with empties removed (a re-attribution can empty a
-     * parent). A BATCH of 10040s does ONE walk over the union of their services,
-     * not one walk per list.
-     */
-    suspend fun recomputeSubjectsOf(listDocs: List<EventDoc>) {
-        if (listDocs.isEmpty()) return
-        providers.invalidate() // the map just changed; next providerMap() rebuilds
-        val services = ProviderMap.rankServicesOf(listDocs)
-        if (services.isEmpty()) return
-        recomputeWalk(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = services))
     }
 
     /**
