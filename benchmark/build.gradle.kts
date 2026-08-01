@@ -58,6 +58,14 @@ tasks.register<JavaExec>("visitBench") {
     maxHeapSize = System.getenv("BENCH_HEAP") ?: "2g"
 }
 
+tasks.register<JavaExec>("queryBench") {
+    group = "verification"
+    description = "Latency + exact-correctness check of search/count shapes over the visitBench corpus"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.vitorpamplona.quartz.eventstore.benchmark.QueryBench")
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "3g"
+}
+
 tasks.register<JavaExec>("traceProbe") {
     group = "verification"
     description = "Dump Vespa query-execution plans (trace.explainLevel) for the named REQ shapes"
