@@ -429,13 +429,26 @@ open class NostrSemanticsStoreTest {
             assertEquals(0, store.count(listOf(Filter(kinds = listOf(1), limit = -1), Filter(kinds = listOf(999)))))
         }
 
-    /** NIP-45: a COUNT means the same thing alone and beside a sibling filter — limits cap hits, never counts. */
+    /**
+     * NIP-45: COUNT == the REQ's feed, EXACTLY — same limits, same gates, same
+     * cross-filter dedup. The number a client could verify by running the REQ.
+     */
     @Test
-    fun `multi-filter count matches single-filter count under a limit`() =
+    fun `count equals the REQ feed exactly`() =
         runBlocking {
-            (1..5).forEach { store.insert(note(at = 100L + it)) }
+            (1..5).forEach { store.insert(note(at = 100L + it, content = "hello world $it")) }
             val limited = Filter(kinds = listOf(1), limit = 2)
-            assertEquals(5, store.count(limited), "engine count ignores a positive limit")
-            assertEquals(5, store.count(listOf(limited, Filter(kinds = listOf(999)))), "the same filter must count the same with a sibling")
+            val all = Filter(kinds = listOf(1))
+            val searching = Filter(kinds = listOf(1), search = "hello")
+            assertEquals(store.query<Event>(limited).size, store.count(limited), "limited")
+            assertEquals(2, store.count(limited), "the feed caps at the limit, so the count does")
+            assertEquals(store.query<Event>(all).size, store.count(all), "unbounded")
+            assertEquals(5, store.count(all))
+            assertEquals(store.query<Event>(searching).size, store.count(searching), "searching")
+            // Multi-filter: the union of the SERVED pages, deduped — filters
+            // overlap, so the count is the feed's size, not the sum.
+            val filters = listOf(limited, all)
+            assertEquals(store.query<Event>(filters).size, store.count(filters), "multi-filter dedup")
+            assertEquals(5, store.count(filters))
         }
 }

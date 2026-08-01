@@ -23,7 +23,10 @@ package com.vitorpamplona.quartz.eventstore.store.trust
 import com.vitorpamplona.quartz.eventstore.store.NostrSemanticsStore
 import com.vitorpamplona.quartz.eventstore.vespa.InMemoryEventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.InMemoryReputationIndex
+import com.vitorpamplona.quartz.eventstore.vespa.client.DocsPage
+import com.vitorpamplona.quartz.eventstore.vespa.client.EventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.doc.ReputationDoc
+import com.vitorpamplona.quartz.eventstore.vespa.query.EventQuery
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
@@ -34,6 +37,7 @@ import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
  * The projection is driven through the REAL store, so every path that
@@ -283,5 +287,31 @@ class TrustProjectionTest {
             // And the values are what we expect, not coincidentally-equal empties.
             assertEquals(mapOf(observer to 55, observer2 to 9), bulkReputations.docs.getValue(subject).influenceScores)
             assertNull(bulkReputations.docs[subjectB], "subjectB was retracted")
+        }
+
+    /**
+     * The decorator must forward visitDocsPage to the inner client's
+     * implementation — the interface default re-lists the whole corpus through
+     * search() per page, the exact O(corpus squared) shape the visit-backed
+     * reindex replaced.
+     */
+    @Test
+    fun `visitDocsPage forwards to the inner index`() =
+        runBlocking {
+            var forwarded = false
+            val inner =
+                object : EventIndex by InMemoryEventIndex() {
+                    override suspend fun visitDocsPage(
+                        query: EventQuery,
+                        resumeFrom: String?,
+                        maxDocs: Int,
+                    ): DocsPage {
+                        forwarded = true
+                        return DocsPage(emptyList(), null)
+                    }
+                }
+            val decorated = TrustProjection(inner, InMemoryReputationIndex())
+            decorated.visitDocsPage(EventQuery(), null, 8)
+            assertTrue(forwarded, "the reindex walk must reach the engine's visit, not the search-per-page default")
         }
 }

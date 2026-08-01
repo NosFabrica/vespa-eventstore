@@ -24,6 +24,7 @@ import com.vitorpamplona.quartz.eventstore.store.mapping.toEvent
 import com.vitorpamplona.quartz.eventstore.vespa.IngestStats
 import com.vitorpamplona.quartz.eventstore.vespa.QUERY_FANOUT
 import com.vitorpamplona.quartz.eventstore.vespa.client.DocRef
+import com.vitorpamplona.quartz.eventstore.vespa.client.DocsPage
 import com.vitorpamplona.quartz.eventstore.vespa.client.EventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.client.ReputationIndex
 import com.vitorpamplona.quartz.eventstore.vespa.doc.EventDoc
@@ -75,6 +76,16 @@ class TrustProjection(
     ) = inner.visitIds(query, withDTag, onPage)
 
     override suspend fun count(query: EventQuery): Int = inner.count(query)
+
+    // MUST forward like the walks above: the interface default re-lists the
+    // ENTIRE corpus through this decorator's search() per page — the exact
+    // O(corpus²) shape the visit-backed reindex replaced, resurrected one
+    // layer up. Pure read; nothing to react to.
+    override suspend fun visitDocsPage(
+        query: EventQuery,
+        resumeFrom: String?,
+        maxDocs: Int,
+    ): DocsPage = inner.visitDocsPage(query, resumeFrom, maxDocs)
 
     // The author/kind aggregates below MUST forward to inner, not ride the
     // interface default: the default reconstructs the whole match set through

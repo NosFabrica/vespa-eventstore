@@ -35,6 +35,7 @@ import com.vitorpamplona.quartz.eventstore.vespa.client.EventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.doc.EventDoc
 import com.vitorpamplona.quartz.eventstore.vespa.mapBounded
 import com.vitorpamplona.quartz.eventstore.vespa.query.EventQuery
+import com.vitorpamplona.quartz.eventstore.vespa.query.EventYql
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.core.HexKey
 import com.vitorpamplona.quartz.nip01Core.core.isAddressable
@@ -347,7 +348,57 @@ class NostrSemanticsStore(
         onEach: (T) -> Unit,
     ) = query<T>(filters).forEach(onEach)
 
-    override suspend fun count(filter: Filter): Int = filter.toExpiryQuery(nowSecs())?.let { index.count(it) } ?: 0
+    /**
+     * NIP-45 COUNT == the REQ's feed, EXACTLY: the same observer (ranking
+     * gates included), the same per-filter limits, the same cross-filter id
+     * dedup — the number a client could verify by running the REQ and counting
+     * what arrives. Anything else makes COUNT lie about the feed it summarizes.
+     */
+    override suspend fun count(filter: Filter): Int = count(listOf(filter))
+
+    override suspend fun count(filters: List<Filter>): Int {
+        val observer = coroutineContext[StoreQueryContext]?.observer
+        val cutoff = nowSecs()
+        val queries =
+            filters
+                .mapNotNull { it.toExpiryQuery(cutoff, observer) }
+                // A present limit <= 0 is the "matches nothing" sentinel on the
+                // feed, so it contributes nothing to the count either.
+                .filterNot { (it.limit ?: 1) <= 0 }
+        if (queries.isEmpty()) return 0
+        if (queries.size == 1) {
+            val q = queries[0]
+            return when {
+                // Ranked/searching: only the search path applies the observer's
+                // trust floor and spam gate, so the count must recall what the
+                // feed would serve (bounded by the same limit the feed honors).
+                q.isRanked() -> index.rawSearch(q).size
+
+                // Plain with a limit: the feed caps at the limit, so the count
+                // does too — the cheap exact engine count, clamped.
+                q.limit != null -> minOf(index.count(q.copy(limit = null)), q.limit ?: 0)
+
+                // Plain, unbounded: the engine's exact grouping count.
+                else -> index.count(q)
+            }
+        }
+        // Multi-filter: the feed dedups across filters, so collect each
+        // filter's SERVED ids and count the union. Plain unbounded filters
+        // stream ids through the visit (no doc materialization); limit'd and
+        // ranked filters recall exactly the page the feed would serve.
+        val ids = HashSet<String>()
+        for (q in queries) {
+            if (!q.isRanked() && q.limit == null) {
+                index.visitIds(q) { page ->
+                    page.forEach { ids += it.id }
+                    true
+                }
+            } else {
+                index.rawSearch(q).forEach { ids += it.id }
+            }
+        }
+        return ids.size
+    }
 
     /**
      * The distinct authors (pubkeys) matching [filter], via a server-side grouping
@@ -373,40 +424,6 @@ class NostrSemanticsStore(
             true
         }
         return out
-    }
-
-    override suspend fun count(filters: List<Filter>): Int {
-        // Multi-filter counts need cross-filter id dedup (engine count can't),
-        // but they don't need the events materialized — collect ids only.
-        if (filters.size == 1) return count(filters[0])
-        val cutoff = nowSecs()
-        // Mirror the single-filter engine-count semantics per filter, so the
-        // same filter counts the same alone or beside a sibling: a present
-        // limit <= 0 is the "matches nothing" sentinel; a positive limit is
-        // about hits, not counts, and is ignored.
-        val queries =
-            filters
-                .mapNotNull { it.toExpiryQuery(cutoff) }
-                .filterNot { (it.limit ?: 1) <= 0 }
-                .map { if (it.limit != null) it.copy(limit = null) else it }
-        val ids = HashSet<String>()
-        for (q in queries) {
-            if (q.isRanked()) {
-                // Searching filters carry ranking semantics (rank floor, spam
-                // gate) that only the search path applies; rawSearch recalls
-                // them without the per-hit tag parse.
-                index.rawSearch(q).forEach { ids += it.id }
-            } else {
-                // Plain filters stream ids through the engine's visit — no doc
-                // materialization, no summary-stage load, complete however
-                // large the match set.
-                index.visitIds(q) { page ->
-                    page.forEach { ids += it.id }
-                    true
-                }
-            }
-        }
-        return ids.size
     }
 
     /**
@@ -473,7 +490,16 @@ class NostrSemanticsStore(
     private suspend fun sweep(q: EventQuery) {
         // The read is paged; the caller's own limit, if any, still decides
         // whether one page is the whole job (below), so read q.limit, not this.
-        val paged = q.copy(limit = q.limit ?: sweepPage)
+        // Plain sweeps stamp RANK_UNRANKED: a sweep wants ANY page, so the
+        // recency planner's count probes (up to 3 per round, serial under the
+        // writer lock) answer a question it never asked — the explicit ranking
+        // opts out of isBareRecencyScan while compiling to identical YQL.
+        val paged =
+            if (q.search == null && q.ranking == null) {
+                q.copy(limit = q.limit ?: sweepPage, ranking = EventYql.RANK_UNRANKED)
+            } else {
+                q.copy(limit = q.limit ?: sweepPage)
+            }
         var rounds = 0
         var lastPage: Set<String>? = null
         while (rounds++ < MAX_SWEEP_ROUNDS) {
@@ -535,20 +561,29 @@ class NostrSemanticsStore(
      * after, as the tombstone.
      */
     private suspend fun applyDeletion(ev: DeletionEvent) {
-        for (id in ev.deleteEventIds()) {
-            val doc = index.get(id) ?: continue
-            // NIP-09/NIP-62: kind 5 against a kind 5 or a kind 62 has no effect.
-            if (doc.kind == DeletionEvent.KIND || doc.kind == RequestToVanishEvent.KIND) continue
-            if (doc.owner == ev.pubKey) index.remove(id)
-        }
+        // Deletions routinely carry dozens of e-tags: resolve them with
+        // bounded-concurrent gets (light doc-API reads) and remove the victims
+        // in ONE pipelined removeDocs — which also hands the trust projection
+        // its batch react instead of a re-read per id.
+        val byId =
+            ev
+                .deleteEventIds()
+                .distinct()
+                .mapBounded(TARGET_GET_FANOUT) { index.get(it) }
+                .filterNotNull()
+                // NIP-09/NIP-62: kind 5 against a kind 5 or a kind 62 has no effect.
+                .filter { it.kind != DeletionEvent.KIND && it.kind != RequestToVanishEvent.KIND }
+                .filter { it.owner == ev.pubKey }
+        if (byId.isNotEmpty()) index.removeDocs(byId)
         for (address in ev.deleteAddresses()) {
             if (address.pubKeyHex != ev.pubKey) continue
             if (!address.kind.isAddressable() && !address.kind.isReplaceable()) continue
-            index
-                .search(EventQuery(kinds = listOf(address.kind), authors = listOf(address.pubKeyHex), until = ev.createdAt))
-                // Replaceable kinds have ONE address regardless of the a-tag's d part.
-                .filter { !address.kind.isAddressable() || it.dTagOrEmpty() == address.dTag }
-                .forEach { index.remove(it.id) }
+            val victims =
+                index
+                    .search(EventQuery(kinds = listOf(address.kind), authors = listOf(address.pubKeyHex), until = ev.createdAt))
+                    // Replaceable kinds have ONE address regardless of the a-tag's d part.
+                    .filter { !address.kind.isAddressable() || it.dTagOrEmpty() == address.dTag }
+            if (victims.isNotEmpty()) index.removeDocs(victims)
         }
     }
 
@@ -592,10 +627,15 @@ class NostrSemanticsStore(
     ): FtsReindexProgress =
         writes.withLock {
             val page = index.visitDocsPage(EventQuery(), resumeFrom, batchSize)
+            // ONE pipelined write per page: serial awaited puts pay per-op ack
+            // latency — on a churny reindex (extractor upgrade touching most
+            // docs) that is hours of pure latency the feed client exists to hide.
+            val changed = ArrayList<EventDoc>()
             for (doc in page.docs) {
                 val fields = SearchExtractors.extract(doc.toEvent())
-                if (fields != doc.search) index.put(doc.copy(search = fields))
+                if (fields != doc.search) changed += doc.copy(search = fields)
             }
+            if (changed.isNotEmpty()) index.putAll(changed)
             FtsReindexProgress(cursor = page.continuation, processedThisBatch = page.docs.size, done = page.continuation == null)
         }
 
@@ -612,6 +652,11 @@ class NostrSemanticsStore(
         // Runs at least this long take the bulk path; smaller ones aren't
         // worth the setup and stay on the per-event path.
         const val BULK_MIN = 16
+
+        // Concurrent doc-API gets when resolving a kind 5's e-tag targets.
+        // Gets are light (no summary stage to overrun), so this floats above
+        // QUERY_FANOUT; the real client's own id fan-out uses 32.
+        const val TARGET_GET_FANOUT = 16
 
         val NEWEST_FIRST = compareByDescending(EventDoc::createdAt).thenBy(EventDoc::id)
 

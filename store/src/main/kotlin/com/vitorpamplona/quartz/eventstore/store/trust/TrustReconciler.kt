@@ -20,8 +20,10 @@
  */
 package com.vitorpamplona.quartz.eventstore.store.trust
 
+import com.vitorpamplona.quartz.eventstore.vespa.QUERY_FANOUT
 import com.vitorpamplona.quartz.eventstore.vespa.client.EventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.client.ReputationIndex
+import com.vitorpamplona.quartz.eventstore.vespa.mapBounded
 import com.vitorpamplona.quartz.eventstore.vespa.query.EventQuery
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 
@@ -81,13 +83,13 @@ class TrustReconciler internal constructor(
      *
      * ## Progress
      *
-     * [onProgress] reports `(inspected, total, rebuilt, derivedInService)` before
-     * each service, and again inside a rebuild as its subjects are re-derived.
-     * This runs at startup over every provider list the store holds, and one
-     * service can cost a full walk of six figures of documents — minutes during
-     * which ranked search does not work and the caller could say only that it had
-     * begun. `total` is known up front, so a caller can show a real fraction
-     * rather than a spinner.
+     * Sampling is FANNED OUT (bounded), so [onProgress] reports once before it
+     * and once after; the expensive phase — the per-service rebuild walks, one
+     * of which can cost a full six-figure visit — stays serial and reports
+     * `(total, total, rebuilt, derivedInService)` as its subjects are
+     * re-derived, so a caller shows movement through exactly the slow part.
+     * `total` is known up front, so a caller can show a real fraction rather
+     * than a spinner.
      */
     suspend fun reconcile(
         samplesPerService: Int = DEFAULT_RECONCILE_SAMPLES,
@@ -95,41 +97,37 @@ class TrustReconciler internal constructor(
     ): Reconciliation {
         val serviceToObserver = recompute.providerMap()
         if (serviceToObserver.isEmpty()) return Reconciliation(0, emptyList())
-
-        val rebuilt = mutableListOf<String>()
-        var examined = 0
-        var inspected = 0
         val total = serviceToObserver.size
-        for ((service, observer) in serviceToObserver) {
-            // Before, not after: the expensive part of a service is the walk that
-            // may follow, so a caller reporting "inspected 47 of 124" after the
-            // fact would sit silent through exactly the slow one.
-            onProgress?.invoke(inspected, total, rebuilt.size, 0)
-            inspected++
-            val sample =
-                index.search(
-                    EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service), limit = samplesPerService),
-                )
-            // A service that has published nothing we hold has nothing to project.
-            if (sample.isEmpty()) continue
-            examined++
-            val projected =
-                sample.any { card ->
-                    val subject = subjectOf(card) ?: return@any false
-                    reputations.get(subject)?.influenceScores?.containsKey(observer) == true
+        onProgress?.invoke(0, total, 0, 0)
+
+        // Phase 1 — sampling, fanned out: pure reads with no ordering
+        // dependency, so hundreds of mapped services cost a few round-trip
+        // waves instead of ~4 serial round trips each, on every startup,
+        // in front of ranked search working. null = nothing stored for the
+        // service; true/false = sampled projected/unprojected.
+        val verdicts =
+            serviceToObserver.entries.toList().mapBounded(QUERY_FANOUT) { (service, observer) ->
+                val sample =
+                    index.search(
+                        EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service), limit = samplesPerService),
+                    )
+                when {
+                    sample.isEmpty() -> null
+                    else -> service to sample.any { card -> subjectOf(card)?.let { reputations.get(it)?.influenceScores?.containsKey(observer) == true } == true }
                 }
-            if (!projected) {
-                // The expensive case, and the reason a caller needs progress at
-                // all: one provider can hold six figures of scores, so this walk
-                // is most of the time reconcile takes. Reporting only between
-                // services would sit still through exactly the slow part.
-                recompute.recomputeWalk(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service))) { derived ->
-                    onProgress?.invoke(inspected - 1, total, rebuilt.size, derived)
-                }
-                rebuilt += service
             }
+        val examined = verdicts.count { it != null }
+        onProgress?.invoke(total, total, 0, 0)
+
+        // Phase 2 — rebuilds, serial: heavy walks that mutate the projection.
+        val rebuilt = mutableListOf<String>()
+        for (service in verdicts.mapNotNull { v -> v?.takeIf { !it.second }?.first }) {
+            recompute.recomputeWalk(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service))) { derived ->
+                onProgress?.invoke(total, total, rebuilt.size, derived)
+            }
+            rebuilt += service
+            onProgress?.invoke(total, total, rebuilt.size, 0)
         }
-        onProgress?.invoke(inspected, total, rebuilt.size, 0)
         return Reconciliation(examined, rebuilt)
     }
 

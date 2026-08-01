@@ -58,7 +58,6 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.long
 import kotlinx.serialization.json.put
 import okhttp3.Request
 import java.io.IOException
@@ -125,7 +124,7 @@ class VespaEventIndex(
      * back-to-back; 8 halved the fallback's wall clock in the A/B. Streamed
      * visits do NOT use it — they pin bucket concurrency to 1, which is what
      * makes their resume exactly-once (see [streamedSlice]). Total visitor
-     * pressure is what wedges a small node's document API (see [visitHttp]),
+     * pressure is what wedges a small node's document API (see VespaHttp's visit client),
      * so keep the product of concurrent visits and this figure modest
      * (the read-deadline rationale lives on VespaHttp's visit client).
      * `VESPA_VISIT_CONCURRENCY` overrides (Vespa accepts 1..100).
@@ -370,10 +369,43 @@ class VespaEventIndex(
             // is per node and each node picks its own cut threshold, so with
             // several nodes one node's overshoot can drop mid-page docs while
             // the others fill the page. Short page anywhere, or full page on a
-            // multi-node cluster -> rerun exact.
-            val provablyExact = root.children.size >= (q.limit ?: 0) && root.coverage.nodes <= 1
+            // multi-node cluster -> rerun exact. A boundary TIE also demotes:
+            // the match-phase keeps candidates by created_at alone, so a tie
+            // straddling the cut can drop a lower-id member while a higher-id
+            // one fills the page — if the page's oldest timestamp appears more
+            // than once, ties at the boundary provably exist. (A dropped tie
+            // behind a UNIQUE returned boundary needs the estimator to cut
+            // inside a tiny tie group 10x under max-hits — residual, accepted.)
+            val timestamps = root.children.mapNotNull { it.fields?.createdAt }
+            val oldest = timestamps.minOrNull()
+            val boundaryTied = oldest != null && timestamps.count { it == oldest } > 1
+            val provablyExact = root.children.size >= (q.limit ?: 0) && root.coverage.nodes <= 1 && !boundaryTied
             if (!provablyExact) {
-                val exact = EventYql.build(q.copy(ranking = EventYql.RANK_UNRANKED)) ?: return root
+                val unranked = q.copy(ranking = EventYql.RANK_UNRANKED)
+                // The rerun must be exact but need not be UNBOUNDED — a full
+                // corpus-order scan here would make the profile a net loss on
+                // every cluster where degradation is routine:
+                //  - FULL page: any true top-`limit` doc the cut excluded is
+                //    newer than at least one returned doc, so `since = oldest
+                //    returned created_at` (inclusive — ties included) bounds
+                //    the rerun to a page-sized window, provably lossless.
+                //  - SHORT page: nothing returned bounds the miss, so route
+                //    through the count-probe ladder the profile normally skips.
+                val rerun =
+                    when {
+                        root.children.size >= (q.limit ?: 0) && oldest != null -> {
+                            unranked.copy(since = maxOf(q.since ?: Long.MIN_VALUE, oldest))
+                        }
+
+                        queryPlanning && unranked.isBareRecencyScan() -> {
+                            planWindow(unranked)
+                        }
+
+                        else -> {
+                            unranked
+                        }
+                    }
+                val exact = EventYql.build(rerun) ?: return root
                 return searchRoot(exact, hits = hitsFor(q))
             }
         }
@@ -404,6 +436,14 @@ class VespaEventIndex(
      */
     private fun EventQuery.isBareRecencyScan(): Boolean =
         (limit ?: 0) > 0 &&
+            // An explicit rank profile (sort:rank / filter:rank extensions) is
+            // ordered by TRUST SCORE, not recency — the planner's "everything
+            // outside the window is older than everything inside" argument does
+            // not apply, and windowing one silently drops every higher-ranked
+            // older hit. Only ranking-free queries are recency scans. (This is
+            // also the opt-out: internal reads stamp RANK_UNRANKED to skip the
+            // planner — see NostrSemanticsStore.sweep.)
+            ranking == null &&
             search == null &&
             ids.isEmpty() &&
             authors.isEmpty() &&
@@ -436,6 +476,22 @@ class VespaEventIndex(
         // gate), and takes everything back when the serving schema lacks the
         // profile.
         if (recencyProfileAvailable && EventYql.usesRecencyProfile(q)) return q
+        return planWindow(q)
+    }
+
+    /**
+     * The count-probe ladder itself, shared by [planRecency] and [recallRoot]'s
+     * short-page rerun (which windows queries [usesRecencyProfile] told
+     * [planRecency] to skip). Requires an unranked, limit'd [q].
+     *
+     * The window is proven >= limit at PROBE time; a deletion committing
+     * between the probe and the windowed query can transiently shrink it below
+     * the limit while older matches survive outside — one short page on a rare
+     * interleaving, which a paginating client's next `until` request recovers.
+     * Accepted: reads never hold the writer lock, so no probe can be atomic
+     * with its query.
+     */
+    private suspend fun planWindow(q: EventQuery): EventQuery {
         val anchor = q.until ?: (System.currentTimeMillis() / 1000)
         for (window in PLANNER_WINDOWS) {
             val since = anchor - window
@@ -536,23 +592,15 @@ class VespaEventIndex(
         visitPages(selection, fieldSet) { documents ->
             val page =
                 documents.mapNotNull { d ->
-                    val obj = d.jsonObject
-                    val id = obj["id"]?.jsonPrimitive?.content?.substringAfterLast(":") ?: return@mapNotNull null
-                    val fields = obj["fields"]?.jsonObject
-                    val at = fields?.get("created_at")?.jsonPrimitive?.long ?: return@mapNotNull null
+                    if (d.id.isEmpty()) return@mapNotNull null
+                    val at = d.fields?.createdAt ?: return@mapNotNull null
                     val dTag =
                         if (withDTag) {
-                            fields["tag_index"]
-                                ?.jsonArray
-                                ?.firstNotNullOfOrNull { t ->
-                                    t.jsonPrimitive.content
-                                        .takeIf { it.startsWith("d:") }
-                                        ?.substring(2)
-                                }
+                            d.fields.tagIndex?.firstNotNullOfOrNull { t -> t.takeIf { it.startsWith("d:") }?.substring(2) }
                         } else {
                             null
                         }
-                    DocRef(id, at, dTag)
+                    DocRef(d.id.substringAfterLast(":"), at, dTag)
                 }
             page.isEmpty() || onPage(page)
         }
@@ -560,7 +608,8 @@ class VespaEventIndex(
 
     /**
      * Page every match of [selection] out of the document-API visit, calling
-     * [onDocuments] with lists of raw document objects (`{"id": …, "fields": …}`);
+     * [onDocuments] with lists of lean [VisitedDoc]s (typed line/page decode —
+     * no JsonElement tree per doc on a path that walks whole corpora);
      * a false return stops the walk. The shared engine behind [visitIds] and
      * [scanAuthors].
      *
@@ -579,10 +628,10 @@ class VespaEventIndex(
     private suspend fun visitPages(
         selection: String,
         fieldSet: String,
-        onDocuments: suspend (List<JsonElement>) -> Boolean,
+        onDocuments: suspend (List<VisitedDoc>) -> Boolean,
     ): Unit =
         coroutineScope {
-            val pages = Channel<List<JsonElement>>(visitSlices)
+            val pages = Channel<List<VisitedDoc>>(visitSlices)
             val producers =
                 launch {
                     try {
@@ -623,7 +672,7 @@ class VespaEventIndex(
     private suspend fun pagedWalk(
         selection: String,
         fieldSet: String,
-        emit: suspend (List<JsonElement>) -> Unit,
+        emit: suspend (List<VisitedDoc>) -> Unit,
     ) {
         val base =
             "${endpoint()}/document/v1/$NAMESPACE/$DOCTYPE/docid" +
@@ -642,9 +691,9 @@ class VespaEventIndex(
         while (true) {
             val resp = http.getVisit(continuation?.let { "$base&continuation=$it" } ?: base)
             require(resp.statusCode() < 400) { "vespa visit ${resp.statusCode()}: ${resp.body().take(300)}" }
-            val json = Json.parseToJsonElement(resp.body()).jsonObject
-            json["documents"]?.jsonArray?.takeIf { it.isNotEmpty() }?.let { emit(it) }
-            continuation = json["continuation"]?.jsonPrimitive?.content ?: return
+            val env = DECODER.decodeFromString<PagedVisitEnvelope>(resp.body())
+            if (env.documents.isNotEmpty()) emit(env.documents.map { VisitedDoc(it.id, it.fields) })
+            continuation = env.continuation ?: return
         }
     }
 
@@ -675,7 +724,7 @@ class VespaEventIndex(
         selection: String,
         fieldSet: String,
         sliceId: Int,
-        emit: suspend (List<JsonElement>) -> Unit,
+        emit: suspend (List<VisitedDoc>) -> Unit,
     ): Boolean {
         val base =
             "${endpoint()}/document/v1/$NAMESPACE/$DOCTYPE/docid" +
@@ -687,7 +736,7 @@ class VespaEventIndex(
         var failures = 0
         // Docs since the last continuation line: certain to be exactly the one
         // in-flight bucket (concurrency=1), so at most a few hundred docs.
-        val uncertified = ArrayList<JsonElement>()
+        val uncertified = ArrayList<VisitedDoc>()
 
         suspend fun certify(upToToken: String?) {
             if (uncertified.isNotEmpty()) {
@@ -748,8 +797,8 @@ class VespaEventIndex(
 
     /**
      * One streamed request: open, read JSON-Lines until the stream ends, and
-     * classify how it ended. Put lines land in [into] (adapted to the paged
-     * walk's `{"id": …, "fields": …}` document shape); each continuation line
+     * classify how it ended. Put lines land in [into] as lean [VisitedDoc]s
+     * (typed decode, no JsonElement tree per doc); each continuation line
      * fires [onContinuation] with its token (null on the final 100% marker,
      * which certifies the tail). Blocking reads run on [Dispatchers.IO]; a
      * cancelled coroutine aborts the in-flight call via the guard child, which
@@ -757,7 +806,7 @@ class VespaEventIndex(
      */
     private suspend fun streamOnce(
         url: String,
-        into: MutableList<JsonElement>,
+        into: MutableList<VisitedDoc>,
         onContinuation: suspend (String?) -> Unit,
     ): StreamEnd =
         withContext(Dispatchers.IO) {
@@ -803,24 +852,21 @@ class VespaEventIndex(
                         // A stream cut mid-line leaves a truncated tail that no
                         // longer parses — that is an interruption to resume
                         // from, not a fatal decode error.
-                        val obj = runCatching { Json.parseToJsonElement(line).jsonObject }.getOrNull() ?: break
+                        val obj = runCatching { DECODER.decodeFromString<StreamLine>(line) }.getOrNull() ?: break
                         when {
-                            "put" in obj -> {
-                                val fields = obj["fields"] ?: continue
-                                into += JsonObject(mapOf("id" to (obj["put"] ?: continue), "fields" to fields))
+                            obj.put != null -> {
+                                into += VisitedDoc(obj.put, obj.fields ?: continue)
                             }
 
-                            "continuation" in obj -> {
-                                val c = obj["continuation"]?.jsonObject
-                                val t = c?.get("token")?.jsonPrimitive?.content
+                            obj.continuation != null -> {
+                                val t = obj.continuation.token
                                 onContinuation(t)
                                 if (t == null) complete = true // the final 100% marker carries no token
                             }
 
-                            "message" in obj -> {
-                                val m = obj["message"]?.jsonObject
-                                if (m?.get("severity")?.jsonPrimitive?.content == "error") {
-                                    throw IOException("vespa streamed visit error: ${m["text"]?.jsonPrimitive?.content}")
+                            obj.message != null -> {
+                                if (obj.message.severity == "error") {
+                                    throw IOException("vespa streamed visit error: ${obj.message.text}")
                                 }
                             }
 
@@ -960,14 +1006,7 @@ class VespaEventIndex(
         val selection = EventSelection.build(query) ?: return super.scanAuthors(query)
         val authors = HashSet<String>()
         visitPages(selection, "$DOCTYPE:pubkey") { documents ->
-            documents.forEach { d ->
-                d.jsonObject["fields"]
-                    ?.jsonObject
-                    ?.get("pubkey")
-                    ?.jsonPrimitive
-                    ?.content
-                    ?.let { authors += it }
-            }
+            documents.forEach { d -> d.fields?.pubkey?.let { authors += it } }
             true
         }
         return authors
@@ -1135,6 +1174,53 @@ class VespaEventIndex(
     @Serializable
     private class DocEnvelope(
         val fields: VespaSummary? = null,
+    )
+
+    /** One projected doc off a visit page or stream — the lean carrier [visitPages] hands its consumer. */
+    private class VisitedDoc(
+        val id: String,
+        val fields: VisitFields?,
+    )
+
+    /** The projected fields the walks ask for (`created_at[,tag_index]` / `pubkey`); everything else is server-trimmed. */
+    @Serializable
+    private class VisitFields(
+        @SerialName("created_at") val createdAt: Long? = null,
+        @SerialName("tag_index") val tagIndex: List<String>? = null,
+        val pubkey: String? = null,
+    )
+
+    /** A paged visit response: projected docs plus the continuation. */
+    @Serializable
+    private class PagedVisitEnvelope(
+        val documents: List<PagedVisitDoc> = emptyList(),
+        val continuation: String? = null,
+    )
+
+    @Serializable
+    private class PagedVisitDoc(
+        val id: String = "",
+        val fields: VisitFields? = null,
+    )
+
+    /** One JSON-Lines stream line: exactly one of put/continuation/message is set; anything else (sessionStats) decodes all-null. */
+    @Serializable
+    private class StreamLine(
+        val put: String? = null,
+        val fields: VisitFields? = null,
+        val continuation: StreamContinuation? = null,
+        val message: StreamMessage? = null,
+    )
+
+    @Serializable
+    private class StreamContinuation(
+        val token: String? = null,
+    )
+
+    @Serializable
+    private class StreamMessage(
+        val severity: String? = null,
+        val text: String? = null,
     )
 
     /** A `[document]` visit page: full summaries plus the continuation ([visitDocsPage]). */
