@@ -65,6 +65,7 @@ import kotlinx.serialization.json.long
 import kotlinx.serialization.json.put
 import okhttp3.Call
 import okhttp3.Callback
+import okhttp3.Dispatcher
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
@@ -227,7 +228,21 @@ class VespaEventIndex(
     private val http =
         OkHttpClient
             .Builder()
-            .protocols(listOf(Protocol.H2_PRIOR_KNOWLEDGE))
+            // Every request this client makes goes to ONE host, so OkHttp's
+            // per-host default of 5 is the real ceiling — not maxRequests. The
+            // whole store was capped at five concurrent engine requests, shared
+            // by every snapshot visit, every search and every count.
+            //
+            // With no read deadline (below), five requests that never return
+            // wedge the store permanently. Observed: three snapshots frozen at
+            // 94k, 2.5M and 3.1M ids with zero visit requests reaching the
+            // engine for minutes, the relay idle at 2.5% CPU.
+            .dispatcher(
+                Dispatcher().apply {
+                    maxRequests = MAX_CONCURRENT_REQUESTS
+                    maxRequestsPerHost = MAX_CONCURRENT_REQUESTS
+                },
+            ).protocols(listOf(Protocol.H2_PRIOR_KNOWLEDGE))
             .connectTimeout(Duration.ofSeconds(5))
             .writeTimeout(Duration.ofSeconds(60))
             // NO read or whole-call deadline. A query with no `limit` asks for the
@@ -1188,6 +1203,13 @@ class VespaEventIndex(
 
         /** Newest first (created_at desc, id asc tiebreak) — the same order the search path and the store apply. */
         val NEWEST_FIRST = compareByDescending(EventDoc::createdAt).thenBy(EventDoc::id)
+
+        /**
+         * Concurrent requests to the engine, total and per host — the same
+         * number, because every request goes to the same host and the per-host
+         * limit is therefore the only one that binds.
+         */
+        const val MAX_CONCURRENT_REQUESTS = 1024
 
         /** Docs asked for per visit response (Vespa's per-request ceiling is 1024). */
         const val VISIT_PAGE = 1024
