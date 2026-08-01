@@ -37,5 +37,10 @@ class InMemoryReputationIndex : ReputationIndex {
         docs.remove(pubkey)
     }
 
+    override suspend fun visitPubkeys(onPage: suspend (List<String>) -> Boolean) {
+        // One snapshot page — plenty for the reference; the real client streams.
+        onPage(docs.keys.toList())
+    }
+
     override fun close() {}
 }

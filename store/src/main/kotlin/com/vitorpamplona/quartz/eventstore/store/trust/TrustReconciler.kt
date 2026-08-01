@@ -20,12 +20,15 @@
  */
 package com.vitorpamplona.quartz.eventstore.store.trust
 
+import com.vitorpamplona.quartz.eventstore.store.ingest.GuardBloom
 import com.vitorpamplona.quartz.eventstore.vespa.QUERY_FANOUT
 import com.vitorpamplona.quartz.eventstore.vespa.client.EventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.client.ReputationIndex
+import com.vitorpamplona.quartz.eventstore.vespa.doc.ReputationDoc
 import com.vitorpamplona.quartz.eventstore.vespa.mapBounded
 import com.vitorpamplona.quartz.eventstore.vespa.query.EventQuery
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import com.vitorpamplona.quartz.utils.Hex
 
 /**
  * The repair tool for a projection no write can reach — [TrustProjection]
@@ -33,11 +36,20 @@ import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
  * its provider lists stays unprojected with nothing left to trip. This class
  * finds and re-derives that drift: [reconcile] per affected service (worth
  * running at startup), [rebuildAll] as the operator's hammer.
+ *
+ * Every MUTATING pass runs through [gate] — the store's writer lock. Without
+ * it a reconcile racing live ingest can overwrite a concurrent write's fresh
+ * derivation with one computed from pre-write state, drift no later trigger
+ * repairs. The gate wraps each bounded batch, not the whole walk, so a
+ * minutes-long rebuild shares the lock with ingest instead of stalling it.
  */
 class TrustReconciler internal constructor(
     private val index: EventIndex,
     private val reputations: ReputationIndex,
     private val recompute: TrustRecompute,
+    private val dirt: DirtLedger,
+    private val gate: suspend (suspend () -> Unit) -> Unit = { it() },
+    private val nowSecs: () -> Long = { System.currentTimeMillis() / 1000 },
 ) {
     /** What [reconcile] found: services examined, and the ones it had to re-derive. */
     data class Reconciliation(
@@ -48,8 +60,144 @@ class TrustReconciler internal constructor(
     }
 
     /**
-     * Re-derive the services whose scores are not projected under the observer
-     * currently mapped to them.
+     * One subject whose stored parent doc does not match what the 10040+30382
+     * records derive: [actual] null = MISSING (records score it, no doc);
+     * [expected] null = ORPHAN or leftover (a doc with no records behind it);
+     * both present = STALE cells.
+     */
+    data class TrustDrift(
+        val subject: String,
+        val expected: ReputationDoc?,
+        val actual: ReputationDoc?,
+    )
+
+    /** What [verify] found across BOTH corpora. [drift] holds the first examples; [driftCount] is complete. */
+    data class TrustAudit(
+        /** Subjects with stored 30382s whose expected-vs-actual doc was compared. */
+        val subjectsChecked: Int,
+        /** Stored reputation parents examined for the orphan check. */
+        val parentsChecked: Int,
+        /** Every mismatch found (complete count; [drift] samples the first [VERIFY_DRIFT_SAMPLES]). */
+        val driftCount: Int,
+        val drift: List<TrustDrift>,
+        /** Whether the drifted subjects were re-derived in place. */
+        val repaired: Boolean,
+    ) {
+        fun isClean() = driftCount == 0
+    }
+
+    /**
+     * FULL audit: does every reputation doc match its 10040+30382 counterparts?
+     *
+     * Answers it from both directions. First the queued deferred work is
+     * drained — that is lag, not drift, and auditing through it would report
+     * every in-flight subject. Then:
+     *
+     *  1. COMPLETENESS: every subject with stored 30382s is re-derived from the
+     *     records ([TrustRecompute.deriveBatch] — the same pure derivation the
+     *     projection writes, including the current 10040 attribution) and
+     *     compared against the stored parent. Catches missing docs, stale
+     *     cells, wrong observers, and leftovers for retracted subjects.
+     *  2. ORPHANS: every stored parent's pubkey is streamed
+     *     ([ReputationIndex.visitPubkeys]) and checked against a Bloom filter
+     *     of the subjects phase 1 saw. [GuardBloom] has NO false negatives, so
+     *     "not seen" proves the doc had no records when phase 1 passed. (A
+     *     false positive can only HIDE an orphan — at the configured 1e-6 rate
+     *     — never invent drift; the same filter also dedups subjects whose
+     *     cards span visit pages.)
+     *
+     * Both phases SCREEN lock-free — millions of clean subjects must not take
+     * the writer lock at all — and only the suspects are re-judged under the
+     * gate ([confirm]): queued work is drained first (a write racing the
+     * screen is lag, not drift), then the suspect is re-derived and re-read
+     * atomically against writers. Only confirmed drift is counted, so a live
+     * store cannot produce false positives; the cost is a short lock hold per
+     * suspect batch, zero on a clean store.
+     *
+     * Follower cells are compared at float32 precision — that is how the engine
+     * stores them, and comparing doubles would report storage rounding as drift.
+     *
+     * [repair] re-derives exactly the confirmed subjects in place (same gate),
+     * the targeted alternative to [rebuildAll]. Cost of the audit itself: one
+     * read of every 30382 plus one get per scored subject — no writes beyond
+     * the drains (and the repairs, when asked).
+     */
+    suspend fun verify(
+        repair: Boolean = false,
+        onProgress: ((subjectsChecked: Int) -> Unit)? = null,
+    ): TrustAudit {
+        dirt.drain(gate)
+        val seen = GuardBloom(expectedInsertions = index.count(EventQuery(kinds = listOf(ContactCardEvent.KIND))).coerceAtLeast(1024), fpp = 1e-6)
+        val samples = ArrayList<TrustDrift>()
+        var driftCount = 0
+        var subjectsChecked = 0
+
+        // The gated re-judgement of screened suspects; also repairs, when asked.
+        suspend fun confirm(suspects: List<String>) {
+            if (suspects.isEmpty()) return
+            dirt.drain(gate) // settle work queued since the last drain before judging it
+            gate {
+                val expected = recompute.deriveBatch(suspects, recompute.providerMap())
+                val drifted = ArrayList<String>()
+                suspects
+                    .mapBounded(QUERY_FANOUT) { it to reputations.get(it) }
+                    .forEach { (subject, actual) ->
+                        if (!matches(expected[subject], actual)) {
+                            driftCount++
+                            drifted += subject
+                            if (samples.size < VERIFY_DRIFT_SAMPLES) samples += TrustDrift(subject, expected[subject], actual)
+                        }
+                    }
+                if (repair && drifted.isNotEmpty()) recompute.recomputeBatch(drifted, recompute.providerMap(), removeEmpties = true)
+            }
+        }
+
+        // Phase 1 — completeness: expected (from the records) vs actual (stored),
+        // per batch of subjects streamed off the 30382 corpus.
+        val buffer = LinkedHashSet<String>()
+
+        suspend fun screenBatch() {
+            val batch = buffer.filter { !seen.mightContain(it) }
+            buffer.clear()
+            if (batch.isEmpty()) return
+            batch.forEach(seen::add)
+            val expected = recompute.deriveBatch(batch, recompute.providerMap())
+            val suspects =
+                batch
+                    .mapBounded(QUERY_FANOUT) { it to reputations.get(it) }
+                    .filter { (subject, actual) -> !matches(expected[subject], actual) }
+                    .map { it.first }
+            confirm(suspects)
+            subjectsChecked += batch.size
+            onProgress?.invoke(subjectsChecked)
+        }
+        index.visitIds(EventQuery(kinds = listOf(ContactCardEvent.KIND)), withDTag = true) { page ->
+            page.forEach { it.dTag?.takeIf(Hex::isHex64)?.let(buffer::add) }
+            if (buffer.size >= VERIFY_BATCH) screenBatch()
+            true
+        }
+        screenBatch()
+
+        // Phase 2 — orphans: stored parents phase 1 never derived. The non-hex
+        // filter keeps the ledger's dirt marker out of the audit. Candidates go
+        // through the same gated confirm — a subject whose first records landed
+        // mid-audit re-derives non-empty there and is judged like any other,
+        // not miscalled an orphan.
+        var parentsChecked = 0
+        reputations.visitPubkeys { page ->
+            parentsChecked += page.count { Hex.isHex64(it) }
+            confirm(page.filter { Hex.isHex64(it) && !seen.mightContain(it) })
+            true
+        }
+        return TrustAudit(subjectsChecked, parentsChecked, driftCount, samples, repair)
+    }
+
+    /**
+     * Re-derive the services whose scores are not projected under every observer
+     * currently mapped to them. Drains the [DirtLedger] first: a marker left by
+     * a crashed process — or by a deferred-mode shutdown with work still
+     * queued — names drift EXACTLY, and repairing it here means a restart heals
+     * before ranked search serves stale cells.
      *
      * ## Why this is needed at all
      *
@@ -69,17 +217,23 @@ class TrustReconciler internal constructor(
      *
      * ## What it checks
      *
-     * A service is projected when its subjects carry a cell for ITS observer. So
-     * for each mapped service this samples a few of its cards and asks whether
-     * any of their subjects has that observer's cell. Checking the observer
-     * rather than mere existence is what also catches a RE-MAPPED service: its
-     * subjects have docs, but the cells belong to the previous observer.
+     * A service is projected when its subjects carry a cell for EACH of its
+     * observers — the observer set, because a popular provider is named by many
+     * 10040s and every one of those users must rank through it. So for each
+     * mapped service this samples a few of its cards and asks, per observer,
+     * whether any sampled subject has that observer's cell (either tensor — a
+     * followers-only corpus is still projected). Checking observers rather than
+     * mere existence is what also catches a RE-MAPPED service: its subjects have
+     * docs, but the cells belong to the previous observer.
      *
      * Sampling, not counting, because the alternative is reading every card. A
      * service whose sample happens to land on retracted subjects is re-derived
      * needlessly, which costs one walk and is idempotent. The opposite error —
      * calling an unprojected service clean — would need a sampled subject to be
-     * projected while the rest are not, which is not the shape this failure takes.
+     * projected while the rest are not. The never-triggered failure this hunts
+     * is all-or-nothing per (service, observer), so the sample settles it;
+     * PARTIAL drift (a batch that failed mid-corpus) is not left to sampling at
+     * all — the dirty marker names it and [DirtLedger.drain] repairs it exactly.
      *
      * ## Progress
      *
@@ -95,9 +249,10 @@ class TrustReconciler internal constructor(
         samplesPerService: Int = DEFAULT_RECONCILE_SAMPLES,
         onProgress: ((inspected: Int, total: Int, rebuilt: Int, derivedInService: Int) -> Unit)? = null,
     ): Reconciliation {
-        val serviceToObserver = recompute.providerMap()
-        if (serviceToObserver.isEmpty()) return Reconciliation(0, emptyList())
-        val total = serviceToObserver.size
+        dirt.drain(gate)
+        val serviceToObservers = recompute.providerMap()
+        if (serviceToObservers.isEmpty()) return Reconciliation(0, emptyList())
+        val total = serviceToObservers.size
         onProgress?.invoke(0, total, 0, 0)
 
         // Phase 1 — sampling, fanned out: pure reads with no ordering
@@ -105,26 +260,36 @@ class TrustReconciler internal constructor(
         // waves instead of ~4 serial round trips each, on every startup,
         // in front of ranked search working. null = nothing stored for the
         // service; true/false = sampled projected/unprojected.
+        val cutoff = nowSecs()
         val verdicts =
-            serviceToObserver.entries.toList().mapBounded(QUERY_FANOUT) { (service, observer) ->
+            serviceToObservers.entries.toList().mapBounded(QUERY_FANOUT) { (service, observers) ->
                 val sample =
                     index.search(
-                        EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service), limit = samplesPerService),
+                        EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service), limit = samplesPerService, notExpiredAt = cutoff),
                     )
                 when {
-                    sample.isEmpty() -> null
-                    else -> service to sample.any { card -> subjectOf(card)?.let { reputations.get(it)?.influenceScores?.containsKey(observer) == true } == true }
+                    sample.isEmpty() -> {
+                        null
+                    }
+
+                    else -> {
+                        val parents = sample.mapNotNull { subjectOf(it) }.distinct().mapNotNull { reputations.get(it) }
+                        service to observers.all { o -> parents.any { it.influenceScores.containsKey(o) || it.followerCounts.containsKey(o) } }
+                    }
                 }
             }
         val examined = verdicts.count { it != null }
         onProgress?.invoke(total, total, 0, 0)
 
-        // Phase 2 — rebuilds, serial: heavy walks that mutate the projection.
+        // Phase 2 — rebuilds: heavy walks whose mutating batches take the
+        // writer lock through the gate.
         val rebuilt = mutableListOf<String>()
         for (service in verdicts.mapNotNull { v -> v?.takeIf { !it.second }?.first }) {
-            recompute.recomputeWalk(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service))) { derived ->
-                onProgress?.invoke(total, total, rebuilt.size, derived)
-            }
+            recompute.recomputeWalk(
+                EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service)),
+                onSubjects = { derived -> onProgress?.invoke(total, total, rebuilt.size, derived) },
+                gate = gate,
+            )
             rebuilt += service
             onProgress?.invoke(total, total, rebuilt.size, 0)
         }
@@ -133,16 +298,67 @@ class TrustReconciler internal constructor(
 
     /**
      * Re-derive every parent doc from scratch (bootstrap over an existing
-     * index). Bounded only by the corpus — [reconcile] does the same repair per
-     * affected service and normally finds nothing to do.
+     * index), THEN sweep the parents the card walk cannot reach: a doc whose
+     * subject has no stored cards left (its last card's removal crashed before
+     * the recompute) is enumerated from the REPUTATION corpus and re-derived to
+     * empty, which removes it. Without that second pass an orphan survives even
+     * this hammer — the card walk, by construction, only visits subjects that
+     * still have cards. Bounded only by the corpus — [reconcile] does the same
+     * repair per affected service and normally finds nothing to do.
      */
-    suspend fun rebuildAll() = recompute.recomputeWalk(EventQuery(kinds = listOf(ContactCardEvent.KIND)))
+    suspend fun rebuildAll() {
+        recompute.recomputeWalk(EventQuery(kinds = listOf(ContactCardEvent.KIND)), gate = gate)
+        val buffer = ArrayList<String>(ORPHAN_BATCH)
+
+        suspend fun flush() {
+            if (buffer.isNotEmpty()) {
+                gate { recompute.recomputeBatch(buffer.toList(), recompute.providerMap(), removeEmpties = true) }
+                buffer.clear()
+            }
+        }
+        reputations.visitPubkeys { page ->
+            // Only real subjects (64-hex): the projection's own bookkeeping doc
+            // (DirtLedger's marker) must not be "repaired" away mid-crash.
+            page.filterTo(buffer) { Hex.isHex64(it) }
+            if (buffer.size >= ORPHAN_BATCH) flush()
+            true
+        }
+        flush()
+    }
 
     private companion object {
         // Cards sampled per service by [reconcile]. The question it answers is
-        // "did this service's scores get projected at all", and the failure is
-        // all-or-nothing per service, so a handful settles it; the cost is one
-        // small query plus that many key lookups per mapped service.
+        // "did this service's scores get projected at all", and the
+        // never-triggered failure is all-or-nothing per (service, observer), so
+        // a handful settles it; the cost is one small query plus a few key
+        // lookups per mapped service.
         const val DEFAULT_RECONCILE_SAMPLES = 3
+
+        // Subjects per orphan-sweep re-derive round (memory-bounded, like
+        // TrustRecompute's walk batches).
+        const val ORPHAN_BATCH = 20_000
+
+        // Subjects compared per gated [verify] batch (memory- and lock-hold-bounded).
+        const val VERIFY_BATCH = 20_000
+
+        // Drift examples carried in the [TrustAudit] report; the COUNT is always complete.
+        const val VERIFY_DRIFT_SAMPLES = 100
+
+        /**
+         * Expected-vs-stored equality for [verify]. Influence cells are int8 —
+         * exact. Follower cells are stored as float32, so they are compared at
+         * that precision; a double-precision compare would call the engine's
+         * own rounding "drift". A subject whose derivation is EMPTY matches
+         * exactly a missing doc.
+         */
+        fun matches(
+            expected: ReputationDoc?,
+            actual: ReputationDoc?,
+        ): Boolean {
+            if (expected == null || actual == null) return (expected == null) && (actual == null)
+            return expected.influenceScores == actual.influenceScores &&
+                expected.followerCounts.keys == actual.followerCounts.keys &&
+                expected.followerCounts.all { (observer, count) -> actual.followerCounts[observer]?.toFloat() == count.toFloat() }
+        }
     }
 }

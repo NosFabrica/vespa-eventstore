@@ -26,8 +26,11 @@ import com.vitorpamplona.quartz.eventstore.vespa.doc.ReputationDoc
 import kotlinx.coroutines.future.await
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import java.net.URLEncoder
 import java.time.Duration
 
 /**
@@ -97,11 +100,53 @@ class VespaReputationIndex(
         feed.client.remove(DocumentId.of(NAMESPACE, DOCTYPE, pubkey), feedParams()).await()
     }
 
+    /**
+     * The document-API visit over the reputation corpus, projecting only
+     * `pubkey` — the paged walk the orphan sweep runs. Same shape as the event
+     * client's paged visit: one continuation chain, the server timing out under
+     * the client's read deadline so a slow page returns partial + continuation
+     * instead of dying.
+     */
+    override suspend fun visitPubkeys(onPage: suspend (List<String>) -> Boolean) {
+        val base =
+            "$baseUrl/document/v1/$NAMESPACE/$DOCTYPE/docid" +
+                "?selection=${URLEncoder.encode(DOCTYPE, "UTF-8")}" +
+                "&wantedDocumentCount=$VISIT_PAGE" +
+                "&fieldSet=${URLEncoder.encode("$DOCTYPE:pubkey", "UTF-8")}" +
+                "&timeout=$VISIT_SERVER_TIMEOUT_SECONDS" +
+                "&concurrency=$VISIT_CONCURRENCY"
+        var continuation: String? = null
+        while (true) {
+            val resp = http.getVisit(continuation?.let { "$base&continuation=$it" } ?: base)
+            require(resp.statusCode() < 400) { "vespa reputation visit ${resp.statusCode()}: ${resp.body().take(300)}" }
+            val env = Json.parseToJsonElement(resp.body()).jsonObject
+            val pubkeys =
+                env["documents"]?.jsonArray.orEmpty().mapNotNull {
+                    it.jsonObject["fields"]
+                        ?.jsonObject
+                        ?.get("pubkey")
+                        ?.jsonPrimitive
+                        ?.content
+                }
+            if (pubkeys.isNotEmpty() && !onPage(pubkeys)) return
+            continuation = env["continuation"]?.jsonPrimitive?.content ?: return
+        }
+    }
+
     override fun close() = feed.close()
 
     private companion object {
         const val NAMESPACE = "reputation"
         const val DOCTYPE = "reputation"
+
+        /** Docs asked for per visit response (Vespa's per-request ceiling is 1024). */
+        const val VISIT_PAGE = 1024
+
+        /** Server-side visit timeout, strictly under VespaHttp's visit read deadline (see VespaEventIndex.pagedWalk). */
+        const val VISIT_SERVER_TIMEOUT_SECONDS = 90L
+
+        /** Backend buckets read in parallel per visit page — the event walk's measured default. */
+        const val VISIT_CONCURRENCY = 8
 
         /** Per-op deadline so a half-dead HTTP/2 connection fails instead of hanging the writer forever (see VespaEventIndex). */
         fun feedParams(): OperationParameters = OperationParameters.empty().timeout(Duration.ofSeconds(30))

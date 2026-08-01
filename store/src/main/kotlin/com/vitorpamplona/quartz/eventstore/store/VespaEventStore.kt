@@ -26,6 +26,14 @@ import com.vitorpamplona.quartz.eventstore.vespa.client.VespaEventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.client.VespaReputationIndex
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.net.URI
 
 /**
@@ -61,13 +69,19 @@ class VespaEventStore internal constructor(
      * [reconcileTrust].
      */
     private val reconciler: TrustReconciler,
+    /** The projection, for the deferred-mode drain barrier ([awaitTrustProjection]). */
+    private val trust: TrustProjection,
+    /** The background drain worker's scope in deferred mode; null when the projection settles inline. */
+    private val drainScope: CoroutineScope? = null,
 ) : IEventStore by store {
     /** The engine's feed-health status line (bulk-ingest backpressure), for progress/status output. */
     fun feedGauge(): String = events.feedGauge()
 
     /**
-     * Re-derive the trust view for any service whose scores are not projected
-     * under the observer currently mapped to it, and report what it had to fix.
+     * Repair the trust view: drain any projection work a crashed or shut-down
+     * process left queued (see DirtLedger), then re-derive any service whose
+     * scores are not projected under EVERY observer currently naming it, and
+     * report what it had to fix.
      *
      * Worth running at startup. The projection is maintained by write triggers,
      * and dedup means an event already in the store never reaches them again —
@@ -82,6 +96,43 @@ class VespaEventStore internal constructor(
      * repair per affected service and normally finds nothing to do.
      */
     suspend fun rebuildTrust() = reconciler.rebuildAll()
+
+    /**
+     * FULL audit: does every reputation doc match its 10040+30382 records?
+     * Drains any queued deferred work (lag, not drift), then compares the
+     * stored parent of every scored subject against a fresh derivation from the
+     * records, and sweeps the reputation corpus for orphan docs with no records
+     * behind them. Read-only beyond that drain; with [repair] the drifted
+     * subjects are re-derived in place — the targeted alternative to
+     * [rebuildTrust]. The report carries complete counts and the first examples
+     * of each mismatch. See [TrustReconciler.verify] for the full contract.
+     */
+    suspend fun verifyTrust(
+        repair: Boolean = false,
+        onProgress: ((subjectsChecked: Int) -> Unit)? = null,
+    ): TrustReconciler.TrustAudit = reconciler.verify(repair, onProgress)
+
+    /**
+     * The deferred-projection BARRIER: drain every queued trust reaction before
+     * returning, so ranking reflects all inserts acked so far — the
+     * read-your-writes moment a caller occasionally needs (a test, a "publish
+     * then search" API) under a store opened with `deferTrustProjection`. A
+     * no-op when the queue is empty, and safe alongside the background drainer
+     * (draining is idempotent; both take the writer lock per batch). With
+     * deferral off this returns immediately — inline settles leave no queue.
+     * Note the barrier chases the queue: under a sustained stream of trust
+     * writes it keeps draining until a pass finds nothing new, so it bounds
+     * "everything acked BEFORE the call", not the writes racing it.
+     */
+    suspend fun awaitTrustProjection() = trust.dirt.drain { store.withWriteLock(it) }
+
+    override fun close() {
+        // Stop the drainer FIRST, then the store: queued work survives in the
+        // persisted marker and is drained by the next open's startup signal (or
+        // reconcileTrust) — shutdown must not block on a six-figure walk.
+        drainScope?.cancel()
+        store.close()
+    }
 
     companion object {
         /**
@@ -104,6 +155,21 @@ class VespaEventStore internal constructor(
          * docs/scaling.md; a multi-node deployment pairs this with
          * `autoDeploy = false` and an operator-owned application package.
          *
+         * [deferTrustProjection] (default ON) moves the trust projection's
+         * read-based reactions — a 10040's service walk (which could otherwise
+         * hold the writer lock for minutes), single-score re-derives, retraction
+         * and deletion re-derives — off the insert path onto a background
+         * drainer that batches them under the writer lock. Inserts get faster
+         * and reactions about the same subjects coalesce; the cost is that
+         * ranked search lags trust writes by the drain cycle (the events
+         * themselves are always read-your-writes). [awaitTrustProjection] is
+         * the explicit barrier. The bulk zero-read cell path stays inline
+         * either way, so mirror ingest keeps immediate ranking. Turn OFF for
+         * strict read-your-writes ranking on every insert. Correctness is
+         * identical in both modes: the work queue is the same crash-safe
+         * persisted marker, drained here, at the next write, or by
+         * [reconcileTrust] — whichever comes first.
+         *
          * The store imposes no result cap of its own: a filter with a `limit`
          * gets that many events, one without gets every match. Bounding what a
          * query costs belongs to whoever writes the filter.
@@ -114,14 +180,56 @@ class VespaEventStore internal constructor(
             autoDeploy: Boolean = true,
             configUrl: String = deriveConfigUrl(url),
             endpoints: List<String> = emptyList(),
+            deferTrustProjection: Boolean = true,
         ): VespaEventStore {
             if (autoDeploy) SchemaDeployer(configUrl).deployIfAbsent(url)
             val events = VespaEventIndex(url, endpoints = endpoints)
             val reputations = VespaReputationIndex(url)
             val trust = TrustProjection(events, reputations)
             val store = NostrSemanticsStore(trust, relay = relay)
-            return VespaEventStore(store, events, TrustReconciler(events, reputations, trust.recompute))
+            // The reconciler's and drainer's mutating batches take the store's
+            // writer lock (the gate): repairs must not race live inserts'
+            // recomputes.
+            val gate: suspend (suspend () -> Unit) -> Unit = { store.withWriteLock(it) }
+            val reconciler = TrustReconciler(events, reputations, trust.recompute, trust.dirt, gate = gate)
+            val drainScope = if (deferTrustProjection) startDrainer(trust, gate) else null
+            return VespaEventStore(store, events, reconciler, trust, drainScope)
         }
+
+        /**
+         * The deferred-mode drain worker: a CONFLATED signal (a burst of writes
+         * = one wake-up; drain always processes everything pending anyway) and
+         * one loop that drains on each signal, retrying with a fixed backoff on
+         * engine failure — the marker keeps the work, so a failed drain loses
+         * nothing. Fired once at startup: work a previous process left queued
+         * must not wait for the first write.
+         */
+        private fun startDrainer(
+            trust: TrustProjection,
+            gate: suspend (suspend () -> Unit) -> Unit,
+        ): CoroutineScope {
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val signal = Channel<Unit>(Channel.CONFLATED)
+            trust.dirt.deferTo { signal.trySend(Unit) }
+            scope.launch {
+                for (wake in signal) {
+                    try {
+                        trust.dirt.drain(gate)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (t: Throwable) {
+                        // Engine hiccup mid-drain: the marker still names the work.
+                        delay(DRAIN_RETRY_MILLIS)
+                        signal.trySend(Unit)
+                    }
+                }
+            }
+            signal.trySend(Unit)
+            return scope
+        }
+
+        /** Backoff between drain retries after an engine failure. */
+        private const val DRAIN_RETRY_MILLIS = 5_000L
 
         /** The config server sits on :19071 by convention, on the same host as the :8080 query endpoint. */
         internal fun deriveConfigUrl(queryUrl: String): String {

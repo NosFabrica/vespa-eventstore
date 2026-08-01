@@ -55,4 +55,13 @@ interface ReputationIndex : AutoCloseable {
         }
 
     suspend fun remove(pubkey: String)
+
+    /**
+     * Stream every stored reputation doc's pubkey, paged. This is the walk the
+     * orphan sweep needs: a parent whose subject has no stored cards left can
+     * only be found from the REPUTATION corpus — no event walk can enumerate
+     * it. [onPage] returns whether to continue; false stops the walk early.
+     * Order is engine-defined.
+     */
+    suspend fun visitPubkeys(onPage: suspend (List<String>) -> Boolean)
 }

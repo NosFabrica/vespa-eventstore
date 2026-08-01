@@ -25,6 +25,8 @@ import com.vitorpamplona.quartz.eventstore.vespa.InMemoryEventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.InMemoryReputationIndex
 import com.vitorpamplona.quartz.eventstore.vespa.client.DocsPage
 import com.vitorpamplona.quartz.eventstore.vespa.client.EventIndex
+import com.vitorpamplona.quartz.eventstore.vespa.client.ReputationIndex
+import com.vitorpamplona.quartz.eventstore.vespa.doc.ReputationCells
 import com.vitorpamplona.quartz.eventstore.vespa.doc.ReputationDoc
 import com.vitorpamplona.quartz.eventstore.vespa.query.EventQuery
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
@@ -36,6 +38,8 @@ import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -76,12 +80,14 @@ class TrustProjectionTest {
         followers: Int? = 120,
         at: Long = next(),
         eventId: String = id(),
+        expires: Long? = null,
     ): ContactCardEvent {
         val tags =
             buildList {
                 add(arrayOf("d", about))
                 rank?.let { add(arrayOf("rank", it.toString())) }
                 followers?.let { add(arrayOf("followers", it.toString())) }
+                expires?.let { add(arrayOf("expiration", it.toString())) }
             }.toTypedArray()
         return ContactCardEvent(eventId, signer, at, tags, "", "")
     }
@@ -289,6 +295,340 @@ class TrustProjectionTest {
             assertNull(bulkReputations.docs[subjectB], "subjectB was retracted")
         }
 
+    // ---- a provider shared by several observers (the NIP-85 norm) ------------
+
+    /**
+     * Popular providers are named by MANY users' 10040s. Every one of those
+     * observers must get the service's scores under their own key — a
+     * single-winner map silently unranked everyone else trusting that provider.
+     */
+    @Test
+    fun `a provider shared by two observers scores both`() =
+        runBlocking {
+            store.insert(list10040(author = observer, serviceKey = service))
+            store.insert(list10040(author = observer2, serviceKey = service))
+            store.insert(card())
+            assertEquals(
+                mapOf(observer to 87, observer2 to 87),
+                reputations.get(subject)?.influenceScores,
+                "both users trusting the provider see its score",
+            )
+        }
+
+    /** The same fan-out on the BULK zero-read cell path. */
+    @Test
+    fun `a shared provider fans out on the bulk path too`() =
+        runBlocking {
+            store.insert(list10040(author = observer, serviceKey = service))
+            store.insert(list10040(author = observer2, serviceKey = service))
+            val subjects = (1..20).map { it.toString(16).padStart(64, 'f') }
+            val outcomes = store.batchInsert(subjects.map { s -> card(about = s) })
+            assertEquals(20, outcomes.count { it is IEventStore.InsertOutcome.Accepted })
+            subjects.forEach { s ->
+                assertEquals(mapOf(observer to 87, observer2 to 87), reputations.docs.getValue(s).influenceScores, "subject $s")
+            }
+        }
+
+    /** One observer un-naming the shared provider drops only THEIR cells. */
+    @Test
+    fun `dropping a shared provider detaches only that observer`() =
+        runBlocking {
+            store.insert(list10040(author = observer, serviceKey = service))
+            store.insert(list10040(author = observer2, serviceKey = service))
+            store.insert(card())
+            assertEquals(mapOf(observer to 87, observer2 to 87), reputations.get(subject)?.influenceScores)
+
+            // observer2's NEW 10040 picks service2 instead: their cell moves off
+            // the shared provider; observer's stays.
+            store.insert(list10040(author = observer2, serviceKey = service2))
+            assertEquals(mapOf(observer to 87), reputations.get(subject)?.influenceScores)
+        }
+
+    // ---- crash safety: the dirty marker ---------------------------------------
+
+    /**
+     * The event write and the projection write are separate acks. A failure
+     * between them stores the events, and the retry comes back all-duplicates —
+     * which never reaches the projection. The persisted dirt marker must repair
+     * that at the NEXT trust write.
+     */
+    @Test
+    fun `a projection failure after the event write heals at the next trust write`() =
+        runBlocking {
+            val inner = InMemoryEventIndex()
+            val reps = InMemoryReputationIndex()
+            val failing = FailingCellsReputationIndex(reps)
+            val proj = TrustProjection(inner, failing)
+            val st = NostrSemanticsStore(proj, relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+            st.insert(list10040())
+
+            val subjects = (1..20).map { it.toString(16).padStart(64, 'e') }
+            val batch = subjects.map { s -> card(about = s) }
+            failing.failNext = true
+            assertFailsWith<RuntimeException> { st.batchInsert(batch) }
+
+            // Events landed, cells did not — the exact drift, named by the marker.
+            assertEquals(20, inner.search(EventQuery(kinds = listOf(ContactCardEvent.KIND))).count { subjectOf(it) in subjects })
+            subjects.forEach { assertNull(reps.get(it), "cells must be missing after the failure") }
+            assertEquals(subjects.toSet(), reps.get(DirtLedger.MARKER_KEY)?.influenceScores?.keys, "the marker names the dirty subjects")
+
+            // A retry is all duplicates and never reaches the projection; the
+            // next NEW trust write heals first.
+            st.batchInsert(batch)
+            subjects.forEach { assertNull(reps.get(it), "duplicates alone cannot repair") }
+            st.insert(card(about = "9a".repeat(32)))
+            subjects.forEach { s -> assertEquals(mapOf(observer to 87), reps.get(s)?.influenceScores, "healed subject $s") }
+            assertNull(reps.get(DirtLedger.MARKER_KEY), "marker cleared after the heal")
+        }
+
+    /** A crafted card cannot collide with the marker: subjects must be 64-hex. */
+    @Test
+    fun `a card whose d tag is the marker id projects nothing and breaks nothing`() =
+        runBlocking {
+            store.insert(list10040())
+            store.insert(ContactCardEvent(id(), service, next(), arrayOf(arrayOf("d", DirtLedger.MARKER_KEY), arrayOf("rank", "87")), "", ""))
+            assertNull(reputations.get(DirtLedger.MARKER_KEY))
+            // And ordinary projection still works beside it.
+            store.insert(card())
+            assertEquals(mapOf(observer to 87), reputations.get(subject)?.influenceScores)
+        }
+
+    // ---- expiry (NIP-40) ------------------------------------------------------
+
+    /** An expired card must stop scoring the moment its subject is re-derived, not only when swept. */
+    @Test
+    fun `an expired card contributes nothing to a re-derivation`() =
+        runBlocking {
+            var now = System.currentTimeMillis() / 1000
+            val inner = InMemoryEventIndex()
+            val reps = InMemoryReputationIndex()
+            val st = NostrSemanticsStore(TrustProjection(inner, reps, nowSecs = { now }), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+            st.insert(list10040(author = observer, serviceKey = service))
+            st.insert(list10040(author = observer2, serviceKey = service2))
+            st.insert(card(signer = service, rank = 87, expires = now + 500))
+            assertEquals(mapOf(observer to 87), reps.get(subject)?.influenceScores)
+
+            now += 1_000 // the card is now past its NIP-40 expiration
+            st.insert(card(signer = service2, rank = 15, followers = 3))
+            assertEquals(
+                mapOf(observer2 to 15),
+                reps.get(subject)?.influenceScores,
+                "the expired card's cell must drop with the re-derive",
+            )
+        }
+
+    // ---- deterministic derivation --------------------------------------------
+
+    /** Two services of ONE observer: the NEWEST card wins the cell, regardless of arrival order. */
+    @Test
+    fun `derivation is deterministic across arrival orders`() =
+        runBlocking {
+            val twoServices =
+                TrustProviderListEvent(
+                    id(),
+                    observer,
+                    next(),
+                    arrayOf(
+                        arrayOf("30382:rank", service, "wss://scores.example.com/"),
+                        arrayOf("30382:rank", service2, "wss://scores.example.com/"),
+                    ),
+                    "",
+                    "",
+                )
+            val newer = card(signer = service, rank = 30, at = 2_000_000)
+            val older = card(signer = service2, rank = 71, at = 1_500_000)
+
+            for (order in listOf(listOf(older, newer), listOf(newer, older))) {
+                val reps = InMemoryReputationIndex()
+                val st = NostrSemanticsStore(TrustProjection(InMemoryEventIndex(), reps), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+                st.insert(twoServices)
+                order.forEach { st.insert(it) }
+                assertEquals(mapOf(observer to 30), reps.get(subject)?.influenceScores, "newest card wins for order $order")
+            }
+        }
+
+    // ---- deferred (async) projection -----------------------------------------
+
+    /**
+     * Deferred mode: the expensive reactions leave the insert as PENDING work —
+     * signalled, persisted, and invisible to ranking until a drain. The drain
+     * then settles everything and clears the marker.
+     */
+    @Test
+    fun `deferred mode queues reactions and drains them on demand`() =
+        runBlocking {
+            val reps = InMemoryReputationIndex()
+            val proj = TrustProjection(InMemoryEventIndex(), reps)
+            var signals = 0
+            proj.dirt.deferTo { signals++ }
+            val st = NostrSemanticsStore(proj, relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+
+            st.insert(list10040())
+            st.insert(card())
+            assertNull(reps.get(subject), "reactions are queued, not applied")
+            assertTrue(signals >= 2, "each trust write signals the drainer")
+            assertNotNull(reps.get(DirtLedger.MARKER_KEY), "the queue is persisted — a crash loses nothing")
+
+            proj.dirt.drain { it() }
+            assertEquals(mapOf(observer to 87), reps.get(subject)?.influenceScores, "drained")
+            assertNull(reps.get(DirtLedger.MARKER_KEY), "queue empty, marker gone")
+        }
+
+    /** The bulk zero-read cell path stays INLINE in deferred mode — mirror ingest keeps immediate ranking. */
+    @Test
+    fun `deferred mode keeps the bulk cell path inline`() =
+        runBlocking {
+            val reps = InMemoryReputationIndex()
+            val proj = TrustProjection(InMemoryEventIndex(), reps)
+            proj.dirt.deferTo { }
+            val st = NostrSemanticsStore(proj, relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+
+            st.insert(list10040())
+            proj.dirt.drain { it() } // attribute the 10040 so the map is live
+            val subjects = (1..20).map { it.toString(16).padStart(64, 'f') }
+            st.batchInsert(subjects.map { s -> card(about = s) })
+            subjects.forEach { s ->
+                assertEquals(mapOf(observer to 87), reps.docs.getValue(s).influenceScores, "bulk cells land without a drain")
+            }
+        }
+
+    /**
+     * The parity net for deferral: the same sequence — shared observers,
+     * supersession, a provider switch, a retraction, a kind-5 deletion, a bulk
+     * batch — lands the SAME tensors whether settled inline per write or
+     * queued and drained at arbitrary points. Deferral needs no event ordering
+     * because every drain re-derives from the store's current state.
+     */
+    @Test
+    fun `deferred drains converge to the sync tensors`() =
+        runBlocking {
+            val deleted = card(signer = service2, about = "cd".repeat(32), rank = 44, at = 500)
+            val script: suspend (IEventStore) -> Unit = { st ->
+                st.insert(list10040(author = observer, serviceKey = service, at = 10))
+                st.insert(list10040(author = observer2, serviceKey = service, at = 11)) // shared provider
+                st.insert(card(rank = 20, at = 100))
+                st.insert(card(rank = 55, at = 200)) // supersedes
+                st.batchInsert((1..20).map { card(about = it.toString(16).padStart(64, 'a'), rank = 10) })
+                st.insert(list10040(author = observer2, serviceKey = service2, at = 12)) // observer2 switches provider
+                st.insert(deleted)
+                st.insert(DeletionEvent(id(), service2, 600, arrayOf(arrayOf("e", deleted.id)), "", ""))
+                st.insert(card(about = "ef".repeat(32), rank = 30, at = 300))
+                st.insert(card(about = "ef".repeat(32), rank = null, followers = null, at = 400)) // retraction
+            }
+
+            val syncReps = InMemoryReputationIndex()
+            script(NostrSemanticsStore(TrustProjection(InMemoryEventIndex(), syncReps), relay = RelayUrlNormalizer.normalize("ws://localhost:7777")))
+
+            val defReps = InMemoryReputationIndex()
+            val defProj = TrustProjection(InMemoryEventIndex(), defReps)
+            defProj.dirt.deferTo { }
+            script(NostrSemanticsStore(defProj, relay = RelayUrlNormalizer.normalize("ws://localhost:7777")))
+            defProj.dirt.drain { it() }
+
+            assertEquals(syncReps.docs, defReps.docs, "any drain schedule must converge to the inline tensors")
+            // And they are the values we expect, not coincidentally-equal emptiness.
+            assertEquals(mapOf(observer to 55), syncReps.docs.getValue(subject).influenceScores)
+        }
+
+    /**
+     * Back-to-back updates to the SAME score (one replaceable address) in one
+     * session: the doc must follow the replaceable winner — the newest version —
+     * under EVERY drain timing. Supersession itself is synchronous at the event
+     * layer (remove-old + put-new inside one writer-lock hold, un-interleavable
+     * by a drain), and each drain re-derives from stored state, which only ever
+     * contains the winner.
+     */
+    @Test
+    fun `back-to-back updates to one score converge to the newest version under any drain timing`() =
+        runBlocking {
+            // Drain after the first version? after the second? Every combination
+            // must land the same final cell.
+            for (schedule in listOf(
+                listOf(false, false),
+                listOf(true, false),
+                listOf(false, true),
+                listOf(true, true),
+            )) {
+                val reps = InMemoryReputationIndex()
+                val proj = TrustProjection(InMemoryEventIndex(), reps)
+                proj.dirt.deferTo { }
+                val st = NostrSemanticsStore(proj, relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+                st.insert(list10040())
+                st.insert(card(rank = 50, at = 100))
+                if (schedule[0]) proj.dirt.drain { it() }
+                st.insert(card(rank = 80, at = 200))
+                if (schedule[1]) proj.dirt.drain { it() }
+                proj.dirt.drain { it() }
+                assertEquals(mapOf(observer to 80), reps.get(subject)?.influenceScores, "newest version wins for drains at $schedule")
+            }
+        }
+
+    /** A STALE version arriving after a drain is rejected at the event layer and cannot regress the cell. */
+    @Test
+    fun `a stale version arriving later does not regress the projected score`() =
+        runBlocking {
+            val reps = InMemoryReputationIndex()
+            val proj = TrustProjection(InMemoryEventIndex(), reps)
+            proj.dirt.deferTo { }
+            val st = NostrSemanticsStore(proj, relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+            st.insert(list10040())
+            st.insert(card(rank = 80, at = 200))
+            proj.dirt.drain { it() }
+            assertEquals(mapOf(observer to 80), reps.get(subject)?.influenceScores)
+
+            val outcome = st.batchInsert(listOf(card(rank = 50, at = 100))).single()
+            assertTrue(outcome is IEventStore.InsertOutcome.Rejected, "the older version is replaced, not stored")
+            proj.dirt.drain { it() }
+            assertEquals(mapOf(observer to 80), reps.get(subject)?.influenceScores, "nothing left to derive the stale value from")
+        }
+
+    /**
+     * A bulk-projected cell superseded by a later single insert: the cell shows
+     * the OLD value only until the next drain (the documented bounded lag),
+     * then follows the replaceable winner.
+     */
+    @Test
+    fun `an inline bulk cell follows a later superseding single insert at the next drain`() =
+        runBlocking {
+            val reps = InMemoryReputationIndex()
+            val proj = TrustProjection(InMemoryEventIndex(), reps)
+            proj.dirt.deferTo { }
+            val st = NostrSemanticsStore(proj, relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+            st.insert(list10040())
+            proj.dirt.drain { it() }
+            // A real bulk batch (>= the bulk threshold), so v1's cell lands INLINE.
+            val fillers = (1..15).map { card(about = it.toString(16).padStart(64, 'b'), rank = 10) }
+            st.batchInsert(fillers + card(rank = 50, at = 100))
+            assertEquals(mapOf(observer to 50), reps.get(subject)?.influenceScores, "bulk cell is immediate")
+
+            st.insert(card(rank = 80, at = 200))
+            assertEquals(mapOf(observer to 50), reps.get(subject)?.influenceScores, "stale only until the drain — the documented lag")
+            proj.dirt.drain { it() }
+            assertEquals(mapOf(observer to 80), reps.get(subject)?.influenceScores, "the drain re-derives the winner")
+        }
+
+    /** Create then delete in one session: the cells die with the event, under every drain timing. */
+    @Test
+    fun `create then delete converges to no cells under any drain timing`() =
+        runBlocking {
+            for (drainBetween in listOf(false, true)) {
+                val reps = InMemoryReputationIndex()
+                val proj = TrustProjection(InMemoryEventIndex(), reps)
+                proj.dirt.deferTo { }
+                val st = NostrSemanticsStore(proj, relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+                st.insert(list10040())
+                val scored = card()
+                st.insert(scored)
+                if (drainBetween) {
+                    proj.dirt.drain { it() }
+                    assertEquals(mapOf(observer to 87), reps.get(subject)?.influenceScores, "projected while the event lives")
+                }
+                st.insert(DeletionEvent(id(), service, next(), arrayOf(arrayOf("e", scored.id)), "", ""))
+                proj.dirt.drain { it() }
+                assertNull(reps.get(subject), "deleted event derives nothing (drainBetween=$drainBetween)")
+            }
+        }
+
     /**
      * The decorator must forward visitDocsPage to the inner client's
      * implementation — the interface default re-lists the whole corpus through
@@ -314,4 +654,66 @@ class TrustProjectionTest {
             decorated.visitDocsPage(EventQuery(), null, 8)
             assertTrue(forwarded, "the reindex walk must reach the engine's visit, not the search-per-page default")
         }
+
+    /**
+     * The write-ahead marker must be priced to the op: per-cell adds for the
+     * small dirt of live traffic, ONE doc put for a bulk batch — per-subject
+     * feed ops at batch size would rival the event writes they insure.
+     */
+    @Test
+    fun `the marker write-ahead is one doc put for a bulk batch and cell adds for singles`() =
+        runBlocking {
+            val counting = MarkerCountingReputationIndex(InMemoryReputationIndex())
+            val st = NostrSemanticsStore(TrustProjection(InMemoryEventIndex(), counting), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+            st.insert(list10040())
+            assertEquals(1, counting.markerCellAdds, "a single's dirt is one pipelined cell add")
+            assertEquals(0, counting.markerPuts)
+
+            val subjects = (1..100).map { it.toString(16).padStart(64, 'c') }
+            st.batchInsert(subjects.map { s -> card(about = s) })
+            assertEquals(1, counting.markerCellAdds, "a bulk batch must not pay per-subject marker ops")
+            assertEquals(1, counting.markerPuts, "its write-ahead is one marker-doc put")
+
+            st.insert(card())
+            assertEquals(2, counting.markerCellAdds, "back to a single cell add for a single insert")
+            assertEquals(1, counting.markerPuts)
+        }
+}
+
+/** Counts marker-doc traffic, separating pipelined cell adds from whole-doc puts. */
+private class MarkerCountingReputationIndex(
+    private val inner: InMemoryReputationIndex,
+) : ReputationIndex by inner {
+    var markerCellAdds = 0
+    var markerPuts = 0
+
+    override suspend fun updateCells(updates: List<ReputationCells>) {
+        markerCellAdds += updates.count { it.subject == DirtLedger.MARKER_KEY }
+        inner.updateCells(updates)
+    }
+
+    override suspend fun put(reputation: ReputationDoc) {
+        if (reputation.pubkey == DirtLedger.MARKER_KEY) markerPuts++
+        inner.put(reputation)
+    }
+}
+
+/**
+ * Fails ONE projection cell write on demand — the "engine hiccup after the
+ * event write" the dirt marker exists for. The ledger's write-ahead marker
+ * persist ALSO rides updateCells (and runs before the event write), so the
+ * failure targets only updates that touch real subjects.
+ */
+private class FailingCellsReputationIndex(
+    private val inner: InMemoryReputationIndex,
+) : ReputationIndex by inner {
+    var failNext = false
+
+    override suspend fun updateCells(updates: List<ReputationCells>) {
+        if (failNext && updates.any { it.subject != DirtLedger.MARKER_KEY }) {
+            failNext = false
+            throw RuntimeException("simulated projection failure")
+        }
+        inner.updateCells(updates)
+    }
 }

@@ -46,19 +46,35 @@ import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
  * into [put]/[remove] calls here, so every deletion style updates the tensors
  * with ZERO deletion-specific code.
  *
- * This class decides WHEN the tensors change; HOW a subject is re-derived lives
- * in [TrustRecompute], and the startup repair for drift no write can reach (a
- * corpus mirrored before its provider lists) is [TrustReconciler].
+ * This class decides WHAT each mutation invalidates; the work itself is
+ * declarative [DirtLedger.Dirt] settled through the ledger — inline by default
+ * (read-your-writes, and what every unit test asserts), or DEFERRED to a
+ * background drain when a signal is attached ([DirtLedger.deferTo]). Deferral
+ * needs no event ordering: HOW a subject is re-derived ([TrustRecompute]) reads
+ * the store's CURRENT state under the writer lock, so any drain schedule
+ * converges — the price is only that ranking lags writes by the drain cycle.
+ * The one order-sensitive projection write, the bulk zero-read cell update,
+ * stays inline in BOTH modes for exactly that reason (and because it is already
+ * the cheap path). The startup repair for drift no write can reach (a corpus
+ * mirrored before its provider lists) is [TrustReconciler].
  *
- * Recomputes run inline with the store's single-writer insert, so ranking is
- * read-your-writes consistent with the event corpus.
+ * Every trust-mutating op runs [DirtLedger.guarded]: the event write and the
+ * projection write are separate acks, and dedup means a trigger fires once — a
+ * crash between them used to be PERMANENT drift (the retry comes back
+ * all-duplicates and never reaches this decorator). The ledger persists what
+ * the op invalidates before it starts and repairs it at the next settle,
+ * drain, or reconcile.
  */
 class TrustProjection(
     private val inner: EventIndex,
     private val reputations: ReputationIndex,
+    nowSecs: () -> Long = { System.currentTimeMillis() / 1000 },
 ) : EventIndex {
-    /** The recompute engine the write triggers below drive; [TrustReconciler] shares it. */
-    internal val recompute = TrustRecompute(inner, reputations)
+    /** The recompute engine the ledger's drains drive; [TrustReconciler] shares it. */
+    internal val recompute = TrustRecompute(inner, reputations, nowSecs)
+
+    /** The work ledger: crash marker + (optionally deferred) projection queue; [TrustReconciler] drains it at startup. */
+    internal val dirt = DirtLedger(reputations, recompute)
 
     override suspend fun get(id: String): EventDoc? = inner.get(id)
 
@@ -109,7 +125,7 @@ class TrustProjection(
 
     // NOTE — this decorator deliberately does NOT forward supersedesViaPut or
     // override putIfNewer, so it rides the read-then-supersede default (which
-    // routes through this put()/remove(), firing react() for BOTH the superseded
+    // routes through this put()/remove(), recording dirt for BOTH the superseded
     // old version and the new one). The engine's address-keyed conditional put
     // (VespaEventIndex under VESPA_ADDRESS_KEYED) is a single atomic op that never
     // exposes the removed old doc, so a 10040 that drops a service would leave that
@@ -118,70 +134,96 @@ class TrustProjection(
     // engages only on an undecorated index; through the trust projection,
     // supersession stays read-based to keep the tensors consistent.
     override suspend fun put(doc: EventDoc) {
-        inner.put(doc)
-        react(doc)
+        val work = opDirt(doc)
+        dirt.guarded(work) {
+            inner.put(doc)
+            // The attribution cache must not outlive a 10040 change even while its
+            // walk is deferred: later inline cell updates attribute through it.
+            if (doc.kind == TrustProviderListEvent.KIND) recompute.invalidateProviders()
+            Unit to work
+        }
     }
 
     /**
      * The bulk path writes ranking with ZERO reads. The store's supersession
      * guarantees every card reaching this putAll is the NEWEST version of its
      * (service, subject) address, so its rank/followers can be applied as a
-     * tensor-cell UPDATE ([ReputationIndex.updateCells]) directly. Measured on an
-     * 11M-card load, re-deriving parents from re-fetched cards was 44% of the
-     * entire ingest wall clock.
+     * tensor-cell UPDATE ([ReputationIndex.updateCells]) directly — inline in
+     * both ledger modes; deferring it would need an ordered durable queue where
+     * everything else here needs none. Measured on an 11M-card load, re-deriving
+     * parents from re-fetched cards was 44% of the entire ingest wall clock.
      *
-     * Semantics note (many services -> ONE observer cell): the cell holds the
-     * latest-arriving mapped card's value, where the full derivation held an
-     * arbitrary one. Equally arbitrary, and an order of magnitude cheaper. A
-     * RETRACTION (a card whose rank tag disappeared) can't be applied blindly,
-     * because another service's card may still back the cell. So those rare
-     * subjects take the exact recompute path; deletions and 10040 changes always
-     * did.
+     * A card scores ONE cell PER OBSERVER naming its service — a shared
+     * provider (the NIP-85 norm) ranks every user who trusts it, so the update
+     * fans out per observer, exactly as [TrustRecompute]'s derive does.
+     *
+     * Semantics note (many services -> one observer's cell): the cards are
+     * applied in the same (created_at, then lowest-id-wins) order the full
+     * derivation folds in, so WITHIN a batch the two paths agree; across
+     * batches the cell holds the last-arriving batch's winner, which a full
+     * derivation may order differently. Bounded arbitrariness, an order of
+     * magnitude cheaper than reading. A RETRACTION (a card missing either
+     * dimension) can't be applied blindly, because another service's card may
+     * still back the cell — those rare subjects become re-derive work, as do
+     * the 10040s' service walks; deletions always did.
      */
     override suspend fun putAll(docs: List<EventDoc>) {
-        IngestStats.timed("write") { inner.putAll(docs) }
-        // Provider lists first (ONE walk over the union): they change the service->observer map the scores are attributed through.
-        recompute.recomputeSubjectsOf(docs.filter { it.kind == TrustProviderListEvent.KIND })
-        val cards = docs.filter { it.kind == ContactCardEvent.KIND }
-        if (cards.isEmpty()) return
-        val serviceToObserver = recompute.providerMap()
-        val updates = ArrayList<ReputationCells>(cards.size)
-        val retracted = LinkedHashSet<String>()
-        for (doc in cards) {
-            val subject = subjectOf(doc) ?: continue
-            val observer = serviceToObserver[doc.pubkey] ?: continue
-            val card = doc.toEvent() as? ContactCardEvent ?: continue
-            val influence = card.rank()
-            val followers = card.followerCount()?.toDouble()
-            if (influence != null && followers != null) {
-                updates += ReputationCells(subject, observer, influence, followers)
-            } else {
-                // A card MISSING either dimension can't take the zero-read cell
-                // update. updateCells only ADDS cells, so a null dimension would
-                // leave the OTHER tensor's prior cell stale (bulk would diverge
-                // from the single-doc derive, which drops it). Any partial or
-                // full retraction goes through the read-based recompute, which
-                // rebuilds the subject's whole doc from the newest stored cards.
-                retracted += subject
+        dirt.guarded(putDirt(docs)) {
+            IngestStats.timed("write") { inner.putAll(docs) }
+            val listServices = ProviderMap.rankServicesOf(docs.filter { it.kind == TrustProviderListEvent.KIND }).toSet()
+            if (listServices.isNotEmpty()) recompute.invalidateProviders()
+            val cards = docs.filter { it.kind == ContactCardEvent.KIND }
+            if (cards.isEmpty()) return@guarded Unit to DirtLedger.Dirt(emptySet(), listServices)
+            val serviceToObservers = recompute.providerMap()
+            val updates = ArrayList<ReputationCells>(cards.size)
+            val retracted = LinkedHashSet<String>()
+            // Same fold order as the derive (newest wins, ties to the LOWEST id),
+            // so a same-batch conflict between two services of one observer lands
+            // the same cell a full re-derivation would.
+            for (doc in cards.sortedWith(compareBy<EventDoc> { it.createdAt }.thenByDescending { it.id })) {
+                val subject = subjectOf(doc) ?: continue
+                val observers = serviceToObservers[doc.pubkey] ?: continue
+                val card = doc.toEvent() as? ContactCardEvent
+                val influence = card?.rank()
+                val followers = card?.followerCount()?.toDouble()
+                if (influence != null && followers != null) {
+                    observers.forEach { observer -> updates += ReputationCells(subject, observer, influence, followers) }
+                } else {
+                    // A card MISSING either dimension can't take the zero-read cell
+                    // update. updateCells only ADDS cells, so a null dimension would
+                    // leave the OTHER tensor's prior cell stale (bulk would diverge
+                    // from the derive, which drops it). Any partial or full
+                    // retraction becomes read-based re-derive work, which rebuilds
+                    // the subject's whole doc from the newest stored cards. A card
+                    // that fails reconstruction lands here too — freezing its cells
+                    // on a parse regression would be silent drift.
+                    retracted += subject
+                }
             }
+            IngestStats.timed("proj.write") { reputations.updateCells(updates) }
+            Unit to DirtLedger.Dirt(retracted, listServices)
         }
-        IngestStats.timed("proj.write") { reputations.updateCells(updates) }
-        if (retracted.isNotEmpty()) recompute.recomputeBatch(retracted.toList(), serviceToObserver, removeEmpties = true)
     }
 
     override suspend fun remove(id: String) {
         // The doomed doc says what the removal invalidates — read before deleting.
         val doc = inner.get(id)
-        inner.remove(id)
-        doc?.let { react(it) }
+        val work = removeDirt(listOfNotNull(doc))
+        dirt.guarded(work) {
+            // With the doc in hand, remove THROUGH it: the address-keyed client
+            // resolves the docid locally instead of re-reading it per id.
+            if (doc != null) inner.removeDocs(listOf(doc)) else inner.remove(id)
+            if (doc?.kind == TrustProviderListEvent.KIND) recompute.invalidateProviders()
+            Unit to work
+        }
     }
 
     /**
      * Bulk remove by id: only TRUST docs (30382/10040) can invalidate the
      * projection, so read back just those — chunked kind-filtered searches,
      * never a get per id (a million-deletion sweep would pay a round trip per
-     * doomed doc to learn it was a plain note). Then delete pipelined and react
-     * ONCE for the whole set.
+     * doomed doc to learn it was a plain note). Then delete pipelined and
+     * record ONE work set for the whole batch.
      */
     override suspend fun removeAll(ids: List<String>) {
         val docs =
@@ -189,8 +231,12 @@ class TrustProjection(
                 .chunked(REMOVE_CHUNK)
                 .mapBounded(QUERY_FANOUT) { chunk -> inner.search(EventQuery(ids = chunk, kinds = TRUST_KINDS)) }
                 .flatten()
-        inner.removeAll(ids)
-        react(docs)
+        val work = removeDirt(docs)
+        dirt.guarded(work) {
+            inner.removeAll(ids)
+            if (docs.any { it.kind == TrustProviderListEvent.KIND }) recompute.invalidateProviders()
+            Unit to work
+        }
     }
 
     /**
@@ -199,22 +245,54 @@ class TrustProjection(
      * — the docs themselves say what each removal invalidates.
      */
     override suspend fun removeDocs(docs: List<EventDoc>) {
-        inner.removeDocs(docs)
-        react(docs)
-    }
-
-    /** The shared bulk reaction: re-attribute for removed 10040s, re-derive removed 30382s' subjects in one batch. */
-    private suspend fun react(docs: List<EventDoc>) {
-        recompute.recomputeSubjectsOf(docs.filter { it.kind == TrustProviderListEvent.KIND })
-        val subjects = docs.filter { it.kind == ContactCardEvent.KIND }.mapNotNull { subjectOf(it) }.distinct()
-        if (subjects.isNotEmpty()) recompute.recomputeBatch(subjects, recompute.providerMap(), removeEmpties = true)
-    }
-
-    private suspend fun react(doc: EventDoc) {
-        when (doc.kind) {
-            ContactCardEvent.KIND -> subjectOf(doc)?.let { recompute.recompute(it) }
-            TrustProviderListEvent.KIND -> recompute.recomputeSubjectsOf(listOf(doc))
+        val work = removeDirt(docs)
+        dirt.guarded(work) {
+            inner.removeDocs(docs)
+            if (docs.any { it.kind == TrustProviderListEvent.KIND }) recompute.invalidateProviders()
+            Unit to work
         }
+    }
+
+    /** What ONE doc's write invalidates: a card its subject, a 10040 its rank services, anything else nothing. */
+    private fun opDirt(doc: EventDoc): DirtLedger.Dirt =
+        when (doc.kind) {
+            ContactCardEvent.KIND -> DirtLedger.Dirt(setOfNotNull(subjectOf(doc)), emptySet())
+            TrustProviderListEvent.KIND -> DirtLedger.Dirt(emptySet(), ProviderMap.rankServicesOf(listOf(doc)).toSet())
+            else -> DirtLedger.Dirt.NONE
+        }
+
+    /**
+     * What a PUT of [docs] could leave stale, for the crash insurance. Card
+     * subjects are recorded exactly while they fit [DIRT_SUBJECT_CAP] (repair =
+     * one cheap batched re-derive); a bigger batch records the cards' SERVICES
+     * instead — a few keys however large the batch, repaired by re-walking each
+     * service (safe for puts: the cards exist in the store, so the walk reaches
+     * every touched subject). 10040s always record their rank services, since
+     * their blast radius is every subject those services ever scored.
+     */
+    private fun putDirt(docs: List<EventDoc>): DirtLedger.Dirt {
+        val subjects = LinkedHashSet<String>()
+        for (doc in docs) if (doc.kind == ContactCardEvent.KIND) subjectOf(doc)?.let(subjects::add)
+        val services = LinkedHashSet(ProviderMap.rankServicesOf(docs.filter { it.kind == TrustProviderListEvent.KIND }))
+        if (subjects.size > DIRT_SUBJECT_CAP) {
+            docs.forEach { if (it.kind == ContactCardEvent.KIND) services += it.pubkey }
+            subjects.clear()
+        }
+        return DirtLedger.Dirt(subjects, services)
+    }
+
+    /**
+     * What a REMOVE of [docs] invalidates. Card subjects are recorded exactly
+     * and NEVER coarsened to services: a removed card may have been its
+     * subject's last, and a service re-walk enumerates subjects from stored
+     * cards — it can never reach a subject with none left, whose parent doc
+     * would linger as an orphan. The exact re-derive removes it.
+     */
+    private fun removeDirt(docs: List<EventDoc>): DirtLedger.Dirt {
+        val subjects = LinkedHashSet<String>()
+        for (doc in docs) if (doc.kind == ContactCardEvent.KIND) subjectOf(doc)?.let(subjects::add)
+        val services = LinkedHashSet(ProviderMap.rankServicesOf(docs.filter { it.kind == TrustProviderListEvent.KIND }))
+        return DirtLedger.Dirt(subjects, services)
     }
 
     private companion object {
@@ -223,5 +301,13 @@ class TrustProjection(
 
         /** Ids per removeAll read-back query — round-trip width, not a result cap. */
         const val REMOVE_CHUNK = 500
+
+        /**
+         * Max subjects persisted per put insurance before coarsening to services.
+         * Bounds the marker write (~64 bytes/subject) to noise against the batch
+         * it brackets, while keeping the precise (and much cheaper) repair for
+         * every normally-sized batch.
+         */
+        const val DIRT_SUBJECT_CAP = 5_000
     }
 }
