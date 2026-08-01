@@ -278,20 +278,25 @@ class VespaEventIndexTest {
     fun `visitIds streams every match through sliced continuation walks`() =
         runBlocking {
             val bob = "b2".repeat(32)
-            // 100 docs across the client's 8 default slices: by pigeonhole some
-            // slice holds more than one mock bucket (streamed) or page (paged),
-            // so the walk MUST cross continuation boundaries — and the union
-            // across slices must still be complete.
+            // 100 docs across 8 slices (pinned — the default derives from host
+            // cores): by pigeonhole some slice holds more than one mock bucket
+            // (streamed) or page (paged), so the walk MUST cross continuation
+            // boundaries — and the union across slices must still be complete.
             seed(*(1..100).map { doc(kind = 30382, pubkey = bob) }.toTypedArray())
             seed(doc(kind = 1, pubkey = bob), doc(kind = 30382)) // outside the selection
-            val pages = ArrayList<List<DocRef>>()
-            index.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(bob))) {
-                pages += it
-                true
+            val sliced = VespaEventIndex(mock.url, visitSlices = 8)
+            try {
+                val pages = ArrayList<List<DocRef>>()
+                sliced.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(bob))) {
+                    pages += it
+                    true
+                }
+                assertEquals(true, pages.size > 1, "expected a multi-page walk, got ${pages.size} page(s)")
+                val expected = reference.search(EventQuery(kinds = listOf(30382), authors = listOf(bob))).map { DocRef(it.id, it.createdAt) }
+                assertEquals(expected.sortedBy { it.id }, pages.flatten().sortedBy { it.id })
+            } finally {
+                sliced.close()
             }
-            assertEquals(true, pages.size > 1, "expected a multi-page walk, got ${pages.size} page(s)")
-            val expected = reference.search(EventQuery(kinds = listOf(30382), authors = listOf(bob))).map { DocRef(it.id, it.createdAt) }
-            assertEquals(expected.sortedBy { it.id }, pages.flatten().sortedBy { it.id })
         }
 
     /**

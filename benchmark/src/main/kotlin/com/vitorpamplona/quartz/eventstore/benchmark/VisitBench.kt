@@ -65,15 +65,24 @@ object VisitBench {
             // pressure (~64 sessions) wedged this node's document API
             // mid-response, indefinitely — hence the modest figures throughout
             // and the visit read deadline in VespaEventIndex.
+            // BENCH_VISIT_ONLY narrows the matrix by label substring (comma-
+            // separated), for quick single-config measurements.
+            val only =
+                System
+                    .getenv("BENCH_VISIT_ONLY")
+                    ?.split(",")
+                    ?.map { it.trim() }
+                    ?.filter { it.isNotEmpty() }
             val configs =
                 listOf(
                     Config("paged serial (original)", slices = 1, concurrency = 1, streaming = false),
                     Config("paged serial, conc=8", slices = 1, concurrency = 8, streaming = false),
                     Config("streamed 1 slice", slices = 1, concurrency = 1, streaming = true),
+                    Config("streamed 2 slices", slices = 2, concurrency = 1, streaming = true),
                     Config("streamed 4 slices", slices = 4, concurrency = 1, streaming = true),
                     Config("streamed 8 slices", slices = 8, concurrency = 1, streaming = true),
                     Config("streamed 16 slices", slices = 16, concurrency = 1, streaming = true),
-                )
+                ).filter { c -> only == null || only.any { c.label.contains(it) } }
 
             println()
             println(String.format("%-28s %12s %12s %14s", "config", "run1", "run2", "docs/sec(best)"))

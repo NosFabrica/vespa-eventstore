@@ -115,16 +115,22 @@ class VespaEventIndex(
     /**
      * Independent STREAMED slices a full-corpus visit is split into
      * (document-API `slices`/`sliceId`), each walked concurrently as its own
-     * JSON-Lines stream. Slicing multiplies streamed throughput until the
-     * content node saturates (8 already saturated a 4-core node in the A/B);
-     * it does NOT apply to the paged fallback, where it was measured 11x
-     * SLOWER than a serial walk (each sliced request returns roughly one
-     * small bucket, not a full page). `VESPA_VISIT_SLICES` overrides for
-     * deployment tuning.
+     * JSON-Lines stream. Each slice is roughly one visitor thread on the
+     * content node, so the walk scales near-linearly with slices until they
+     * cover the node's cores, then ~15% more from 2x oversubscription, then
+     * nothing (measured on a 4-core node: 1->4 slices 2.0x, 4->8 1.15x,
+     * 8->16 flat). The default is therefore 2 x this host's cores — right
+     * when the store runs beside its content node, a floor when the cluster
+     * is bigger; set `VESPA_VISIT_SLICES` to 2 x the CONTENT NODE's cores
+     * when they differ. Slicing does NOT apply to the paged fallback, where
+     * it was measured 11x SLOWER than a serial walk (each sliced request
+     * returns roughly one small bucket, not a full page).
      */
     private val visitSlices: Int =
-        (System.getenv("VESPA_VISIT_SLICES")?.toIntOrNull() ?: VISIT_SLICES)
-            .coerceAtLeast(1),
+        (
+            System.getenv("VESPA_VISIT_SLICES")?.toIntOrNull()
+                ?: (2 * Runtime.getRuntime().availableProcessors()).coerceIn(VISIT_SLICES_MIN, VISIT_SLICES_MAX)
+        ).coerceAtLeast(1),
     /**
      * Backend bucket parallelism WITHIN each paged visit request (document-API
      * `concurrency`), used only by the serial paged fallback ([pagedWalk]).
@@ -1202,8 +1208,15 @@ class VespaEventIndex(
         /** Docs asked for per visit response (Vespa's per-request ceiling is 1024). */
         const val VISIT_PAGE = 1024
 
-        /** Default parallel STREAMED visit slices — see [visitSlices] for why and the env override. */
-        const val VISIT_SLICES = 8
+        /**
+         * Bounds on the derived streamed-slice default (2 x host cores — see
+         * [visitSlices]). The floor keeps tiny hosts from serializing the walk;
+         * the cap keeps huge hosts from opening visitor sessions far past where
+         * scaling stopped in the A/B, and comfortably below the ~64-session
+         * pressure that wedged a small node's document API.
+         */
+        const val VISIT_SLICES_MIN = 4
+        const val VISIT_SLICES_MAX = 32
 
         /**
          * Default bucket concurrency for the serial paged fallback — see
