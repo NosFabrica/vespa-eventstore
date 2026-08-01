@@ -142,11 +142,11 @@ class VespaEventIndex(
             .coerceIn(1, 100),
     /**
      * Stream each visit slice as one long JSON-Lines response
-     * ([streamedSlice]) instead of paging it through continuation round trips
-     * ([pagedSlice]). Streaming removes the per-page round trip entirely — the
-     * dominant cost of a corpus-sized walk. Falls back to the paged walk
-     * per-slice when the server doesn't answer in JSON Lines (an older Vespa).
-     * `VESPA_VISIT_STREAM=0` disables.
+     * ([streamedSlice]) instead of paging through continuation round trips.
+     * Streaming removes the per-page round trip entirely — the dominant cost
+     * of a corpus-sized walk. When the server doesn't answer in JSON Lines (an
+     * older Vespa), the whole walk falls back to ONE serial paged chain
+     * ([pagedWalk]). `VESPA_VISIT_STREAM=0` forces that fallback.
      */
     private val visitStreaming: Boolean =
         System.getenv("VESPA_VISIT_STREAM")?.let { it != "0" && !it.equals("false", ignoreCase = true) } ?: true,
@@ -260,19 +260,7 @@ class VespaEventIndex(
             .pingInterval(Duration.ofSeconds(PING_INTERVAL_SECONDS))
             // Vespa is local; never route through the egress proxy.
             .proxy(Proxy.NO_PROXY)
-            .apply {
-                // OkHttp's dispatcher defaults cap ASYNC calls at 5 per host —
-                // measured live throttling a sliced visit walk to 5 of its 8
-                // slices (and squeezing every other concurrent read with them).
-                // Sync execute() calls bypass the dispatcher, so this only
-                // widens the async paths.
-                dispatcher(
-                    okhttp3.Dispatcher().apply {
-                        maxRequests = 128
-                        maxRequestsPerHost = 64
-                    },
-                )
-            }.build()
+            .build()
 
     /**
      * The visit walk's client: [http] plus a READ timeout, which visits need
