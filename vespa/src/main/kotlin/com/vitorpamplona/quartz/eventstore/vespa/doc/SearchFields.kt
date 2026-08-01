@@ -19,6 +19,7 @@
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 package com.vitorpamplona.quartz.eventstore.vespa.doc
+import com.vitorpamplona.quartz.eventstore.vespa.NearText
 import com.vitorpamplona.quartz.eventstore.vespa.WHITESPACE
 
 /**
@@ -73,8 +74,16 @@ data class SearchFields(
      * Naive recall check for the in-memory reference index, following the
      * word-group YQL's OR shape. ANY query word that substring-matches ANY field
      * recalls the doc; ranking, not recall, decides what floats. Every word
-     * counts, exactly as the YQL builder now emits every word. Fuzzy/gram recall
-     * is deliberately not modeled.
+     * counts, exactly as the YQL builder emits every word.
+     *
+     * Substring is a deliberately LOOSER superset of the real engine's
+     * matchers, not a model of them: Vespa matches exact whole tokens, word
+     * prefixes (via the *_parts and *_tokens attributes), a length-gated typo
+     * budget, and the AND-trigram nets — but NOT arbitrary infix ("dell" does
+     * not recall "ODELL" there, while it does here), and conversely fuzzy can
+     * recall what substring misses ("Odelll" -> ODELL). NIP-50 search is
+     * excluded from strict parity for exactly this reason; this reference
+     * answers "could a reasonable engine recall it", and ranking is Vespa's.
      */
     fun matches(term: String): Boolean {
         val values = fields().values
@@ -84,22 +93,73 @@ data class SearchFields(
             .any { word -> values.any { it.contains(word, ignoreCase = true) } }
     }
 
+    /**
+     * The near-tier attribute arrays (event.sd: prefix/fuzzy match targets),
+     * derived from the searchable text via [NearText] — folded, split at two
+     * granularities, merged across the fields nothing downstream needs to
+     * tell apart. name+display_name share one pair (a near hit is a near hit
+     * whichever carried it); search_primary gets the generic-tier pair;
+     * search_secondary gets a TOKENS-only column ("bitco" -> #bitcoin —
+     * hashtags and summaries deserve prefix reach, but parts-splitting prose
+     * would flood the dictionary for no query shape anyone types).
+     */
+    fun nearFields(): Map<String, List<String>> =
+        buildMap {
+            val names = listOfNotNull(name, displayName)
+            if (names.isNotEmpty()) {
+                put("name_parts", NearText.merge(*names.map(NearText::parts).toTypedArray()))
+                put("name_tokens", NearText.merge(*names.map(NearText::tokens).toTypedArray()))
+            }
+            primary?.let {
+                put("search_primary_parts", NearText.parts(it))
+                put("search_primary_tokens", NearText.tokens(it))
+            }
+            secondary?.let { put("search_secondary_tokens", NearText.tokens(it)) }
+        }
+
+    /**
+     * "" and absent are the same state: real Vespa omits empty-string fields
+     * from summaries while the mock serves them — fold "" back to null so
+     * decoded docs compare equal to what was fed either way.
+     */
+    fun normalized(): SearchFields =
+        SearchFields(
+            name = name?.takeIf { it.isNotEmpty() },
+            displayName = displayName?.takeIf { it.isNotEmpty() },
+            about = about?.takeIf { it.isNotEmpty() },
+            nip05 = nip05?.takeIf { it.isNotEmpty() },
+            lud16 = lud16?.takeIf { it.isNotEmpty() },
+            website = website?.takeIf { it.isNotEmpty() },
+            primary = primary?.takeIf { it.isNotEmpty() },
+            secondary = secondary?.takeIf { it.isNotEmpty() },
+            text = text?.takeIf { it.isNotEmpty() },
+            location = location?.takeIf { it.isNotEmpty() },
+        )
+
     companion object {
         val NONE = SearchFields()
 
-        /** Rebuild from a doc field map (the [fields] shape). */
-        fun fromFields(get: (String) -> String?): SearchFields =
-            SearchFields(
-                name = get("name"),
-                displayName = get("display_name"),
-                about = get("about"),
-                nip05 = get("nip05"),
-                lud16 = get("lud16"),
-                website = get("website"),
-                primary = get("search_primary"),
-                secondary = get("search_secondary"),
-                text = get("search_text"),
-                location = get("search_location"),
+        /**
+         * Rebuild from a doc field map (the [fields] shape). Empty strings
+         * normalize back to null: [fields] feeds "" for an absent name/
+         * display_name sibling (see there), and real Vespa omits empty-string
+         * fields from summaries anyway — so "" and absent are the same state,
+         * and folding them keeps round-trips lossless.
+         */
+        fun fromFields(get: (String) -> String?): SearchFields {
+            fun at(field: String): String? = get(field)?.takeIf { it.isNotEmpty() }
+            return SearchFields(
+                name = at("name"),
+                displayName = at("display_name"),
+                about = at("about"),
+                nip05 = at("nip05"),
+                lud16 = at("lud16"),
+                website = at("website"),
+                primary = at("search_primary"),
+                secondary = at("search_secondary"),
+                text = at("search_text"),
+                location = at("search_location"),
             )
+        }
     }
 }

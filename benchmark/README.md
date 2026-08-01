@@ -9,6 +9,31 @@ lever for optimizing *this* framework.
 Not published to Maven Central (it pulls in the SQLite driver and a fixed corpus
 generator that have no place in the released artifacts).
 
+## Search-ranking harness (`rankAb` + `RankRegressionIT`)
+
+Two tools guard SEARCH QUALITY, born of the 2026-07 lesson that an inert
+`{prefix:true}userInput(...)` annotation can ship for months when nothing
+measures what the emitted query actually does:
+
+- **`RankRegressionIT`** (test, `@Tag("integration")`) — stands up a real Vespa
+  in Docker, deploys the bundled schema, feeds the canonical regression corpus
+  (Ode/ODELL/Odessa, VitorPamplona in all three spellings, José, 中村太郎,
+  BitcoinMemeTreasury, a bio-only ODELL mention, a #bitcoin note…) and asserts
+  where each expected doc lands and through which match TIER it arrived
+  (`searchScored`). This is also what proves the schema — the second-phase
+  `fieldMatch` features included — actually deploys. Run with `-Pintegration`.
+
+- **`rankAb`** (main) — A/Bs ranking knobs against a LIVE Vespa with
+  per-request `ranking.features.query(...)` overrides: no deploy, no reindex,
+  no re-feed. The YQL comes from `EventYql` itself, so it is byte-identical to
+  production's. Cases live in `benchmark/rank_cases.json` (`query` → expected
+  doc-id prefix); **add a case every time someone reports a bad search**.
+
+  ```bash
+  ./gradlew :benchmark:rankAb --args="--vespa http://localhost:8080"
+  ./gradlew :benchmark:rankAb --args="--configs baseline,near_off --profile text"
+  ```
+
 ## Did Quartz already have a benchmark to copy?
 
 No. The closest thing in Amethyst's Quartz is

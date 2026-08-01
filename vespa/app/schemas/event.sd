@@ -22,9 +22,11 @@
 # Profile fields + equations ported VERBATIM from Brainstorm's
 # brainstorm-k8s charts/brainstorm/vespa-app doc.sd (2026-07; operator-
 # provided) — the §12 multiplicative-trust default and all sort alternates —
-# with two mechanical changes: the trust tensors are IMPORTED from the
-# reputation parent (author_influence_scores / author_follower_counts) instead of
-# living on the doc, and the generic tier group extends each composite so
+# plus their 2026-07-30 prefix/fuzzy fix (brainstorm-k8s#3 +
+# brainstorm_server#64: the *_parts/*_tokens attributes and the near tier).
+# Two mechanical changes: the trust tensors are IMPORTED from the reputation
+# parent (author_influence_scores / author_follower_counts) instead of living
+# on the doc, and the generic tier group extends each composite so
 # non-profile kinds ride the same profiles. Query side:
 # brainstorm_server app/core/vespa.py + vespa_query.py.
 schema event {
@@ -193,6 +195,64 @@ schema event {
             indexing: index | summary
             index: enable-bm25
         }
+
+        # ---- near-tier attribute targets (prefix / fuzzy match fields) ----
+        #
+        # ATTRIBUTE targets for the direct prefix/fuzzy terms FuzzyWordGroup
+        # emits (Brainstorm's 2026-07-30 root-cause: `userInput()` silently
+        # drops prefix/fuzzy annotations AND both matchers are rejected
+        # against `index` fields — so the annotated forms this schema's
+        # queries once carried were silent no-ops). `fast-search` builds the
+        # dictionary + posting lists both matchers scan.
+        #
+        # FED, not derived by an indexing expression: the store computes these
+        # via NearText at feed time, because (1) string attributes match raw
+        # bytes — Vespa's linguistic folding only applies to index fields — so
+        # doc and query must share ONE normalization (NFKD diacritic fold +
+        # lowercase) for "jose" to reach "josé"; (2) the tokenizations
+        # (camelCase parts, alnum-stripped compound variants, whole-name
+        # concatenation, CJK run suffixes) don't fit the indexing language's
+        # regex split; (3) a schema-side concatenation of two inputs nulls out
+        # when either is missing. CONSEQUENCE: existing docs need a RE-FEED
+        # (not just a reindex) to populate these on an already-running corpus.
+        #
+        # TWO granularities, both load-bearing (verified upstream):
+        #   *_parts   every word START — camelCase transitions, separator
+        #             runs, CJK suffixes — "meme" finds "BitcoinMemeTreasury",
+        #             "太郎" finds "中村太郎".
+        #   *_tokens  whole tokens plus alnum-stripped and whole-name-joined
+        #             variants — "vitorp" finds "VitorPamplona",
+        #             "Vitor-Pamplona" AND "Vitor Pamplona".
+        #
+        # name_parts/name_tokens merge name + display_name; search_primary
+        # gets the generic-tier pair; search_secondary gets a TOKENS-only
+        # column so hashtags/summaries have prefix reach ("bitco" ->
+        # #bitcoin) without parts-splitting prose into the dictionary.
+        # about/website/nip05/lud16 deliberately get NO near sibling.
+        field name_parts type array<string> {
+            indexing: attribute
+            attribute: fast-search
+        }
+
+        field name_tokens type array<string> {
+            indexing: attribute
+            attribute: fast-search
+        }
+
+        field search_primary_parts type array<string> {
+            indexing: attribute
+            attribute: fast-search
+        }
+
+        field search_primary_tokens type array<string> {
+            indexing: attribute
+            attribute: fast-search
+        }
+
+        field search_secondary_tokens type array<string> {
+            indexing: attribute
+            attribute: fast-search
+        }
     }
 
     import field author_ref.influence_scores as author_influence_scores {}
@@ -297,18 +357,98 @@ schema event {
             # more-popular typo/substring hit.
             query(w_pop_token_tier) double: 1000000000.0
             query(w_pop_match_step) double: 10000000.0
+            # Near (prefix/fuzzy) tier for the trust-sorted profiles: between
+            # the token tier (1e9) and the affiliation tier (1e7). Without it
+            # a prefix hit scores bare user_score() — measured upstream five
+            # orders of magnitude below a bio-only hit.
+            query(w_pop_near_tier) double: 100000000.0
+            # Weak tier (bounded infix + hashtag prefix) for the trust-sorted
+            # profiles: below near, above affiliation.
+            query(w_pop_weak_tier) double: 30000000.0
             # Affiliation tier (§11): a genuine bio OR website-domain token
             # match ranks above gram noise, below real name matches.
             query(w_affil_tier) double: 10000000.0
             query(w_affil_tier_text) double: 550.0
             # Default (sort_followers) §12 rewrite: IDF-diluted text ×
             # modest multiplicative trust.
-            query(w_name_tier) double: 2000.0
+            #
+            # The tier ladder must survive the trust multiply: wot_mult()
+            # spans 1.0 → ~5.6 (min_rank 2), so each rung's FLOOR × 1.0 must
+            # clear the rung below's CEILING × 5.6, or trust reorders the
+            # tiers (Brainstorm measured 126 bio-only accounts above the
+            # account literally named "coffee" before this discipline).
+            # Four rungs — exact > near > weak > affiliation — derive bottom
+            # up, each rung ~×5.6 the one below:
+            #     bio  ceiling = (550 + ~130) × 5.6          ≈   3 808
+            #     weak floor   = w_weak_tier   =      4 000  >   3 808
+            #     weak ceiling = (4000 + gram 80) × 5.6      =  22 848
+            #     near floor   = w_near_tier   =     23 000  >  22 848
+            #     near ceiling = (23000 + 80) × 5.6          = 129 248
+            #     exact floor  = w_name_tier + 100 = 130 100 > 129 248
+            # Re-derive on any change to w_affil_tier_text, w_about, gram_cap
+            # or w_wot. Caveat: w_identity × identity_text() is unbounded and
+            # sits outside this ladder — a near hit that also matches a UNIQUE
+            # nip05 handle can cross into the exact band, which is intended
+            # (a unique-handle match is itself an exact signal, §12.1).
+            query(w_name_tier) double: 130000.0
+            # w_near_tier: a PREFIX or FUZZY hit on the *_parts/*_tokens
+            # attributes ("Ode"/"Odel" -> ODELL), scored below an exact
+            # whole-token match and above everything else. 0 disables the
+            # near tier without touching the query side.
+            query(w_near_tier) double: 23000.0
+            # w_weak_tier: the bounded weak-partial signals — an AND-of-
+            # trigrams INFIX hit on a name ("dell" -> ODELL: every trigram of
+            # the query must appear, a near-substring test whose selectivity
+            # grows with query length) or a hashtag/summary token PREFIX
+            # ("bitco" -> #bitcoin via search_secondary_tokens). Still name-
+            # side evidence, so above bio mentions; far weaker than an
+            # anchored prefix or a budgeted typo, so below near.
+            query(w_weak_tier) double: 4000.0
+            # Same tiers for the pure-text relevance(), which has NO trust
+            # multiply, so the ladder is plain: exact 1100 > near 700 >
+            # weak 620 > affiliation 550 > gram (<= gram_cap 80).
+            query(w_near_tier_text) double: 700.0
+            query(w_weak_tier_text) double: 620.0
+            # ---- second-phase precision signals (Meilisearch's "words" and
+            # "exactness" rules + within-near ordering). Computed ONLY in the
+            # second phase over the top rerank-count hits — fieldMatch is a
+            # per-hit positional analysis, and elementCompleteness walks the
+            # matched elements; neither belongs in a first phase that scores
+            # every match. The SUM of these weights must stay UNDER the
+            # smallest inter-band gap so precision reorders hits WITHIN a band
+            # and can never cross bands. The tightest gap is near floor 23000
+            # minus weak ceiling (4000+80)*5.6 = 22848 -> 152; the shipped
+            # 60+40 = 100 fits (worst case: a boosted weak-ceiling hit reaches
+            # 22948, still under an unboosted near floor). Re-check this gap
+            # if any tier weight moves.
+            #     w_words       reward for matching MORE of a multi-word query
+            #                   (fieldMatch queryCompleteness, 0..1) —
+            #                   Meilisearch's #1 "words" rule
+            #     w_exactness   reward when the query covers the WHOLE field
+            #                   ("Ode" the full name above "Ode Fan Club";
+            #                   fieldMatch fieldCompleteness, 0..1)
+            query(w_words) double: 60.0
+            query(w_exactness) double: 40.0
+            # The text profiles' band gaps are only ~70-80 wide, so the same
+            # boost rides in scaled: 100 × 0.25 = 25 < the near/weak gap.
+            query(w_precision_scale_text) double: 0.25
             query(w_identity) double: 50.0
             query(w_wot) double: 1.0
             # Discard hits whose text_score is below this BEFORE the trust
             # multiply — kills weak gram-only noise so trust can't float it.
-            query(text_score_cutoff) double: 50.0
+            #
+            # 50 -> 100 (Brainstorm 2026-07-30): 50 sat INSIDE the gram band.
+            # The client drops w_gram 8.0 -> 2.0 the moment the shortest query
+            # word reaches 4 characters, collapsing gram-only scores from
+            # ~60-90 to ~15-25 — so the cutoff deleted entire result sets at
+            # exactly 4 chars ("Odel" -> zero results; "VitorP" dropped while
+            # "VitorPa" ranked #1). Now that prefix/typo hits score
+            # w_near_tier instead of a gram score, nothing real lives down
+            # there: 100 sits ABOVE the gram-only ceiling (gram_cap 80 + the
+            # about fallback ~13 ≈ 93) and BELOW every real tier (affiliation
+            # 550, near 4000). Corpus-dependent (bm25 scales with corpus
+            # statistics) — re-check against real data after a reindex.
+            query(text_score_cutoff) double: 100.0
             # Tier-group weights (generic-tier extension, non-profile kinds).
             query(w_secondary) double: 0.4
             query(w_content) double: 0.15
@@ -360,12 +500,17 @@ schema event {
         }
 
         # about contributes only when NOTHING primary matched (fallback).
+        # Near hits gate it too: a doc that matched a name at all — exactly or
+        # nearly — is scored by that tier alone (tiers must never stack, or
+        # they reorder each other's bands; see affiliation_match).
         function secondary_active() {
-            expression: if(has_token_match() > 0, 0, 1)
+            expression: if(has_token_match() > 0 || any_near_match() > 0 || weak_match() > 0, 0, 1)
         }
 
-        # A "real" token match — exact/prefix/fuzzy in an INDEXED name or
-        # identity field; trigram-only recall doesn't feed matchCount.
+        # A "real" token match — an EXACT whole-token hit in an indexed name or
+        # identity field; trigram-only recall doesn't feed matchCount, and
+        # prefix/fuzzy hits land on the *_parts/*_tokens attributes instead
+        # (near_name_match), so this counts exact hits only.
         function has_token_match() {
             expression: if(matchCount(name) > 0 || matchCount(display_name) > 0 || matchCount(nip05) > 0 || matchCount(lud16) > 0, 1, 0)
         }
@@ -381,8 +526,11 @@ schema event {
         }
 
         # A bio/website affiliation match WITHOUT any name-field token match.
+        # Also gated on near hits: without that the tiers STACK and invert the
+        # ladder — upstream measured a prefix hit whose bio also matched
+        # (700 + 550 = 1250) ranking ABOVE the exact name match (1100).
         function affiliation_match() {
-            expression: if(has_token_match() > 0, 0, if(matchCount(about) > 0 || matchCount(website) > 0, 1, 0))
+            expression: if(has_token_match() > 0 || any_near_match() > 0 || weak_match() > 0, 0, if(matchCount(about) > 0 || matchCount(website) > 0, 1, 0))
         }
 
         # Multi-word proximity over the primary fields (0..1): Meilisearch's
@@ -409,6 +557,112 @@ schema event {
 
         function identity_match() {
             expression: if(matchCount(nip05) > 0 || matchCount(lud16) > 0, 1, 0)
+        }
+
+        # ---- the near (prefix/fuzzy) tier ----
+        # matchCount() on the *_parts/*_tokens attributes is the reliable
+        # exact-vs-loose separator the inert itemRawScore ladder (§11.1) never
+        # delivered: matchCount(name) counts ONLY exact whole-token hits (the
+        # index field), matchCount(name_parts)/… count prefix/fuzzy hits.
+        # Each near function is gated on its tier's exact match so an exact
+        # hit is scored ONCE, by its own tier, and never also collects near.
+
+        # A prefix/fuzzy hit on the profile name attributes (name+display_name).
+        function loose_name_match() {
+            expression: if(matchCount(name_parts) > 0 || matchCount(name_tokens) > 0, 1, 0)
+        }
+
+        function near_name_match() {
+            expression: if(name_match() > 0, 0, loose_name_match())
+        }
+
+        # The generic-tier twin: prefix/fuzzy on search_primary (titles/subjects).
+        function tier_loose_match() {
+            expression: if(matchCount(search_primary_parts) > 0 || matchCount(search_primary_tokens) > 0, 1, 0)
+        }
+
+        function tier_near_match() {
+            expression: if(tier_token_match() > 0, 0, tier_loose_match())
+        }
+
+        # Cross-kind composite, like any_token_match(): the groups are
+        # disjoint per kind, so max() is exact.
+        function any_near_match() {
+            expression: max(near_name_match(), tier_near_match())
+        }
+
+        # Affiliation gate for the DEFAULT profile only. Identical to
+        # affiliation_match() except it gates on name_match() instead of
+        # has_token_match() (which ALSO counts nip05/lud16): a doc whose only
+        # match is a COMMON nip05 domain (identity_text ~ 0) must not lose the
+        # bio-affiliation credit it genuinely earned — with the old gate it
+        # could fall under text_score_cutoff and vanish while the same profile
+        # without the matching nip05 ranked normally. affiliation_match() and
+        # secondary_active() keep the old gate: relevance() and the rank_*
+        # profiles are built on them.
+        function affiliation_match_text() {
+            expression: if(name_match() > 0 || near_name_match() > 0 || weak_match() > 0, 0, if(matchCount(about) > 0 || matchCount(website) > 0, 1, 0))
+        }
+
+        # about-fallback gate for the DEFAULT profile: contribute only when
+        # nothing better matched (no name, no near, no identity, no
+        # affiliation) — same common-nip05 reasoning as affiliation_match_text.
+        function secondary_active_text() {
+            expression: if(name_match() > 0 || near_name_match() > 0 || weak_match() > 0 || identity_match() > 0 || affiliation_match_text() > 0, 0, 1)
+        }
+
+        # ---- the weak tier: bounded infix + hashtag/summary prefix ----
+        # matchCount on the *_gram fields only fires for the AND-of-trigrams
+        # INFIX net FuzzyWordGroup emits (the unbounded OR net is off): every
+        # trigram of the query word must appear in the name, a near-substring
+        # test — "dell" reaches ODELL, "ode" (too few trigrams) reaches
+        # nothing. search_secondary_tokens carries hashtag/summary token
+        # prefixes ("bitco" -> #bitcoin). Both are real signals with a bound,
+        # weaker than an anchored prefix or a budgeted typo — one tier, gated
+        # on the tiers above so nothing stacks.
+
+        function infix_gram_match() {
+            expression: if(matchCount(name_gram) > 0 || matchCount(display_name_gram) > 0 || matchCount(search_primary_gram) > 0, 1, 0)
+        }
+
+        function secondary_prefix_match() {
+            expression: if(matchCount(search_secondary_tokens) > 0, 1, 0)
+        }
+
+        function weak_match() {
+            expression: if(any_token_match() > 0 || any_near_match() > 0, 0, if(infix_gram_match() > 0 || secondary_prefix_match() > 0, 1, 0))
+        }
+
+        # ---- second-phase precision signals ----
+        # Meilisearch's "words" and "exactness" rules, plus within-near
+        # ordering. EXPENSIVE: fieldMatch runs a positional analysis per hit
+        # and elementCompleteness walks matched elements — these run ONLY in
+        # the second phase over the top rerank-count hits (see sort_followers
+        # / text2), never in a first phase that scores every match. Weights
+        # are sized to reorder WITHIN a band, never across (see the w_words
+        # comment in inputs).
+
+        # How much of a multi-word query the best primary field matched
+        # (0..1). Single-word queries read 1.0 everywhere — a harmless
+        # constant within a band.
+        function words_coverage() {
+            expression: max(max(fieldMatch(name).queryCompleteness, fieldMatch(display_name).queryCompleteness), fieldMatch(search_primary).queryCompleteness)
+        }
+
+        # How much of the matched FIELD the query covers (0..1): 1.0 when the
+        # query is the whole name — "Ode" the account beats "Ode Fan Club".
+        function exactness() {
+            expression: max(max(fieldMatch(name).fieldCompleteness, fieldMatch(display_name).fieldCompleteness), fieldMatch(search_primary).fieldCompleteness)
+        }
+
+        # NOT here: a within-near ordering by CHARACTER coverage ("Ode" ->
+        # "Ode" above "Ode" -> "Odessa"). fieldMatch/elementCompleteness are
+        # TOKEN-granular — a prefix hit on a one-token element reads as a
+        # complete match either way — so that signal is not expressible with
+        # stock rank features; it would need a custom searcher. Within the
+        # near band, order falls to primary_text()/trust as before.
+        function precision_boost() {
+            expression: query(w_words) * words_coverage() + query(w_exactness) * exactness()
         }
 
         # ---- generic-tier extension: the generic tier group (non-profile kinds). ----
@@ -443,6 +697,7 @@ schema event {
         function tier_text() {
             expression {
                 tier_token_match() * query(w_name_tier)
+                + tier_near_match() * query(w_near_tier)
                 + tier_primary_text()
                 + query(w_secondary) * secondary_text()
                 + query(w_content) * bm25(search_text)
@@ -463,10 +718,12 @@ schema event {
         function text_score() {
             expression {
                 name_match() * query(w_name_tier)
+                + near_name_match() * query(w_near_tier)
+                + weak_match() * query(w_weak_tier)
                 + primary_text()
                 + query(w_identity) * identity_text()
-                + affiliation_match() * query(w_affil_tier_text)
-                + secondary_active() * query(w_about) * about_text()
+                + affiliation_match_text() * query(w_affil_tier_text)
+                + secondary_active_text() * query(w_about) * about_text()
                 + tier_text()
             }
         }
@@ -484,6 +741,8 @@ schema event {
         function relevance() {
             expression {
                 any_token_match() * 1100
+                + any_near_match() * query(w_near_tier_text)
+                + weak_match() * query(w_weak_tier_text)
                 + match_quality() * query(w_match_step)
                 + affiliation_match() * query(w_affil_tier_text)
                 + query(w_proximity) * proximity()
@@ -506,6 +765,10 @@ schema event {
             display_name_text
             about_text
             has_token_match
+            any_token_match
+            near_name_match
+            any_near_match
+            weak_match
             match_quality
             affiliation_match
             itemRawScore(mtch_exact)
@@ -536,7 +799,7 @@ schema event {
     # ordering inside a tier (Meilisearch's `typo` over `sort`).
     rank-profile rank_desc inherits text_relevance {
         first-phase {
-            expression: if(user_score() >= query(min_rank), any_token_match() * query(w_pop_token_tier) + match_quality() * query(w_pop_match_step) + affiliation_match() * query(w_affil_tier) + user_score(), -1000000000.0)
+            expression: if(user_score() >= query(min_rank), any_token_match() * query(w_pop_token_tier) + any_near_match() * query(w_pop_near_tier) + weak_match() * query(w_pop_weak_tier) + match_quality() * query(w_pop_match_step) + affiliation_match() * query(w_affil_tier) + user_score(), -1000000000.0)
             rank-score-drop-limit: -1000000.0
         }
     }
@@ -544,7 +807,7 @@ schema event {
     # sort:rank:asc: ascending trust WITHIN each (still-descending) match tier.
     rank-profile rank_asc inherits text_relevance {
         first-phase {
-            expression: if(user_score() >= query(min_rank), any_token_match() * query(w_pop_token_tier) + match_quality() * query(w_pop_match_step) + affiliation_match() * query(w_affil_tier) - user_score(), -1000000000.0)
+            expression: if(user_score() >= query(min_rank), any_token_match() * query(w_pop_token_tier) + any_near_match() * query(w_pop_near_tier) + weak_match() * query(w_pop_weak_tier) + match_quality() * query(w_pop_match_step) + affiliation_match() * query(w_affil_tier) - user_score(), -1000000000.0)
             rank-score-drop-limit: -1000000.0
         }
     }
@@ -560,6 +823,17 @@ schema event {
             rank-score-drop-limit: 0.5
         }
 
+        # Precision pass over the top hits only: the expensive per-hit
+        # signals (words rule, exactness, within-near ordering) reorder
+        # WITHIN a band — precision_boost() is additive AFTER the trust
+        # multiply and bounded under the smallest tier gap, so band
+        # membership is exactly the first phase's. Dropped hits (cutoff /
+        # rank-score-drop-limit) never reach this phase.
+        second-phase {
+            expression: firstPhase + precision_boost()
+            rerank-count: 1000
+        }
+
         # Surface the decisive signals so the API/inspector can show WHY a hit
         # ranked where it did (text bands + the trust multiplier).
         match-features {
@@ -569,7 +843,14 @@ schema event {
             identity_match
             identity_text
             has_token_match
+            any_token_match
+            loose_name_match
+            near_name_match
+            any_near_match
+            weak_match
             affiliation_match
+            affiliation_match_text
+            secondary_active_text
             text_score
             wot_mult
             name_text
@@ -601,6 +882,8 @@ schema event {
         function relevance_cheap() {
             expression {
                 any_token_match() * 1100
+                + any_near_match() * query(w_near_tier_text)
+                + weak_match() * query(w_weak_tier_text)
                 + affiliation_match() * query(w_affil_tier_text)
                 + primary_text()
                 + tier_primary_text()
@@ -616,7 +899,10 @@ schema event {
         }
 
         second-phase {
-            expression: relevance()
+            # relevance() restores the full tuned order; the scaled precision
+            # boost (the text ladder's gaps are only ~70-80 wide) adds the
+            # words/exactness/near-quality rules on top. In-band only.
+            expression: relevance() + query(w_precision_scale_text) * precision_boost()
             rerank-count: 1000
         }
     }

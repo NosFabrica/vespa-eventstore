@@ -474,6 +474,30 @@ class VespaEventIndexTest {
             }
         }
 
+    /**
+     * A serving schema that predates the near attribute fields (name_parts/…)
+     * answers 400 to ANY search query naming them — the client must demote to
+     * exact + gram matching, serve the REQ, and remember, never fail the
+     * caller. Recall through the mock is the in-memory reference's either way;
+     * what this pins is the retry-and-remember, not the narrower matching.
+     */
+    @Test
+    fun `a schema without the near fields demotes to exact matching instead of failing`() =
+        runBlocking {
+            seed(doc(kind = 0, search = SearchFields(name = "odell")))
+            mock.rejectNearFields = true
+            val fresh = VespaEventIndex(mock.url)
+            try {
+                val expected = reference.search(EventQuery(search = "odell")).map { it.id }
+                assertEquals(expected, fresh.search(EventQuery(search = "odell")).map { it.id }, "first query (flips the flag)")
+                assertEquals(expected, fresh.search(EventQuery(search = "odell")).map { it.id }, "second query (already demoted)")
+                assertEquals(1, fresh.count(EventQuery(search = "odell")), "the grouping paths ride the same net")
+            } finally {
+                mock.rejectNearFields = false
+                fresh.close()
+            }
+        }
+
     /** The visit walk: the complete match set, across slices AND continuation pages. */
     @Test
     fun `visitIds streams every match through sliced continuation walks`() =

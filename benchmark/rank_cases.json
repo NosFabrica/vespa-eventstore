@@ -1,0 +1,37 @@
+[
+  {
+    "query": "example",
+    "expect": "",
+    "note": "TEMPLATE — `expect` is a doc-id prefix (the event id of the profile that should rank). Empty expect = skipped, so shapes can be parked here. ADD A CASE EVERY TIME SOMEONE REPORTS A BAD SEARCH; capture a baseline in the same run as any candidate (positions depend on live data)."
+  },
+  {
+    "query": "Ode",
+    "expect": "",
+    "note": "prefix of a name (upstream's canonical regression: must find ODELL through the near tier, not trigram noise)"
+  },
+  {
+    "query": "Odel",
+    "expect": "",
+    "note": "4-char prefix — the old text_score_cutoff cliff returned ZERO results for this shape"
+  },
+  {
+    "query": "dell",
+    "expect": "",
+    "note": "infix — reaches the name only through the bounded AND-gram weak tier"
+  },
+  {
+    "query": "vitorp",
+    "expect": "",
+    "note": "compound prefix — must reach 'VitorPamplona', 'Vitor Pamplona' AND 'Vitor-Pamplona' via name_tokens' joined variants"
+  },
+  {
+    "query": "jose",
+    "expect": "",
+    "note": "diacritic folding — must reach 'José' through the folded near params"
+  },
+  {
+    "query": "中村",
+    "expect": "",
+    "note": "2-char CJK — needs the non-ASCII prefix floor"
+  }
+]

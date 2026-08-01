@@ -1,0 +1,358 @@
+<meta charset="utf-8">
+<title>NIP-50 search — how matching and ranking actually work</title>
+<style>
+  .viz-root {
+    color-scheme: light;
+    --surface-1:#fcfcfb; --text-primary:#0b0b0b; --text-secondary:#52514e;
+    --grid:#e4e3df; --panel:#f3f2ee;
+    --exact:#2a78d6; --exact-soft:#cde2fb;
+    --near:#eb6834;  --near-soft:#fadfd2;
+    --gram:#9b9a94;  --gram-soft:#e8e7e3;
+    --affil:#3b9e64; --affil-soft:#d3eedd;
+    --broken:#b3261e;
+    font:14px/1.5 system-ui,sans-serif; background:var(--surface-1); color:var(--text-primary);
+    max-width:1060px; margin:0 auto; padding:26px;
+  }
+  @media (prefers-color-scheme: dark){ :root:not([data-theme="light"]) .viz-root{
+    color-scheme:dark; --surface-1:#1a1a19; --text-primary:#fff; --text-secondary:#c3c2b7;
+    --grid:#33322f; --panel:#232322;
+    --exact:#3987e5; --exact-soft:#184f95;
+    --near:#d95926;  --near-soft:#6b2a10;
+    --gram:#7a7973;  --gram-soft:#33322f;
+    --affil:#3f9e66; --affil-soft:#174726;
+    --broken:#e5675f; }}
+  :root[data-theme="dark"] .viz-root{
+    color-scheme:dark; --surface-1:#1a1a19; --text-primary:#fff; --text-secondary:#c3c2b7;
+    --grid:#33322f; --panel:#232322;
+    --exact:#3987e5; --exact-soft:#184f95;
+    --near:#d95926;  --near-soft:#6b2a10;
+    --gram:#7a7973;  --gram-soft:#33322f;
+    --affil:#3f9e66; --affil-soft:#174726;
+    --broken:#e5675f; }
+  h1{font-size:19px;margin:0 0 4px}
+  h2{font-size:15px;margin:34px 0 8px}
+  h3{font-size:13.5px;margin:20px 0 6px}
+  .sub{color:var(--text-secondary);font-size:13px;margin:0 0 18px}
+  p,li{font-size:13.5px}
+  .note{color:var(--text-secondary);font-size:12.5px;margin-top:10px;line-height:1.55}
+  code{font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--panel);padding:1px 5px;border-radius:4px}
+  pre{font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--panel);padding:12px 14px;border-radius:8px;overflow-x:auto}
+  pre code{background:none;padding:0}
+  table{border-collapse:collapse;width:100%;font-size:12.5px;margin:10px 0}
+  th{text-align:left;color:var(--text-secondary);font-weight:600;border-bottom:1px solid var(--grid);padding:6px 10px 6px 0;vertical-align:bottom}
+  td{border-bottom:1px solid var(--grid);padding:6px 10px 6px 0;vertical-align:top}
+  .scroll{overflow-x:auto}
+  .ok{color:var(--affil);font-weight:600;white-space:nowrap}
+  .bad{color:var(--broken);font-weight:600;white-space:nowrap}
+  .meh{color:var(--text-secondary);font-weight:600;white-space:nowrap}
+  .tier{display:flex;align-items:center;gap:10px;margin:5px 0;font-size:12.5px}
+  .tier .lbl{width:250px;text-align:right;color:var(--text-secondary);flex-shrink:0}
+  .tier .bar{height:20px;border-radius:4px;display:flex;align-items:center;padding:0 8px;
+             font:11.5px ui-monospace,monospace;color:var(--text-primary);white-space:nowrap;min-width:40px}
+  .flow{display:flex;flex-wrap:wrap;gap:8px;align-items:stretch;margin:12px 0}
+  .flow .box{background:var(--panel);border-radius:8px;padding:8px 12px;font-size:12.5px;flex:1;min-width:150px}
+  .flow .box b{display:block;font-size:12.5px;margin-bottom:3px}
+  .flow .arrow{align-self:center;color:var(--text-secondary);flex:0}
+  .legend{display:flex;gap:16px;font-size:12px;color:var(--text-secondary);margin:8px 0}
+  .legend span{display:inline-flex;align-items:center;gap:5px}
+  .sw{width:12px;height:12px;border-radius:3px;display:inline-block}
+</style>
+<div class="viz-root">
+  <h1>NIP-50 search — how matching and ranking actually work</h1>
+  <p class="sub">The full pipeline from a search term to a ranked page, what each knob weighs, and — the honest part —
+     which match paths were <em>silently inert</em> before this branch. Root cause from Brainstorm's 2026-07-30
+     fix (NosFabrica/brainstorm-k8s#3 + brainstorm_server#64), whose schema and query builder this library's
+     profile group is a port of. <b>The fix is now ported here</b>: the *_parts/*_tokens attribute fields, direct
+     prefix/fuzzy terms, the near tier in every profile, and the re-derived weights all land in this branch —
+     "today"/"before" below describes the pre-branch (and currently deployed) behavior, "after" is what this
+     branch does once a deploy + reindex lands.</p>
+
+  <h2>1 · The pipeline</h2>
+  <div class="flow">
+    <div class="box"><b>tokenize</b>search term → whitespace words, every word kept (<code>EventYql</code>); ≥2 words adds a joined variant, ≥3 adds adjacent pairs</div>
+    <div class="arrow">→</div>
+    <div class="box"><b>recall</b>one OR-group per word across all 10 search fields + trigram nets (<code>FuzzyWordGroup</code>) — a word matching <em>any</em> clause recalls the doc</div>
+    <div class="arrow">→</div>
+    <div class="box"><b>rank</b>a rank profile scores every recalled doc: text tiers, then trust (<code>event.sd</code>)</div>
+    <div class="arrow">→</div>
+    <div class="box"><b>cut</b><code>text_score_cutoff</code> / <code>min_rank</code> / <code>rank-score-drop-limit</code> discard weak hits before the page is built</div>
+  </div>
+  <p class="note">Recall is deliberately loose — ranking is supposed to sort the noise out. That division of labor
+     is why a broken <em>matcher</em> hides for months: nothing errors, the doc just arrives through a noisier
+     path and ranks accordingly.</p>
+
+  <h2>2 · What one query word emits — and what actually runs</h2>
+  <p>For each word, <code>FuzzyWordGroup</code> emits up to four clause shapes per field, plus trigram nets.
+     Two of the four shapes <b>do nothing</b>, verified by Brainstorm against a real Vespa:</p>
+  <div class="scroll"><table>
+    <tr><th>clause (as emitted)</th><th>intent</th><th>status</th><th>why</th></tr>
+    <tr>
+      <td><code>({defaultIndex:"name"}userInput(@w))</code></td>
+      <td>exact whole-token match</td><td class="ok">✓ works</td>
+      <td>feeds <code>matchCount(name)</code> → the token-match tiers</td>
+    </tr>
+    <tr>
+      <td><code>({defaultIndex:"name",prefix:true}userInput(@w))</code></td>
+      <td>prefix match ("Ode" → ODELL)</td><td class="bad">✗ silent no-op</td>
+      <td><code>userInput()</code> does not propagate <code>prefix</code>/<code>fuzzy</code> annotations —
+          the clause parses, runs, and behaves as a second exact match. No error, ever.</td>
+    </tr>
+    <tr>
+      <td><code>({…,fuzzy:{maxEditDistance:1,prefixLength:2}}userInput(@w))</code></td>
+      <td>1–2 typo match ("Odel" → ODELL)</td><td class="bad">✗ silent no-op</td>
+      <td>same annotation drop — <em>and</em> even a direct <code>fuzzy()</code> term would be rejected:
+          prefix/fuzzy require an <b>attribute</b> field, and <code>name</code>/<code>display_name</code>/<code>search_primary</code>
+          are <code>index</code> fields. Cause 1 masks cause 2, so nothing ever surfaced.</td>
+    </tr>
+    <tr>
+      <td><code>name_gram contains "ode" or …</code> (OR net)</td>
+      <td>recall safety net</td><td class="meh">△ works, unbounded</td>
+      <td>any doc sharing a single trigram matches: "ode" recalls <b>model</b>, <b>code</b>. No edit-distance
+          bound exists on this matcher, so no typo budget can constrain it.</td>
+    </tr>
+    <tr>
+      <td><code>about_gram contains "ode" and …</code> (AND net)</td>
+      <td>discriminative bio recall</td><td class="meh">△ works, degenerates short</td>
+      <td>at 1–2 trigrams (words of 3–4 chars) the AND collapses into a bare substring test —
+          "Ode" reaches a bio reading "hosted by ODELL".</td>
+    </tr>
+    <tr>
+      <td><code>label:"mtch_prefix"</code> → <code>match_quality()</code></td>
+      <td>exact&gt;prefix&gt;typo rank ladder</td><td class="bad">✗ inert</td>
+      <td><code>itemRawScore</code> never populates for plain text terms (documented in <code>event.sd</code>
+          as KNOWN-INERT). The ladder reads 0 for everything.</td>
+    </tr>
+  </table></div>
+  <p><b>Net effect:</b> matching is <em>exact-whole-token OR trigram-noise</em>, nothing in between.
+     Every "fractional" hit — prefix, typo, part-of-a-compound — arrives through the trigram net,
+     scores in the gram band (≤ <code>gram_cap</code> = 80), and is ranked as noise.</p>
+
+  <h2>3 · Fractional matches, shape by shape</h2>
+  <p>What each query shape does on the deployed engine (observer present → default <code>search</code> profile).
+     "Their fix" = behavior after the Brainstorm port (§6).</p>
+  <div class="scroll"><table>
+    <tr><th>query → target</th><th>shape</th><th>today</th><th>what happens today</th><th>after port</th></tr>
+    <tr><td>"odell" → <b>ODELL</b></td><td>exact token</td><td class="ok">✓ found</td>
+        <td>exact clause hits, name tier (2000+), ranks on top</td><td class="ok">✓ unchanged</td></tr>
+    <tr><td>"Ode" → <b>ODELL</b></td><td>prefix</td><td class="meh">△ gram band</td>
+        <td>prefix clause inert; trigram OR recalls it <em>plus</em> "model", "code" — all rank together as gram noise</td>
+        <td class="ok">✓ near tier, noise gone</td></tr>
+    <tr><td>"Odel" → <b>ODELL</b></td><td>prefix, 4 chars</td><td class="bad">✗ can be zero results</td>
+        <td>the cliff: at a 4-char shortest word <code>w_gram</code> drops 8.0→2.0, gram-only scores collapse to ~15–25,
+            and <code>text_score_cutoff</code> (50) deletes the whole result set</td>
+        <td class="ok">✓ near tier</td></tr>
+    <tr><td>"Odelll" → <b>ODELL</b></td><td>1 typo</td><td class="meh">△ gram band</td>
+        <td>fuzzy clause inert; survives only if enough trigrams overlap</td>
+        <td class="ok">✓ near tier (edit ≤ budget)</td></tr>
+    <tr><td>"VitorP" → <b>VitorPamplona</b></td><td>compound prefix</td><td class="bad">✗ cutoff-dependent</td>
+        <td>measured upstream: gram score ~49 vs cutoff 50 → dropped, while "VitorPa" (62) ranked #1 —
+            adding a letter made results vanish, adding another brought them back</td>
+        <td class="ok">✓ via <code>name_tokens</code></td></tr>
+    <tr><td>"meme" → <b>BitcoinMemeTreasury</b></td><td>word-inside-compound</td><td class="bad">✗ usually missed</td>
+        <td>no split of camelCase compounds exists; only trigram overlap can recall it, below the cutoff at 4 chars</td>
+        <td class="ok">✓ via <code>name_parts</code></td></tr>
+    <tr><td>"dell" → <b>ODELL</b></td><td>infix</td><td class="meh">△ gram band</td>
+        <td>trigram OR recalls it (as noise)</td>
+        <td class="ok">✓ weak tier — an AND of every query trigram (a bounded near-substring test)
+            replaces the unbounded OR; scored between near and affiliation</td></tr>
+    <tr><td>"jose" → <b>José</b></td><td>diacritics</td><td class="bad">✗ attribute bytes don't fold</td>
+        <td>string attributes match raw bytes; Vespa's linguistic folding applies to index fields only</td>
+        <td class="ok">✓ NearText folds doc + query symmetrically (NFKD, strip marks, lowercase)</td></tr>
+    <tr><td>"vitorp" → <b>Vitor Pamplona / Vitor-Pamplona</b></td><td>spaced/hyphenated compound</td><td class="meh">△ fuzzy rescue only</td>
+        <td>tokens keep separators; only the 1-edit fuzzy budget catches it</td>
+        <td class="ok">✓ tokens also index alnum-stripped + whole-name-joined variants</td></tr>
+    <tr><td>"太郎" → <b>中村太郎</b></td><td>CJK given name</td><td class="bad">✗ unreachable</td>
+        <td>no spaces to split, prefix anchors at the run start</td>
+        <td class="ok">✓ CJK runs index their suffixes (runs ≤ 8 chars)</td></tr>
+    <tr><td>"bitco" → <b>#bitcoin</b> note</td><td>hashtag prefix</td><td class="bad">✗ exact-token only</td>
+        <td>search_secondary has no partial path</td>
+        <td class="ok">✓ <code>search_secondary_tokens</code>, prefix-only, weak tier</td></tr>
+    <tr><td>"中村" → profile</td><td>2-char CJK</td><td class="meh">△ fragile</td>
+        <td>below the 3-char trigram floor; only an exact token hit works</td>
+        <td class="ok">✓ script-aware prefix floor (2 for non-ASCII)</td></tr>
+    <tr><td>"vitor pamplona"</td><td>multi-word</td><td class="ok">✓ found</td>
+        <td>per-word exact + joined-variant clause both work; proximity tie-break applies</td><td class="ok">✓ unchanged</td></tr>
+    <tr><td>bio word → bio-only profile</td><td>affiliation</td><td class="ok">✓ found</td>
+        <td>exact token on <code>about</code>/<code>website</code>, affiliation tier (550)</td><td class="ok">✓ unchanged</td></tr>
+  </table></div>
+  <p class="note">Our in-memory reference (<code>SearchFields.matches</code>) is a case-insensitive <b>substring</b>
+     test — strictly looser than any of the above. Tests that assert recall-equivalence against it pass while the
+     real engine misses prefix/typo/compound shapes: the reference promises recall the engine does not deliver.
+     Any port must reconcile this contract (see §6).</p>
+
+  <h2>4 · The ranking ladder</h2>
+  <p>Default profile (<code>search</code> = <code>sort_followers</code>):
+     <code>score = text_score() × wot_mult()</code>, with hits below
+     <code>text_score_cutoff</code> dropped <em>before</em> the trust multiply.</p>
+
+  <h3>text_score() bands — where a hit can land (log-ish, not to scale)</h3>
+  <div class="legend">
+    <span><span class="sw" style="background:var(--exact)"></span>name tier</span>
+    <span><span class="sw" style="background:var(--near)"></span>near tier (after port)</span>
+    <span><span class="sw" style="background:var(--affil)"></span>identity / affiliation</span>
+    <span><span class="sw" style="background:var(--gram)"></span>gram noise</span>
+  </div>
+  <div class="tier"><div class="lbl">exact name match (name/display_name)</div>
+    <div class="bar" style="background:var(--exact-soft);width:88%">w_name_tier 2000 (port: 23000) + matchCount·100 + bm25</div></div>
+  <div class="tier"><div class="lbl">prefix / typo name match — after port</div>
+    <div class="bar" style="background:var(--near-soft);width:62%">w_near_tier 4000 (today: lands in gram noise instead)</div></div>
+  <div class="tier"><div class="lbl">unique nip05 / lud16 handle</div>
+    <div class="bar" style="background:var(--affil-soft);width:48%">w_identity 50 × bm25 — IDF-scaled: unique handle high, primal.net ≈ 0</div></div>
+    <div class="tier"><div class="lbl">bio / website token match</div>
+    <div class="bar" style="background:var(--affil-soft);width:40%">w_affil_tier_text 550 + about fallback</div></div>
+  <div class="tier"><div class="lbl">trigram-only overlap</div>
+    <div class="bar" style="background:var(--gram-soft);width:16%">≤ gram_cap 80</div></div>
+  <div class="tier"><div class="lbl">cutoff (drops the row above it at 4-char queries)</div>
+    <div class="bar" style="background:var(--panel);width:12%">50 (port: 100)</div></div>
+
+  <h3>Why 2000 is not enough — the trust multiply breaks the ladder</h3>
+  <p><code>wot_mult()</code> spans 1.0 → ~5.6 (at <code>min_rank</code>=2, log-concave). Tiers only stay ordered if
+     each band's <em>floor × 1.0</em> clears the band below's <em>ceiling × 5.6</em>. Measured upstream at
+     <code>w_name_tier</code>=2000: a max-trust bio mention ((550+130)×5.6 ≈ 3800) beat a floor-trust exact
+     name match (~2100) — searching "coffee" put 126 bio-only accounts above the account literally named
+     "coffee". Their re-derivation:</p>
+  <pre><code>bio ceiling   (550 + 130) × 5.6  ≈   3 808
+weak floor    w_weak_tier        =   4 000   &gt;   3 808 ✓   (infix + hashtag prefix)
+weak ceiling  (4000 + 80) × 5.6  =  22 848
+near floor    w_near_tier        =  23 000   &gt;  22 848 ✓
+near ceiling  (23000 + 80) × 5.6 = 129 248
+exact floor   w_name_tier + 100  = 130 100   &gt; 129 248 ✓   → w_name_tier = 130 000</code></pre>
+  <p class="note">The invariant to re-derive on any weight change:
+     <code>w_name_tier + 100 &gt; (w_near_tier + gram_cap) × max(wot_mult)</code> and
+     <code>w_near_tier &gt; (w_affil_tier_text + ~130) × max(wot_mult)</code> — and one more rung down for
+     <code>w_weak_tier</code>. This branch ships the four-rung values above; the deployed pre-branch schema
+     still has 2000, where the "coffee" inversion is live.</p>
+
+  <h3>The other profiles</h3>
+  <div class="scroll"><table>
+    <tr><th>profile</th><th>selected by</th><th>ordering</th><th>fractional-match behavior</th></tr>
+    <tr><td><code>search</code> / <code>sort_followers</code></td><td>default with observer</td>
+        <td><code>text_score × wot_mult</code>, cutoff 50</td>
+        <td>prefix/typo hits are gram-band → cutoff can delete them (the "Odel → zero results" cliff)</td></tr>
+    <tr><td><code>text</code> (<code>text_relevance</code>)</td><td><code>sort:text</code>, or no observer</td>
+        <td>token band 1100 → affiliation 550 → bm25 + proximity</td>
+        <td>no cutoff, so gram hits survive — but rank below everything; inert <code>match_quality</code> means
+            exact and would-be-prefix hits are indistinguishable inside the band</td></tr>
+    <tr><td><code>rank_filtered</code></td><td><code>filter:rank</code></td><td>text order, min_rank gate</td>
+        <td>same as <code>text</code> + trust floor</td></tr>
+    <tr><td><code>rank_desc</code>/<code>rank_asc</code></td><td><code>sort:rank</code></td>
+        <td>match tier (1e9) → quality step (1e7, inert) → affiliation (1e7) → ±trust</td>
+        <td>a prefix hit has no tier: it scores bare <code>user_score()</code> — measured upstream five orders of
+            magnitude below a bio-only hit. Port adds <code>w_pop_near_tier</code> 1e8 between them.</td></tr>
+  </table></div>
+
+  <h2>5 · Every knob, in one table</h2>
+  <div class="scroll"><table>
+    <tr><th>query() input</th><th>before</th><th>this branch</th><th>role</th></tr>
+    <tr><td><code>w_name_tier</code></td><td>2000</td><td><b>130000</b></td><td>exact-name band offset inside text_score (each rung ×5.6 the one below — see §4)</td></tr>
+    <tr><td><code>w_near_tier</code></td><td>—</td><td><b>23000</b></td><td>prefix/fuzzy name band (new)</td></tr>
+    <tr><td><code>w_weak_tier</code></td><td>—</td><td><b>4000</b></td><td>bounded infix (AND-gram) + hashtag prefix band (new)</td></tr>
+    <tr><td><code>w_near_tier_text</code> / <code>w_weak_tier_text</code></td><td>—</td><td><b>700 / 620</b></td><td>same bands for pure-text relevance() (exact 1100 &gt; near 700 &gt; weak 620 &gt; affil 550)</td></tr>
+    <tr><td><code>w_pop_near_tier</code> / <code>w_pop_weak_tier</code></td><td>—</td><td><b>1e8 / 3e7</b></td><td>near/weak tiers for the trust-sorted profiles (between 1e9 and 1e7)</td></tr>
+    <tr><td><code>w_words</code> / <code>w_exactness</code></td><td>—</td><td><b>60 / 40</b></td><td>second-phase precision: Meilisearch's "words" rule (query coverage) + whole-field exactness; bounded under the smallest band gap, in-band only</td></tr>
+    <tr><td><code>text_score_cutoff</code></td><td>50</td><td><b>100</b></td><td>pre-multiply noise gate; 100 sits above the gram ceiling (~93) and below every real tier</td></tr>
+    <tr><td><code>w_identity</code></td><td>50</td><td>50</td><td>IDF-scaled nip05/lud16 ("primal flood" fix)</td></tr>
+    <tr><td><code>w_affil_tier_text</code> / <code>w_affil_tier</code></td><td>550 / 1e7</td><td>550 / 1e7</td><td>bio/website affiliation band (text / popularity)</td></tr>
+    <tr><td><code>w_gram</code></td><td>8.0 if shortest ≤ 3 else 2.0 (client-set)</td><td>same</td><td>trigram signal weight — the 4-char step behind the cliff</td></tr>
+    <tr><td><code>gram_cap</code></td><td>80</td><td>80</td><td>ceiling on gram contribution (&lt; one matchCount unit)</td></tr>
+    <tr><td><code>w_wot</code></td><td>1.0</td><td>1.0</td><td>trust multiplier scale; 0 = pure text</td></tr>
+    <tr><td><code>min_rank</code></td><td>−1e9 default; client sends 2.0 on ranked searches</td><td>2.0 sent</td><td>trust floor; also anchors the log curve — <b>unset, wot_mult flattens to ≈21.7×</b> for everyone and trust ordering vanishes (our store layer defaults it; direct EventQuery users must too)</td></tr>
+    <tr><td><code>w_match_step</code> / <code>w_pop_match_step</code></td><td>250 / 1e7</td><td>same</td><td>exact&gt;prefix&gt;typo ladder spacing — <b>inert</b> (itemRawScore)</td></tr>
+    <tr><td><code>w_proximity</code></td><td>30</td><td>30</td><td>multi-word closeness tie-break, &lt; w_match_step by design</td></tr>
+    <tr><td><code>w_secondary</code> / <code>w_content</code> / <code>w_location</code></td><td>0.4 / 0.15 / 0.3</td><td>n/a (ours)</td><td>generic-tier weights for non-profile kinds</td></tr>
+    <tr><td><code>MAX_TYPO_EDITS</code> + ladder</td><td>&lt;4:0, ≥4:1, ≥9:2 (server-side)</td><td><b>&lt;4:0, 4–8:1, 9–12:2, ≥13:3</b>, cap 3</td><td>match-time bound (maxEditDistance) — not a rank knob, cannot be A/B'd live</td></tr>
+  </table></div>
+
+  <h2>6 · The upstream fix, and what our port must adapt</h2>
+  <p>Brainstorm's two-PR fix (schema: brainstorm-k8s#3 · query: brainstorm_server#64):</p>
+  <ul>
+    <li><b>Two attribute fields</b> derived from <code>name + display_name</code>, both load-bearing:
+        <code>name_parts</code> (split at every word start — camelCase + non-alphanumeric runs, Unicode-aware so
+        Cyrillic/CJK/accents survive) and <code>name_tokens</code> (whole lowercased tokens — without it
+        "vitorp" → "VitorPamplona" regresses, since parts splits it into [vitor, pamplona]).</li>
+    <li><b>Direct terms</b> — <code>name_parts contains ({prefix:true}@w)</code> /
+        <code>({maxEditDistance:N,prefixLength:2}fuzzy(@w))</code> — never via <code>userInput()</code>;
+        only the top edit distance emitted (it subsumes the smaller ones).</li>
+    <li><b>Bounded matchers replace unbounded recall:</b> length-gated typo budget capped at 3 (≈22–25% of the word,
+        Meilisearch's ratio); name-side trigram OR off; <code>about_gram</code> gated to ≥3 trigrams; prefix floor
+        3 Latin / 2 non-ASCII; synthetic joined/pair variants get prefix but no fuzzy (a 22-char concatenation
+        drew the top typo budget — the most expensive matcher — for a token nobody typed).</li>
+    <li><b>A real near tier</b> in every profile, gated so exact ≻ near ≻ identity ≻ affiliation ≻ gram never
+        stack or invert; weights re-derived to survive the ×5.6 trust multiply (§4).</li>
+    <li><b>Gate consistency:</b> <code>affiliation_match_text</code>/<code>secondary_active_text</code> key on
+        <code>name_match()</code> so a common-domain nip05 hit no longer zeroes genuine bio credit.</li>
+    <li><b>Tooling:</b> <code>rank_ab.py</code> + 33 regression cases (query → expected pubkey), and 19 YQL-shape
+        unit tests that provably fail against the pre-fix builder.</li>
+  </ul>
+
+  <h3>Port checklist for this library — beyond copy-paste</h3>
+  <p><b>Status: items 1–5 are implemented in this branch</b> (and superseded in part by Round 2 below). The near
+     fields landed as <code>name_parts</code>/<code>name_tokens</code> (merged name + display_name),
+     <code>search_primary_parts</code>/<code>_tokens</code>, and <code>search_secondary_tokens</code> — all
+     computed at FEED time by <code>NearText</code> (see Round 2), which also settled the recall contract: the
+     substring reference stays a documented looser superset (NIP-50 was already excluded from strict parity).
+     The schema-version gate is <code>nearSafe</code> in <code>VespaEventIndex</code>: a 400 naming a near field
+     demotes the query to exact + gram matching and remembers, mirroring the <code>recency</code>-profile net.
+     Item 6 — measuring the shipped weights against a real corpus and watching fuzzy latency — needs a deployed
+     schema plus a re-feed first; the IT and rankAb harness below are the vehicles.</p>
+  <div class="scroll"><table>
+    <tr><th>#</th><th>adaptation</th><th>why it differs here</th></tr>
+    <tr><td>1</td><td>Add <code>name_parts</code>/<code>name_tokens</code> to <code>event.sd</code>; extend the same
+        treatment to <code>search_primary</code> (e.g. <code>search_primary_parts/tokens</code>)</td>
+        <td>our schema serves all kinds — titles/subjects deserve the same prefix/typo reach as profile names,
+            and <code>tier_text()</code>/<code>any_token_match()</code> need the near branch too</td></tr>
+    <tr><td>2</td><td>Rewrite <code>FuzzyWordGroup.fieldClauses</code>: exact stays on userInput; prefix/fuzzy become
+        direct terms on the attribute fields; drop per-tier fuzzy duplicates; port the ladder + floors</td>
+        <td>byte-shape decisions are already settled upstream; our labels (<code>mtch_prefix/fz1/fz2</code>) go away
+            with the inert ladder</td></tr>
+    <tr><td>3</td><td>Decide the <b>recall contract</b>: bounded matchers (upstream) vs substring
+        (<code>SearchFields.matches</code>, our in-memory reference)</td>
+        <td>upstream dropped infix ("dell" ⇏ ODELL) as the price of bounded edit distance. If we follow, the
+            in-memory reference and MockVespaEngine must tighten in lockstep or recall-equivalence tests go red —
+            if we keep <code>NAME_GRAM_RECALL=true</code> instead, we keep infix and keep the noise</td></tr>
+    <tr><td>4</td><td>Schema-version gating for the new YQL</td>
+        <td>same library ships schema + builder, but a deployed Vespa can lag: new query against old schema =
+            HTTP 400 on <em>every</em> search (upstream ordered two repos' merges around this; we already
+            version-gate the <code>recency</code> profile — same mechanism)</td></tr>
+    <tr><td>5</td><td>Reindex after deploy, and re-check attribute memory</td>
+        <td>derived fields are empty on existing docs until a native reindex runs — and the reindex only
+            <em>starts</em> on the next package activation. Budget ~0.5–1 GB attribute RAM per 3M profiles</td></tr>
+    <tr><td>6</td><td>Re-derive weights, then verify with a rank_ab-style harness against our corpus</td>
+        <td>the 23000/4000/700/100 values encode <em>their</em> bm25 statistics; the invariants (§4) transfer,
+            the constants may not — and <code>text_score_cutoff</code> is explicitly corpus-dependent</td></tr>
+  </table></div>
+
+  <h3>Round 2 — beyond the upstream port</h3>
+  <p>A second pass took the algorithm past what Brainstorm shipped:</p>
+  <ul>
+    <li><b>Feed-side derivation (<code>NearText</code>)</b> replaces the schema-side split: doc and query now
+        share one normalization (NFKD diacritic fold + lowercase), so "jose" reaches "José" — string attributes
+        match raw bytes and Vespa's linguistics never applied to them. Tokens also index alnum-stripped and
+        whole-name-joined variants ("vitorp" → "Vitor Pamplona"), and CJK runs index their suffixes
+        ("太郎" → "中村太郎"). <b>Deploy consequence: populating these needs a RE-FEED, not a reindex</b> —
+        feed-computed fields can't be rebuilt from Vespa's document store.</li>
+    <li><b>The weak tier</b> restores bounded infix ("dell" → ODELL via an AND of every query trigram — the
+        regression the upstream port accepted) and adds hashtag/summary prefix reach
+        (<code>search_secondary_tokens</code>, prefix-only). The ladder re-derives to
+        130000 / 23000 / 4000 / 550 so all four rungs survive the ×5.6 trust multiply.</li>
+    <li><b>Second-phase precision</b> on <code>sort_followers</code>/<code>text2</code>: the words rule
+        (query coverage) and exactness (whole-field match), computed over the top 1000 hits only and bounded to
+        reorder within a band. A within-near ordering by <em>character</em> coverage ("Ode"→"Ode" above
+        "Ode"→"Odessa") is deliberately absent — fieldMatch/elementCompleteness are token-granular, so that
+        signal needs a custom searcher, not a rank expression.</li>
+    <li><b>Measurement</b>: <code>searchScored</code> labels every hit with its tier;
+        <code>RankRegressionIT</code> asserts the whole canonical corpus (positions + tiers) against a real
+        Docker Vespa — including that the second-phase fieldMatch features deploy — and
+        <code>:benchmark:rankAb</code> A/Bs any knob against <code>rank_cases.json</code> live, with no
+        deploy/reindex/re-feed. Add a case every time someone reports a bad search.</li>
+  </ul>
+  <p class="note">Not yet verified here (no Docker in this environment): run
+     <code>./gradlew :benchmark:test -Pintegration</code> where Docker is available before deploying — it is
+     both the ranking regression gate and the schema deploy check.</p>
+
+  <p class="note">Sources: <code>vespa/app/schemas/event.sd</code>, <code>query/FuzzyWordGroup.kt</code>,
+     <code>query/EventYql.kt</code>, <code>store/mapping/FilterMapping.kt</code> (this repo);
+     NosFabrica/brainstorm-k8s#3 and NosFabrica/brainstorm_server#64 (upstream fix, verified against a real
+     Vespa on a 16-doc corpus — matcher semantics are corpus-independent; fuzzy latency at millions of docs is not
+     yet measured). Match-tier labels after the port: <code>name → near → identity → affiliation → gram</code>.</p>
+</div>
