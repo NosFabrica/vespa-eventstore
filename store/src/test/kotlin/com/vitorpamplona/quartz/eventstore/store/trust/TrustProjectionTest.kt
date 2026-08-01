@@ -23,7 +23,6 @@ package com.vitorpamplona.quartz.eventstore.store.trust
 import com.vitorpamplona.quartz.eventstore.store.NostrSemanticsStore
 import com.vitorpamplona.quartz.eventstore.vespa.InMemoryEventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.InMemoryReputationIndex
-import com.vitorpamplona.quartz.eventstore.vespa.doc.ReputationCells
 import com.vitorpamplona.quartz.eventstore.vespa.doc.ReputationDoc
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
@@ -35,7 +34,6 @@ import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
-import kotlin.test.assertTrue
 
 /**
  * The projection is driven through the REAL store, so every path that
@@ -93,33 +91,6 @@ class TrustProjectionTest {
                 ReputationDoc(subject, mapOf(observer to 87), mapOf(observer to 120.0)),
                 reputations.get(subject),
             )
-        }
-
-    @Test
-    fun `an empty provider map is not cached, so a late corpus still projects`() =
-        runBlocking {
-            // The engine is cold, or the 10040s have not been mirrored yet. Either
-            // way, asking early must not poison the map: it is read once per
-            // reconcile pass, and a cached emptiness leaves a relay unrankable
-            // until it restarts. Observed live — 271 kind-10040s queryable at full
-            // coverage while ten minutes of retries all read the same cached
-            // nothing, because only a 10040 WRITE invalidates, and dedup drops a
-            // 10040 the store already holds before any write happens.
-            val index = InMemoryEventIndex()
-            val cold = TrustProjection(index, InMemoryReputationIndex())
-            val coldStore = NostrSemanticsStore(cold, relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
-
-            assertEquals(0, cold.reconcile().services, "nothing there yet")
-
-            // Written through a DIFFERENT store over the same index, so nothing
-            // invalidates the cold one's map — the dedup case, exactly.
-            val other = NostrSemanticsStore(TrustProjection(index, InMemoryReputationIndex()), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
-            other.insert(list10040())
-            other.insert(card())
-
-            assertEquals(1, cold.reconcile().services, "the next pass must look again, not replay a cached empty map")
-            coldStore.close()
-            other.close()
         }
 
     @Test
@@ -184,17 +155,6 @@ class TrustProjectionTest {
             assertEquals(mapOf(observer to 42), reputations.get(subject)?.influenceScores)
         }
 
-    @Test
-    fun `rebuildAll re-derives everything from the event corpus`() =
-        runBlocking {
-            store.insert(list10040())
-            store.insert(card())
-            reputations.docs.clear()
-
-            projection.rebuildAll()
-            assertEquals(mapOf(observer to 87), reputations.get(subject)?.influenceScores)
-        }
-
     // ---- a 10040 carrying tags that are not service tags ---------------------
 
     @Test
@@ -226,74 +186,6 @@ class TrustProjectionTest {
             assertEquals(mapOf(observer to 87), reputations.get(subject)?.influenceScores)
         }
     }
-
-    // ---- reconcile: the repair for a projection no write can reach ----------
-
-    @Test
-    fun `reconcile re-derives a service whose scores were stored before its 10040`() =
-        runBlocking {
-            // The mirror's normal order: scores first, by a service nothing maps
-            // yet, so putAll drops them. Then the 10040 arrives in a LATER run,
-            // where it is a duplicate — no write, so no repair trigger fires.
-            store.insert(card())
-            assertNull(reputations.get(subject), "unmapped scores derive nothing")
-
-            store.insert(list10040())
-            reputations.docs.clear() // as if that run's derivation never happened
-            assertNull(reputations.get(subject))
-
-            val report = projection.reconcile()
-            assertEquals(listOf(service), report.rebuilt, "the unprojected service is re-derived")
-            assertEquals(mapOf(observer to 87), reputations.get(subject)?.influenceScores)
-        }
-
-    @Test
-    fun `reconcile leaves a healthy projection alone`() =
-        runBlocking {
-            store.insert(list10040())
-            store.insert(card())
-
-            val report = projection.reconcile()
-            assertEquals(emptyList(), report.rebuilt, "nothing to fix")
-            assertEquals(1, report.services, "but the service was examined")
-            assertEquals(mapOf(observer to 87), reputations.get(subject)?.influenceScores)
-        }
-
-    @Test
-    fun `reconcile catches a service remapped to a different observer`() =
-        runBlocking {
-            // Cells exist, so "has a doc" would call this clean — but they belong
-            // to the previous observer. Checking the CURRENT observer's cell is
-            // what makes the difference.
-            store.insert(list10040())
-            store.insert(card())
-            assertEquals(mapOf(observer to 87), reputations.get(subject)?.influenceScores)
-
-            reputations.docs.clear()
-            reputations.updateCells(listOf(ReputationCells(subject, observer2, 87, 1.0)))
-
-            val report = projection.reconcile()
-            assertEquals(listOf(service), report.rebuilt)
-            assertEquals(87, reputations.get(subject)?.influenceScores?.get(observer))
-        }
-
-    @Test
-    fun `reconcile ignores a mapped service we hold no scores for`() =
-        runBlocking {
-            store.insert(list10040())
-            val report = projection.reconcile()
-            assertEquals(0, report.services, "nothing stored for it, nothing to project")
-            assertTrue(report.isClean())
-        }
-
-    @Test
-    fun `reconcile is a no-op with no provider lists at all`() =
-        runBlocking {
-            store.insert(card())
-            val report = projection.reconcile()
-            assertEquals(0, report.services)
-            assertTrue(report.isClean())
-        }
 
     /** The BULK path: one store batch of scores builds every subject's parent doc. */
     @Test
