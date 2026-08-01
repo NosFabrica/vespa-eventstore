@@ -46,6 +46,7 @@ import com.vitorpamplona.quartz.nip01Core.store.FtsReindexProgress
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
+import com.vitorpamplona.quartz.nip01Core.store.StoreQueryContext
 import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
 import com.vitorpamplona.quartz.nip40Expiration.isExpired
 import com.vitorpamplona.quartz.nip50Search.SearchableEvent
@@ -84,7 +85,10 @@ import kotlin.coroutines.coroutineContext
  *  - NIP-50: only kinds implementing [SearchableEvent] are searchable, via
  *    [SearchExtractors], which decomposes each kind's indexable content into the
  *    schema's per-kind search fields. [reindexFullTextSearch] re-derives them
- *    after extractor/Quartz upgrades.
+ *    after extractor/Quartz upgrades. Per the [IEventStore] contract, filters
+ *    arrive with `search` VERBATIM — this store interprets the
+ *    `sort:`/`filter:rank:`/`include:spam`/`observer:` extensions itself and
+ *    ignores ones it doesn't know.
  *
  * Correctness rests on two properties. First, all writes serialize behind one
  * [Mutex], so query-then-write is atomic against other writers in this process.
@@ -274,9 +278,9 @@ class NostrSemanticsStore(
 
     @Suppress("UNCHECKED_CAST")
     override suspend fun <T : Event> query(filters: List<Filter>): List<T> {
-        val observer = coroutineContext[ObserverContext]?.pubkey
+        val observer = coroutineContext[StoreQueryContext]?.observer
         val cutoff = nowSecs()
-        val queries = restoreSearches(filters).mapNotNull { it.toExpiryQuery(cutoff, observer) }
+        val queries = filters.mapNotNull { it.toExpiryQuery(cutoff, observer) }
         val ordered = recallOrdered(queries, NEWEST_FIRST, EventDoc::id) { index.search(it) }
         // Reconstruct via Quartz's by-kind factory straight from the stored fields,
         // skipping the toEventJson()->fromJson() serialize+parse round trip that was
@@ -326,9 +330,9 @@ class NostrSemanticsStore(
         filters: List<Filter>,
         onEach: (RawEvent) -> Unit,
     ) {
-        val observer = coroutineContext[ObserverContext]?.pubkey
+        val observer = coroutineContext[StoreQueryContext]?.observer
         val cutoff = nowSecs()
-        val queries = restoreSearches(filters).mapNotNull { it.toExpiryQuery(cutoff, observer) }
+        val queries = filters.mapNotNull { it.toExpiryQuery(cutoff, observer) }
         // Same recall, dedup and (per-query, NIP-50-aware) ordering as [query].
         recallOrdered(queries, RAW_NEWEST_FIRST, RawEvent::id) { index.rawSearch(it) }.forEach(onEach)
     }
@@ -343,7 +347,7 @@ class NostrSemanticsStore(
         onEach: (T) -> Unit,
     ) = query<T>(filters).forEach(onEach)
 
-    override suspend fun count(filter: Filter): Int = restoreSearches(listOf(filter)).single().toExpiryQuery(nowSecs())?.let { index.count(it) } ?: 0
+    override suspend fun count(filter: Filter): Int = filter.toExpiryQuery(nowSecs())?.let { index.count(it) } ?: 0
 
     /**
      * The distinct authors (pubkeys) matching [filter], via a server-side grouping
@@ -351,7 +355,7 @@ class NostrSemanticsStore(
      * out of a huge match set without reconstructing every event (the orphan-score
      * sweep over millions of 30382s). Honors expiry like [count].
      */
-    suspend fun distinctAuthors(filter: Filter): Set<HexKey> = restoreSearches(listOf(filter)).single().toExpiryQuery(nowSecs())?.let { index.distinctAuthors(it) } ?: emptySet()
+    suspend fun distinctAuthors(filter: Filter): Set<HexKey> = filter.toExpiryQuery(nowSecs())?.let { index.distinctAuthors(it) } ?: emptySet()
 
     /**
      * Every distinct `d` tag (addressable subject) across [filter]'s matches, via
@@ -362,7 +366,7 @@ class NostrSemanticsStore(
      * cap. The sync uses this to find every scored author to fetch content for.
      */
     suspend fun distinctDTags(filter: Filter): Set<String> {
-        val q = restoreSearches(listOf(filter)).single().toExpiryQuery(nowSecs()) ?: return emptySet()
+        val q = filter.toExpiryQuery(nowSecs()) ?: return emptySet()
         val out = HashSet<String>()
         index.visitIds(q, withDTag = true) { page ->
             page.forEach { it.dTag?.takeIf(String::isNotEmpty)?.let(out::add) }
@@ -381,7 +385,7 @@ class NostrSemanticsStore(
         // limit <= 0 is the "matches nothing" sentinel; a positive limit is
         // about hits, not counts, and is ignored.
         val queries =
-            restoreSearches(filters)
+            filters
                 .mapNotNull { it.toExpiryQuery(cutoff) }
                 .filterNot { (it.limit ?: 1) <= 0 }
                 .map { if (it.limit != null) it.copy(limit = null) else it }
@@ -406,55 +410,21 @@ class NostrSemanticsStore(
     }
 
     /**
-     * Undo Quartz's relay-side NIP-50 extension stripping. `LiveEventStore`
-     * strips `key:value` tokens from every REQ's search before the store sees
-     * it. That is the right default for stores that would match them as text,
-     * but THIS store honors `sort:`/`filter:rank:`/`include:spam`. The relay
-     * backend carries the pre-strip filters in [OriginalFilters] — the same list
-     * in the same order, only `search` differs — so each filter's original
-     * search string is restored before mapping. Direct callers (no context
-     * element) are untouched.
-     */
-    private suspend fun restoreSearches(filters: List<Filter>): List<Filter> {
-        val originals = coroutineContext[OriginalFilters]?.filters ?: return filters
-        if (originals.size != filters.size) return filters
-        return filters.mapIndexed { i, f ->
-            val original = originals[i].search
-            if (original != null && original != f.search) f.copy(search = original) else f
-        }
-    }
-
-    /**
      * (created_at, id) pairs straight off the docs — no Event materialization
      * and no result cap. Plain filters walk the corpus through the engine's
      * visit ([com.vitorpamplona.quartz.eventstore.vespa.client.EventIndex.visitIds]), so a negentropy
      * session (or a sync reconcile diff) sees the COMPLETE match set even when it
      * dwarfs the search page limit. Searching or limit'd filters keep the search
      * path, since their semantics live there.
+     *
+     * [onProgress] (now on the [IEventStore] contract) fires after every page:
+     * the walk is the longest silent phase a mirror has — minutes of visit
+     * requests on a large corpus — and the page loop already knows the count.
      */
     override suspend fun snapshotIdsForNegentropy(
         filters: List<Filter>,
         maxEntries: Int?,
-    ): List<IdAndTime> = snapshotIdsForNegentropy(filters, maxEntries, null)
-
-    /**
-     * The same walk, reporting the running count after every page.
-     *
-     * An overload rather than a parameter on the interface method: the contract
-     * lives in quartz and nobody else needs this, so widening it there would make
-     * every implementation carry a hook only a mirror uses.
-     *
-     * The walk is the longest silent phase a mirror has: on a 25M-event corpus it
-     * is minutes of visit requests during which the caller can report neither
-     * what it is doing nor whether it is moving, because the only signal is the
-     * finished list. The page loop already knows the count — it was simply thrown
-     * away. Optional, and called on the walking coroutine, so a caller that does
-     * not want it pays nothing and one that does must keep the callback cheap.
-     */
-    suspend fun snapshotIdsForNegentropy(
-        filters: List<Filter>,
-        maxEntries: Int? = null,
-        onProgress: ((collected: Int) -> Unit)? = null,
+        onProgress: ((collected: Int) -> Unit)?,
     ): List<IdAndTime> {
         val all = ArrayList<IdAndTime>()
         // A single-filter cap can stop the walk early: the caller only needs to
