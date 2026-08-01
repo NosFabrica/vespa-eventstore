@@ -20,10 +20,10 @@
  */
 package com.vitorpamplona.quartz.eventstore.store.trust
 
+import com.vitorpamplona.quartz.eventstore.store.mapping.toEvent
 import com.vitorpamplona.quartz.eventstore.vespa.client.EventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.doc.EventDoc
 import com.vitorpamplona.quartz.eventstore.vespa.query.EventQuery
-import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.tags.ProviderTypes
 
@@ -78,7 +78,7 @@ internal class ProviderMap(
         /** Every 10040 doc's `30382:rank` entries as `service key -> observer (the 10040 author)` pairs. */
         private fun rankProviders(listDocs: List<EventDoc>): List<Pair<String, String>> =
             listDocs
-                .mapNotNull { Event.fromJsonOrNull(it.toEventJson()) as? TrustProviderListEvent }
+                .mapNotNull { it.toEvent() as? TrustProviderListEvent }
                 .flatMap { list -> list.serviceProviders().filter { it.service == ProviderTypes.rank }.map { it.pubkey to list.pubKey } }
 
         /** The distinct rank-service keys named across a batch of 10040 lists. */

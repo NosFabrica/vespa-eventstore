@@ -65,6 +65,16 @@ interface EventIndex : AutoCloseable {
     /** Bulk [remove]; the real client pipelines the deletes over HTTP/2 (a big sweep is O(1) round trips, not O(N)). */
     suspend fun removeAll(ids: List<String>) = ids.forEach { remove(it) }
 
+    /**
+     * [removeAll] for callers that already HOLD the doomed docs (a sweep just
+     * searched them; the mixed bulk path preloaded them). The default discards
+     * the extra information; overrides use it to skip reads — a reacting
+     * decorator (the trust projection) learns what each removal invalidates
+     * without a get per id, and the address-keyed client resolves each docid
+     * locally instead of reading it back.
+     */
+    suspend fun removeDocs(docs: List<EventDoc>) = removeAll(docs.map { it.id })
+
     /** Docs matching [query]: newest first (`created_at` desc, id asc tiebreak) unless ranked by a search term. */
     suspend fun search(query: EventQuery): List<EventDoc>
 
@@ -106,6 +116,31 @@ interface EventIndex : AutoCloseable {
         onPage: suspend (List<DocRef>) -> Boolean,
     ) {
         onPage(search(query).map { DocRef(it.id, it.createdAt, if (withDTag) it.dTag() else null) })
+    }
+
+    /**
+     * One PAGE of FULL docs from a resumable, engine-ordered walk over
+     * [query]'s matches — the corpus-rewrite primitive (reindex). [resumeFrom]
+     * is the continuation a previous page returned (null starts the walk); a
+     * null continuation in the result means the walk is complete. Order is
+     * engine-defined but the walk is exhaustive, with O(page) memory — what
+     * [visitIds] gives a sync diff, for callers that need the whole document.
+     *
+     * The default emulates it by id-ordered paging over [search] — correct,
+     * but it re-lists the match set per call, so it is only for the in-memory
+     * reference; the real client overrides it with the document API's visit.
+     */
+    suspend fun visitDocsPage(
+        query: EventQuery,
+        resumeFrom: String?,
+        maxDocs: Int,
+    ): DocsPage {
+        val batch =
+            search(query)
+                .sortedBy { it.id }
+                .filter { resumeFrom == null || it.id > resumeFrom }
+                .take(maxDocs)
+        return DocsPage(batch, batch.lastOrNull()?.id?.takeIf { batch.size == maxDocs })
     }
 
     suspend fun count(query: EventQuery): Int
@@ -200,6 +235,12 @@ interface EventIndex : AutoCloseable {
 /** NIP-01 replaceable winner order: newest `created_at` first, ties to the LOWEST id. */
 internal val REPLACEABLE_WINNER: Comparator<EventDoc> =
     compareByDescending<EventDoc> { it.createdAt }.thenBy { it.id }
+
+/** One page of [EventIndex.visitDocsPage]: the docs plus the continuation for the next call (null = the walk is complete). */
+data class DocsPage(
+    val docs: List<EventDoc>,
+    val continuation: String?,
+)
 
 /** The (id, created_at[, d tag]) projection [EventIndex.visitIds] streams — all a sync diff or projection walk needs. */
 data class DocRef(

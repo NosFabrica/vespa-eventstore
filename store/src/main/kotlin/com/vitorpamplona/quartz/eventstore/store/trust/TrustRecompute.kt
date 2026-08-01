@@ -20,6 +20,7 @@
  */
 package com.vitorpamplona.quartz.eventstore.store.trust
 
+import com.vitorpamplona.quartz.eventstore.store.mapping.toEvent
 import com.vitorpamplona.quartz.eventstore.vespa.IngestStats
 import com.vitorpamplona.quartz.eventstore.vespa.QUERY_FANOUT
 import com.vitorpamplona.quartz.eventstore.vespa.client.EventIndex
@@ -29,7 +30,6 @@ import com.vitorpamplona.quartz.eventstore.vespa.doc.ReputationDoc
 import com.vitorpamplona.quartz.eventstore.vespa.forEachBounded
 import com.vitorpamplona.quartz.eventstore.vespa.mapBounded
 import com.vitorpamplona.quartz.eventstore.vespa.query.EventQuery
-import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 
 /**
@@ -197,7 +197,9 @@ internal class TrustRecompute(
         val influence = LinkedHashMap<String, Int>()
         val followers = LinkedHashMap<String, Double>()
         for (doc in docs) {
-            val card = Event.fromJsonOrNull(doc.toEventJson()) as? ContactCardEvent ?: continue
+            // Direct by-kind reconstruction — no toEventJson()/fromJson round
+            // trip; this runs once per fetched card across every recompute walk.
+            val card = doc.toEvent() as? ContactCardEvent ?: continue
             val observer = serviceToObserver[card.pubKey] ?: continue
             card.rank()?.let { influence[observer] = it }
             card.followerCount()?.let { followers[observer] = it.toDouble() }

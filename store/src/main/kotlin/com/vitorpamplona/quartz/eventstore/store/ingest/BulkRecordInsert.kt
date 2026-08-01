@@ -25,6 +25,7 @@ import com.vitorpamplona.quartz.eventstore.store.mapping.VespaText
 import com.vitorpamplona.quartz.eventstore.store.mapping.addressOrNull
 import com.vitorpamplona.quartz.eventstore.store.mapping.owner
 import com.vitorpamplona.quartz.eventstore.store.mapping.toDoc
+import com.vitorpamplona.quartz.eventstore.store.mapping.toEvent
 import com.vitorpamplona.quartz.eventstore.vespa.IngestStats
 import com.vitorpamplona.quartz.eventstore.vespa.PUT_FANOUT
 import com.vitorpamplona.quartz.eventstore.vespa.QUERY_FANOUT
@@ -165,12 +166,15 @@ internal class BulkRecordInsert(
         val owners = alive().groupBy { events[it].owner() }
         val guardSets =
             IngestStats.timed("guards") {
-                // Only owners with any stored tombstone/vanish can have guard
+                // Only owners with a stored tombstone/vanish can have guard
                 // docs at all (GuardOwners); everyone else's sets are provably
                 // empty — usually ALL of a content batch, skipping both queries.
-                val flagged = guards.filterFlagged(owners.keys)
-                val tombs = if (flagged.isEmpty()) emptyMap() else guardDocs(flagged, DeletionEvent.KIND)
-                val vanishes = if (flagged.isEmpty()) emptyMap() else guardDocs(flagged, RequestToVanishEvent.KIND)
+                // Gated independently: deleters vastly outnumber vanishers, so
+                // the vanish query usually disappears even in a flagged batch.
+                val flaggedDeleters = guards.filterFlaggedDeleters(owners.keys)
+                val flaggedVanishers = guards.filterFlaggedVanishers(owners.keys)
+                val tombs = if (flaggedDeleters.isEmpty()) emptyMap() else guardDocs(flaggedDeleters, DeletionEvent.KIND)
+                val vanishes = if (flaggedVanishers.isEmpty()) emptyMap() else guardDocs(flaggedVanishers, RequestToVanishEvent.KIND)
                 owners.keys.associateWith { (tombs[it].orEmpty() to vanishes[it].orEmpty()) }
             }
         for ((owner, idxs) in owners) {
@@ -190,7 +194,7 @@ internal class BulkRecordInsert(
             }
             val vanishAt =
                 vanishes
-                    .mapNotNull { doc -> (Event.fromJsonOrNull(doc.toEventJson()) as? RequestToVanishEvent)?.takeIf { it.shouldVanishFrom(relay) }?.createdAt }
+                    .mapNotNull { doc -> (doc.toEvent() as? RequestToVanishEvent)?.takeIf { it.shouldVanishFrom(relay) }?.createdAt }
                     .maxOrNull() ?: Long.MIN_VALUE
             for (i in idxs) {
                 val e = events[i]
@@ -290,12 +294,17 @@ internal class BulkRecordInsert(
                     existing.getOrPut(Triple(doc.kind, doc.pubkey, d)) { mutableListOf() } += doc
                 }
             }
-        val removeFromStore = ArrayList<String>()
+        val removeFromStore = ArrayList<EventDoc>()
+        val removeIds = HashSet<String>()
+
+        fun scheduleRemove(doc: EventDoc) {
+            if (removeIds.add(doc.id)) removeFromStore += doc
+        }
         for ((key, idxs) in groups) {
             val versions = existing[key].orEmpty()
             // The run competes against the store's best. Every stored version
             // strictly older than the final winner is swept.
-            var bestDocId: String? = versions.maxWithOrNull(compareBy<EventDoc> { it.createdAt }.thenByDescending { it.id })?.id
+            var bestDoc: EventDoc? = versions.maxWithOrNull(compareBy<EventDoc> { it.createdAt }.thenByDescending { it.id })
             var bestAt = versions.maxOfOrNull { it.createdAt } ?: Long.MIN_VALUE
             var bestId = versions.filter { it.createdAt == bestAt }.minOfOrNull { it.id }
             var bestInRun: Int? = null
@@ -308,8 +317,8 @@ internal class BulkRecordInsert(
                     // The previous best is superseded. An in-run best stays
                     // Accepted but never lands; a stored best is removed.
                     bestInRun?.let { toPut.remove(events[it].id) }
-                    bestDocId?.let { removeFromStore += it }
-                    bestDocId = null
+                    bestDoc?.let { scheduleRemove(it) }
+                    bestDoc = null
                     bestInRun = i
                     bestAt = e.createdAt
                     bestId = e.id
@@ -317,12 +326,12 @@ internal class BulkRecordInsert(
                 }
             }
             // Older stored versions beyond the single best also fall (drift repair).
-            versions.forEach { doc -> if (doc.id != bestDocId && doc.id !in removeFromStore) removeFromStore += doc.id }
+            versions.forEach { doc -> if (doc.id != bestDoc?.id && doc.id !in removeIds) scheduleRemove(doc) }
         }
         // Skip the round trip when nothing supersedes — the common case for a
-        // fresh corpus (first-seen addresses remove nothing).
-        val toRemove = removeFromStore.distinct()
-        if (toRemove.isNotEmpty()) index.removeAll(toRemove)
+        // fresh corpus (first-seen addresses remove nothing). The docs are in
+        // hand, so removeDocs lets the projection react without a get per id.
+        if (removeFromStore.isNotEmpty()) index.removeDocs(removeFromStore)
 
         // Stage E — one pipelined write for everything that survived. (Timing
         // is booked by the layers below: the projection decorator splits it

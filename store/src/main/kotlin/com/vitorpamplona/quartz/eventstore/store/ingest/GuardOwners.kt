@@ -24,29 +24,34 @@ import com.vitorpamplona.quartz.eventstore.vespa.client.EventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.query.EventQuery
 import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /**
- * The set of owners with ANY stored tombstone or vanish — the key that lets the
- * admission path SKIP its NIP-09/NIP-62 guard probes for everyone else, which
- * is nearly everyone (content authors seldom publish deletions). Both guard
- * probes query kind-5/62 docs whose AUTHOR is the inserted event's owner, so
- * "no stored guard doc by this author" proves both probes would come back
- * empty.
+ * The owners with a stored tombstone, and the owners with a stored vanish — the
+ * keys that let the admission path SKIP its NIP-09 and NIP-62 guard probes for
+ * everyone else, which is nearly everyone (content authors seldom publish
+ * deletions). Each guard probe queries kind-5/62 docs whose AUTHOR is the
+ * inserted event's owner, so "no stored guard doc of that kind by this author"
+ * proves that probe would come back empty.
+ *
+ * TWO blooms, not one: vanishers are orders of magnitude rarer than deleters,
+ * and the two probes gate independently. A conflated set forces the vanish
+ * probe on every deleter's event — on a deletion-heavy sync that is one wasted
+ * query (or an O(snapshot) scan in the bulk replay) per event, proving over and
+ * over that owners who never vanished didn't vanish.
  *
  * Why this is safe:
- *  - OVER-flagging (an owner in the set with no live guard) only costs a probe.
- *  - UNDER-flagging cannot happen within the store's write model: the set is
- *    preloaded from the engine (two grouping queries over kind 5 and kind 62)
- *    and every guard this store subsequently stores is added via
- *    [noteGuardStored]. A single writer — or one owner-sharded lane, since
+ *  - OVER-flagging (an owner in a set with no live guard) only costs a probe.
+ *  - UNDER-flagging cannot happen within the store's write model: the sets are
+ *    preloaded from the engine (two corpus walks, run concurrently) and every
+ *    guard this store subsequently stores is added via [noteDeletionStored] /
+ *    [noteVanishStored]. A single writer — or one owner-sharded lane, since
  *    lanes never insert another lane's owners (docs/multi-node-consistency.md)
- *    — therefore always sees its owners' guards. A FOREIGN feeder writing
- *    kind 5/62 directly to the engine would bypass this (and every other
- *    query-then-write guarantee); that deployment shape needs the probes, so
- *    it should disable the cache.
- *  - Scale: the flagged owners live in a [GuardBloom], not an exact set, so a
+ *    — therefore always sees its owners' guards.
+ *  - Scale: the flagged owners live in [GuardBloom]s, not exact sets, so a
  *    relay with millions of distinct deleters costs a few MB and the guard-skip
  *    KEEPS WORKING. The Bloom's no-false-negative property is exactly the
  *    UNDER-flag prohibition above; a false positive is just the harmless
@@ -54,15 +59,20 @@ import kotlinx.coroutines.sync.withLock
  *    WHOLE corpus, so it uses [EventIndex.scanAuthors] — the continuation-paged
  *    visit — rather than [EventIndex.distinctAuthors], whose grouping is equally
  *    complete but builds its entire answer in one response.
- *  - A FOREIGN feeder writing kind 5/62 directly to the engine still bypasses
- *    [noteGuardStored]; that deployment must set `GUARD_OWNERS_DISABLE=1` so
- *    every insert probes.
+ *  - A FOREIGN feeder writing kind 5/62 directly to the engine bypasses the
+ *    note hooks; that deployment must set `GUARD_OWNERS_DISABLE=1` so every
+ *    insert probes.
  */
 internal class GuardOwners(
     private val index: EventIndex,
 ) {
+    private class Blooms(
+        val deleters: GuardBloom,
+        val vanishers: GuardBloom,
+    )
+
     @Volatile
-    private var bloom: GuardBloom? = null
+    private var blooms: Blooms? = null
 
     // Config-only now (a foreign direct-feeder deployment). No longer tripped by
     // deleter cardinality — the Bloom scales where the old exact set gave up.
@@ -73,40 +83,69 @@ internal class GuardOwners(
 
     private val loadLock = Mutex()
 
-    /** False only when this owner provably has no stored tombstone/vanish — the probes can be skipped. */
-    suspend fun mightHaveGuards(owner: String): Boolean {
+    /** False only when this owner provably has no stored tombstone — the NIP-09 probe can be skipped. */
+    suspend fun mightBeDeleted(owner: String): Boolean {
         if (disabled) return true
         val b = loaded() ?: return true
-        return b.mightContain(owner)
+        return b.deleters.mightContain(owner)
     }
 
-    /** The subset of [owners] that can have guard docs at all (bulk path: query only these). */
-    suspend fun filterFlagged(owners: Collection<String>): Collection<String> {
+    /** False only when this owner provably has no stored vanish — the NIP-62 probe can be skipped. */
+    suspend fun mightHaveVanished(owner: String): Boolean {
+        if (disabled) return true
+        val b = loaded() ?: return true
+        return b.vanishers.mightContain(owner)
+    }
+
+    /** The subset of [owners] that can have stored tombstones at all (bulk paths: query only these). */
+    suspend fun filterFlaggedDeleters(owners: Collection<String>): Collection<String> {
         if (disabled) return owners
         val b = loaded() ?: return owners
-        return owners.filter { b.mightContain(it) }
+        return owners.filter { b.deleters.mightContain(it) }
     }
 
-    /** A kind 5/62 by [author] was just stored — their events must probe from now on. */
-    fun noteGuardStored(author: String) {
-        bloom?.add(author)
+    /** The subset of [owners] that can have stored vanishes at all (bulk paths: query only these). */
+    suspend fun filterFlaggedVanishers(owners: Collection<String>): Collection<String> {
+        if (disabled) return owners
+        val b = loaded() ?: return owners
+        return owners.filter { b.vanishers.mightContain(it) }
     }
 
-    private suspend fun loaded(): GuardBloom? {
-        bloom?.let { return it }
+    /** A kind 5 by [author] was just stored — their events must probe NIP-09 from now on. */
+    fun noteDeletionStored(author: String) {
+        blooms?.deleters?.add(author)
+    }
+
+    /** A kind 62 by [author] was just stored — their events must probe NIP-62 from now on. */
+    fun noteVanishStored(author: String) {
+        blooms?.vanishers?.add(author)
+    }
+
+    private suspend fun loaded(): Blooms? {
+        blooms?.let { return it }
         if (disabled) return null
         loadLock.withLock {
-            bloom?.let { return it }
-            val deleters = index.scanAuthors(EventQuery(kinds = listOf(DeletionEvent.KIND)))
-            val vanishers = index.scanAuthors(EventQuery(kinds = listOf(RequestToVanishEvent.KIND)))
-            // Size for the loaded set plus headroom for guards stored this run;
-            // overfill only raises the (harmless) false-positive rate, never
-            // yields a false negative.
-            val b = GuardBloom(expectedInsertions = (deleters.size + vanishers.size) * 4 + 4096)
-            deleters.forEach { b.add(it) }
-            vanishers.forEach { b.add(it) }
-            bloom = b
+            blooms?.let { return it }
+            // The two corpus walks are independent, so they run CONCURRENTLY:
+            // the first-insert stall is one walk's wall time, not two in series.
+            val b =
+                coroutineScope {
+                    val deleters = async { index.scanAuthors(EventQuery(kinds = listOf(DeletionEvent.KIND))) }
+                    val vanishers = async { index.scanAuthors(EventQuery(kinds = listOf(RequestToVanishEvent.KIND))) }
+                    Blooms(bloomOf(deleters.await()), bloomOf(vanishers.await()))
+                }
+            blooms = b
             return b
         }
+    }
+
+    /**
+     * Sized for the loaded set plus headroom for guards stored this run; overfill
+     * only raises the (harmless) false-positive rate, never yields a false negative.
+     */
+    private fun bloomOf(authors: Set<String>): GuardBloom {
+        val bloom = GuardBloom(expectedInsertions = authors.size * 4 + 4096)
+        authors.forEach(bloom::add)
+        return bloom
     }
 }

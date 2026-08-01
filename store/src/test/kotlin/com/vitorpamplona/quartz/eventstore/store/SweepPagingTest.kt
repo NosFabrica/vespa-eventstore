@@ -128,6 +128,8 @@ class SweepPagingTest {
         val broken =
             object : EventIndex by inner {
                 override suspend fun removeAll(ids: List<String>) {} // acked, never applied
+
+                override suspend fun removeDocs(docs: List<EventDoc>) {} // the sweep's actual path
             }
         val store = NostrSemanticsStore(broken, sweepPage = PAGE)
         runBlocking {

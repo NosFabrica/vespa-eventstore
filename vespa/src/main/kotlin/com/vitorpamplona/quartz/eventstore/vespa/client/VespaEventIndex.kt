@@ -45,7 +45,6 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.long
 import kotlinx.serialization.json.put
 import java.net.URLEncoder
 import java.time.Duration
@@ -203,6 +202,15 @@ class VespaEventIndex(
         feed.client.remove(DocumentId.of(NAMESPACE, DOCTYPE, docId), feedParams()).await()
     }
 
+    /**
+     * Bulk remove with the docs in hand: the docid comes straight from each doc
+     * ([docIdOf]), so the address-keyed resolve-by-get that [removeAll] must do
+     * per id disappears. Same pipelining as [putAll].
+     */
+    override suspend fun removeDocs(docs: List<EventDoc>) {
+        docs.map { feed.client.remove(DocumentId.of(NAMESPACE, DOCTYPE, docIdOf(it)), feedParams()) }.forEach { it.await() }
+    }
+
     /** All removes in flight together over HTTP/2, like [putAll]. */
     override suspend fun removeAll(ids: List<String>) {
         // Address-keyed replaceables live at an address docid, not their event id,
@@ -326,30 +334,47 @@ class VespaEventIndex(
         while (true) {
             val resp = http.get(continuation?.let { "$base&continuation=$it" } ?: base)
             require(resp.statusCode() < 400) { "vespa visit ${resp.statusCode()}: ${resp.body().take(300)}" }
-            val json = Json.parseToJsonElement(resp.body()).jsonObject
+            // Streamed into flat DTOs, like the search path: a 25M-doc walk is
+            // ~24k pages, and a JsonElement tree per page is pure garbage here.
+            val env = DECODER.decodeFromString<VisitEnvelope>(resp.body())
             val page =
-                json["documents"]?.jsonArray?.mapNotNull { d ->
-                    val obj = d.jsonObject
-                    val id = obj["id"]?.jsonPrimitive?.content?.substringAfterLast(":") ?: return@mapNotNull null
-                    val fields = obj["fields"]?.jsonObject
-                    val at = fields?.get("created_at")?.jsonPrimitive?.long ?: return@mapNotNull null
+                env.documents.mapNotNull { d ->
+                    if (d.id.isEmpty()) return@mapNotNull null
+                    val at = d.fields?.createdAt ?: return@mapNotNull null
                     val dTag =
                         if (withDTag) {
-                            fields["tag_index"]
-                                ?.jsonArray
-                                ?.firstNotNullOfOrNull { t ->
-                                    t.jsonPrimitive.content
-                                        .takeIf { it.startsWith("d:") }
-                                        ?.substring(2)
-                                }
+                            d.fields.tagIndex?.firstNotNullOfOrNull { t -> t.takeIf { it.startsWith("d:") }?.substring(2) }
                         } else {
                             null
                         }
-                    DocRef(id, at, dTag)
-                } ?: emptyList()
+                    DocRef(d.id.substringAfterLast(":"), at, dTag)
+                }
             if (page.isNotEmpty() && !onPage(page)) return
-            continuation = json["continuation"]?.jsonPrimitive?.content ?: return
+            continuation = env.continuation ?: return
         }
+    }
+
+    /**
+     * One page of FULL docs through the document API's visit — the reindex
+     * primitive. `[document]` selects every real document field (the search
+     * columns included: they are stored fields, written by [putOp]), so the
+     * page decodes through the same [VespaSummary] a get returns. The
+     * continuation token rides in [DocsPage.continuation], opaque to callers.
+     */
+    override suspend fun visitDocsPage(
+        query: EventQuery,
+        resumeFrom: String?,
+        maxDocs: Int,
+    ): DocsPage {
+        val selection = EventSelection.build(query) ?: return super.visitDocsPage(query, resumeFrom, maxDocs)
+        val base =
+            "${endpoint()}/document/v1/$NAMESPACE/$DOCTYPE/docid" +
+                "?selection=${URLEncoder.encode(selection, "UTF-8")}" +
+                "&wantedDocumentCount=${maxDocs.coerceIn(1, VISIT_PAGE)}&fieldSet=${URLEncoder.encode("[document]", "UTF-8")}"
+        val resp = http.get(resumeFrom?.let { "$base&continuation=$it" } ?: base)
+        require(resp.statusCode() < 400) { "vespa visit ${resp.statusCode()}: ${resp.body().take(300)}" }
+        val env = DECODER.decodeFromString<DocVisitEnvelope>(resp.body())
+        return DocsPage(env.documents.mapNotNull { it.fields?.toDoc() }, env.continuation)
     }
 
     override suspend fun count(query: EventQuery): Int {
@@ -458,16 +483,9 @@ class VespaEventIndex(
         while (true) {
             val resp = http.get(continuation?.let { "$base&continuation=$it" } ?: base)
             require(resp.statusCode() < 400) { "vespa visit ${resp.statusCode()}: ${resp.body().take(300)}" }
-            val json = Json.parseToJsonElement(resp.body()).jsonObject
-            json["documents"]?.jsonArray?.forEach { d ->
-                d.jsonObject["fields"]
-                    ?.jsonObject
-                    ?.get("pubkey")
-                    ?.jsonPrimitive
-                    ?.content
-                    ?.let { authors += it }
-            }
-            continuation = json["continuation"]?.jsonPrimitive?.content ?: return authors
+            val env = DECODER.decodeFromString<VisitEnvelope>(resp.body())
+            env.documents.forEach { d -> d.fields?.pubkey?.let { authors += it } }
+            continuation = env.continuation ?: return authors
         }
     }
 
@@ -613,6 +631,38 @@ class VespaEventIndex(
     /** `/document/v1/…` get response. */
     @Serializable
     private class DocEnvelope(
+        val fields: VespaSummary? = null,
+    )
+
+    /** A visit page for the projected walks ([visitIds]/[scanAuthors]) — flat DTOs, no JsonElement tree. */
+    @Serializable
+    private class VisitEnvelope(
+        val documents: List<VisitDoc> = emptyList(),
+        val continuation: String? = null,
+    )
+
+    @Serializable
+    private class VisitDoc(
+        val id: String = "",
+        val fields: VisitFields? = null,
+    )
+
+    @Serializable
+    private class VisitFields(
+        @SerialName("created_at") val createdAt: Long? = null,
+        @SerialName("tag_index") val tagIndex: List<String>? = null,
+        val pubkey: String? = null,
+    )
+
+    /** A `[document]` visit page: full summaries plus the continuation ([visitDocsPage]). */
+    @Serializable
+    private class DocVisitEnvelope(
+        val documents: List<DocVisitDoc> = emptyList(),
+        val continuation: String? = null,
+    )
+
+    @Serializable
+    private class DocVisitDoc(
         val fields: VespaSummary? = null,
     )
 

@@ -70,20 +70,31 @@ class GuardOwnersTest {
             plain.forEach { author -> store.insert(Event(id(), author, 1_000, 1, emptyArray(), "hi", "")) }
 
             // A FRESH GuardOwners over the same index — exercises the exhaustive
-            // scanAuthors load, not the write-time noteGuardStored path.
+            // scanAuthors load, not the write-time note*Stored path.
             val guards = GuardOwners(index)
 
-            (deleters + vanishers).forEach { author ->
-                assertTrue(guards.mightHaveGuards(author), "guard author $author not flagged — false negative")
+            deleters.forEach { author ->
+                assertTrue(guards.mightBeDeleted(author), "deleter $author not flagged — false negative")
             }
+            vanishers.forEach { author ->
+                assertTrue(guards.mightHaveVanished(author), "vanisher $author not flagged — false negative")
+            }
+            // The blooms gate INDEPENDENTLY: a mere deleter must not force the
+            // vanish probe, and vice versa (no false positive at this tiny fill).
+            deleters.forEach { author -> assertFalse(guards.mightHaveVanished(author), "deleter $author wrongly vanish-flagged") }
+            vanishers.forEach { author -> assertFalse(guards.mightBeDeleted(author), "vanisher $author wrongly delete-flagged") }
 
-            // filterFlagged over a mixed set returns ALL guard authors (may over-return
-            // a plain author on a Bloom collision, never under-return a guard one).
-            val flagged = guards.filterFlagged(deleters + vanishers + plain).toSet()
-            assertTrue(flagged.containsAll(deleters + vanishers), "filterFlagged dropped a guard author")
+            // The filters over a mixed set return ALL their guard authors (may
+            // over-return on a Bloom collision, never under-return).
+            val all = deleters + vanishers + plain
+            assertTrue(guards.filterFlaggedDeleters(all).toSet().containsAll(deleters), "filterFlaggedDeleters dropped a deleter")
+            assertTrue(guards.filterFlaggedVanishers(all).toSet().containsAll(vanishers), "filterFlaggedVanishers dropped a vanisher")
 
-            // Pure-content authors are skippable (no false positive at this tiny fill).
-            plain.forEach { author -> assertFalse(guards.mightHaveGuards(author), "plain author $author wrongly flagged") }
+            // Pure-content authors are skippable on both probes.
+            plain.forEach { author ->
+                assertFalse(guards.mightBeDeleted(author), "plain author $author wrongly flagged")
+                assertFalse(guards.mightHaveVanished(author), "plain author $author wrongly flagged")
+            }
         }
 
     @Test
@@ -92,9 +103,12 @@ class GuardOwnersTest {
             val index = InMemoryEventIndex()
             val guards = GuardOwners(index)
             val author = pk("aa")
-            // Trigger the (empty) load, then record a guard as the write path would.
-            assertFalse(guards.mightHaveGuards(author))
-            guards.noteGuardStored(author)
-            assertTrue(guards.mightHaveGuards(author), "noteGuardStored did not flag the author")
+            // Trigger the (empty) load, then record guards as the write path would.
+            assertFalse(guards.mightBeDeleted(author))
+            guards.noteDeletionStored(author)
+            assertTrue(guards.mightBeDeleted(author), "noteDeletionStored did not flag the author")
+            assertFalse(guards.mightHaveVanished(author), "a deletion must not vanish-flag the author")
+            guards.noteVanishStored(author)
+            assertTrue(guards.mightHaveVanished(author), "noteVanishStored did not flag the author")
         }
 }

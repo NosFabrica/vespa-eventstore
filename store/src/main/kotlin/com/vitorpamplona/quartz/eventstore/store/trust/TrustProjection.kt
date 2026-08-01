@@ -20,6 +20,7 @@
  */
 package com.vitorpamplona.quartz.eventstore.store.trust
 
+import com.vitorpamplona.quartz.eventstore.store.mapping.toEvent
 import com.vitorpamplona.quartz.eventstore.vespa.IngestStats
 import com.vitorpamplona.quartz.eventstore.vespa.QUERY_FANOUT
 import com.vitorpamplona.quartz.eventstore.vespa.client.DocRef
@@ -29,7 +30,6 @@ import com.vitorpamplona.quartz.eventstore.vespa.doc.EventDoc
 import com.vitorpamplona.quartz.eventstore.vespa.doc.ReputationCells
 import com.vitorpamplona.quartz.eventstore.vespa.mapBounded
 import com.vitorpamplona.quartz.eventstore.vespa.query.EventQuery
-import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
@@ -139,7 +139,7 @@ class TrustProjection(
         for (doc in cards) {
             val subject = subjectOf(doc) ?: continue
             val observer = serviceToObserver[doc.pubkey] ?: continue
-            val card = Event.fromJsonOrNull(doc.toEventJson()) as? ContactCardEvent ?: continue
+            val card = doc.toEvent() as? ContactCardEvent ?: continue
             val influence = card.rank()
             val followers = card.followerCount()?.toDouble()
             if (influence != null && followers != null) {
@@ -166,13 +166,34 @@ class TrustProjection(
     }
 
     /**
-     * Bulk remove: read the doomed docs (what each removal invalidates), delete
-     * them all pipelined, then react ONCE for the whole set. Every removed
-     * 30382's subject is re-derived in a single batch, not one recompute per doc.
+     * Bulk remove by id: only TRUST docs (30382/10040) can invalidate the
+     * projection, so read back just those — chunked kind-filtered searches,
+     * never a get per id (a million-deletion sweep would pay a round trip per
+     * doomed doc to learn it was a plain note). Then delete pipelined and react
+     * ONCE for the whole set.
      */
     override suspend fun removeAll(ids: List<String>) {
-        val docs = ids.mapBounded(QUERY_FANOUT) { inner.get(it) }.filterNotNull()
+        val docs =
+            ids
+                .chunked(REMOVE_CHUNK)
+                .mapBounded(QUERY_FANOUT) { chunk -> inner.search(EventQuery(ids = chunk, kinds = TRUST_KINDS)) }
+                .flatten()
         inner.removeAll(ids)
+        react(docs)
+    }
+
+    /**
+     * Bulk remove for callers that already HOLD the doomed docs (the store's
+     * sweep just searched them; the mixed bulk path preloaded them): ZERO reads
+     * — the docs themselves say what each removal invalidates.
+     */
+    override suspend fun removeDocs(docs: List<EventDoc>) {
+        inner.removeDocs(docs)
+        react(docs)
+    }
+
+    /** The shared bulk reaction: re-attribute for removed 10040s, re-derive removed 30382s' subjects in one batch. */
+    private suspend fun react(docs: List<EventDoc>) {
         recompute.recomputeSubjectsOf(docs.filter { it.kind == TrustProviderListEvent.KIND })
         val subjects = docs.filter { it.kind == ContactCardEvent.KIND }.mapNotNull { subjectOf(it) }.distinct()
         if (subjects.isNotEmpty()) recompute.recomputeBatch(subjects, recompute.providerMap(), removeEmpties = true)
@@ -183,5 +204,13 @@ class TrustProjection(
             ContactCardEvent.KIND -> subjectOf(doc)?.let { recompute.recompute(it) }
             TrustProviderListEvent.KIND -> recompute.recomputeSubjectsOf(listOf(doc))
         }
+    }
+
+    private companion object {
+        /** The only kinds whose removal can invalidate the projection. */
+        val TRUST_KINDS = listOf(ContactCardEvent.KIND, TrustProviderListEvent.KIND)
+
+        /** Ids per removeAll read-back query — round-trip width, not a result cap. */
+        const val REMOVE_CHUNK = 500
     }
 }

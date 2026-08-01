@@ -33,7 +33,6 @@ import com.vitorpamplona.quartz.eventstore.store.mapping.toEventQuery
 import com.vitorpamplona.quartz.eventstore.vespa.QUERY_FANOUT
 import com.vitorpamplona.quartz.eventstore.vespa.client.EventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.doc.EventDoc
-import com.vitorpamplona.quartz.eventstore.vespa.doc.SearchFields
 import com.vitorpamplona.quartz.eventstore.vespa.mapBounded
 import com.vitorpamplona.quartz.eventstore.vespa.query.EventQuery
 import com.vitorpamplona.quartz.nip01Core.core.Event
@@ -203,29 +202,38 @@ class NostrSemanticsStore(
         // conditional writes pay a read-for-write check) and ~35% slower on
         // duplicates, which lose this wave's 1-round-trip early exit and pay a
         // full write attempt instead. See docs/server-side-constraints.md.
-        coroutineScope {
-            val existing = async { index.get(event.id) }
-            // Guard probes run only when this owner HAS a stored tombstone or
-            // vanish (GuardOwners) — for everyone else both probes provably
-            // come back empty, so the common-case insert reads just the dup get.
-            val probeGuards = guards.mightHaveGuards(event.owner())
-            val deleted = if (probeGuards) async { isDeleted(event) } else null
-            val vanished = if (probeGuards) async { isVanished(event) } else null
-            if (existing.await() != null) throw RejectedException(Rejections.DUPLICATE)
-            if (deleted?.await() == true) throw RejectedException(Rejections.DELETED)
-            if (vanished?.await() == true) throw RejectedException(Rejections.VANISHED)
+        // Guard probes run only when this owner HAS a stored tombstone (NIP-09)
+        // or vanish (NIP-62) — gated INDEPENDENTLY (GuardOwners): a prolific
+        // deleter's events skip the vanish probe unless they also vanished.
+        val owner = event.owner()
+        val probeDeleted = guards.mightBeDeleted(owner)
+        val probeVanished = guards.mightHaveVanished(owner)
+        if (!probeDeleted && !probeVanished) {
+            // The common-case insert reads just the dup get — skip the fan-out
+            // machinery (coroutineScope + async allocate per call; the same
+            // shortcut the client's single-id read path takes).
+            if (index.get(event.id) != null) throw RejectedException(Rejections.DUPLICATE)
+        } else {
+            coroutineScope {
+                val existing = async { index.get(event.id) }
+                val deleted = if (probeDeleted) async { isDeleted(event) } else null
+                val vanished = if (probeVanished) async { isVanished(event) } else null
+                if (existing.await() != null) throw RejectedException(Rejections.DUPLICATE)
+                if (deleted?.await() == true) throw RejectedException(Rejections.DELETED)
+                if (vanished?.await() == true) throw RejectedException(Rejections.VANISHED)
+            }
         }
         when {
             event is DeletionEvent -> {
                 applyDeletion(event)
                 index.put(event.toDoc())
-                guards.noteGuardStored(event.pubKey)
+                guards.noteDeletionStored(event.pubKey)
             }
 
             event is RequestToVanishEvent -> {
                 applyVanish(event)
                 index.put(event.toDoc())
-                guards.noteGuardStored(event.pubKey)
+                guards.noteVanishStored(event.pubKey)
             }
 
             // Replaceable/addressable newest-wins in ONE call: address-keyed Vespa
@@ -507,7 +515,9 @@ class NostrSemanticsStore(
             // landing. Fail NOW: silently returning would report a vanish/delete
             // as enforced while the events are still stored and served.
             check(ids != lastPage) { "sweep is not shrinking: ${ids.size} matches for $q survived their own removal" }
-            index.removeAll(page.map { it.id })
+            // The docs are already in hand — removeDocs lets the projection
+            // react without a get per id (see TrustProjection.removeDocs).
+            index.removeDocs(page)
             // A limit'd delete is satisfied by its first page.
             if (q.limit != null) return
             lastPage = ids
@@ -544,9 +554,7 @@ class NostrSemanticsStore(
     /** NIP-62: a stored vanish request by this event's OWNER covering [relay] blocks their events up to its time. */
     private suspend fun isVanished(event: Event): Boolean {
         val vanishes = index.search(EventQuery(kinds = listOf(RequestToVanishEvent.KIND), authors = listOf(event.owner()), since = event.createdAt))
-        return vanishes.any { doc ->
-            (Event.fromJsonOrNull(doc.toEventJson()) as? RequestToVanishEvent)?.shouldVanishFrom(relay) == true
-        }
+        return vanishes.any { doc -> (doc.toEvent() as? RequestToVanishEvent)?.shouldVanishFrom(relay) == true }
     }
 
     /**
@@ -602,26 +610,23 @@ class NostrSemanticsStore(
     }
 
     /**
-     * Resumable batch: docs are walked in id order from [resumeFrom]
-     * (exclusive). This is reference-grade paging: each call re-lists the ids
-     * through [EventIndex.search]. The real Vespa client will page with a visit.
+     * Resumable batch: one page of the engine's document walk
+     * ([EventIndex.visitDocsPage]), with the walk's continuation carried in the
+     * opaque [FtsReindexProgress.cursor]. O(page) memory and O(corpus) total —
+     * the previous shape re-listed the ENTIRE corpus per batch (one unbounded
+     * search response, sorted), which cannot finish on a large index.
      */
     override suspend fun reindexFullTextSearch(
         resumeFrom: String?,
         batchSize: Int,
     ): FtsReindexProgress =
         writes.withLock {
-            val batch =
-                index
-                    .search(EventQuery())
-                    .sortedBy { it.id }
-                    .filter { resumeFrom == null || it.id > resumeFrom }
-                    .take(batchSize)
-            for (doc in batch) {
-                val fields = Event.fromJsonOrNull(doc.toEventJson())?.let(SearchExtractors::extract) ?: SearchFields.NONE
+            val page = index.visitDocsPage(EventQuery(), resumeFrom, batchSize)
+            for (doc in page.docs) {
+                val fields = SearchExtractors.extract(doc.toEvent())
                 if (fields != doc.search) index.put(doc.copy(search = fields))
             }
-            FtsReindexProgress(cursor = batch.lastOrNull()?.id, processedThisBatch = batch.size, done = batch.size < batchSize)
+            FtsReindexProgress(cursor = page.continuation, processedThisBatch = page.docs.size, done = page.continuation == null)
         }
 
     override fun close() = index.close()
