@@ -117,7 +117,9 @@ object SearchBench {
                 println()
                 println("profile A/B (same two-word query, limit=50)")
                 for ((label, q) in listOf(
-                    "text (single-phase)" to EventQuery(kinds = listOf(1), search = "$common $mid", limit = 50),
+                    // Both pinned explicitly — the DEFAULT is text2 now, so the
+                    // single-phase side must name its profile to stay measured.
+                    "text (single-phase)" to EventQuery(kinds = listOf(1), search = "$common $mid", limit = 50, ranking = "text"),
                     "text2 (two-phase, rerank 1000)" to EventQuery(kinds = listOf(1), search = "$common $mid", limit = 50, ranking = "text2"),
                     "text2 rerank=100" to EventQuery(kinds = listOf(1), search = "$common $mid", limit = 50, ranking = "text2", rerankCount = 100),
                 )) {
