@@ -20,25 +20,23 @@
  */
 package com.vitorpamplona.quartz.eventstore.store
 
-import com.vitorpamplona.quartz.eventstore.vespa.MockVespaEngine
-import com.vitorpamplona.quartz.eventstore.vespa.client.EventIndex
-import com.vitorpamplona.quartz.eventstore.vespa.client.VespaEventIndex
-import kotlin.test.AfterTest
+import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
+import kotlin.coroutines.AbstractCoroutineContextElement
+import kotlin.coroutines.CoroutineContext
 
 /**
- * The ENTIRE store semantics suite again, but over the wire: every operation
- * travels [VespaEventIndex] -> HTTP (h2c feed writes, plain reads) ->
- * [MockVespaEngine], whose YQL parser + in-memory evaluation must reproduce
- * exactly what the in-memory run produced.
+ * Carries the ORIGINAL request filters past Quartz's extension stripping.
+ *
+ * Quartz's `LiveEventStore` runs `strippingSearchExtensions` on every REQ's
+ * filters before they reach the store. That is the right default for stores
+ * that would otherwise match `key:value` tokens as text, but this store HONORS
+ * the NIP-50 `sort:`/`filter:rank:`/`include:spam` extensions and must see them.
+ * The relay backend stashes the pre-strip filters here. The store then restores
+ * each filter's `search` string by position — it is the same list in the same
+ * order, only the search field differs — before mapping to the engine query.
  */
-class NostrEventStoreWireTest : NostrEventStoreTest() {
-    private val mock = MockVespaEngine()
-
-    override fun newIndex(): EventIndex = VespaEventIndex(mock.url)
-
-    @AfterTest
-    fun stopMock() {
-        index.close()
-        mock.stop()
-    }
+class OriginalFilters(
+    val filters: List<Filter>,
+) : AbstractCoroutineContextElement(OriginalFilters) {
+    companion object Key : CoroutineContext.Key<OriginalFilters>
 }

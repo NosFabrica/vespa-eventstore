@@ -20,22 +20,25 @@
  */
 package com.vitorpamplona.quartz.eventstore.store
 
-import kotlin.coroutines.AbstractCoroutineContextElement
-import kotlin.coroutines.CoroutineContext
+import com.vitorpamplona.quartz.eventstore.vespa.MockVespaEngine
+import com.vitorpamplona.quartz.eventstore.vespa.client.EventIndex
+import com.vitorpamplona.quartz.eventstore.vespa.client.VespaEventIndex
+import kotlin.test.AfterTest
 
 /**
- * Carries the ranking observer from the relay session down to
- * [NostrSemanticsStore]'s queries. The observer is the NIP-42-authenticated pubkey
- * (or the operator's default) whose web of trust weighs NIP-50 search hits.
- *
- * It is a coroutine-context element because the seam it crosses, Quartz's
- * `IEventStore`, has no per-caller parameter. The relay backend wraps each
- * REQ/COUNT in `withContext(ObserverContext(pubkey))`, and the store reads it
- * back to stamp `EventQuery.observer`. This is ranking context only; it never
- * changes which events match.
+ * The ENTIRE store semantics suite again, but over the wire: every operation
+ * travels [VespaEventIndex] -> HTTP (h2c feed writes, plain reads) ->
+ * [MockVespaEngine], whose YQL parser + in-memory evaluation must reproduce
+ * exactly what the in-memory run produced.
  */
-class ObserverContext(
-    val pubkey: String,
-) : AbstractCoroutineContextElement(ObserverContext) {
-    companion object Key : CoroutineContext.Key<ObserverContext>
+class NostrSemanticsStoreWireTest : NostrSemanticsStoreTest() {
+    private val mock = MockVespaEngine()
+
+    override fun newIndex(): EventIndex = VespaEventIndex(mock.url)
+
+    @AfterTest
+    fun stopMock() {
+        index.close()
+        mock.stop()
+    }
 }

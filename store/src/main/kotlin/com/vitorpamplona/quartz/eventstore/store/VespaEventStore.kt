@@ -20,6 +20,7 @@
  */
 package com.vitorpamplona.quartz.eventstore.store
 
+import com.vitorpamplona.quartz.eventstore.store.trust.TrustProjection
 import com.vitorpamplona.quartz.eventstore.vespa.client.VespaEventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.client.VespaReputationIndex
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -30,7 +31,7 @@ import java.net.URI
 
 /**
  * The library's public handle AND front door: a ready [IEventStore] backed by
- * Vespa. [open] wires the whole NostrEventStore(TrustProjection(VespaEventIndex,
+ * Vespa. [open] wires the whole NostrSemanticsStore(TrustProjection(VespaEventIndex,
  * VespaReputationIndex)) stack over a running Vespa in one call (plus, by default,
  * a first-run schema deploy), and this handle delegates the entire [IEventStore]
  * surface to it — so a consumer programs against the Quartz interface and never
@@ -48,7 +49,7 @@ class VespaEventStore internal constructor(
      * `distinctDTags`, used by trust-graph walks). Most consumers can ignore it
      * and use this handle directly as an [IEventStore].
      */
-    val store: NostrEventStore,
+    val store: NostrSemanticsStore,
     /**
      * The raw engine index, NOT trust-projected. Reads through it skip the
      * projection decorator — status/health metrics query it directly, since they
@@ -69,7 +70,7 @@ class VespaEventStore internal constructor(
      *
      * Exposed on the handle because the walk is the longest silent phase a mirror
      * has — minutes on a large corpus — and a caller that cannot see inside it
-     * cannot tell a working snapshot from a hung one. See [NostrEventStore].
+     * cannot tell a working snapshot from a hung one. See [NostrSemanticsStore].
      */
     suspend fun snapshotIdsForNegentropy(
         filters: List<Filter>,
@@ -130,7 +131,7 @@ class VespaEventStore internal constructor(
             if (autoDeploy) SchemaDeployer(configUrl).deployIfAbsent(url)
             val events = VespaEventIndex(url, endpoints = endpoints)
             val trust = TrustProjection(events, VespaReputationIndex(url))
-            val store = NostrEventStore(trust, relay = relay)
+            val store = NostrSemanticsStore(trust, relay = relay)
             return VespaEventStore(store, events, trust)
         }
 

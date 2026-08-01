@@ -6,7 +6,7 @@ Vespa? Do we need "one node per pubkey"?
 
 ## Multi-node Vespa is NOT the threat
 
-The store's correctness rests on two invariants (see `NostrEventStore`):
+The store's correctness rests on two invariants (see `NostrSemanticsStore`):
 
 1. **One writer at a time** — every admission check and its write happen behind
    a single client-side mutex, so query-then-write is atomic against other

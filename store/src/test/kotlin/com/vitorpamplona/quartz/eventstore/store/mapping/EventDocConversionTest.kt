@@ -18,7 +18,7 @@
  * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package com.vitorpamplona.quartz.eventstore.store
+package com.vitorpamplona.quartz.eventstore.store.mapping
 
 import com.vitorpamplona.quartz.eventstore.vespa.doc.EventDoc
 import com.vitorpamplona.quartz.nip01Core.core.Event
@@ -33,7 +33,7 @@ import kotlin.test.assertEquals
  * dispatch, this fails loudly rather than letting the store hand back a
  * mis-typed event.
  */
-class EventReconstructionTest {
+class EventDocConversionTest {
     private var seq = 0
 
     private fun id() = (++seq).toString(16).padStart(64, '0')

@@ -20,7 +20,7 @@
  */
 package com.vitorpamplona.quartz.eventstore.benchmark
 
-import com.vitorpamplona.quartz.eventstore.store.NostrEventStore
+import com.vitorpamplona.quartz.eventstore.store.NostrSemanticsStore
 import com.vitorpamplona.quartz.eventstore.vespa.InMemoryEventIndex
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.sqlite.EventStore as SqliteEventStore
@@ -46,11 +46,11 @@ object Backends {
      * layer's own logic. Use [countingVespa] to read the round-trip counts, which
      * ARE engine-independent.
      */
-    fun vespaInMemory(): IEventStore = NostrEventStore(InMemoryEventIndex(), relay = null)
+    fun vespaInMemory(): IEventStore = NostrSemanticsStore(InMemoryEventIndex(), relay = null)
 
     /** The reference store wrapped so every engine call is counted. */
     fun countingVespa(): Pair<IEventStore, CountingEventIndex> {
         val counting = CountingEventIndex(InMemoryEventIndex())
-        return NostrEventStore(counting, relay = null) to counting
+        return NostrSemanticsStore(counting, relay = null) to counting
     }
 }

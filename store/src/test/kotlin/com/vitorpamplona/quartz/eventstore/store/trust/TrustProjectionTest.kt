@@ -18,8 +18,9 @@
  * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package com.vitorpamplona.quartz.eventstore.store
+package com.vitorpamplona.quartz.eventstore.store.trust
 
+import com.vitorpamplona.quartz.eventstore.store.NostrSemanticsStore
 import com.vitorpamplona.quartz.eventstore.vespa.InMemoryEventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.InMemoryReputationIndex
 import com.vitorpamplona.quartz.eventstore.vespa.doc.ReputationCells
@@ -50,7 +51,7 @@ class TrustProjectionTest {
 
     private val reputations = InMemoryReputationIndex()
     private val projection = TrustProjection(InMemoryEventIndex(), reputations)
-    private val store = NostrEventStore(projection, relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+    private val store = NostrSemanticsStore(projection, relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
 
     private var t = 1_000_000L
 
@@ -106,13 +107,13 @@ class TrustProjectionTest {
             // 10040 the store already holds before any write happens.
             val index = InMemoryEventIndex()
             val cold = TrustProjection(index, InMemoryReputationIndex())
-            val coldStore = NostrEventStore(cold, relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+            val coldStore = NostrSemanticsStore(cold, relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
 
             assertEquals(0, cold.reconcile().services, "nothing there yet")
 
             // Written through a DIFFERENT store over the same index, so nothing
             // invalidates the cold one's map — the dedup case, exactly.
-            val other = NostrEventStore(TrustProjection(index, InMemoryReputationIndex()), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+            val other = NostrSemanticsStore(TrustProjection(index, InMemoryReputationIndex()), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
             other.insert(list10040())
             other.insert(card())
 
@@ -379,11 +380,11 @@ class TrustProjectionTest {
                 )
 
             val sequentialReputations = InMemoryReputationIndex()
-            val sequential = NostrEventStore(TrustProjection(InMemoryEventIndex(), sequentialReputations), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+            val sequential = NostrSemanticsStore(TrustProjection(InMemoryEventIndex(), sequentialReputations), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
             events.forEach { sequential.insert(it) }
 
             val bulkReputations = InMemoryReputationIndex()
-            val bulk = NostrEventStore(TrustProjection(InMemoryEventIndex(), bulkReputations), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+            val bulk = NostrSemanticsStore(TrustProjection(InMemoryEventIndex(), bulkReputations), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
             bulk.batchInsert(events)
 
             assertEquals(sequentialReputations.docs, bulkReputations.docs, "bulk cell-updates must match sequential re-derivation")

@@ -33,7 +33,7 @@ import kotlin.test.assertTrue
 
 /**
  * A sweep (delete, NIP-40 expiry, NIP-62 vanish) walks its match set in
- * [NostrEventStore.sweepPage] rounds. Two properties matter and they pull
+ * [NostrSemanticsStore.sweepPage] rounds. Two properties matter and they pull
  * against each other:
  *
  *  - it must delete EVERYTHING, however many pages that takes; and
@@ -56,7 +56,7 @@ class SweepPagingTest {
     }
 
     private val index = RecordingIndex()
-    private val store = NostrEventStore(index, sweepPage = PAGE)
+    private val store = NostrSemanticsStore(index, sweepPage = PAGE)
 
     private val alice = "a1".repeat(32)
 

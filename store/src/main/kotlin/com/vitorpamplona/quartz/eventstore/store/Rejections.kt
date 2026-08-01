@@ -20,22 +20,22 @@
  */
 package com.vitorpamplona.quartz.eventstore.store
 
-import kotlin.coroutines.AbstractCoroutineContextElement
-import kotlin.coroutines.CoroutineContext
+/** A SEMANTIC insert rejection (duplicate, replaced, or blocked). Transient engine failures are NOT this; they propagate. */
+class RejectedException(
+    message: String,
+) : Exception(message)
 
-/**
- * Carries the ranking observer from the relay session down to
- * [NostrSemanticsStore]'s queries. The observer is the NIP-42-authenticated pubkey
- * (or the operator's default) whose web of trust weighs NIP-50 search hits.
- *
- * It is a coroutine-context element because the seam it crosses, Quartz's
- * `IEventStore`, has no per-caller parameter. The relay backend wraps each
- * REQ/COUNT in `withContext(ObserverContext(pubkey))`, and the store reads it
- * back to stamp `EventQuery.observer`. This is ranking context only; it never
- * changes which events match.
- */
-class ObserverContext(
-    val pubkey: String,
-) : AbstractCoroutineContextElement(ObserverContext) {
-    companion object Key : CoroutineContext.Key<ObserverContext>
+/** The insert-rejection reasons, shared by the per-event and bulk paths so the two can never drift. */
+internal object Rejections {
+    const val EXPIRED = "blocked: Cannot insert an expired event"
+    const val DUPLICATE = "duplicate: already have this event"
+    const val DELETED = "blocked: a deletion event exists"
+    const val VANISHED = "blocked: a request to vanish event exists"
+    const val REPLACED = "replaced: a newer version exists"
+    const val INSERT_FAILED = "insert failed"
+
+    // One constant string, not one per field or code point: callers tally
+    // rejections by reason, and a reason that varies per event fragments that
+    // tally into thousands of singletons instead of naming the class once.
+    const val UNSTORABLE_TEXT = "blocked: text carries a code point the engine cannot store"
 }

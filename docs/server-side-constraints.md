@@ -134,7 +134,7 @@ where the NIP-09/NIP-62 admission belongs if it should leave the client:
   library.
 
 Cost and why it is roadmap rather than shipped: the admission logic
-(`NostrEventStore`'s guard reads and precedence rules) would need a port to a
+(`NostrSemanticsStore`'s guard reads and precedence rules) would need a port to a
 container bundle (Java, deployed inside the app package), CI that stands up
 the container with the bundle, and a versioning story between the bundle and
 this library. The measured ceiling it attacks: per-event insert round trips

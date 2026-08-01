@@ -18,8 +18,13 @@
  * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package com.vitorpamplona.quartz.eventstore.store
+package com.vitorpamplona.quartz.eventstore.store.ingest
 
+import com.vitorpamplona.quartz.eventstore.store.Rejections
+import com.vitorpamplona.quartz.eventstore.store.mapping.VespaText
+import com.vitorpamplona.quartz.eventstore.store.mapping.addressOrNull
+import com.vitorpamplona.quartz.eventstore.store.mapping.owner
+import com.vitorpamplona.quartz.eventstore.store.mapping.toDoc
 import com.vitorpamplona.quartz.eventstore.vespa.IngestStats
 import com.vitorpamplona.quartz.eventstore.vespa.PUT_FANOUT
 import com.vitorpamplona.quartz.eventstore.vespa.QUERY_FANOUT
@@ -38,29 +43,10 @@ import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
 import com.vitorpamplona.quartz.nip40Expiration.isExpired
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 
-/** A SEMANTIC insert rejection (duplicate, replaced, or blocked). Transient engine failures are NOT this; they propagate. */
-class RejectedException(
-    message: String,
-) : Exception(message)
-
-/** The insert-rejection reasons, shared by the per-event and bulk paths so the two can never drift. */
-internal object Rejections {
-    const val EXPIRED = "blocked: Cannot insert an expired event"
-    const val DUPLICATE = "duplicate: already have this event"
-    const val DELETED = "blocked: a deletion event exists"
-    const val VANISHED = "blocked: a request to vanish event exists"
-    const val REPLACED = "replaced: a newer version exists"
-    const val INSERT_FAILED = "insert failed"
-
-    // One constant string, not one per field or code point: callers tally
-    // rejections by reason, and a reason that varies per event fragments that
-    // tally into thousands of singletons instead of naming the class once.
-    const val UNSTORABLE_TEXT = "blocked: text carries a code point the engine cannot store"
-}
-
 /**
- * The bulk insert fast path for one run of plain events (no kind 5/62). It
- * enforces the same Nostr rules as the per-event [NostrEventStore] path, but
+ * The bulk insert fast path for one run of plain events (no kind 5/62) —
+ * batches that CONTAIN deletions/vanishes take [BulkMixedInsert] instead. It
+ * enforces the same Nostr rules as the per-event [NostrSemanticsStore] path, but
  * with BATCHED I/O. The per-event path costs 3–5 engine round trips per event,
  * which is useless against a million-event sync. Stages:
  *
@@ -76,7 +62,7 @@ internal object Rejections {
  * Every stage read is unbounded — batched I/O may not trade exactness for
  * speed, and a short page here would be a wrong write, not a small answer.
  */
-internal class BulkInsert(
+internal class BulkRecordInsert(
     private val index: EventIndex,
     private val relay: NormalizedRelayUrl?,
     private val guards: GuardOwners,

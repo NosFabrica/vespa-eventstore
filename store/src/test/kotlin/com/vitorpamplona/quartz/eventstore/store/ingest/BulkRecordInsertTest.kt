@@ -18,8 +18,9 @@
  * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package com.vitorpamplona.quartz.eventstore.store
+package com.vitorpamplona.quartz.eventstore.store.ingest
 
+import com.vitorpamplona.quartz.eventstore.store.NostrSemanticsStore
 import com.vitorpamplona.quartz.eventstore.vespa.InMemoryEventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.query.EventQuery
 import com.vitorpamplona.quartz.nip01Core.core.Event
@@ -39,7 +40,7 @@ import kotlin.test.assertTrue
  * both and compares the outcomes AND the final stored id sets. Batches are
  * sized past BULK_MIN so the fast path actually engages.
  */
-class BulkInsertTest {
+class BulkRecordInsertTest {
     private val relayUrl = "wss://sot.test/".normalizeRelayUrl()
     private val alice = "a1".repeat(32)
     private val service = "c3".repeat(32)
@@ -83,12 +84,12 @@ class BulkInsertTest {
         bulkSupersedesViaPut: Boolean = false,
     ) = runBlocking {
         val bulkIndex = InMemoryEventIndex(supersedesViaPut = bulkSupersedesViaPut)
-        val bulkStore = NostrEventStore(bulkIndex, relay = relayUrl)
+        val bulkStore = NostrSemanticsStore(bulkIndex, relay = relayUrl)
         prelude.forEach { bulkStore.insert(it) }
         val bulkOutcomes = bulkStore.batchInsert(batch)
 
         val seqIndex = InMemoryEventIndex()
-        val seqStore = NostrEventStore(seqIndex, relay = relayUrl)
+        val seqStore = NostrSemanticsStore(seqIndex, relay = relayUrl)
         prelude.forEach { seqStore.insert(it) }
         val seqOutcomes =
             batch.map { ev ->

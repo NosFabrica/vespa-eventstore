@@ -18,8 +18,9 @@
  * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package com.vitorpamplona.quartz.eventstore.store
+package com.vitorpamplona.quartz.eventstore.store.ingest
 
+import com.vitorpamplona.quartz.eventstore.store.NostrSemanticsStore
 import com.vitorpamplona.quartz.eventstore.vespa.InMemoryEventIndex
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.normalizeRelayUrl
@@ -49,7 +50,7 @@ class GuardOwnersTest {
     fun everyStoredDeleterAndVanisherIsFlagged() =
         runBlocking {
             val index = InMemoryEventIndex()
-            val store = NostrEventStore(index, relay = relay)
+            val store = NostrSemanticsStore(index, relay = relay)
 
             // Two deleters (each deletes a real prior own note), one vanisher, one
             // pure-content author who never guards.

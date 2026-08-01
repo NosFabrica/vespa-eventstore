@@ -18,8 +18,11 @@
  * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package com.vitorpamplona.quartz.eventstore.store
+package com.vitorpamplona.quartz.eventstore.store.mapping
 
+import com.vitorpamplona.quartz.eventstore.store.NostrSemanticsStore
+import com.vitorpamplona.quartz.eventstore.store.RejectedException
+import com.vitorpamplona.quartz.eventstore.store.Rejections
 import com.vitorpamplona.quartz.eventstore.vespa.InMemoryEventIndex
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
@@ -195,7 +198,7 @@ class VespaTextTest {
 
     // ---- the store rejects rather than throwing -----------------------------
 
-    private fun store() = NostrEventStore(InMemoryEventIndex(), relay = relayUrl)
+    private fun store() = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
 
     @Test
     fun `bulk insert rejects the bad event and stores the rest of the batch`() =

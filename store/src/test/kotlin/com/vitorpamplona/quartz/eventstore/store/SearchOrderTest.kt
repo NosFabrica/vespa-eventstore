@@ -64,7 +64,7 @@ class SearchOrderTest {
         override fun close() {}
     }
 
-    private fun store() = NostrEventStore(FixedOrderIndex(listOf(older, newer)))
+    private fun store() = NostrSemanticsStore(FixedOrderIndex(listOf(older, newer)))
 
     @Test
     fun `a search keeps the engine's relevance order`() =

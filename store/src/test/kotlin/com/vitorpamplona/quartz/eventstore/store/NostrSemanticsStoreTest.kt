@@ -20,6 +20,7 @@
  */
 package com.vitorpamplona.quartz.eventstore.store
 
+import com.vitorpamplona.quartz.eventstore.store.mapping.addressOrNull
 import com.vitorpamplona.quartz.eventstore.vespa.InMemoryEventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.client.EventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.doc.EventDoc
@@ -45,7 +46,7 @@ import kotlin.test.assertTrue
  * each test names the sqlite ...Module.kt rule it mirrors. Events are unsigned
  * fixtures: like the SQLite store, verification is the ingest path's job.
  */
-open class NostrEventStoreTest {
+open class NostrSemanticsStoreTest {
     private val alice = "a1".repeat(32)
     private val bob = "b2".repeat(32)
 
@@ -57,11 +58,11 @@ open class NostrEventStoreTest {
 
     private fun id() = (++seq).toString(16).padStart(64, '0')
 
-    /** Override to run the WHOLE semantics suite against another engine (see NostrEventStoreWireTest). */
+    /** Override to run the WHOLE semantics suite against another engine (see NostrSemanticsStoreWireTest). */
     protected open fun newIndex(): EventIndex = InMemoryEventIndex()
 
     protected val index: EventIndex by lazy { newIndex() }
-    private val store by lazy { NostrEventStore(index, relay = "wss://sot.test/".normalizeRelayUrl()) }
+    private val store by lazy { NostrSemanticsStore(index, relay = "wss://sot.test/".normalizeRelayUrl()) }
 
     private fun storedDocs() = runBlocking { index.count(EventQuery()) }
 
@@ -232,7 +233,7 @@ open class NostrEventStoreTest {
                 store.insert(note(tags = arrayOf(arrayOf("expiration", "${realNow - 10}"))))
             }
 
-            val lateStore = NostrEventStore(index, nowSecs = { realNow + 100_000 })
+            val lateStore = NostrSemanticsStore(index, nowSecs = { realNow + 100_000 })
             val expiring = note(tags = arrayOf(arrayOf("expiration", "${realNow + 50_000}")))
             val keeper = note()
             store.insert(expiring)
@@ -358,7 +359,7 @@ open class NostrEventStoreTest {
             store.insert(keeper)
 
             // Same index, clock past the expiration, no sweep has run:
-            val lateStore = NostrEventStore(index, nowSecs = { realNow + 100_000 })
+            val lateStore = NostrSemanticsStore(index, nowSecs = { realNow + 100_000 })
             assertEquals(setOf(keeper.id), lateStore.query<Event>(Filter(kinds = listOf(1))).map { it.id }.toSet())
             assertEquals(1, lateStore.count(Filter(kinds = listOf(1))))
             // The doc is still stored (the sweep hasn't run) — only serving is guarded.

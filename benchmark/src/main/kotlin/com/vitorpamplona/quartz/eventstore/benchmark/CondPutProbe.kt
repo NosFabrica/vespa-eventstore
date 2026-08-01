@@ -43,7 +43,7 @@ import kotlin.system.measureNanoTime
  * rejected) and the rest advance it.
  *
  * A) read-then-supersede — the real store: feed the stream through
- *    NostrEventStore.batchInsert (dedup + supersession searches + writes).
+ *    NostrSemanticsStore.batchInsert (dedup + supersession searches + writes).
  * B) conditional put — address-keyed docid + `condition: event.created_at < X`
  *    with create-if-absent: one atomic write per event; the engine rejects the
  *    stale ones (conditionNotMet) with no client read.
