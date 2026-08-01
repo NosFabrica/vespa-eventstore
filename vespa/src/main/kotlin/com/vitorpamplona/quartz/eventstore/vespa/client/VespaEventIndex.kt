@@ -35,6 +35,8 @@ import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import com.vitorpamplona.quartz.utils.Hex
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
@@ -110,25 +112,28 @@ class VespaEventIndex(
      */
     endpoints: List<String> = emptyList(),
     /**
-     * Independent slices a full-corpus visit is split into (document-API
-     * `slices`/`sliceId`), each advanced concurrently through its own walk. A
-     * serial walk pays one round trip per [VISIT_PAGE]-doc page — ~27k
-     * sequential round trips on a 28M corpus, i.e. minutes of wall clock spent
-     * mostly waiting — and slicing divides that latency chain by this count.
-     * `VESPA_VISIT_SLICES` overrides for deployment tuning (1 restores the
-     * serial walk).
+     * Independent STREAMED slices a full-corpus visit is split into
+     * (document-API `slices`/`sliceId`), each walked concurrently as its own
+     * JSON-Lines stream. Slicing multiplies streamed throughput until the
+     * content node saturates (8 already saturated a 4-core node in the A/B);
+     * it does NOT apply to the paged fallback, where it was measured 11x
+     * SLOWER than a serial walk (each sliced request returns roughly one
+     * small bucket, not a full page). `VESPA_VISIT_SLICES` overrides for
+     * deployment tuning.
      */
     private val visitSlices: Int =
         (System.getenv("VESPA_VISIT_SLICES")?.toIntOrNull() ?: VISIT_SLICES)
             .coerceAtLeast(1),
     /**
      * Backend bucket parallelism WITHIN each paged visit request (document-API
-     * `concurrency`). Distribution buckets hold only a few hundred docs each on
-     * a large corpus, so filling a 1024-doc page at the default of 1 reads
-     * several buckets back-to-back; this reads them in parallel instead.
-     * Response size stays bounded by wantedDocumentCount either way. Streamed
+     * `concurrency`), used only by the serial paged fallback ([pagedWalk]).
+     * Distribution buckets hold only a few hundred docs each on a large corpus,
+     * so filling a 1024-doc page at concurrency 1 reads several buckets
+     * back-to-back; 8 halved the fallback's wall clock in the A/B. Streamed
      * visits do NOT use it — they pin bucket concurrency to 1, which is what
-     * makes their resume exactly-once (see [streamedSlice]).
+     * makes their resume exactly-once (see [streamedSlice]). Total visitor
+     * pressure is what wedges a small node's document API (see [visitHttp]),
+     * so keep the product of concurrent visits and this figure modest.
      * `VESPA_VISIT_CONCURRENCY` overrides (Vespa accepts 1..100).
      */
     private val visitConcurrency: Int =
@@ -516,17 +521,17 @@ class VespaEventIndex(
      * a false return stops the walk. The shared engine behind [visitIds] and
      * [scanAuthors].
      *
-     * PARALLEL under the hood: the corpus is split into [visitSlices]
-     * independent slices (`slices`/`sliceId`), each walked concurrently against
-     * a round-robin endpoint — streamed as one JSON-Lines response
-     * ([streamedSlice], the default) or paged through continuation round trips
-     * ([pagedSlice], the fallback and the `VESPA_VISIT_STREAM=0` path). What
-     * made the serial walk slow was never the engine — it was ~27k sequential
-     * HTTP round trips on a 28M corpus; slicing divides that chain by the slice
-     * count and streaming removes the per-page round trip entirely. Producer
-     * pages meet a single consumer through a channel, so [onDocuments] runs
-     * strictly serially (callers mutate plain collections) and an early stop
-     * cancels every in-flight slice.
+     * Two transports, chosen by what the A/B against a live corpus measured:
+     * [visitSlices] STREAMED slices walked concurrently (2.2x the serial paged
+     * walk, and the plateau was the node's cores, not the transport), or ONE
+     * serial paged walk when streaming is off or the server doesn't speak
+     * JSON Lines. The paged fallback is deliberately UNSLICED: measured on the
+     * same corpus, sliced paged requests return roughly one small bucket per
+     * round trip instead of a full page — 11x SLOWER than the serial walk they
+     * were meant to speed up. Slicing pays only when the slice streams.
+     * Producer pages meet a single consumer through a channel, so
+     * [onDocuments] runs strictly serially (callers mutate plain collections)
+     * and an early stop cancels every in-flight slice.
      */
     private suspend fun visitPages(
         selection: String,
@@ -538,14 +543,20 @@ class VespaEventIndex(
             val producers =
                 launch {
                     try {
-                        coroutineScope {
-                            repeat(visitSlices) { sliceId ->
-                                launch {
-                                    val streamed = visitStreaming && streamedSlice(selection, fieldSet, sliceId) { pages.send(it) }
-                                    if (!streamed) pagedSlice(selection, fieldSet, sliceId) { pages.send(it) }
-                                }
-                            }
-                        }
+                        val streamed =
+                            visitStreaming &&
+                                coroutineScope {
+                                    (0 until visitSlices)
+                                        .map { sliceId -> async { streamedSlice(selection, fieldSet, sliceId) { pages.send(it) } } }
+                                        .awaitAll()
+                                }.also { oks ->
+                                    // A server either speaks JSON Lines or doesn't — for
+                                    // every slice alike. A mixed answer means some slice
+                                    // DELIVERED while another wants the whole walk redone
+                                    // as paged, which would duplicate; refuse loudly.
+                                    check(oks.all { it } || oks.none { it }) { "vespa answered JSON Lines for only some visit slices" }
+                                }.all { it }
+                        if (!streamed) pagedWalk(selection, fieldSet) { pages.send(it) }
                     } finally {
                         // Close on completion AND failure: a stuck-open channel
                         // would leave the consumer below suspended forever.
@@ -561,14 +572,14 @@ class VespaEventIndex(
         }
 
     /**
-     * Walk one slice through paged visit requests: each round trip returns up
-     * to [VISIT_PAGE] docs plus a continuation token for the next. Each request
-     * also asks the backend to read [visitConcurrency] buckets at once.
+     * The serial paged walk: each round trip returns up to [VISIT_PAGE] docs
+     * plus a continuation token for the next, with the backend reading
+     * [visitConcurrency] buckets in parallel to fill each page. One chain, no
+     * slices — see [visitPages] for why slicing this path is a measured loss.
      */
-    private suspend fun pagedSlice(
+    private suspend fun pagedWalk(
         selection: String,
         fieldSet: String,
-        sliceId: Int,
         emit: suspend (List<JsonElement>) -> Unit,
     ) {
         val base =
@@ -576,7 +587,7 @@ class VespaEventIndex(
                 "?selection=${URLEncoder.encode(selection, "UTF-8")}" +
                 "&wantedDocumentCount=$VISIT_PAGE" +
                 "&fieldSet=${URLEncoder.encode(fieldSet, "UTF-8")}" +
-                "&concurrency=$visitConcurrency&slices=$visitSlices&sliceId=$sliceId"
+                "&concurrency=$visitConcurrency"
         var continuation: String? = null
         while (true) {
             val resp = sendVisit(continuation?.let { "$base&continuation=$it" } ?: base)
@@ -1181,17 +1192,16 @@ class VespaEventIndex(
         /** Docs asked for per visit response (Vespa's per-request ceiling is 1024). */
         const val VISIT_PAGE = 1024
 
-        /** Default parallel visit slices — see [visitSlices] for why and the env override. */
+        /** Default parallel STREAMED visit slices — see [visitSlices] for why and the env override. */
         const val VISIT_SLICES = 8
 
         /**
-         * Default per-request visit bucket concurrency — see [visitConcurrency].
-         * Deliberately 1: total visitor pressure is slices x concurrency, and
-         * measured live, driving it to ~64 wedged a small node's document API
-         * mid-response (silent, indefinite). The slice count already provides
-         * the parallelism; raise this only on hardware measured to take it.
+         * Default bucket concurrency for the serial paged fallback — see
+         * [visitConcurrency]. 8 halved the fallback's wall clock in the A/B and
+         * keeps total visitor pressure at 8 sessions (one serial walk); the
+         * measured wedge needed ~64.
          */
-        const val VISIT_CONCURRENCY = 1
+        const val VISIT_CONCURRENCY = 8
 
         /**
          * Read deadline for visit requests ([visitHttp]): pages are small and
