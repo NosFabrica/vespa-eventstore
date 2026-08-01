@@ -22,8 +22,10 @@ package com.vitorpamplona.quartz.eventstore.store
 
 import com.vitorpamplona.quartz.eventstore.vespa.client.VespaEventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.client.VespaReputationIndex
+import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
+import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
 import java.net.URI
 
 /**
@@ -61,6 +63,19 @@ class VespaEventStore internal constructor(
 ) : IEventStore by store {
     /** The engine's feed-health status line (bulk-ingest backpressure), for progress/status output. */
     fun feedGauge(): String = events.feedGauge()
+
+    /**
+     * The negentropy id set, reporting the running count after every page.
+     *
+     * Exposed on the handle because the walk is the longest silent phase a mirror
+     * has — minutes on a large corpus — and a caller that cannot see inside it
+     * cannot tell a working snapshot from a hung one. See [NostrEventStore].
+     */
+    suspend fun snapshotIdsForNegentropy(
+        filters: List<Filter>,
+        maxEntries: Int? = null,
+        onProgress: ((collected: Int) -> Unit)? = null,
+    ): List<IdAndTime> = store.snapshotIdsForNegentropy(filters, maxEntries, onProgress)
 
     /**
      * Re-derive the trust view for any service whose scores are not projected
