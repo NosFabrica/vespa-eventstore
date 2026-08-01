@@ -531,6 +531,105 @@ class TrustProjectionTest {
         }
 
     /**
+     * Back-to-back updates to the SAME score (one replaceable address) in one
+     * session: the doc must follow the replaceable winner — the newest version —
+     * under EVERY drain timing. Supersession itself is synchronous at the event
+     * layer (remove-old + put-new inside one writer-lock hold, un-interleavable
+     * by a drain), and each drain re-derives from stored state, which only ever
+     * contains the winner.
+     */
+    @Test
+    fun `back-to-back updates to one score converge to the newest version under any drain timing`() =
+        runBlocking {
+            // Drain after the first version? after the second? Every combination
+            // must land the same final cell.
+            for (schedule in listOf(
+                listOf(false, false),
+                listOf(true, false),
+                listOf(false, true),
+                listOf(true, true),
+            )) {
+                val reps = InMemoryReputationIndex()
+                val proj = TrustProjection(InMemoryEventIndex(), reps)
+                proj.dirt.deferTo { }
+                val st = NostrSemanticsStore(proj, relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+                st.insert(list10040())
+                st.insert(card(rank = 50, at = 100))
+                if (schedule[0]) proj.dirt.drain { it() }
+                st.insert(card(rank = 80, at = 200))
+                if (schedule[1]) proj.dirt.drain { it() }
+                proj.dirt.drain { it() }
+                assertEquals(mapOf(observer to 80), reps.get(subject)?.influenceScores, "newest version wins for drains at $schedule")
+            }
+        }
+
+    /** A STALE version arriving after a drain is rejected at the event layer and cannot regress the cell. */
+    @Test
+    fun `a stale version arriving later does not regress the projected score`() =
+        runBlocking {
+            val reps = InMemoryReputationIndex()
+            val proj = TrustProjection(InMemoryEventIndex(), reps)
+            proj.dirt.deferTo { }
+            val st = NostrSemanticsStore(proj, relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+            st.insert(list10040())
+            st.insert(card(rank = 80, at = 200))
+            proj.dirt.drain { it() }
+            assertEquals(mapOf(observer to 80), reps.get(subject)?.influenceScores)
+
+            val outcome = st.batchInsert(listOf(card(rank = 50, at = 100))).single()
+            assertTrue(outcome is IEventStore.InsertOutcome.Rejected, "the older version is replaced, not stored")
+            proj.dirt.drain { it() }
+            assertEquals(mapOf(observer to 80), reps.get(subject)?.influenceScores, "nothing left to derive the stale value from")
+        }
+
+    /**
+     * A bulk-projected cell superseded by a later single insert: the cell shows
+     * the OLD value only until the next drain (the documented bounded lag),
+     * then follows the replaceable winner.
+     */
+    @Test
+    fun `an inline bulk cell follows a later superseding single insert at the next drain`() =
+        runBlocking {
+            val reps = InMemoryReputationIndex()
+            val proj = TrustProjection(InMemoryEventIndex(), reps)
+            proj.dirt.deferTo { }
+            val st = NostrSemanticsStore(proj, relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+            st.insert(list10040())
+            proj.dirt.drain { it() }
+            // A real bulk batch (>= the bulk threshold), so v1's cell lands INLINE.
+            val fillers = (1..15).map { card(about = it.toString(16).padStart(64, 'b'), rank = 10) }
+            st.batchInsert(fillers + card(rank = 50, at = 100))
+            assertEquals(mapOf(observer to 50), reps.get(subject)?.influenceScores, "bulk cell is immediate")
+
+            st.insert(card(rank = 80, at = 200))
+            assertEquals(mapOf(observer to 50), reps.get(subject)?.influenceScores, "stale only until the drain — the documented lag")
+            proj.dirt.drain { it() }
+            assertEquals(mapOf(observer to 80), reps.get(subject)?.influenceScores, "the drain re-derives the winner")
+        }
+
+    /** Create then delete in one session: the cells die with the event, under every drain timing. */
+    @Test
+    fun `create then delete converges to no cells under any drain timing`() =
+        runBlocking {
+            for (drainBetween in listOf(false, true)) {
+                val reps = InMemoryReputationIndex()
+                val proj = TrustProjection(InMemoryEventIndex(), reps)
+                proj.dirt.deferTo { }
+                val st = NostrSemanticsStore(proj, relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+                st.insert(list10040())
+                val scored = card()
+                st.insert(scored)
+                if (drainBetween) {
+                    proj.dirt.drain { it() }
+                    assertEquals(mapOf(observer to 87), reps.get(subject)?.influenceScores, "projected while the event lives")
+                }
+                st.insert(DeletionEvent(id(), service, next(), arrayOf(arrayOf("e", scored.id)), "", ""))
+                proj.dirt.drain { it() }
+                assertNull(reps.get(subject), "deleted event derives nothing (drainBetween=$drainBetween)")
+            }
+        }
+
+    /**
      * The decorator must forward visitDocsPage to the inner client's
      * implementation — the interface default re-lists the whole corpus through
      * search() per page, the exact O(corpus squared) shape the visit-backed
