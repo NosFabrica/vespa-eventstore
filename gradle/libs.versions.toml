@@ -8,7 +8,7 @@ mavenPublish = "0.37.0"
 # 4179a6312a = amethyst PR #3747 "harden negentropy window-splitting and error
 # classification" (2026-07-27); prev e9074aa2cb (2026-07-27). No SearchableEvent
 # changes in this range, so the store's search extractors are unaffected.
-quartz = "dc1f0dd995"
+quartz = "31c3eaf2b3"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 sqlite = "2.7.0"
