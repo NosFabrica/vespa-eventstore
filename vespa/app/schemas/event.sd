@@ -620,4 +620,27 @@ schema event {
             rerank-count: 1000
         }
     }
+
+    # Limit'd unranked recall: instead of ranking EVERY posting the filter
+    # matches (~100ms per million) to keep the newest few, match-phase keeps
+    # only the ~max-hits newest candidates DURING matching. The client sends
+    # this profile only when limit is far below max-hits (10x margin) and the
+    # query's until anchor is recent; the response is marked
+    # match-phase-degraded, which the client accepts ONLY when the page is
+    # provably exact (full, single node) and otherwise reruns unranked —
+    # match-phase can under-deliver on skewed corpora, so a probe-shaped
+    # query (a NIP-09 guard's limit-1 lookup) stays exact through that rerun.
+    # Counts and groupings never use this profile at all.
+    # NOTE: max-hits is PER CONTENT NODE; the client treats any multi-node
+    # degraded page as needing the exact rerun.
+    rank-profile recency {
+        match-phase {
+            attribute: created_at
+            order: descending
+            max-hits: 20000
+        }
+        first-phase {
+            expression: attribute(created_at)
+        }
+    }
 }

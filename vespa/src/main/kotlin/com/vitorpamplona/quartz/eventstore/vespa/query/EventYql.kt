@@ -59,6 +59,24 @@ object EventYql {
     const val RANK_FOLLOWERS = "sort_followers"
 
     /**
+     * Match-phase profile for LIMIT'D unranked recall: keeps only the
+     * ~[MATCH_PHASE_MAX_HITS] newest candidates during matching instead of
+     * ranking every posting the filter matches — the engine-side rescue for
+     * the bare recency scans the count-guarded planner could not window.
+     * Selected only when the limit sits at [MATCH_PHASE_HEADROOM]x or more
+     * under max-hits, so the true top-`limit` always survives the cut; the
+     * response arrives match-phase-degraded, which the client accepts for
+     * this profile alone.
+     */
+    const val RANK_RECENCY = "recency"
+
+    /** `max-hits` in event.sd's `recency` match-phase — keep in sync with the schema. */
+    const val MATCH_PHASE_MAX_HITS = 20_000
+
+    /** A limit may use [RANK_RECENCY] only with this safety factor under [MATCH_PHASE_MAX_HITS]. */
+    const val MATCH_PHASE_HEADROOM = 10
+
+    /**
      * The summary fields a hit actually needs to reconstruct its event
      * ([com.vitorpamplona.quartz.eventstore.vespa.doc.EventDoc.fromSummary]). Selecting these instead of `*`
      * omits the BM25 index fields (search_text — a full COPY of content for notes
@@ -68,6 +86,29 @@ object EventYql {
      * The omitted fields are index/ranking inputs, never part of the served event.
      */
     const val SUMMARY_FIELDS = "id, pubkey, created_at, kind, tags, content, sig, owner"
+
+    /**
+     * True when [build] would auto-select [RANK_RECENCY] for [q]. The index
+     * keys two behaviors on this: skipping the count-probe planner (match-phase
+     * already owns these limits) and demoting to [RANK_UNRANKED] against a
+     * serving schema that predates the profile.
+     *
+     * A deep-past `until` (until-based REQ pagination reaching old history) is
+     * EXCLUDED: it is exactly the anchor a newest-first match-phase cut is
+     * hostile to — the cut lands above the wanted window, the page comes back
+     * short, and the client's exactness rerun pays the full scan the profile
+     * was meant to avoid. Left out of the profile, those shapes fall to the
+     * count-probe planner, whose windows anchor at `until` and work at any
+     * depth.
+     */
+    fun usesRecencyProfile(q: EventQuery): Boolean =
+        q.ranking == null &&
+            q.search.isNullOrBlank() &&
+            (q.limit ?: 0) in 1..(MATCH_PHASE_MAX_HITS / MATCH_PHASE_HEADROOM) &&
+            (q.until == null || q.until >= System.currentTimeMillis() / 1000 - RECENT_UNTIL_HORIZON)
+
+    /** How far back an `until` may sit and still ride [RANK_RECENCY] — beyond it, pagination anchors take the planner path. */
+    const val RECENT_UNTIL_HORIZON = 2_592_000L
 
     fun build(q: EventQuery): VespaQuery? {
         val params = LinkedHashMap<String, String>()
@@ -82,11 +123,20 @@ object EventYql {
         val observer = q.observer?.lowercase()?.takeIf(Hex::isHex64)
         val ranking =
             q.ranking ?: when {
+                // Limit'd unranked recall rides the match-phase profile: same
+                // `order by`, but the engine keeps only the newest candidates
+                // during matching instead of ranking every posting. Gated to
+                // limits with 10x headroom under the profile's max-hits so the
+                // top-`limit` always survives. (Keep in sync with [usesRecencyProfile].)
+                usesRecencyProfile(q) -> RANK_RECENCY
+
                 q.search.isNullOrBlank() -> RANK_UNRANKED
+
                 observer != null -> RANK_SEARCH
+
                 else -> RANK_TEXT
             }
-        if (ranking != RANK_UNRANKED && observer != null) {
+        if (ranking != RANK_UNRANKED && ranking != RANK_RECENCY && observer != null) {
             params["ranking.features.query(user_q)"] = "{$observer:1.0}"
             q.minRank?.let { params["ranking.features.query(min_rank)"] = it.toString() }
         }
@@ -96,7 +146,8 @@ object EventYql {
         val where = if (clauses.isEmpty()) "true" else clauses.joinToString(" and ")
         // No text and no rank profile = plain relay REQ semantics: newest
         // first, no scoring. Anything ranked keeps Vespa's score order.
-        val order = if (ranking == RANK_UNRANKED) " order by created_at desc" else ""
+        // (RANK_RECENCY is unranked-with-match-phase: same order contract.)
+        val order = if (ranking == RANK_UNRANKED || ranking == RANK_RECENCY) " order by created_at desc" else ""
         val limit = q.limit?.let { if (it <= 0) return null else " limit $it" } ?: ""
         return VespaQuery(
             // Only the reconstruction fields, not `*`: the returned summary skips the

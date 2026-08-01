@@ -24,6 +24,7 @@ import com.vitorpamplona.quartz.eventstore.vespa.client.VespaEventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.doc.EventDoc
 import com.vitorpamplona.quartz.eventstore.vespa.doc.SearchFields
 import com.vitorpamplona.quartz.eventstore.vespa.query.EventQuery
+import com.vitorpamplona.quartz.eventstore.vespa.query.EventYql
 import kotlinx.coroutines.runBlocking
 import kotlin.test.AfterTest
 import kotlin.test.Test
@@ -273,23 +274,230 @@ class VespaEventIndexTest {
             assertEquals(0, index.count(EventQuery(limit = 0)))
         }
 
-    /** The visit walk: the complete match set, across MULTIPLE continuation pages. */
+    /**
+     * The recency planner must be INVISIBLE in results: a dense live-shaped
+     * corpus (events within the last hour) takes the windowed path, a sparse or
+     * ancient corpus falls through to the unbounded query — both must return
+     * exactly what a planner-off index returns, top-of-corpus order included.
+     * Run against a schema WITHOUT the match-phase profile, because that is
+     * when the planner owns small limits (with the profile serving, it stands
+     * down for them — see the fallback test for that division).
+     */
     @Test
-    fun `visitIds streams every match through continuation tokens`() =
+    fun `recency planner returns exactly the unplanned results`() =
+        runBlocking {
+            val now = System.currentTimeMillis() / 1000
+            // Dense: 30 docs inside the planner's first (one-hour) rung.
+            seed(*(1..30).map { doc(kind = 1, at = now - it) }.toTypedArray())
+            // Ancient: outside every rung — only the fall-through can see it.
+            seed(doc(kind = 7, at = 1000))
+            mock.rejectRecencyProfile = true
+            val planned = VespaEventIndex(mock.url)
+            val unplanned = VespaEventIndex(mock.url, queryPlanning = false)
+            try {
+                // First query flips each client's profile-missing flag (400 ->
+                // demote); from then on the planner owns the small limits.
+                planned.search(EventQuery(kinds = listOf(1), limit = 1))
+                unplanned.search(EventQuery(kinds = listOf(1), limit = 1))
+                for (q in listOf(
+                    EventQuery(kinds = listOf(1), limit = 10), // dense -> windowed
+                    EventQuery(kinds = listOf(1), limit = 30), // exactly the window's population
+                    EventQuery(kinds = listOf(7), limit = 5), // sparse+ancient -> fall-through, still found
+                    EventQuery(limit = 500), // limit past the corpus -> everything
+                )) {
+                    assertEquals(unplanned.search(q).map { it.id }, planned.search(q).map { it.id }, "planned vs unplanned: $q")
+                }
+                // The dense query must actually return the newest docs, not a hole.
+                assertEquals(now - 1, planned.search(EventQuery(kinds = listOf(1), limit = 1)).single().createdAt)
+            } finally {
+                mock.rejectRecencyProfile = false
+                planned.close()
+                unplanned.close()
+            }
+        }
+
+    /**
+     * Vespa documents that a match-phase-limited query can return FEWER hits
+     * than requested on an unevenly distributed corpus, with no automatic
+     * re-run. A short match-phase page silently served would under-deliver a
+     * REQ — the client must rerun it unranked and serve the exact answer.
+     */
+    @Test
+    fun `match-phase under-delivery is rerun exact, not served short`() =
+        runBlocking {
+            seed(*(1..8).map { doc(kind = 1) }.toTypedArray())
+            mock.matchPhaseUnderdeliver = 2 // recency answers 2 hits, degraded
+            try {
+                val hits = index.search(EventQuery(kinds = listOf(1), limit = 6))
+                assertEquals(
+                    reference.search(EventQuery(kinds = listOf(1), limit = 6)).map { it.id },
+                    hits.map { it.id },
+                    "a short degraded page must be rerun exact, not served",
+                )
+            } finally {
+                mock.matchPhaseUnderdeliver = 0
+            }
+        }
+
+    /**
+     * max-hits is PER CONTENT NODE: on a multi-node cluster each node cuts at
+     * its own threshold, so even a FULL degraded page can silently omit
+     * mid-page docs. Full-page acceptance is single-node only — a multi-node
+     * degraded page must be rerun exact regardless of fill.
+     */
+    @Test
+    fun `a full match-phase page from a multi-node cluster is rerun exact`() =
+        runBlocking {
+            seed(*(1..8).map { doc(kind = 1) }.toTypedArray())
+            mock.matchPhaseUnderdeliver = 6 // page LOOKS full (== limit)...
+            mock.matchPhaseNodes = 2 // ...but two nodes cut independently
+            try {
+                val hits = index.search(EventQuery(kinds = listOf(1), limit = 6))
+                assertEquals(
+                    reference.search(EventQuery(kinds = listOf(1), limit = 6)).map { it.id },
+                    hits.map { it.id },
+                    "a multi-node degraded page proves nothing — must be rerun exact",
+                )
+            } finally {
+                mock.matchPhaseUnderdeliver = 0
+                mock.matchPhaseNodes = 1
+            }
+        }
+
+    /** Deep-past until anchors (old-history pagination) skip the recency profile — the planner windows them instead. */
+    @Test
+    fun `deep-past until skips the recency profile`() {
+        val recent = System.currentTimeMillis() / 1000 - 60
+        val ancient = System.currentTimeMillis() / 1000 - 90 * 86_400L
+        assertEquals(true, EventYql.usesRecencyProfile(EventQuery(kinds = listOf(1), limit = 10)))
+        assertEquals(true, EventYql.usesRecencyProfile(EventQuery(kinds = listOf(1), limit = 10, until = recent)))
+        assertEquals(false, EventYql.usesRecencyProfile(EventQuery(kinds = listOf(1), limit = 10, until = ancient)))
+    }
+
+    /**
+     * A serving schema that predates the `recency` profile answers 400 to it —
+     * the client must demote that query to unranked, serve the REQ, and
+     * remember (no second 400), never fail the caller.
+     */
+    @Test
+    fun `a missing recency profile demotes to unranked instead of failing`() =
+        runBlocking {
+            seed(*(1..5).map { doc(kind = 1) }.toTypedArray())
+            mock.rejectRecencyProfile = true
+            val fresh = VespaEventIndex(mock.url)
+            try {
+                val expected = reference.search(EventQuery(kinds = listOf(1), limit = 3)).map { it.id }
+                assertEquals(expected, fresh.search(EventQuery(kinds = listOf(1), limit = 3)).map { it.id }, "first query (flips the flag)")
+                assertEquals(expected, fresh.search(EventQuery(kinds = listOf(1), limit = 3)).map { it.id }, "second query (already demoted)")
+            } finally {
+                mock.rejectRecencyProfile = false
+                fresh.close()
+            }
+        }
+
+    /** The visit walk: the complete match set, across slices AND continuation pages. */
+    @Test
+    fun `visitIds streams every match through sliced continuation walks`() =
         runBlocking {
             val bob = "b2".repeat(32)
-            seed(*(1..20).map { doc(kind = 30382, pubkey = bob) }.toTypedArray())
+            // 100 docs across 8 slices (pinned — the default derives from host
+            // cores): by pigeonhole some slice holds more than one mock bucket
+            // (streamed) or page (paged), so the walk MUST cross continuation
+            // boundaries — and the union across slices must still be complete.
+            seed(*(1..100).map { doc(kind = 30382, pubkey = bob) }.toTypedArray())
             seed(doc(kind = 1, pubkey = bob), doc(kind = 30382)) // outside the selection
-            val pages = ArrayList<List<DocRef>>()
-            index.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(bob))) {
-                pages += it
-                true
+            val sliced = VespaEventIndex(mock.url, visitSlices = 8)
+            try {
+                val pages = ArrayList<List<DocRef>>()
+                sliced.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(bob))) {
+                    pages += it
+                    true
+                }
+                assertEquals(true, pages.size > 1, "expected a multi-page walk, got ${pages.size} page(s)")
+                val expected = reference.search(EventQuery(kinds = listOf(30382), authors = listOf(bob))).map { DocRef(it.id, it.createdAt) }
+                assertEquals(expected.sortedBy { it.id }, pages.flatten().sortedBy { it.id })
+            } finally {
+                sliced.close()
             }
-            // The mock caps pages far below the requested size, so a full walk
-            // proves the client actually follows continuation tokens.
-            assertEquals(true, pages.size > 1, "expected a multi-page walk, got ${pages.size} page(s)")
-            val expected = reference.search(EventQuery(kinds = listOf(30382), authors = listOf(bob))).map { DocRef(it.id, it.createdAt) }
-            assertEquals(expected.sortedBy { it.id }, pages.flatten().sortedBy { it.id })
+        }
+
+    /**
+     * A broken streamed visit must resume from the last per-bucket continuation
+     * token and still deliver EXACTLY the match set: the cut bucket re-streams
+     * in full on resume, so its pre-cut (uncertified) docs must not have been
+     * delivered — a duplicate here would corrupt a negentropy snapshot.
+     */
+    @Test
+    fun `streamed visit resumes a broken stream exactly once`() =
+        runBlocking {
+            seed(*(1..23).map { doc(kind = 30382) }.toTypedArray())
+            // One slice so the one-shot cut deterministically hits the walk.
+            val single = VespaEventIndex(mock.url, visitSlices = 1)
+            try {
+                mock.cutStreamedVisitAfterDocs = 12 // mid-bucket (buckets of 5), after two certified tokens
+                val got = ArrayList<DocRef>()
+                single.visitIds(EventQuery(kinds = listOf(30382))) {
+                    got += it
+                    true
+                }
+                val expected = reference.search(EventQuery(kinds = listOf(30382))).map { DocRef(it.id, it.createdAt) }
+                assertEquals(expected.sortedBy { it.id }, got.sortedBy { it.id }, "resume must lose nothing and deliver nothing twice")
+            } finally {
+                single.close()
+            }
+        }
+
+    /** A server that answers a streamed visit in plain JSON (an older Vespa) still gets the complete set via the paged fallback. */
+    @Test
+    fun `streamed visit falls back to paging when the server ignores streaming`() =
+        runBlocking {
+            seed(*(1..30).map { doc(kind = 30382) }.toTypedArray())
+            mock.ignoreStreamedVisits = true
+            try {
+                val got = ArrayList<DocRef>()
+                index.visitIds(EventQuery(kinds = listOf(30382))) {
+                    got += it
+                    true
+                }
+                val expected = reference.search(EventQuery(kinds = listOf(30382))).map { DocRef(it.id, it.createdAt) }
+                assertEquals(expected.sortedBy { it.id }, got.sortedBy { it.id })
+            } finally {
+                mock.ignoreStreamedVisits = false
+            }
+        }
+
+    /** VESPA_VISIT_STREAM=0 (visitStreaming=false) walks the paged path directly and is still complete. */
+    @Test
+    fun `paged visit configuration streams every match too`() =
+        runBlocking {
+            seed(*(1..30).map { doc(kind = 30382) }.toTypedArray())
+            val paged = VespaEventIndex(mock.url, visitStreaming = false)
+            try {
+                val got = ArrayList<DocRef>()
+                paged.visitIds(EventQuery(kinds = listOf(30382))) {
+                    got += it
+                    true
+                }
+                val expected = reference.search(EventQuery(kinds = listOf(30382))).map { DocRef(it.id, it.createdAt) }
+                assertEquals(expected.sortedBy { it.id }, got.sortedBy { it.id })
+            } finally {
+                paged.close()
+            }
+        }
+
+    /** onPage returning false stops the sliced walk early instead of scanning the whole corpus. */
+    @Test
+    fun `visitIds stops when the page callback declines to continue`() =
+        runBlocking {
+            seed(*(1..100).map { doc(kind = 30382) }.toTypedArray())
+            val got = ArrayList<DocRef>()
+            index.visitIds(EventQuery(kinds = listOf(30382))) {
+                got += it
+                false // first page is enough — a capped snapshot stopping early
+            }
+            // Exactly the one page the callback accepted; the cancelled slices
+            // must not deliver more after the stop.
+            assertEquals(true, got.isNotEmpty() && got.size < 100, "expected a partial walk, got ${got.size} of 100")
         }
 
     /** The projection's rebuild walk: d tags stream out with the ids. */
