@@ -61,25 +61,39 @@ tokens stay part of the search text:
 
 | Token | Effect |
 |---|---|
-| `observer:<64-hex>` | Rank through this pubkey's web of trust. Absent ⇒ pure-text relevance, and every trust token below quietly no-ops. (The relay can also supply the observer from the NIP-42 connection.) |
+| `observer:<64-hex>` | Rank through this pubkey's web of trust. With no observer resolved (see below) trust ranking is impossible: searches fall back to pure-text relevance and every trust token below quietly no-ops. |
 | `sort:rank` / `sort:rank:asc` | Trust-order within match tiers (descending / ascending). |
 | `sort:followers` | Verified-follower-count order within match tiers. |
-| `sort:text` | Force pure-text relevance. |
+| `sort:text` | Force pure-text relevance, ignoring the observer. |
 | `filter:rank:gte:N` / `filter:rank:gt:N` | Raise the trust floor from the default 2 to N (0–100 scale) — a pure filter, the ordering is untouched. |
 | `include:spam` | Turn off the default trust floor. An explicit `filter:rank:` floor always survives it. |
 
-How they combine (`<hex>` = a 64-hex observer pubkey):
+**Where the observer comes from.** The `observer:` token is only one of two
+sources. The embedding relay can also supply an observer out-of-band — Quartz's
+`StoreQueryContext` coroutine context element — which is how "this connection is
+NIP-42-authenticated as X" (or an operator-wide default lens) reaches the store
+without touching the client's query. An explicit `observer:` token wins over the
+context observer: scores are public, so any client may rank through any lens.
+Every behavior below keys off the *resolved* observer, whichever source it came
+from — on an authenticated connection, `pizza` behaves like
+`pizza observer:<your-hex>`, and `sort:text` is how that connection opts back
+out of personalization. A resolved observer never touches plain NIP-01 filters,
+though: with no terms and no `sort:`/`filter:` token the query stays unranked
+and the lens is ignored, so logging in cannot shrink a regular feed.
+
+How they combine (`<hex>` = a 64-hex observer pubkey; the examples assume no
+context observer, so the token is the only source):
 
 | Example `search` string | What you get |
 |---|---|
 | *(no `search` field)* | Plain NIP-01: newest first, no ranking, never trust-gated. |
-| `pizza` | Pure text relevance — no observer, so no trust and no spam floor. |
+| `pizza` | Pure text relevance — no observer resolved, so no trust and no spam floor. |
 | `pizza observer:<hex>` | **The default:** text score × the observer's web-of-trust curve; authors below trust 2 dropped as spam. |
 | `pizza observer:<hex> include:spam` | Same order, floor off — low-trust authors rank low instead of disappearing. |
 | `pizza observer:<hex> filter:rank:gte:20` | Same default order, floor raised to 20. |
 | `pizza observer:<hex> sort:rank` | Token matches first, ordered by author trust inside each match tier. |
 | `pizza observer:<hex> sort:followers` | Token matches first, most-followed authors first inside each tier. |
-| `pizza sort:text` | Pure text relevance even with an observer present. |
+| `pizza sort:text` | Pure text relevance even when an observer resolved (token or connection) — the un-personalized view. |
 | `sort:rank observer:<hex>` | No terms: the trust firehose — everything, ordered by author trust. |
 | `filter:rank:gte:50 observer:<hex>` | No terms: everything from authors the observer trusts at ≥ 50. |
 
@@ -228,6 +242,13 @@ VespaEventStore.open("http://localhost:8080").use { store ->
 
     // Trust-ranked — just name the observer lens in the search string.
     store.query<Event>(Filter(kinds = listOf(0), search = "vitor observer:<64-hex>"))
+
+    // Or supply the lens out-of-band (how a relay passes the NIP-42 login):
+    // every ranked query in the block ranks through it, an explicit observer:
+    // token overrides it, and plain filters ignore it — recall is never gated.
+    withContext(StoreQueryContext(observer = authedPubkey)) {
+        store.query<Event>(Filter(kinds = listOf(0), search = "vitor"))
+    }
 }
 ```
 
