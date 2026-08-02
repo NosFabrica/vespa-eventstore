@@ -102,6 +102,14 @@ class MockVespaEngine {
     @Volatile var rejectRecencyProfile: Boolean = false
 
     /**
+     * Refuse `ranking=recency_gated` / `recency_gated_exact` queries the way a
+     * schema deployed before the observer gate does (HTTP 400 naming the
+     * profile). The client must demote to `unranked` (fail-open, the pre-gate
+     * behavior) and remember, not fail the REQ.
+     */
+    @Volatile var rejectGatedProfile: Boolean = false
+
+    /**
      * Refuse any YQL referencing the near attribute fields (name_parts/…) the
      * way a schema deployed before the prefix/fuzzy fix does — real Vespa is
      * HTTP 400 `Could not create query from YQL: Field 'name_parts' does not
@@ -111,12 +119,13 @@ class MockVespaEngine {
     @Volatile var rejectNearFields: Boolean = false
 
     /**
-     * Answer `ranking=recency` queries with only this many hits, marked
-     * match-phase-degraded — real Vespa's documented under-delivery on an
-     * unevenly distributed corpus ("you risk sometimes getting less than the
-     * configured hits back", with no automatic re-run). The client must rerun
-     * the query unranked instead of serving the short page. Unranked queries
-     * are untouched, so the rerun sees the true answer. 0 = off.
+     * Answer match-phase queries (`ranking=recency` or `recency_gated`) with
+     * only this many hits, marked match-phase-degraded — real Vespa's
+     * documented under-delivery on an unevenly distributed corpus ("you risk
+     * sometimes getting less than the configured hits back", with no automatic
+     * re-run). The client must rerun the query on its exact profile (unranked,
+     * or recency_gated_exact) instead of serving the short page; the exact
+     * profiles are untouched, so the rerun sees the true answer. 0 = off.
      */
     @Volatile var matchPhaseUnderdeliver: Int = 0
 
@@ -279,6 +288,11 @@ class MockVespaEngine {
         if (rejectRecencyProfile && params["ranking"] == "recency") {
             return Reply(400, """{"message":"Requested rank profile 'recency' is undefined for document type 'event'"}""")
         }
+        // A schema deployed before the observer gate: both gated profiles are
+        // unknown to it, and real Vespa 400s naming whichever was requested.
+        if (rejectGatedProfile && (params["ranking"] == "recency_gated" || params["ranking"] == "recency_gated_exact")) {
+            return Reply(400, """{"message":"Requested rank profile '${params["ranking"]}' is undefined for document type 'event'"}""")
+        }
         val yql = params["yql"] ?: return Reply(400, """{"message":"missing yql"}""")
         // A schema predating the near attribute fields: real Vespa rejects the
         // whole query the moment the YQL names an unknown field.
@@ -312,7 +326,7 @@ class MockVespaEngine {
                 }.let { ordered -> query.limit?.let { ordered.take(it) } ?: ordered }
         // Simulated match-phase under-delivery: fewer hits than the limit, with
         // ONLY the match-phase degradation flag set (see [matchPhaseUnderdeliver]).
-        val underdeliver = matchPhaseUnderdeliver > 0 && !grouped && params["ranking"] == "recency"
+        val underdeliver = matchPhaseUnderdeliver > 0 && !grouped && (params["ranking"] == "recency" || params["ranking"] == "recency_gated")
         val served = if (underdeliver) minOf(matchPhaseUnderdeliver, hits) else hits
         val children =
             when {

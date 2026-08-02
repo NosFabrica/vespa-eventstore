@@ -46,8 +46,30 @@ object EventYql {
     /** Pure text relevance, no trust (`sort:text`). */
     const val RANK_TEXT = "text"
 
-    /** Text order with the trust floor applied (`filter:rank:…` without a sort). */
+    /** Text order with the trust floor applied. No longer selected by the store's filter mapping (the floor rides the query's own profile); kept for direct API use. */
     const val RANK_FILTERED = "rank_filtered"
+
+    /**
+     * NIP-01 recency order with the trust floor applied: score IS created_at,
+     * below-floor authors are dropped. The store stamps this on plain (non-
+     * search) recall when an observer resolves — the always-on spam gate for
+     * feeds — and on the no-terms `filter:rank:` match-all.
+     *
+     * This is the MATCH-PHASE variant, sized for the dominant REQ shape
+     * (small recent limits): the engine keeps only the newest ~
+     * [MATCH_PHASE_MAX_HITS] candidates per node before gating, so a bare
+     * gated feed query costs the same as ungated recency. [build] demotes
+     * shapes the cut can't serve exactly (no limit, limit past the headroom,
+     * deep-past `until`) to [RANK_RECENCY_GATED_EXACT], and the client reruns
+     * a degraded-and-unproven page on the exact profile
+     * (VespaEventIndex.recallRoot). The count-probe planner still excludes
+     * both variants: its windows are proven against the UNGATED match set,
+     * which the gate breaks.
+     */
+    const val RANK_RECENCY_GATED = "recency_gated"
+
+    /** The full-scan variant of [RANK_RECENCY_GATED]: exact for every shape, but ranks every match — the fallback and the unlimited/deep shape, not the hot path. */
+    const val RANK_RECENCY_GATED_EXACT = "recency_gated_exact"
 
     /** Trust-sorted within each match tier, descending (`sort:rank`). */
     const val RANK_DESC = "rank_desc"
@@ -65,8 +87,8 @@ object EventYql {
      * the bare recency scans the count-guarded planner could not window.
      * Selected only when the limit sits at [MATCH_PHASE_HEADROOM]x or more
      * under max-hits, so the true top-`limit` always survives the cut; the
-     * response arrives match-phase-degraded, which the client accepts for
-     * this profile alone.
+     * response arrives match-phase-degraded, which the client accepts only
+     * for this profile and [RANK_RECENCY_GATED].
      */
     const val RANK_RECENCY = "recency"
 
@@ -110,6 +132,23 @@ object EventYql {
     /** How far back an `until` may sit and still ride [RANK_RECENCY] — beyond it, pagination anchors take the planner path. */
     const val RECENT_UNTIL_HORIZON = 2_592_000L
 
+    /**
+     * True when [build] keeps a [RANK_RECENCY_GATED] query on the match-phase
+     * variant instead of demoting it to [RANK_RECENCY_GATED_EXACT]. The same
+     * shape gate as [usesRecencyProfile] (small limit with 10x headroom under
+     * max-hits, `until` recent or absent), for the same reasons — with one
+     * addition the ungated profile doesn't need: the headroom must also absorb
+     * the gate's drops, so a shape that qualifies can still come back
+     * degraded-and-short when fewer than `limit` of the ~[MATCH_PHASE_MAX_HITS]
+     * newest candidates are trusted. That case reruns exact
+     * (VespaEventIndex.recallRoot); it is paid only on heavily-spammed corpora
+     * or near-empty trust graphs, not on the routine feed query.
+     */
+    fun usesGatedMatchPhase(q: EventQuery): Boolean =
+        q.ranking == RANK_RECENCY_GATED &&
+            (q.limit ?: 0) in 1..(MATCH_PHASE_MAX_HITS / MATCH_PHASE_HEADROOM) &&
+            (q.until == null || q.until >= System.currentTimeMillis() / 1000 - RECENT_UNTIL_HORIZON)
+
     fun build(q: EventQuery): VespaQuery? {
         val params = LinkedHashMap<String, String>()
         val clauses = filterClauses(q, params) ?: return null
@@ -121,7 +160,7 @@ object EventYql {
         // emits neither feature. An explicit sort:/filter: still selects its
         // profile, but degrades to match-tier order (no trust) without an observer.
         val observer = q.observer?.lowercase()?.takeIf(Hex::isHex64)
-        val ranking =
+        val requested =
             q.ranking ?: when {
                 // Limit'd unranked recall rides the match-phase profile: same
                 // `order by`, but the engine keeps only the newest candidates
@@ -136,6 +175,11 @@ object EventYql {
 
                 else -> RANK_TEXT
             }
+        // Gated recall's match-phase cut is only sound for the shapes
+        // [usesGatedMatchPhase] admits — an unlimited or deep-until query under
+        // the cut would silently lose every hit older than the newest ~max-hits
+        // candidates, so those demote to the full-scan variant.
+        val ranking = if (requested == RANK_RECENCY_GATED && !usesGatedMatchPhase(q)) RANK_RECENCY_GATED_EXACT else requested
         if (ranking != RANK_UNRANKED && ranking != RANK_RECENCY && observer != null) {
             params["ranking.features.query(user_q)"] = "{$observer:1.0}"
             q.minRank?.let { params["ranking.features.query(min_rank)"] = it.toString() }
