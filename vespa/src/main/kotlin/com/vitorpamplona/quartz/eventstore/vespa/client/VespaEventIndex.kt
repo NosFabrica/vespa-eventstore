@@ -429,8 +429,9 @@ class VespaEventIndex(
      * The summary-free existence check: `select id` under the attribute-only
      * `dedup` summary class ([EventYql.buildExistence]), so proton answers
      * membership from the id attribute in memory — no disk summary fetch, no
-     * document reconstruction, ~99% less response to transfer and decode at
-     * the mirror workload's hit rate (measured: see benchmark/README.md,
+     * document reconstruction, ~76% less response to transfer and none of it
+     * decoded into documents at the mirror workload's hit rate; 2.2–2.3× the
+     * full-summary path end to end (measured: see benchmark/README.md,
      * "Dedup / existence-check A/B"). Works identically under address-keying:
      * the `id` ATTRIBUTE carries the event id whatever the docid is, which a
      * document-API get here would not (an address-keyed replaceable is not at

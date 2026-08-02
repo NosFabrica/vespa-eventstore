@@ -104,12 +104,12 @@ internal class VespaHttp {
             // multi-segment POST (a 500-id existence query is a ~35KB body) can
             // stall a full delayed-ACK quantum (~40ms) mid-upload waiting for an
             // ACK the peer is deliberately withholding. Measured (benchmark
-            // transportProbe, dedupProbe): the stall is deterministic behind a
-            // userspace proxy hop (docker-proxy: flat +45ms per query) and
-            // intermittent even on a direct link (tail-dominated: existence
-            // chunks p95 95ms vs 14ms through a NODELAY client, means 23.5 vs
-            // 10.9ms). Writes are already frame-batched by okio/h2c, so there
-            // is no small-write flood for Nagle to be saving us from.
+            // transportProbe): a 500-id existence query through docker-proxy
+            // drops 55.6ms -> 10.7ms with NODELAY; on a direct link 26.2ms
+            // mean / 78ms p95 -> 10.1 / 11.3 — the stall is deterministic
+            // behind a userspace proxy hop and tail-shaped on a direct one.
+            // Writes are already frame-batched by okio/h2c, so there is no
+            // small-write flood for Nagle to be saving us from.
             .socketFactory(NoDelaySocketFactory)
             .build()
 
