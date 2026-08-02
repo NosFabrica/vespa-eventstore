@@ -81,6 +81,30 @@ tasks.register<JavaExec>("queryBench") {
     maxHeapSize = System.getenv("BENCH_HEAP") ?: "3g"
 }
 
+tasks.register<JavaExec>("searchBench") {
+    group = "verification"
+    description = "NIP-50 search latency: term shapes, trigram/fuzzy, filters, profiles, text vs text2 (self-feeding corpus)"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.vitorpamplona.quartz.eventstore.benchmark.SearchBench")
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "3g"
+}
+
+tasks.register<JavaExec>("corpusLoad") {
+    group = "verification"
+    description = "Load the deterministic NostrCorpus into a live store (setup for the workload benches)"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.vitorpamplona.quartz.eventstore.benchmark.CorpusLoad")
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "2g"
+}
+
+tasks.register<JavaExec>("multiFilterBench") {
+    group = "verification"
+    description = "Store-level multi-filter REQ latency vs the serialized single-filter sum (A/B VESPA_QUERY_FANOUT)"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.vitorpamplona.quartz.eventstore.benchmark.MultiFilterBench")
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "3g"
+}
+
 tasks.register<JavaExec>("traceProbe") {
     group = "verification"
     description = "Dump Vespa query-execution plans (trace.explainLevel) for the named REQ shapes"

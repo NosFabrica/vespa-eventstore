@@ -70,9 +70,15 @@ object MixedLoadBench {
         // duplicates run — different work). Sized so a writer cannot run dry.
         val perWriter = ((durMs / 1000) * 4_000).toInt().coerceAtLeast(8_000)
 
+        // BENCH_MIXED_BAND_SEED gives an A/B rerun FRESH write bands while the
+        // reader workload (sampled from the main corpus, BENCH_SEED) stays
+        // identical — re-feeding earlier bands would silently turn the write
+        // phases into an all-duplicates run, a different workload.
+        val bandSeed = System.getenv("BENCH_MIXED_BAND_SEED")?.toLongOrNull() ?: seed
+
         fun feedsFor(mode: Int) =
             (0 until writers).map { i ->
-                NostrCorpus.generate(NostrCorpus.Config(size = perWriter, seed = seed + 100 + mode * 16 + i, idBand = 0xB0L + mode * 16 + i))
+                NostrCorpus.generate(NostrCorpus.Config(size = perWriter, seed = bandSeed + 100 + mode * 16 + i, idBand = 0xB0L + mode * 16 + i))
             }
 
         VespaEventStore.open(url).use { store ->

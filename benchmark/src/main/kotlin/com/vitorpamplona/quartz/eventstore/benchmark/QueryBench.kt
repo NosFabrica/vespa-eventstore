@@ -54,6 +54,18 @@ object QueryBench {
                 // 1.4M floor: the count(window=1000k) expectation anchors at
                 // BASE + n/4 and needs the full window inside the corpus.
                 check(n >= 1_400_000) { "corpus too small ($n docs) — run :benchmark:visitBench first to feed it" }
+                // Every expectation derives from the PRISTINE visit band
+                // (created_at = BASE + seq, contiguous). Foreign kind-1 docs —
+                // corpusLoad's events, searchBench's band, mixed-load writes —
+                // shift the derived top and poison hundreds of assertions with
+                // cryptic order-wrong noise. Detect and name the fix instead.
+                val newest = index.search(EventQuery(kinds = listOf(1), limit = 1)).single().createdAt
+                check(newest == BASE + n - 1) {
+                    "corpus polluted: newest kind-1 doc is at $newest, the pristine band would end at ${BASE + n - 1} " +
+                        "(count includes foreign kind-1 docs). Restore the snapshot (docker stop vespa; docker rm vespa; " +
+                        "docker run -d --name vespa -p 8080:8080 -p 19071:19071 vespa-2m-snapshot) or re-feed via :benchmark:visitBench " +
+                        "on a clean engine — see benchmark/README.md's bench inventory."
+                }
                 val top = BASE + n - 1 // newest created_at in the corpus
 
                 println()

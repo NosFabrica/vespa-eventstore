@@ -43,11 +43,22 @@
       </resource-limits>
     </tuning>
 
-    <!-- Bulk ingest is the workload (a full trust-provider sync feeds
-         millions of docs); let proton use every core for feeding. -->
+    <!-- Feed threads get 40% of the cores, NOT all of them — measured on the
+         mixed-load A/B (2 writers x 16 readers, 2M-doc corpus, warm engine,
+         4 cores), 0.4 beat 1.0 on BOTH sides:
+
+           write-only  444 -> 753 ev/s   (+70%)
+           mixed       385 -> 652 ev/s and 89 -> 112 q/s, p99 677 -> 552ms
+
+         The store's write path is itself READ-heavy (dedup preloads, guard
+         probes, supersession searches between the puts), so at 1.0 the feed
+         pipeline starves the very reads its own batches wait on — full-core
+         feeding throttled ingest, not just queries. Raw index-level feeding
+         (no store semantics) may still prefer more; re-measure with
+         BENCH_MIXED before changing. -->
     <config name="vespa.config.search.core.proton">
       <feeding>
-        <concurrency>1.0</concurrency>
+        <concurrency>0.4</concurrency>
       </feeding>
       <!-- One matching thread per query. A relay's load is MANY concurrent
            queries, not one big query needing low latency; splitting a query

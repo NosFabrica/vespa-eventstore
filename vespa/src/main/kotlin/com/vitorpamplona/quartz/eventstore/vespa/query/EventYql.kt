@@ -43,8 +43,20 @@ object EventYql {
     /** The DEFAULT search profile in event.sd: text relevance combined with concave trust. */
     const val RANK_SEARCH = "search"
 
-    /** Pure text relevance, no trust (`sort:text`). */
+    /** Pure text relevance, no trust (`sort:text`), single-phase. */
     const val RANK_TEXT = "text"
+
+    /**
+     * [RANK_TEXT]'s two-phase twin and the DEFAULT for observer-less search:
+     * a cheap first phase (band membership is exact — dropped terms cannot
+     * cross the 1100-point band gap), the full tuned relevance re-applied to
+     * the top rerank-count. The RankQuality gate measured order parity 1.00
+     * (overlap@10/@50 and tau) against [RANK_TEXT] on every term class, and
+     * the 200k-doc searchBench measured it 1.3x faster where match sets are
+     * large — same order, less first-phase work. `sort:text` still selects
+     * the single-phase profile explicitly.
+     */
+    const val RANK_TEXT2 = "text2"
 
     /** Text order with the trust floor applied (`filter:rank:…` without a sort). */
     const val RANK_FILTERED = "rank_filtered"
@@ -134,7 +146,7 @@ object EventYql {
 
                 observer != null -> RANK_SEARCH
 
-                else -> RANK_TEXT
+                else -> RANK_TEXT2
             }
         if (ranking != RANK_UNRANKED && ranking != RANK_RECENCY && observer != null) {
             params["ranking.features.query(user_q)"] = "{$observer:1.0}"
