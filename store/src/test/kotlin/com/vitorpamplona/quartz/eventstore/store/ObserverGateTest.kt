@@ -136,7 +136,7 @@ class ObserverGateTest {
         assertEquals(
             INCLUDE_SPAM_MIN_RANK,
             q.minRank,
-            "the floor must ride the query at 0 — omitted, wot_mult's log anchors at the " +
+            "the floor must ride the query at 0 — omitted, wot_mult's curve anchors at the " +
                 "schema's -1e9 fail-open and the trust ORDER collapses to pure text",
         )
     }
