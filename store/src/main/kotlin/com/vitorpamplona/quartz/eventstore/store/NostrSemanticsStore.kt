@@ -646,7 +646,15 @@ class NostrSemanticsStore(
      * searchable — and how [SearchExtractors] decomposes them — is baked into
      * this build, so docs indexed under old code can be stale (or missing from
      * search) until this runs. It also clears fields for kinds that LOST
-     * searchability.
+     * searchability, and it is the RE-FEED that backfills the near-tier
+     * prefix/fuzzy attributes (event.sd's fed `*_parts`/`*_tokens` arrays) on
+     * a corpus fed before they existed — a Vespa reindex cannot, because fed
+     * fields only change on a put.
+     *
+     * ORDER MATTERS on an upgraded deployment: deploy the bundled schema
+     * BEFORE running this. The backfill re-puts docs with the near fields,
+     * and a serving schema that predates them rejects those puts outright
+     * (unknown field) — the run fails loudly instead of backfilling nothing.
      */
     override suspend fun reindexFullTextSearch() {
         var cursor: String? = null
@@ -675,7 +683,21 @@ class NostrSemanticsStore(
             val changed = ArrayList<EventDoc>()
             for (doc in page.docs) {
                 val fields = SearchExtractors.extract(doc.toEvent())
-                if (fields != doc.search) changed += doc.copy(search = fields)
+                // The near-tier arrays are FED data derived from the search
+                // columns at put time (EventDoc.indexFields), so identical
+                // columns can hide a stale or MISSING near tier: a corpus fed
+                // before the near fields existed decodes to byte-identical
+                // SearchFields and the column check alone would skip it forever
+                // ("Ode" never finds ODELL — the prefix tier has nothing to
+                // match). storedNearFields is the visit's evidence of what the
+                // engine actually holds (null = no evidence, e.g. the in-memory
+                // reference, whose derivation can't go stale); any drift forces
+                // the re-put that backfills them. Checked second: a changed
+                // column already forces the re-put, so the NearText derivation
+                // (per-doc string work) is skipped when it can't matter.
+                val columnsChanged = fields != doc.search
+                val nearStale = !columnsChanged && doc.storedNearFields?.let { it != fields.nearFieldsWritten() } == true
+                if (columnsChanged || nearStale) changed += doc.copy(search = fields)
             }
             if (changed.isNotEmpty()) index.putAll(changed)
             FtsReindexProgress(cursor = page.continuation, processedThisBatch = page.docs.size, done = page.continuation == null)

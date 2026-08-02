@@ -132,6 +132,14 @@ data class SearchFields(
         }
 
     /**
+     * [nearFields] minus empty arrays — exactly the entries a put writes
+     * ([EventDoc.indexFields] never feeds an empty array, and Vespa omits
+     * absent fields on read), so "stored == this" is the feed-parity test the
+     * reindex uses to catch a corpus fed before the near tier existed.
+     */
+    fun nearFieldsWritten(): Map<String, List<String>> = nearFields().filterValues { it.isNotEmpty() }
+
+    /**
      * "" and absent are the same state: real Vespa omits empty-string fields
      * from summaries while the mock serves them — fold "" back to null so
      * decoded docs compare equal to what was fed either way.

@@ -345,7 +345,10 @@ exact floor   w_name_tier + 100  = 130 100   &gt; 129 248 ✓   → w_name_tier 
         match raw bytes and Vespa's linguistics never applied to them. Tokens also index alnum-stripped and
         whole-name-joined variants ("vitorp" → "Vitor Pamplona"), and CJK runs index their suffixes
         ("太郎" → "中村太郎"). <b>Deploy consequence: populating these needs a RE-FEED, not a reindex</b> —
-        feed-computed fields can't be rebuilt from Vespa's document store.</li>
+        feed-computed fields can't be rebuilt from Vespa's document store. <code>reindexFullTextSearch</code>
+        is that re-feed: the document-API walk reports the near arrays each doc actually holds, and any doc
+        whose stored arrays drift from a fresh <code>NearText</code> derivation is re-put. Run it once after
+        deploying the near-tier schema; re-runs converge to a no-op.</li>
     <li><b>The weak tier</b> restores bounded infix ("dell" → ODELL via an AND of every query trigram — the
         regression the upstream port accepted) and adds hashtag/summary prefix reach
         (<code>search_secondary_tokens</code>, prefix-only). The ladder re-derives to

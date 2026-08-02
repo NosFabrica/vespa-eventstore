@@ -214,7 +214,10 @@ schema event {
         # concatenation, CJK run suffixes) don't fit the indexing language's
         # regex split; (3) a schema-side concatenation of two inputs nulls out
         # when either is missing. CONSEQUENCE: existing docs need a RE-FEED
-        # (not just a reindex) to populate these on an already-running corpus.
+        # (not just a reindex) to populate these on an already-running corpus —
+        # NostrSemanticsStore.reindexFullTextSearch is that re-feed: it
+        # compares the stored arrays against a fresh derivation and re-puts
+        # any doc whose near tier is missing or stale.
         #
         # TWO granularities, both load-bearing (verified upstream):
         #   *_parts   every word START — camelCase transitions, separator
