@@ -22,7 +22,9 @@ package com.vitorpamplona.quartz.eventstore.benchmark
 
 import com.vitorpamplona.quartz.eventstore.store.SchemaDeployer
 import com.vitorpamplona.quartz.eventstore.vespa.client.VespaEventIndex
+import com.vitorpamplona.quartz.eventstore.vespa.client.VespaReputationIndex
 import com.vitorpamplona.quartz.eventstore.vespa.doc.EventDoc
+import com.vitorpamplona.quartz.eventstore.vespa.doc.ReputationDoc
 import com.vitorpamplona.quartz.eventstore.vespa.doc.SearchFields
 import com.vitorpamplona.quartz.eventstore.vespa.query.EventQuery
 import com.vitorpamplona.quartz.eventstore.vespa.query.EventYql
@@ -53,10 +55,12 @@ import kotlin.test.assertTrue
 @Tag("integration")
 class RankRegressionIT {
     // One profile per interesting shape. Ids are sequential; names carry the shape.
+    // Docs 1/2/14 get DISTINCT authors so the sort:followers case can hang a
+    // different verified-follower count on each via the reputation parent.
     private val corpus =
         listOf(
-            profile(1, name = "Ode"),
-            profile(2, name = "ODELL"),
+            profile(1, name = "Ode", pubkey = pk(1)),
+            profile(2, name = "ODELL", pubkey = pk(2)),
             profile(3, name = "Odessa"),
             profile(4, name = "model"),
             profile(5, name = "code"),
@@ -68,7 +72,7 @@ class RankRegressionIT {
             profile(11, name = "CITADELDISPATCH"),
             profile(12, name = "José"),
             profile(13, name = "中村太郎"),
-            profile(14, name = "Ode Fan Club"),
+            profile(14, name = "Ode Fan Club", pubkey = pk(14)),
             profile(15, name = "podcaster", about = "a show hosted by ODELL every week"),
             profile(16, name = "coffee"),
             // A note whose hashtags ride search_secondary — the weak tier's prefix reach.
@@ -152,20 +156,46 @@ class RankRegressionIT {
                         )
 
                         // --- the default profile + its SECOND PHASE actually execute ---
-                        // sort_followers is the only profile whose second phase computes
+                        // `search` is the only profile whose second phase computes
                         // the fieldMatch precision features at query time; a broken
                         // feature reference would surface HERE, not at deploy. No
-                        // reputation docs are fed, so trust is a constant multiplier
+                        // observer is passed, so trust is a constant multiplier
                         // and the tier ladder alone must produce this order.
-                        val followers = searchWith("Ode", EventYql.RANK_FOLLOWERS)
-                        val fnames = followers.map { nameOf(it.doc) }
-                        assertEquals("Ode", fnames.first(), "exact match on top under sort_followers: $fnames")
-                        assertTrue("ODELL" in fnames, "the near hit must survive text_score_cutoff: $fnames")
-                        assertEquals("near", followers.first { nameOf(it.doc) == "ODELL" }.tier)
+                        val ranked = searchWith("Ode", EventYql.RANK_SEARCH)
+                        val rnames = ranked.map { nameOf(it.doc) }
+                        assertEquals("Ode", rnames.first(), "exact match on top under the default profile: $rnames")
+                        assertTrue("ODELL" in rnames, "the near hit must survive text_score_cutoff: $rnames")
+                        assertEquals("near", ranked.first { nameOf(it.doc) == "ODELL" }.tier)
                         assertTrue(
-                            fnames.indexOf("Ode") < fnames.indexOf("Ode Fan Club"),
-                            "second-phase exactness keeps the whole-field match on top: $fnames",
+                            rnames.indexOf("Ode") < rnames.indexOf("Ode Fan Club"),
+                            "second-phase exactness keeps the whole-field match on top: $rnames",
                         )
+
+                        // --- sort:followers — verified-follower order within tiers ---
+                        // Fed through the real reputation parent: the fan club
+                        // out-follows the exact "Ode"; ODELL out-follows everyone
+                        // but arrives through the NEAR tier — the count orders
+                        // hits WITHIN a tier and never lifts one across tiers.
+                        VespaReputationIndex(queryUrl).use { reputation ->
+                            reputation.putAll(
+                                listOf(
+                                    ReputationDoc(pk(1), followerCounts = mapOf(OBSERVER to 10.0)),
+                                    ReputationDoc(pk(2), followerCounts = mapOf(OBSERVER to 250_000.0)),
+                                    ReputationDoc(pk(14), followerCounts = mapOf(OBSERVER to 5_000.0)),
+                                ),
+                            )
+                        }
+                        val followers = searchWith("Ode", EventYql.RANK_FOLLOWERS, observer = OBSERVER)
+                        val fnames = followers.map { nameOf(it.doc) }
+                        assertTrue(
+                            fnames.indexOf("Ode Fan Club") < fnames.indexOf("Ode"),
+                            "within the token tier the larger verified-follower count wins: $fnames",
+                        )
+                        assertTrue(
+                            fnames.indexOf("Ode") < fnames.indexOf("ODELL"),
+                            "a near hit never outranks a token hit, whatever its follower count: $fnames",
+                        )
+                        assertEquals("near", followers.first { nameOf(it.doc) == "ODELL" }.tier)
 
                         // --- typo bound: over-budget hits never match ---
                         absent("odelll", "Odessa")
@@ -193,7 +223,8 @@ class RankRegressionIT {
     private suspend fun searchWith(
         text: String,
         ranking: String,
-    ) = indexRef.searchScored(EventQuery(search = text, ranking = ranking))
+        observer: String? = null,
+    ) = indexRef.searchScored(EventQuery(search = text, ranking = ranking, observer = observer))
 
     private suspend fun expect(
         query: String,
@@ -232,15 +263,17 @@ class RankRegressionIT {
         n: Int,
         name: String,
         about: String? = null,
-    ) = doc(n, kind = 0, search = SearchFields(name = name, about = about))
+        pubkey: String = "a1".repeat(32),
+    ) = doc(n, kind = 0, search = SearchFields(name = name, about = about), pubkey = pubkey)
 
     private fun doc(
         n: Int,
         kind: Int,
         search: SearchFields,
+        pubkey: String = "a1".repeat(32),
     ) = EventDoc(
         id = id(n),
-        pubkey = "a1".repeat(32),
+        pubkey = pubkey,
         createdAt = 1_700_000_000L + n,
         kind = kind,
         tags = emptyList(),
@@ -252,6 +285,12 @@ class RankRegressionIT {
     private companion object {
         const val QUERY_PORT = 8080
         const val CONFIG_PORT = 19071
+
+        /** The ranking lens for the sort:followers case — cells are keyed by observer. */
+        val OBSERVER = "c".repeat(64)
+
+        /** A doc-n author pubkey, distinct from ids (b-padded vs 0-padded). */
+        fun pk(n: Int) = n.toString(16).padStart(64, 'b')
 
         fun dockerAvailable(): Boolean = runCatching { DockerClientFactory.instance().isDockerAvailable }.getOrDefault(false)
     }

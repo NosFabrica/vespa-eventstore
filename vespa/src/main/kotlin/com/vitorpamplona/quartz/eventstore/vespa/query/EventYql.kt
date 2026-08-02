@@ -55,7 +55,7 @@ object EventYql {
     /** Ascending trust within each (still-descending) match tier (`sort:rank:asc`). */
     const val RANK_ASC = "rank_asc"
 
-    /** Follower-count ranking (`sort:followers`). */
+    /** Verified-follower-count order within match tiers (`sort:followers`). */
     const val RANK_FOLLOWERS = "sort_followers"
 
     /**
