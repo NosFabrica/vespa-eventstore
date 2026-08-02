@@ -20,6 +20,7 @@
  */
 package com.vitorpamplona.quartz.eventstore.vespa
 
+import com.vitorpamplona.quartz.eventstore.vespa.doc.SearchFields
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -97,5 +98,34 @@ class NearTextTest {
             listOf("vitor", "pamplona", "vitorpamplona"),
             NearText.merge(listOf("vitor", "pamplona"), listOf("pamplona", "vitorpamplona")),
         )
+    }
+
+    @Test
+    fun `affil_tokens carries identity and affiliation segments, identity first`() {
+        // The as-you-type continuity column (SearchFields.nearFields): the
+        // segments the exact clauses tokenize nip05/lud16/website/about into
+        // must be prefix-reachable, or every doc reached through those fields
+        // vanishes while the final word is still being typed.
+        val affil =
+            SearchFields(
+                name = "amethyst",
+                nip05 = "amethyst@vitorpamplona.com",
+                lud16 = "vitor@vitorpamplona.com",
+                website = "https://amethyst.social",
+                about = "Nostr Client for Android",
+            ).nearFields()
+                .getValue("affil_tokens")
+        // Email/URL segments become elements — what "vitorpamp" must prefix.
+        assertTrue("vitorpamplona" in affil, "$affil")
+        assertTrue("vitor" in affil)
+        assertTrue("amethyst" in affil)
+        assertTrue("social" in affil)
+        // about rides too ("github.com/vitorpamplona/amethyst"-style bios are
+        // how several of the report's docs match at all)…
+        assertTrue("android" in affil)
+        // …but LAST, so the element cap trims bio prose, never identity.
+        assertTrue(affil.indexOf("vitorpamplona") < affil.indexOf("android"))
+        // Absent sources contribute nothing; all-absent emits no column.
+        assertFalse("affil_tokens" in SearchFields(name = "plain").nearFields())
     }
 }

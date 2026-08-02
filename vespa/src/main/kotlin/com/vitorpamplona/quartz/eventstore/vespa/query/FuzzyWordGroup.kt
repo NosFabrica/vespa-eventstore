@@ -61,9 +61,10 @@ import com.vitorpamplona.quartz.eventstore.vespa.NearText
  *     supported"; fuzzy() is HTTP 400).
  *
  * Cause 1 masked cause 2 by turning it into a no-op, which is why "Ode" and
- * "Odel" could never find "ODELL" and nothing ever surfaced. Fields without an
- * attribute sibling (about/website/nip05/lud16) stay exact-only: a prefix or
- * fuzzy term against them is an ERROR, not a no-op.
+ * "Odel" could never find "ODELL" and nothing ever surfaced. The INDEX fields
+ * themselves (about/website/nip05/lud16 included) stay exact-only — a prefix
+ * or fuzzy term against them is an ERROR, not a no-op; their prefix reach
+ * lives on the affil_tokens attribute sibling ([PREFIX_ONLY_FIELDS]).
  */
 internal object FuzzyWordGroup {
     /**
@@ -79,11 +80,19 @@ internal object FuzzyWordGroup {
 
     /**
      * Prefix-ONLY attribute fields: hashtag/summary tokens ("bitco" ->
-     * #bitcoin). No fuzzy — secondary text builds a much larger dictionary
-     * than names do, and a typo'd hashtag is not a query shape worth the
+     * #bitcoin) and the identity/affiliation segments of nip05/lud16/website/
+     * about ("vitorpamp" -> amethyst@vitorpamplona.com). The affil column is
+     * what keeps recall CONTINUOUS while a name is being typed: the docs the
+     * finished word reaches through those fields' exact clauses must not
+     * vanish for every prefix of it — most of that reach rides the
+     * joined-variant prefix ("Vitor Pamp" -> @fwj "vitorpamp" ->
+     * "vitorpamplona"), which only sees attribute fields (the 2026-08-02
+     * as-you-type ladder report; SearchPrefixLadderIT). No fuzzy on either —
+     * secondary/affiliation text builds a much larger dictionary than names
+     * do, and a typo'd hashtag or domain is not a query shape worth the
      * dictionary walk. Scored by the schema's WEAK tier, not the near tier.
      */
-    val PREFIX_ONLY_FIELDS = listOf("search_secondary_tokens")
+    val PREFIX_ONLY_FIELDS = listOf("search_secondary_tokens", "affil_tokens")
 
     /** Every attribute field the near/weak clauses can reference — the client's compatibility net matches 400s against these names. */
     val ALL_NEAR_FIELDS = NEAR_FIELDS + PREFIX_ONLY_FIELDS

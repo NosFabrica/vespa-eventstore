@@ -116,6 +116,17 @@ data class SearchFields(
      * search_secondary gets a TOKENS-only column ("bitco" -> #bitcoin —
      * hashtags and summaries deserve prefix reach, but parts-splitting prose
      * would flood the dictionary for no query shape anyone types).
+     *
+     * affil_tokens is the identity/affiliation column (nip05, lud16, website,
+     * about), [NearText.parts]-split so email/URL SEGMENTS become elements —
+     * "vitor@vitorpamplona.com" -> [vitor, vitorpamplona, com] — because
+     * that is what the exact clauses tokenize those fields into: any doc a
+     * finished word reaches through them must stay reachable while the word
+     * is still being typed ("Vitor Pamp" must not drop the
+     * amethyst@vitorpamplona.com profiles that "Vitor Pamplona" returns; the
+     * 2026-08-02 as-you-type report, SearchPrefixLadderIT). Identity fields
+     * come FIRST so [NearText.MAX_ELEMENTS] trims bio prose, never the
+     * identity segments.
      */
     fun nearFields(): Map<String, List<String>> =
         buildMap {
@@ -129,6 +140,10 @@ data class SearchFields(
                 put("search_primary_tokens", NearText.tokens(it))
             }
             secondary?.let { put("search_secondary_tokens", NearText.tokens(it)) }
+            val affil = listOfNotNull(nip05, lud16, website, about)
+            if (affil.isNotEmpty()) {
+                put("affil_tokens", NearText.merge(*affil.map(NearText::parts).toTypedArray()))
+            }
         }
 
     /**

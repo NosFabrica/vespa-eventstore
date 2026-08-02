@@ -35,6 +35,16 @@
     "note": "2-char CJK — needs the non-ASCII prefix floor"
   },
   {
+    "query": "Vitor P",
+    "expect": "",
+    "note": "reported 2026-08-02 (the as-you-type ladder): typing toward 'Vitor Pamplona' returned NOTHING at 'Vitor P'..'Vitor Pam' and only the 3 name-bearing profiles at 'Vitor Pamp'..'Vitor Pamplon', snapping to all 10 on the final keystroke. The trailing word sits under the prefix floor, so only the joined-variant prefix can carry it — and it now reaches nip05/lud16/website/about through the affil_tokens weak-tier column. Full corpus + ladder pinned by SearchPrefixLadderIT."
+  },
+  {
+    "query": "Vitor Pamp",
+    "expect": "",
+    "note": "same report, the mid-ladder shape: name-bearers matched but every identity/affiliation doc (amethyst@vitorpamplona.com, bios holding github.com/vitorpamplona) dropped out until the word was finished. Must return the same set as 'Vitor Pamplona'."
+  },
+  {
     "query": "Vitor",
     "expect": "",
     "note": "reported 2026-08-02 (the include:spam shape): logged-in Vitor searching his own name with include:spam saw untrusted namesakes first — include:spam must drop only the GATE, not the trust ORDER. The store now sends min_rank=0.0 instead of omitting the feature (wot_mult anchors its log at min_rank; the omitted-feature fallback of -1e9 flattened the boost to a constant). NOTE FOR RankAb: extensions are NOT parsed here (queries feed EventQuery directly, and RankAb pins min_rank=2 with an observer) — reproduce with `--observer <hex whose provider ranks the real Vitor>` plus a config overriding min_rank to 0.0, never by putting include:spam in the query text."
