@@ -72,6 +72,11 @@ class EventSelectionTest {
         assertNull(EventSelection.build(EventQuery(tags = mapOf("d" to listOf("x")))))
         assertNull(EventSelection.build(EventQuery(tagsAll = mapOf("t" to listOf("a", "b")))))
         assertNull(EventSelection.build(EventQuery(search = "vitor")))
+        // A selection sees no derived search fields, so a dropped exclusion
+        // would stream exactly the docs the query subtracted — and a dropped
+        // phrase would stream everything the requirement filtered out.
+        assertNull(EventSelection.build(EventQuery(notSearch = listOf("vitor"))))
+        assertNull(EventSelection.build(EventQuery(phrases = listOf("vitor pamplona"))))
         assertNull(EventSelection.build(EventQuery(limit = 10)))
         assertNull(EventSelection.build(EventQuery(expiresBefore = 100)))
         // Injection rule: a non-64-hex key never reaches the expression.

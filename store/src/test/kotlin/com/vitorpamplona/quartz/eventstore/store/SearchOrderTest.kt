@@ -100,4 +100,20 @@ class SearchOrderTest {
             val ids = store().query<Event>(Filter(kinds = listOf(1))).map { it.id }
             assertEquals(listOf(newer.id, older.id), ids, "newest first without a search")
         }
+
+    /** A phrase-only query is a SEARCH: relevance order, never re-sorted to recency. */
+    @Test
+    fun `a phrase-only search keeps the engine's relevance order`() =
+        runBlocking {
+            val ids = store().query<Event>(Filter(search = "\"hello there\"")).map { it.id }
+            assertEquals(listOf(older.id, newer.id), ids, "rank order survives the store")
+        }
+
+    /** An exclusion-only query is PLAIN recall: newest first, like any NIP-01 filter. */
+    @Test
+    fun `an exclusion-only search gets NIP-01 recency order`() =
+        runBlocking {
+            val ids = store().query<Event>(Filter(search = "-nomatch")).map { it.id }
+            assertEquals(listOf(newer.id, older.id), ids, "recall minus a word is still recall")
+        }
 }

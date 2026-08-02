@@ -68,6 +68,8 @@ tokens stay part of the search text:
 | `sort:text` | Force pure-text relevance, ignoring the observer. |
 | `filter:rank:gte:N` / `filter:rank:gt:N` | Raise the trust floor from the default 2 to N (0–100 scale) — a pure filter, the ordering is untouched. |
 | `include:spam` | Turn off the default trust floor. An explicit `filter:rank:` floor always survives it. |
+| `-word` | Google-style exclusion: drop hits containing the word. Exact-match only — the typo/prefix tolerance the positive terms enjoy never widens an exclusion (though the prose fields stem, so `-runs` also drops `running` there) — and hyphenated exclusions (`-e-cash`) exclude the adjacent phrase. A query of *only* exclusions is plain newest-first recall minus the words (the observer gate still applies), and events search can't see (non-searchable kinds) are never excluded. |
+| `"exact phrase"` | Google-style quotes: the words must appear adjacently, in order. Exact-match only — quoting a single word (`"vitor"`) is the opt-out from typo/prefix matching (not from prose-field stemming). Unlike exclusions, phrases are search text: a phrase-only query is a relevance-ranked search with the normal trust/spam treatment. `-"exact phrase"` excludes the phrase. An unclosed quote runs to the end; quotes protect extension-shaped tokens (`"sort:rank"` is a phrase, not a sort). |
 
 **Where the observer comes from.** The `observer:` token is only one of two
 sources. The embedding relay can also supply an observer out-of-band — Quartz's
@@ -101,6 +103,11 @@ context observer, so the token is the only source):
 | `pizza observer:<hex> filter:rank:gte:20` | Same default order, floor raised to 20. |
 | `pizza observer:<hex> sort:rank` | Token matches first, ordered by author trust inside each match tier. |
 | `pizza observer:<hex> sort:followers` | Token matches first, most-followed authors first inside each tier. |
+| `pizza -pineapple` | Text relevance for `pizza`, minus every hit that contains `pineapple`. |
+| `-pineapple observer:<hex>` | No terms left: the observer-gated feed, minus every searchable hit containing `pineapple`. |
+| `"new york" pizza` | Hits must contain the adjacent phrase `new york`; `pizza` still matches loosely and drives relevance alongside it. |
+| `"pizza" observer:<hex>` | Exactly the token `pizza` (typo/prefix matching off), ranked through the observer's web of trust like any search. |
+| `pizza -"pineapple ham"` | `pizza` hits, minus those containing the adjacent phrase `pineapple ham` — `pineapple` or `ham` alone is fine. |
 | `pizza sort:text` | Pure text relevance even when an observer resolved (token or connection) — the un-personalized view. |
 | `sort:rank observer:<hex>` | No terms: the trust firehose — everything, ordered by author trust. |
 | `filter:rank:gte:50 observer:<hex>` | No terms: newest-first feed of authors the observer trusts at ≥ 50. |

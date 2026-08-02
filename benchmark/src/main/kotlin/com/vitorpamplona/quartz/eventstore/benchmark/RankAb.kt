@@ -171,6 +171,11 @@ object RankAb {
         hits: Int,
         overrides: Map<String, Double>,
     ): List<String> {
+        // Case text feeds EventQuery.search RAW — below the store's syntax
+        // parser, so `-word`/quotes in a rank case would be loose words here,
+        // not exclusions/phrases. Deliberate (this A/Bs engine profiles on
+        // identical recall); route cases through FilterMapping if they ever
+        // adopt the term syntax.
         val vq = EventYql.build(EventQuery(search = text, observer = observer, ranking = profile, minRank = observer?.let { 2.0 })) ?: return emptyList()
         val body =
             buildJsonObject {

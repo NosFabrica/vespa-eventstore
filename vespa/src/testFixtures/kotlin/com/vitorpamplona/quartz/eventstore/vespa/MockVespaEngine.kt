@@ -764,36 +764,86 @@ object MockYql {
         for (clause in splitTopLevel(rest, " and ")) {
             q =
                 when {
-                    clause.startsWith("id in (") -> q.copy(ids = strings(clause))
+                    // The explicit match-all a negation-only query subtracts
+                    // from (EventYql.whereOf) — no constraint of its own.
+                    clause == "true" -> {
+                        q
+                    }
 
-                    clause.startsWith("pubkey in (") -> q.copy(authors = strings(clause))
+                    clause.startsWith("id in (") -> {
+                        q.copy(ids = strings(clause))
+                    }
 
-                    clause.startsWith("owner in (") -> q.copy(owners = strings(clause))
+                    clause.startsWith("pubkey in (") -> {
+                        q.copy(authors = strings(clause))
+                    }
 
-                    clause.startsWith("kind in (") -> q.copy(kinds = ints(clause))
+                    clause.startsWith("owner in (") -> {
+                        q.copy(owners = strings(clause))
+                    }
 
-                    clause.startsWith("!(kind in (") -> q.copy(notKinds = ints(clause.removePrefix("!(").removeSuffix(")")))
+                    clause.startsWith("kind in (") -> {
+                        q.copy(kinds = ints(clause))
+                    }
 
-                    clause.startsWith("created_at >= ") -> q.copy(since = clause.substringAfterLast(' ').toLong())
+                    clause.startsWith("!(kind in (") -> {
+                        q.copy(notKinds = ints(clause.removePrefix("!(").removeSuffix(")")))
+                    }
 
-                    clause.startsWith("created_at <= ") -> q.copy(until = clause.substringAfterLast(' ').toLong())
+                    clause.startsWith("created_at >= ") -> {
+                        q.copy(since = clause.substringAfterLast(' ').toLong())
+                    }
 
-                    clause.startsWith("expires_at < ") -> q.copy(expiresBefore = clause.substringAfterLast(' ').toLong())
+                    clause.startsWith("created_at <= ") -> {
+                        q.copy(until = clause.substringAfterLast(' ').toLong())
+                    }
 
-                    clause.startsWith("expires_at > ") -> q.copy(notExpiredAt = clause.substringAfterLast(' ').toLong())
+                    clause.startsWith("expires_at < ") -> {
+                        q.copy(expiresBefore = clause.substringAfterLast(' ').toLong())
+                    }
+
+                    clause.startsWith("expires_at > ") -> {
+                        q.copy(notExpiredAt = clause.substringAfterLast(' ').toLong())
+                    }
 
                     // The word-group search clause (its first sub-clause is always a
                     // field-annotated userInput, behind a paren run whose depth varies
                     // with the word count — single word, AND'd words, AND'd words with
                     // pair coverage): reconstruct the term from the per-word
                     // parameters (@w0..@wN — @wj/@wp* are derived variants).
-                    SEARCH_CLAUSE.containsMatchIn(clause) -> q.copy(search = searchWords(params))
+                    SEARCH_CLAUSE.containsMatchIn(clause) -> {
+                        q.copy(search = searchWords(params))
+                    }
 
-                    clause.startsWith("(tag_index contains ") -> tagGroup(q, clause)
+                    // One required quoted phrase (EventQuery.phrases): a plain
+                    // phrase term against the default fieldset. Matched
+                    // EXACTLY, annotations included — a drifted phrase grammar
+                    // must fail parsing, not silently loosen the requirement.
+                    PHRASE_CLAUSE.matches(clause) -> {
+                        val param = PHRASE_CLAUSE.find(clause)!!.groupValues[1]
+                        q.copy(phrases = q.phrases + params.getValue(param))
+                    }
 
-                    clause.startsWith("tag_index in (") -> tagInGroup(q, clause)
+                    // One exclusion word (EventQuery.notSearch): a negated
+                    // phrase term against the default fieldset. Matched
+                    // EXACTLY, annotations included — a drifted exclusion
+                    // grammar must fail parsing, not silently keep the doc.
+                    NOT_SEARCH_CLAUSE.matches(clause) -> {
+                        val param = NOT_SEARCH_CLAUSE.find(clause)!!.groupValues[1]
+                        q.copy(notSearch = q.notSearch + params.getValue(param))
+                    }
 
-                    else -> error("unparseable clause: $clause")
+                    clause.startsWith("(tag_index contains ") -> {
+                        tagGroup(q, clause)
+                    }
+
+                    clause.startsWith("tag_index in (") -> {
+                        tagInGroup(q, clause)
+                    }
+
+                    else -> {
+                        error("unparseable clause: $clause")
+                    }
                 }
         }
         return q
@@ -801,6 +851,12 @@ object MockYql {
 
     /** Exactly 3 parens (one word), 4 (AND'd words), or 5 (AND'd words with pair coverage) — anything else is drift. */
     private val SEARCH_CLAUSE = Regex("""^\({3,5}\{defaultIndex:""")
+
+    /** The required-phrase clause EventYql emits per quoted phrase, pinned annotation-for-annotation; group 1 is the @-parameter carrying the phrase. */
+    private val PHRASE_CLAUSE = Regex("""^\(\{defaultIndex:"default",grammar:"phrase"\}userInput\(@(p\d+)\)\)$""")
+
+    /** The exclusion clause EventYql emits per notSearch word, pinned annotation-for-annotation; group 1 is the @-parameter carrying the word. */
+    private val NOT_SEARCH_CLAUSE = Regex("""^!\(\(\{defaultIndex:"default",grammar:"phrase"\}userInput\(@(n\d+)\)\)\)$""")
 
     /** w0, w1, … until the first gap — the builder emits one per word, with no upper bound. */
     private fun searchWords(params: Map<String, String>): String {

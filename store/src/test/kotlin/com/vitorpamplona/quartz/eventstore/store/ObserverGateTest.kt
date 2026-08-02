@@ -108,6 +108,29 @@ class ObserverGateTest {
     }
 
     @Test
+    fun `an exclusion-only search is plain recall to the gate`() {
+        // "-word" leaves no positive terms, so the mapping hands the store
+        // search=null — and the recall gate must own it like any plain filter.
+        val q = captured(Filter(kinds = listOf(1), search = "-spamword"), observer = hex)
+        assertEquals(EventYql.RANK_RECENCY_GATED, q.ranking)
+        assertEquals(DEFAULT_MIN_RANK, q.minRank)
+        assertEquals(listOf("spamword"), q.notSearch)
+        assertNull(q.search)
+    }
+
+    @Test
+    fun `a phrase-only search gates through the search profile, not the recall gate`() {
+        // Quoted phrases are search text — the opposite polarity from the
+        // exclusion-only case above: the query stays on the search path
+        // (ranking null = EventYql's default profile) with the default floor.
+        val q = captured(Filter(kinds = listOf(1), search = "\"hello world\""), observer = hex)
+        assertNull(q.ranking, "phrases rank like terms: the search profile owns the gate")
+        assertEquals(DEFAULT_MIN_RANK, q.minRank)
+        assertEquals(listOf("hello world"), q.phrases)
+        assertNull(q.search)
+    }
+
+    @Test
     fun `no observer resolved means no gate`() {
         val q = captured(Filter(kinds = listOf(1)))
         assertNull(q.ranking)

@@ -65,18 +65,53 @@ import com.vitorpamplona.quartz.utils.Hex
  *    supplies it from the NIP-42 connection); a non-hex value is ignored. With
  *    no observer resolved, a search degrades to pure-text relevance.
  *
+ * Two pieces of TERM-level syntax ride beside the extensions (which are all
+ * `key:value` tokens Quartz splits off) — Google's minus and Google's quotes:
+ *
+ *  - A term starting with `-` is an EXCLUSION and becomes
+ *    [EventQuery.notSearch] instead of a search word. Exclusion is
+ *    exact-match only (see the field's KDoc); a `-` on a word with nothing
+ *    the index can hold (`-⚡`) excludes nothing and is dropped. A query of
+ *    ONLY exclusions has no ranking terms, so it is plain recall minus the
+ *    words — newest first, and the store's observer gate applies to it
+ *    exactly as to any plain filter. A lone `-` is not syntax and stays a
+ *    (never-matching) term, as before.
+ *  - A `"quoted span"` is an exact-phrase REQUIREMENT ([EventQuery.phrases]):
+ *    adjacent tokens, in order, none of the loose words' typo/prefix reach —
+ *    quoting a single word is the opt-out from fuzzy matching. Unlike
+ *    exclusions, phrases are search text: a phrase-only query is a
+ *    relevance-ordered search that gates through the search profiles.
+ *    `-"quoted span"` combines the two into a phrase exclusion. An unclosed
+ *    quote runs to the end of the text; empty quotes are dropped. Quoted
+ *    spans are lifted BEFORE Quartz's extension pass (see [liftQuotedSpans]
+ *    for why that order is load-bearing), so quotes also PROTECT
+ *    extension-shaped tokens: `"sort:rank"` is the phrase [sort, rank], not
+ *    a sort order.
+ *
  * Unknown extensions are ignored. A query that is nothing but extensions becomes
  * unconstrained (null terms), not match-nothing.
  */
 internal fun Filter.toEventQuery(): EventQuery? {
     if (ids?.isEmpty() == true || authors?.isEmpty() == true || kinds?.isEmpty() == true) return null
     if (tags?.values?.any { it.isEmpty() } == true || tagsAll?.values?.any { it.isEmpty() } == true) return null
-    val parsed = SearchQuery.parse(search)
-    val terms = parsed.terms.ifEmpty { null }
+    // Term-level syntax parses in two stages AROUND Quartz's extension pass
+    // (quotes first — see liftQuotedSpans for why that order is load-bearing;
+    // then extensions off the residual; then `-word` off what remains). At
+    // the EventQuery seam a search word is always a requirement, never
+    // syntax — the pure-negative case arrives engine- and store-side with
+    // search=null and takes every plain-recall path (the observer gate, the
+    // unranked profile) instead of masquerading as a ranked search, while
+    // phrases arrive as the typed requirement they are.
+    val quoted = liftQuotedSpans(search.orEmpty())
+    val parsed = SearchQuery.parse(quoted.residual)
+    val words = splitMinusWords(parsed.terms)
+    val terms = words.terms
+    // Exclusions no index can hold ("-⚡") are vacuous either way — dropped.
+    val notSearch = (words.notWords + quoted.notPhrases).filter { w -> w.any(Char::isLetterOrDigit) }
     val sort = parsed.extensions["sort"]?.let(::rankReputationOf)
     val floor = parsed.extensions["filter"]?.let(::rankFloorOf)
     val observer = parsed.extensions["observer"]?.lowercase()?.takeIf(Hex::isHex64)
-    val ranked = terms != null || sort != null
+    val ranked = terms != null || quoted.phrases.isNotEmpty() || sort != null
     return EventQuery(
         ids = ids.orEmpty(),
         kinds = kinds.orEmpty(),
@@ -87,6 +122,8 @@ internal fun Filter.toEventQuery(): EventQuery? {
         until = until,
         limit = limit,
         search = terms,
+        phrases = quoted.phrases,
+        notSearch = notSearch,
         observer = observer,
         // A floor is just a floor: the profile stays whatever the query's shape
         // selects (minRank carries N). The no-terms case resolves in the store,
@@ -123,6 +160,91 @@ const val DEFAULT_MIN_RANK = 2.0
  * designed full span and only the gate is off.
  */
 const val INCLUDE_SPAM_MIN_RANK = 0.0
+
+/** The quoted spans lifted off the RAW search text, plus the residual for the extension and `-word` passes. */
+internal class QuotedSpans(
+    val phrases: List<String>,
+    val notPhrases: List<String>,
+    val residual: String,
+)
+
+/** The `-word` split of the extension-free terms: loose words joined back up, exclusions apart. */
+internal class MinusWords(
+    val terms: String?,
+    val notWords: List<String>,
+)
+
+/**
+ * Stage one of the term-syntax scan, over the RAW search string: lift every
+ * `"…"` / `-"…"` span out before anything else runs. The order is
+ * load-bearing: Quartz's extension pass is quote-BLIND and strips ANY
+ * whitespace token shaped `key:value`, so a span ending in one
+ * (`"pizza sort:rank" -spam`) would lose its closing quote with the stripped
+ * token — and the then-unclosed quote would swallow the rest of the query
+ * into the phrase, flipping the trailing `-spam` EXCLUSION into required
+ * text. Lifting first also means quotes protect extension-shaped tokens
+ * (`"sort:rank"` is the phrase [sort, rank], not a sort order).
+ *
+ * A quote opens a span only at a token boundary (start of text, after
+ * whitespace, or as `-"` there); a mid-token quote (`foo"bar`) stays an
+ * ordinary character. A span runs to the next quote, or to the end when
+ * unclosed — the tolerant reading of a dangling quote. Empty spans are
+ * dropped; a positive phrase keeps even index-invisible content ("⚡"),
+ * because like a loose "⚡" word it is an unsatisfiable requirement the
+ * ENGINE turns into provably-no-match — dropping it here would silently
+ * flip that into match-all.
+ */
+internal fun liftQuotedSpans(text: String): QuotedSpans {
+    val phrases = ArrayList<String>()
+    val notPhrases = ArrayList<String>()
+    val residual = StringBuilder()
+    var i = 0
+    var boundary = true
+    while (i < text.length) {
+        val c = text[i]
+        val neg = c == '-' && i + 1 < text.length && text[i + 1] == '"'
+        if (boundary && (c == '"' || neg)) {
+            val start = i + if (neg) 2 else 1
+            val close = text.indexOf('"', start)
+            val end = if (close < 0) text.length else close
+            val span = text.substring(start, end).trim()
+            i = if (close < 0) text.length else close + 1
+            if (span.isNotEmpty()) {
+                if (neg) notPhrases += span else phrases += span
+            }
+            // The lifted span's place stays a token boundary for what follows.
+            residual.append(' ')
+        } else {
+            residual.append(c)
+            boundary = c.isWhitespace()
+            i++
+        }
+    }
+    return QuotedSpans(phrases, notPhrases, residual.toString())
+}
+
+/**
+ * Stage two, over the extension-free terms Quartz hands back: the `-word`
+ * token rule. A leading `-` on a 2+ character token flips it to an exclusion
+ * (every leading dash stripped, so `--word` excludes `word`); a lone `-` is
+ * not syntax and stays a (never-matching) loose term. Note an
+ * extension-shaped token with a `-` prefix (`-sort:rank`) is NOT an
+ * extension (Quartz keys are strictly `a`-`z`), so it lands here and
+ * excludes the literal — the phrase [sort, rank] — rather than negating a
+ * sort order; there is no `-extension` syntax.
+ */
+internal fun splitMinusWords(terms: String): MinusWords {
+    val loose = ArrayList<String>()
+    val excluded = ArrayList<String>()
+    for (token in terms.split(WHITESPACE)) {
+        if (token.isEmpty()) continue
+        if (token.length > 1 && token[0] == '-') excluded += token.trimStart('-') else loose += token
+    }
+    return MinusWords(loose.joinToString(" ").ifEmpty { null }, excluded)
+}
+
+/** Term splitter for [splitMinusWords] (the engine's own WHITESPACE is module-internal). */
+private val WHITESPACE = Regex("\\s+")
 
 /** `sort:` value -> rank profile; null (ignored) for values we don't recognize. */
 private fun rankReputationOf(value: String): String? =

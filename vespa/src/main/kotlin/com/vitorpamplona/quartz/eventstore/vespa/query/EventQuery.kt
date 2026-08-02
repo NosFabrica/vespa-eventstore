@@ -51,6 +51,41 @@ data class EventQuery(
     /** NIP-50 search term; null/blank = plain recall ordered by recency. */
     val search: String? = null,
     /**
+     * Quoted-phrase requirements — the engine half of the store's
+     * `"exact words"` syntax. Each entry must appear in some search field as
+     * ADJACENT tokens, in order, matched exactly (one phrase-grammar term
+     * over the `default` fieldset) with none of [search]'s prefix/fuzzy/typo
+     * reach — quoting a single word is the opt-out from fuzzy matching (but
+     * NOT from the schema's stemming on the prose fields: `"runs"` still
+     * matches "running" there — see the [notSearch] KDoc, same mechanics).
+     * Phrases are positive search text: they make a query ranked exactly as
+     * [search] terms do, so a phrase-only query is a relevance-ordered
+     * search — unlike a [notSearch]-only one, which is plain recall. A
+     * phrase with nothing any index can hold ("⚡") is an unsatisfiable
+     * requirement — the query provably matches nothing, the same rule
+     * [search] words follow (and the opposite of [notSearch], where such a
+     * word is vacuous).
+     */
+    val phrases: List<String> = emptyList(),
+    /**
+     * Words that must NOT match any search field — the engine half of the
+     * store's `-word` search syntax, which splits exclusions off [search]
+     * before the query gets here (an engine-level word in [search] is always
+     * a requirement, never syntax). Exclusion is deliberately EXACT: one
+     * negated tokenized term per word over the schema's `default` fieldset,
+     * none of the prefix/fuzzy/trigram reach the positive side has — a loose
+     * matcher can only over-exclude, and a hit wrongly dropped is invisible
+     * to the user in a way a wrongly kept one is not. One looseness DOES
+     * ride along engine-side: the prose fields (about/search_text/… — see
+     * event.sd; the name-tier fields are `stemming: none`) index STEMMED
+     * tokens, so on those fields "-runs" also drops "running". That is
+     * index-side and unavoidable from the query (a `stem:false` term would
+     * stop matching even the exact word against a stemmed index); the
+     * in-memory reference does not model it. Docs without search fields
+     * (kinds NIP-50 can't see) contain no word and are never excluded.
+     */
+    val notSearch: List<String> = emptyList(),
+    /**
      * The ranking lens: the 64-hex pubkey whose web-of-trust weighs and gates
      * hits (the NIP-42-authenticated user, the NIP-50 `observer:` search
      * token, or the operator's default). Emitted as the `user_q` ranking

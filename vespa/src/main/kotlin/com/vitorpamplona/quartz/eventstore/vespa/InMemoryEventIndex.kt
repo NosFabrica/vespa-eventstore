@@ -133,7 +133,13 @@ class InMemoryEventIndex(
                 (q.until == null || d.createdAt <= q.until) &&
                 (q.expiresBefore == null || (d.expiresAt()?.let { it < q.expiresBefore } == true)) &&
                 (q.notExpiredAt == null || (d.expiresAt() ?: EventDoc.NO_EXPIRATION) > q.notExpiredAt) &&
-                (q.search.isNullOrBlank() || d.search.matches(q.search.trim()))
+                (q.search.isNullOrBlank() || d.search.matches(q.search.trim())) &&
+                // Phrases and exclusions share the exact-adjacency check
+                // (SearchFields.containsPhrase), never the loose substring the
+                // positive words allow — mirroring the engine, where both are
+                // the same phrase-grammar term, required or negated.
+                q.phrases.all { d.search.containsPhrase(it) } &&
+                q.notSearch.none { d.search.containsPhrase(it) }
         }
     }
 

@@ -129,6 +129,110 @@ class FilterMappingTest {
     }
 
     @Test
+    fun `minus terms become exclusions, not search words`() {
+        val q = map("cat -dog")
+        assertEquals("cat", q.search)
+        assertEquals(listOf("dog"), q.notSearch)
+        assertEquals(DEFAULT_MIN_RANK, q.minRank, "the positive term still ranks (and spam-filters) as usual")
+    }
+
+    @Test
+    fun `an exclusion-only query is plain recall minus the words`() {
+        val q = map("-spam -scam")
+        assertNull(q.search, "no positive terms: nothing to rank")
+        assertEquals(listOf("spam", "scam"), q.notSearch)
+        assertNull(q.ranking)
+        assertNull(q.minRank, "plain recall: the observer gate, not the search floor, decides")
+    }
+
+    @Test
+    fun `minus edge cases — lone dash, unindexable word, mid-word hyphens`() {
+        assertEquals("-", map("-").search, "a lone dash is a term (never-matching), not syntax")
+        assertTrue(map("-").notSearch.isEmpty())
+        assertEquals("cat", map("cat -⚡").search)
+        assertTrue(map("cat -⚡").notSearch.isEmpty(), "an exclusion no index can hold excludes nothing")
+        assertEquals("e-cash", map("e-cash").search, "mid-word hyphens are not exclusions")
+        assertEquals(listOf("e-cash"), map("-e-cash").notSearch, "…but a leading dash flips the whole term")
+        assertNull(map("-e-cash").search)
+    }
+
+    @Test
+    fun `quoted spans become exact-phrase requirements`() {
+        val q = map("pizza \"new york\"")
+        assertEquals("pizza", q.search)
+        assertEquals(listOf("new york"), q.phrases)
+        assertEquals(DEFAULT_MIN_RANK, q.minRank)
+    }
+
+    @Test
+    fun `a phrase-only query is still a ranked search`() {
+        val q = map("\"new york\"")
+        assertNull(q.search)
+        assertEquals(listOf("new york"), q.phrases)
+        assertEquals(DEFAULT_MIN_RANK, q.minRank, "phrases are search text: the default spam floor applies")
+    }
+
+    @Test
+    fun `a minus before quotes excludes the phrase`() {
+        val q = map("pizza -\"pineapple ham\"")
+        assertEquals("pizza", q.search)
+        assertTrue(q.phrases.isEmpty())
+        assertEquals(listOf("pineapple ham"), q.notSearch)
+    }
+
+    @Test
+    fun `quote edge cases — unclosed, empty, single word`() {
+        assertEquals(listOf("new york"), map("pizza \"new york").phrases, "an unclosed quote runs to the end")
+        assertEquals("pizza", map("pizza \"new york").search)
+        val empty = map("pizza \"\"")
+        assertEquals("pizza", empty.search)
+        assertTrue(empty.phrases.isEmpty(), "empty quotes are nothing")
+        assertEquals(listOf("vitor"), map("\"vitor\"").phrases, "a quoted word is the fuzzy opt-out, not a loose term")
+        assertNull(map("\"vitor\"").search)
+    }
+
+    @Test
+    fun `quotes are lifted before the extension pass — the closing quote survives`() {
+        // Quartz's extension pass is quote-blind: parsed AFTER it, the span's
+        // closing quote would vanish with the stripped `sort:rank"` token and
+        // the then-unclosed quote would swallow `-spam` into the phrase —
+        // flipping an exclusion into REQUIRED text. The audit's headline bug.
+        val q = map("\"pizza sort:rank\" -spam")
+        assertEquals(listOf("pizza sort:rank"), q.phrases, "the quoted span survives intact")
+        assertEquals(listOf("spam"), q.notSearch, "…and the exclusion stays an exclusion")
+        assertNull(q.search)
+        assertNull(q.ranking, "a quoted sort token is text, not a sort order")
+    }
+
+    @Test
+    fun `quotes protect extension-shaped tokens`() {
+        val q = map("\"sort:rank\" pizza sort:followers")
+        assertEquals(listOf("sort:rank"), q.phrases, "quoted: a phrase")
+        assertEquals(EventYql.RANK_FOLLOWERS, q.ranking, "unquoted: still an extension")
+        assertEquals("pizza", q.search)
+    }
+
+    @Test
+    fun `dashed edge cases — double dash and dash-prefixed extension shapes`() {
+        assertEquals(listOf("word"), map("--word").notSearch, "every leading dash strips")
+        // `-sort:rank` is NOT an extension (Quartz keys are strictly a-z), so
+        // it lands in the term scan and excludes the literal — there is no
+        // `-extension` syntax.
+        val q = map("-sort:rank pizza")
+        assertEquals(listOf("sort:rank"), q.notSearch)
+        assertNull(q.ranking)
+        assertEquals("pizza", q.search)
+    }
+
+    @Test
+    fun `exclusions ride beside extensions`() {
+        val q = map("-nsfw sort:rank")
+        assertEquals(listOf("nsfw"), q.notSearch)
+        assertEquals(EventYql.RANK_DESC, q.ranking, "a sorted match-all, minus the word")
+        assertEquals(DEFAULT_MIN_RANK, q.minRank, "an explicit sort is ranked, so the default floor applies")
+    }
+
+    @Test
     fun `plain filters are never trust-gated`() {
         val none = Filter(kinds = listOf(1)).toEventQuery()!!
         assertNull(none.search)

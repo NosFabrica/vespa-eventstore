@@ -130,6 +130,85 @@ class EventYqlTest {
     }
 
     @Test
+    fun `quoted phrases emit required phrase clauses and rank like search text`() {
+        val q = EventYql.build(EventQuery(search = "cat", phrases = listOf("new york", "e-cash")))!!
+        // One self-contained REQUIRED phrase term per entry — exact and
+        // adjacent, none of the loose words' prefix/fuzzy/gram reach.
+        assertTrue("""({defaultIndex:"default",grammar:"phrase"}userInput(@p0))""" in q.yql, q.yql)
+        assertTrue("""({defaultIndex:"default",grammar:"phrase"}userInput(@p1))""" in q.yql, q.yql)
+        assertEquals("new york", q.params["p0"])
+        assertEquals("e-cash", q.params["p1"])
+        // Exact-only, proven by reference count: each phrase parameter appears
+        // in exactly its one pinned clause — no fuzzy/prefix/gram matcher may
+        // cite it anywhere else. (A bare `fuzzy(@p` absence check would also
+        // pass if phrases were wrongly routed through the word groups, which
+        // name their params @w…, so it proves nothing.)
+        assertEquals(1, Regex(Regex.escape("@p0")).findAll(q.yql).count())
+        assertEquals(1, Regex(Regex.escape("@p1")).findAll(q.yql).count())
+
+        // A phrase-only query is a SEARCH: relevance-ranked, never recency recall.
+        val alone = EventYql.build(EventQuery(phrases = listOf("new york")))!!
+        assertEquals(EventYql.RANK_TEXT, alone.ranking)
+        assertFalse("order by" in alone.yql, "ranked queries must not force recency order")
+        assertEquals(EventYql.RANK_SEARCH, EventYql.build(EventQuery(phrases = listOf("new york"), observer = hexA))!!.ranking)
+    }
+
+    @Test
+    fun `an all-erased phrase is an unsatisfiable requirement`() {
+        // Same rule as loose words ("⚡" alone), OPPOSITE of notSearch: a
+        // REQUIRED phrase no index can hold provably matches nothing —
+        // dropping it instead would silently flip the query into match-all.
+        assertNull(EventYql.build(EventQuery(phrases = listOf("⚡"))))
+        assertNull(EventYql.build(EventQuery(search = "vitor", phrases = listOf("⚡ //"))))
+        // A partially-erased phrase rides raw: Vespa's tokenizer drops what
+        // indexing dropped, so the emitted phrase equals what docs hold.
+        assertEquals("new ⚡ york", EventYql.build(EventQuery(phrases = listOf("new ⚡ york")))!!.params["p0"])
+    }
+
+    @Test
+    fun `notSearch words emit negated exact clauses with out-of-band params`() {
+        val q = EventYql.build(EventQuery(search = "cat", notSearch = listOf("dog", "e-cash")))!!
+        // One self-contained negation per word, against the default fieldset —
+        // NOT the fuzzy word group: exclusion must never out-reach what the
+        // user literally typed, so no prefix/fuzzy/gram matcher may appear on
+        // an @n parameter (phrase keeps "e-cash" one adjacent unit).
+        assertTrue("""!(({defaultIndex:"default",grammar:"phrase"}userInput(@n0)))""" in q.yql, q.yql)
+        assertTrue("""!(({defaultIndex:"default",grammar:"phrase"}userInput(@n1)))""" in q.yql, q.yql)
+        assertEquals("dog", q.params["n0"])
+        assertEquals("e-cash", q.params["n1"])
+        // Exact-only, proven by reference count (see the phrase test's note):
+        // each excluded word appears in exactly its one pinned negation.
+        assertEquals(1, Regex(Regex.escape("@n0")).findAll(q.yql).count())
+        assertEquals(1, Regex(Regex.escape("@n1")).findAll(q.yql).count())
+        assertEquals(EventYql.RANK_TEXT, q.ranking, "the positive term still drives ranking; exclusions are pure filters")
+    }
+
+    @Test
+    fun `an exclusion-only query subtracts from an explicit match-all and stays unranked`() {
+        // YQL's ! is AND-NOT sugar: a negation needs a positive side, so a
+        // notSearch-only query (the store's pure "-word" search) gets a
+        // spelled-out `true` — and with no search term it is plain recall,
+        // newest first, not a ranked search with nothing to score.
+        val q = EventYql.build(EventQuery(notSearch = listOf("spam")))!!
+        assertTrue(q.yql.contains("where true and !(("), q.yql)
+        assertEquals("spam", q.params["n0"])
+        assertEquals(EventYql.RANK_UNRANKED, q.ranking)
+        assertTrue("order by created_at desc" in q.yql)
+        // The same guard covers the other negation-only shape (notKinds).
+        assertTrue(EventYql.build(EventQuery(notKinds = listOf(5)))!!.yql.contains("where true and !(kind in (5))"))
+    }
+
+    @Test
+    fun `a tokenization-erased exclusion is a no-op, not a dead clause`() {
+        // The positive-side rule's mirror image with the opposite outcome:
+        // "⚡" is in no index, so requiring it is unsatisfiable (null) but
+        // EXCLUDING it is vacuous — nothing holds it, nothing is dropped.
+        val q = EventYql.build(EventQuery(notSearch = listOf("⚡")))!!
+        assertFalse("userInput(@n" in q.yql, q.yql)
+        assertTrue(q.yql.contains("where true "), "the erased exclusion leaves plain recall untouched")
+    }
+
+    @Test
     fun `an observer switches the search default to the trust profile`() {
         val text = EventYql.build(EventQuery(search = "vitor"))!!
         assertEquals(EventYql.RANK_TEXT, text.ranking, "no observer: pure text")

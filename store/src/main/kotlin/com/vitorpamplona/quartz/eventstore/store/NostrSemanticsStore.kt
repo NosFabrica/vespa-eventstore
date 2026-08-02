@@ -89,7 +89,8 @@ import kotlin.coroutines.coroutineContext
  *    schema's per-kind search fields. [reindexFullTextSearch] re-derives them
  *    after extractor/Quartz upgrades. Per the [IEventStore] contract, filters
  *    arrive with `search` VERBATIM — this store interprets the
- *    `sort:`/`filter:rank:`/`include:spam`/`observer:` extensions itself and
+ *    `sort:`/`filter:rank:`/`include:spam`/`observer:` extensions and the
+ *    `-word` / `"exact phrase"` term syntax itself and
  *    ignores ones it doesn't know. A resolved observer (token or
  *    [StoreQueryContext]) also trust-gates PLAIN recall — the observer gate,
  *    see [toExpiryQuery].
@@ -298,15 +299,18 @@ class NostrSemanticsStore(
         toEventQuery()?.let {
             val q = it.copy(notExpiredAt = cutoffSecs, observer = it.observer ?: observer)
             val floor = q.minRank ?: DEFAULT_MIN_RANK.takeUnless { q.includeSpam }
-            if (q.observer != null && q.search == null && q.ranking == null && floor != null) {
+            // Phrases count as search text (they gate through the search
+            // profiles); notSearch does not — an exclusion-only query is
+            // plain recall and takes the recall gate like any other.
+            if (q.observer != null && q.search == null && q.phrases.isEmpty() && q.ranking == null && floor != null) {
                 q.copy(ranking = EventYql.RANK_RECENCY_GATED, minRank = floor)
             } else {
                 q
             }
         }
 
-    /** Whether this query recalls through a rank profile (its trust gates apply engine-side). */
-    private fun EventQuery.isRanked(): Boolean = search != null || ranking != null
+    /** Whether this query recalls through a rank profile (its trust gates apply engine-side). Phrases are search text; notSearch alone is plain recall. */
+    private fun EventQuery.isRanked(): Boolean = search != null || phrases.isNotEmpty() || ranking != null
 
     /**
      * Whether the ENGINE's hit order is the serving order. Ranked queries keep

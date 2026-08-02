@@ -108,6 +108,50 @@ data class SearchFields(
     }
 
     /**
+     * Exact-adjacency check for the in-memory reference — the engine's
+     * phrase-grammar term, both polarities: a REQUIRED quoted phrase
+     * ([EventQuery.phrases]) matches iff this is true, and a `-word`
+     * exclusion ([EventQuery.notSearch]) drops the doc iff it is. True when
+     * [phrase]'s folded tokens appear ADJACENTLY, in order, in some field.
+     * Unlike [matches] this deliberately mirrors ONLY the engine's exact
+     * side — whole tokens (split at non-alphanumerics), folded like the
+     * index (NearText.fold), no substring reach: "-ode" must NOT drop a doc
+     * whose text merely contains "model", and a quoted "ode" must not FIND
+     * one, while adjacency keeps a punctuated unit ("e-cash") one phrase, as
+     * the grammar does. Residual divergences are accepted — the same reason
+     * NIP-50 recall is excluded from strict parity: Vespa's stemming on the
+     * prose fields cuts BOTH polarities loose of this check (a required
+     * "runs" can match "running" there, and — the sharper edge — "-runs" can
+     * EXCLUDE "running", over-excluding relative to this reference; see the
+     * EventQuery.notSearch KDoc), and its CJK segmenter splits runs this
+     * treats as one token.
+     */
+    fun containsPhrase(phrase: String): Boolean {
+        val wanted = tokensOf(NearText.fold(phrase))
+        if (wanted.isEmpty()) return false
+        return fields().values.any { value ->
+            val have = tokensOf(NearText.fold(value))
+            (0..have.size - wanted.size).any { at -> wanted.indices.all { have[at + it] == wanted[it] } }
+        }
+    }
+
+    /** Maximal letter/digit runs — the reference's stand-in for the engine's tokenizer. */
+    private fun tokensOf(s: String): List<String> {
+        val out = ArrayList<String>()
+        val cur = StringBuilder()
+        for (c in s) {
+            if (c.isLetterOrDigit()) {
+                cur.append(c)
+            } else if (cur.isNotEmpty()) {
+                out += cur.toString()
+                cur.clear()
+            }
+        }
+        if (cur.isNotEmpty()) out += cur.toString()
+        return out
+    }
+
+    /**
      * The near-tier attribute arrays (event.sd: prefix/fuzzy match targets),
      * derived from the searchable text via [NearText] — folded, split at two
      * granularities, merged across the fields nothing downstream needs to
