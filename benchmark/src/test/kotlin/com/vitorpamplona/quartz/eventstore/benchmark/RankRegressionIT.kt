@@ -77,6 +77,8 @@ class RankRegressionIT {
             profile(16, name = "coffee"),
             // A note whose hashtags ride search_secondary — the weak tier's prefix reach.
             doc(17, kind = 1, search = SearchFields(primary = "morning thoughts", secondary = "#bitcoin #nostr")),
+            // Matches only ONE word of "Vitor Pamplona" — the multi-word AND must keep it out.
+            profile(18, name = "Vitor"),
         )
 
     @Test
@@ -128,6 +130,15 @@ class RankRegressionIT {
                         expect("jose", has = "José", tier = "name")
                         expect("vitorp", has = "Vitor Pamplona", tier = "near")
                         expect("vitorp", has = "Vitor-Pamplona", tier = "near")
+
+                        // --- multi-word AND: every word must be present on the doc ---
+                        expect("Vitor Pamplona", has = "Vitor Pamplona", tier = "name")
+                        expect("Vitor Pamplona", has = "VitorPamplona")
+                        expect("Vitor Pamplona", has = "Vitor-Pamplona")
+                        absent("Vitor Pamplona", "Vitor")
+                        // A typo'd word still counts as present through its fuzzy matcher.
+                        expect("Vitor Pamplna", has = "Vitor Pamplona")
+                        absent("Vitor Pamplna", "Vitor")
 
                         // --- CJK: 2-char floor + run suffixes ---
                         expect("中村", has = "中村太郎", tier = "near")

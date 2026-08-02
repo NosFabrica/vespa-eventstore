@@ -72,25 +72,29 @@ data class SearchFields(
 
     /**
      * Naive recall check for the in-memory reference index, following the
-     * word-group YQL's OR shape. ANY query word that substring-matches ANY field
-     * recalls the doc; ranking, not recall, decides what floats. Every word
-     * counts, exactly as the YQL builder emits every word.
+     * word-group YQL's AND shape: EVERY query word must substring-match SOME
+     * field — a doc matching only "vitor" never recalls "vitor pamplona".
+     * Different words may land in different fields; ranking, not recall,
+     * decides what floats. Substring containment also absorbs the YQL's
+     * joined/pair concatenation variants: a word covered by a concatenated
+     * handle ("vitor" in "vitorpamplona") is a substring of it.
      *
-     * Substring is a deliberately LOOSER superset of the real engine's
-     * matchers, not a model of them: Vespa matches exact whole tokens, word
-     * prefixes (via the *_parts and *_tokens attributes), a length-gated typo
-     * budget, and the AND-trigram nets — but NOT arbitrary infix ("dell" does
-     * not recall "ODELL" there, while it does here), and conversely fuzzy can
-     * recall what substring misses ("Odelll" -> ODELL). NIP-50 search is
-     * excluded from strict parity for exactly this reason; this reference
-     * answers "could a reasonable engine recall it", and ranking is Vespa's.
+     * Per word, substring is a deliberately LOOSER superset of the real
+     * engine's matchers, not a model of them: Vespa matches exact whole
+     * tokens, word prefixes (via the *_parts and *_tokens attributes), a
+     * length-gated typo budget, and the AND-trigram nets — but NOT arbitrary
+     * infix ("dell" does not recall "ODELL" there, while it does here), and
+     * conversely fuzzy can recall what substring misses ("Odelll" -> ODELL).
+     * NIP-50 search is excluded from strict parity for exactly this reason;
+     * this reference answers "could a reasonable engine recall it", and
+     * ranking is Vespa's.
      */
     fun matches(term: String): Boolean {
         val values = fields().values
         return term
             .split(WHITESPACE)
             .filter { it.isNotEmpty() }
-            .any { word -> values.any { it.contains(word, ignoreCase = true) } }
+            .all { word -> values.any { it.contains(word, ignoreCase = true) } }
     }
 
     /**

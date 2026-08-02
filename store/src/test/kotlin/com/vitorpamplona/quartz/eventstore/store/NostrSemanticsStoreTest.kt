@@ -311,6 +311,19 @@ open class NostrSemanticsStoreTest {
             assertEquals(listOf(MetadataEvent.KIND), hits.map { it.kind })
         }
 
+    /** Multi-word search is AND: every word must be present on the same event. */
+    @Test
+    fun `multi-word search requires every word on the same event`() =
+        runBlocking {
+            store.insert(metadata(name = "Vitor Pamplona"))
+            store.insert(MetadataEvent(id(), bob, next(), emptyArray(), """{"name":"Vitor"}""", ""))
+
+            val hits = store.query<Event>(Filter(search = "vitor pamplona"))
+            assertEquals(listOf(alice), hits.map { it.pubKey }, "a profile matching only one word must not recall")
+            // Each word alone still recalls both — AND narrows, it doesn't drop matchers.
+            assertEquals(2, store.query<Event>(Filter(search = "vitor")).size)
+        }
+
     /** EventIndexesModule pubkey_owner_hash: a gift-wrap is OWNED by its p-tag recipient. */
     @Test
     fun `gift wraps obey their recipient not their signer`() =

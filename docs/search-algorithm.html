@@ -71,13 +71,15 @@
   <div class="flow">
     <div class="box"><b>tokenize</b>search term → whitespace words, every word kept (<code>EventYql</code>); ≥2 words adds a joined variant, ≥3 adds adjacent pairs</div>
     <div class="arrow">→</div>
-    <div class="box"><b>recall</b>one OR-group per word across all 10 search fields + trigram nets (<code>FuzzyWordGroup</code>) — a word matching <em>any</em> clause recalls the doc</div>
+    <div class="box"><b>recall</b>one match group per word across all 10 search fields + trigram nets (<code>FuzzyWordGroup</code>), AND'd — <em>every</em> word must match somewhere (joined/pair variants stand in for the words they concatenate); a doc matching only some words never recalls</div>
     <div class="arrow">→</div>
     <div class="box"><b>rank</b>a rank profile scores every recalled doc: text tiers, then trust (<code>event.sd</code>)</div>
     <div class="arrow">→</div>
     <div class="box"><b>cut</b><code>text_score_cutoff</code> / <code>min_rank</code> / <code>rank-score-drop-limit</code> discard weak hits before the page is built</div>
   </div>
-  <p class="note">Recall is deliberately loose — ranking is supposed to sort the noise out. That division of labor
+  <p class="note">Recall is deliberately loose <em>per word</em> — any field, any matcher, typos included — but all
+     words are required ("Vitor Pamplona" no longer returns every Vitor and every Pamplona); ranking sorts the
+     full-coverage results out. That division of labor
      is why a broken <em>matcher</em> hides for months: nothing errors, the doc just arrives through a noisier
      path and ranks accordingly.</p>
 
