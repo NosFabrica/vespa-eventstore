@@ -124,9 +124,10 @@ class TrustProjectionTest {
             // a negative cell would silently drop the author from it).
             store.insert(card(rank = -5, followers = null, at = 100))
             assertEquals(mapOf(observer to 0), reputations.get(subject)?.influenceScores, "negative clamps to 0")
-            // Bulk path, over-scale: capped at 100 so wot_mult() stays within
-            // the tier ladder's derived ~5.6 ceiling. Both paths must clamp
-            // identically or the reconciler reads drift.
+            // Bulk path, over-scale: capped at 100 so wot_mult() stays on the
+            // 0..100 span its calibrated tier-crossing thresholds are derived
+            // against. Both paths must clamp identically or the reconciler
+            // reads drift.
             store.batchInsert(listOf(card(rank = 250, followers = null, at = 200)))
             assertEquals(mapOf(observer to 100), reputations.get(subject)?.influenceScores, "over-scale caps at 100")
         }

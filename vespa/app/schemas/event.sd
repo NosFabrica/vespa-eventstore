@@ -390,27 +390,42 @@ schema event {
             # match ranks above gram noise, below real name matches.
             query(w_affil_tier) double: 10000000.0
             query(w_affil_tier_text) double: 550.0
-            # Default (search) §12 rewrite: IDF-diluted text ×
-            # modest multiplicative trust.
+            # Default (search) §12 rewrite: IDF-diluted text × trust — where
+            # trust is deliberately strong enough to CROSS text tiers, but
+            # only on an overwhelming advantage.
             #
-            # The tier ladder must survive the trust multiply: wot_mult()
-            # spans 1.0 → ~5.6 (min_rank 2), so each rung's FLOOR × 1.0 must
-            # clear the rung below's CEILING × 5.6, or trust reorders the
-            # tiers (Brainstorm measured 126 bio-only accounts above the
-            # account literally named "coffee" before this discipline).
-            # Four rungs — exact > near > weak > affiliation — derive bottom
-            # up, each rung ~×5.6 the one below:
-            #     bio  ceiling = (550 + ~130) × 5.6          ≈   3 808
-            #     weak floor   = w_weak_tier   =      4 000  >   3 808
-            #     weak ceiling = (4000 + gram 80) × 5.6      =  22 848
-            #     near floor   = w_near_tier   =     23 000  >  22 848
-            #     near ceiling = (23000 + 80) × 5.6          = 129 248
-            #     exact floor  = w_name_tier + 100 = 130 100 > 129 248
-            # Re-derive on any change to w_affil_tier_text, w_about, gram_cap
-            # or w_wot. Caveat: w_identity × identity_text() is unbounded and
-            # sits outside this ladder — a near hit that also matches a UNIQUE
-            # nip05 handle can cross into the exact band, which is intended
-            # (a unique-handle match is itself an exact signal, §12.1).
+            # At EQUAL trust the four rungs — exact > near > weak >
+            # affiliation — still order strictly, each rung ~×5.6 the one
+            # below (Brainstorm measured 126 bio-only accounts above the
+            # account literally named "coffee" before rungs existed at all):
+            #     bio  band    = 550 + ~130 (about fallback)
+            #     weak floor   = w_weak_tier   =      4 000   (~×5.7 bio)
+            #     near floor   = w_near_tier   =     23 000   (~×5.75 weak)
+            #     exact floor  = w_name_tier + 100 = 130 100  (~×5.65 near)
+            # ACROSS trust, wot_mult() (convex: 1 + trust-delta^w_wot_pow)
+            # lets a lower rung overtake the rung above when its trust-delta
+            # ratio exceeds (rung ratio)^(1/w_wot_pow) — at the shipped 2.7
+            # ≈1.9× per rung, ≈7.6× for the full bio→name gap (×236).
+            # Calibrated against the 2026-08-02 "odell" report (the rank case
+            # in benchmark/rank_cases.json), which bounds the threshold from
+            # BOTH sides: the observer's 97-trust CITADEL DISPATCH bio
+            # mention (delta 95) must beat the trust-13 accounts NAMED odell
+            # (delta 11; 95/11 ≈ 8.6 > 7.6 ✓); a 77-trust bio mention must
+            # NOT beat them (75/11 ≈ 6.8 < 7.6 ✓ — a name match only falls
+            # to a bio mention on near-top trust, though a near-FLOOR name
+            # match, trust ≤ ~4, still falls behind everyday ~20+-trust bio
+            # mentions); and nothing may beat the 93-trust exact ODELL
+            # (95/91 is nowhere near 7.6). The window pins w_wot_pow to
+            # ~2.55..2.85; 2.7 splits the margin. The old
+            # log-concave curve spanned 1.0→~5.6 — under every rung ratio —
+            # so trust could NEVER cross a tier and the 97-trust bio mention
+            # sat below every name squatter. Re-derive the crossing
+            # thresholds on any change to the rung weights, w_affil_tier_text,
+            # w_about, gram_cap, w_wot or w_wot_pow. Caveat: w_identity ×
+            # identity_text() is unbounded and sits outside this ladder — a
+            # near hit that also matches a UNIQUE nip05 handle can cross into
+            # the exact band, which is intended (a unique-handle match is
+            # itself an exact signal, §12.1).
             query(w_name_tier) double: 130000.0
             # w_near_tier: a PREFIX or FUZZY hit on the *_parts/*_tokens
             # attributes ("Ode"/"Odel" -> ODELL), scored below an exact
@@ -436,12 +451,14 @@ schema event {
             # per-hit positional analysis, and elementCompleteness walks the
             # matched elements; neither belongs in a first phase that scores
             # every match. The SUM of these weights must stay UNDER the
-            # smallest inter-band gap so precision reorders hits WITHIN a band
-            # and can never cross bands. The tightest gap is near floor 23000
-            # minus weak ceiling (4000+80)*5.6 = 22848 -> 152; the shipped
-            # 60+40 = 100 fits (worst case: a boosted weak-ceiling hit reaches
-            # 22948, still under an unboosted near floor). Re-check this gap
-            # if any tier weight moves.
+            # smallest EQUAL-TRUST inter-band gap so precision reorders hits
+            # WITHIN a band and never crosses bands on its own. The tightest
+            # gap is near floor 23000 minus weak ceiling (4000+80) = 18920 at
+            # wot_mult()=1, and it only widens with trust (the multiply
+            # scales the band gap; the boost stays additive) — the shipped
+            # 60+40 = 100 fits with room. Trust itself DOES cross bands by
+            # design (see wot_mult); next to those order-of-magnitude moves
+            # the boost is noise. Re-check the gap if any tier weight moves.
             #     w_words       reward for matching MORE of a multi-word query
             #                   (fieldMatch queryCompleteness, 0..1) —
             #                   Meilisearch's #1 "words" rule
@@ -455,6 +472,14 @@ schema event {
             query(w_precision_scale_text) double: 0.25
             query(w_identity) double: 50.0
             query(w_wot) double: 1.0
+            # Exponent of wot_mult()'s trust curve. Sets how much trust
+            # advantage crosses a text tier: the trust-delta ratio needed to
+            # overtake the rung above is (rung ratio)^(1/w_wot_pow) — see the
+            # ladder derivation at query(w_name_tier). 2.7 calibrates the
+            # full bio→name gap (×236) to a ~7.6× advantage; 1.0 (linear)
+            # pushes the same crossing past the 0..100 scale, i.e. trust is
+            # back to (almost) never reordering tiers.
+            query(w_wot_pow) double: 2.7
             # Discard hits whose text_score is below this BEFORE the trust
             # multiply — kills weak gram-only noise so trust can't float it.
             #
@@ -750,18 +775,31 @@ schema event {
         }
 
         # MULTIPLICATIVE trust — NOT additive (additive WoT swamped exactness).
-        # 0 below the rank cutoff (server passes min_rank=2), then a modest
-        # CONCAVE (log, diminishing-returns) boost. w_wot=0 => pure text.
+        # 0 below the rank cutoff (server passes min_rank=2), then a CONVEX
+        # power boost over the trust delta (w_wot_pow, shipped 2.7).
+        # w_wot=0 => pure text.
         #
-        # query(min_rank) is ALSO the log's anchor, not just the gate: a
-        # sender that wants "no gate" must pass min_rank=0, never omit the
-        # feature. The input's fail-open default (-1e9) exists so the rank_*
-        # GATES below no-op, but HERE it turns the boost into the same
-        # ~log(1e9) constant for every author — trust differences vanish into
-        # the 8th decimal place and the order degrades to pure text (the
-        # include:spam regression; the store sends 0.0 for that case).
+        # WHY convex, not the concave log this shipped with: the log's whole
+        # span was 1.0→~5.6 — below every rung ratio of the tier ladder — so
+        # trust could NEVER cross a text tier, and "odell" buried the
+        # observer's 97-trust CITADEL DISPATCH (bio: "hosted by ODELL") at
+        # #9, under trust-13 accounts NAMED odell (reported 2026-08-02).
+        # Powered trust-deltas make the crossing deliberate and calibrated —
+        # only an overwhelming (~7.6× for bio→name) trust advantage crosses;
+        # see the ladder derivation at query(w_name_tier).
+        #
+        # The delta is clamped to the served 0..100 provider scale (the store
+        # clamps scores to the same bound — TrustRecompute.boundedRank), so
+        # the crossing calculus can't be distorted from either side. The
+        # clamp is also what keeps the fail-open min_rank default (-1e9)
+        # merely degenerate rather than astronomical: it flattens the
+        # multiplier to the same 1 + w_wot·100^w_wot_pow constant for every
+        # author and the order degrades to pure text (the include:spam
+        # regression; the store sends 0.0 for that case). query(min_rank) is
+        # therefore ALSO the curve's anchor, not just the gate: a sender that
+        # wants "no gate" must pass min_rank=0, never omit the feature.
         function wot_mult() {
-            expression: if(user_score() < query(min_rank), 0.0, 1.0 + query(w_wot) * log(1.0 + max(0.0, user_score() - query(min_rank))))
+            expression: if(user_score() < query(min_rank), 0.0, 1.0 + query(w_wot) * pow(min(max(0.0, user_score() - query(min_rank)), 100.0), query(w_wot_pow)))
         }
 
         # PURE-TEXT relevance (Brainstorm relevance() + the tier group):
@@ -936,10 +974,11 @@ schema event {
     }
 
     # DEFAULT profile (Brainstorm §12, 2026-07-01): IDF-diluted text score
-    # MULTIPLIED by the modest concave trust curve. Weak text (below
-    # text_score_cutoff) and below-cutoff trust (wot_mult()=0) both map to 0
-    # and are dropped. Tune LIVE via query(w_wot)/query(w_identity)/
-    # query(min_rank)/query(w_name_tier) — rank-config, no redeploy.
+    # MULTIPLIED by the calibrated convex trust curve (wot_mult). Weak text
+    # (below text_score_cutoff) and below-cutoff trust (wot_mult()=0) both
+    # map to 0 and are dropped. Tune LIVE via query(w_wot)/query(w_wot_pow)/
+    # query(w_identity)/query(min_rank)/query(w_name_tier) — rank-config, no
+    # redeploy.
     # (This body lived on sort_followers until that profile became a real
     # follower sort; EventYql has always sent `search`, so the default's
     # behavior is unchanged.)

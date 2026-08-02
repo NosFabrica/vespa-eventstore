@@ -58,7 +58,8 @@ class RankRegressionIT {
     // Docs 1/2/14 get DISTINCT authors so the sort:followers case can hang a
     // different verified-follower count on each via the reputation parent;
     // docs 6/7/8 likewise, so the include:spam case can trust exactly one of
-    // the three Vitor namesakes.
+    // the three Vitor namesakes; docs 2/15/19/20 likewise, so the
+    // trust-crossing case can bound the crossing from both sides.
     private val corpus =
         listOf(
             profile(1, name = "Ode", pubkey = pk(1)),
@@ -75,12 +76,16 @@ class RankRegressionIT {
             profile(12, name = "José"),
             profile(13, name = "中村太郎"),
             profile(14, name = "Ode Fan Club", pubkey = pk(14)),
-            profile(15, name = "podcaster", about = "a show hosted by ODELL every week"),
+            profile(15, name = "podcaster", about = "a show hosted by ODELL every week", pubkey = pk(15)),
             profile(16, name = "coffee"),
             // A note whose hashtags ride search_secondary — the weak tier's prefix reach.
             doc(17, kind = 1, search = SearchFields(primary = "morning thoughts", secondary = "#bitcoin #nostr")),
             // Matches only ONE word of "Vitor Pamplona" — the multi-word AND must keep it out.
             profile(18, name = "Vitor"),
+            // A barely-trusted account NAMED odell — the trust-crossing case's foil.
+            profile(19, name = "ODELL mirror", pubkey = pk(19)),
+            // A well-but-not-top-trusted bio mention — must NOT cross above the foil.
+            profile(20, name = "fan zine", about = "all things ODELL, unofficial", pubkey = pk(20)),
         )
 
     @Test
@@ -193,12 +198,24 @@ class RankRegressionIT {
                             reputation.putAll(
                                 listOf(
                                     ReputationDoc(pk(1), followerCounts = mapOf(OBSERVER to 10.0)),
-                                    ReputationDoc(pk(2), followerCounts = mapOf(OBSERVER to 250_000.0)),
+                                    // ODELL also carries an influence score for the
+                                    // trust-crossing case below (sort_followers ignores it:
+                                    // its within-tier key is the follower count).
+                                    ReputationDoc(
+                                        pk(2),
+                                        followerCounts = mapOf(OBSERVER to 250_000.0),
+                                        influenceScores = mapOf(OBSERVER to 93),
+                                    ),
                                     ReputationDoc(pk(14), followerCounts = mapOf(OBSERVER to 5_000.0)),
                                     // The include:spam case: the observer's provider ranks
                                     // ONE of the three Vitor namesakes; the other two stay
                                     // unranked (user_score 0).
                                     ReputationDoc(pk(7), influenceScores = mapOf(OBSERVER to 60)),
+                                    // The trust-crossing case: a near-top-trust bio mention
+                                    // and a well-trusted one vs a barely-trusted name squatter.
+                                    ReputationDoc(pk(15), influenceScores = mapOf(OBSERVER to 97)),
+                                    ReputationDoc(pk(19), influenceScores = mapOf(OBSERVER to 13)),
+                                    ReputationDoc(pk(20), influenceScores = mapOf(OBSERVER to 77)),
                                 ),
                             )
                         }
@@ -218,12 +235,12 @@ class RankRegressionIT {
                         // The store maps include:spam on a search to min_rank=0.0
                         // rather than omitting the feature: wot_mult() in the
                         // default profile anchors its log boost at query(min_rank),
-                        // and the schema's fail-open default (-1e9) flattens the
-                        // multiplier to the same ~log(1e9) constant for every
-                        // author — the observer's own trusted namesake then sorts
-                        // under text noise (the reported "many Vitors above the
-                        // real one"). Anchored at 0 the boost keeps its 1.0→~5.6
-                        // span: trust orders the namesakes, nothing is dropped.
+                        // and the schema's fail-open default (-1e9) clamps the
+                        // multiplier to the same constant for every author — the
+                        // observer's own trusted namesake then sorts under text
+                        // noise (the reported "many Vitors above the real one").
+                        // Anchored at 0 the curve keeps its full span: trust
+                        // orders the namesakes, nothing is dropped.
                         val spamOk =
                             indexRef.searchScored(
                                 EventQuery(search = "vitor", observer = OBSERVER, minRank = 0.0),
@@ -238,6 +255,38 @@ class RankRegressionIT {
                             "VitorPamplona" in vnames && "Vitor-Pamplona" in vnames,
                             "include:spam keeps the unranked namesakes in the result: $vnames",
                         )
+
+                        // --- overwhelming trust crosses the tier ladder — bounded from BOTH sides ---
+                        // The 2026-08-02 "odell" report: under the observer's lens
+                        // CITADEL DISPATCH (bio "hosted by ODELL", trust 97) sat
+                        // #9, below trust-13 accounts NAMED odell — the log trust
+                        // curve (span ~5.6×) could never cross the ~236× bio→name
+                        // band ratio. wot_mult()'s power curve (w_wot_pow 2.7)
+                        // crosses on a ~7.6× trust-delta advantage, a window the
+                        // report pins from both sides: the 97-trust bio mention
+                        // (delta ratio 95/11 ≈ 8.6) must beat the 13-trust name
+                        // squatter, the 77-trust bio mention (75/11 ≈ 6.8) must
+                        // NOT, and the 93-trust exact name stays on top of
+                        // everything (97-vs-93 is nowhere near a crossing).
+                        val lensed =
+                            indexRef.searchScored(
+                                EventQuery(search = "odell", observer = OBSERVER, minRank = 2.0),
+                            )
+                        val lnames = lensed.map { nameOf(it.doc) }
+                        assertEquals(
+                            "ODELL",
+                            lnames.first(),
+                            "the exact name at comparable trust must stay on top: $lnames",
+                        )
+                        assertTrue(
+                            lnames.indexOf("podcaster") < lnames.indexOf("ODELL mirror"),
+                            "a 97-trust bio mention must cross above a 13-trust name match: $lnames",
+                        )
+                        assertTrue(
+                            lnames.indexOf("ODELL mirror") < lnames.indexOf("fan zine"),
+                            "a 77-trust bio mention must NOT cross above a 13-trust name match: $lnames",
+                        )
+                        assertEquals("affiliation", lensed.first { nameOf(it.doc) == "podcaster" }.tier)
 
                         // --- typo bound: over-budget hits never match ---
                         absent("odelll", "Odessa")

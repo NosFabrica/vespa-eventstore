@@ -267,9 +267,11 @@ internal fun subjectOf(doc: EventDoc): String? =
  * NEGATIVE score sits below even `include:spam`'s min_rank=0 floor (the
  * "keep everything" opt-out — INCLUDE_SPAM_MIN_RANK in FilterMapping), so it
  * would silently drop the author from the one query shape that promises not
- * to drop anyone; an OVER-SCALE score pushes wot_mult() past the ~5.6
- * ceiling the schema's tier-ladder spacing is derived against (event.sd),
- * letting a weaker match tier outrank a stronger one. Clamped at EVERY read
+ * to drop anyone; an OVER-SCALE score would distort wot_mult()'s calibrated
+ * tier-crossing thresholds, which are derived against the 0..100 span
+ * (event.sd clamps its side of the curve to the same bound) — letting a
+ * weaker match tier outrank a stronger one on less than the intended
+ * overwhelming trust advantage. Clamped at EVERY read
  * of the tag — the projection's fast path, its bulk path, and the recompute
  * derive must land the same cell value or [TrustReconciler] reads drift.
  */

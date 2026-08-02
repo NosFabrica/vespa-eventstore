@@ -84,6 +84,7 @@ object RankAb {
                     "text_score_cutoff" to 100.0,
                     "w_words" to 60.0,
                     "w_exactness" to 40.0,
+                    "w_wot_pow" to 2.7,
                 ),
             // Individual levers, to attribute any movement.
             "near_off" to mapOf("w_near_tier" to 0.0, "w_near_tier_text" to 0.0, "w_pop_near_tier" to 0.0),
@@ -92,6 +93,11 @@ object RankAb {
             "cutoff_50" to mapOf("text_score_cutoff" to 50.0),
             // Isolate the trust multiplier — the "is it ranking or is it data" test.
             "no_trust" to mapOf("w_wot" to 0.0),
+            // Flatten the trust curve to linear deltas: crossing a rung then
+            // needs a trust ratio past the rung ratio itself (~5.7x, ~236x for
+            // bio->name) — the pre-curve "trust (almost) never crosses a tier"
+            // feel, for attributing a movement to the curve exponent.
+            "trust_linear" to mapOf("w_wot_pow" to 1.0),
         )
 
     @JvmStatic

@@ -113,14 +113,14 @@ const val DEFAULT_MIN_RANK = 2.0
 /**
  * The floor a ranked `include:spam` query still SENDS: 0 on the 0..100 score
  * scale, so no hit is dropped — but the feature must not be omitted. The
- * default search profile's wot_mult() anchors its concave trust boost at
- * query(min_rank) (`log(1 + user_score - min_rank)`), and the schema's
- * fail-open default for the feature is -1e9: omit the floor and the boost
- * becomes the same ~log(1e9) constant for EVERY author — trust differences
- * vanish into the 8th decimal place and the observer's most-trusted match
- * sorts as if unranked (reported as "many Vitors above the real one" under
- * include:spam). Anchored at 0, the boost keeps its designed 1.0→~5.6 span
- * and only the gate is off.
+ * default search profile's wot_mult() anchors its trust curve at
+ * query(min_rank) (`1 + (user_score - min_rank)^w_wot_pow`, delta clamped to
+ * the 0..100 scale), and the schema's fail-open default for the feature is
+ * -1e9: omit the floor and the clamp flattens the boost to the same constant
+ * for EVERY author — trust stops ordering the hits and the observer's
+ * most-trusted match sorts as if unranked (reported as "many Vitors above
+ * the real one" under include:spam). Anchored at 0, the curve keeps its
+ * designed full span and only the gate is off.
  */
 const val INCLUDE_SPAM_MIN_RANK = 0.0
 
