@@ -29,10 +29,16 @@ import com.vitorpamplona.quartz.eventstore.vespa.NearText
  * NIP-01/NIP-50 filter-to-YQL assembly. MockVespaEngine's parser guards against
  * drift.
  *
- * There is one OR group per query word: a word that matches ANY field recalls
- * the doc, and ranking sorts the results out. Two extra groups help multi-word
+ * There is one match group per query word, and the groups are AND'd: EVERY
+ * word must land somewhere on the doc — "Vitor Pamplona" no longer recalls
+ * every Vitor and every Pamplona. Within its group a word still matches
+ * loosely (any field, through exact/prefix/fuzzy/trigram alike, so a typo'd
+ * word still counts as present), and ranking sorts the full-coverage results
+ * out. Two extra groups keep concatenated handles reachable for multi-word
  * queries: a joined-CamelCase variant for 2+ words ("John Carvalho" finds
- * @johncarvalho), and adjacent-pair concatenations for 3+ words.
+ * @johncarvalho), which satisfies every word at once and is therefore OR'd
+ * against the whole conjunction; and adjacent-pair concatenations for 3+
+ * words, each standing in for exactly its two words inside the conjunction.
  *
  * Words go out-of-band as query parameters, never inlined, so no escaping is
  * needed: @w0..@wN carry the words AS TYPED (for the exact clauses, whose
@@ -125,30 +131,55 @@ internal object FuzzyWordGroup {
      */
     const val MIN_AND_GRAMS_TEXT = 3
 
-    /** All word groups OR'd into one parenthesized clause, filling [params] with the out-of-band words. */
+    /**
+     * The per-word groups AND'd into one parenthesized clause, filling
+     * [params] with the out-of-band words.
+     *
+     * Each adjacent-pair concatenation covers exactly ITS two words, so it is
+     * OR'd into both words' requirements and nowhere else: a "johncarvalho"
+     * hit stands in for "john" and "carvalho", but "dev" still has to match
+     * on its own. The joined variant covers EVERY word at once, which lets it
+     * hoist out of the conjunction — `∧ (reqᵢ ∨ joined)` ≡ `(∧ reqᵢ) ∨
+     * joined` — so its group is emitted ONCE instead of once per word
+     * (duplicate identical terms would also inflate matchCount, i.e. the
+     * exact tier's text score, for every doc the variant matches).
+     *
+     * The pair groups' two-way ride is the accepted residual of that concern:
+     * a pair covers two words, not all, so it cannot hoist without
+     * duplicating the real word groups instead (which carry the fuzzy
+     * matchers — far worse). The cost is bounded — synthetic groups are
+     * exact+prefix only, the shape needs 3+ words, and only docs actually
+     * matching the concatenation see the inflated matchCount.
+     */
     fun clause(
         words: List<String>,
         params: MutableMap<String, String>,
         nearFields: Boolean = true,
     ): String {
-        val groups = ArrayList<String>()
-        words.forEachIndexed { i, word ->
-            params["w$i"] = word
-            groups += wordGroup("w$i", word, params, synthetic = false, nearFields = nearFields)
-        }
-        if (words.size >= 2) {
-            val joined = words.joinToString("")
-            params["wj"] = joined
-            groups += wordGroup("wj", joined, params, synthetic = true, nearFields = nearFields)
-        }
+        val own =
+            words.mapIndexed { i, word ->
+                params["w$i"] = word
+                wordGroup("w$i", word, params, synthetic = false, nearFields = nearFields)
+            }
+        if (words.size == 1) return "(${own[0]})"
+        val coverers = List(words.size) { ArrayList<String>() }
         if (words.size >= 3) {
             for (i in 0 until words.size - 1) {
                 val pair = words[i] + words[i + 1]
                 params["wp$i"] = pair
-                groups += wordGroup("wp$i", pair, params, synthetic = true, nearFields = nearFields)
+                val group = wordGroup("wp$i", pair, params, synthetic = true, nearFields = nearFields)
+                coverers[i] += group
+                coverers[i + 1] += group
             }
         }
-        return "(${groups.joinToString(" or ")})"
+        val required =
+            words.indices.joinToString(" and ") { i ->
+                if (coverers[i].isEmpty()) own[i] else "(${(listOf(own[i]) + coverers[i]).joinToString(" or ")})"
+            }
+        val joined = words.joinToString("")
+        params["wj"] = joined
+        val joinedGroup = wordGroup("wj", joined, params, synthetic = true, nearFields = nearFields)
+        return "(($required) or $joinedGroup)"
     }
 
     /** True when the shortest word is short enough to lean harder on the trigram net (drives query(w_gram)). */

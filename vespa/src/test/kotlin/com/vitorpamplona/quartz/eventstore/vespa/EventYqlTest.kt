@@ -79,7 +79,7 @@ class EventYqlTest {
     @Test
     fun `search words go out-of-band and switch the default ranking on`() {
         val q = EventYql.build(EventQuery(kinds = listOf(0), search = "vitor pamplona"))!!
-        assertTrue(q.yql.startsWith("select ${EventYql.SUMMARY_FIELDS} from event where kind in (0) and ((("), q.yql)
+        assertTrue(q.yql.startsWith("select ${EventYql.SUMMARY_FIELDS} from event where kind in (0) and (((("), q.yql)
         assertEquals("vitor", q.params["w0"])
         assertEquals("pamplona", q.params["w1"])
         assertEquals("vitorpamplona", q.params["wj"], "two words get the joined-CamelCase variant")
@@ -87,6 +87,46 @@ class EventYqlTest {
         assertEquals("2.0", q.params["ranking.features.query(w_gram)"], "no short word: normal gram weight")
         assertEquals(EventYql.RANK_TEXT, q.ranking, "no observer: search defaults to pure text")
         assertFalse("order by" in q.yql, "ranked queries must not force recency order")
+    }
+
+    @Test
+    fun `multi-word queries AND the word groups and the joined variant satisfies them all`() {
+        // Every word must be present somewhere on the doc — "vitor pamplona"
+        // must stop recalling every vitor and every pamplona. Each word's own
+        // group keeps its full matcher set (exact/prefix/fuzzy/grams), so a
+        // typo'd word still counts as present.
+        val two = EventYql.build(EventQuery(search = "vitor pamplona"))!!
+        assertTrue(") and (({defaultIndex:\"name\",label:\"mtch_exact\"}userInput(@w1))" in two.yql, two.yql)
+        // The joined variant covers both words at once, so it ORs against the
+        // whole conjunction — ((w0-group and w1-group) or wj-group) — and its
+        // group is emitted exactly once (duplicates would inflate matchCount).
+        assertTrue(") or (({defaultIndex:\"name\",label:\"mtch_exact\"}userInput(@wj))" in two.yql, two.yql)
+        val wjExact = Regex(Regex.escape("({defaultIndex:\"name\",label:\"mtch_exact\"}userInput(@wj))"))
+        assertEquals(1, wjExact.findAll(two.yql).count(), "the joined variant is hoisted, not repeated per word")
+
+        // A pair concatenation stands in for exactly ITS two words: it rides
+        // inside both adjacent words' requirements and nowhere else.
+        val three = EventYql.build(EventQuery(search = "john carvalho dev"))!!
+        val wp0Exact = Regex(Regex.escape("({defaultIndex:\"name\",label:\"mtch_exact\"}userInput(@wp0))"))
+        assertEquals(2, wp0Exact.findAll(three.yql).count(), "a pair covers its two words, not the third")
+        assertEquals(1, wjExact.findAll(three.yql).count())
+    }
+
+    @Test
+    fun `words without a letter or digit cannot be required`() {
+        // Tokenization erases "⚡" from every matcher's view — userInput emits
+        // no term, NearText folds it away, the trigram filter drops it. Under
+        // the AND'd word groups an empty requirement would surrender the whole
+        // conjunction to Vespa's null-term handling, so the builder drops the
+        // word — mirroring what indexing did to the doc side.
+        val q = EventYql.build(EventQuery(search = "vitor ⚡"))!!
+        assertEquals("vitor", q.params["w0"])
+        assertFalse("w1" in q.params, "the symbol word must not become a requirement")
+        assertFalse("wj" in q.params, "one matchable word left: no joined variant")
+        // A query that is ONLY such words asked for something no index holds.
+        assertNull(EventYql.build(EventQuery(search = "⚡ //")))
+        // Non-ASCII LETTERS are matchable — the filter is not an ASCII gate.
+        assertEquals("中村", EventYql.build(EventQuery(search = "中村 ⚡"))!!.params["w0"])
     }
 
     @Test

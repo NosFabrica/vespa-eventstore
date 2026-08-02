@@ -72,25 +72,39 @@ data class SearchFields(
 
     /**
      * Naive recall check for the in-memory reference index, following the
-     * word-group YQL's OR shape. ANY query word that substring-matches ANY field
-     * recalls the doc; ranking, not recall, decides what floats. Every word
-     * counts, exactly as the YQL builder emits every word.
+     * word-group YQL's AND shape: EVERY query word must substring-match SOME
+     * field — a doc matching only "vitor" never recalls "vitor pamplona".
+     * Different words may land in different fields; ranking, not recall,
+     * decides what floats. Substring containment also absorbs the YQL's
+     * joined/pair concatenation variants: a word covered by a concatenated
+     * handle ("vitor" in "vitorpamplona") is a substring of it.
      *
-     * Substring is a deliberately LOOSER superset of the real engine's
-     * matchers, not a model of them: Vespa matches exact whole tokens, word
-     * prefixes (via the *_parts and *_tokens attributes), a length-gated typo
-     * budget, and the AND-trigram nets — but NOT arbitrary infix ("dell" does
-     * not recall "ODELL" there, while it does here), and conversely fuzzy can
-     * recall what substring misses ("Odelll" -> ODELL). NIP-50 search is
-     * excluded from strict parity for exactly this reason; this reference
-     * answers "could a reasonable engine recall it", and ranking is Vespa's.
+     * Per word, substring is a deliberately LOOSER superset of the real
+     * engine's matchers, not a model of them: Vespa matches exact whole
+     * tokens, word prefixes (via the *_parts and *_tokens attributes), a
+     * length-gated typo budget, and the AND-trigram nets — but NOT arbitrary
+     * infix ("dell" does not recall "ODELL" there, while it does here), and
+     * conversely fuzzy can recall what substring misses ("Odelll" -> ODELL).
+     * NIP-50 search is excluded from strict parity for exactly this reason;
+     * this reference answers "could a reasonable engine recall it", and
+     * ranking is Vespa's.
+     *
+     * The one place looseness must NOT apply: a word with no letter or digit
+     * ("⚡") is erased by tokenization on the engine side, so EventYql drops
+     * it from the required set (and an all-such-words query provably matches
+     * nothing). Substring COULD find the emoji in raw content — but requiring
+     * here what the engine cannot see would make reference and engine
+     * disagree on whole-query recall now that words are AND'd.
      */
     fun matches(term: String): Boolean {
+        val words =
+            term
+                .split(WHITESPACE)
+                .filter { it.isNotEmpty() }
+                .filter { w -> w.any(Char::isLetterOrDigit) }
+        if (words.isEmpty()) return false
         val values = fields().values
-        return term
-            .split(WHITESPACE)
-            .filter { it.isNotEmpty() }
-            .any { word -> values.any { it.contains(word, ignoreCase = true) } }
+        return words.all { word -> values.any { it.contains(word, ignoreCase = true) } }
     }
 
     /**

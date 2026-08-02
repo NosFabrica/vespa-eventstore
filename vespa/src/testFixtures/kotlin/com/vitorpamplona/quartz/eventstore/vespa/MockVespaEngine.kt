@@ -773,9 +773,11 @@ object MockYql {
                     clause.startsWith("expires_at > ") -> q.copy(notExpiredAt = clause.substringAfterLast(' ').toLong())
 
                     // The word-group search clause (its first sub-clause is always a
-                    // field-annotated userInput): reconstruct the term from the
-                    // per-word parameters (@w0..@wN — @wj/@wp* are derived variants).
-                    clause.startsWith("((({defaultIndex:") -> q.copy(search = searchWords(params))
+                    // field-annotated userInput, behind a paren run whose depth varies
+                    // with the word count — single word, AND'd words, AND'd words with
+                    // pair coverage): reconstruct the term from the per-word
+                    // parameters (@w0..@wN — @wj/@wp* are derived variants).
+                    SEARCH_CLAUSE.containsMatchIn(clause) -> q.copy(search = searchWords(params))
 
                     clause.startsWith("(tag_index contains ") -> tagGroup(q, clause)
 
@@ -786,6 +788,9 @@ object MockYql {
         }
         return q
     }
+
+    /** Exactly 3 parens (one word), 4 (AND'd words), or 5 (AND'd words with pair coverage) — anything else is drift. */
+    private val SEARCH_CLAUSE = Regex("""^\({3,5}\{defaultIndex:""")
 
     /** w0, w1, … until the first gap — the builder emits one per word, with no upper bound. */
     private fun searchWords(params: Map<String, String>): String {
