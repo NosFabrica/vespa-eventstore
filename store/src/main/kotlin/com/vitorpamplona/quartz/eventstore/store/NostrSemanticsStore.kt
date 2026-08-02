@@ -90,7 +90,9 @@ import kotlin.coroutines.coroutineContext
  *    after extractor/Quartz upgrades. Per the [IEventStore] contract, filters
  *    arrive with `search` VERBATIM — this store interprets the
  *    `sort:`/`filter:rank:`/`include:spam`/`observer:` extensions itself and
- *    ignores ones it doesn't know.
+ *    ignores ones it doesn't know. A resolved observer (token or
+ *    [StoreQueryContext]) also trust-gates PLAIN recall — the observer gate,
+ *    see [toExpiryQuery].
  *
  * Correctness rests on two properties. First, all writes serialize behind one
  * [Mutex], so query-then-write is atomic against other writers in this process.

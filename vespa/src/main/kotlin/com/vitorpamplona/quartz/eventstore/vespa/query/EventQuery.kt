@@ -51,11 +51,14 @@ data class EventQuery(
     /** NIP-50 search term; null/blank = plain recall ordered by recency. */
     val search: String? = null,
     /**
-     * RANKING context, never recall: the 64-hex pubkey whose web-of-trust
-     * weighs search hits (the NIP-42-authenticated user, the NIP-50 `observer:`
-     * search token, or the operator's default). Only emitted alongside a search
-     * term, as the `user_q` ranking feature. When absent, a search falls back to
-     * pure-text relevance ([EventYql.RANK_TEXT]) and no trust gate is applied.
+     * The ranking lens: the 64-hex pubkey whose web-of-trust weighs and gates
+     * hits (the NIP-42-authenticated user, the NIP-50 `observer:` search
+     * token, or the operator's default). Emitted as the `user_q` ranking
+     * feature on every profile that reads trust — searches AND the gated
+     * plain-recall profiles ([EventYql.RANK_RECENCY_GATED]); never on
+     * unranked/recency recall. When absent, a search falls back to pure-text
+     * relevance ([EventYql.RANK_TEXT]) and no trust gate is applied anywhere —
+     * trust features fail open, not closed.
      */
     val observer: String? = null,
     /**

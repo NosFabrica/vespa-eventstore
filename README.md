@@ -111,8 +111,8 @@ A search matches on the content and some tags of each event, and different field
 carry different weight: a **primary** field (a title or name) outweighs a
 **secondary** field (a summary, description, or hashtags), which outweighs the
 **body** (the event's `content`). Profiles (kind 0) are split into their own
-name and identity fields. When you supply an observer, the matches are then
-ordered by that observer's web of trust.
+name and identity fields. When you supply an observer, the matches are weighted
+and spam-gated by that observer's web of trust.
 
 The kinds it indexes and the fields it reads from each (highest weight first).
 Kinds with no title to split out are indexed by their full `content`; on every
@@ -270,7 +270,9 @@ For a commit snapshot, JitPack works:
   `observer:` token or `StoreQueryContext` — only returns authors that lens
   trusts at the floor or above, plain filters included (newest-first order is
   kept). Don't pass a lens on reads that must see everything; `include:spam`
-  opts a single query out.
+  opts a single query out. On a serving cluster whose schema predates the
+  gate's rank profiles, the gate fails open (plain ungated recall) until the
+  schema is redeployed — `deployIfAbsent` never redeploys on its own.
 - **The store never verifies signatures.** It stores whatever you hand it — signed
   events *and* unsigned rumors (NIP-59 inner events, drafts). Verifying signed
   network input is the caller's job, at ingress.
