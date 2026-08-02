@@ -80,6 +80,8 @@ class TrustProjection(
 
     override suspend fun search(query: EventQuery): List<EventDoc> = inner.search(query)
 
+    override suspend fun existingIds(ids: List<String>): Set<String> = inner.existingIds(ids)
+
     // MUST delegate, not ride the interface default: the default would call this
     // decorator's search() (parsed EventDocs) and lose the inner client's raw
     // passthrough — the whole point of the raw path (see EventIndex.rawSearch).

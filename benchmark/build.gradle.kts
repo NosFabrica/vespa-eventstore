@@ -19,6 +19,9 @@ dependencies {
     // CondPutProbe drives the feed client directly to A/B server-side test-and-set
     // (address-keyed conditional put) against the store's read-then-supersede.
     implementation(libs.vespa.feed.client)
+    // TransportProbe A/Bs the production read transport (OkHttp h2c) against
+    // plain HTTP/1.1 clients on identical queries.
+    implementation(libs.okhttp)
 
     // VespaParityIT stands up a real Vespa in a container and runs the parity
     // battery against it — the CI correctness gate. Skips when Docker is absent.
@@ -103,6 +106,22 @@ tasks.register<JavaExec>("multiFilterBench") {
     classpath = sourceSets["main"].runtimeClasspath
     mainClass.set("com.vitorpamplona.quartz.eventstore.benchmark.MultiFilterBench")
     maxHeapSize = System.getenv("BENCH_HEAP") ?: "3g"
+}
+
+tasks.register<JavaExec>("dedupProbe") {
+    group = "verification"
+    description = "A/B the bulk-dedup existence-check variants (full summary / id-only / dedup class / grouping / doc-gets) against a loaded corpus"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.vitorpamplona.quartz.eventstore.benchmark.DedupProbe")
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "2g"
+}
+
+tasks.register<JavaExec>("transportProbe") {
+    group = "verification"
+    description = "A/B the read transports (JDK h1 / OkHttp h1 / OkHttp h2c) on identical existence queries"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.vitorpamplona.quartz.eventstore.benchmark.TransportProbe")
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "1g"
 }
 
 tasks.register<JavaExec>("traceProbe") {

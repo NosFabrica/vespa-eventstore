@@ -190,6 +190,56 @@ class VespaEventIndexTest {
         check(EventQuery(ids = docs.take(10).map { it.id }, limit = 3)) // limit after ordering
     }
 
+    /**
+     * The bulk-dedup existence check: `select id` under the attribute-only
+     * `dedup` summary class, resolved from id-only hits. Membership must agree
+     * exactly with the in-memory spec's default (which rides search) — present
+     * and absent ids, case normalization, invalid entries — because a wrong
+     * member here is a wrong write upstream, not a small answer.
+     */
+    @Test
+    fun `existingIds answers exact membership through the dedup summary class`() =
+        runBlocking {
+            val docs = (1..40).map { doc(kind = 1, at = (1000 + it).toLong()) }
+            seed(*docs.toTypedArray())
+            val mixed = docs.take(10).map { it.id } + "f".repeat(64)
+            assertEquals(reference.existingIds(mixed), index.existingIds(mixed))
+            assertEquals(docs.take(10).map { it.id }.toSet(), index.existingIds(mixed))
+            // Uppercase hex must match the lowercase-held id, exactly like search.
+            assertEquals(setOf(docs[0].id), index.existingIds(listOf(docs[0].id.uppercase())))
+            // No valid 64-hex left = unsatisfiable; answered locally, never on the wire.
+            assertEquals(emptySet(), index.existingIds(listOf("nope", "")))
+            // The empty list must be empty on the SPEC too: EventQuery treats
+            // empty ids as "no constraint", so an unguarded default would answer
+            // membership-of-nothing with the whole corpus — the wrong direction.
+            assertEquals(emptySet(), index.existingIds(emptyList()))
+            assertEquals(emptySet(), reference.existingIds(emptyList()))
+        }
+
+    /**
+     * A serving schema that predates the `dedup` document-summary answers 400
+     * naming the class — the client must demote the existence check to the
+     * full-summary search, serve the exact answer, and remember, never fail
+     * the ingest batch riding on it.
+     */
+    @Test
+    fun `a schema without the dedup summary demotes existence checks to full summaries`() =
+        runBlocking {
+            val docs = (1..8).map { doc(kind = 1) }
+            seed(*docs.toTypedArray())
+            mock.rejectDedupSummary = true
+            val fresh = VespaEventIndex(mock.url)
+            try {
+                val ids = docs.map { it.id } + "f".repeat(64)
+                val expected = reference.existingIds(ids)
+                assertEquals(expected, fresh.existingIds(ids), "first check (flips the flag)")
+                assertEquals(expected, fresh.existingIds(ids), "second check (already demoted)")
+            } finally {
+                mock.rejectDedupSummary = false
+                fresh.close()
+            }
+        }
+
     /** `notKinds` excludes the plumbing kinds; the count is the full content match set. */
     @Test
     fun `count honors notKinds exclusion`() =

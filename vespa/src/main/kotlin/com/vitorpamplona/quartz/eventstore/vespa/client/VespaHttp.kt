@@ -32,8 +32,11 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import java.io.IOException
+import java.net.InetAddress
 import java.net.Proxy
+import java.net.Socket
 import java.time.Duration
+import javax.net.SocketFactory
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -94,6 +97,20 @@ internal class VespaHttp {
             .pingInterval(Duration.ofSeconds(PING_INTERVAL_SECONDS))
             // Vespa is local; never route through the egress proxy.
             .proxy(Proxy.NO_PROXY)
+            // TCP_NODELAY. OkHttp never sets it (verified against okhttp-jvm
+            // 5.4.0: no reference to the option anywhere), so its sockets keep
+            // Java's default — Nagle ON — while the JDK HttpClient turns it off.
+            // On this request/response protocol Nagle only ADDS latency: a
+            // multi-segment POST (a 500-id existence query is a ~35KB body) can
+            // stall a full delayed-ACK quantum (~40ms) mid-upload waiting for an
+            // ACK the peer is deliberately withholding. Measured (benchmark
+            // transportProbe): a 500-id existence query through docker-proxy
+            // drops 55.6ms -> 10.7ms with NODELAY; on a direct link 26.2ms
+            // mean / 78ms p95 -> 10.1 / 11.3 — the stall is deterministic
+            // behind a userspace proxy hop and tail-shaped on a direct one.
+            // Writes are already frame-batched by okio/h2c, so there is no
+            // small-write flood for Nagle to be saving us from.
+            .socketFactory(NoDelaySocketFactory)
             .build()
 
     /**
@@ -244,6 +261,37 @@ internal class VespaHttp {
                 },
             )
         }
+
+    /** Plain sockets with `tcpNoDelay = true` — see the builder comment. OkHttp calls the no-arg variant and connects the socket itself. */
+    private object NoDelaySocketFactory : SocketFactory() {
+        private fun on(s: Socket): Socket = s.apply { tcpNoDelay = true }
+
+        override fun createSocket(): Socket = on(Socket())
+
+        override fun createSocket(
+            host: String?,
+            port: Int,
+        ): Socket = on(Socket(host, port))
+
+        override fun createSocket(
+            host: String?,
+            port: Int,
+            localHost: InetAddress?,
+            localPort: Int,
+        ): Socket = on(Socket(host, port, localHost, localPort))
+
+        override fun createSocket(
+            address: InetAddress?,
+            port: Int,
+        ): Socket = on(Socket(address, port))
+
+        override fun createSocket(
+            address: InetAddress?,
+            port: Int,
+            localAddress: InetAddress?,
+            localPort: Int,
+        ): Socket = on(Socket(address, port, localAddress, localPort))
+    }
 
     private companion object {
         /**

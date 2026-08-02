@@ -64,6 +64,19 @@ class EventYqlTest {
     }
 
     @Test
+    fun `existence queries are summary-free — dedup class, no order, no limit`() {
+        val q = EventYql.buildExistence(listOf(hexA.uppercase(), hexB, hexB, "invalid"))!!
+        // Order and limit are deliberately absent: membership is unordered, and
+        // an existence answer must be complete. Ids normalize (lowercase, dedup)
+        // exactly as hexIn does for build().
+        assertEquals("select id from event where id in (\"$hexA\", \"$hexB\")", q.yql)
+        assertEquals(EventYql.RANK_UNRANKED, q.ranking)
+        assertEquals(EventYql.SUMMARY_DEDUP, q.params["presentation.summary"])
+        assertNull(EventYql.buildExistence(listOf("not-hex", "")), "no valid id = unsatisfiable, never a wire query")
+        assertNull(EventYql.buildExistence(emptyList()))
+    }
+
+    @Test
     fun `search words go out-of-band and switch the default ranking on`() {
         val q = EventYql.build(EventQuery(kinds = listOf(0), search = "vitor pamplona"))!!
         assertTrue(q.yql.startsWith("select ${EventYql.SUMMARY_FIELDS} from event where kind in (0) and ((("), q.yql)
