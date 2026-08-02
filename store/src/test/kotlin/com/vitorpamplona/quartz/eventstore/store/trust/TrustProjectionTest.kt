@@ -116,6 +116,22 @@ class TrustProjectionTest {
         }
 
     @Test
+    fun `off-scale provider ranks are clamped to the served 0 to 100 scale`() =
+        runBlocking {
+            store.insert(list10040())
+            // Fast path: a negative rank must land as 0, not below the
+            // include:spam floor (min_rank=0 is the "keep everything" opt-out —
+            // a negative cell would silently drop the author from it).
+            store.insert(card(rank = -5, followers = null, at = 100))
+            assertEquals(mapOf(observer to 0), reputations.get(subject)?.influenceScores, "negative clamps to 0")
+            // Bulk path, over-scale: capped at 100 so wot_mult() stays within
+            // the tier ladder's derived ~5.6 ceiling. Both paths must clamp
+            // identically or the reconciler reads drift.
+            store.batchInsert(listOf(card(rank = 250, followers = null, at = 200)))
+            assertEquals(mapOf(observer to 100), reputations.get(subject)?.influenceScores, "over-scale caps at 100")
+        }
+
+    @Test
     fun `supersession without a rank tag retracts the score`() =
         runBlocking {
             store.insert(list10040())
