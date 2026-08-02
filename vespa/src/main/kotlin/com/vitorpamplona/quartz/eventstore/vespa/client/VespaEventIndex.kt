@@ -867,6 +867,29 @@ class VespaEventIndex(
     }
 
     /**
+     * The tags projection via the same sliced visit as [visitIds], fieldSet
+     * `event:tags`: each match contributes ONLY its stored tag JSON (decoded
+     * here to the tag array) — content, sig, and the search columns never
+     * cross the wire. Queries a selection can't express fall back to the
+     * search default, which returns the same tags in a single page.
+     */
+    override suspend fun visitTags(
+        query: EventQuery,
+        onPage: suspend (List<List<List<String>>>) -> Boolean,
+    ) {
+        val selection = EventSelection.build(query) ?: return super.visitTags(query, onPage)
+        visitPages(selection, "$DOCTYPE:tags") { documents ->
+            val page =
+                documents.mapNotNull { d ->
+                    d.fields?.tags?.let { raw ->
+                        Json.parseToJsonElement(raw).jsonArray.map { tag -> tag.jsonArray.map { it.jsonPrimitive.content } }
+                    }
+                }
+            page.isEmpty() || onPage(page)
+        }
+    }
+
+    /**
      * Page every match of [selection] out of the document-API visit, calling
      * [onDocuments] with lists of lean [VisitedDoc]s (typed line/page decode —
      * no JsonElement tree per doc on a path that walks whole corpora);
@@ -1458,12 +1481,14 @@ class VespaEventIndex(
         val fields: VisitFields?,
     )
 
-    /** The projected fields the walks ask for (`created_at[,tag_index]` / `pubkey`); everything else is server-trimmed. */
+    /** The projected fields the walks ask for (`created_at[,tag_index]` / `pubkey` / `tags`); everything else is server-trimmed. */
     @Serializable
     private class VisitFields(
         @SerialName("created_at") val createdAt: Long? = null,
         @SerialName("tag_index") val tagIndex: List<String>? = null,
         val pubkey: String? = null,
+        /** The stored tag JSON string ([visitTags]'s projection), decoded by the caller. */
+        val tags: String? = null,
     )
 
     /** A paged visit response: projected docs plus the continuation. */

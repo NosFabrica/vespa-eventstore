@@ -469,6 +469,54 @@ class NostrSemanticsStore(
     }
 
     /**
+     * Every distinct value of [tagName] at position [valueIndex] across
+     * [filter]'s matches, optionally narrowed by [where] — which sees the WHOLE
+     * tag, so a positional condition on another element is expressible (NIP-65:
+     * `["r", url, marker]`, keep a relay when the marker at position 2 is
+     * "write" or absent; NIP-85: `["30382:rank", provider, relay]`, read the
+     * relay at position 2). This is the discovery read a mirroring relay's
+     * router repeats on a timer; paging it through [query] materialized every
+     * matching event — content, sig, the lot — to read one tag off each.
+     *
+     * It rides the tags-only visit projection ([EventIndex.visitTags]), NOT a
+     * grouping over `tag_index`, and deliberately so: `tag_index` is a derived,
+     * lossy view (single-letter names, first values only), so a grouping never
+     * sees a multi-character name at all and cannot apply any positional
+     * condition — for a marker-filtered select it would return a SUPERSET,
+     * a behavior change dressed as an optimization. Widening `tag_index`
+     * wouldn't mend that: flattened `name:value` entries lose the intra-tag
+     * association between a value and its marker (expressing "r values whose
+     * marker is write" needs composite entries, which changes `#x` filter
+     * matching), and it would cost a schema change plus a full-corpus re-feed.
+     * Full tag fidelity round-trips only through the stored `tags` field, so
+     * this streams exactly that field and nothing else.
+     *
+     * Empty values are skipped (a valueless select is meaningless), and expiry
+     * is honored like [count]. Searching or limit-carrying filters fall back to
+     * the search path engine-side, keeping their semantics.
+     */
+    suspend fun distinctTagValues(
+        filter: Filter,
+        tagName: String,
+        valueIndex: Int = 1,
+        where: (List<String>) -> Boolean = { true },
+    ): Set<String> {
+        val q = filter.toExpiryQuery(nowSecs()) ?: return emptySet()
+        val out = HashSet<String>()
+        index.visitTags(q) { page ->
+            for (tags in page) {
+                for (tag in tags) {
+                    if (tag.size > valueIndex && tag[0] == tagName && where(tag)) {
+                        tag[valueIndex].takeIf(String::isNotEmpty)?.let(out::add)
+                    }
+                }
+            }
+            true
+        }
+        return out
+    }
+
+    /**
      * (created_at, id) pairs straight off the docs — no Event materialization
      * and no result cap. Plain filters walk the corpus through the engine's
      * visit ([com.vitorpamplona.quartz.eventstore.vespa.client.EventIndex.visitIds]), so a negentropy

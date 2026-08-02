@@ -145,6 +145,33 @@ interface EventIndex : AutoCloseable {
     }
 
     /**
+     * Stream every match's exact TAG ARRAY — the full-fidelity tags projection
+     * behind distinct-tag-value discovery (a mirroring relay's router asking
+     * "every value of tag X across the corpus"). Same walk contract as
+     * [visitIds]: no result cap, engine-defined order, [onPage] returns whether
+     * to continue.
+     *
+     * This is a projection, deliberately NOT a grouping over `tag_index`: that
+     * field is a derived, lossy view (single-letter names, FIRST values only —
+     * see [EventDoc.tagIndex]), so grouping it cannot see a multi-character tag
+     * name at all, nor a value's sibling positions (a NIP-65 marker at index 2)
+     * — a "distinct values" answer from it would silently widen or miss the
+     * asked-for set. The exact tags round-trip only through the stored `tags`
+     * field, so the real client streams exactly that field per doc and nothing
+     * else — no summaries, no content/sig on the wire.
+     *
+     * The default rides [search] and hands everything back as one page, keeping
+     * the in-memory reference the executable spec. A decorator MUST delegate to
+     * its inner index or it loses the streaming projection.
+     */
+    suspend fun visitTags(
+        query: EventQuery,
+        onPage: suspend (List<List<List<String>>>) -> Boolean,
+    ) {
+        onPage(search(query).map { it.tags })
+    }
+
+    /**
      * One PAGE of FULL docs from a resumable, engine-ordered walk over
      * [query]'s matches — the corpus-rewrite primitive (reindex). [resumeFrom]
      * is the continuation a previous page returned (null starts the walk); a
