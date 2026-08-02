@@ -365,11 +365,16 @@ schema event {
             # Weak tier (bounded infix + hashtag prefix) for the trust-sorted
             # profiles: below near, above affiliation.
             query(w_pop_weak_tier) double: 30000000.0
+            # sort_followers' within-tier key scale: w_followers × log(1+count).
+            # Even at 1e9 followers the term is ≈ 2.1e6, under every pop-tier
+            # gap (1e7+), so the count can order hits inside a tier but never
+            # lift one across tiers.
+            query(w_followers) double: 100000.0
             # Affiliation tier (§11): a genuine bio OR website-domain token
             # match ranks above gram noise, below real name matches.
             query(w_affil_tier) double: 10000000.0
             query(w_affil_tier_text) double: 550.0
-            # Default (sort_followers) §12 rewrite: IDF-diluted text ×
+            # Default (search) §12 rewrite: IDF-diluted text ×
             # modest multiplicative trust.
             #
             # The tier ladder must survive the trust multiply: wot_mult()
@@ -637,8 +642,8 @@ schema event {
         # Meilisearch's "words" and "exactness" rules, plus within-near
         # ordering. EXPENSIVE: fieldMatch runs a positional analysis per hit
         # and elementCompleteness walks matched elements — these run ONLY in
-        # the second phase over the top rerank-count hits (see sort_followers
-        # / text2), never in a first phase that scores every match. Weights
+        # the second phase over the top rerank-count hits (see search / text2),
+        # never in a first phase that scores every match. Weights
         # are sized to reorder WITHIN a band, never across (see the w_words
         # comment in inputs).
 
@@ -812,12 +817,53 @@ schema event {
         }
     }
 
+    # sort:followers — VERIFIED-FOLLOWER-COUNT order within each match tier.
+    # Same tier ladder and min_rank gate as rank_desc, but the within-tier key
+    # is verified_followers() (the count the observer's `30382:followers`
+    # provider attested), not the influence score. The count rides in
+    # log-compressed: log is monotonic, so within-tier ORDER is exactly by
+    # follower count, while the term stays bounded — w_followers × log(1+1e9)
+    # ≈ 2.1e6, far under the smallest inter-tier gap (1e7) — so a mega
+    # account can never buy its way across a match tier.
+    #
+    # HISTORY: this profile name long predates its behavior. Before the §12
+    # rewrite it was the default profile; §12 replaced its expression with the
+    # text × trust multiply, which left `sort:followers` a silent alias of the
+    # default and follower_counts feeding nothing but a match-feature. The §12
+    # default now lives on `search` (below) and this profile does what its
+    # name — and the NIP-50 token — always said.
+    rank-profile sort_followers inherits text_relevance {
+        function follower_key() {
+            expression: query(w_followers) * log(1.0 + max(0.0, verified_followers()))
+        }
+
+        first-phase {
+            expression: if(user_score() >= query(min_rank), any_token_match() * query(w_pop_token_tier) + any_near_match() * query(w_pop_near_tier) + weak_match() * query(w_pop_weak_tier) + match_quality() * query(w_pop_match_step) + affiliation_match() * query(w_affil_tier) + follower_key(), -1000000000.0)
+            rank-score-drop-limit: -1000000.0
+        }
+
+        match-features {
+            user_score
+            verified_followers
+            has_token_match
+            any_token_match
+            near_name_match
+            any_near_match
+            weak_match
+            identity_match
+            affiliation_match
+        }
+    }
+
     # DEFAULT profile (Brainstorm §12, 2026-07-01): IDF-diluted text score
     # MULTIPLIED by the modest concave trust curve. Weak text (below
     # text_score_cutoff) and below-cutoff trust (wot_mult()=0) both map to 0
     # and are dropped. Tune LIVE via query(w_wot)/query(w_identity)/
     # query(min_rank)/query(w_name_tier) — rank-config, no redeploy.
-    rank-profile sort_followers inherits text_relevance {
+    # (This body lived on sort_followers until that profile became a real
+    # follower sort; EventYql has always sent `search`, so the default's
+    # behavior is unchanged.)
+    rank-profile search inherits text_relevance {
         first-phase {
             expression: if(text_score() < query(text_score_cutoff), 0.0, text_score() * wot_mult())
             rank-score-drop-limit: 0.5
@@ -859,12 +905,9 @@ schema event {
         }
     }
 
-    # the library's stable profile names: `search` is what EventYql sends by default
-    # for any search term (currently Brainstorm's §12 default), `text` is the
-    # pure-text profile NIP-50 `sort:text` selects. Both are pure renames.
-    rank-profile search inherits sort_followers {
-    }
-
+    # `text` is the library's stable name for the pure-text profile NIP-50
+    # `sort:text` selects (and the observer-less default) — a pure rename.
+    # (`search`, the other stable name, is defined above with the §12 body.)
     rank-profile text inherits text_relevance {
     }
 

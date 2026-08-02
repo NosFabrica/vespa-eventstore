@@ -59,7 +59,8 @@ Extensions travel inside the `search` string:
 | Token | Effect |
 |---|---|
 | `observer:<64-hex>` | Rank through this pubkey's web of trust. Absent ⇒ pure-text relevance, and every trust token below quietly no-ops. |
-| `sort:rank` / `sort:rank:asc` / `sort:followers` | Trust-order within match tiers. |
+| `sort:rank` / `sort:rank:asc` | Trust-order within match tiers. |
+| `sort:followers` | Verified-follower-count order within match tiers. |
 | `sort:text` | Force pure-text relevance. |
 | `filter:rank:gte:N` / `filter:rank:gt:N` | Keep only authors the observer trusts ≥ N (0–100 scale). |
 | `include:spam` | Turn off the default trust floor that a trust-ranked query applies. |

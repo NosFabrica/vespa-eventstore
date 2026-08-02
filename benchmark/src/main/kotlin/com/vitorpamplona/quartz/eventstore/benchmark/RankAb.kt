@@ -104,7 +104,7 @@ object RankAb {
                 .associate { it[0] to it[1] }
         val vespa = (opts["--vespa"] ?: "http://localhost:8080").trimEnd('/')
         val casesPath = opts["--cases"] ?: "benchmark/rank_cases.json"
-        val profile = opts["--profile"] ?: "sort_followers"
+        val profile = opts["--profile"] ?: "search"
         val observer = opts["--observer"]
         val hits = (opts["--hits"] ?: "100").toInt()
         val names = opts["--configs"]?.split(",") ?: CONFIGS.keys.toList()

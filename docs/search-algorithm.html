@@ -181,7 +181,7 @@
      Any port must reconcile this contract (see §6).</p>
 
   <h2>4 · The ranking ladder</h2>
-  <p>Default profile (<code>search</code> = <code>sort_followers</code>):
+  <p>Default profile (<code>search</code>):
      <code>score = text_score() × wot_mult()</code>, with hits below
      <code>text_score_cutoff</code> dropped <em>before</em> the trust multiply.</p>
 
@@ -226,9 +226,13 @@ exact floor   w_name_tier + 100  = 130 100   &gt; 129 248 ✓   → w_name_tier 
   <h3>The other profiles</h3>
   <div class="scroll"><table>
     <tr><th>profile</th><th>selected by</th><th>ordering</th><th>fractional-match behavior</th></tr>
-    <tr><td><code>search</code> / <code>sort_followers</code></td><td>default with observer</td>
+    <tr><td><code>search</code></td><td>default with observer</td>
         <td><code>text_score × wot_mult</code>, cutoff 50</td>
         <td>prefix/typo hits are gram-band → cutoff can delete them (the "Odel → zero results" cliff)</td></tr>
+    <tr><td><code>sort_followers</code></td><td><code>sort:followers</code></td>
+        <td>match tier (1e9/1e8/3e7/1e7) → verified-follower count (log-compressed, within tier)</td>
+        <td>same ladder as <code>rank_desc</code>; the follower term is bounded ≈ 2.1e6, under every
+            tier gap, so a mega account never crosses a match tier</td></tr>
     <tr><td><code>text</code> (<code>text_relevance</code>)</td><td><code>sort:text</code>, or no observer</td>
         <td>token band 1100 → affiliation 550 → bm25 + proximity</td>
         <td>no cutoff, so gram hits survive — but rank below everything; inert <code>match_quality</code> means
@@ -335,7 +339,7 @@ exact floor   w_name_tier + 100  = 130 100   &gt; 129 248 ✓   → w_name_tier 
         regression the upstream port accepted) and adds hashtag/summary prefix reach
         (<code>search_secondary_tokens</code>, prefix-only). The ladder re-derives to
         130000 / 23000 / 4000 / 550 so all four rungs survive the ×5.6 trust multiply.</li>
-    <li><b>Second-phase precision</b> on <code>sort_followers</code>/<code>text2</code>: the words rule
+    <li><b>Second-phase precision</b> on <code>search</code>/<code>text2</code>: the words rule
         (query coverage) and exactness (whole-field match), computed over the top 1000 hits only and bounded to
         reorder within a band. A within-near ordering by <em>character</em> coverage ("Ode"→"Ode" above
         "Ode"→"Odessa") is deliberately absent — fieldMatch/elementCompleteness are token-granular, so that

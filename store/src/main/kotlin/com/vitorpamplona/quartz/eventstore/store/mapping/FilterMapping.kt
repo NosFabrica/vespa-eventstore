@@ -44,7 +44,9 @@ import com.vitorpamplona.quartz.utils.Hex
  * extensions this store honors:
  *
  *  - `sort:rank[:desc]` / `sort:rank:asc` / `sort:followers` / `sort:text`
- *    pick the rank profile. With no terms this is a trust-ordered match-all.
+ *    pick the rank profile: trust order, verified-follower-count order, or
+ *    pure text — the first two within match tiers. With no terms this is a
+ *    match-all in that order.
  *  - `filter:rank:gte:N` / `filter:rank:gt:N` set the observer trust floor
  *    (rank_filtered when no sort chose a profile — text order, gated).
  *  - `include:spam` turns OFF the default trust floor. Every ranked query is
