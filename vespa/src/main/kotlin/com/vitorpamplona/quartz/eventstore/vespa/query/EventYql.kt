@@ -46,7 +46,7 @@ object EventYql {
     /** Pure text relevance, no trust (`sort:text`). */
     const val RANK_TEXT = "text"
 
-    /** Text order with the trust floor applied (`filter:rank:…` without a sort). */
+    /** Trust-gated match-all (`filter:rank:…` with no terms and no sort — with terms the floor rides the selected profile). */
     const val RANK_FILTERED = "rank_filtered"
 
     /** Trust-sorted within each match tier, descending (`sort:rank`). */

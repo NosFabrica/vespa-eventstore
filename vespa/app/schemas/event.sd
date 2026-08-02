@@ -791,7 +791,10 @@ schema event {
     # (-1e6) drop it; real scores stay far above the sentinel.
     # -----------------------------------------------------------------------
 
-    # filter:rank only (no sort): keep the pure-text order, drop low-trust.
+    # filter:rank with no terms and no sort: a trust-gated match-all. With
+    # terms the floor rides the query's own profile instead (the default
+    # `search` gates through wot_mult) — this profile only serves the no-text
+    # shape `search` cannot score.
     rank-profile rank_filtered inherits text_relevance {
         first-phase {
             expression: if(user_score() >= query(min_rank), relevance(), -1000000000.0)

@@ -47,8 +47,12 @@ import com.vitorpamplona.quartz.utils.Hex
  *    pick the rank profile: trust order, verified-follower-count order, or
  *    pure text — the first two within match tiers. With no terms this is a
  *    match-all in that order.
- *  - `filter:rank:gte:N` / `filter:rank:gt:N` set the observer trust floor
- *    (rank_filtered when no sort chose a profile — text order, gated).
+ *  - `filter:rank:gte:N` / `filter:rank:gt:N` raise the observer trust floor
+ *    from [DEFAULT_MIN_RANK] to N without changing the order: whatever profile
+ *    the rest of the query selects keeps its ranking, gated at N. Only a
+ *    floor with no terms and no sort falls to rank_filtered — a trust-gated
+ *    match-all (the default `search` profile needs text to score, so it
+ *    cannot serve that shape).
  *  - `include:spam` turns OFF the default trust floor. Every ranked query is
  *    otherwise gated at [DEFAULT_MIN_RANK], and include:spam is its inverse.
  *    Plain filter REQs (no terms, no sort) are never gated: that recall belongs
@@ -81,7 +85,10 @@ internal fun Filter.toEventQuery(): EventQuery? {
         limit = limit,
         search = terms,
         observer = observer,
-        ranking = sort ?: floor?.let { EventYql.RANK_FILTERED },
+        // A floor is just a floor: with terms the default profile keeps its
+        // order (minRank carries N). rank_filtered only serves the no-terms
+        // match-all, which `search` cannot (no text = every score 0, dropped).
+        ranking = sort ?: if (terms == null) floor?.let { EventYql.RANK_FILTERED } else null,
         minRank = floor ?: if (ranked && !parsed.includeSpam) DEFAULT_MIN_RANK else null,
     )
 }

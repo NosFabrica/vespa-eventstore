@@ -237,8 +237,9 @@ exact floor   w_name_tier + 100  = 130 100   &gt; 129 248 ✓   → w_name_tier 
         <td>token band 1100 → affiliation 550 → bm25 + proximity</td>
         <td>no cutoff, so gram hits survive — but rank below everything; inert <code>match_quality</code> means
             exact and would-be-prefix hits are indistinguishable inside the band</td></tr>
-    <tr><td><code>rank_filtered</code></td><td><code>filter:rank</code></td><td>text order, min_rank gate</td>
-        <td>same as <code>text</code> + trust floor</td></tr>
+    <tr><td><code>rank_filtered</code></td><td><code>filter:rank</code> with no terms and no sort</td><td>text order, min_rank gate</td>
+        <td>same as <code>text</code> + trust floor; with terms the floor rides the selected profile
+            (<code>search</code> gates through <code>wot_mult</code>) and this profile is not used</td></tr>
     <tr><td><code>rank_desc</code>/<code>rank_asc</code></td><td><code>sort:rank</code></td>
         <td>match tier (1e9) → quality step (1e7, inert) → affiliation (1e7) → ±trust</td>
         <td>a prefix hit has no tier: it scores bare <code>user_score()</code> — measured upstream five orders of

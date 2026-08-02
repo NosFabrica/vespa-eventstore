@@ -69,13 +69,21 @@ class FilterMappingTest {
     }
 
     @Test
-    fun `filter rank sets the floor and falls back to the filtered profile`() {
+    fun `filter rank raises the floor without changing the default order`() {
         val gte = map("vitor filter:rank:gte:5")
         assertEquals(5.0, gte.minRank)
-        assertEquals(EventYql.RANK_FILTERED, gte.ranking, "no sort: text order, trust-gated")
+        assertNull(gte.ranking, "a floor is just a floor: the default profile keeps its order")
 
         assertEquals(6.0, map("vitor filter:rank:gt:5").minRank, "gt on integer ranks = gte the next one")
-        assertNull(map("vitor filter:rank:eq:5").ranking, "unknown comparators are ignored")
+        assertEquals(DEFAULT_MIN_RANK, map("vitor filter:rank:eq:5").minRank, "unknown comparators are ignored, leaving the default floor")
+    }
+
+    @Test
+    fun `filter rank without terms is a trust-gated match-all`() {
+        val q = map("filter:rank:gte:50")
+        assertNull(q.search)
+        assertEquals(50.0, q.minRank)
+        assertEquals(EventYql.RANK_FILTERED, q.ranking, "search can't score a no-text query, so the floor needs its own profile")
     }
 
     @Test

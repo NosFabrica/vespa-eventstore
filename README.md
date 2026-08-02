@@ -54,16 +54,34 @@ A [Vespa](https://vespa.ai)-backed [Quartz](https://github.com/vitorpamplona/ame
 
 ### Search grammar
 
-Extensions travel inside the `search` string:
+Extensions travel inside the `search` string. `sort:` picks the ordering,
+`filter:` moves the trust floor, `include:spam` removes it — the three are
+orthogonal and stack freely. Unknown extensions are ignored, and `scheme://…`
+tokens stay part of the search text:
 
 | Token | Effect |
 |---|---|
-| `observer:<64-hex>` | Rank through this pubkey's web of trust. Absent ⇒ pure-text relevance, and every trust token below quietly no-ops. |
-| `sort:rank` / `sort:rank:asc` | Trust-order within match tiers. |
+| `observer:<64-hex>` | Rank through this pubkey's web of trust. Absent ⇒ pure-text relevance, and every trust token below quietly no-ops. (The relay can also supply the observer from the NIP-42 connection.) |
+| `sort:rank` / `sort:rank:asc` | Trust-order within match tiers (descending / ascending). |
 | `sort:followers` | Verified-follower-count order within match tiers. |
 | `sort:text` | Force pure-text relevance. |
-| `filter:rank:gte:N` / `filter:rank:gt:N` | Keep only authors the observer trusts ≥ N (0–100 scale). |
-| `include:spam` | Turn off the default trust floor that a trust-ranked query applies. |
+| `filter:rank:gte:N` / `filter:rank:gt:N` | Raise the trust floor from the default 2 to N (0–100 scale) — a pure filter, the ordering is untouched. |
+| `include:spam` | Turn off the default trust floor. An explicit `filter:rank:` floor always survives it. |
+
+How they combine (`<hex>` = a 64-hex observer pubkey):
+
+| Example `search` string | What you get |
+|---|---|
+| *(no `search` field)* | Plain NIP-01: newest first, no ranking, never trust-gated. |
+| `pizza` | Pure text relevance — no observer, so no trust and no spam floor. |
+| `pizza observer:<hex>` | **The default:** text score × the observer's web-of-trust curve; authors below trust 2 dropped as spam. |
+| `pizza observer:<hex> include:spam` | Same order, floor off — low-trust authors rank low instead of disappearing. |
+| `pizza observer:<hex> filter:rank:gte:20` | Same default order, floor raised to 20. |
+| `pizza observer:<hex> sort:rank` | Token matches first, ordered by author trust inside each match tier. |
+| `pizza observer:<hex> sort:followers` | Token matches first, most-followed authors first inside each tier. |
+| `pizza sort:text` | Pure text relevance even with an observer present. |
+| `sort:rank observer:<hex>` | No terms: the trust firehose — everything, ordered by author trust. |
+| `filter:rank:gte:50 observer:<hex>` | No terms: everything from authors the observer trusts at ≥ 50. |
 
 ## What's searchable
 
