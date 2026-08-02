@@ -650,6 +650,11 @@ class NostrSemanticsStore(
      * prefix/fuzzy attributes (event.sd's fed `*_parts`/`*_tokens` arrays) on
      * a corpus fed before they existed — a Vespa reindex cannot, because fed
      * fields only change on a put.
+     *
+     * ORDER MATTERS on an upgraded deployment: deploy the bundled schema
+     * BEFORE running this. The backfill re-puts docs with the near fields,
+     * and a serving schema that predates them rejects those puts outright
+     * (unknown field) — the run fails loudly instead of backfilling nothing.
      */
     override suspend fun reindexFullTextSearch() {
         var cursor: String? = null
@@ -687,9 +692,12 @@ class NostrSemanticsStore(
                 // match). storedNearFields is the visit's evidence of what the
                 // engine actually holds (null = no evidence, e.g. the in-memory
                 // reference, whose derivation can't go stale); any drift forces
-                // the re-put that backfills them.
-                val nearStale = doc.storedNearFields?.let { it != fields.nearFieldsWritten() } ?: false
-                if (fields != doc.search || nearStale) changed += doc.copy(search = fields)
+                // the re-put that backfills them. Checked second: a changed
+                // column already forces the re-put, so the NearText derivation
+                // (per-doc string work) is skipped when it can't matter.
+                val columnsChanged = fields != doc.search
+                val nearStale = !columnsChanged && doc.storedNearFields?.let { it != fields.nearFieldsWritten() } == true
+                if (columnsChanged || nearStale) changed += doc.copy(search = fields)
             }
             if (changed.isNotEmpty()) index.putAll(changed)
             FtsReindexProgress(cursor = page.continuation, processedThisBatch = page.docs.size, done = page.continuation == null)
