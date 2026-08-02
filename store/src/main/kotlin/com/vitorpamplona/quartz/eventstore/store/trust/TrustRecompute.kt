@@ -44,12 +44,15 @@ import com.vitorpamplona.quartz.utils.Hex
  * [ReputationDoc] from the stored kind-30382s about them —
  *
  *   subject's 30382s (d = subject) -> signer is a SERVICE key
- *   -> observers = EVERY kind-10040 author whose `30382:rank` entry lists that
- *      service key (NIP-85: cells are keyed by the OBSERVER, never the signer;
- *      a popular provider is named by many observers and scores every one)
+ *   -> observers, PER DIMENSION ([TrustProviders]): the `rank` tag credits the
+ *      kind-10040 authors whose `30382:rank` entry lists that service key, the
+ *      `followers` tag those whose `30382:followers` entry does — a user may
+ *      pick different services for the two (NIP-85: cells are keyed by the
+ *      OBSERVER, never the signer; a popular provider is named by many
+ *      observers and scores every one)
  *   -> influence_scores{observer} = rank tag, follower_counts{observer} =
- *      followers tag; a version without a rank tag contributes nothing
- *      (the provider retracted the score).
+ *      followers tag; a version missing a tag contributes nothing to that
+ *      dimension (the provider retracted the score).
  *
  * Already-expired cards (NIP-40) contribute nothing: the store never serves
  * them as records, so they must not keep scoring — the derive queries carry
@@ -62,11 +65,11 @@ internal class TrustRecompute(
     private val reputations: ReputationIndex,
     private val nowSecs: () -> Long = { System.currentTimeMillis() / 1000 },
 ) {
-    /** service key -> observers (NIP-85 attribution), cached across a pass; see [ProviderMap]. */
+    /** Per-dimension `service key -> observers` (NIP-85 attribution), cached across a pass; see [ProviderMap]. */
     private val providers = ProviderMap(inner, nowSecs)
 
-    /** The current attribution map, rebuilding it once per pass (see [ProviderMap.get]). */
-    suspend fun providerMap(): Map<String, Set<String>> = providers.get()
+    /** The current attribution maps, rebuilding them once per pass (see [ProviderMap.get]). */
+    suspend fun providerMap(): TrustProviders = providers.get()
 
     /**
      * Drop the cached attribution map. Call after ANY 10040 write or removal —
@@ -86,10 +89,10 @@ internal class TrustRecompute(
      */
     suspend fun recomputeBatch(
         subjects: List<String>,
-        serviceToObservers: Map<String, Set<String>>,
+        serviceProviders: TrustProviders,
         removeEmpties: Boolean,
     ) {
-        val derived = deriveBatch(subjects, serviceToObservers)
+        val derived = deriveBatch(subjects, serviceProviders)
         IngestStats.timed("proj.write") {
             reputations.putAll(derived.values.toList())
             if (removeEmpties) subjects.filter { it !in derived }.mapBounded(QUERY_FANOUT) { reputations.remove(it) }
@@ -104,7 +107,7 @@ internal class TrustRecompute(
      */
     suspend fun deriveBatch(
         subjects: List<String>,
-        serviceToObservers: Map<String, Set<String>>,
+        serviceProviders: TrustProviders,
     ): Map<String, ReputationDoc> {
         // Derived per CHUNK, not per batch. A chunk's query returns every score
         // for its 50 subjects — complete, since the query carries no limit — so a
@@ -138,7 +141,7 @@ internal class TrustRecompute(
                     subjectOf(doc)?.takeIf { it in wanted }?.let { bySubject.getOrPut(it) { mutableListOf() } += doc }
                 }
                 for (subject in chunk) {
-                    val reputation = derive(subject, bySubject[subject].orEmpty(), serviceToObservers)
+                    val reputation = derive(subject, bySubject[subject].orEmpty(), serviceProviders)
                     if (!reputation.isEmpty()) derived[subject] = reputation
                 }
             }
@@ -198,7 +201,7 @@ internal class TrustRecompute(
     private fun derive(
         subject: String,
         docs: List<EventDoc>,
-        serviceToObservers: Map<String, Set<String>>,
+        serviceProviders: TrustProviders,
     ): ReputationDoc {
         val influence = LinkedHashMap<String, Int>()
         val followers = LinkedHashMap<String, Double>()
@@ -211,14 +214,18 @@ internal class TrustRecompute(
             // Direct by-kind reconstruction — no toEventJson()/fromJson round
             // trip; this runs once per fetched card across every recompute walk.
             val card = doc.toEvent() as? ContactCardEvent ?: continue
-            val observers = serviceToObservers[card.pubKey] ?: continue
-            val rank = card.rank()
-            val followerCount = card.followerCount()?.toDouble()
+            // Each dimension attributes on its own map: the card's rank tag
+            // counts only for observers who named its signer under `30382:rank`,
+            // its followers tag only for those who named it under
+            // `30382:followers` — a rank provider's followers tag must not
+            // shadow the value the user's chosen follower provider asserts.
             // EVERY observer naming the service gets the cell — a shared
             // provider scores each of the users who trust it, not one winner.
-            for (observer in observers) {
-                rank?.let { influence[observer] = it }
-                followerCount?.let { followers[observer] = it }
+            serviceProviders.rank[card.pubKey]?.let { observers ->
+                card.rank()?.let { rank -> observers.forEach { influence[it] = rank } }
+            }
+            serviceProviders.followers[card.pubKey]?.let { observers ->
+                card.followerCount()?.toDouble()?.let { count -> observers.forEach { followers[it] = count } }
             }
         }
         return ReputationDoc(subject, influence, followers)

@@ -41,6 +41,7 @@ class TrustReconcilerTest {
     private val observer = "0b".repeat(32)
     private val observer2 = "2b".repeat(32)
     private val service = "5e".repeat(32)
+    private val service2 = "6e".repeat(32)
     private val subject = "ab".repeat(32)
 
     private val index = InMemoryEventIndex()
@@ -57,11 +58,13 @@ class TrustReconcilerTest {
 
     private fun id() = (++seq).toString(16).padStart(64, '0')
 
+    // The default names ONE service for BOTH dimensions — the single-provider norm.
     private fun list10040(
         author: String = observer,
         serviceKey: String = service,
         at: Long = next(),
-    ) = TrustProviderListEvent(id(), author, at, arrayOf(arrayOf("30382:rank", serviceKey, "wss://scores.example.com/")), "", "")
+        types: List<String> = listOf("30382:rank", "30382:followers"),
+    ) = TrustProviderListEvent(id(), author, at, types.map { arrayOf(it, serviceKey, "wss://scores.example.com/") }.toTypedArray(), "", "")
 
     private fun card(
         signer: String = service,
@@ -233,7 +236,7 @@ class TrustReconcilerTest {
             assertEquals(mapOf(observer to 87, observer2 to 87), reputations.get(subject)?.influenceScores)
         }
 
-    /** A followers-only corpus IS projected — either tensor counts, so no rebuild loop on every startup. */
+    /** A followers-only corpus IS projected (through the followers mapping) — no rebuild loop on every startup. */
     @Test
     fun `reconcile accepts a followers-only service as projected`() =
         runBlocking {
@@ -243,6 +246,35 @@ class TrustReconcilerTest {
 
             val report = reconciler.reconcile()
             assertTrue(report.isClean(), "follower cells are projection too")
+        }
+
+    /**
+     * A service mapped for a dimension its cards never assert derives nothing —
+     * the sampling must not call that drift, or every startup re-walks the
+     * service for a projection that can never exist.
+     */
+    @Test
+    fun `reconcile does not rebuild a service whose cards never assert the mapped dimension`() =
+        runBlocking {
+            store.insert(list10040(types = listOf("30382:rank")))
+            store.insert(card(rank = null, followers = 42)) // signer is rank-mapped only; the card asserts only followers
+            assertNull(reputations.get(subject), "nothing attributable to derive")
+
+            val report = reconciler.reconcile()
+            assertTrue(report.isClean(), "no sampled card asserts the mapped dimension — nothing to rebuild")
+        }
+
+    /** The never-triggered mirror order, follower-provider edition: reconcile must repair through the followers map. */
+    @Test
+    fun `reconcile re-derives an unprojected follower service`() =
+        runBlocking {
+            store.insert(card(signer = service2, rank = null, followers = 42))
+            store.insert(list10040(serviceKey = service2, types = listOf("30382:followers")))
+            reputations.docs.clear() // as if that run's derivation never happened
+
+            val report = reconciler.reconcile()
+            assertEquals(listOf(service2), report.rebuilt, "the unprojected follower service is re-derived")
+            assertEquals(mapOf(observer to 42.0), reputations.get(subject)?.followerCounts)
         }
 
     /**
