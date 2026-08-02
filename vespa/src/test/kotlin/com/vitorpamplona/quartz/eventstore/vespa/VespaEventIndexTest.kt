@@ -209,7 +209,11 @@ class VespaEventIndexTest {
             assertEquals(setOf(docs[0].id), index.existingIds(listOf(docs[0].id.uppercase())))
             // No valid 64-hex left = unsatisfiable; answered locally, never on the wire.
             assertEquals(emptySet(), index.existingIds(listOf("nope", "")))
+            // The empty list must be empty on the SPEC too: EventQuery treats
+            // empty ids as "no constraint", so an unguarded default would answer
+            // membership-of-nothing with the whole corpus — the wrong direction.
             assertEquals(emptySet(), index.existingIds(emptyList()))
+            assertEquals(emptySet(), reference.existingIds(emptyList()))
         }
 
     /**

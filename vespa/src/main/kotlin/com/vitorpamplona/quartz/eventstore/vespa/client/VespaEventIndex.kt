@@ -395,8 +395,11 @@ class VespaEventIndex(
      * its id docid — the reason this stays on the search stack).
      */
     override suspend fun existingIds(ids: List<String>): Set<String> {
-        val vq = EventYql.buildExistence(ids) ?: return emptySet()
+        // Demotion first: a demoted client must not build (and discard) the
+        // ~35KB YQL per chunk — super rides search(), which handles the
+        // no-valid-ids case through EventYql.build's own null contract.
         if (!dedupSummaryAvailable) return super.existingIds(ids)
+        val vq = EventYql.buildExistence(ids) ?: return emptySet()
         val root =
             try {
                 searchRoot(vq, hits = Int.MAX_VALUE)

@@ -138,7 +138,7 @@ internal class BulkRecordInsert(
         IngestStats.timed("dedup") {
             alive()
                 .map { events[it].id }
-                .chunked(CHECK_CHUNK)
+                .chunked(DEDUP_CHUNK)
                 .mapBounded(QUERY_FANOUT) { chunk -> index.existingIds(chunk) }
                 .forEach { stored += it }
         }
@@ -367,5 +367,17 @@ internal class BulkRecordInsert(
         // Ids/authors/d-tags per check query. Not a result cap — no query here
         // carries a limit — just how wide one round trip is built.
         const val CHECK_CHUNK = 500
+
+        /**
+         * Stage B's dedup chunk width alone — the guard/version queries keep
+         * [CHECK_CHUNK]; their shapes were never measured at other widths.
+         * The measured curve (benchmark/README.md, dedup A/B): existence
+         * throughput still climbs at 2000 ids/chunk (~1.5x the 500 default at
+         * fan-out 4), but each query occupies the engine longer, which is the
+         * read-starvation lever — so the DEFAULT stays at the width the
+         * REQ-latency A/B was measured at, and `VESPA_DEDUP_CHUNK` lets a
+         * deployment that values sync speed over read latency widen it.
+         */
+        val DEDUP_CHUNK: Int = System.getenv("VESPA_DEDUP_CHUNK")?.toIntOrNull()?.coerceAtLeast(1) ?: CHECK_CHUNK
     }
 }

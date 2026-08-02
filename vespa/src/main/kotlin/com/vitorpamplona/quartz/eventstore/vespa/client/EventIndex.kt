@@ -94,7 +94,15 @@ interface EventIndex : AutoCloseable {
      * A decorator MUST delegate to its inner index or it silently loses the
      * engine-side summary-free path.
      */
-    suspend fun existingIds(ids: List<String>): Set<String> = search(EventQuery(ids = ids)).mapTo(HashSet()) { it.id }
+    suspend fun existingIds(ids: List<String>): Set<String> {
+        // Guarded HERE, not left to search(): EventQuery treats an empty ids
+        // list as "no constraint", so riding it would answer a membership
+        // question about NOTHING with EVERYTHING — the wrong direction for an
+        // exactness contract (a future caller would see every id "already
+        // stored"). The real client short-circuits identically.
+        if (ids.isEmpty()) return emptySet()
+        return search(EventQuery(ids = ids)).mapTo(HashSet()) { it.id }
+    }
 
     /**
      * The same recall as [search], but each match projected to a Quartz
