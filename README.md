@@ -105,6 +105,40 @@ context observer, so the token is the only source):
 | `sort:rank observer:<hex>` | No terms: the trust firehose — everything, ordered by author trust. |
 | `filter:rank:gte:50 observer:<hex>` | No terms: newest-first feed of authors the observer trusts at ≥ 50. |
 
+### Where trust comes from (NIP-85)
+
+The scores behind every trust behavior above are NIP-85 events the store
+ingests like any other:
+
+1. The observer's **kind 10040** names a trust provider — a service pubkey.
+   The entry is per dimension: `30382:rank` picks the service whose scores
+   gate and order (`sort:rank`, the floors, the observer gate), and
+   `30382:followers` may name a *different* service for `sort:followers`.
+2. That service signs **kind 30382** cards: the d-tag is the subject pubkey,
+   the rank tag its 0–100 score. Only cards signed by a service that some
+   stored 10040 names count, and they are credited per observer — a popular
+   provider's cards fan out to every user whose 10040 names it.
+3. The store folds the cards into per-subject **reputation tensors**
+   (subject → {observer: score}) as they are written — queries never scan
+   30382s. At query time the author's cell for the observer is the
+   `user_score()` the profiles gate and sort on, so the per-query cost is one
+   tensor-cell lookup per candidate, independent of how large the observer's
+   network is (300k ranked keys costs the same as 300).
+
+Two consequences worth knowing:
+
+- **Listed is not enough — the score must clear the floor.** A subject the
+  service ranked at 0 or 1 is in the d-tag list but below the default floor
+  of 2, so the gate drops it.
+- **Switching providers is automatic but only as fresh as the stored cards.**
+  Replacing a 10040 re-attributes immediately: the old service's scores stop
+  counting and the new one's take over, no query-side change needed. But the
+  store never fetches the new service's 30382s itself — until they are
+  ingested, the observer's score map is empty and, with the observer still
+  resolved, gated feeds return **nothing** (the gate fails closed here, unlike
+  the no-observer case). When a 10040 changes, sync the named service's 30382
+  corpus promptly.
+
 ## What's searchable
 
 A search matches on the content and some tags of each event, and different fields
