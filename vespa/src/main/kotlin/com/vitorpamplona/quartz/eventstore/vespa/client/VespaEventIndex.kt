@@ -510,7 +510,7 @@ class VespaEventIndex(
         // they take the same overfetch + tie-resolution path — their engine
         // score ties are exactly as arbitrary as the single-key sort's.
         val recencyOrdered =
-            (q.ranking == null && q.search.isNullOrBlank()) ||
+            (q.ranking == null && q.search.isNullOrBlank() && q.phrases.isEmpty()) ||
                 q.ranking == EventYql.RANK_UNRANKED ||
                 q.ranking == EventYql.RANK_RECENCY ||
                 q.ranking == EventYql.RANK_RECENCY_GATED ||
@@ -705,6 +705,12 @@ class VespaEventIndex(
             // planner — see NostrSemanticsStore.sweep.)
             ranking == null &&
             search == null &&
+            // Phrases are search text (already selective, and relevance-ordered
+            // — a recency window would silently drop older relevant hits);
+            // notSearch is NOT excluded: an exclusion-only query is still a
+            // recency scan, and the count probes carry the same exclusion
+            // clause, so a proven window stays proven.
+            phrases.isEmpty() &&
             ids.isEmpty() &&
             authors.isEmpty() &&
             owners.isEmpty() &&
@@ -801,7 +807,10 @@ class VespaEventIndex(
             kinds.isEmpty() && notKinds.isEmpty() && authors.isEmpty() && owners.isEmpty() &&
             tags.isEmpty() && tagsAll.isEmpty() &&
             since == null && until == null && expiresBefore == null &&
-            search == null && ranking == null
+            // Text constraints of EVERY polarity: a doc-API get never sees the
+            // search fields, so an id lookup riding a phrase requirement or a
+            // notSearch exclusion must take the search path to honor it.
+            search == null && phrases.isEmpty() && notSearch.isEmpty() && ranking == null
 
     /** Resolve [EventQuery.ids] through parallel document-API gets, then filter expiry, order, and cap like the search path. */
     private suspend fun getByIds(query: EventQuery): List<EventDoc> {

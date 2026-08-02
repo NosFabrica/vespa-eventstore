@@ -805,6 +805,15 @@ object MockYql {
                         q.copy(search = searchWords(params))
                     }
 
+                    // One required quoted phrase (EventQuery.phrases): a plain
+                    // phrase term against the default fieldset. Matched
+                    // EXACTLY, annotations included — a drifted phrase grammar
+                    // must fail parsing, not silently loosen the requirement.
+                    PHRASE_CLAUSE.matches(clause) -> {
+                        val param = PHRASE_CLAUSE.find(clause)!!.groupValues[1]
+                        q.copy(phrases = q.phrases + params.getValue(param))
+                    }
+
                     // One exclusion word (EventQuery.notSearch): a negated
                     // phrase term against the default fieldset. Matched
                     // EXACTLY, annotations included — a drifted exclusion
@@ -832,6 +841,9 @@ object MockYql {
 
     /** Exactly 3 parens (one word), 4 (AND'd words), or 5 (AND'd words with pair coverage) — anything else is drift. */
     private val SEARCH_CLAUSE = Regex("""^\({3,5}\{defaultIndex:""")
+
+    /** The required-phrase clause EventYql emits per quoted phrase, pinned annotation-for-annotation; group 1 is the @-parameter carrying the phrase. */
+    private val PHRASE_CLAUSE = Regex("""^\(\{defaultIndex:"default",grammar:"phrase"\}userInput\(@(p\d+)\)\)$""")
 
     /** The exclusion clause EventYql emits per notSearch word, pinned annotation-for-annotation; group 1 is the @-parameter carrying the word. */
     private val NOT_SEARCH_CLAUSE = Regex("""^!\(\(\{defaultIndex:"default",grammar:"phrase"\}userInput\(@(n\d+)\)\)\)$""")

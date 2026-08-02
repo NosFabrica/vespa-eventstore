@@ -37,26 +37,29 @@ import java.time.Duration
 import kotlin.test.assertEquals
 
 /**
- * `notSearch` (the store's `-word` syntax) against a REAL Vespa — the
- * engine-side facts the wire mock cannot prove, because its parser accepts by
+ * The exact-text clauses — `phrases` (the store's `"exact words"` quotes) and
+ * `notSearch` (its `-word` minus) — against a REAL Vespa: the engine-side
+ * facts the wire mock cannot prove, because its parser accepts by
  * construction whatever EventYql emits:
  *
- *  - the negated phrase-grammar `userInput` clause and the exclusion-only
- *    `where true and !(…)` shape are ACCEPTED by the deployed schema (YQL
- *    acceptance is exactly what only a real engine can check);
- *  - Vespa's own tokenizer draws the exclusion line where the in-memory
- *    reference says it should: whole tokens drop, substrings stay, and a
- *    punctuated exclusion behaves as the adjacent phrase, not an
- *    anywhere-in-doc AND of its pieces.
+ *  - the phrase-grammar `userInput` clause is ACCEPTED by the deployed
+ *    schema, required and negated alike, along with the exclusion-only
+ *    `where true and !(…)` shape (YQL acceptance is exactly what only a real
+ *    engine can check);
+ *  - Vespa's own tokenizer draws the exact-match line where the in-memory
+ *    reference says it should: whole tokens in adjacency match a phrase and
+ *    drop an exclusion, substrings do neither, and a punctuated unit
+ *    ("e-cash") behaves as the adjacent phrase, not an anywhere-in-doc AND
+ *    of its pieces.
  *
  * Tagged `integration`, excluded from the default `:benchmark:test`; run with
  * `-Pintegration` where Docker is available. Skips cleanly without a daemon.
  */
 @Tag("integration")
-class SearchExclusionIT {
+class SearchExactTextIT {
     @Test
-    fun `exclusions drop exact hits, keep looser ones, and the exclusion-only shape is accepted`() {
-        assumeTrue(dockerAvailable(), "Docker not available — skipping the search exclusion IT")
+    fun `phrases require adjacency, exclusions drop exact hits, and both shapes are accepted`() {
+        assumeTrue(dockerAvailable(), "Docker not available — skipping the exact-text IT")
 
         GenericContainer("vespaengine/vespa:latest")
             .withExposedPorts(QUERY_PORT, CONFIG_PORT)
@@ -114,6 +117,43 @@ class SearchExclusionIT {
                             listOf(unsearchable.id, cashOnly.id, ecash.id, model.id).sorted(),
                             index.search(EventQuery(notSearch = listOf("pamplona"))).map { it.id }.sorted(),
                             "exclusion-only recall: everything but the excluded hit",
+                        )
+
+                        // ---- the REQUIRED phrase clause, same grammar, positive ----
+
+                        // Adjacent, in order: only the doc whose about reads
+                        // "pamplona dev" — not the one with the words apart.
+                        assertEquals(
+                            listOf(pamplona.id),
+                            index.search(EventQuery(phrases = listOf("pamplona dev"))).map { it.id },
+                            "a quoted phrase requires adjacency",
+                        )
+                        assertEquals(
+                            emptyList(),
+                            index.search(EventQuery(phrases = listOf("dev pamplona"))).map { it.id },
+                            "…and order",
+                        )
+
+                        // A quoted single word is the fuzzy opt-out: the exact
+                        // token matches, its prefix does not.
+                        assertEquals(
+                            setOf(pamplona.id, model.id),
+                            index.search(EventQuery(phrases = listOf("vitor"))).map { it.id }.toSet(),
+                        )
+                        assertEquals(
+                            emptyList(),
+                            index.search(EventQuery(phrases = listOf("vito"))).map { it.id },
+                            "no prefix/typo reach inside quotes",
+                        )
+
+                        // Phrase + loose word + exclusion in one query — the
+                        // full clause surface the store can emit at once.
+                        assertEquals(
+                            listOf(model.id),
+                            index
+                                .search(EventQuery(search = "vitor", phrases = listOf("model builder"), notSearch = listOf("pamplona")))
+                                .map { it.id },
+                            "all three text clause kinds compose",
                         )
                     }
                 }

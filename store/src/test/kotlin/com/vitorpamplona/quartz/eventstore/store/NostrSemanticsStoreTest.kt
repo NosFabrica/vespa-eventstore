@@ -351,6 +351,22 @@ open class NostrSemanticsStoreTest {
             assertEquals(3, store.query<Event>(Filter(search = "-nowhere")).size, "an absent word excludes nothing")
         }
 
+    /** `"exact phrase"` (FilterMapping): quoted spans require adjacency, in order. */
+    @Test
+    fun `a quoted phrase requires the exact adjacent words`() =
+        runBlocking {
+            val full = metadata(name = "Vitor Pamplona")
+            store.insert(full)
+            store.insert(MetadataEvent(id(), bob, next(), emptyArray(), """{"name":"Vitor"}""", ""))
+
+            // Loose words recall both profiles; the quoted phrase only the full name.
+            assertEquals(2, store.query<Event>(Filter(search = "vitor")).size)
+            assertEquals(listOf(full.id), store.query<Event>(Filter(search = "\"vitor pamplona\"")).map { it.id })
+            assertEquals(0, store.query<Event>(Filter(search = "\"pamplona vitor\"")).size, "order matters inside quotes")
+            // And the negated phrase is its mirror: only the full name drops.
+            assertEquals(listOf(bob), store.query<Event>(Filter(search = "vitor -\"vitor pamplona\"")).map { it.pubKey })
+        }
+
     /** EventIndexesModule pubkey_owner_hash: a gift-wrap is OWNED by its p-tag recipient. */
     @Test
     fun `gift wraps obey their recipient not their signer`() =

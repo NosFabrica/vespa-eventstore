@@ -51,6 +51,21 @@ data class EventQuery(
     /** NIP-50 search term; null/blank = plain recall ordered by recency. */
     val search: String? = null,
     /**
+     * Quoted-phrase requirements — the engine half of the store's
+     * `"exact words"` syntax. Each entry must appear in some search field as
+     * ADJACENT tokens, in order, matched exactly (one phrase-grammar term
+     * over the `default` fieldset) with none of [search]'s prefix/fuzzy/typo
+     * reach — quoting a single word is the opt-out from fuzzy matching.
+     * Phrases are positive search text: they make a query ranked exactly as
+     * [search] terms do, so a phrase-only query is a relevance-ordered
+     * search — unlike a [notSearch]-only one, which is plain recall. A
+     * phrase with nothing any index can hold ("⚡") is an unsatisfiable
+     * requirement — the query provably matches nothing, the same rule
+     * [search] words follow (and the opposite of [notSearch], where such a
+     * word is vacuous).
+     */
+    val phrases: List<String> = emptyList(),
+    /**
      * Words that must NOT match any search field — the engine half of the
      * store's `-word` search syntax, which splits exclusions off [search]
      * before the query gets here (an engine-level word in [search] is always

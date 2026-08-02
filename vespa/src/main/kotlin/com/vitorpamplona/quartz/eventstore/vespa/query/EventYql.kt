@@ -154,6 +154,7 @@ object EventYql {
     fun usesRecencyProfile(q: EventQuery): Boolean =
         q.ranking == null &&
             q.search.isNullOrBlank() &&
+            q.phrases.isEmpty() &&
             (q.limit ?: 0) in 1..(MATCH_PHASE_MAX_HITS / MATCH_PHASE_HEADROOM) &&
             (q.until == null || q.until >= System.currentTimeMillis() / 1000 - RECENT_UNTIL_HORIZON)
 
@@ -197,7 +198,9 @@ object EventYql {
                 // top-`limit` always survives. (Keep in sync with [usesRecencyProfile].)
                 usesRecencyProfile(q) -> RANK_RECENCY
 
-                q.search.isNullOrBlank() -> RANK_UNRANKED
+                // Phrases are search text: a phrase-only query ranks like any
+                // search. Only notSearch-free-and-text-free recall is plain.
+                q.search.isNullOrBlank() && q.phrases.isEmpty() -> RANK_UNRANKED
 
                 observer != null -> RANK_SEARCH
 
@@ -387,6 +390,19 @@ object EventYql {
             clauses += FuzzyWordGroup.clause(matchable, params, nearFields = q.nearMatching)
             // Short queries lean harder on the trigram safety net.
             params["ranking.features.query(w_gram)"] = if (FuzzyWordGroup.leansOnGrams(matchable)) "8.0" else "2.0"
+        }
+
+        // Quoted phrases ([EventQuery.phrases]): one REQUIRED phrase-grammar
+        // term per entry, against the `default` fieldset, the text out-of-band
+        // like everything else. Exact and adjacent by construction — no fuzzy
+        // word group, that is the point of quoting. The phrase rides RAW:
+        // Vespa's tokenizer drops what indexing dropped ("new ⚡ york" is the
+        // phrase [new, york], exactly what the doc side holds), so only the
+        // ALL-erased phrase needs the words' unsatisfiable-requirement rule.
+        q.phrases.forEachIndexed { i, phrase ->
+            if (phrase.none(Char::isLetterOrDigit)) return null
+            params["p$i"] = phrase
+            clauses += "({defaultIndex:\"default\",grammar:\"phrase\"}userInput(@p$i))"
         }
 
         // Exclusions ([EventQuery.notSearch]): one negated term per word,

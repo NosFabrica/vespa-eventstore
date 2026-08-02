@@ -108,20 +108,23 @@ data class SearchFields(
     }
 
     /**
-     * Exclusion check for the in-memory reference ([EventQuery.notSearch] —
-     * `-word`): true when [word]'s folded tokens appear ADJACENTLY in some
-     * field. Unlike [matches] this deliberately mirrors ONLY the engine's
-     * exact side — whole tokens (split at non-alphanumerics), folded like the
-     * index (NearText.fold), no substring reach: the YQL excludes on a plain
-     * phrase term, so "-ode" must NOT drop a doc whose text merely contains
-     * "model", while the adjacency requirement keeps a punctuated exclusion
-     * ("-e-cash") one unit, as the phrase grammar does. Residual divergences
-     * (Vespa's stemming can exclude an inflected form this keeps; its CJK
-     * segmenter splits runs this treats as one token) are accepted — the same
-     * reason NIP-50 recall is excluded from strict parity.
+     * Exact-adjacency check for the in-memory reference — the engine's
+     * phrase-grammar term, both polarities: a REQUIRED quoted phrase
+     * ([EventQuery.phrases]) matches iff this is true, and a `-word`
+     * exclusion ([EventQuery.notSearch]) drops the doc iff it is. True when
+     * [phrase]'s folded tokens appear ADJACENTLY, in order, in some field.
+     * Unlike [matches] this deliberately mirrors ONLY the engine's exact
+     * side — whole tokens (split at non-alphanumerics), folded like the
+     * index (NearText.fold), no substring reach: "-ode" must NOT drop a doc
+     * whose text merely contains "model", and a quoted "ode" must not FIND
+     * one, while adjacency keeps a punctuated unit ("e-cash") one phrase, as
+     * the grammar does. Residual divergences (Vespa's stemming can match an
+     * inflected form this misses; its CJK segmenter splits runs this treats
+     * as one token) are accepted — the same reason NIP-50 recall is excluded
+     * from strict parity.
      */
-    fun excludedBy(word: String): Boolean {
-        val wanted = tokensOf(NearText.fold(word))
+    fun containsPhrase(phrase: String): Boolean {
+        val wanted = tokensOf(NearText.fold(phrase))
         if (wanted.isEmpty()) return false
         return fields().values.any { value ->
             val have = tokensOf(NearText.fold(value))

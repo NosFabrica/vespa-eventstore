@@ -166,6 +166,39 @@ class VespaEventIndexTest {
         check(EventQuery(notKinds = listOf(0, 30382), authors = listOf(bob)))
         check(EventQuery(search = "vitor", notSearch = listOf("pamplona")))
         check(EventQuery(notSearch = listOf("vitor")))
+        check(EventQuery(phrases = listOf("pamplona dev")))
+        check(EventQuery(search = "vitor", phrases = listOf("pamplona dev"), notSearch = listOf("nothing")))
+    }
+
+    @Test
+    fun `quoted phrases require exact adjacency in order`() {
+        val pamplona = doc(kind = 0, search = SearchFields(name = "vitor", about = "pamplona dev"))
+        val scattered = doc(kind = 0, search = SearchFields(name = "vitor", about = "dev of pamplona"))
+        seed(pamplona, scattered)
+        runBlocking {
+            // Adjacent and in order: "pamplona dev" matches only the first doc.
+            assertEquals(listOf(pamplona.id), index.search(EventQuery(phrases = listOf("pamplona dev"))).map { it.id })
+            // Order matters — the reversed phrase matches only the reversed text… almost:
+            // "dev of pamplona" has "of" between, so neither doc has "dev pamplona".
+            assertEquals(emptyList(), index.search(EventQuery(phrases = listOf("dev pamplona"))).map { it.id })
+            // A quoted single word is the fuzzy opt-out: exact token or nothing.
+            assertEquals(2, index.search(EventQuery(phrases = listOf("vitor"))).size)
+            assertEquals(0, index.search(EventQuery(phrases = listOf("vito"))).size, "no prefix reach inside quotes")
+        }
+    }
+
+    @Test
+    fun `an id lookup carrying a text constraint must not take the doc-API fast path`() {
+        // getByIds never sees the search fields, so ids + phrases/notSearch
+        // must route through the search path or the constraint is dropped.
+        val d = doc(kind = 0, search = SearchFields(name = "vitor", about = "pamplona dev"))
+        seed(d)
+        runBlocking {
+            assertEquals(listOf(d.id), index.search(EventQuery(ids = listOf(d.id))).map { it.id })
+            assertEquals(0, index.search(EventQuery(ids = listOf(d.id), notSearch = listOf("pamplona"))).size)
+            assertEquals(0, index.search(EventQuery(ids = listOf(d.id), phrases = listOf("something else"))).size)
+            assertEquals(listOf(d.id), index.search(EventQuery(ids = listOf(d.id), phrases = listOf("pamplona dev"))).map { it.id })
+        }
     }
 
     @Test

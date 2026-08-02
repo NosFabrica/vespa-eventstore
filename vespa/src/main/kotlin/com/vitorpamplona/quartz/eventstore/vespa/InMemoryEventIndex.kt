@@ -134,10 +134,12 @@ class InMemoryEventIndex(
                 (q.expiresBefore == null || (d.expiresAt()?.let { it < q.expiresBefore } == true)) &&
                 (q.notExpiredAt == null || (d.expiresAt() ?: EventDoc.NO_EXPIRATION) > q.notExpiredAt) &&
                 (q.search.isNullOrBlank() || d.search.matches(q.search.trim())) &&
-                // Exclusions are exact-token (SearchFields.excludedBy), never
-                // the loose substring the positive side allows — mirroring the
-                // engine, where only the exact matcher can exclude.
-                q.notSearch.none { d.search.excludedBy(it) }
+                // Phrases and exclusions share the exact-adjacency check
+                // (SearchFields.containsPhrase), never the loose substring the
+                // positive words allow — mirroring the engine, where both are
+                // the same phrase-grammar term, required or negated.
+                q.phrases.all { d.search.containsPhrase(it) } &&
+                q.notSearch.none { d.search.containsPhrase(it) }
         }
     }
 

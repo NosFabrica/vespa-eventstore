@@ -31,8 +31,9 @@ import com.vitorpamplona.quartz.utils.Hex
  * works).
  *
  * Returns null when [q] carries anything a selection can't (or shouldn't)
- * express: ids, tags, a search term (positive or the `notSearch` exclusions —
- * a selection sees no derived search fields, so a silently dropped exclusion
+ * express: ids, tags, a search constraint of any polarity (words, quoted
+ * phrases, or the `notSearch` exclusions — a selection sees no derived search
+ * fields, so a silently dropped exclusion
  * would stream exactly the docs the query subtracted), a limit, the
  * expiry-sweep bound, or a non-64-hex key. In that case the caller falls back
  * to the ranked `/search/` path, which handles all of those. Keys are
@@ -42,7 +43,7 @@ import com.vitorpamplona.quartz.utils.Hex
 object EventSelection {
     fun build(q: EventQuery): String? {
         if (q.ids.isNotEmpty() || q.tags.isNotEmpty() || q.tagsAll.isNotEmpty()) return null
-        if (!q.search.isNullOrBlank() || q.notSearch.isNotEmpty() || q.limit != null || q.expiresBefore != null) return null
+        if (!q.search.isNullOrBlank() || q.phrases.isNotEmpty() || q.notSearch.isNotEmpty() || q.limit != null || q.expiresBefore != null) return null
         val clauses = ArrayList<String>()
         if (q.kinds.isNotEmpty()) clauses += q.kinds.joinToString(" or ", "(", ")") { "event.kind==$it" }
         // Translated, never dropped: this builder's contract is "null for what a

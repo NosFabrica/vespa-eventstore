@@ -130,6 +130,36 @@ class EventYqlTest {
     }
 
     @Test
+    fun `quoted phrases emit required phrase clauses and rank like search text`() {
+        val q = EventYql.build(EventQuery(search = "cat", phrases = listOf("new york", "e-cash")))!!
+        // One self-contained REQUIRED phrase term per entry — exact and
+        // adjacent, none of the loose words' prefix/fuzzy/gram reach.
+        assertTrue("""({defaultIndex:"default",grammar:"phrase"}userInput(@p0))""" in q.yql, q.yql)
+        assertTrue("""({defaultIndex:"default",grammar:"phrase"}userInput(@p1))""" in q.yql, q.yql)
+        assertEquals("new york", q.params["p0"])
+        assertEquals("e-cash", q.params["p1"])
+        assertFalse("fuzzy(@p" in q.yql, "a quoted phrase is exact-only")
+
+        // A phrase-only query is a SEARCH: relevance-ranked, never recency recall.
+        val alone = EventYql.build(EventQuery(phrases = listOf("new york")))!!
+        assertEquals(EventYql.RANK_TEXT, alone.ranking)
+        assertFalse("order by" in alone.yql, "ranked queries must not force recency order")
+        assertEquals(EventYql.RANK_SEARCH, EventYql.build(EventQuery(phrases = listOf("new york"), observer = hexA))!!.ranking)
+    }
+
+    @Test
+    fun `an all-erased phrase is an unsatisfiable requirement`() {
+        // Same rule as loose words ("⚡" alone), OPPOSITE of notSearch: a
+        // REQUIRED phrase no index can hold provably matches nothing —
+        // dropping it instead would silently flip the query into match-all.
+        assertNull(EventYql.build(EventQuery(phrases = listOf("⚡"))))
+        assertNull(EventYql.build(EventQuery(search = "vitor", phrases = listOf("⚡ //"))))
+        // A partially-erased phrase rides raw: Vespa's tokenizer drops what
+        // indexing dropped, so the emitted phrase equals what docs hold.
+        assertEquals("new ⚡ york", EventYql.build(EventQuery(phrases = listOf("new ⚡ york")))!!.params["p0"])
+    }
+
+    @Test
     fun `notSearch words emit negated exact clauses with out-of-band params`() {
         val q = EventYql.build(EventQuery(search = "cat", notSearch = listOf("dog", "e-cash")))!!
         // One self-contained negation per word, against the default fieldset —

@@ -151,6 +151,41 @@ class FilterMappingTest {
     }
 
     @Test
+    fun `quoted spans become exact-phrase requirements`() {
+        val q = map("pizza \"new york\"")
+        assertEquals("pizza", q.search)
+        assertEquals(listOf("new york"), q.phrases)
+        assertEquals(DEFAULT_MIN_RANK, q.minRank)
+    }
+
+    @Test
+    fun `a phrase-only query is still a ranked search`() {
+        val q = map("\"new york\"")
+        assertNull(q.search)
+        assertEquals(listOf("new york"), q.phrases)
+        assertEquals(DEFAULT_MIN_RANK, q.minRank, "phrases are search text: the default spam floor applies")
+    }
+
+    @Test
+    fun `a minus before quotes excludes the phrase`() {
+        val q = map("pizza -\"pineapple ham\"")
+        assertEquals("pizza", q.search)
+        assertTrue(q.phrases.isEmpty())
+        assertEquals(listOf("pineapple ham"), q.notSearch)
+    }
+
+    @Test
+    fun `quote edge cases — unclosed, empty, single word`() {
+        assertEquals(listOf("new york"), map("pizza \"new york").phrases, "an unclosed quote runs to the end")
+        assertEquals("pizza", map("pizza \"new york").search)
+        val empty = map("pizza \"\"")
+        assertEquals("pizza", empty.search)
+        assertTrue(empty.phrases.isEmpty(), "empty quotes are nothing")
+        assertEquals(listOf("vitor"), map("\"vitor\"").phrases, "a quoted word is the fuzzy opt-out, not a loose term")
+        assertNull(map("\"vitor\"").search)
+    }
+
+    @Test
     fun `exclusions ride beside extensions`() {
         val q = map("-nsfw sort:rank")
         assertEquals(listOf("nsfw"), q.notSearch)

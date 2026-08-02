@@ -62,15 +62,27 @@ import com.vitorpamplona.quartz.utils.Hex
  *    supplies it from the NIP-42 connection); a non-hex value is ignored. With
  *    no observer resolved, a search degrades to pure-text relevance.
  *
- * One piece of TERM-level syntax rides beside the extensions (which are all
- * `key:value` tokens Quartz splits off): a term starting with `-` is an
- * EXCLUSION — Google's `-word` — and becomes [EventQuery.notSearch] instead
- * of a search word. Exclusion is exact-match only (see the field's KDoc); a
- * `-` on a word with nothing the index can hold (`-⚡`) excludes nothing and
- * is dropped. A query of ONLY exclusions has no ranking terms, so it is plain
- * recall minus the words — newest first, and the store's observer gate
- * applies to it exactly as to any plain filter. A lone `-` is not syntax and
- * stays a (never-matching) term, as before.
+ * Two pieces of TERM-level syntax ride beside the extensions (which are all
+ * `key:value` tokens Quartz splits off) — Google's minus and Google's quotes:
+ *
+ *  - A term starting with `-` is an EXCLUSION and becomes
+ *    [EventQuery.notSearch] instead of a search word. Exclusion is
+ *    exact-match only (see the field's KDoc); a `-` on a word with nothing
+ *    the index can hold (`-⚡`) excludes nothing and is dropped. A query of
+ *    ONLY exclusions has no ranking terms, so it is plain recall minus the
+ *    words — newest first, and the store's observer gate applies to it
+ *    exactly as to any plain filter. A lone `-` is not syntax and stays a
+ *    (never-matching) term, as before.
+ *  - A `"quoted span"` is an exact-phrase REQUIREMENT ([EventQuery.phrases]):
+ *    adjacent tokens, in order, none of the loose words' typo/prefix reach —
+ *    quoting a single word is the opt-out from fuzzy matching. Unlike
+ *    exclusions, phrases are search text: a phrase-only query is a
+ *    relevance-ordered search that gates through the search profiles.
+ *    `-"quoted span"` combines the two into a phrase exclusion. An unclosed
+ *    quote runs to the end of the text; empty quotes are dropped. One
+ *    caveat inherited from the extension pass: Quartz strips `key:value`
+ *    tokens before this scanner runs, so an extension-shaped token INSIDE a
+ *    quoted span does not stay in the phrase.
  *
  * Unknown extensions are ignored. A query that is nothing but extensions becomes
  * unconstrained (null terms), not match-nothing.
@@ -79,19 +91,18 @@ internal fun Filter.toEventQuery(): EventQuery? {
     if (ids?.isEmpty() == true || authors?.isEmpty() == true || kinds?.isEmpty() == true) return null
     if (tags?.values?.any { it.isEmpty() } == true || tagsAll?.values?.any { it.isEmpty() } == true) return null
     val parsed = SearchQuery.parse(search)
-    // `-word` exclusions split off the terms HERE, not in the engine: at the
-    // EventQuery seam a search word is always a requirement, never syntax —
-    // so the pure-negative case arrives engine- and store-side with
-    // search=null and takes every plain-recall path (the observer gate, the
-    // unranked profile) instead of masquerading as a ranked search.
-    val tokens = parsed.terms.split(WHITESPACE).filter { it.isNotEmpty() }
-    val (excluded, included) = tokens.partition { it.length > 1 && it[0] == '-' }
-    val notTerms = excluded.map { it.trimStart('-') }.filter { w -> w.any(Char::isLetterOrDigit) }
-    val terms = included.joinToString(" ").ifEmpty { null }
+    // `-word` and `"phrase"` syntax splits off the terms HERE, not in the
+    // engine: at the EventQuery seam a search word is always a requirement,
+    // never syntax — so the pure-negative case arrives engine- and store-side
+    // with search=null and takes every plain-recall path (the observer gate,
+    // the unranked profile) instead of masquerading as a ranked search, while
+    // phrases arrive as the typed requirement they are.
+    val syntax = scanTermSyntax(parsed.terms)
+    val terms = syntax.terms
     val sort = parsed.extensions["sort"]?.let(::rankReputationOf)
     val floor = parsed.extensions["filter"]?.let(::rankFloorOf)
     val observer = parsed.extensions["observer"]?.lowercase()?.takeIf(Hex::isHex64)
-    val ranked = terms != null || sort != null
+    val ranked = terms != null || syntax.phrases.isNotEmpty() || sort != null
     return EventQuery(
         ids = ids.orEmpty(),
         kinds = kinds.orEmpty(),
@@ -102,7 +113,8 @@ internal fun Filter.toEventQuery(): EventQuery? {
         until = until,
         limit = limit,
         search = terms,
-        notSearch = notTerms,
+        phrases = syntax.phrases,
+        notSearch = syntax.notSearch,
         observer = observer,
         // A floor is just a floor: the profile stays whatever the query's shape
         // selects (minRank carries N). The no-terms case resolves in the store,
@@ -121,8 +133,63 @@ internal fun Filter.toEventQuery(): EventQuery? {
  */
 const val DEFAULT_MIN_RANK = 2.0
 
-/** Term splitter for the `-word` scan (the engine's own WHITESPACE is module-internal). */
-private val WHITESPACE = Regex("\\s+")
+/** The scanned term-level syntax: loose words (fuzzy requirements), quoted phrases (exact requirements), exclusions of either. */
+internal class TermSyntax(
+    val terms: String?,
+    val phrases: List<String>,
+    val notSearch: List<String>,
+)
+
+/**
+ * One left-to-right scan over the extension-free search text. Quotes span
+ * whitespace (that is their point), so this is a character scan, not a token
+ * split: `-"…"` and `"…"` open a span to the closing quote (or the end, when
+ * unclosed — the tolerant reading of a dangling quote), everything else reads
+ * to the next whitespace and takes the `-word` rule. Positive phrases keep
+ * even index-invisible content ("⚡"): like a loose "⚡" word they are an
+ * unsatisfiable requirement the ENGINE turns into provably-no-match, and
+ * dropping them here would silently flip that into match-all. Excluded words
+ * and phrases with nothing the index can hold are vacuous and dropped.
+ */
+internal fun scanTermSyntax(text: String): TermSyntax {
+    val loose = ArrayList<String>()
+    val phrases = ArrayList<String>()
+    val excluded = ArrayList<String>()
+    var i = 0
+    while (i < text.length) {
+        val c = text[i]
+        when {
+            c.isWhitespace() -> {
+                i++
+            }
+
+            c == '"' || (c == '-' && i + 1 < text.length && text[i + 1] == '"') -> {
+                val neg = c == '-'
+                val start = i + if (neg) 2 else 1
+                val close = text.indexOf('"', start)
+                val end = if (close < 0) text.length else close
+                val span = text.substring(start, end).trim()
+                i = if (close < 0) text.length else close + 1
+                if (span.isNotEmpty()) {
+                    if (neg) excluded += span else phrases += span
+                }
+            }
+
+            else -> {
+                var j = i
+                while (j < text.length && !text[j].isWhitespace()) j++
+                val token = text.substring(i, j)
+                i = j
+                if (token.length > 1 && token[0] == '-') excluded += token.trimStart('-') else loose += token
+            }
+        }
+    }
+    return TermSyntax(
+        terms = loose.joinToString(" ").ifEmpty { null },
+        phrases = phrases,
+        notSearch = excluded.filter { w -> w.any(Char::isLetterOrDigit) },
+    )
+}
 
 /** `sort:` value -> rank profile; null (ignored) for values we don't recognize. */
 private fun rankReputationOf(value: String): String? =
