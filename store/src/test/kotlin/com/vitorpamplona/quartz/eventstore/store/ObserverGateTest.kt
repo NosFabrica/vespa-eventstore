@@ -21,6 +21,7 @@
 package com.vitorpamplona.quartz.eventstore.store
 
 import com.vitorpamplona.quartz.eventstore.store.mapping.DEFAULT_MIN_RANK
+import com.vitorpamplona.quartz.eventstore.store.mapping.INCLUDE_SPAM_MIN_RANK
 import com.vitorpamplona.quartz.eventstore.vespa.client.EventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.doc.EventDoc
 import com.vitorpamplona.quartz.eventstore.vespa.query.EventQuery
@@ -126,6 +127,18 @@ class ObserverGateTest {
         val q = captured(Filter(search = "filter:rank:gte:50 include:spam"), observer = hex)
         assertEquals(EventYql.RANK_RECENCY_GATED, q.ranking, "include:spam only cancels the DEFAULT floor")
         assertEquals(50.0, q.minRank, "the user asked for this floor; it gates")
+    }
+
+    @Test
+    fun `include spam on a search sends a ZERO floor, not an absent one`() {
+        val q = captured(Filter(search = "vitor include:spam"), observer = hex)
+        assertNull(q.ranking, "terms: the default search profile still owns the order")
+        assertEquals(
+            INCLUDE_SPAM_MIN_RANK,
+            q.minRank,
+            "the floor must ride the query at 0 — omitted, wot_mult's log anchors at the " +
+                "schema's -1e9 fail-open and the trust ORDER collapses to pure text",
+        )
     }
 
     @Test

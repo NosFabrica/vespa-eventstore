@@ -279,7 +279,7 @@ class TrustReconciler internal constructor(
                 // never assert the dimension derives nothing there, and calling
                 // that drift would re-walk the service on every startup.
                 val cards = sample.mapNotNull { doc -> subjectOf(doc)?.let { s -> (doc.toEvent() as? ContactCardEvent)?.let { s to it } } }
-                val rankSubjects = cards.filter { it.second.rank() != null }.map { it.first }.distinct()
+                val rankSubjects = cards.filter { it.second.boundedRank() != null }.map { it.first }.distinct()
                 val followerSubjects = cards.filter { it.second.followerCount() != null }.map { it.first }.distinct()
                 val parents = (rankSubjects + followerSubjects).distinct().mapNotNull { s -> reputations.get(s)?.let { s to it } }.toMap()
                 val rankProjected =

@@ -56,7 +56,10 @@ import com.vitorpamplona.quartz.utils.Hex
  *    query is otherwise gated at [DEFAULT_MIN_RANK] — searches here, plain
  *    recall by the store's observer gate (NostrSemanticsStore) — and
  *    include:spam is the inverse of both, so it rides along as
- *    [EventQuery.includeSpam].
+ *    [EventQuery.includeSpam]. On RANKED queries the floor is LOWERED to
+ *    [INCLUDE_SPAM_MIN_RANK] (0 = keep everything), never omitted: min_rank
+ *    is also the anchor of the default profile's trust boost, so it must
+ *    still be sent for the order to stay trust-lensed.
  *  - `observer:<64-hex>` names the pubkey whose web-of-trust ranks the hits.
  *    It is the query-side way to pick the ranking lens (the relay otherwise
  *    supplies it from the NIP-42 connection); a non-hex value is ignored. With
@@ -90,7 +93,12 @@ internal fun Filter.toEventQuery(): EventQuery? {
         // where the out-of-band observer is known — see the observer gate in
         // NostrSemanticsStore.
         ranking = sort,
-        minRank = floor ?: if (ranked && !parsed.includeSpam) DEFAULT_MIN_RANK else null,
+        minRank =
+            floor ?: when {
+                !ranked -> null
+                parsed.includeSpam -> INCLUDE_SPAM_MIN_RANK
+                else -> DEFAULT_MIN_RANK
+            },
         includeSpam = parsed.includeSpam,
     )
 }
@@ -101,6 +109,20 @@ internal fun Filter.toEventQuery(): EventQuery? {
  * spam-filtered out unless the query says `include:spam`.
  */
 const val DEFAULT_MIN_RANK = 2.0
+
+/**
+ * The floor a ranked `include:spam` query still SENDS: 0 on the 0..100 score
+ * scale, so no hit is dropped — but the feature must not be omitted. The
+ * default search profile's wot_mult() anchors its concave trust boost at
+ * query(min_rank) (`log(1 + user_score - min_rank)`), and the schema's
+ * fail-open default for the feature is -1e9: omit the floor and the boost
+ * becomes the same ~log(1e9) constant for EVERY author — trust differences
+ * vanish into the 8th decimal place and the observer's most-trusted match
+ * sorts as if unranked (reported as "many Vitors above the real one" under
+ * include:spam). Anchored at 0, the boost keeps its designed 1.0→~5.6 span
+ * and only the gate is off.
+ */
+const val INCLUDE_SPAM_MIN_RANK = 0.0
 
 /** `sort:` value -> rank profile; null (ignored) for values we don't recognize. */
 private fun rankReputationOf(value: String): String? =

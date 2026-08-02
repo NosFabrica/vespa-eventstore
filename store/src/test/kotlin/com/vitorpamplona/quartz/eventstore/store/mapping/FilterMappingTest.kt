@@ -31,8 +31,9 @@ import kotlin.test.assertTrue
 /**
  * The NIP-50 `search` string -> [com.vitorpamplona.quartz.eventstore.vespa.EventQuery]
  * extension mapping: `sort:` picks the rank profile, `filter:rank:…` sets the
- * trust floor, and `include:spam` switches off the default floor (Brainstorm's
- * onlyRanked, inverted).
+ * trust floor, and `include:spam` lowers the default floor to 0 (Brainstorm's
+ * onlyRanked, inverted — the floor still rides the query because it anchors
+ * the trust boost).
  */
 class FilterMappingTest {
     private fun map(search: String?) = Filter(search = search).toEventQuery()!!
@@ -46,10 +47,15 @@ class FilterMappingTest {
     }
 
     @Test
-    fun `include spam removes the default floor and rides the query`() {
+    fun `include spam lowers the floor to zero instead of dropping it`() {
         val q = map("vitor include:spam")
         assertEquals("vitor", q.search)
-        assertNull(q.minRank)
+        assertEquals(
+            INCLUDE_SPAM_MIN_RANK,
+            q.minRank,
+            "0 keeps every hit but still anchors wot_mult's boost — an ABSENT floor " +
+                "collapses the trust multiplier to a constant and the order degrades to pure text",
+        )
         assertTrue(q.includeSpam, "the opt-out survives the mapping for the store's observer gate")
         assertFalse(map("vitor").includeSpam)
     }

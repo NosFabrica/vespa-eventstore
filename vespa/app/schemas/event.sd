@@ -749,6 +749,14 @@ schema event {
         # MULTIPLICATIVE trust — NOT additive (additive WoT swamped exactness).
         # 0 below the rank cutoff (server passes min_rank=2), then a modest
         # CONCAVE (log, diminishing-returns) boost. w_wot=0 => pure text.
+        #
+        # query(min_rank) is ALSO the log's anchor, not just the gate: a
+        # sender that wants "no gate" must pass min_rank=0, never omit the
+        # feature. The input's fail-open default (-1e9) exists so the rank_*
+        # GATES below no-op, but HERE it turns the boost into the same
+        # ~log(1e9) constant for every author — trust differences vanish into
+        # the 8th decimal place and the order degrades to pure text (the
+        # include:spam regression; the store sends 0.0 for that case).
         function wot_mult() {
             expression: if(user_score() < query(min_rank), 0.0, 1.0 + query(w_wot) * log(1.0 + max(0.0, user_score() - query(min_rank))))
         }
