@@ -1,6 +1,6 @@
 # vespa-eventstore
 
-A [Vespa](https://vespa.ai)-backed [Quartz](https://github.com/vitorpamplona/amethyst) Event Store with **trust-based filters** and **trust-ranked NIP-50 search** based on NIP-85 events.
+A [Vespa](https://vespa.ai)-backed [Quartz](https://github.com/vitorpamplona/amethyst) Event Store that filters and ranks everything — REQs, COUNTs, and NIP-50 search — through each connecting user's **NIP-85 web of trust**.
 
 ## Features
 
