@@ -153,28 +153,34 @@ class TrustProjection(
      * everything else here needs none. Measured on an 11M-card load, re-deriving
      * parents from re-fetched cards was 44% of the entire ingest wall clock.
      *
-     * A card scores ONE cell PER OBSERVER naming its service — a shared
-     * provider (the NIP-85 norm) ranks every user who trusts it, so the update
-     * fans out per observer, exactly as [TrustRecompute]'s derive does.
+     * Attribution is PER DIMENSION ([TrustProviders]): the card's rank tag
+     * updates the influence cell of every observer naming its signer under
+     * `30382:rank`, its followers tag the follower cell of those naming it
+     * under `30382:followers` — a user may pick different services for the two,
+     * and a rank provider's followers tag must not clobber the follower
+     * provider's value. A shared provider (the NIP-85 norm) fans out to every
+     * observer trusting it, exactly as [TrustRecompute]'s derive does; a cell's
+     * null side leaves the other tensor untouched, which under per-dimension
+     * ownership is correct — that cell belongs to the other provider's cards.
      *
      * Semantics note (many services -> one observer's cell): the cards are
      * applied in the same (created_at, then lowest-id-wins) order the full
      * derivation folds in, so WITHIN a batch the two paths agree; across
      * batches the cell holds the last-arriving batch's winner, which a full
      * derivation may order differently. Bounded arbitrariness, an order of
-     * magnitude cheaper than reading. A RETRACTION (a card missing either
-     * dimension) can't be applied blindly, because another service's card may
-     * still back the cell — those rare subjects become re-derive work, as do
-     * the 10040s' service walks; deletions always did.
+     * magnitude cheaper than reading. A RETRACTION (a card missing a tag its
+     * signer is mapped for) can't be applied blindly, because another service's
+     * card may still back the cell — those rare subjects become re-derive work,
+     * as do the 10040s' service walks; deletions always did.
      */
     override suspend fun putAll(docs: List<EventDoc>) {
         dirt.guarded(putDirt(docs)) {
             IngestStats.timed("write") { inner.putAll(docs) }
-            val listServices = ProviderMap.rankServicesOf(docs.filter { it.kind == TrustProviderListEvent.KIND }).toSet()
+            val listServices = ProviderMap.trustServicesOf(docs.filter { it.kind == TrustProviderListEvent.KIND }).toSet()
             if (listServices.isNotEmpty()) recompute.invalidateProviders()
             val cards = docs.filter { it.kind == ContactCardEvent.KIND }
             if (cards.isEmpty()) return@guarded Unit to DirtLedger.Dirt(emptySet(), listServices)
-            val serviceToObservers = recompute.providerMap()
+            val providers = recompute.providerMap()
             val updates = ArrayList<ReputationCells>(cards.size)
             val retracted = LinkedHashSet<String>()
             // Same fold order as the derive (newest wins, ties to the LOWEST id),
@@ -182,22 +188,36 @@ class TrustProjection(
             // the same cell a full re-derivation would.
             for (doc in cards.sortedWith(compareBy<EventDoc> { it.createdAt }.thenByDescending { it.id })) {
                 val subject = subjectOf(doc) ?: continue
-                val observers = serviceToObservers[doc.pubkey] ?: continue
+                val rankObservers = providers.rank[doc.pubkey].orEmpty()
+                val followerObservers = providers.followers[doc.pubkey].orEmpty()
+                if (rankObservers.isEmpty() && followerObservers.isEmpty()) continue
                 val card = doc.toEvent() as? ContactCardEvent
                 val influence = card?.rank()
                 val followers = card?.followerCount()?.toDouble()
-                if (influence != null && followers != null) {
-                    observers.forEach { observer -> updates += ReputationCells(subject, observer, influence, followers) }
-                } else {
-                    // A card MISSING either dimension can't take the zero-read cell
-                    // update. updateCells only ADDS cells, so a null dimension would
-                    // leave the OTHER tensor's prior cell stale (bulk would diverge
-                    // from the derive, which drops it). Any partial or full
-                    // retraction becomes read-based re-derive work, which rebuilds
-                    // the subject's whole doc from the newest stored cards. A card
-                    // that fails reconstruction lands here too — freezing its cells
-                    // on a parse regression would be silent drift.
+                if ((rankObservers.isNotEmpty() && influence == null) || (followerObservers.isNotEmpty() && followers == null)) {
+                    // A card MISSING a tag its signer is MAPPED for can't take the
+                    // zero-read cell update. updateCells only ADDS cells, so the
+                    // missing dimension's prior cell would linger (bulk would
+                    // diverge from the derive, which drops it). Any such partial or
+                    // full retraction becomes read-based re-derive work, which
+                    // rebuilds the subject's whole doc from the newest stored
+                    // cards. A card that fails reconstruction lands here too —
+                    // freezing its cells on a parse regression would be silent
+                    // drift.
                     retracted += subject
+                    continue
+                }
+                // Union fan-out, one partial cell per observer: only the mapped
+                // dimension(s) carry a value — an unmapped dimension stays null so
+                // the other provider's cell survives.
+                (rankObservers + followerObservers).forEach { observer ->
+                    updates +=
+                        ReputationCells(
+                            subject,
+                            observer,
+                            influence.takeIf { observer in rankObservers },
+                            followers.takeIf { observer in followerObservers },
+                        )
                 }
             }
             IngestStats.timed("proj.write") { reputations.updateCells(updates) }
@@ -253,11 +273,11 @@ class TrustProjection(
         }
     }
 
-    /** What ONE doc's write invalidates: a card its subject, a 10040 its rank services, anything else nothing. */
+    /** What ONE doc's write invalidates: a card its subject, a 10040 its trust services (either dimension), anything else nothing. */
     private fun opDirt(doc: EventDoc): DirtLedger.Dirt =
         when (doc.kind) {
             ContactCardEvent.KIND -> DirtLedger.Dirt(setOfNotNull(subjectOf(doc)), emptySet())
-            TrustProviderListEvent.KIND -> DirtLedger.Dirt(emptySet(), ProviderMap.rankServicesOf(listOf(doc)).toSet())
+            TrustProviderListEvent.KIND -> DirtLedger.Dirt(emptySet(), ProviderMap.trustServicesOf(listOf(doc)).toSet())
             else -> DirtLedger.Dirt.NONE
         }
 
@@ -273,7 +293,7 @@ class TrustProjection(
     private fun putDirt(docs: List<EventDoc>): DirtLedger.Dirt {
         val subjects = LinkedHashSet<String>()
         for (doc in docs) if (doc.kind == ContactCardEvent.KIND) subjectOf(doc)?.let(subjects::add)
-        val services = LinkedHashSet(ProviderMap.rankServicesOf(docs.filter { it.kind == TrustProviderListEvent.KIND }))
+        val services = LinkedHashSet(ProviderMap.trustServicesOf(docs.filter { it.kind == TrustProviderListEvent.KIND }))
         if (subjects.size > DIRT_SUBJECT_CAP) {
             docs.forEach { if (it.kind == ContactCardEvent.KIND) services += it.pubkey }
             subjects.clear()
@@ -291,7 +311,7 @@ class TrustProjection(
     private fun removeDirt(docs: List<EventDoc>): DirtLedger.Dirt {
         val subjects = LinkedHashSet<String>()
         for (doc in docs) if (doc.kind == ContactCardEvent.KIND) subjectOf(doc)?.let(subjects::add)
-        val services = LinkedHashSet(ProviderMap.rankServicesOf(docs.filter { it.kind == TrustProviderListEvent.KIND }))
+        val services = LinkedHashSet(ProviderMap.trustServicesOf(docs.filter { it.kind == TrustProviderListEvent.KIND }))
         return DirtLedger.Dirt(subjects, services)
     }
 

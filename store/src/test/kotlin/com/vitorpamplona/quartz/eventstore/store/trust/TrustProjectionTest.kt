@@ -67,11 +67,14 @@ class TrustProjectionTest {
 
     private fun id() = (++seq).toString(16).padStart(64, '0')
 
+    // The default names ONE service for BOTH dimensions — the single-provider
+    // norm. Per-dimension attribution is exercised by the split-provider tests.
     private fun list10040(
         author: String = observer,
         serviceKey: String = service,
         at: Long = next(),
-    ) = TrustProviderListEvent(id(), author, at, arrayOf(arrayOf("30382:rank", serviceKey, "wss://scores.example.com/")), "", "")
+        types: List<String> = listOf("30382:rank", "30382:followers"),
+    ) = TrustProviderListEvent(id(), author, at, types.map { arrayOf(it, serviceKey, "wss://scores.example.com/") }.toTypedArray(), "", "")
 
     private fun card(
         signer: String = service,
@@ -165,6 +168,72 @@ class TrustProjectionTest {
             assertEquals(mapOf(observer to 42), reputations.get(subject)?.influenceScores)
         }
 
+    // ---- per-dimension provider attribution (NIP-85 typed entries) -----------
+
+    private fun splitList10040(at: Long = next()) =
+        TrustProviderListEvent(
+            id(),
+            observer,
+            at,
+            arrayOf(
+                arrayOf("30382:rank", service, "wss://scores.example.com/"),
+                arrayOf("30382:followers", service2, "wss://followers.example.com/"),
+            ),
+            "",
+            "",
+        )
+
+    /**
+     * The observer picks DIFFERENT services per dimension: rank from [service],
+     * follower counts from [service2]. Each card's tag lands only through the
+     * service the observer named for THAT dimension — the rank provider's
+     * followers tag (and the follower provider's rank tag) must not land.
+     */
+    @Test
+    fun `rank and followers attribute through their own services`() =
+        runBlocking {
+            store.insert(splitList10040())
+            store.insert(card(signer = service, rank = 87, followers = 999)) // followers: not its dimension
+            store.insert(card(signer = service2, rank = 50, followers = 300)) // rank: not its dimension
+            assertEquals(
+                ReputationDoc(subject, mapOf(observer to 87), mapOf(observer to 300.0)),
+                reputations.get(subject),
+            )
+        }
+
+    /** The same split through the bulk zero-read cell path: per-dimension partial updates merge into one doc. */
+    @Test
+    fun `split providers merge per dimension on the bulk path`() =
+        runBlocking {
+            store.insert(splitList10040())
+            // A real bulk batch (>= the bulk threshold), so the cells land inline;
+            // the rank-only fillers must ride the fast path too — a missing
+            // followers tag is no retraction when the signer is rank-mapped only.
+            val fillers = (1..15).map { card(signer = service, about = it.toString(16).padStart(64, 'b'), rank = 10, followers = null) }
+            val outcomes = store.batchInsert(fillers + card(signer = service, rank = 87, followers = 999) + card(signer = service2, rank = 50, followers = 300))
+            assertEquals(17, outcomes.count { it is IEventStore.InsertOutcome.Accepted })
+            assertEquals(
+                ReputationDoc(subject, mapOf(observer to 87), mapOf(observer to 300.0)),
+                reputations.get(subject),
+            )
+            fillers.forEach { f ->
+                val about = f.tags.first { it[0] == "d" }[1]
+                assertEquals(ReputationDoc(about, mapOf(observer to 10), emptyMap()), reputations.get(about), "rank-only filler $about")
+            }
+        }
+
+    /** BOTH dimensions from ONE service the observer named twice — the single-provider norm. */
+    @Test
+    fun `a service named for both dimensions scores both tensors`() =
+        runBlocking {
+            store.insert(list10040()) // the default names service under rank AND followers
+            store.insert(card(rank = 87, followers = 120))
+            assertEquals(
+                ReputationDoc(subject, mapOf(observer to 87), mapOf(observer to 120.0)),
+                reputations.get(subject),
+            )
+        }
+
     // ---- a 10040 carrying tags that are not service tags ---------------------
 
     @Test
@@ -197,11 +266,16 @@ class TrustProjectionTest {
         }
     }
 
-    /** The BULK path: one store batch of scores builds every subject's parent doc. */
+    /**
+     * The BULK path: one store batch of scores builds every subject's parent
+     * doc. The observer maps the service for RANK only, so the rank-only cards
+     * take the zero-read cell update — a missing followers tag is not a
+     * retraction when nobody named the signer as a follower provider.
+     */
     @Test
     fun `a bulk batch of scores projects one parent doc per subject`() =
         runBlocking {
-            store.insert(list10040())
+            store.insert(list10040(types = listOf("30382:rank")))
             val subjects = (1..40).map { it.toString(16).padStart(64, 'f') }
             val batch = subjects.map { s -> card(about = s, rank = 10, followers = null) }
             val outcomes = store.batchInsert(batch)

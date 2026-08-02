@@ -21,6 +21,7 @@
 package com.vitorpamplona.quartz.eventstore.store.trust
 
 import com.vitorpamplona.quartz.eventstore.store.ingest.GuardBloom
+import com.vitorpamplona.quartz.eventstore.store.mapping.toEvent
 import com.vitorpamplona.quartz.eventstore.vespa.QUERY_FANOUT
 import com.vitorpamplona.quartz.eventstore.vespa.client.EventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.client.ReputationIndex
@@ -220,10 +221,15 @@ class TrustReconciler internal constructor(
      * A service is projected when its subjects carry a cell for EACH of its
      * observers — the observer set, because a popular provider is named by many
      * 10040s and every one of those users must rank through it. So for each
-     * mapped service this samples a few of its cards and asks, per observer,
-     * whether any sampled subject has that observer's cell (either tensor — a
-     * followers-only corpus is still projected). Checking observers rather than
-     * mere existence is what also catches a RE-MAPPED service: its subjects have
+     * mapped service this samples a few of its cards and asks, per observer PER
+     * DIMENSION ([TrustProviders]), whether a sampled subject has that
+     * observer's cell in the tensor the mapping owns — rank-mapped observers
+     * are checked against influence cells, followers-mapped ones against
+     * follower cells. Only sampled cards that ASSERT a dimension (carry its
+     * tag) can prove it unprojected: a corpus whose cards never carry the
+     * mapped tag projects nothing, and treating that as drift would re-walk
+     * the service on every startup. Checking observers rather than mere
+     * existence is what also catches a RE-MAPPED service: its subjects have
      * docs, but the cells belong to the previous observer.
      *
      * Sampling, not counting, because the alternative is reading every card. A
@@ -250,9 +256,9 @@ class TrustReconciler internal constructor(
         onProgress: ((inspected: Int, total: Int, rebuilt: Int, derivedInService: Int) -> Unit)? = null,
     ): Reconciliation {
         dirt.drain(gate)
-        val serviceToObservers = recompute.providerMap()
-        if (serviceToObservers.isEmpty()) return Reconciliation(0, emptyList())
-        val total = serviceToObservers.size
+        val providers = recompute.providerMap()
+        if (providers.isEmpty()) return Reconciliation(0, emptyList())
+        val total = providers.services.size
         onProgress?.invoke(0, total, 0, 0)
 
         // Phase 1 — sampling, fanned out: pure reads with no ordering
@@ -262,21 +268,27 @@ class TrustReconciler internal constructor(
         // service; true/false = sampled projected/unprojected.
         val cutoff = nowSecs()
         val verdicts =
-            serviceToObservers.entries.toList().mapBounded(QUERY_FANOUT) { (service, observers) ->
+            providers.services.toList().mapBounded(QUERY_FANOUT) { service ->
                 val sample =
                     index.search(
                         EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service), limit = samplesPerService, notExpiredAt = cutoff),
                     )
-                when {
-                    sample.isEmpty() -> {
-                        null
-                    }
-
-                    else -> {
-                        val parents = sample.mapNotNull { subjectOf(it) }.distinct().mapNotNull { reputations.get(it) }
-                        service to observers.all { o -> parents.any { it.influenceScores.containsKey(o) || it.followerCounts.containsKey(o) } }
-                    }
-                }
+                if (sample.isEmpty()) return@mapBounded null
+                // Per dimension: only sampled cards that CARRY a tag can prove
+                // that tag's tensor unprojected — a mapped corpus whose cards
+                // never assert the dimension derives nothing there, and calling
+                // that drift would re-walk the service on every startup.
+                val cards = sample.mapNotNull { doc -> subjectOf(doc)?.let { s -> (doc.toEvent() as? ContactCardEvent)?.let { s to it } } }
+                val rankSubjects = cards.filter { it.second.rank() != null }.map { it.first }.distinct()
+                val followerSubjects = cards.filter { it.second.followerCount() != null }.map { it.first }.distinct()
+                val parents = (rankSubjects + followerSubjects).distinct().mapNotNull { s -> reputations.get(s)?.let { s to it } }.toMap()
+                val rankProjected =
+                    rankSubjects.isEmpty() ||
+                        providers.rank[service].orEmpty().all { o -> rankSubjects.any { parents[it]?.influenceScores?.containsKey(o) == true } }
+                val followersProjected =
+                    followerSubjects.isEmpty() ||
+                        providers.followers[service].orEmpty().all { o -> followerSubjects.any { parents[it]?.followerCounts?.containsKey(o) == true } }
+                service to (rankProjected && followersProjected)
             }
         val examined = verdicts.count { it != null }
         onProgress?.invoke(total, total, 0, 0)
