@@ -24,7 +24,9 @@ import com.vitorpamplona.quartz.eventstore.vespa.query.EventYql
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
  * The NIP-50 `search` string -> [com.vitorpamplona.quartz.eventstore.vespa.EventQuery]
@@ -44,10 +46,12 @@ class FilterMappingTest {
     }
 
     @Test
-    fun `include spam removes the default floor`() {
+    fun `include spam removes the default floor and rides the query`() {
         val q = map("vitor include:spam")
         assertEquals("vitor", q.search)
         assertNull(q.minRank)
+        assertTrue(q.includeSpam, "the opt-out survives the mapping for the store's observer gate")
+        assertFalse(map("vitor").includeSpam)
     }
 
     @Test
@@ -69,13 +73,21 @@ class FilterMappingTest {
     }
 
     @Test
-    fun `filter rank sets the floor and falls back to the filtered profile`() {
+    fun `filter rank raises the floor without changing the default order`() {
         val gte = map("vitor filter:rank:gte:5")
         assertEquals(5.0, gte.minRank)
-        assertEquals(EventYql.RANK_FILTERED, gte.ranking, "no sort: text order, trust-gated")
+        assertNull(gte.ranking, "a floor is just a floor: the default profile keeps its order")
 
         assertEquals(6.0, map("vitor filter:rank:gt:5").minRank, "gt on integer ranks = gte the next one")
-        assertNull(map("vitor filter:rank:eq:5").ranking, "unknown comparators are ignored")
+        assertEquals(DEFAULT_MIN_RANK, map("vitor filter:rank:eq:5").minRank, "unknown comparators are ignored, leaving the default floor")
+    }
+
+    @Test
+    fun `filter rank without terms leaves the profile to the store's observer gate`() {
+        val q = map("filter:rank:gte:50")
+        assertNull(q.search)
+        assertEquals(50.0, q.minRank)
+        assertNull(q.ranking, "the gated-recall profile is stamped in the store, once the out-of-band observer is known")
     }
 
     @Test

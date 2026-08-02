@@ -1,6 +1,6 @@
 # vespa-eventstore
 
-A [Vespa](https://vespa.ai)-backed [Quartz](https://github.com/vitorpamplona/amethyst) Event Store with **trust-ranked NIP-50 search** based on NIP-85 events.
+A [Vespa](https://vespa.ai)-backed [Quartz](https://github.com/vitorpamplona/amethyst) Event Store that filters and ranks everything — REQs, COUNTs, and NIP-50 search — through each connecting user's **NIP-85 web of trust**.
 
 ## Features
 
@@ -44,6 +44,7 @@ A [Vespa](https://vespa.ai)-backed [Quartz](https://github.com/vitorpamplona/ame
 - **NIP-50 Full Text Search**
     - Banded BM25 relevance (match-quality tiers, IDF weighting, trigram typo-recall) ranks results.
     - Observer-centric ranking weights results by NIP-85 user scores.
+    - The observer gate: a resolved observer turns plain recall into a trusted-only feed (`include:spam` opts out).
     - Indexes are updated on replaceables, deletions, vanishes, and expirations.
 
 - **NIP-77 Negentropy**
@@ -54,16 +55,89 @@ A [Vespa](https://vespa.ai)-backed [Quartz](https://github.com/vitorpamplona/ame
 
 ### Search grammar
 
-Extensions travel inside the `search` string:
+Extensions travel inside the `search` string. `sort:` picks the ordering,
+`filter:` moves the trust floor, `include:spam` removes it — the three are
+orthogonal and stack freely. Unknown extensions are ignored, and `scheme://…`
+tokens stay part of the search text:
 
 | Token | Effect |
 |---|---|
-| `observer:<64-hex>` | Rank through this pubkey's web of trust. Absent ⇒ pure-text relevance, and every trust token below quietly no-ops. |
-| `sort:rank` / `sort:rank:asc` | Trust-order within match tiers. |
+| `observer:<64-hex>` | Rank through this pubkey's web of trust. With no observer resolved (see below) trust ranking is impossible: searches fall back to pure-text relevance and every trust token below quietly no-ops. |
+| `sort:rank` / `sort:rank:asc` | Trust-order within match tiers (descending / ascending). |
 | `sort:followers` | Verified-follower-count order within match tiers. |
-| `sort:text` | Force pure-text relevance. |
-| `filter:rank:gte:N` / `filter:rank:gt:N` | Keep only authors the observer trusts ≥ N (0–100 scale). |
-| `include:spam` | Turn off the default trust floor that a trust-ranked query applies. |
+| `sort:text` | Force pure-text relevance, ignoring the observer. |
+| `filter:rank:gte:N` / `filter:rank:gt:N` | Raise the trust floor from the default 2 to N (0–100 scale) — a pure filter, the ordering is untouched. |
+| `include:spam` | Turn off the default trust floor. An explicit `filter:rank:` floor always survives it. |
+
+**Where the observer comes from.** The `observer:` token is only one of two
+sources. The embedding relay can also supply an observer out-of-band — Quartz's
+`StoreQueryContext` coroutine context element — which is how "this connection is
+NIP-42-authenticated as X" (or an operator-wide default lens) reaches the store
+without touching the client's query. An explicit `observer:` token wins over the
+context observer: scores are public, so any client may rank through any lens.
+Every behavior below keys off the *resolved* observer, whichever source it came
+from — on an authenticated connection, `pizza` behaves like
+`pizza observer:<your-hex>`, and `sort:text` is how that connection opts back
+out of personalization.
+
+**The observer gate.** Supplying an observer — either way — opts the *whole
+request* into that lens, plain NIP-01 filters included: non-search queries keep
+their newest-first order but drop authors the observer trusts below the floor
+(2 by default, `filter:rank:` to move it, `include:spam` to lift it). Recall
+without a resolved observer is never gated — an anonymous REQ sees everything —
+and sync paths (negentropy snapshots, internal sweeps) never resolve one.
+
+How they combine (`<hex>` = a 64-hex observer pubkey; the examples assume no
+context observer, so the token is the only source):
+
+| Example `search` string | What you get |
+|---|---|
+| *(no `search` field)* | Plain NIP-01: newest first, no ranking, no gate. |
+| `observer:<hex>` *(no terms)* | The observer gate: newest first, but only authors the observer trusts ≥ 2. (An authenticated connection gets this on every plain filter without any search string.) |
+| `include:spam` *(no terms)* | Opts a plain filter back out of the gate — full ungated recall even with an observer resolved. |
+| `pizza` | Pure text relevance — no observer resolved, so no trust and no spam floor. |
+| `pizza observer:<hex>` | **The default:** text score × the observer's web-of-trust curve; authors below trust 2 dropped as spam. |
+| `pizza observer:<hex> include:spam` | Same order, floor off — low-trust authors rank low instead of disappearing. |
+| `pizza observer:<hex> filter:rank:gte:20` | Same default order, floor raised to 20. |
+| `pizza observer:<hex> sort:rank` | Token matches first, ordered by author trust inside each match tier. |
+| `pizza observer:<hex> sort:followers` | Token matches first, most-followed authors first inside each tier. |
+| `pizza sort:text` | Pure text relevance even when an observer resolved (token or connection) — the un-personalized view. |
+| `sort:rank observer:<hex>` | No terms: the trust firehose — everything, ordered by author trust. |
+| `filter:rank:gte:50 observer:<hex>` | No terms: newest-first feed of authors the observer trusts at ≥ 50. |
+
+### Where trust comes from (NIP-85)
+
+The scores behind every trust behavior above are NIP-85 events the store
+ingests like any other:
+
+1. The observer's **kind 10040** names a trust provider — a service pubkey.
+   The entry is per dimension: `30382:rank` picks the service whose scores
+   gate and order (`sort:rank`, the floors, the observer gate), and
+   `30382:followers` may name a *different* service for `sort:followers`.
+2. That service signs **kind 30382** cards: the d-tag is the subject pubkey,
+   the rank tag its 0–100 score. Only cards signed by a service that some
+   stored 10040 names count, and they are credited per observer — a popular
+   provider's cards fan out to every user whose 10040 names it.
+3. The store folds the cards into per-subject **reputation tensors**
+   (subject → {observer: score}) as they are written — queries never scan
+   30382s. At query time the author's cell for the observer is the
+   `user_score()` the profiles gate and sort on, so the per-query cost is one
+   tensor-cell lookup per candidate, independent of how large the observer's
+   network is (300k ranked keys costs the same as 300).
+
+Two consequences worth knowing:
+
+- **Listed is not enough — the score must clear the floor.** A subject the
+  service ranked at 0 or 1 is in the d-tag list but below the default floor
+  of 2, so the gate drops it.
+- **Switching providers is automatic but only as fresh as the stored cards.**
+  Replacing a 10040 re-attributes immediately: the old service's scores stop
+  counting and the new one's take over, no query-side change needed. But the
+  store never fetches the new service's 30382s itself — until they are
+  ingested, the observer's score map is empty and, with the observer still
+  resolved, gated feeds return **nothing** (the gate fails closed here, unlike
+  the no-observer case). When a 10040 changes, sync the named service's 30382
+  corpus promptly.
 
 ## What's searchable
 
@@ -71,8 +145,8 @@ A search matches on the content and some tags of each event, and different field
 carry different weight: a **primary** field (a title or name) outweighs a
 **secondary** field (a summary, description, or hashtags), which outweighs the
 **body** (the event's `content`). Profiles (kind 0) are split into their own
-name and identity fields. When you supply an observer, the matches are then
-ordered by that observer's web of trust.
+name and identity fields. When you supply an observer, the matches are weighted
+and spam-gated by that observer's web of trust.
 
 The kinds it indexes and the fields it reads from each (highest weight first).
 Kinds with no title to split out are indexed by their full `content`; on every
@@ -210,14 +284,29 @@ VespaEventStore.open("http://localhost:8080").use { store ->
 
     // Trust-ranked — just name the observer lens in the search string.
     store.query<Event>(Filter(kinds = listOf(0), search = "vitor observer:<64-hex>"))
+
+    // Or supply the lens out-of-band (how a relay passes the NIP-42 login):
+    // searches rank through it, plain filters become trusted-only feeds (the
+    // observer gate — newest first, below-floor authors dropped; include:spam
+    // opts a query out), and an explicit observer: token overrides it.
+    withContext(StoreQueryContext(setOf(authedPubkey))) {
+        store.query<Event>(Filter(kinds = listOf(0), search = "vitor"))
+    }
 }
 ```
 
 For a commit snapshot, JitPack works:
 `com.github.vitorpamplona.vespa-eventstore:store:<commit>`.
 
-## Two things to know
+## Three things to know
 
+- **Supplying an observer gates recall.** A query with a resolved observer —
+  `observer:` token or `StoreQueryContext` — only returns authors that lens
+  trusts at the floor or above, plain filters included (newest-first order is
+  kept). Don't pass a lens on reads that must see everything; `include:spam`
+  opts a single query out. On a serving cluster whose schema predates the
+  gate's rank profiles, the gate fails open (plain ungated recall) until the
+  schema is redeployed — `deployIfAbsent` never redeploys on its own.
 - **The store never verifies signatures.** It stores whatever you hand it — signed
   events *and* unsigned rumors (NIP-59 inner events, drafts). Verifying signed
   network input is the caller's job, at ingress.

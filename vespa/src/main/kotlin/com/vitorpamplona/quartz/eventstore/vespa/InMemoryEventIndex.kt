@@ -34,6 +34,10 @@ import com.vitorpamplona.quartz.utils.Hex
  * Search-term matching is a naive case-insensitive substring over the derived
  * search fields — recall-equivalent for tests (docs with no search fields are
  * invisible to search, like SQLite's FTS table); real ranking is Vespa's job.
+ * That includes the observer gate: [EventQuery.minRank]/[EventQuery.observer]
+ * are ignored here (the reference holds no trust scores), so gated queries
+ * recall UNGATED, newest first — tests of the gate's engine-side dropping
+ * belong against real Vespa, not this reference.
  */
 class InMemoryEventIndex(
     // Test hook: exercise the bulk path's putIfNewer branch (the address-keyed

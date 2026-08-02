@@ -47,12 +47,16 @@ import com.vitorpamplona.quartz.utils.Hex
  *    pick the rank profile: trust order, verified-follower-count order, or
  *    pure text — the first two within match tiers. With no terms this is a
  *    match-all in that order.
- *  - `filter:rank:gte:N` / `filter:rank:gt:N` set the observer trust floor
- *    (rank_filtered when no sort chose a profile — text order, gated).
- *  - `include:spam` turns OFF the default trust floor. Every ranked query is
- *    otherwise gated at [DEFAULT_MIN_RANK], and include:spam is its inverse.
- *    Plain filter REQs (no terms, no sort) are never gated: that recall belongs
- *    to NIP-01, not to search.
+ *  - `filter:rank:gte:N` / `filter:rank:gt:N` raise the observer trust floor
+ *    from [DEFAULT_MIN_RANK] to N without changing the order: whatever profile
+ *    the query resolves to keeps its ranking, gated at N. The profile is NOT
+ *    chosen here — plain shapes stay ranking-null so the store can pick the
+ *    gated-recall profile once the out-of-band observer is known.
+ *  - `include:spam` turns OFF the default trust floor. Every observer-lensed
+ *    query is otherwise gated at [DEFAULT_MIN_RANK] — searches here, plain
+ *    recall by the store's observer gate (NostrSemanticsStore) — and
+ *    include:spam is the inverse of both, so it rides along as
+ *    [EventQuery.includeSpam].
  *  - `observer:<64-hex>` names the pubkey whose web-of-trust ranks the hits.
  *    It is the query-side way to pick the ranking lens (the relay otherwise
  *    supplies it from the NIP-42 connection); a non-hex value is ignored. With
@@ -81,8 +85,13 @@ internal fun Filter.toEventQuery(): EventQuery? {
         limit = limit,
         search = terms,
         observer = observer,
-        ranking = sort ?: floor?.let { EventYql.RANK_FILTERED },
+        // A floor is just a floor: the profile stays whatever the query's shape
+        // selects (minRank carries N). The no-terms case resolves in the store,
+        // where the out-of-band observer is known — see the observer gate in
+        // NostrSemanticsStore.
+        ranking = sort,
         minRank = floor ?: if (ranked && !parsed.includeSpam) DEFAULT_MIN_RANK else null,
+        includeSpam = parsed.includeSpam,
     )
 }
 

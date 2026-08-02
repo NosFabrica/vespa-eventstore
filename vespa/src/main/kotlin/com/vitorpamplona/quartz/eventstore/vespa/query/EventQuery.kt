@@ -51,22 +51,33 @@ data class EventQuery(
     /** NIP-50 search term; null/blank = plain recall ordered by recency. */
     val search: String? = null,
     /**
-     * RANKING context, never recall: the 64-hex pubkey whose web-of-trust
-     * weighs search hits (the NIP-42-authenticated user, the NIP-50 `observer:`
-     * search token, or the operator's default). Only emitted alongside a search
-     * term, as the `user_q` ranking feature. When absent, a search falls back to
-     * pure-text relevance ([EventYql.RANK_TEXT]) and no trust gate is applied.
+     * The ranking lens: the 64-hex pubkey whose web-of-trust weighs and gates
+     * hits (the NIP-42-authenticated user, the NIP-50 `observer:` search
+     * token, or the operator's default). Emitted as the `user_q` ranking
+     * feature on every profile that reads trust — searches AND the gated
+     * plain-recall profiles ([EventYql.RANK_RECENCY_GATED]); never on
+     * unranked/recency recall. When absent, a search falls back to pure-text
+     * relevance ([EventYql.RANK_TEXT]) and no trust gate is applied anywhere —
+     * trust features fail open, not closed.
      */
     val observer: String? = null,
     /**
      * Rank-profile override (the NIP-50 `sort:` extension): one of the
      * schema's profiles — [EventYql.RANK_DESC] / [EventYql.RANK_ASC] /
      * [EventYql.RANK_FILTERED] / [EventYql.RANK_FOLLOWERS] /
-     * [EventYql.RANK_TEXT]. Null = the default ([EventYql.RANK_SEARCH] with a
-     * term, unranked recency without). A non-null ranking with no term is a
-     * trust-ordered match-all ("who does my observer rank highest").
+     * [EventYql.RANK_TEXT] / [EventYql.RANK_RECENCY_GATED]. Null = the default
+     * ([EventYql.RANK_SEARCH] with a term, unranked recency without). A
+     * non-null ranking with no term is a trust-ordered match-all ("who does my
+     * observer rank highest").
      */
     val ranking: String? = null,
+    /**
+     * NIP-50 `include:spam`: the query's opt-out from caller-applied default
+     * trust gates. The YQL builder ignores it — [minRank] is the actual gate —
+     * it exists so a caller resolving an out-of-band observer AFTER the filter
+     * mapping (NostrSemanticsStore's recall gate) can still honor the opt-out.
+     */
+    val includeSpam: Boolean = false,
     /**
      * The per-observer trust floor, emitted as query(min_rank). Every trust
      * profile gates on it, and the default profile's wot_mult() zeroes anything

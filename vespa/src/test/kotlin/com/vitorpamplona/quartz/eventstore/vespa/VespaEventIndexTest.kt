@@ -446,6 +446,54 @@ class VespaEventIndexTest {
         }
 
     /**
+     * The observer gate's hot path ("kind 1, limit 50, authenticated") rides
+     * the recency_gated match-phase profile, and its under-delivery must be
+     * rerun on recency_gated_exact — never served short. The mock's matcher
+     * doesn't emulate the trust gate (that is Vespa's job), so what this pins
+     * is the plumbing: the fast profile is sent, the degraded short page
+     * triggers exactly one exact rerun, and the served page is complete.
+     */
+    @Test
+    fun `gated match-phase under-delivery is rerun on the exact gated profile`() =
+        runBlocking {
+            seed(*(1..8).map { doc(kind = 1) }.toTypedArray())
+            mock.matchPhaseUnderdeliver = 2 // recency_gated answers 2 hits, degraded
+            try {
+                val q = EventQuery(kinds = listOf(1), limit = 6, ranking = EventYql.RANK_RECENCY_GATED, minRank = 2.0, observer = "ab".repeat(32))
+                assertEquals(
+                    reference.search(EventQuery(kinds = listOf(1), limit = 6)).map { it.id },
+                    index.search(q).map { it.id },
+                    "a short degraded gated page must be rerun on the exact gated profile, not served",
+                )
+            } finally {
+                mock.matchPhaseUnderdeliver = 0
+            }
+        }
+
+    /**
+     * A serving schema that predates the observer gate answers 400 to both
+     * gated profiles — the client must demote the query to plain ranking-free
+     * recall (FAIL-OPEN, the pre-gate behavior, recency profile and planner
+     * included), serve the REQ, and remember, never fail the caller.
+     */
+    @Test
+    fun `a missing gated profile demotes to plain recall instead of failing`() =
+        runBlocking {
+            seed(*(1..5).map { doc(kind = 1) }.toTypedArray())
+            mock.rejectGatedProfile = true
+            val fresh = VespaEventIndex(mock.url)
+            try {
+                val q = EventQuery(kinds = listOf(1), limit = 3, ranking = EventYql.RANK_RECENCY_GATED, minRank = 2.0, observer = "ab".repeat(32))
+                val expected = reference.search(EventQuery(kinds = listOf(1), limit = 3)).map { it.id }
+                assertEquals(expected, fresh.search(q).map { it.id }, "first query (flips the flag)")
+                assertEquals(expected, fresh.search(q).map { it.id }, "second query (already demoted)")
+            } finally {
+                mock.rejectGatedProfile = false
+                fresh.close()
+            }
+        }
+
+    /**
      * The engine sorts by created_at ONLY (the id tiebreak cost UCA collation
      * over the whole match set); the client restores exact
      * `created_at desc, id asc` order — INCLUDING boundary-tie membership

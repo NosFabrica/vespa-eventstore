@@ -804,11 +804,67 @@ schema event {
     # (-1e6) drop it; real scores stay far above the sentinel.
     # -----------------------------------------------------------------------
 
-    # filter:rank only (no sort): keep the pure-text order, drop low-trust.
+    # Text order with the trust floor applied. The store's filter mapping no
+    # longer selects this (with terms the floor rides the query's own profile;
+    # without terms recall is served chronologically by recency_gated below) —
+    # kept for direct EventQuery API users.
     rank-profile rank_filtered inherits text_relevance {
         first-phase {
             expression: if(user_score() >= query(min_rank), relevance(), -1000000000.0)
             rank-score-drop-limit: -1000000.0
+        }
+    }
+
+    # Observer-gated plain recall: NIP-01 recency order, low-trust dropped.
+    # The store stamps recency_gated on every non-search query with a resolved
+    # observer (include:spam opts out) and on the no-terms filter:rank
+    # match-all. The score IS created_at, so relevance order = newest first;
+    # the sentinel / drop-limit pair removes below-floor authors engine-side.
+    # Real timestamps (~1.7e9) sit far above the drop limit, so no live hit is
+    # ever dropped by accident.
+    #
+    # recency_gated_exact is the full-scan variant: every match the filter
+    # touches is gated and scored. Exact for every shape, but a bare gated
+    # feed query pays ~100ms per million candidate postings — so it serves as
+    # the fallback and the unlimited/deep-pagination shape, not the hot path.
+    #
+    # STANDALONE, not inheriting text_relevance: these are the only trust
+    # profiles serving TERMLESS queries on the hot feed path, and inheriting
+    # would carry text_relevance's 16 match-features — computed and serialized
+    # PER HIT for a query that has no text at all (several even reference
+    # query item labels a termless query never emits). The two inputs below
+    # therefore mirror text_relevance's declarations — same tensor type, same
+    # fail-open min_rank default (below every real score) — keep them in sync.
+    rank-profile recency_gated_exact {
+        inputs {
+            query(user_q) tensor<float>(user{})
+            query(min_rank) double: -1000000000.0
+        }
+
+        function user_score() {
+            expression: sum(query(user_q) * attribute(author_influence_scores))
+        }
+
+        first-phase {
+            expression: if(user_score() >= query(min_rank), attribute(created_at), -1000000000.0)
+            rank-score-drop-limit: -1000000.0
+        }
+    }
+
+    # recency_gated: the hot-path variant for the dominant REQ shape ("kind 1,
+    # limit 50, authenticated"). The match-phase keeps only the ~max-hits
+    # newest candidates per node BEFORE the gate runs, so the cost matches the
+    # ungated recency profile instead of ranking every posting. If fewer than
+    # `limit` trusted hits survive among the kept candidates the response
+    # arrives match-phase-degraded and the client reruns on
+    # recency_gated_exact — degradation can cost a second query, never a
+    # result (see VespaEventIndex.recallRoot). max-hits mirrors the recency
+    # profile and is PER CONTENT NODE.
+    rank-profile recency_gated inherits recency_gated_exact {
+        match-phase {
+            attribute: created_at
+            order: descending
+            max-hits: 20000
         }
     }
 

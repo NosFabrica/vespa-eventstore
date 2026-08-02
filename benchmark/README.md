@@ -23,6 +23,16 @@ measures what the emitted query actually does:
   (`searchScored`). This is also what proves the schema — the second-phase
   `fieldMatch` features included — actually deploys. Run with `-Pintegration`.
 
+- **`ObserverGateIT`** (test, `@Tag("integration")`) — the observer gate
+  against a real Vespa: proves both gated profiles (`recency_gated` with its
+  match-phase, `recency_gated_exact`) deploy, that the gate drops exactly the
+  authors below `min_rank` (unranked ones included) while keeping newest-first
+  order on both variants, that an explicit floor moves the cut, and that the
+  lens-less query still recalls everything. Also prints the median latency of
+  the dominant relay shape ("kind 1, limit 50") anonymous vs gated over a
+  10k-note corpus — informational; run it against a staging cluster for real
+  numbers. Run with `-Pintegration`.
+
 - **`rankAb`** (main) — A/Bs ranking knobs against a LIVE Vespa with
   per-request `ranking.features.query(...)` overrides: no deploy, no reindex,
   no re-feed. The YQL comes from `EventYql` itself, so it is byte-identical to
