@@ -123,6 +123,42 @@ class FilterMappingTest {
     }
 
     @Test
+    fun `minus terms become exclusions, not search words`() {
+        val q = map("cat -dog")
+        assertEquals("cat", q.search)
+        assertEquals(listOf("dog"), q.notSearch)
+        assertEquals(DEFAULT_MIN_RANK, q.minRank, "the positive term still ranks (and spam-filters) as usual")
+    }
+
+    @Test
+    fun `an exclusion-only query is plain recall minus the words`() {
+        val q = map("-spam -scam")
+        assertNull(q.search, "no positive terms: nothing to rank")
+        assertEquals(listOf("spam", "scam"), q.notSearch)
+        assertNull(q.ranking)
+        assertNull(q.minRank, "plain recall: the observer gate, not the search floor, decides")
+    }
+
+    @Test
+    fun `minus edge cases — lone dash, unindexable word, mid-word hyphens`() {
+        assertEquals("-", map("-").search, "a lone dash is a term (never-matching), not syntax")
+        assertTrue(map("-").notSearch.isEmpty())
+        assertEquals("cat", map("cat -⚡").search)
+        assertTrue(map("cat -⚡").notSearch.isEmpty(), "an exclusion no index can hold excludes nothing")
+        assertEquals("e-cash", map("e-cash").search, "mid-word hyphens are not exclusions")
+        assertEquals(listOf("e-cash"), map("-e-cash").notSearch, "…but a leading dash flips the whole term")
+        assertNull(map("-e-cash").search)
+    }
+
+    @Test
+    fun `exclusions ride beside extensions`() {
+        val q = map("-nsfw sort:rank")
+        assertEquals(listOf("nsfw"), q.notSearch)
+        assertEquals(EventYql.RANK_DESC, q.ranking, "a sorted match-all, minus the word")
+        assertEquals(DEFAULT_MIN_RANK, q.minRank, "an explicit sort is ranked, so the default floor applies")
+    }
+
+    @Test
     fun `plain filters are never trust-gated`() {
         val none = Filter(kinds = listOf(1)).toEventQuery()!!
         assertNull(none.search)

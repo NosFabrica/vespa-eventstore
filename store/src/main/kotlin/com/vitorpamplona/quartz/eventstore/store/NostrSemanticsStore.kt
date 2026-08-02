@@ -89,7 +89,8 @@ import kotlin.coroutines.coroutineContext
  *    schema's per-kind search fields. [reindexFullTextSearch] re-derives them
  *    after extractor/Quartz upgrades. Per the [IEventStore] contract, filters
  *    arrive with `search` VERBATIM — this store interprets the
- *    `sort:`/`filter:rank:`/`include:spam`/`observer:` extensions itself and
+ *    `sort:`/`filter:rank:`/`include:spam`/`observer:` extensions and the
+ *    `-word` exclusion syntax itself and
  *    ignores ones it doesn't know. A resolved observer (token or
  *    [StoreQueryContext]) also trust-gates PLAIN recall — the observer gate,
  *    see [toExpiryQuery].

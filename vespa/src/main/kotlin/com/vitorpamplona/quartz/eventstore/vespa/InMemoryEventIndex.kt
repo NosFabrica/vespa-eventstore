@@ -133,7 +133,11 @@ class InMemoryEventIndex(
                 (q.until == null || d.createdAt <= q.until) &&
                 (q.expiresBefore == null || (d.expiresAt()?.let { it < q.expiresBefore } == true)) &&
                 (q.notExpiredAt == null || (d.expiresAt() ?: EventDoc.NO_EXPIRATION) > q.notExpiredAt) &&
-                (q.search.isNullOrBlank() || d.search.matches(q.search.trim()))
+                (q.search.isNullOrBlank() || d.search.matches(q.search.trim())) &&
+                // Exclusions are exact-token (SearchFields.excludedBy), never
+                // the loose substring the positive side allows — mirroring the
+                // engine, where only the exact matcher can exclude.
+                q.notSearch.none { d.search.excludedBy(it) }
         }
     }
 

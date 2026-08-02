@@ -108,6 +108,44 @@ data class SearchFields(
     }
 
     /**
+     * Exclusion check for the in-memory reference ([EventQuery.notSearch] —
+     * `-word`): true when [word]'s folded tokens appear ADJACENTLY in some
+     * field. Unlike [matches] this deliberately mirrors ONLY the engine's
+     * exact side — whole tokens (split at non-alphanumerics), folded like the
+     * index (NearText.fold), no substring reach: the YQL excludes on a plain
+     * phrase term, so "-ode" must NOT drop a doc whose text merely contains
+     * "model", while the adjacency requirement keeps a punctuated exclusion
+     * ("-e-cash") one unit, as the phrase grammar does. Residual divergences
+     * (Vespa's stemming can exclude an inflected form this keeps; its CJK
+     * segmenter splits runs this treats as one token) are accepted — the same
+     * reason NIP-50 recall is excluded from strict parity.
+     */
+    fun excludedBy(word: String): Boolean {
+        val wanted = tokensOf(NearText.fold(word))
+        if (wanted.isEmpty()) return false
+        return fields().values.any { value ->
+            val have = tokensOf(NearText.fold(value))
+            (0..have.size - wanted.size).any { at -> wanted.indices.all { have[at + it] == wanted[it] } }
+        }
+    }
+
+    /** Maximal letter/digit runs — the reference's stand-in for the engine's tokenizer. */
+    private fun tokensOf(s: String): List<String> {
+        val out = ArrayList<String>()
+        val cur = StringBuilder()
+        for (c in s) {
+            if (c.isLetterOrDigit()) {
+                cur.append(c)
+            } else if (cur.isNotEmpty()) {
+                out += cur.toString()
+                cur.clear()
+            }
+        }
+        if (cur.isNotEmpty()) out += cur.toString()
+        return out
+    }
+
+    /**
      * The near-tier attribute arrays (event.sd: prefix/fuzzy match targets),
      * derived from the searchable text via [NearText] — folded, split at two
      * granularities, merged across the fields nothing downstream needs to

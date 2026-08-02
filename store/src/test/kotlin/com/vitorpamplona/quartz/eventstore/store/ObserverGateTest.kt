@@ -107,6 +107,17 @@ class ObserverGateTest {
     }
 
     @Test
+    fun `an exclusion-only search is plain recall to the gate`() {
+        // "-word" leaves no positive terms, so the mapping hands the store
+        // search=null — and the recall gate must own it like any plain filter.
+        val q = captured(Filter(kinds = listOf(1), search = "-spamword"), observer = hex)
+        assertEquals(EventYql.RANK_RECENCY_GATED, q.ranking)
+        assertEquals(DEFAULT_MIN_RANK, q.minRank)
+        assertEquals(listOf("spamword"), q.notSearch)
+        assertNull(q.search)
+    }
+
+    @Test
     fun `no observer resolved means no gate`() {
         val q = captured(Filter(kinds = listOf(1)))
         assertNull(q.ranking)

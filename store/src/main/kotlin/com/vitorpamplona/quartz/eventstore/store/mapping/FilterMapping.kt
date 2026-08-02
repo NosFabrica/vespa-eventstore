@@ -62,6 +62,16 @@ import com.vitorpamplona.quartz.utils.Hex
  *    supplies it from the NIP-42 connection); a non-hex value is ignored. With
  *    no observer resolved, a search degrades to pure-text relevance.
  *
+ * One piece of TERM-level syntax rides beside the extensions (which are all
+ * `key:value` tokens Quartz splits off): a term starting with `-` is an
+ * EXCLUSION — Google's `-word` — and becomes [EventQuery.notSearch] instead
+ * of a search word. Exclusion is exact-match only (see the field's KDoc); a
+ * `-` on a word with nothing the index can hold (`-⚡`) excludes nothing and
+ * is dropped. A query of ONLY exclusions has no ranking terms, so it is plain
+ * recall minus the words — newest first, and the store's observer gate
+ * applies to it exactly as to any plain filter. A lone `-` is not syntax and
+ * stays a (never-matching) term, as before.
+ *
  * Unknown extensions are ignored. A query that is nothing but extensions becomes
  * unconstrained (null terms), not match-nothing.
  */
@@ -69,7 +79,15 @@ internal fun Filter.toEventQuery(): EventQuery? {
     if (ids?.isEmpty() == true || authors?.isEmpty() == true || kinds?.isEmpty() == true) return null
     if (tags?.values?.any { it.isEmpty() } == true || tagsAll?.values?.any { it.isEmpty() } == true) return null
     val parsed = SearchQuery.parse(search)
-    val terms = parsed.terms.ifEmpty { null }
+    // `-word` exclusions split off the terms HERE, not in the engine: at the
+    // EventQuery seam a search word is always a requirement, never syntax —
+    // so the pure-negative case arrives engine- and store-side with
+    // search=null and takes every plain-recall path (the observer gate, the
+    // unranked profile) instead of masquerading as a ranked search.
+    val tokens = parsed.terms.split(WHITESPACE).filter { it.isNotEmpty() }
+    val (excluded, included) = tokens.partition { it.length > 1 && it[0] == '-' }
+    val notTerms = excluded.map { it.trimStart('-') }.filter { w -> w.any(Char::isLetterOrDigit) }
+    val terms = included.joinToString(" ").ifEmpty { null }
     val sort = parsed.extensions["sort"]?.let(::rankReputationOf)
     val floor = parsed.extensions["filter"]?.let(::rankFloorOf)
     val observer = parsed.extensions["observer"]?.lowercase()?.takeIf(Hex::isHex64)
@@ -84,6 +102,7 @@ internal fun Filter.toEventQuery(): EventQuery? {
         until = until,
         limit = limit,
         search = terms,
+        notSearch = notTerms,
         observer = observer,
         // A floor is just a floor: the profile stays whatever the query's shape
         // selects (minRank carries N). The no-terms case resolves in the store,
@@ -101,6 +120,9 @@ internal fun Filter.toEventQuery(): EventQuery? {
  * spam-filtered out unless the query says `include:spam`.
  */
 const val DEFAULT_MIN_RANK = 2.0
+
+/** Term splitter for the `-word` scan (the engine's own WHITESPACE is module-internal). */
+private val WHITESPACE = Regex("\\s+")
 
 /** `sort:` value -> rank profile; null (ignored) for values we don't recognize. */
 private fun rankReputationOf(value: String): String? =

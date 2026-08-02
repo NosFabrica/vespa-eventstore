@@ -164,6 +164,32 @@ class VespaEventIndexTest {
         check(EventQuery(kinds = listOf(0, 1), tags = mapOf("p" to listOf(bob)), until = 9000))
         check(EventQuery(notKinds = listOf(0, 30382)))
         check(EventQuery(notKinds = listOf(0, 30382), authors = listOf(bob)))
+        check(EventQuery(search = "vitor", notSearch = listOf("pamplona")))
+        check(EventQuery(notSearch = listOf("vitor")))
+    }
+
+    @Test
+    fun `notSearch drops exact word hits and nothing looser`() {
+        val vitor = doc(kind = 0, search = SearchFields(name = "vitor", about = "pamplona dev"))
+        val model = doc(kind = 0, search = SearchFields(name = "vitor", about = "model builder"))
+        val jose = doc(kind = 0, search = SearchFields(name = "José"))
+        val unsearchable = doc(kind = 1, content = "pamplona pamplona", search = SearchFields.NONE)
+        seed(vitor, model, jose, unsearchable)
+        runBlocking {
+            // The exclusion drops the exact word, wherever it sits on the doc.
+            assertEquals(listOf(model.id), index.search(EventQuery(search = "vitor", notSearch = listOf("pamplona"))).map { it.id })
+            // Exact-only: "-ode" is not a token of "model builder", so the
+            // substring reach the POSITIVE side has must not exclude here.
+            assertEquals(listOf(model.id), index.search(EventQuery(search = "model", notSearch = listOf("ode"))).map { it.id })
+            // Folded like the index: an unaccented exclusion reaches the accented name.
+            assertTrue(index.search(EventQuery(kinds = listOf(0), notSearch = listOf("jose"))).none { it.id == jose.id })
+            // Exclusion-only = plain recall minus the word, and docs invisible
+            // to search (no search fields) contain no word — never excluded.
+            assertEquals(
+                listOf(unsearchable.id, jose.id, model.id).sorted(),
+                index.search(EventQuery(notSearch = listOf("pamplona"))).map { it.id }.sorted(),
+            )
+        }
     }
 
     /**

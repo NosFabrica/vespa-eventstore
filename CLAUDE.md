@@ -60,7 +60,7 @@ The per-event `insert()` path pays admission-probe round trips; `batchInsert()` 
 
 ### Search
 
-Only kinds Quartz parses as `SearchableEvent` are searchable. `SearchExtractors` maps each kind to weighted fields (primary/secondary/body — the authoritative kind table is in README). Search-string extensions (`observer:`, `sort:rank`, `filter:rank:gte:N`, `include:spam`) are interpreted by the store; ranking profiles live in `event.sd`. When changing ranking: cases live in `benchmark/rank_cases.json` (add one for every reported bad search), A/B with `./gradlew :benchmark:rankAb` against a live Vespa (no redeploy needed), and `RankRegressionIT` must stay green.
+Only kinds Quartz parses as `SearchableEvent` are searchable. `SearchExtractors` maps each kind to weighted fields (primary/secondary/body — the authoritative kind table is in README). Search-string extensions (`observer:`, `sort:rank`, `filter:rank:gte:N`, `include:spam`, and the `-word` exclusion syntax) are interpreted by the store; ranking profiles live in `event.sd`. When changing ranking: cases live in `benchmark/rank_cases.json` (add one for every reported bad search), A/B with `./gradlew :benchmark:rankAb` against a live Vespa (no redeploy needed), and `RankRegressionIT` must stay green.
 
 ## Conventions
 

@@ -215,7 +215,7 @@ object EventYql {
         // Two-phase profiles only; the engine ignores it elsewhere.
         q.rerankCount?.let { params["ranking.rerankCount"] = it.toString() }
 
-        val where = if (clauses.isEmpty()) "true" else clauses.joinToString(" and ")
+        val where = whereOf(clauses)
         // No text and no rank profile = plain relay REQ semantics: newest
         // first, no scoring. Anything ranked keeps Vespa's score order.
         // (RANK_RECENCY is unranked-with-match-phase: same order contract.)
@@ -317,7 +317,7 @@ object EventYql {
         if (q.limit != null && q.limit <= 0) return null
         val params = LinkedHashMap<String, String>()
         val clauses = filterClauses(q, params) ?: return null
-        val where = if (clauses.isEmpty()) "true" else clauses.joinToString(" and ")
+        val where = whereOf(clauses)
         params["grouping.defaultMaxGroups"] = UNLIMITED_GROUPS
         params["grouping.defaultMaxHits"] = UNLIMITED_GROUPS
         return VespaQuery(
@@ -337,7 +337,7 @@ object EventYql {
      */
     const val GLOBAL_MAX_GROUPS = "grouping.globalMaxGroups"
 
-    /** The shared WHERE clauses (filters + optional search term); null when the filter provably matches nothing. */
+    /** The shared WHERE clauses (filters + optional search term + exclusions); null when the filter provably matches nothing. */
     private fun filterClauses(
         q: EventQuery,
         params: MutableMap<String, String>,
@@ -388,8 +388,41 @@ object EventYql {
             // Short queries lean harder on the trigram safety net.
             params["ranking.features.query(w_gram)"] = if (FuzzyWordGroup.leansOnGrams(matchable)) "8.0" else "2.0"
         }
+
+        // Exclusions ([EventQuery.notSearch]): one negated term per word,
+        // against the `default` fieldset (every search field at once), the
+        // word out-of-band like the positive side. Deliberately NOT the fuzzy
+        // word group — see the field's KDoc: exclusion must never out-reach
+        // what the user literally typed. grammar:"phrase" keeps a punctuated
+        // word ("e-cash") one adjacent unit instead of an anywhere-in-doc AND
+        // of its tokens; for a single token the two are identical. A word
+        // tokenization erased doc-side ("⚡") is the positive-side rule's
+        // mirror image with the opposite outcome: there the requirement was
+        // unsatisfiable (provably no match), here it is vacuous — no index
+        // holds the word, so no doc can be excluded by it, and the clause is
+        // simply dropped.
+        q.notSearch
+            .filter { w -> w.any(Char::isLetterOrDigit) }
+            .forEachIndexed { i, word ->
+                params["n$i"] = word
+                clauses += "!(({defaultIndex:\"default\",grammar:\"phrase\"}userInput(@n$i)))"
+            }
         return clauses
     }
+
+    /**
+     * The WHERE text for [clauses]. A negation-only list gets an explicit
+     * `true` companion: YQL's `!` is AND-NOT sugar, so a negation needs a
+     * positive side to subtract from — match-all, spelled out. (Reached by a
+     * query whose only constraints are exclusions: `notSearch`- or
+     * `notKinds`-only.)
+     */
+    private fun whereOf(clauses: List<String>): String =
+        when {
+            clauses.isEmpty() -> "true"
+            clauses.all { it.startsWith("!(") } -> (listOf("true") + clauses).joinToString(" and ")
+            else -> clauses.joinToString(" and ")
+        }
 
     /**
      * One tag constraint: values joined with [op] ("or" = NIP-01 tags, "and" =

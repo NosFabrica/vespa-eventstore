@@ -330,6 +330,27 @@ open class NostrSemanticsStoreTest {
             assertEquals(0, store.query<Event>(Filter(search = "⚡")).size)
         }
 
+    /** `-word` (FilterMapping): a leading minus flips a term into an exclusion. */
+    @Test
+    fun `a minus term excludes its word from the search`() =
+        runBlocking {
+            store.insert(metadata(name = "Vitor Pamplona"))
+            val plain = MetadataEvent(id(), bob, next(), emptyArray(), """{"name":"Vitor"}""", "")
+            store.insert(plain)
+            store.insert(note(content = "vitor pamplona in a plain note"))
+
+            assertEquals(listOf(plain.id), store.query<Event>(Filter(search = "vitor -pamplona")).map { it.id })
+            // Exclusion-only: plain recall minus the word — and the kind-1
+            // note comes back too, because an event search can't see holds
+            // no word to exclude on (its content is invisible both ways).
+            assertEquals(2, store.query<Event>(Filter(search = "-pamplona")).size)
+            assertEquals(
+                listOf(bob),
+                store.query<Event>(Filter(kinds = listOf(MetadataEvent.KIND), search = "-pamplona")).map { it.pubKey },
+            )
+            assertEquals(3, store.query<Event>(Filter(search = "-nowhere")).size, "an absent word excludes nothing")
+        }
+
     /** EventIndexesModule pubkey_owner_hash: a gift-wrap is OWNED by its p-tag recipient. */
     @Test
     fun `gift wraps obey their recipient not their signer`() =
