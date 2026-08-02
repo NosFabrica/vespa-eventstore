@@ -44,6 +44,7 @@ A [Vespa](https://vespa.ai)-backed [Quartz](https://github.com/vitorpamplona/ame
 - **NIP-50 Full Text Search**
     - Banded BM25 relevance (match-quality tiers, IDF weighting, trigram typo-recall) ranks results.
     - Observer-centric ranking weights results by NIP-85 user scores.
+    - The observer gate: a resolved observer turns plain recall into a trusted-only feed (`include:spam` opts out).
     - Indexes are updated on replaceables, deletions, vanishes, and expirations.
 
 - **NIP-77 Negentropy**
@@ -77,16 +78,23 @@ context observer: scores are public, so any client may rank through any lens.
 Every behavior below keys off the *resolved* observer, whichever source it came
 from — on an authenticated connection, `pizza` behaves like
 `pizza observer:<your-hex>`, and `sort:text` is how that connection opts back
-out of personalization. A resolved observer never touches plain NIP-01 filters,
-though: with no terms and no `sort:`/`filter:` token the query stays unranked
-and the lens is ignored, so logging in cannot shrink a regular feed.
+out of personalization.
+
+**The observer gate.** Supplying an observer — either way — opts the *whole
+request* into that lens, plain NIP-01 filters included: non-search queries keep
+their newest-first order but drop authors the observer trusts below the floor
+(2 by default, `filter:rank:` to move it, `include:spam` to lift it). Recall
+without a resolved observer is never gated — an anonymous REQ sees everything —
+and sync paths (negentropy snapshots, internal sweeps) never resolve one.
 
 How they combine (`<hex>` = a 64-hex observer pubkey; the examples assume no
 context observer, so the token is the only source):
 
 | Example `search` string | What you get |
 |---|---|
-| *(no `search` field)* | Plain NIP-01: newest first, no ranking, never trust-gated. |
+| *(no `search` field)* | Plain NIP-01: newest first, no ranking, no gate. |
+| `observer:<hex>` *(no terms)* | The observer gate: newest first, but only authors the observer trusts ≥ 2. (An authenticated connection gets this on every plain filter without any search string.) |
+| `include:spam` *(no terms)* | Opts a plain filter back out of the gate — full ungated recall even with an observer resolved. |
 | `pizza` | Pure text relevance — no observer resolved, so no trust and no spam floor. |
 | `pizza observer:<hex>` | **The default:** text score × the observer's web-of-trust curve; authors below trust 2 dropped as spam. |
 | `pizza observer:<hex> include:spam` | Same order, floor off — low-trust authors rank low instead of disappearing. |
@@ -95,7 +103,7 @@ context observer, so the token is the only source):
 | `pizza observer:<hex> sort:followers` | Token matches first, most-followed authors first inside each tier. |
 | `pizza sort:text` | Pure text relevance even when an observer resolved (token or connection) — the un-personalized view. |
 | `sort:rank observer:<hex>` | No terms: the trust firehose — everything, ordered by author trust. |
-| `filter:rank:gte:50 observer:<hex>` | No terms: everything from authors the observer trusts at ≥ 50. |
+| `filter:rank:gte:50 observer:<hex>` | No terms: newest-first feed of authors the observer trusts at ≥ 50. |
 
 ## What's searchable
 
@@ -244,9 +252,10 @@ VespaEventStore.open("http://localhost:8080").use { store ->
     store.query<Event>(Filter(kinds = listOf(0), search = "vitor observer:<64-hex>"))
 
     // Or supply the lens out-of-band (how a relay passes the NIP-42 login):
-    // every ranked query in the block ranks through it, an explicit observer:
-    // token overrides it, and plain filters ignore it — recall is never gated.
-    withContext(StoreQueryContext(observer = authedPubkey)) {
+    // searches rank through it, plain filters become trusted-only feeds (the
+    // observer gate — newest first, below-floor authors dropped; include:spam
+    // opts a query out), and an explicit observer: token overrides it.
+    withContext(StoreQueryContext(setOf(authedPubkey))) {
         store.query<Event>(Filter(kinds = listOf(0), search = "vitor"))
     }
 }
@@ -255,8 +264,13 @@ VespaEventStore.open("http://localhost:8080").use { store ->
 For a commit snapshot, JitPack works:
 `com.github.vitorpamplona.vespa-eventstore:store:<commit>`.
 
-## Two things to know
+## Three things to know
 
+- **Supplying an observer gates recall.** A query with a resolved observer —
+  `observer:` token or `StoreQueryContext` — only returns authors that lens
+  trusts at the floor or above, plain filters included (newest-first order is
+  kept). Don't pass a lens on reads that must see everything; `include:spam`
+  opts a single query out.
 - **The store never verifies signatures.** It stores whatever you hand it — signed
   events *and* unsigned rumors (NIP-59 inner events, drafts). Verifying signed
   network input is the caller's job, at ingress.

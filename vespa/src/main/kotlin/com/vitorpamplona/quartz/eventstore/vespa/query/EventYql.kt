@@ -46,8 +46,19 @@ object EventYql {
     /** Pure text relevance, no trust (`sort:text`). */
     const val RANK_TEXT = "text"
 
-    /** Trust-gated match-all (`filter:rank:…` with no terms and no sort — with terms the floor rides the selected profile). */
+    /** Text order with the trust floor applied. No longer selected by the store's filter mapping (the floor rides the query's own profile); kept for direct API use. */
     const val RANK_FILTERED = "rank_filtered"
+
+    /**
+     * NIP-01 recency order with the trust floor applied: score IS created_at,
+     * below-floor authors are dropped. The store stamps this on plain (non-
+     * search) recall when an observer resolves — the always-on spam gate for
+     * feeds — and on the no-terms `filter:rank:` match-all. Deliberately
+     * excluded from the recency match-phase profile and the count-probe
+     * planner: both prove "newest N candidates ⊇ top N results" against the
+     * UNGATED match set, and the gate breaks that argument.
+     */
+    const val RANK_RECENCY_GATED = "recency_gated"
 
     /** Trust-sorted within each match tier, descending (`sort:rank`). */
     const val RANK_DESC = "rank_desc"

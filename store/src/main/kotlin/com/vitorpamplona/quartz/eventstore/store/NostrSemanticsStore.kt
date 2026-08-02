@@ -23,6 +23,7 @@ package com.vitorpamplona.quartz.eventstore.store
 import com.vitorpamplona.quartz.eventstore.store.ingest.BulkMixedInsert
 import com.vitorpamplona.quartz.eventstore.store.ingest.BulkRecordInsert
 import com.vitorpamplona.quartz.eventstore.store.ingest.GuardOwners
+import com.vitorpamplona.quartz.eventstore.store.mapping.DEFAULT_MIN_RANK
 import com.vitorpamplona.quartz.eventstore.store.mapping.SearchExtractors
 import com.vitorpamplona.quartz.eventstore.store.mapping.VespaText
 import com.vitorpamplona.quartz.eventstore.store.mapping.addressOrNull
@@ -271,19 +272,45 @@ class NostrSemanticsStore(
     /**
      * Map a filter to an [EventQuery] stamped with the request's expiry cutoff
      * (NIP-40 — one [cutoffSecs] per request, so sibling filters can't disagree
-     * about an event expiring on the boundary) and, for searches, the ranking
-     * observer. An explicit `observer:` search token wins over the connection
-     * [observer] — a client may ask to rank through any lens (scores are
-     * public), so the query's own choice takes precedence over the
-     * authenticated default.
+     * about an event expiring on the boundary) and the ranking observer. An
+     * explicit `observer:` search token wins over the connection [observer] — a
+     * client may ask to rank through any lens (scores are public), so the
+     * query's own choice takes precedence over the authenticated default.
+     *
+     * THE OBSERVER GATE: supplying an observer (either way) opts the whole
+     * request into that lens — including plain recall. A non-search query with
+     * a resolved observer keeps its NIP-01 recency order but drops authors
+     * below the trust floor ([EventQuery.minRank] if the query set one via
+     * `filter:rank:…`, else [DEFAULT_MIN_RANK]); `include:spam` opts a query
+     * back out. Queries that chose a profile (`sort:`) or carry terms already
+     * gate through their own profile and are left alone. Reads that never
+     * resolve an observer (negentropy snapshots, internal sweeps, anonymous
+     * connections) are untouched — recall without a lens is never gated.
      */
     private fun Filter.toExpiryQuery(
         cutoffSecs: Long,
         observer: String? = null,
-    ): EventQuery? = toEventQuery()?.let { it.copy(notExpiredAt = cutoffSecs, observer = it.observer ?: observer) }
+    ): EventQuery? =
+        toEventQuery()?.let {
+            val q = it.copy(notExpiredAt = cutoffSecs, observer = it.observer ?: observer)
+            if (q.observer != null && q.search == null && q.ranking == null && !q.includeSpam) {
+                q.copy(ranking = EventYql.RANK_RECENCY_GATED, minRank = q.minRank ?: DEFAULT_MIN_RANK)
+            } else {
+                q
+            }
+        }
 
-    /** Whether this query's results carry engine ranking order (NIP-50) instead of NIP-01 recency. */
+    /** Whether this query recalls through a rank profile (its trust gates apply engine-side). */
     private fun EventQuery.isRanked(): Boolean = search != null || ranking != null
+
+    /**
+     * Whether the ENGINE's hit order is the serving order. Ranked queries keep
+     * relevance order (NIP-50) — except the observer gate's profile, whose
+     * order is defined as NIP-01 recency: the engine's created_at score order
+     * is re-sorted client-side so the page honors the exact
+     * `created_at desc, id asc` contract (engine score ties are arbitrary).
+     */
+    private fun EventQuery.keepsEngineOrder(): Boolean = isRanked() && ranking != EventYql.RANK_RECENCY_GATED
 
     override suspend fun <T : Event> query(filter: Filter): List<T> = query(listOf(filter))
 
@@ -320,12 +347,12 @@ class NostrSemanticsStore(
                 1 -> listOf(searchOne(queries[0]))
                 else -> queries.mapBounded(QUERY_FANOUT) { searchOne(it) }
             }
-        if (queries.none { it.isRanked() }) {
+        if (queries.none { it.keepsEngineOrder() }) {
             val combined = results.flatten()
             val unique = if (queries.size > 1) combined.distinctBy(idOf) else combined
             return unique.sortedWith(newestFirst)
         }
-        val ordered = queries.zip(results).flatMap { (q, hits) -> if (q.isRanked()) hits else hits.sortedWith(newestFirst) }
+        val ordered = queries.zip(results).flatMap { (q, hits) -> if (q.keepsEngineOrder()) hits else hits.sortedWith(newestFirst) }
         return if (queries.size > 1) ordered.distinctBy(idOf) else ordered
     }
 

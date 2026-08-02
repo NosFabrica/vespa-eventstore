@@ -577,11 +577,13 @@ class VespaEventIndex(
      */
     private fun EventQuery.isBareRecencyScan(): Boolean =
         (limit ?: 0) > 0 &&
-            // An explicit rank profile (sort:rank / filter:rank extensions) is
-            // ordered by TRUST SCORE, not recency — the planner's "everything
-            // outside the window is older than everything inside" argument does
-            // not apply, and windowing one silently drops every higher-ranked
-            // older hit. Only ranking-free queries are recency scans. (This is
+            // An explicit rank profile is never a recency scan. Trust-sorted
+            // profiles (sort:rank) aren't recency-ordered at all — windowing
+            // one silently drops every higher-ranked older hit — and the
+            // recency_gated profile drops hits the count probe counted: a
+            // window proven full of MATCHES isn't proven full of ABOVE-FLOOR
+            // matches, so windowing it could starve a page while older trusted
+            // hits exist. Only ranking-free queries are recency scans. (This is
             // also the opt-out: internal reads stamp RANK_UNRANKED to skip the
             // planner — see NostrSemanticsStore.sweep.)
             ranking == null &&

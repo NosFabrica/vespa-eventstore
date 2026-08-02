@@ -339,6 +339,15 @@ class EventYqlTest {
     }
 
     @Test
+    fun `the observer gate profile carries the lens and floor, and owns the order`() {
+        val q = EventYql.build(EventQuery(kinds = listOf(1), ranking = EventYql.RANK_RECENCY_GATED, minRank = 2.0, observer = hexA))!!
+        assertEquals(EventYql.RANK_RECENCY_GATED, q.ranking)
+        assertEquals("{$hexA:1.0}", q.params["ranking.features.query(user_q)"])
+        assertEquals("2.0", q.params["ranking.features.query(min_rank)"])
+        assertFalse("order by" in q.yql, "the profile's created_at score is the order")
+    }
+
+    @Test
     fun `observer is ranking context only — never emitted for unranked recall`() {
         val unranked = EventYql.build(EventQuery(kinds = listOf(1), observer = hexA))!!
         assertTrue(unranked.params.isEmpty(), "no term, no profile: pure NIP-01 recall")

@@ -24,7 +24,9 @@ import com.vitorpamplona.quartz.eventstore.vespa.query.EventYql
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
  * The NIP-50 `search` string -> [com.vitorpamplona.quartz.eventstore.vespa.EventQuery]
@@ -44,10 +46,12 @@ class FilterMappingTest {
     }
 
     @Test
-    fun `include spam removes the default floor`() {
+    fun `include spam removes the default floor and rides the query`() {
         val q = map("vitor include:spam")
         assertEquals("vitor", q.search)
         assertNull(q.minRank)
+        assertTrue(q.includeSpam, "the opt-out survives the mapping for the store's observer gate")
+        assertFalse(map("vitor").includeSpam)
     }
 
     @Test
@@ -79,11 +83,11 @@ class FilterMappingTest {
     }
 
     @Test
-    fun `filter rank without terms is a trust-gated match-all`() {
+    fun `filter rank without terms leaves the profile to the store's observer gate`() {
         val q = map("filter:rank:gte:50")
         assertNull(q.search)
         assertEquals(50.0, q.minRank)
-        assertEquals(EventYql.RANK_FILTERED, q.ranking, "search can't score a no-text query, so the floor needs its own profile")
+        assertNull(q.ranking, "the gated-recall profile is stamped in the store, once the out-of-band observer is known")
     }
 
     @Test

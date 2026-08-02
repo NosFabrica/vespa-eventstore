@@ -62,11 +62,19 @@ data class EventQuery(
      * Rank-profile override (the NIP-50 `sort:` extension): one of the
      * schema's profiles — [EventYql.RANK_DESC] / [EventYql.RANK_ASC] /
      * [EventYql.RANK_FILTERED] / [EventYql.RANK_FOLLOWERS] /
-     * [EventYql.RANK_TEXT]. Null = the default ([EventYql.RANK_SEARCH] with a
-     * term, unranked recency without). A non-null ranking with no term is a
-     * trust-ordered match-all ("who does my observer rank highest").
+     * [EventYql.RANK_TEXT] / [EventYql.RANK_RECENCY_GATED]. Null = the default
+     * ([EventYql.RANK_SEARCH] with a term, unranked recency without). A
+     * non-null ranking with no term is a trust-ordered match-all ("who does my
+     * observer rank highest").
      */
     val ranking: String? = null,
+    /**
+     * NIP-50 `include:spam`: the query's opt-out from caller-applied default
+     * trust gates. The YQL builder ignores it — [minRank] is the actual gate —
+     * it exists so a caller resolving an out-of-band observer AFTER the filter
+     * mapping (NostrSemanticsStore's recall gate) can still honor the opt-out.
+     */
+    val includeSpam: Boolean = false,
     /**
      * The per-observer trust floor, emitted as query(min_rank). Every trust
      * profile gates on it, and the default profile's wot_mult() zeroes anything
