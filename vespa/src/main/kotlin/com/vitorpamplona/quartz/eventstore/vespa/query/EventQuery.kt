@@ -83,7 +83,7 @@ data class EventQuery(
      * profile gates on it, and the default profile's wot_mult() zeroes anything
      * below it. Set from NIP-50 `filter:rank:…`, or from the spam-filter
      * default — which `include:spam` LOWERS to 0 rather than removes: min_rank
-     * is also the ANCHOR of wot_mult()'s concave boost, so a trust-ranked
+     * is also the ANCHOR of wot_mult()'s trust curve, so a trust-ranked
      * query must always send some floor (0 = keep everything). Null here means
      * the schema's fail-open default (-1e9) applies, which no-ops the gates
      * but flattens the default profile's boost to a constant — trust stops
