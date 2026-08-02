@@ -138,7 +138,13 @@ class EventYqlTest {
         assertTrue("""({defaultIndex:"default",grammar:"phrase"}userInput(@p1))""" in q.yql, q.yql)
         assertEquals("new york", q.params["p0"])
         assertEquals("e-cash", q.params["p1"])
-        assertFalse("fuzzy(@p" in q.yql, "a quoted phrase is exact-only")
+        // Exact-only, proven by reference count: each phrase parameter appears
+        // in exactly its one pinned clause — no fuzzy/prefix/gram matcher may
+        // cite it anywhere else. (A bare `fuzzy(@p` absence check would also
+        // pass if phrases were wrongly routed through the word groups, which
+        // name their params @w…, so it proves nothing.)
+        assertEquals(1, Regex(Regex.escape("@p0")).findAll(q.yql).count())
+        assertEquals(1, Regex(Regex.escape("@p1")).findAll(q.yql).count())
 
         // A phrase-only query is a SEARCH: relevance-ranked, never recency recall.
         val alone = EventYql.build(EventQuery(phrases = listOf("new york")))!!
@@ -170,8 +176,10 @@ class EventYqlTest {
         assertTrue("""!(({defaultIndex:"default",grammar:"phrase"}userInput(@n1)))""" in q.yql, q.yql)
         assertEquals("dog", q.params["n0"])
         assertEquals("e-cash", q.params["n1"])
-        assertFalse("fuzzy(@n" in q.yql, "exclusion is exact-only")
-        assertFalse("prefix:true}@n" in q.yql, "exclusion is exact-only")
+        // Exact-only, proven by reference count (see the phrase test's note):
+        // each excluded word appears in exactly its one pinned negation.
+        assertEquals(1, Regex(Regex.escape("@n0")).findAll(q.yql).count())
+        assertEquals(1, Regex(Regex.escape("@n1")).findAll(q.yql).count())
         assertEquals(EventYql.RANK_TEXT, q.ranking, "the positive term still drives ranking; exclusions are pure filters")
     }
 

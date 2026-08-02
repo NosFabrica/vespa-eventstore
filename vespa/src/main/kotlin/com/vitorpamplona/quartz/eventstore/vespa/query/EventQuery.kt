@@ -55,7 +55,9 @@ data class EventQuery(
      * `"exact words"` syntax. Each entry must appear in some search field as
      * ADJACENT tokens, in order, matched exactly (one phrase-grammar term
      * over the `default` fieldset) with none of [search]'s prefix/fuzzy/typo
-     * reach — quoting a single word is the opt-out from fuzzy matching.
+     * reach — quoting a single word is the opt-out from fuzzy matching (but
+     * NOT from the schema's stemming on the prose fields: `"runs"` still
+     * matches "running" there — see the [notSearch] KDoc, same mechanics).
      * Phrases are positive search text: they make a query ranked exactly as
      * [search] terms do, so a phrase-only query is a relevance-ordered
      * search — unlike a [notSearch]-only one, which is plain recall. A
@@ -73,8 +75,14 @@ data class EventQuery(
      * negated tokenized term per word over the schema's `default` fieldset,
      * none of the prefix/fuzzy/trigram reach the positive side has — a loose
      * matcher can only over-exclude, and a hit wrongly dropped is invisible
-     * to the user in a way a wrongly kept one is not. Docs without search
-     * fields (kinds NIP-50 can't see) contain no word and are never excluded.
+     * to the user in a way a wrongly kept one is not. One looseness DOES
+     * ride along engine-side: the prose fields (about/search_text/… — see
+     * event.sd; the name-tier fields are `stemming: none`) index STEMMED
+     * tokens, so on those fields "-runs" also drops "running". That is
+     * index-side and unavoidable from the query (a `stem:false` term would
+     * stop matching even the exact word against a stemmed index); the
+     * in-memory reference does not model it. Docs without search fields
+     * (kinds NIP-50 can't see) contain no word and are never excluded.
      */
     val notSearch: List<String> = emptyList(),
     /**

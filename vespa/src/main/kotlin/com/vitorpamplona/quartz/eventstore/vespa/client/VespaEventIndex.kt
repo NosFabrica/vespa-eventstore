@@ -615,7 +615,15 @@ class VespaEventIndex(
                             exact.copy(since = maxOf(q.since ?: Long.MIN_VALUE, oldest))
                         }
 
-                        queryPlanning && exact.isBareRecencyScan() -> {
+                        // The shape test must lift the exactness stamp first:
+                        // isBareRecencyScan reads `ranking == null` as the
+                        // planner opt-out (see sweep), and `exact` always
+                        // carries RANK_UNRANKED here — testing it stamped made
+                        // this branch dead and every short page paid the full
+                        // scan. UNRANKED only: a gated short page must NOT be
+                        // windowed (the probes count the UNGATED match set),
+                        // exactly as the comment above promises.
+                        queryPlanning && exactRanking == EventYql.RANK_UNRANKED && exact.copy(ranking = null).isBareRecencyScan() -> {
                             planWindow(exact)
                         }
 

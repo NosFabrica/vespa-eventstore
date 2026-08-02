@@ -340,9 +340,11 @@ open class NostrSemanticsStoreTest {
             store.insert(note(content = "vitor pamplona in a plain note"))
 
             assertEquals(listOf(plain.id), store.query<Event>(Filter(search = "vitor -pamplona")).map { it.id })
-            // Exclusion-only: plain recall minus the word — and the kind-1
-            // note comes back too, because an event search can't see holds
-            // no word to exclude on (its content is invisible both ways).
+            // Exclusion-only: plain recall minus the word. The kind-1 fixture
+            // comes back too — but only because note() builds a BASE Event,
+            // which never implements SearchableEvent: no search fields, no
+            // word to exclude on. A real relayed kind 1 parses to
+            // TextNoteEvent, IS searchable, and WOULD be excluded here.
             assertEquals(2, store.query<Event>(Filter(search = "-pamplona")).size)
             assertEquals(
                 listOf(bob),

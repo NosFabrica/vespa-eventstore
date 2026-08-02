@@ -118,10 +118,13 @@ data class SearchFields(
      * index (NearText.fold), no substring reach: "-ode" must NOT drop a doc
      * whose text merely contains "model", and a quoted "ode" must not FIND
      * one, while adjacency keeps a punctuated unit ("e-cash") one phrase, as
-     * the grammar does. Residual divergences (Vespa's stemming can match an
-     * inflected form this misses; its CJK segmenter splits runs this treats
-     * as one token) are accepted — the same reason NIP-50 recall is excluded
-     * from strict parity.
+     * the grammar does. Residual divergences are accepted — the same reason
+     * NIP-50 recall is excluded from strict parity: Vespa's stemming on the
+     * prose fields cuts BOTH polarities loose of this check (a required
+     * "runs" can match "running" there, and — the sharper edge — "-runs" can
+     * EXCLUDE "running", over-excluding relative to this reference; see the
+     * EventQuery.notSearch KDoc), and its CJK segmenter splits runs this
+     * treats as one token.
      */
     fun containsPhrase(phrase: String): Boolean {
         val wanted = tokensOf(NearText.fold(phrase))

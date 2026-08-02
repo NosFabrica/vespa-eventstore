@@ -184,8 +184,9 @@ class SearchExactTextIT {
             createdAt = 1_700_000_000L + n,
             kind = 1,
             tags = emptyList(),
-            // The word under exclusion, deliberately: a kind search can't see
-            // holds no search fields, so it must never be excluded by it.
+            // The word under exclusion, deliberately: this doc carries NO
+            // search fields, so it holds no word and must never be excluded
+            // — however loudly its raw content shouts the excluded term.
             content = "pamplona pamplona",
             sig = "e".repeat(128),
         )

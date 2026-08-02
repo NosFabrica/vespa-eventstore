@@ -186,6 +186,39 @@ class FilterMappingTest {
     }
 
     @Test
+    fun `quotes are lifted before the extension pass — the closing quote survives`() {
+        // Quartz's extension pass is quote-blind: parsed AFTER it, the span's
+        // closing quote would vanish with the stripped `sort:rank"` token and
+        // the then-unclosed quote would swallow `-spam` into the phrase —
+        // flipping an exclusion into REQUIRED text. The audit's headline bug.
+        val q = map("\"pizza sort:rank\" -spam")
+        assertEquals(listOf("pizza sort:rank"), q.phrases, "the quoted span survives intact")
+        assertEquals(listOf("spam"), q.notSearch, "…and the exclusion stays an exclusion")
+        assertNull(q.search)
+        assertNull(q.ranking, "a quoted sort token is text, not a sort order")
+    }
+
+    @Test
+    fun `quotes protect extension-shaped tokens`() {
+        val q = map("\"sort:rank\" pizza sort:followers")
+        assertEquals(listOf("sort:rank"), q.phrases, "quoted: a phrase")
+        assertEquals(EventYql.RANK_FOLLOWERS, q.ranking, "unquoted: still an extension")
+        assertEquals("pizza", q.search)
+    }
+
+    @Test
+    fun `dashed edge cases — double dash and dash-prefixed extension shapes`() {
+        assertEquals(listOf("word"), map("--word").notSearch, "every leading dash strips")
+        // `-sort:rank` is NOT an extension (Quartz keys are strictly a-z), so
+        // it lands in the term scan and excludes the literal — there is no
+        // `-extension` syntax.
+        val q = map("-sort:rank pizza")
+        assertEquals(listOf("sort:rank"), q.notSearch)
+        assertNull(q.ranking)
+        assertEquals("pizza", q.search)
+    }
+
+    @Test
     fun `exclusions ride beside extensions`() {
         val q = map("-nsfw sort:rank")
         assertEquals(listOf("nsfw"), q.notSearch)

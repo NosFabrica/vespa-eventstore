@@ -214,8 +214,13 @@ class VespaEventIndexTest {
             // Exact-only: "-ode" is not a token of "model builder", so the
             // substring reach the POSITIVE side has must not exclude here.
             assertEquals(listOf(model.id), index.search(EventQuery(search = "model", notSearch = listOf("ode"))).map { it.id })
-            // Folded like the index: an unaccented exclusion reaches the accented name.
-            assertTrue(index.search(EventQuery(kinds = listOf(0), notSearch = listOf("jose"))).none { it.id == jose.id })
+            // Folded like the index: an unaccented exclusion reaches the accented
+            // name. Pinned as the full surviving SET — a none{} here would also
+            // pass on an exclusion that wrongly dropped everything.
+            assertEquals(
+                setOf(vitor.id, model.id),
+                index.search(EventQuery(kinds = listOf(0), notSearch = listOf("jose"))).map { it.id }.toSet(),
+            )
             // Exclusion-only = plain recall minus the word, and docs invisible
             // to search (no search fields) contain no word — never excluded.
             assertEquals(
