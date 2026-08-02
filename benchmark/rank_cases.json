@@ -45,6 +45,11 @@
     "note": "same report, the mid-ladder shape: name-bearers matched but every identity/affiliation doc (amethyst@vitorpamplona.com, bios holding github.com/vitorpamplona) dropped out until the word was finished. Must return the same set as 'Vitor Pamplona'."
   },
   {
+    "query": "odell",
+    "expect": "a9809f7c60e9998dc4a998995fe6fe7188666c562df2a451cf7b9c68fce46aa6",
+    "note": "reported 2026-08-02 (calibrated in two rounds): under the reporting observer's lens, CITADEL DISPATCH (kind-0 above; about: 'hosted by ODELL'; author trust 97) ranked #9 — below trust-13 accounts NAMED odell — because the old log trust curve (span ~5.6x) could never cross the ~236x bio->name band ratio. wot_mult()'s power curve (w_wot_pow 2.7) crosses on a ~7.6x trust-delta advantage, which the report bounds from BOTH sides: expect this doc ~#2, directly under the real ODELL (trust 93, exact name) — while the trust-13 name matches stay ABOVE the 77-trust bio mention (BitcoinMemeTreasury); only near-top trust crosses, though near-floor name matches (trust <= ~4) still fall behind everyday ~20+-trust bio mentions. NOTE FOR RankAb: needs --observer <hex whose provider ranks the CITADEL DISPATCH author ~97> (author 7f573f55d875ce8edc528edf822949fd2ab9f9c65d914a40225663b0a697be07); RankAb pins min_rank=2. RankRegressionIT pins both bounds corpus-independently ('overwhelming trust crosses the tier ladder')."
+  },
+  {
     "query": "Vitor",
     "expect": "",
     "note": "reported 2026-08-02 (the include:spam shape): logged-in Vitor searching his own name with include:spam saw untrusted namesakes first — include:spam must drop only the GATE, not the trust ORDER. The store now sends min_rank=0.0 instead of omitting the feature (wot_mult anchors its log at min_rank; the omitted-feature fallback of -1e9 flattened the boost to a constant). NOTE FOR RankAb: extensions are NOT parsed here (queries feed EventQuery directly, and RankAb pins min_rank=2 with an observer) — reproduce with `--observer <hex whose provider ranks the real Vitor>` plus a config overriding min_rank to 0.0, never by putting include:spam in the query text."
