@@ -33,5 +33,10 @@
     "query": "中村",
     "expect": "",
     "note": "2-char CJK — needs the non-ASCII prefix floor"
+  },
+  {
+    "query": "Vitor include:spam",
+    "expect": "",
+    "note": "reported 2026-08-02: logged-in Vitor searching his own name with include:spam saw untrusted namesakes first — include:spam must drop only the GATE, not the trust ORDER. The store now sends min_rank=0.0 instead of omitting the feature (wot_mult anchors its log at min_rank; the omitted-feature fallback of -1e9 flattened the boost to a constant). Run with an observer whose provider ranks the real Vitor."
   }
 ]

@@ -56,7 +56,9 @@ import kotlin.test.assertTrue
 class RankRegressionIT {
     // One profile per interesting shape. Ids are sequential; names carry the shape.
     // Docs 1/2/14 get DISTINCT authors so the sort:followers case can hang a
-    // different verified-follower count on each via the reputation parent.
+    // different verified-follower count on each via the reputation parent;
+    // docs 6/7/8 likewise, so the include:spam case can trust exactly one of
+    // the three Vitor namesakes.
     private val corpus =
         listOf(
             profile(1, name = "Ode", pubkey = pk(1)),
@@ -64,9 +66,9 @@ class RankRegressionIT {
             profile(3, name = "Odessa"),
             profile(4, name = "model"),
             profile(5, name = "code"),
-            profile(6, name = "VitorPamplona"),
-            profile(7, name = "Vitor Pamplona"),
-            profile(8, name = "Vitor-Pamplona"),
+            profile(6, name = "VitorPamplona", pubkey = pk(6)),
+            profile(7, name = "Vitor Pamplona", pubkey = pk(7)),
+            profile(8, name = "Vitor-Pamplona", pubkey = pk(8)),
             profile(9, name = "BitcoinMemeTreasury"),
             profile(10, name = "CoffeeLover"),
             profile(11, name = "CITADELDISPATCH"),
@@ -182,6 +184,10 @@ class RankRegressionIT {
                                     ReputationDoc(pk(1), followerCounts = mapOf(OBSERVER to 10.0)),
                                     ReputationDoc(pk(2), followerCounts = mapOf(OBSERVER to 250_000.0)),
                                     ReputationDoc(pk(14), followerCounts = mapOf(OBSERVER to 5_000.0)),
+                                    // The include:spam case: the observer's provider ranks
+                                    // ONE of the three Vitor namesakes; the other two stay
+                                    // unranked (user_score 0).
+                                    ReputationDoc(pk(7), influenceScores = mapOf(OBSERVER to 60)),
                                 ),
                             )
                         }
@@ -196,6 +202,31 @@ class RankRegressionIT {
                             "a near hit never outranks a token hit, whatever its follower count: $fnames",
                         )
                         assertEquals("near", followers.first { nameOf(it.doc) == "ODELL" }.tier)
+
+                        // --- include:spam: the GATE goes, the trust ORDER stays ---
+                        // The store maps include:spam on a search to min_rank=0.0
+                        // rather than omitting the feature: wot_mult() in the
+                        // default profile anchors its log boost at query(min_rank),
+                        // and the schema's fail-open default (-1e9) flattens the
+                        // multiplier to the same ~log(1e9) constant for every
+                        // author — the observer's own trusted namesake then sorts
+                        // under text noise (the reported "many Vitors above the
+                        // real one"). Anchored at 0 the boost keeps its 1.0→~5.6
+                        // span: trust orders the namesakes, nothing is dropped.
+                        val spamOk =
+                            indexRef.searchScored(
+                                EventQuery(search = "vitor", observer = OBSERVER, minRank = 0.0),
+                            )
+                        val vnames = spamOk.map { nameOf(it.doc) }
+                        assertEquals(
+                            "Vitor Pamplona",
+                            vnames.first(),
+                            "the observer-trusted namesake must rank FIRST under include:spam: $vnames",
+                        )
+                        assertTrue(
+                            "VitorPamplona" in vnames && "Vitor-Pamplona" in vnames,
+                            "include:spam keeps the unranked namesakes in the result: $vnames",
+                        )
 
                         // --- typo bound: over-budget hits never match ---
                         absent("odelll", "Odessa")
