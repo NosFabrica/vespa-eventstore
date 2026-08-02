@@ -1588,6 +1588,7 @@ class VespaEventIndex(
         @SerialName("search_primary_parts") val primaryParts: List<String>? = null,
         @SerialName("search_primary_tokens") val primaryTokens: List<String>? = null,
         @SerialName("search_secondary_tokens") val secondaryTokens: List<String>? = null,
+        @SerialName("affil_tokens") val affilTokens: List<String>? = null,
         /** The rank profile's declared match-features, when the profile has any (see event.sd). */
         val matchfeatures: JsonObject? = null,
     ) {
@@ -1599,6 +1600,7 @@ class VespaEventIndex(
                 primaryParts?.let { put("search_primary_parts", it) }
                 primaryTokens?.let { put("search_primary_tokens", it) }
                 secondaryTokens?.let { put("search_secondary_tokens", it) }
+                affilTokens?.let { put("affil_tokens", it) }
             }
     }
 

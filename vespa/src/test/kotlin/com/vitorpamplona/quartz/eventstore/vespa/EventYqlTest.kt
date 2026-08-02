@@ -264,6 +264,11 @@ class EventYqlTest {
         assertTrue("(search_primary_tokens contains ({prefix:true}@fw0))" in q.yql)
         // Hashtag/summary tokens get prefix reach too ("bitco" -> #bitcoin)…
         assertTrue("(search_secondary_tokens contains ({prefix:true}@fw0))" in q.yql)
+        // …and so do the identity/affiliation segments ("vitorpamp" ->
+        // amethyst@vitorpamplona.com): the docs a finished word reaches
+        // through nip05/lud16/website/about must stay reachable while the
+        // word is still being typed (the as-you-type ladder report).
+        assertTrue("(affil_tokens contains ({prefix:true}@fw0))" in q.yql)
         // The form that parses, runs, and does nothing.
         assertFalse("prefix:true}userInput" in q.yql)
     }
@@ -274,8 +279,9 @@ class EventYqlTest {
         assertTrue("(name_parts contains ({maxEditDistance:1,prefixLength:2}fuzzy(@fw0)))" in q.yql, q.yql)
         assertTrue("(name_tokens contains ({maxEditDistance:1,prefixLength:2}fuzzy(@fw0)))" in q.yql)
         assertFalse("fuzzy:{maxEditDistance" in q.yql)
-        // …but never fuzzy: a typo'd hashtag is not worth walking that dictionary.
+        // …but never fuzzy: a typo'd hashtag or domain is not worth walking those dictionaries.
         assertFalse("search_secondary_tokens contains ({maxEditDistance" in q.yql)
+        assertFalse("affil_tokens contains ({maxEditDistance" in q.yql)
     }
 
     @Test
@@ -374,6 +380,7 @@ class EventYqlTest {
         assertFalse("name_tokens" in q.yql)
         assertFalse("search_primary_parts" in q.yql)
         assertFalse("search_secondary_tokens" in q.yql)
+        assertFalse("affil_tokens" in q.yql)
         assertFalse("prefix:true" in q.yql)
         assertFalse("fuzzy(" in q.yql)
         // The exact clauses and gram nets stay — those fields predate the near

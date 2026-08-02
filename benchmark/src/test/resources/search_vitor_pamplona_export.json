@@ -1,0 +1,274 @@
+[
+  {
+    "id": "b48187a7aa20d1607f8767c46f8656ad01d18d66a91ebb33efda712860be91d5",
+    "pubkey": "460c25e682fda7832b52d1f22d3d22b3176d972f60dcdc3212ed8c92ef85065c",
+    "created_at": 1784937205,
+    "kind": 0,
+    "tags": [
+      [
+        "alt",
+        "User profile for VitorPamplona"
+      ],
+      [
+        "name",
+        "VitorPamplona"
+      ],
+      [
+        "display_name",
+        "Vitor Pamplona"
+      ],
+      [
+        "picture",
+        "https://vitorpamplona.com/images/me_300.jpg"
+      ],
+      [
+        "banner",
+        "https://pbs.twimg.com/profile_banners/15064756/1414451651/1080x360"
+      ],
+      [
+        "website",
+        "https://vitorpamplona.com"
+      ],
+      [
+        "pronouns",
+        "he/him"
+      ],
+      [
+        "about",
+        "Nostr's Chief Android Officer - Amethyst/Brainstorm"
+      ],
+      [
+        "nip05",
+        "_@vitorpamplona.com"
+      ],
+      [
+        "lud16",
+        "vitor@vitorpamplona.com"
+      ],
+      [
+        "client",
+        "Amethyst"
+      ],
+      [
+        "clink_offer",
+        "noffer1qvqsyqjqx5crzcn9v43kxdp4xdnrvcmpxv6ngdphxg6ngcfhxyenzvfex4jkvctxxceryvf5vyenyd3svcuxxenrvc6kgde4xdnrjdfhxfjxxccprfmhxue69uhhxarjvee8jtnndphkx6ewdejhgam0wf4sqgrka4zlqr820wk9nkxsklfqfpy02vva0wtvzs8lkm7t424s5y75fcezf5k3"
+      ]
+    ],
+    "content": "{\"about\":\"Nostr's Chief Android Officer - Amethyst/Brainstorm\",\"banner\":\"https://pbs.twimg.com/profile_banners/15064756/1414451651/1080x360\",\"display_name\":\"Vitor Pamplona\",\"lud16\":\"vitor@vitorpamplona.com\",\"name\":\"VitorPamplona\",\"nip05\":\"_@vitorpamplona.com\",\"picture\":\"https://vitorpamplona.com/images/me_300.jpg\",\"website\":\"https://vitorpamplona.com\",\"displayName\":\"Vitor Pamplona\",\"pronouns\":\"he/him\",\"clink_offer\":\"noffer1qvqsyqjqx5crzcn9v43kxdp4xdnrvcmpxv6ngdphxg6ngcfhxyenzvfex4jkvctxxceryvf5vyenyd3svcuxxenrvc6kgde4xdnrjdfhxfjxxccprfmhxue69uhhxarjvee8jtnndphkx6ewdejhgam0wf4sqgrka4zlqr820wk9nkxsklfqfpy02vva0wtvzs8lkm7t424s5y75fcezf5k3\"}",
+    "sig": "6cb948cc0a66a1cade744b52d9c7684b0bce0b8c0028e80008ef34157b13f65fa1f3b00798a4be03b66c69861c6571d32126a04f4cb05ccf3d4be4bfb82b2147"
+  },
+  {
+    "id": "9822d6cda8978779925dc074dd48e93e8b4499ed7ae48a50718f926ef3572fcb",
+    "pubkey": "7d7ffd720b907fe597a7f454afe02f2dc1eca440baa029e9117b1c3209839377",
+    "created_at": 1784305740,
+    "kind": 0,
+    "tags": [],
+    "content": "{\"name\": \"VitorPamplona's Brainstorm Assistant\", \"display_name\": \"VitorPamplona's Brainstorm Assistant\", \"website\": \"https://brainstorm-staging.nosfabrica.com\", \"about\": \"I am the Brainstorm Assistant for my owner. My primary task is to publish kind 30382 Trusted Assertions so that my owner's personalized web of trust metrics are available to be utilized by any nostr client that supports NIP-85.\"}",
+    "sig": "843cda7419297d11965939fd67f6fff9f10cafa2e4c33f310b85ec106d09b6e6d05046566aec5192d2541fc6896989f64a555e0114ce614ec2597b9b9b011314"
+  },
+  {
+    "id": "3d3dd4239b0ce42ab8fd70d191066ef7b1be87847f2f269ac89713b632e0fbea",
+    "pubkey": "3cddee78ad379131cf633de94f6ca325d91d73e0d8f79fb90d7849487d3e5ac5",
+    "created_at": 1671548474,
+    "kind": 0,
+    "tags": [],
+    "content": "{\"name\":\"vitorpamplona\",\"about\":\"\",\"display_name\":\"Vitor Pamplona\"}",
+    "sig": "7dcbbc51044a1248b325c0ee22dda0525eaa55650ce708cb046255cb7f48e2c2b186515b8dc3c7a19d729bd1b4410f1596965a38d324f127b0ced57c10a42f85"
+  },
+  {
+    "id": "90ef4f3d994a22b1199ded3479acf6491781bfb0ea712c204e98ba66db0efa26",
+    "pubkey": "aa9047325603dacd4f8142093567973566de3b1e20a89557b728c3be4c6a844b",
+    "created_at": 1778950803,
+    "kind": 0,
+    "tags": [
+      [
+        "alt",
+        "User profile for amethyst"
+      ],
+      [
+        "name",
+        "amethyst"
+      ],
+      [
+        "display_name",
+        "Amethyst"
+      ],
+      [
+        "picture",
+        "https://image.nostr.build/11634d2402a4c037cced83c58387271e1777e3f1099bf5c03d05b83817ce5ee5.jpg"
+      ],
+      [
+        "banner",
+        "https://image.nostr.build/8e410ed39251a9dd6d5f8587f420c5f470a2bf90352cd1e50b4220af544b6ba9.jpg"
+      ],
+      [
+        "website",
+        "https://amethyst.social"
+      ],
+      [
+        "about",
+        "Nostr Client for Android"
+      ],
+      [
+        "nip05",
+        "amethyst@vitorpamplona.com"
+      ],
+      [
+        "lud16",
+        "vitor@vitorpamplona.com"
+      ],
+      [
+        "client",
+        "Amethyst"
+      ]
+    ],
+    "content": "{\"name\":\"amethyst\",\"username\":\"\",\"display_name\":\"Amethyst\",\"displayName\":\"Amethyst\",\"picture\":\"https://image.nostr.build/11634d2402a4c037cced83c58387271e1777e3f1099bf5c03d05b83817ce5ee5.jpg\",\"website\":\"https://amethyst.social\",\"about\":\"Nostr Client for Android\",\"lud16\":\"vitor@vitorpamplona.com\",\"banner\":\"https://image.nostr.build/8e410ed39251a9dd6d5f8587f420c5f470a2bf90352cd1e50b4220af544b6ba9.jpg\",\"nip05\":\"amethyst@vitorpamplona.com\"}",
+    "sig": "70c400285475ec545d1e74ac11894317355eb9931bce8fdabe31b6b1ba09922ad6528cf5fceacddb2a213c50798d082f600a2b4ac1976eb5dcd682732d30066c"
+  },
+  {
+    "id": "3a7d52ee6d8316dd8d46b999524afebcdcd9619980412ab20b9d70e041769a60",
+    "pubkey": "e7764a227c12ac1ef2db79ae180392c90903b2cec1e37f5c1a4afed38117185e",
+    "created_at": 1774288998,
+    "kind": 0,
+    "tags": [
+      [
+        "alt",
+        "User profile for Anonymous"
+      ],
+      [
+        "display_name",
+        "Dr Martha Liz"
+      ],
+      [
+        "picture",
+        "https://nostr.build/i/nostr.build_6eb34e1bbfb8d44ac429f86f80576a5b4f5e84e6034889fa2e374adb47b469ee.png"
+      ],
+      [
+        "banner",
+        "https://nostr.build/i/58590787dbf5dce4c1eacca942a371a48b1b32e55de01f1a1eaee8ca36a9529b.jpg"
+      ],
+      [
+        "about",
+        "Test account for Amethyst"
+      ],
+      [
+        "nip05",
+        "range3two@vitorpamplona.com"
+      ]
+    ],
+    "content": "{\"username\":\"\",\"display_name\":\"Dr Martha Liz\",\"displayName\":\"Dr Martha Liz\",\"picture\":\"https://nostr.build/i/nostr.build_6eb34e1bbfb8d44ac429f86f80576a5b4f5e84e6034889fa2e374adb47b469ee.png\",\"banner\":\"https://nostr.build/i/58590787dbf5dce4c1eacca942a371a48b1b32e55de01f1a1eaee8ca36a9529b.jpg\",\"about\":\"Test account for Amethyst\",\"nip05\":\"range3two@vitorpamplona.com\"}",
+    "sig": "df8d3c088bf23d80ff6c07932d8731f2f40d53dc131c30e4bdd7745ca19e9cdb08a2523b31ee9dad617187e8ed6fc76ff5dc6a9e9fc63235654900d41e9c1ca9"
+  },
+  {
+    "id": "17a3a90efa8358a7c7a0fcb69b91616b3b4107ece24e4ed9942a93f69e1bb6ea",
+    "pubkey": "f8ff11c7a7d3478355d3b4d174e5a473797a906ea4aa61aa9b6bc0652c1ea17a",
+    "created_at": 1757629610,
+    "kind": 0,
+    "tags": [
+      [
+        "alt",
+        "User profile for Dr. Edo Paz"
+      ],
+      [
+        "name",
+        "Dr. Edo Paz"
+      ],
+      [
+        "display_name",
+        "Dr. Edo Paz"
+      ],
+      [
+        "picture",
+        "http://i.imgur.com/RvbY4Z6.png"
+      ],
+      [
+        "website",
+        "myoptometry.com"
+      ],
+      [
+        "about",
+        "Test account Amethyst 2"
+      ],
+      [
+        "nip05",
+        "edo@myoptometry.com"
+      ],
+      [
+        "lud16",
+        "vitorpamplona@getalby.com"
+      ]
+    ],
+    "content": "{\"name\":\"Dr. Edo Paz\",\"username\":\"testing\",\"display_name\":\"Dr. Edo Paz\",\"displayName\":\"Dr Edo Paz\",\"picture\":\"http://i.imgur.com/RvbY4Z6.png\",\"website\":\"myoptometry.com\",\"about\":\"Test account Amethyst 2\",\"lud16\":\"vitorpamplona@getalby.com\",\"nip05\":\"edo@myoptometry.com\"}",
+    "sig": "965d54da0c32f6d8b0ad44654dfe41c38d3a2a5a14cc36888493bad0c0e6163290cedfab8392bd07110551cefb64a26dbf6daf7d30f975688a4e462f96455417"
+  },
+  {
+    "id": "17f37e03f2ecc4aed95df4628b9b54ac6e8b14bff13ebf7caefd1e06c834a7a3",
+    "pubkey": "98b5514d1806cec91e771b6d89052e9a878e809099b3839d604e3e1a75230a3f",
+    "created_at": 1675642495,
+    "kind": 0,
+    "tags": [],
+    "content": "{\"name\":\"a open source android nostr client\",\"username\":\"a open source android nostr client\",\"display_name\":\"Amethyst\",\"displayName\":\"Amethyst\",\"picture\":\"https://i.postimg.cc/Pr9XxYfF/20230204192128.png\",\"banner\":\"\",\"website\":\"\",\"about\":\"project link: https://github.com/vitorpamplona/amethyst\",\"nip05\":\"\",\"lud16\":\"\"}",
+    "sig": "d2a82d2179cb64cfbb93378b4affd7a46ef848270fcccc712a0b9c0f76ba67ae220c5f55b0debc4d382bd465302d4de39ea3031c618a9b36042c5f9b356021aa"
+  },
+  {
+    "id": "399e7f558553085d3cc98ad96f989fbd1f8b9c33253435b33b37431d3f0e5d1d",
+    "pubkey": "05acfe7f6f21994ed3f58d7b4820f865482f60166c8cbd18b875b8aa436f6688",
+    "created_at": 1688420460,
+    "kind": 0,
+    "tags": [],
+    "content": "{\"about\":\"\\n\\nhttps://github.com/vitorpamplona/amethyst/releases\",\"name\":\"Release notes from amethyst (RSS Feed)\",\"nip05\":\"https://github.com/vitorpamplona/amethyst/releases.atom@rsslay.nostr.moe\",\"picture\":\"https://i.imgur.com/MaceU96.png\"}",
+    "sig": "1aa4b8b44a83c5ee453d03e5ae1bfb12899d78c5d50cbe76055e51e7dad8b617a56fb81b0796960e94d3b91cd22bc29bd8df57069b964c32d56bf6467c03a461"
+  },
+  {
+    "id": "647a9ee7633152b676387d12abb5f18d5f2e16f14afc44fa5904c0cf6b874ba5",
+    "pubkey": "1aa25ae8479f23895bf8fab5c94d9619f2fe3d71cd3d9031e4f49e0fa87c8967",
+    "created_at": 1761639919,
+    "kind": 0,
+    "tags": [
+      [
+        "alt",
+        "User profile for davotoula"
+      ],
+      [
+        "name",
+        "davotoula"
+      ],
+      [
+        "display_name",
+        "davotoula"
+      ],
+      [
+        "picture",
+        "https://image.nostr.build/63e0600ff02b5f4e7e4fce8626f5df3e8cd1ec6378e081a0270047a0b47d7cfd.jpg"
+      ],
+      [
+        "banner",
+        "https://image.nostr.build/112244151a135fa0f45fda991359a77a9dce8b9f0674355a2fb98ac050cd5e93.jpg"
+      ],
+      [
+        "about",
+        "Open source coding\n\nhttps://github.com/vitorpamplona/amethyst\nhttps://github.com/davotoula/LightCompressor-enhanced"
+      ],
+      [
+        "lud16",
+        "elationmellisonant274956@getalby.com"
+      ],
+      [
+        "i",
+        "github:davotoula",
+        "55c4ccf555abfaeae90d8926422f7b66"
+      ]
+    ],
+    "content": "{\"name\":\"davotoula\",\"display_name\":\"davotoula\",\"picture\":\"https://image.nostr.build/63e0600ff02b5f4e7e4fce8626f5df3e8cd1ec6378e081a0270047a0b47d7cfd.jpg\",\"about\":\"Open source coding\\n\\nhttps://github.com/vitorpamplona/amethyst\\nhttps://github.com/davotoula/LightCompressor-enhanced\",\"lud16\":\"elationmellisonant274956@getalby.com\",\"banner\":\"https://image.nostr.build/112244151a135fa0f45fda991359a77a9dce8b9f0674355a2fb98ac050cd5e93.jpg\"}",
+    "sig": "25350cd1d5d86ad07baa2daa4cc0a17b7f853d1ab3a5529e1ea2f34c606c526558a5bf6b712857a8faa3c9c13dfcea0eb702b26402d784e02fb6654d3e7bc6e4"
+  },
+  {
+    "id": "6dbb8cd133d8e9a90c1cea62c27677534c2f14d63331063233bd50525761fad0",
+    "pubkey": "6c7bc8d6dbc6d9b06c509475cfa96ae5635e2fba26daaae8d47ecbbcbcd0bff4",
+    "created_at": 1779380305,
+    "kind": 0,
+    "tags": [],
+    "content": "{\"lud16\":\"vitor@vitorpamplona.com\",\"name\":\"MOAM\",\"nip05\":\"\",\"picture\":\"https:\\/\\/m.primal.net\\/HUlP.jpg\",\"lud06\":\"\",\"display_name\":\"Measure of a Mountain\",\"banner\":\"https:\\/\\/m.primal.net\\/HQTd.jpg\",\"about\":\"\",\"website\":\"\"}",
+    "sig": "1e8c33f4c983c6f1193d751f38db275e38f028c8abdf315338d0d26ce429a9c4fbeb4a7425155ad123ac187308a80419470853aa6d5058383088007b759ae46b"
+  }
+]

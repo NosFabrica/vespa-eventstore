@@ -231,7 +231,15 @@ schema event {
         # gets the generic-tier pair; search_secondary gets a TOKENS-only
         # column so hashtags/summaries have prefix reach ("bitco" ->
         # #bitcoin) without parts-splitting prose into the dictionary.
-        # about/website/nip05/lud16 deliberately get NO near sibling.
+        # about/website/nip05/lud16 get NO near-TIER sibling (a prefix hit on
+        # a bio or domain is not name evidence) — but they DO get the
+        # weak-tier affil_tokens column below: their exact clauses tokenize
+        # emails/URLs into segments ("vitor@vitorpamplona.com" -> vitor,
+        # vitorpamplona, com), and any doc a finished word reaches that way
+        # must stay reachable while the word is still being TYPED. Without
+        # it, as-you-type recall collapsed and snapped back only on the last
+        # keystroke ("Vitor Pamp" -> 3 hits, "Vitor Pamplona" -> 10; the
+        # 2026-08-02 report pinned by SearchPrefixLadderIT).
         field name_parts type array<string> {
             indexing: attribute
             attribute: fast-search
@@ -253,6 +261,15 @@ schema event {
         }
 
         field search_secondary_tokens type array<string> {
+            indexing: attribute
+            attribute: fast-search
+        }
+
+        # Identity/affiliation segments (nip05, lud16, website, about),
+        # NearText.parts-split so email/URL pieces are elements — matched
+        # prefix-only (no fuzzy: domains build a huge dictionary and a typo'd
+        # domain is not a real query shape), scored by the WEAK tier.
+        field affil_tokens type array<string> {
             indexing: attribute
             attribute: fast-search
         }
@@ -657,15 +674,18 @@ schema event {
             expression: if(name_match() > 0 || near_name_match() > 0 || weak_match() > 0 || identity_match() > 0 || affiliation_match_text() > 0, 0, 1)
         }
 
-        # ---- the weak tier: bounded infix + hashtag/summary prefix ----
+        # ---- the weak tier: bounded infix + hashtag/summary/affil prefix ----
         # matchCount on the *_gram fields only fires for the AND-of-trigrams
         # INFIX net FuzzyWordGroup emits (the unbounded OR net is off): every
         # trigram of the query word must appear in the name, a near-substring
         # test — "dell" reaches ODELL, "ode" (too few trigrams) reaches
         # nothing. search_secondary_tokens carries hashtag/summary token
-        # prefixes ("bitco" -> #bitcoin). Both are real signals with a bound,
-        # weaker than an anchored prefix or a budgeted typo — one tier, gated
-        # on the tiers above so nothing stacks.
+        # prefixes ("bitco" -> #bitcoin); affil_tokens carries identity/
+        # affiliation segment prefixes ("vitorpamp" ->
+        # amethyst@vitorpamplona.com — the as-you-type continuity column).
+        # All are real signals with a bound, weaker than an anchored prefix
+        # or a budgeted typo — one tier, gated on the tiers above so nothing
+        # stacks.
 
         function infix_gram_match() {
             expression: if(matchCount(name_gram) > 0 || matchCount(display_name_gram) > 0 || matchCount(search_primary_gram) > 0, 1, 0)
@@ -675,8 +695,20 @@ schema event {
             expression: if(matchCount(search_secondary_tokens) > 0, 1, 0)
         }
 
+        # Gated on the bio/website EXACT match: a finished word is trivially a
+        # prefix of its own affil_tokens element, and ungated that promoted
+        # every exact bio mention out of the affiliation band into weak
+        # (RankRegressionIT's "odell" bio case). The column is purely the
+        # UNFINISHED-word bridge — the moment the word completes, the exact
+        # clauses take over and the doc scores exactly as it did before this
+        # column existed. (Identity exacts need no gate here: matchCount on
+        # nip05/lud16 already flips any_token_match, which gates weak_match.)
+        function affil_prefix_match() {
+            expression: if(matchCount(about) > 0 || matchCount(website) > 0, 0, if(matchCount(affil_tokens) > 0, 1, 0))
+        }
+
         function weak_match() {
-            expression: if(any_token_match() > 0 || any_near_match() > 0, 0, if(infix_gram_match() > 0 || secondary_prefix_match() > 0, 1, 0))
+            expression: if(any_token_match() > 0 || any_near_match() > 0, 0, if(infix_gram_match() > 0 || secondary_prefix_match() > 0 || affil_prefix_match() > 0, 1, 0))
         }
 
         # ---- second-phase precision signals ----
