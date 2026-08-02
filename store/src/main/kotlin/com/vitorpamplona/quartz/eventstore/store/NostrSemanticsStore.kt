@@ -283,11 +283,13 @@ class NostrSemanticsStore(
      * request into that lens — including plain recall. A non-search query with
      * a resolved observer keeps its NIP-01 recency order but drops authors
      * below the trust floor ([EventQuery.minRank] if the query set one via
-     * `filter:rank:…`, else [DEFAULT_MIN_RANK]); `include:spam` opts a query
-     * back out. Queries that chose a profile (`sort:`) or carry terms already
-     * gate through their own profile and are left alone. Reads that never
-     * resolve an observer (negentropy snapshots, internal sweeps, anonymous
-     * connections) are untouched — recall without a lens is never gated.
+     * `filter:rank:…`, else [DEFAULT_MIN_RANK]). `include:spam` opts a query
+     * out of the DEFAULT floor only — an explicit `filter:rank:` floor always
+     * survives it, same as on the search path. Queries that chose a profile
+     * (`sort:`) or carry terms already gate through their own profile and are
+     * left alone. Reads that never resolve an observer (negentropy snapshots,
+     * internal sweeps, anonymous connections) are untouched — recall without a
+     * lens is never gated.
      */
     private fun Filter.toExpiryQuery(
         cutoffSecs: Long,
@@ -295,8 +297,9 @@ class NostrSemanticsStore(
     ): EventQuery? =
         toEventQuery()?.let {
             val q = it.copy(notExpiredAt = cutoffSecs, observer = it.observer ?: observer)
-            if (q.observer != null && q.search == null && q.ranking == null && !q.includeSpam) {
-                q.copy(ranking = EventYql.RANK_RECENCY_GATED, minRank = q.minRank ?: DEFAULT_MIN_RANK)
+            val floor = q.minRank ?: DEFAULT_MIN_RANK.takeUnless { q.includeSpam }
+            if (q.observer != null && q.search == null && q.ranking == null && floor != null) {
+                q.copy(ranking = EventYql.RANK_RECENCY_GATED, minRank = floor)
             } else {
                 q
             }
@@ -312,7 +315,7 @@ class NostrSemanticsStore(
      * is re-sorted client-side so the page honors the exact
      * `created_at desc, id asc` contract (engine score ties are arbitrary).
      */
-    private fun EventQuery.keepsEngineOrder(): Boolean = isRanked() && ranking != EventYql.RANK_RECENCY_GATED
+    private fun EventQuery.keepsEngineOrder(): Boolean = isRanked() && ranking != EventYql.RANK_RECENCY_GATED && ranking != EventYql.RANK_RECENCY_GATED_EXACT
 
     override suspend fun <T : Event> query(filter: Filter): List<T> = query(listOf(filter))
 

@@ -422,12 +422,12 @@ class VespaEventIndexTest {
 
     /**
      * A serving schema that predates the observer gate answers 400 to both
-     * gated profiles — the client must demote the query to unranked
-     * (FAIL-OPEN, the pre-gate behavior), serve the REQ, and remember, never
-     * fail the caller.
+     * gated profiles — the client must demote the query to plain ranking-free
+     * recall (FAIL-OPEN, the pre-gate behavior, recency profile and planner
+     * included), serve the REQ, and remember, never fail the caller.
      */
     @Test
-    fun `a missing gated profile demotes to unranked instead of failing`() =
+    fun `a missing gated profile demotes to plain recall instead of failing`() =
         runBlocking {
             seed(*(1..5).map { doc(kind = 1) }.toTypedArray())
             mock.rejectGatedProfile = true

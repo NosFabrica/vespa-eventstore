@@ -312,7 +312,7 @@ class VespaEventIndex(
     /**
      * False from the first 400 naming a `recency_gated*` profile: the serving
      * schema predates the observer gate (deployIfAbsent never redeploys onto a
-     * serving cluster), so gated recall demotes to plain [RANK_UNRANKED] —
+     * serving cluster), so gated recall demotes to plain ranking-free recall —
      * FAIL-OPEN, the pre-gate behavior: the feed serves ungated until the
      * operator redeploys the schema, consistent with how every other missing
      * trust input degrades (an absent observer, an unranked author). One
@@ -323,8 +323,15 @@ class VespaEventIndex(
 
     private fun EventQuery.isGated(): Boolean = ranking == EventYql.RANK_RECENCY_GATED || ranking == EventYql.RANK_RECENCY_GATED_EXACT
 
-    /** [q] rebuilt for a schema without the gated profiles — a no-op while they serve. */
-    private fun demoteGated(q: EventQuery): EventQuery = if (!gatedProfileAvailable && q.isGated()) q.copy(ranking = EventYql.RANK_UNRANKED) else q
+    /**
+     * [q] rebuilt for a schema without the gated profiles — a no-op while they
+     * serve. Demotes to a RANKING-FREE query, NOT [EventYql.RANK_UNRANKED]:
+     * the fallback must regain the recency profile and the count-probe
+     * planner a plain query would have (both key on `ranking == null`), or
+     * every legacy-schema feed query would run as a bare unranked scan —
+     * slower than the pre-gate behavior it falls back to.
+     */
+    private fun demoteGated(q: EventQuery): EventQuery = if (!gatedProfileAvailable && q.isGated()) q.copy(ranking = null) else q
 
     /**
      * Run [attempt] with the profile compatibility nets: a 400 naming the
@@ -337,7 +344,10 @@ class VespaEventIndex(
         attempt: suspend (EventQuery) -> T,
     ): T =
         try {
-            attempt(demoteGated(demoteRecency(q)))
+            // demoteGated FIRST: it strips the ranking, which is what lets
+            // demoteRecency (and the profile selection it guards) see the
+            // fallback as the plain query it now is.
+            attempt(demoteRecency(demoteGated(q)))
         } catch (e: IllegalArgumentException) {
             // queryBody's status guard is a require(), hence IllegalArgument.
             // No flag check here: an attempt that actually ran demoted was
@@ -351,7 +361,7 @@ class VespaEventIndex(
             when {
                 is400 && q.isGated() && e.message?.contains(EventYql.RANK_RECENCY_GATED) == true -> {
                     gatedProfileAvailable = false
-                    attempt(demoteGated(q))
+                    attempt(demoteRecency(demoteGated(q)))
                 }
 
                 is400 && EventYql.usesRecencyProfile(q) && e.message?.contains(EventYql.RANK_RECENCY) == true -> {
@@ -413,8 +423,16 @@ class VespaEventIndex(
         // expiry filter and newest-first order are applied exactly as YQL would, so
         // results are identical to the search path.
         if (query.isPureIdLookup()) return getByIds(query)
+        // demoteGated BEFORE planRecency: once the gated-profile flag has
+        // flipped (legacy schema), the demoted (ranking-free) query must
+        // regain the recency profile / count-probe planner it would have had
+        // pre-gate — planned on the gated original, the planner stands down
+        // (ranking is set) and every fallback feed query would run as a bare
+        // unranked scan. A no-op while the profiles serve; recencySafe's own
+        // demote stays for the first failing query, whose flag flips
+        // mid-flight.
         return nearSafe(query) { qn ->
-            recencySafe(planRecency(qn)) { q ->
+            recencySafe(planRecency(demoteGated(qn))) { q ->
                 // Stream the hits straight into docs (no full JsonElement tree): the
                 // response is decoded into flat DTOs, allocating the target objects
                 // directly instead of a JsonObject/JsonArray/JsonPrimitive wrapper per
@@ -616,8 +634,9 @@ class VespaEventIndex(
      */
     override suspend fun rawSearch(query: EventQuery): List<RawEvent> {
         if (query.isPureIdLookup()) return getByIds(query).map { it.toRawEvent() }
+        // Same demoteGated-before-planRecency ordering as [search] — see there.
         return nearSafe(query) { qn ->
-            recencySafe(planRecency(qn)) { q ->
+            recencySafe(planRecency(demoteGated(qn))) { q ->
                 recallSummaries(q).mapNotNull { it.toRaw() }
             }
         }

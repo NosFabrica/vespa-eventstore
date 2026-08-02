@@ -814,7 +814,24 @@ schema event {
     # touches is gated and scored. Exact for every shape, but a bare gated
     # feed query pays ~100ms per million candidate postings — so it serves as
     # the fallback and the unlimited/deep-pagination shape, not the hot path.
-    rank-profile recency_gated_exact inherits text_relevance {
+    #
+    # STANDALONE, not inheriting text_relevance: these are the only trust
+    # profiles serving TERMLESS queries on the hot feed path, and inheriting
+    # would carry text_relevance's 16 match-features — computed and serialized
+    # PER HIT for a query that has no text at all (several even reference
+    # query item labels a termless query never emits). The two inputs below
+    # therefore mirror text_relevance's declarations — same tensor type, same
+    # fail-open min_rank default (below every real score) — keep them in sync.
+    rank-profile recency_gated_exact {
+        inputs {
+            query(user_q) tensor<float>(user{})
+            query(min_rank) double: -1000000000.0
+        }
+
+        function user_score() {
+            expression: sum(query(user_q) * attribute(author_influence_scores))
+        }
+
         first-phase {
             expression: if(user_score() >= query(min_rank), attribute(created_at), -1000000000.0)
             rank-score-drop-limit: -1000000.0

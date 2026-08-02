@@ -122,6 +122,13 @@ class ObserverGateTest {
     }
 
     @Test
+    fun `an explicit floor survives include spam, like on the search path`() {
+        val q = captured(Filter(search = "filter:rank:gte:50 include:spam"), observer = hex)
+        assertEquals(EventYql.RANK_RECENCY_GATED, q.ranking, "include:spam only cancels the DEFAULT floor")
+        assertEquals(50.0, q.minRank, "the user asked for this floor; it gates")
+    }
+
+    @Test
     fun `searches and sorts gate through their own profile, not the recall gate`() {
         val search = captured(Filter(search = "vitor"), observer = hex)
         assertNull(search.ranking, "terms: EventYql's default (the search profile) owns the gate")
