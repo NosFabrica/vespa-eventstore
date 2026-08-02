@@ -322,6 +322,12 @@ open class NostrSemanticsStoreTest {
             assertEquals(listOf(alice), hits.map { it.pubKey }, "a profile matching only one word must not recall")
             // Each word alone still recalls both — AND narrows, it doesn't drop matchers.
             assertEquals(2, store.query<Event>(Filter(search = "vitor")).size)
+
+            // A word tokenization erases ("⚡") cannot be required — it is
+            // dropped, not turned into an unsatisfiable conjunct; a query
+            // that is ONLY such words matches nothing, not everything.
+            assertEquals(2, store.query<Event>(Filter(search = "vitor ⚡")).size)
+            assertEquals(0, store.query<Event>(Filter(search = "⚡")).size)
         }
 
     /** EventIndexesModule pubkey_owner_hash: a gift-wrap is OWNED by its p-tag recipient. */

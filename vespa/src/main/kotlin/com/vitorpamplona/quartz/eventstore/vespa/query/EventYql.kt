@@ -363,16 +363,30 @@ object EventYql {
         // Every word the caller typed goes into the query. A long search term is
         // slower — that is the caller's call to make, not ours to silently make
         // for them by dropping words and answering a question they didn't ask.
+        //
+        // The one exception is a word with NO letter or digit ("⚡", "//"):
+        // tokenization erases it from every matcher's view — userInput emits no
+        // term for it, NearText folds it away, the trigram filter drops it — so
+        // no index can hold it and no clause can require it. Under the AND'd
+        // word groups such a word is not harmless dead weight (as it was under
+        // OR): its empty requirement would leave the whole conjunction to
+        // Vespa's null-term handling. Dropping it mirrors exactly what indexing
+        // did to the doc side; a query that is ONLY such words asked for
+        // something no index holds — provably no match, like an all-invalid
+        // hex filter. (SearchFields.matches applies the same filter — the
+        // reference must not require what the engine cannot see.)
         val words =
             q.search
                 ?.trim()
                 .orEmpty()
                 .split(WHITESPACE)
                 .filter { it.isNotEmpty() }
-        if (words.isNotEmpty()) {
-            clauses += FuzzyWordGroup.clause(words, params, nearFields = q.nearMatching)
+        val matchable = words.filter { w -> w.any(Char::isLetterOrDigit) }
+        if (words.isNotEmpty() && matchable.isEmpty()) return null
+        if (matchable.isNotEmpty()) {
+            clauses += FuzzyWordGroup.clause(matchable, params, nearFields = q.nearMatching)
             // Short queries lean harder on the trigram safety net.
-            params["ranking.features.query(w_gram)"] = if (FuzzyWordGroup.leansOnGrams(words)) "8.0" else "2.0"
+            params["ranking.features.query(w_gram)"] = if (FuzzyWordGroup.leansOnGrams(matchable)) "8.0" else "2.0"
         }
         return clauses
     }

@@ -143,6 +143,13 @@ internal object FuzzyWordGroup {
      * joined` — so its group is emitted ONCE instead of once per word
      * (duplicate identical terms would also inflate matchCount, i.e. the
      * exact tier's text score, for every doc the variant matches).
+     *
+     * The pair groups' two-way ride is the accepted residual of that concern:
+     * a pair covers two words, not all, so it cannot hoist without
+     * duplicating the real word groups instead (which carry the fuzzy
+     * matchers — far worse). The cost is bounded — synthetic groups are
+     * exact+prefix only, the shape needs 3+ words, and only docs actually
+     * matching the concatenation see the inflated matchCount.
      */
     fun clause(
         words: List<String>,

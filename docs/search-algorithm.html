@@ -69,7 +69,7 @@
 
   <h2>1 · The pipeline</h2>
   <div class="flow">
-    <div class="box"><b>tokenize</b>search term → whitespace words, every word kept (<code>EventYql</code>); ≥2 words adds a joined variant, ≥3 adds adjacent pairs</div>
+    <div class="box"><b>tokenize</b>search term → whitespace words (<code>EventYql</code>); every word kept except those with no letter/digit ("⚡") — tokenization erases them from every index, so they can't be required; ≥2 words adds a joined variant, ≥3 adds adjacent pairs</div>
     <div class="arrow">→</div>
     <div class="box"><b>recall</b>one match group per word across all 10 search fields + trigram nets (<code>FuzzyWordGroup</code>), AND'd — <em>every</em> word must match somewhere (joined/pair variants stand in for the words they concatenate); a doc matching only some words never recalls</div>
     <div class="arrow">→</div>

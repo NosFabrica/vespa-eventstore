@@ -113,6 +113,23 @@ class EventYqlTest {
     }
 
     @Test
+    fun `words without a letter or digit cannot be required`() {
+        // Tokenization erases "⚡" from every matcher's view — userInput emits
+        // no term, NearText folds it away, the trigram filter drops it. Under
+        // the AND'd word groups an empty requirement would surrender the whole
+        // conjunction to Vespa's null-term handling, so the builder drops the
+        // word — mirroring what indexing did to the doc side.
+        val q = EventYql.build(EventQuery(search = "vitor ⚡"))!!
+        assertEquals("vitor", q.params["w0"])
+        assertFalse("w1" in q.params, "the symbol word must not become a requirement")
+        assertFalse("wj" in q.params, "one matchable word left: no joined variant")
+        // A query that is ONLY such words asked for something no index holds.
+        assertNull(EventYql.build(EventQuery(search = "⚡ //")))
+        // Non-ASCII LETTERS are matchable — the filter is not an ASCII gate.
+        assertEquals("中村", EventYql.build(EventQuery(search = "中村 ⚡"))!!.params["w0"])
+    }
+
+    @Test
     fun `an observer switches the search default to the trust profile`() {
         val text = EventYql.build(EventQuery(search = "vitor"))!!
         assertEquals(EventYql.RANK_TEXT, text.ranking, "no observer: pure text")
