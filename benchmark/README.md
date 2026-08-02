@@ -47,6 +47,8 @@ timing is also a proof:
 | `multiFilterBench` | store-level multi-filter REQs vs the serialized sum (A/B `VESPA_QUERY_FANOUT`) | reuses visitBench's corpus | multi-filter result equals the deduped single-filter union |
 | `searchBench` | NIP-50: rare/common terms, multi-word, trigram/fuzzy, search+filters, profile directory, `text` vs `text2` rerank sweep | feeds its own 200k-doc zipfian text band once (`BENCH_SEARCH_DOCS`) | 37 planted sentinel docs must be recalled exactly |
 | `corpusLoad` | setup: loads the deterministic `NostrCorpus` a workload bench samples its filters from | 30k mixed events (`BENCH_SIZE`) | — |
+| `dedupProbe` | the bulk-dedup existence check: full-summary vs summary-free variants at mirror hit rates, chunk × fan-out curves, REQ latency under dedup load | reuses a `corpusLoad` corpus (ids sampled off the live store) | every variant must return the identical member set |
+| `transportProbe` | read-transport isolation: JDK h1 / OkHttp h1 / OkHttp h2c on identical queries across body sizes | any loaded store | — |
 
 The workload benches (`corpusLoad`, `BENCH_MIXED`, `BENCH_THROUGHPUT`,
 `BENCH_CONDPUT`, ingest sweeps) WRITE into the store. The exactness benches
@@ -501,6 +503,12 @@ much), so only structural changes are reliably attributable. Two landed:
    linearly. Single values and `tagsAll` (AND semantics — no `in` form) keep
    `contains`.
 
+4. **The bulk-dedup preload became a summary-free existence check**
+   (`EventIndex.existingIds` — `select id` under the attribute-only `dedup`
+   document-summary): 2.3× the old full-summary path at the production shape
+   and half the read starvation under ingest load. Full A/B, curves, and the
+   rejected alternatives in the [dedup section](#dedup--existence-check-ab-dedupprobe--the-mirror-relays-hottest-query).
+
 Everything is gated by the parity harness (now **127/127**, including the
 list-shaped specs) and the vespa test suite. Measured id-lookup gain from (2):
 **+34–65 %** across runs. Server-side matching and the NIP-50 ranking cost are
@@ -512,6 +520,154 @@ sets once per scan (was per-doc linear membership — a 300-author filter over a
 30k corpus was ~9M string compares per query). Same semantics; it just stops
 punishing exactly the list shapes under study, in the benchmark and in every
 store test that runs on the reference.
+
+## Dedup / existence-check A/B (`dedupProbe`) — the mirror relay's hottest query
+
+A relay that continuously mirrors upstream relays re-sees the network: at
+steady state **~99% of offered events are already stored** (observed live:
+11.9M rejected vs 171k accepted per cycle on a 52.9M-event store, with the
+`dedup` ingest stage at 88s — 30–60× the actual write). The bulk path's stage
+B answers "which of these 500 ids do I hold?" and used to answer it with the
+regular recall query — materializing ~500 **full document summaries** to read
+one field (`id`) off them. This A/B measured every alternative that can answer
+set membership exactly.
+
+Setup: 1M-event `NostrCorpus` (934k live docs after supersession/deletions) on
+a single-node Vespa container (4-core host), client addressing the container
+IP directly (see the docker-proxy caveat below). Chunks are 500 ids at 99%
+stored / 1% novel, hit ids sampled off the live store via the visit walk, so
+membership has a known right answer — **every variant must return the
+identical member set or the run fails** (all did: 29,700/29,700 across 60
+reps). Coverage is checked on every response; a degraded answer is refused,
+same as production.
+
+### One 500-id chunk, serial (ms/chunk; engine timing via `presentation.timing`)
+
+| variant | ms/chunk | p95 | bytes/chunk | engine query ms | engine summary ms |
+|---|---:|---:|---:|---:|---:|
+| `prod` — store `search(EventQuery(ids))`, the old stage B | 50.0 | 125 | ~353k | 5.2 | 5.7 |
+| `prod-new` — store `existingIds()` (shipped) | **23.5** | 95 | ~83k | 3.3 | 1.7 |
+| raw full-summary query (JDK client) | 23.5 | 32 | 353,317 | 5.2 | 5.7 |
+| raw `select id`, default summary class | 11.4 | 14 | 83,413 | 3.3 | 1.5 |
+| raw `select id` + `dedup` summary class (the shipped wire shape) | **10.9** | 14 | 83,412 | 3.3 | 1.7 |
+| raw grouping `all(group(id) each(output(count())))` | 13.8 | 19 | 99,890 | 7.5 | 0.0 |
+| document-API gets ×500 (fanout 32) | 728.6 | 881 | 585,334 | — | — |
+
+What the old path actually paid per chunk: **~353KB of response** (full NIP-01
+summaries — tags, content, sig — for ~495 documents nobody reads) plus the
+client-side decode of all of it (the `prod` 50ms vs raw 23.5ms gap is mostly
+that decode: 500 `EventDoc`s with a tags-JSON parse each). The existence check
+transfers ~83KB (the ids and hit envelopes), skips document reconstruction
+entirely, and at the engine drops summary fill to ~attribute reads.
+
+- **Winner: `select id` under the attribute-only `dedup` document-summary**
+  (event.sd now ships it). Every field in the class is an attribute, so Vespa
+  serves it from memory (the docsum attribute combiner) — the disk summary
+  store never runs. On this cache-warm 934k corpus the default-class
+  `select id` measures the same, but that equality is page-cache luck; the
+  dedicated class is the structural guarantee for a 52.9M-event store under
+  memory pressure, and it costs one deploy (no re-feed, no reindex).
+- **Grouping** (matched ids as group values, zero summary stage) is exact and
+  needs no schema change, but pays ~4ms/chunk more in container-side grouping
+  work (engine query 7.5ms vs 3.3ms). Rejected as the default; it remains the
+  right shape where a redeploy is impossible.
+- **Document-API gets do collapse at this width**: 500 gets × 60 reps at
+  fanout 32 = 729ms/chunk, 67× the winner — confirming `ID_GET_FANOUT`'s KDoc.
+  They are also **wrong under address-keying** (a replaceable lives at its
+  address docid, not its id), which is why `existingIds` stays on the search
+  stack: the `id` attribute carries the event id whatever the docid is.
+
+### Aggregate throughput (ids/s), chunk-size × fan-out
+
+| chunk | full f=1 | full f=4 | full f=16 | exist f=1 | exist f=4 | exist f=16 |
+|---:|---:|---:|---:|---:|---:|---:|
+| 100 | 14,934 | 12,195 | 10,955 | 28,898 | 27,180 | 30,018 |
+| 250 | 18,407 | 22,721 | 20,810 | 49,557 | 43,149 | 37,860 |
+| 500 | 23,131 | 23,334 | 23,868 | 59,861 | 52,579 | 53,546 |
+| 1000 | 29,020 | 29,543 | 31,591 | 62,383 | 67,949 | 61,609 |
+| 2000 | 31,898 | 31,663 | 32,741 | 75,087 | 80,251 | 80,350 |
+
+At the production shape (`CHECK_CHUNK=500`, `QUERY_FANOUT=4`) the existence
+check is **2.3×** the old path; at 2000-id chunks it reaches **3.4×**. Two
+constant-tuning observations, both from THIS box (single content node, 4
+cores, client co-located — the fan-out geometry of a real deployment differs):
+
+- **Fan-out is flat here at every width** — one node saturates on the
+  per-term match work regardless of how many requests carry it, so 4 is
+  neither leaving capacity unused nor protecting anything (the 504 risk the
+  fanout cap exists for lives in the SUMMARY stage, which this path no longer
+  exercises). On a multi-node or many-core cluster the curve should be re-run
+  before touching `VESPA_QUERY_FANOUT`.
+- **Chunk width has real headroom**: throughput still climbs at 2000 ids
+  (+35% over 500) because the per-query fixed cost amortizes while per-term
+  match cost is linear either way. `CHECK_CHUNK` stays 500 — the REQ-latency
+  A/B below was measured at that width, and longer chunks mean longer engine
+  occupancy per query, which is exactly the read-starvation lever — but the
+  curve says a deployment that cares more about sync speed than read latency
+  can profitably widen it.
+
+### Read starvation: author-timeline REQ latency while dedup runs flat out
+
+The second cost of the old path: dedup competes with client REQs for the same
+content-node threads (observed live: a 381ms REQ answering nothing for 20s
+while ingest saturated Vespa at 1087% CPU). Measured here as p50/p99 of a
+50-hit author-timeline REQ while a fanout-4 dedup load runs continuously:
+
+| dedup load | REQ p50 ms | REQ p99 ms |
+|---|---:|---:|
+| idle | 6.9 | 8.5 |
+| full-summary chunks (old stage B) | 86.9 | 101.1 |
+| existence chunks (shipped) | **40.7** | **49.8** |
+| grouping chunks | 55.0 | 64.7 |
+
+The existence check **halves read starvation at the same offered dedup load**
+— and because each chunk also finishes 2.3× sooner, a fixed-size sync cycle
+occupies the engine for less than half as long in total.
+
+### Address-keying and the id paths (analysis, verified against the code)
+
+`VESPA_ADDRESS_KEYED` is opt-in and default-off. What it changes for id work:
+
+- **Stage B dedup is identical in both modes** — 500-id chunks always exceed
+  `ID_GET_FANOUT`, so they ride the search stack either way, and the `id`
+  attribute resolves docs at any docid. Nothing in this A/B moves.
+- **Point reads get slower under address-keying**: `isPureIdLookup` is gated
+  on `!addressKeyed`, so even a single-id REQ routes through `/search/`
+  (~35–55% slower than the direct get, per the optimization notes above).
+- **Stage D gets cheaper**: supersession becomes one conditional put per event
+  (engine-side test-and-set, no read at all) — already the cheapest exact
+  "do I hold this address and is mine newer" (§2c measured it at 1,940 ev/s
+  vs 1,569 for read-then-supersede on draft churn). In default mode stage D's
+  version reads are per-(kind, author-chunk) queries that return few docs —
+  a different shape from stage B's 99%-hit id sets, and not the bottleneck
+  the ingest stage timings point at (`dedup 88.4s  versions 10.5s`).
+
+### Bloom filters and caches — why not (here)
+
+At 99% duplicates the useful filter would prove *presence* cheaply, and a
+Bloom filter proves only *absence* — `mightContain=false` (the exact "it's
+new" answer) fires on ~1% of this traffic, so it saves ~1% of the work.
+`GuardBloom` stays what it is: a guard-owner gate, whose no-false-negatives
+property serves a differently-shaped question. An exact presence cache (ids
+confirmed stored, invalidated through the write decorator the way the trust
+projection observes deletions) would genuinely remove round trips, but it must
+hold full 32-byte ids to stay exact (~1.7GB at 52.9M events, or an eviction
+policy plus every deletion-style invalidation edge). With the summary-free
+check at ~11ms/500 ids, the store-side complexity was not worth it; revisit
+only if dedup is still the top line after this lands.
+
+### Measurement caveat: docker-proxy (`transportProbe`)
+
+The first probe run showed the production OkHttp stack ~45ms/query slower
+than a raw JDK client on the identical wire query. `transportProbe` isolated
+it: a flat ~45ms stall on POST bodies past ~8–10KB, OkHttp h1 and h2c alike,
+JDK client unaffected — and it disappears entirely when the engine is
+addressed by container IP instead of through docker's port mapping. It is a
+docker-proxy (userspace port-forward) interaction, not a production transport
+finding; every number above was taken against the container IP. Worth knowing
+for anyone benchmarking through `-p 8080:8080`, and for any deployment that
+puts a userspace proxy between the store and its engine: a 500-id existence
+query is a 35KB POST, and behind such a proxy it would pay the stall.
 
 ## Latency tails (p50/p95/p99 — now on every row)
 
