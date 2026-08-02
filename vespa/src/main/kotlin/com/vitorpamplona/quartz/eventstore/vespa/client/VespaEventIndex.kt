@@ -310,27 +310,59 @@ class VespaEventIndex(
     private fun demoteRecency(q: EventQuery): EventQuery = if (!recencyProfileAvailable && EventYql.usesRecencyProfile(q)) q.copy(ranking = EventYql.RANK_UNRANKED) else q
 
     /**
-     * Run [attempt] with the recency-profile compatibility net: a 400 naming
-     * the profile means the serving schema predates it — flip
-     * [recencyProfileAvailable] and rerun the demoted query instead of failing
-     * the REQ. Any other failure propagates untouched.
+     * False from the first 400 naming a `recency_gated*` profile: the serving
+     * schema predates the observer gate (deployIfAbsent never redeploys onto a
+     * serving cluster), so gated recall demotes to plain [RANK_UNRANKED] —
+     * FAIL-OPEN, the pre-gate behavior: the feed serves ungated until the
+     * operator redeploys the schema, consistent with how every other missing
+     * trust input degrades (an absent observer, an unranked author). One
+     * failed query flips it for the life of this client; a schema redeploy
+     * plus restart restores the gate.
+     */
+    @Volatile private var gatedProfileAvailable = true
+
+    private fun EventQuery.isGated(): Boolean = ranking == EventYql.RANK_RECENCY_GATED || ranking == EventYql.RANK_RECENCY_GATED_EXACT
+
+    /** [q] rebuilt for a schema without the gated profiles — a no-op while they serve. */
+    private fun demoteGated(q: EventQuery): EventQuery = if (!gatedProfileAvailable && q.isGated()) q.copy(ranking = EventYql.RANK_UNRANKED) else q
+
+    /**
+     * Run [attempt] with the profile compatibility nets: a 400 naming the
+     * `recency` or `recency_gated*` profile means the serving schema predates
+     * it — flip the matching flag and rerun the demoted query instead of
+     * failing the REQ. Any other failure propagates untouched.
      */
     private suspend fun <T> recencySafe(
         q: EventQuery,
         attempt: suspend (EventQuery) -> T,
     ): T =
         try {
-            attempt(demoteRecency(q))
+            attempt(demoteGated(demoteRecency(q)))
         } catch (e: IllegalArgumentException) {
             // queryBody's status guard is a require(), hence IllegalArgument.
             // No flag check here: an attempt that actually ran demoted was
             // unranked and can never 400 naming the profile, so this match
             // already proves the attempt used it — and re-reading the flag
             // would race a concurrent query's flip into a spurious failure.
-            val missingProfile = e.message?.contains("400") == true && e.message?.contains(EventYql.RANK_RECENCY) == true
-            if (!EventYql.usesRecencyProfile(q) || !missingProfile) throw e
-            recencyProfileAvailable = false
-            attempt(demoteRecency(q))
+            // The two nets can't cross-fire: a gated query never satisfies
+            // usesRecencyProfile (it carries a ranking), and a plain recency
+            // 400's message ("recency") never contains "recency_gated".
+            val is400 = e.message?.contains("400") == true
+            when {
+                is400 && q.isGated() && e.message?.contains(EventYql.RANK_RECENCY_GATED) == true -> {
+                    gatedProfileAvailable = false
+                    attempt(demoteGated(q))
+                }
+
+                is400 && EventYql.usesRecencyProfile(q) && e.message?.contains(EventYql.RANK_RECENCY) == true -> {
+                    recencyProfileAvailable = false
+                    attempt(demoteRecency(q))
+                }
+
+                else -> {
+                    throw e
+                }
+            }
         }
 
     /**
@@ -413,10 +445,15 @@ class VespaEventIndex(
      * — the sort alone restores the contract.
      */
     private suspend fun recallSummaries(q: EventQuery): List<VespaSummary> {
+        // The gated profiles are recency-ordered too (score IS created_at), so
+        // they take the same overfetch + tie-resolution path — their engine
+        // score ties are exactly as arbitrary as the single-key sort's.
         val recencyOrdered =
             (q.ranking == null && q.search.isNullOrBlank()) ||
                 q.ranking == EventYql.RANK_UNRANKED ||
-                q.ranking == EventYql.RANK_RECENCY
+                q.ranking == EventYql.RANK_RECENCY ||
+                q.ranking == EventYql.RANK_RECENCY_GATED ||
+                q.ranking == EventYql.RANK_RECENCY_GATED_EXACT
         if (!recencyOrdered) {
             return recallRoot(q)?.children?.mapNotNull { it.fields }?.filter { it.id.isNotEmpty() } ?: emptyList()
         }
@@ -439,8 +476,13 @@ class VespaEventIndex(
             // strictly older than T (all ==T docs sort before any <T doc).
             val complete = hits.size < fetch.limit!! || hits.last().createdAt < t
             if (!complete) {
+                // A gated query's tie window must stay gated (the exact
+                // variant — a [t,t] window is tiny) or the rerun would
+                // resurrect below-floor authors into the boundary group.
+                val gated = q.ranking == EventYql.RANK_RECENCY_GATED || q.ranking == EventYql.RANK_RECENCY_GATED_EXACT
+                val tieRanking = if (gated) EventYql.RANK_RECENCY_GATED_EXACT else EventYql.RANK_UNRANKED
                 val ties =
-                    recallRoot(q.copy(since = t, until = t, limit = null, ranking = EventYql.RANK_UNRANKED))
+                    recallRoot(q.copy(since = t, until = t, limit = null, ranking = tieRanking))
                         ?.children
                         ?.mapNotNull { it.fields }
                         ?.filter { it.id.isNotEmpty() }
@@ -466,7 +508,12 @@ class VespaEventIndex(
     private suspend fun recallRoot(q: EventQuery): SearchRoot? {
         val vq = EventYql.build(q) ?: return null
         val root = searchRoot(vq, hits = hitsFor(q))
-        if (vq.ranking == EventYql.RANK_RECENCY && root.coverage.matchPhaseDegraded) {
+        // Both match-phase profiles share the degradation guard; they differ
+        // only in what "exact" means for the rerun — unranked for plain
+        // recency, the full-scan gated variant for gated recall (the gate must
+        // survive the rerun or under-delivery would serve spam).
+        val matchPhased = vq.ranking == EventYql.RANK_RECENCY || vq.ranking == EventYql.RANK_RECENCY_GATED
+        if (matchPhased && root.coverage.matchPhaseDegraded) {
             // A FULL page proves exactness only on ONE content node: max-hits
             // is per node and each node picks its own cut threshold, so with
             // several nodes one node's overshoot can drop mid-page docs while
@@ -483,7 +530,8 @@ class VespaEventIndex(
             val boundaryTied = oldest != null && timestamps.count { it == oldest } > 1
             val provablyExact = root.children.size >= (q.limit ?: 0) && root.coverage.nodes <= 1 && !boundaryTied
             if (!provablyExact) {
-                val unranked = q.copy(ranking = EventYql.RANK_UNRANKED)
+                val exactRanking = if (vq.ranking == EventYql.RANK_RECENCY_GATED) EventYql.RANK_RECENCY_GATED_EXACT else EventYql.RANK_UNRANKED
+                val exact = q.copy(ranking = exactRanking)
                 // The rerun must be exact but need not be UNBOUNDED — a full
                 // corpus-order scan here would make the profile a net loss on
                 // every cluster where degradation is routine:
@@ -491,24 +539,31 @@ class VespaEventIndex(
                 //    newer than at least one returned doc, so `since = oldest
                 //    returned created_at` (inclusive — ties included) bounds
                 //    the rerun to a page-sized window, provably lossless.
-                //  - SHORT page: nothing returned bounds the miss, so route
-                //    through the count-probe ladder the profile normally skips.
+                //    (Holds gated too: the gate only shrinks what the cut kept,
+                //    and the rerun applies the same gate.)
+                //  - SHORT page: nothing returned bounds the miss. Plain
+                //    recency routes through the count-probe ladder the profile
+                //    normally skips; a gated short page cannot (the probes
+                //    count the UNGATED match set) and pays the full-scan gated
+                //    rerun — the one genuinely expensive path, reached only
+                //    when the newest ~max-hits candidates hold fewer than
+                //    `limit` trusted hits.
                 val rerun =
                     when {
                         root.children.size >= (q.limit ?: 0) && oldest != null -> {
-                            unranked.copy(since = maxOf(q.since ?: Long.MIN_VALUE, oldest))
+                            exact.copy(since = maxOf(q.since ?: Long.MIN_VALUE, oldest))
                         }
 
-                        queryPlanning && unranked.isBareRecencyScan() -> {
-                            planWindow(unranked)
+                        queryPlanning && exact.isBareRecencyScan() -> {
+                            planWindow(exact)
                         }
 
                         else -> {
-                            unranked
+                            exact
                         }
                     }
-                val exact = EventYql.build(rerun) ?: return root
-                return searchRoot(exact, hits = hitsFor(q))
+                val rerunVq = EventYql.build(rerun) ?: return root
+                return searchRoot(rerunVq, hits = hitsFor(q))
             }
         }
         return root
@@ -1199,7 +1254,7 @@ class VespaEventIndex(
         DECODER
             .decodeFromString<SearchEnvelope>(queryBody(vq, hits))
             .root
-            .also { it.coverage.requireComplete(allowMatchPhase = vq.ranking == EventYql.RANK_RECENCY) }
+            .also { it.coverage.requireComplete(allowMatchPhase = vq.ranking == EventYql.RANK_RECENCY || vq.ranking == EventYql.RANK_RECENCY_GATED) }
 
     /** The grouping/count paths need the full tree; [searchRoot] does not (it decodes hits directly). */
     private suspend fun queryRoot(
@@ -1221,13 +1276,14 @@ class VespaEventIndex(
      * dedup and NIP-09/62 guards decide by "did the query find it" and a partial
      * answer resurrects a deleted event. So it fails loudly instead.
      *
-     * ONE deliberate exception: [allowMatchPhase]. The `recency` profile ASKS
-     * the engine to cut the match phase to the newest ~max-hits candidates
-     * (see [EventYql.RANK_RECENCY]) — for that profile, match-phase degradation
-     * is the optimization working as designed, with a 10x limit-to-max-hits
-     * margin keeping the returned top-`limit` intact. Any OTHER degradation
-     * (timeout, non-ideal-state), or match-phase on a query that didn't opt in,
-     * is still refused.
+     * ONE deliberate exception: [allowMatchPhase]. The match-phase profiles
+     * (`recency`, `recency_gated`) ASK the engine to cut the match phase to
+     * the newest ~max-hits candidates (see [EventYql.RANK_RECENCY] /
+     * [EventYql.RANK_RECENCY_GATED]) — for those profiles, match-phase
+     * degradation is the optimization working as designed, and [recallRoot]
+     * separately verifies the page or reruns it exact. Any OTHER degradation
+     * (timeout, non-ideal-state), or match-phase on a query that didn't opt
+     * in, is still refused.
      */
     private fun SearchCoverage.requireComplete(allowMatchPhase: Boolean = false) {
         if (full) return
