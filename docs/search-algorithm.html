@@ -225,13 +225,17 @@ exact floor   w_name_tier + 100  = 130 100   &gt; 129 248 ✓   → w_name_tier 
      reporting observer's lens, CITADEL DISPATCH — bio "hosted by ODELL", author trust <b>97</b> — ranked #9,
      below trust-<b>13</b> accounts <em>named</em> odell, because no trust score could bridge the ~×236
      bio→name band ratio. <code>wot_mult()</code> is now convex —
-     <code>1 + w_wot·min(user_score − min_rank, 100)<sup>w_wot_pow</sup></code>, cubic by default — so a lower
+     <code>1 + w_wot·min(user_score − min_rank, 100)<sup>w_wot_pow</sup></code> — so a lower
      rung overtakes the rung above when its trust-delta ratio exceeds
-     <code>(rung ratio)<sup>1/w_wot_pow</sup></code>: ≈1.8× per rung, ≈6.2× across the full bio→name gap.
-     97-vs-13 crosses; 97-vs-93 does not, so an exact name match at comparable trust stays on top. At equal
+     <code>(rung ratio)<sup>1/w_wot_pow</sup></code>. The report bounds that threshold from both sides: the
+     97-trust bio mention must beat the trust-13 name squatters (delta ratio 95/11 ≈ 8.6), a <b>77</b>-trust
+     bio mention must <em>not</em> (75/11 ≈ 6.8), and nothing may beat the 93-trust exact ODELL. That window
+     pins <code>w_wot_pow</code> to ~2.55–2.85; the shipped <b>2.7</b> splits it — ≈1.9× per rung, ≈7.6×
+     across the full bio→name gap, so a name match only falls to a bio mention on near-top trust while a
+     near-floor name match (trust ≤ ~4) still falls behind everyday ~20+-trust bio mentions. At equal
      trust the four-rung ladder above is as strict as ever. Re-derive the crossing thresholds on any change to
-     the rung weights, <code>w_wot</code> or <code>w_wot_pow</code>; <code>RankRegressionIT</code> pins the
-     crossing ("overwhelming trust crosses the tier ladder") and <code>rank_cases.json</code> carries the live
+     the rung weights, <code>w_wot</code> or <code>w_wot_pow</code>; <code>RankRegressionIT</code> pins both
+     bounds ("overwhelming trust crosses the tier ladder") and <code>rank_cases.json</code> carries the live
      case.</p>
 
   <h3>The other profiles</h3>
@@ -280,7 +284,7 @@ exact floor   w_name_tier + 100  = 130 100   &gt; 129 248 ✓   → w_name_tier 
     <tr><td><code>w_gram</code></td><td>8.0 if shortest ≤ 3 else 2.0 (client-set)</td><td>same</td><td>trigram signal weight — the 4-char step behind the cliff</td></tr>
     <tr><td><code>gram_cap</code></td><td>80</td><td>80</td><td>ceiling on gram contribution (&lt; one matchCount unit)</td></tr>
     <tr><td><code>w_wot</code></td><td>1.0</td><td>1.0</td><td>trust multiplier scale; 0 = pure text</td></tr>
-    <tr><td><code>w_wot_pow</code></td><td>— (log curve)</td><td><b>3.0</b></td><td>trust-curve exponent: a rung is crossed at a trust-delta ratio of (rung ratio)^(1/w_wot_pow) — 3.0 ⇒ ~1.8× per rung, ~6.2× bio→name; 1.0 ⇒ trust (almost) never crosses (see §4, 2026-08 revision)</td></tr>
+    <tr><td><code>w_wot_pow</code></td><td>— (log curve)</td><td><b>2.7</b></td><td>trust-curve exponent: a rung is crossed at a trust-delta ratio of (rung ratio)^(1/w_wot_pow) — 2.7 ⇒ ~1.9× per rung, ~7.6× bio→name (the report's two-sided window pins ~2.55–2.85); 1.0 ⇒ trust (almost) never crosses (see §4, 2026-08 revision)</td></tr>
     <tr><td><code>min_rank</code></td><td>−1e9 default; client sends 2.0 on ranked searches</td><td>2.0 sent</td><td>trust floor; also anchors the trust curve — <b>unset, wot_mult flattens to a constant</b> (the delta clamps at the 0..100 scale) and trust ordering vanishes (our store layer defaults it; direct EventQuery users must too)</td></tr>
     <tr><td><code>w_match_step</code> / <code>w_pop_match_step</code></td><td>250 / 1e7</td><td>same</td><td>exact&gt;prefix&gt;typo ladder spacing — <b>inert</b> (itemRawScore)</td></tr>
     <tr><td><code>w_proximity</code></td><td>30</td><td>30</td><td>multi-word closeness tie-break, &lt; w_match_step by design</td></tr>

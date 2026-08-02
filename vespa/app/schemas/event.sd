@@ -404,13 +404,19 @@ schema event {
             #     exact floor  = w_name_tier + 100 = 130 100  (~×5.65 near)
             # ACROSS trust, wot_mult() (convex: 1 + trust-delta^w_wot_pow)
             # lets a lower rung overtake the rung above when its trust-delta
-            # ratio exceeds (rung ratio)^(1/w_wot_pow) — at the cubic default
-            # ≈1.8× per rung, ≈6.2× for the full bio→name gap (×236).
+            # ratio exceeds (rung ratio)^(1/w_wot_pow) — at the shipped 2.7
+            # ≈1.9× per rung, ≈7.6× for the full bio→name gap (×236).
             # Calibrated against the 2026-08-02 "odell" report (the rank case
-            # in benchmark/rank_cases.json): the observer's 97-trust CITADEL
-            # DISPATCH bio mention (delta 95) must beat the trust-13 accounts
-            # NAMED odell (delta 11; 95/11 > 6.2 ✓) and must NOT beat the
-            # 93-trust exact ODELL (95/91 is nowhere near 6.2). The old
+            # in benchmark/rank_cases.json), which bounds the threshold from
+            # BOTH sides: the observer's 97-trust CITADEL DISPATCH bio
+            # mention (delta 95) must beat the trust-13 accounts NAMED odell
+            # (delta 11; 95/11 ≈ 8.6 > 7.6 ✓); a 77-trust bio mention must
+            # NOT beat them (75/11 ≈ 6.8 < 7.6 ✓ — a name match only falls
+            # to a bio mention on near-top trust, though a near-FLOOR name
+            # match, trust ≤ ~4, still falls behind everyday ~20+-trust bio
+            # mentions); and nothing may beat the 93-trust exact ODELL
+            # (95/91 is nowhere near 7.6). The window pins w_wot_pow to
+            # ~2.55..2.85; 2.7 splits the margin. The old
             # log-concave curve spanned 1.0→~5.6 — under every rung ratio —
             # so trust could NEVER cross a tier and the 97-trust bio mention
             # sat below every name squatter. Re-derive the crossing
@@ -469,11 +475,11 @@ schema event {
             # Exponent of wot_mult()'s trust curve. Sets how much trust
             # advantage crosses a text tier: the trust-delta ratio needed to
             # overtake the rung above is (rung ratio)^(1/w_wot_pow) — see the
-            # ladder derivation at query(w_name_tier). 3.0 calibrates the
-            # full bio→name gap (×236) to a ~6.2× advantage; 1.0 (linear)
+            # ladder derivation at query(w_name_tier). 2.7 calibrates the
+            # full bio→name gap (×236) to a ~7.6× advantage; 1.0 (linear)
             # pushes the same crossing past the 0..100 scale, i.e. trust is
             # back to (almost) never reordering tiers.
-            query(w_wot_pow) double: 3.0
+            query(w_wot_pow) double: 2.7
             # Discard hits whose text_score is below this BEFORE the trust
             # multiply — kills weak gram-only noise so trust can't float it.
             #
@@ -770,7 +776,7 @@ schema event {
 
         # MULTIPLICATIVE trust — NOT additive (additive WoT swamped exactness).
         # 0 below the rank cutoff (server passes min_rank=2), then a CONVEX
-        # (cubic by default: w_wot_pow) boost over the trust delta.
+        # power boost over the trust delta (w_wot_pow, shipped 2.7).
         # w_wot=0 => pure text.
         #
         # WHY convex, not the concave log this shipped with: the log's whole
@@ -778,8 +784,8 @@ schema event {
         # trust could NEVER cross a text tier, and "odell" buried the
         # observer's 97-trust CITADEL DISPATCH (bio: "hosted by ODELL") at
         # #9, under trust-13 accounts NAMED odell (reported 2026-08-02).
-        # Cubed trust-deltas make the crossing deliberate and calibrated —
-        # only an overwhelming (~6.2× for bio→name) trust advantage crosses;
+        # Powered trust-deltas make the crossing deliberate and calibrated —
+        # only an overwhelming (~7.6× for bio→name) trust advantage crosses;
         # see the ladder derivation at query(w_name_tier).
         #
         # The delta is clamped to the served 0..100 provider scale (the store
@@ -787,11 +793,11 @@ schema event {
         # the crossing calculus can't be distorted from either side. The
         # clamp is also what keeps the fail-open min_rank default (-1e9)
         # merely degenerate rather than astronomical: it flattens the
-        # multiplier to the same 1 + w_wot·100³ constant for every author and
-        # the order degrades to pure text (the include:spam regression; the
-        # store sends 0.0 for that case). query(min_rank) is therefore ALSO
-        # the curve's anchor, not just the gate: a sender that wants "no
-        # gate" must pass min_rank=0, never omit the feature.
+        # multiplier to the same 1 + w_wot·100^w_wot_pow constant for every
+        # author and the order degrades to pure text (the include:spam
+        # regression; the store sends 0.0 for that case). query(min_rank) is
+        # therefore ALSO the curve's anchor, not just the gate: a sender that
+        # wants "no gate" must pass min_rank=0, never omit the feature.
         function wot_mult() {
             expression: if(user_score() < query(min_rank), 0.0, 1.0 + query(w_wot) * pow(min(max(0.0, user_score() - query(min_rank)), 100.0), query(w_wot_pow)))
         }

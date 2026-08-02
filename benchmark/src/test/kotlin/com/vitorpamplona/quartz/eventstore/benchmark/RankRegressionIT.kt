@@ -58,8 +58,8 @@ class RankRegressionIT {
     // Docs 1/2/14 get DISTINCT authors so the sort:followers case can hang a
     // different verified-follower count on each via the reputation parent;
     // docs 6/7/8 likewise, so the include:spam case can trust exactly one of
-    // the three Vitor namesakes; docs 2/15/19 likewise, so the trust-crossing
-    // case can rank the bio mention far above the name squatter.
+    // the three Vitor namesakes; docs 2/15/19/20 likewise, so the
+    // trust-crossing case can bound the crossing from both sides.
     private val corpus =
         listOf(
             profile(1, name = "Ode", pubkey = pk(1)),
@@ -84,6 +84,8 @@ class RankRegressionIT {
             profile(18, name = "Vitor"),
             // A barely-trusted account NAMED odell — the trust-crossing case's foil.
             profile(19, name = "ODELL mirror", pubkey = pk(19)),
+            // A well-but-not-top-trusted bio mention — must NOT cross above the foil.
+            profile(20, name = "fan zine", about = "all things ODELL, unofficial", pubkey = pk(20)),
         )
 
     @Test
@@ -210,9 +212,10 @@ class RankRegressionIT {
                                     // unranked (user_score 0).
                                     ReputationDoc(pk(7), influenceScores = mapOf(OBSERVER to 60)),
                                     // The trust-crossing case: a near-top-trust bio mention
-                                    // vs a barely-trusted name squatter.
+                                    // and a well-trusted one vs a barely-trusted name squatter.
                                     ReputationDoc(pk(15), influenceScores = mapOf(OBSERVER to 97)),
                                     ReputationDoc(pk(19), influenceScores = mapOf(OBSERVER to 13)),
+                                    ReputationDoc(pk(20), influenceScores = mapOf(OBSERVER to 77)),
                                 ),
                             )
                         }
@@ -253,15 +256,18 @@ class RankRegressionIT {
                             "include:spam keeps the unranked namesakes in the result: $vnames",
                         )
 
-                        // --- overwhelming trust crosses the tier ladder ---
+                        // --- overwhelming trust crosses the tier ladder — bounded from BOTH sides ---
                         // The 2026-08-02 "odell" report: under the observer's lens
                         // CITADEL DISPATCH (bio "hosted by ODELL", trust 97) sat
                         // #9, below trust-13 accounts NAMED odell — the log trust
                         // curve (span ~5.6×) could never cross the ~236× bio→name
-                        // band ratio. wot_mult()'s cubic trust-delta curve crosses
-                        // on a ~6.2× advantage: the 97-trust bio mention must beat
-                        // the 13-trust name squatter, while the 93-trust exact
-                        // name stays on top (97-vs-93 is nowhere near a crossing).
+                        // band ratio. wot_mult()'s power curve (w_wot_pow 2.7)
+                        // crosses on a ~7.6× trust-delta advantage, a window the
+                        // report pins from both sides: the 97-trust bio mention
+                        // (delta ratio 95/11 ≈ 8.6) must beat the 13-trust name
+                        // squatter, the 77-trust bio mention (75/11 ≈ 6.8) must
+                        // NOT, and the 93-trust exact name stays on top of
+                        // everything (97-vs-93 is nowhere near a crossing).
                         val lensed =
                             indexRef.searchScored(
                                 EventQuery(search = "odell", observer = OBSERVER, minRank = 2.0),
@@ -275,6 +281,10 @@ class RankRegressionIT {
                         assertTrue(
                             lnames.indexOf("podcaster") < lnames.indexOf("ODELL mirror"),
                             "a 97-trust bio mention must cross above a 13-trust name match: $lnames",
+                        )
+                        assertTrue(
+                            lnames.indexOf("ODELL mirror") < lnames.indexOf("fan zine"),
+                            "a 77-trust bio mention must NOT cross above a 13-trust name match: $lnames",
                         )
                         assertEquals("affiliation", lensed.first { nameOf(it.doc) == "podcaster" }.tier)
 
