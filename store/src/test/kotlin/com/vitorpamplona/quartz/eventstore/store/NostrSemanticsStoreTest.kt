@@ -407,6 +407,48 @@ open class NostrSemanticsStoreTest {
             assertEquals(1, store.count(Filter(kinds = listOf(RequestToVanishEvent.KIND))))
         }
 
+    /**
+     * distinctTagValues answers a full-fidelity tag select off the tags
+     * projection: a positional NIP-65 marker condition (invisible to a
+     * `tag_index` grouping, which holds first values only) and a
+     * multi-character NIP-85 name at position 2 (absent from `tag_index`
+     * entirely) — the two select shapes a mirroring router discovers relays
+     * with.
+     */
+    @Test
+    fun `distinct tag values honor positional filters and multi-char names`() =
+        runBlocking {
+            // NIP-65 relay lists: markers live at position 2, no marker = read+write.
+            store.insert(Event(id(), alice, next(), 10002, arrayOf(arrayOf("r", "wss://a.example/", "write"), arrayOf("r", "wss://b.example/", "read")), "", ""))
+            store.insert(Event(id(), bob, next(), 10002, arrayOf(arrayOf("r", "wss://c.example/")), "", ""))
+            // NIP-85 provider list: the service relay rides at position 2 of a multi-char name.
+            store.insert(Event(id(), alice, next(), 10040, arrayOf(arrayOf("30382:rank", "p1".repeat(32), "wss://prov.example/")), "", ""))
+
+            val relayLists = Filter(kinds = listOf(10002))
+            assertEquals(
+                setOf("wss://a.example/", "wss://b.example/", "wss://c.example/"),
+                store.distinctTagValues(relayLists, "r"),
+            )
+            // The write select: the read-only relay drops, the unmarked one stays.
+            assertEquals(
+                setOf("wss://a.example/", "wss://c.example/"),
+                store.distinctTagValues(relayLists, "r") { it.size < 3 || it[2] == "write" },
+            )
+            // The assertions select: multi-char tag name, second value.
+            assertEquals(
+                setOf("wss://prov.example/"),
+                store.distinctTagValues(Filter(kinds = listOf(10040)), "30382:rank", valueIndex = 2),
+            )
+
+            // Replaceable supersession keeps the projection live: alice's newer
+            // list replaces hers, so only its relays (plus bob's) remain.
+            store.insert(Event(id(), alice, next(), 10002, arrayOf(arrayOf("r", "wss://d.example/", "write")), "", ""))
+            assertEquals(
+                setOf("wss://c.example/", "wss://d.example/"),
+                store.distinctTagValues(relayLists, "r"),
+            )
+        }
+
     /** NIP-50: unsupported key:value extensions are ignored, not matched as text. */
     @Test
     fun `search ignores unsupported extensions`() =

@@ -93,6 +93,11 @@ class TrustProjection(
         onPage: suspend (List<DocRef>) -> Boolean,
     ) = inner.visitIds(query, withDTag, onPage)
 
+    override suspend fun visitTags(
+        query: EventQuery,
+        onPage: suspend (List<List<List<String>>>) -> Boolean,
+    ) = inner.visitTags(query, onPage)
+
     override suspend fun count(query: EventQuery): Int = inner.count(query)
 
     // MUST forward like the walks above: the interface default re-lists the

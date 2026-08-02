@@ -494,13 +494,16 @@ class MockVespaEngine {
         // classic bug) is ILLEGAL_PARAMETERS, so reject it here too instead of
         // leniently matching `.contains("tag_index")`.
         val fullDocument = fieldSet == "[document]" // every real document field, like a doc-API get
+        val projected = if (fullDocument) emptyList() else fieldSet.substringAfter(":", "").split(",")
         if (fieldSet.isNotEmpty() && !fullDocument) {
-            val fields = fieldSet.substringAfter(":", "").split(",")
-            if (!fieldSet.contains(":") || fields.any { ":" in it }) {
+            if (!fieldSet.contains(":") || projected.any { ":" in it }) {
                 return Reply(400, """{"message":"ILLEGAL_PARAMETERS: bad fieldSet '$fieldSet'"}""")
             }
         }
-        val withTagIndex = fieldSet.contains("tag_index")
+        // Exact field-name membership, not substring: "event:tags" must project
+        // `tags` (the stored JSON string) and NOT `tag_index`, and vice versa.
+        val withTagIndex = "tag_index" in projected
+        val withTags = "tags" in projected
         val query = MockSelection.parse(selection)
         // Sliced visiting (`slices`/`sliceId`): each slice sees a disjoint
         // partition of the match set, so the union across all slices is exactly
@@ -516,7 +519,7 @@ class MockVespaEngine {
                 .filter { Math.floorMod(it.id.hashCode(), slices) == sliceId }
         val offset = params["continuation"]?.toIntOrNull() ?: 0
         if (params["stream"] == "true" && !ignoreStreamedVisits) {
-            return streamedVisit(all, offset, withTagIndex)
+            return streamedVisit(all, offset, withTagIndex, withTags)
         }
         val wanted = params["wantedDocumentCount"]?.toIntOrNull() ?: 1
         val page = all.drop(offset).take(minOf(wanted, VISIT_PAGE_CAP))
@@ -537,6 +540,7 @@ class MockVespaEngine {
                                         buildJsonObject {
                                             put("created_at", JsonPrimitive(doc.createdAt))
                                             if (withTagIndex) put("tag_index", JsonArray(doc.tagIndex().map(::JsonPrimitive)))
+                                            if (withTags) put("tags", JsonPrimitive(tagsJson(doc)))
                                         }
                                     },
                                 )
@@ -564,6 +568,7 @@ class MockVespaEngine {
         all: List<EventDoc>,
         offset: Int,
         withTagIndex: Boolean,
+        withTags: Boolean,
     ): Reply {
         val out = StringBuilder()
         val cut = cutStreamedVisitAfterDocs
@@ -575,7 +580,7 @@ class MockVespaEngine {
                     cutStreamedVisitAfterDocs = 0
                     return Reply(200, out.toString(), "application/jsonl")
                 }
-                out.append(putLine(doc, withTagIndex)).append('\n')
+                out.append(putLine(doc, withTagIndex, withTags)).append('\n')
                 emitted++
             }
             pos += bucket.size
@@ -590,6 +595,7 @@ class MockVespaEngine {
     private fun putLine(
         doc: EventDoc,
         withTagIndex: Boolean,
+        withTags: Boolean,
     ): String =
         buildJsonObject {
             put("put", JsonPrimitive("id:event:event::${doc.id}"))
@@ -598,9 +604,13 @@ class MockVespaEngine {
                 buildJsonObject {
                     put("created_at", JsonPrimitive(doc.createdAt))
                     if (withTagIndex) put("tag_index", JsonArray(doc.tagIndex().map(::JsonPrimitive)))
+                    if (withTags) put("tags", JsonPrimitive(tagsJson(doc)))
                 },
             )
         }.toString()
+
+    /** The stored `tags` field exactly as a feed wrote it (EventDoc.indexFields serializes the tag array to one JSON string). */
+    private fun tagsJson(doc: EventDoc): String = JsonArray(doc.tags.map { tag -> JsonArray(tag.map(::JsonPrimitive)) }).toString()
 
     private fun params(rawQuery: String): Map<String, String> =
         rawQuery

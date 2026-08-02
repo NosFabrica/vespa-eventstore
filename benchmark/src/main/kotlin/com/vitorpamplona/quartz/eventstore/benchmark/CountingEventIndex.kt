@@ -108,6 +108,14 @@ class CountingEventIndex(
         inner.visitIds(query, withDTag, onPage)
     }
 
+    override suspend fun visitTags(
+        query: EventQuery,
+        onPage: suspend (List<List<List<String>>>) -> Boolean,
+    ) {
+        searches.incrementAndGet()
+        inner.visitTags(query, onPage)
+    }
+
     // Delegate (not ride the default) so the decorator matches the interface contract.
     override suspend fun distinctAuthors(query: EventQuery): Set<String> {
         searches.incrementAndGet()

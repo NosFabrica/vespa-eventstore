@@ -736,6 +736,56 @@ class VespaEventIndexTest {
             assertEquals((1..15).map { "s$it" }.toSet(), got.mapNotNull { it.dTag }.toSet())
         }
 
+    /**
+     * The tags projection keeps FULL fidelity — multi-character names,
+     * every position, several same-name tags per doc — which is exactly what
+     * `tag_index` (single-letter, first-value) loses; a distinct-tag-value
+     * caller reads markers and non-first positions off these.
+     */
+    @Test
+    fun `visitTags streams every match's exact tags across the sliced walk`() =
+        runBlocking {
+            // 30 docs so the walk must cross page/bucket boundaries (page cap 7).
+            seed(
+                *(1..30)
+                    .map {
+                        doc(
+                            kind = 10002,
+                            tags =
+                                listOf(
+                                    listOf("r", "wss://relay$it.example/", if (it % 2 == 0) "write" else "read"),
+                                    listOf("30382:rank", "provider$it", "wss://prov$it.example/"),
+                                ),
+                        )
+                    }.toTypedArray(),
+            )
+            seed(doc(kind = 1, tags = listOf(listOf("r", "wss://other.example/")))) // outside the selection
+            val got = ArrayList<List<List<String>>>()
+            index.visitTags(EventQuery(kinds = listOf(10002))) {
+                got += it
+                true
+            }
+            val expected = reference.search(EventQuery(kinds = listOf(10002))).map { it.tags }
+            assertEquals(expected.map { it.toString() }.sorted(), got.map { it.toString() }.sorted())
+        }
+
+    /** A selection-inexpressible query keeps the same tags through the search fallback. */
+    @Test
+    fun `visitTags falls back to search for tag queries`() =
+        runBlocking {
+            seed(
+                doc(kind = 10002, tags = listOf(listOf("d", "x"), listOf("r", "wss://a.example/", "write"))),
+                doc(kind = 10002, tags = listOf(listOf("d", "y"), listOf("r", "wss://b.example/"))),
+            )
+            val q = EventQuery(kinds = listOf(10002), tags = mapOf("d" to listOf("x")))
+            val got = ArrayList<List<List<String>>>()
+            index.visitTags(q) {
+                got += it
+                true
+            }
+            assertEquals(reference.search(q).map { it.tags }, got)
+        }
+
     /** A selection-inexpressible query (tags) still walks correctly via the search fallback. */
     @Test
     fun `visitIds falls back to search for tag queries`() =
