@@ -198,7 +198,7 @@ class VespaEventIndex(
         val resp = http.get("${endpoint()}/document/v1/$NAMESPACE/$DOCTYPE/docid/$id")
         if (resp.statusCode() == 404) return null
         require(resp.statusCode() < 400) { "vespa get ${resp.statusCode()}: ${resp.body().take(300)}" }
-        return DECODER.decodeFromString<DocEnvelope>(resp.body()).fields?.toDoc()
+        return DECODER.decodeFromString<DocEnvelope>(resp.body()).fields?.toDoc(withNearState = true)
     }
 
     /** One doc by its `id` attribute via the search stack — the id-lookup path under address-keying (no doc-API get, no [getByIds] recursion). */
@@ -1181,7 +1181,7 @@ class VespaEventIndex(
         val resp = http.getVisit(resumeFrom?.let { "$base&continuation=$it" } ?: base)
         require(resp.statusCode() < 400) { "vespa visit ${resp.statusCode()}: ${resp.body().take(300)}" }
         val env = DECODER.decodeFromString<DocVisitEnvelope>(resp.body())
-        return DocsPage(env.documents.mapNotNull { it.fields?.toDoc() }, env.continuation)
+        return DocsPage(env.documents.mapNotNull { it.fields?.toDoc(withNearState = true) }, env.continuation)
     }
 
     override suspend fun count(query: EventQuery): Int =
@@ -1381,8 +1381,15 @@ class VespaEventIndex(
      * per hit — the store keeps it as a JSON string. The search columns map
      * positionally to [SearchFields] (all-null on the trimmed recall path, so it
      * equals [SearchFields.NONE]; populated on a full get).
+     *
+     * [withNearState] stamps [EventDoc.storedNearFields] from the summary's
+     * near arrays, and must be passed ONLY on document-API reads (get, the
+     * `[document]` visit), where the response is the complete stored document —
+     * there, an absent array is genuinely absent from the doc. Search summaries
+     * never carry the near fields (no `| summary`), so stamping there would
+     * claim every doc predates the near tier.
      */
-    private fun VespaSummary.toDoc(): EventDoc? {
+    private fun VespaSummary.toDoc(withNearState: Boolean = false): EventDoc? {
         if (id.isEmpty()) return null
         return EventDoc(
             id = id,
@@ -1396,7 +1403,7 @@ class VespaEventIndex(
             // normalized(): the feed writes "" for an absent name/display_name
             // sibling (SearchFields.fields), so fold it back to null on decode.
             search = SearchFields(name, displayName, about, nip05, lud16, website, primary, secondary, text, location).normalized(),
-        )
+        ).also { if (withNearState) it.storedNearFields = nearArrays() }
     }
 
     /**
@@ -1547,9 +1554,28 @@ class VespaEventIndex(
         @SerialName("search_secondary") val secondary: String? = null,
         @SerialName("search_text") val text: String? = null,
         @SerialName("search_location") val location: String? = null,
+        // The near-tier attribute arrays, present only on document-API reads
+        // (no `| summary` in the schema, so search hits never carry them).
+        // Decoded solely to stamp EventDoc.storedNearFields — the reindex's
+        // evidence of whether this doc predates the near tier.
+        @SerialName("name_parts") val nameParts: List<String>? = null,
+        @SerialName("name_tokens") val nameTokens: List<String>? = null,
+        @SerialName("search_primary_parts") val primaryParts: List<String>? = null,
+        @SerialName("search_primary_tokens") val primaryTokens: List<String>? = null,
+        @SerialName("search_secondary_tokens") val secondaryTokens: List<String>? = null,
         /** The rank profile's declared match-features, when the profile has any (see event.sd). */
         val matchfeatures: JsonObject? = null,
-    )
+    ) {
+        /** The near arrays this summary carries, keyed as fed. Only meaningful on document-API reads (see [toDoc]'s withNearState). */
+        fun nearArrays(): Map<String, List<String>> =
+            buildMap {
+                nameParts?.let { put("name_parts", it) }
+                nameTokens?.let { put("name_tokens", it) }
+                primaryParts?.let { put("search_primary_parts", it) }
+                primaryTokens?.let { put("search_primary_tokens", it) }
+                secondaryTokens?.let { put("search_secondary_tokens", it) }
+            }
+    }
 
     private companion object {
         const val NAMESPACE = "event"

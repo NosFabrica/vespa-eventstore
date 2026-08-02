@@ -208,22 +208,35 @@
     <div class="bar" style="background:var(--panel);width:12%">50 (port: 100)</div></div>
 
   <h3>Why 2000 is not enough — the trust multiply breaks the ladder</h3>
-  <p><code>wot_mult()</code> spans 1.0 → ~5.6 (at <code>min_rank</code>=2, log-concave). Tiers only stay ordered if
-     each band's <em>floor × 1.0</em> clears the band below's <em>ceiling × 5.6</em>. Measured upstream at
-     <code>w_name_tier</code>=2000: a max-trust bio mention ((550+130)×5.6 ≈ 3800) beat a floor-trust exact
-     name match (~2100) — searching "coffee" put 126 bio-only accounts above the account literally named
-     "coffee". Their re-derivation:</p>
+  <p>The log-concave <code>wot_mult()</code> this shipped with spanned 1.0 → ~5.6 (at <code>min_rank</code>=2).
+     Tiers only stay ordered under it if each band's <em>floor × 1.0</em> clears the band below's
+     <em>ceiling × 5.6</em>. Measured upstream at <code>w_name_tier</code>=2000: a max-trust bio mention
+     ((550+130)×5.6 ≈ 3800) beat a floor-trust exact name match (~2100) — searching "coffee" put 126 bio-only
+     accounts above the account literally named "coffee". Their re-derivation:</p>
   <pre><code>bio ceiling   (550 + 130) × 5.6  ≈   3 808
 weak floor    w_weak_tier        =   4 000   &gt;   3 808 ✓   (infix + hashtag prefix)
 weak ceiling  (4000 + 80) × 5.6  =  22 848
 near floor    w_near_tier        =  23 000   &gt;  22 848 ✓
 near ceiling  (23000 + 80) × 5.6 = 129 248
 exact floor   w_name_tier + 100  = 130 100   &gt; 129 248 ✓   → w_name_tier = 130 000</code></pre>
-  <p class="note">The invariant to re-derive on any weight change:
-     <code>w_name_tier + 100 &gt; (w_near_tier + gram_cap) × max(wot_mult)</code> and
-     <code>w_near_tier &gt; (w_affil_tier_text + ~130) × max(wot_mult)</code> — and one more rung down for
-     <code>w_weak_tier</code>. This branch ships the four-rung values above; the deployed pre-branch schema
-     still has 2000, where the "coffee" inversion is live.</p>
+
+  <h3>2026-08 revision — from "trust never crosses" to "crosses only when overwhelming"</h3>
+  <p>The never-crosses discipline produced its own inversion (the "odell" report, 2026-08-02): under the
+     reporting observer's lens, CITADEL DISPATCH — bio "hosted by ODELL", author trust <b>97</b> — ranked #9,
+     below trust-<b>13</b> accounts <em>named</em> odell, because no trust score could bridge the ~×236
+     bio→name band ratio. <code>wot_mult()</code> is now convex —
+     <code>1 + w_wot·min(user_score − min_rank, 100)<sup>w_wot_pow</sup></code> — so a lower
+     rung overtakes the rung above when its trust-delta ratio exceeds
+     <code>(rung ratio)<sup>1/w_wot_pow</sup></code>. The report bounds that threshold from both sides: the
+     97-trust bio mention must beat the trust-13 name squatters (delta ratio 95/11 ≈ 8.6), a <b>77</b>-trust
+     bio mention must <em>not</em> (75/11 ≈ 6.8), and nothing may beat the 93-trust exact ODELL. That window
+     pins <code>w_wot_pow</code> to ~2.55–2.85; the shipped <b>2.7</b> splits it — ≈1.9× per rung, ≈7.6×
+     across the full bio→name gap, so a name match only falls to a bio mention on near-top trust while a
+     near-floor name match (trust ≤ ~4) still falls behind everyday ~20+-trust bio mentions. At equal
+     trust the four-rung ladder above is as strict as ever. Re-derive the crossing thresholds on any change to
+     the rung weights, <code>w_wot</code> or <code>w_wot_pow</code>; <code>RankRegressionIT</code> pins both
+     bounds ("overwhelming trust crosses the tier ladder") and <code>rank_cases.json</code> carries the live
+     case.</p>
 
   <h3>The other profiles</h3>
   <div class="scroll"><table>
@@ -259,7 +272,7 @@ exact floor   w_name_tier + 100  = 130 100   &gt; 129 248 ✓   → w_name_tier 
   <h2>5 · Every knob, in one table</h2>
   <div class="scroll"><table>
     <tr><th>query() input</th><th>before</th><th>this branch</th><th>role</th></tr>
-    <tr><td><code>w_name_tier</code></td><td>2000</td><td><b>130000</b></td><td>exact-name band offset inside text_score (each rung ×5.6 the one below — see §4)</td></tr>
+    <tr><td><code>w_name_tier</code></td><td>2000</td><td><b>130000</b></td><td>exact-name band offset inside text_score (each rung ~×5.6 the one below; rung ratios set the trust-crossing thresholds — see §4)</td></tr>
     <tr><td><code>w_near_tier</code></td><td>—</td><td><b>23000</b></td><td>prefix/fuzzy name band (new)</td></tr>
     <tr><td><code>w_weak_tier</code></td><td>—</td><td><b>4000</b></td><td>bounded infix (AND-gram) + hashtag prefix band (new)</td></tr>
     <tr><td><code>w_near_tier_text</code> / <code>w_weak_tier_text</code></td><td>—</td><td><b>700 / 620</b></td><td>same bands for pure-text relevance() (exact 1100 &gt; near 700 &gt; weak 620 &gt; affil 550)</td></tr>
@@ -271,7 +284,8 @@ exact floor   w_name_tier + 100  = 130 100   &gt; 129 248 ✓   → w_name_tier 
     <tr><td><code>w_gram</code></td><td>8.0 if shortest ≤ 3 else 2.0 (client-set)</td><td>same</td><td>trigram signal weight — the 4-char step behind the cliff</td></tr>
     <tr><td><code>gram_cap</code></td><td>80</td><td>80</td><td>ceiling on gram contribution (&lt; one matchCount unit)</td></tr>
     <tr><td><code>w_wot</code></td><td>1.0</td><td>1.0</td><td>trust multiplier scale; 0 = pure text</td></tr>
-    <tr><td><code>min_rank</code></td><td>−1e9 default; client sends 2.0 on ranked searches</td><td>2.0 sent</td><td>trust floor; also anchors the log curve — <b>unset, wot_mult flattens to ≈21.7×</b> for everyone and trust ordering vanishes (our store layer defaults it; direct EventQuery users must too)</td></tr>
+    <tr><td><code>w_wot_pow</code></td><td>— (log curve)</td><td><b>2.7</b></td><td>trust-curve exponent: a rung is crossed at a trust-delta ratio of (rung ratio)^(1/w_wot_pow) — 2.7 ⇒ ~1.9× per rung, ~7.6× bio→name (the report's two-sided window pins ~2.55–2.85); 1.0 ⇒ trust (almost) never crosses (see §4, 2026-08 revision)</td></tr>
+    <tr><td><code>min_rank</code></td><td>−1e9 default; client sends 2.0 on ranked searches</td><td>2.0 sent</td><td>trust floor; also anchors the trust curve — <b>unset, wot_mult flattens to a constant</b> (the delta clamps at the 0..100 scale) and trust ordering vanishes (our store layer defaults it; direct EventQuery users must too)</td></tr>
     <tr><td><code>w_match_step</code> / <code>w_pop_match_step</code></td><td>250 / 1e7</td><td>same</td><td>exact&gt;prefix&gt;typo ladder spacing — <b>inert</b> (itemRawScore)</td></tr>
     <tr><td><code>w_proximity</code></td><td>30</td><td>30</td><td>multi-word closeness tie-break, &lt; w_match_step by design</td></tr>
     <tr><td><code>w_secondary</code> / <code>w_content</code> / <code>w_location</code></td><td>0.4 / 0.15 / 0.3</td><td>n/a (ours)</td><td>generic-tier weights for non-profile kinds</td></tr>
@@ -345,11 +359,16 @@ exact floor   w_name_tier + 100  = 130 100   &gt; 129 248 ✓   → w_name_tier 
         match raw bytes and Vespa's linguistics never applied to them. Tokens also index alnum-stripped and
         whole-name-joined variants ("vitorp" → "Vitor Pamplona"), and CJK runs index their suffixes
         ("太郎" → "中村太郎"). <b>Deploy consequence: populating these needs a RE-FEED, not a reindex</b> —
-        feed-computed fields can't be rebuilt from Vespa's document store.</li>
+        feed-computed fields can't be rebuilt from Vespa's document store. <code>reindexFullTextSearch</code>
+        is that re-feed: the document-API walk reports the near arrays each doc actually holds, and any doc
+        whose stored arrays drift from a fresh <code>NearText</code> derivation is re-put. Run it once after
+        deploying the near-tier schema; re-runs converge to a no-op.</li>
     <li><b>The weak tier</b> restores bounded infix ("dell" → ODELL via an AND of every query trigram — the
         regression the upstream port accepted) and adds hashtag/summary prefix reach
         (<code>search_secondary_tokens</code>, prefix-only). The ladder re-derives to
-        130000 / 23000 / 4000 / 550 so all four rungs survive the ×5.6 trust multiply.</li>
+        130000 / 23000 / 4000 / 550 so all four rungs survive the ×5.6 trust multiply
+        (since the 2026-08 revision the rung ratios instead calibrate the trust advantage
+        needed to cross a rung — see §4).</li>
     <li><b>Second-phase precision</b> on <code>search</code>/<code>text2</code>: the words rule
         (query coverage) and exactness (whole-field match), computed over the top 1000 hits only and bounded to
         reorder within a band. A within-near ordering by <em>character</em> coverage ("Ode"→"Ode" above

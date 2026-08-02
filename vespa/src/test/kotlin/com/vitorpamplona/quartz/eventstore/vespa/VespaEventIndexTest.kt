@@ -750,6 +750,28 @@ class VespaEventIndexTest {
             }
         }
 
+    /**
+     * storedNearFields is decode metadata with a strict provenance rule: the
+     * document-API reads (get, the `[document]` visit) see the complete stored
+     * doc and stamp exactly the near arrays it holds, while search summaries
+     * never carry the near fields (no `| summary` in the schema) and must
+     * claim NO evidence — stamping there would mark every hit as predating
+     * the near tier and turn the full-text reindex into a corpus rewrite.
+     */
+    @Test
+    fun `document-api reads stamp stored near state and search claims no evidence`() =
+        runBlocking {
+            val d = doc(kind = 0, search = SearchFields(name = "ODELL", about = "freedom"))
+            index.put(d)
+            val expected = d.search.nearFieldsWritten()
+
+            assertEquals(expected, index.get(d.id)?.storedNearFields)
+            val visited = index.visitDocsPage(EventQuery(kinds = listOf(0)), resumeFrom = null, maxDocs = 10).docs
+            assertEquals(listOf(expected), visited.map { it.storedNearFields })
+
+            assertEquals(listOf<Map<String, List<String>>?>(null), index.search(EventQuery(kinds = listOf(0))).map { it.storedNearFields })
+        }
+
     /** onPage returning false stops the sliced walk early instead of scanning the whole corpus. */
     @Test
     fun `visitIds stops when the page callback declines to continue`() =

@@ -20,8 +20,10 @@
  */
 package com.vitorpamplona.quartz.eventstore.store
 
+import com.vitorpamplona.quartz.eventstore.store.mapping.SearchExtractors
 import com.vitorpamplona.quartz.eventstore.store.mapping.addressOrNull
 import com.vitorpamplona.quartz.eventstore.vespa.InMemoryEventIndex
+import com.vitorpamplona.quartz.eventstore.vespa.client.DocsPage
 import com.vitorpamplona.quartz.eventstore.vespa.client.EventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.doc.EventDoc
 import com.vitorpamplona.quartz.eventstore.vespa.query.EventQuery
@@ -473,6 +475,70 @@ open class NostrSemanticsStoreTest {
                 cursor = progress.cursor
             } while (!progress.done)
             assertEquals(1, store.count(Filter(search = "satoshi")))
+        }
+
+    /**
+     * reindexFullTextSearch is also the near-tier RE-FEED. A corpus fed before
+     * the `*_parts`/`*_tokens` attributes existed re-extracts to byte-identical
+     * SearchFields — the column comparison alone would skip it forever, and
+     * "Ode" would never prefix-reach ODELL — so the visit's stored-near
+     * evidence must force the re-put, and ONLY for stale docs: a second pass
+     * (and a doc fed by current code) must find nothing to do.
+     */
+    @Test
+    fun `reindex re-feeds docs whose stored near tier is missing and then converges`() =
+        runBlocking {
+            val inner = InMemoryEventIndex()
+            val fedByCurrentCode = mutableSetOf<String>()
+            val puts = mutableListOf<String>()
+            val engine =
+                object : EventIndex by inner {
+                    override suspend fun put(doc: EventDoc) {
+                        puts += doc.id
+                        fedByCurrentCode += doc.id
+                        inner.put(doc)
+                    }
+
+                    override suspend fun putAll(docs: List<EventDoc>) = docs.forEach { put(it) }
+
+                    // The replaceable insert path: `by inner` would send it to the
+                    // delegate, whose default supersedes via INNER's put and dodges
+                    // the recording above — re-enter the interface default here so
+                    // it supersedes through THIS wrapper's put instead.
+                    override suspend fun putIfNewer(doc: EventDoc): Boolean = super.putIfNewer(doc)
+
+                    // Models the real client's `[document]` visit: it reports the
+                    // near arrays each doc ACTUALLY holds — derived-by-current-code
+                    // for anything written through this index, absent (empty map,
+                    // known-missing) for the pre-upgrade fixture fed around it.
+                    override suspend fun visitDocsPage(
+                        query: EventQuery,
+                        resumeFrom: String?,
+                        maxDocs: Int,
+                    ): DocsPage =
+                        inner.visitDocsPage(query, resumeFrom, maxDocs).also { page ->
+                            page.docs.forEach {
+                                it.storedNearFields = if (it.id in fedByCurrentCode) it.search.nearFieldsWritten() else emptyMap()
+                            }
+                        }
+                }
+            val store = NostrSemanticsStore(engine, relay = "wss://sot.test/".normalizeRelayUrl())
+
+            // The pre-near-tier corpus: search COLUMNS correct (the old build
+            // extracted the same ones), near arrays never fed.
+            val odell = metadata(name = "ODELL")
+            inner.put(EventDoc.fromEventJson(odell.toJson()).copy(search = SearchExtractors.extract(odell)))
+            // And one profile fed by current code (bob's, so it can't supersede
+            // the fixture above), which already carries its near tier.
+            store.insert(MetadataEvent(id(), bob, next(), emptyArray(), """{"name":"fiatjaf"}""", ""))
+
+            puts.clear()
+            store.reindexFullTextSearch()
+            assertEquals(listOf(odell.id), puts, "exactly the legacy doc is re-fed")
+
+            puts.clear()
+            store.reindexFullTextSearch()
+            assertEquals(emptyList<String>(), puts, "a backfilled corpus converges to a no-op")
         }
 
     /** A present limit <= 0 is the "matches nothing" sentinel on EVERY recall path — never an exception, never a full result. */

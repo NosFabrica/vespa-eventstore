@@ -222,7 +222,7 @@ internal class TrustRecompute(
             // EVERY observer naming the service gets the cell — a shared
             // provider scores each of the users who trust it, not one winner.
             serviceProviders.rank[card.pubKey]?.let { observers ->
-                card.rank()?.let { rank -> observers.forEach { influence[it] = rank } }
+                card.boundedRank()?.let { rank -> observers.forEach { influence[it] = rank } }
             }
             serviceProviders.followers[card.pubKey]?.let { observers ->
                 card.followerCount()?.toDouble()?.let { count -> observers.forEach { followers[it] = count } }
@@ -260,3 +260,19 @@ internal fun subjectOf(doc: EventDoc): String? =
         .firstOrNull { it.size >= 2 && it[0] == "d" }
         ?.get(1)
         ?.takeIf { Hex.isHex64(it) }
+
+/**
+ * The card's rank tag clamped to the served 0..100 scale. Providers are not
+ * trusted to stay on-scale, and both bounds are load-bearing engine-side: a
+ * NEGATIVE score sits below even `include:spam`'s min_rank=0 floor (the
+ * "keep everything" opt-out — INCLUDE_SPAM_MIN_RANK in FilterMapping), so it
+ * would silently drop the author from the one query shape that promises not
+ * to drop anyone; an OVER-SCALE score would distort wot_mult()'s calibrated
+ * tier-crossing thresholds, which are derived against the 0..100 span
+ * (event.sd clamps its side of the curve to the same bound) — letting a
+ * weaker match tier outrank a stronger one on less than the intended
+ * overwhelming trust advantage. Clamped at EVERY read
+ * of the tag — the projection's fast path, its bulk path, and the recompute
+ * derive must land the same cell value or [TrustReconciler] reads drift.
+ */
+internal fun ContactCardEvent.boundedRank(): Int? = rank()?.coerceIn(0, 100)

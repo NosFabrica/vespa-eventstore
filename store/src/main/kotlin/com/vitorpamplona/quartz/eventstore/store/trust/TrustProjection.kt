@@ -194,7 +194,7 @@ class TrustProjection(
                 val followerObservers = providers.followers[doc.pubkey].orEmpty()
                 if (rankObservers.isEmpty() && followerObservers.isEmpty()) continue
                 val card = doc.toEvent() as? ContactCardEvent
-                val influence = card?.rank()
+                val influence = card?.boundedRank()
                 val followers = card?.followerCount()?.toDouble()
                 if ((rankObservers.isNotEmpty() && influence == null) || (followerObservers.isNotEmpty() && followers == null)) {
                     // A card MISSING a tag its signer is MAPPED for can't take the
