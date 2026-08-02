@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Vespa-backed implementation of Quartz's `IEventStore` (Quartz is the Nostr library from Amethyst) with trust-ranked NIP-50 search. Kotlin 2.4 / JDK 21, Gradle multi-module. Published to Maven Central as `com.vitorpamplona.quartz.eventstore:{store,vespa}`.
+A Vespa-backed implementation of Quartz's `IEventStore` (Quartz is the Nostr library from Amethyst) with trust-based filters and trust-ranked NIP-50 search. Kotlin 2.4 / JDK 21, Gradle multi-module. Published to Maven Central as `com.vitorpamplona.quartz.eventstore:{store,vespa}`.
 
 ## Commands
 

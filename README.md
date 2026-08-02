@@ -1,6 +1,6 @@
 # vespa-eventstore
 
-A [Vespa](https://vespa.ai)-backed [Quartz](https://github.com/vitorpamplona/amethyst) Event Store with **trust-ranked NIP-50 search** based on NIP-85 events.
+A [Vespa](https://vespa.ai)-backed [Quartz](https://github.com/vitorpamplona/amethyst) Event Store with **trust-based filters** and **trust-ranked NIP-50 search** based on NIP-85 events.
 
 ## Features
 
