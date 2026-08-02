@@ -79,6 +79,24 @@ interface EventIndex : AutoCloseable {
     suspend fun search(query: EventQuery): List<EventDoc>
 
     /**
+     * Which of [ids] the index holds — the bulk-dedup EXISTENCE check, and the
+     * hottest read of a mirroring relay (a store that syncs the network re-sees
+     * the network: ~99% of offered ids are already held). Semantically exactly
+     * `search(EventQuery(ids)).map { it.id }` — RAW presence, no expiry filter,
+     * finding docs at any docid — but an implementation may answer WITHOUT
+     * materializing documents: the caller reads nothing but membership, so
+     * filling ~ids.size full summaries to learn it is the single largest ingest
+     * cost at mirror hit rates (measured — see benchmark/README.md).
+     *
+     * Exactness is the contract, same as every batch-stage read: a short answer
+     * here is a wrong write, not a small answer. The default rides [search], so
+     * the in-memory reference stays the executable spec of what "held" means.
+     * A decorator MUST delegate to its inner index or it silently loses the
+     * engine-side summary-free path.
+     */
+    suspend fun existingIds(ids: List<String>): Set<String> = search(EventQuery(ids = ids)).mapTo(HashSet()) { it.id }
+
+    /**
      * The same recall as [search], but each match projected to a Quartz
      * [RawEvent] — the wire event with `tags` kept as its canonical JSON string.
      * This is the read path a relay serves straight to a client: it never needs

@@ -105,6 +105,14 @@ tasks.register<JavaExec>("multiFilterBench") {
     maxHeapSize = System.getenv("BENCH_HEAP") ?: "3g"
 }
 
+tasks.register<JavaExec>("dedupProbe") {
+    group = "verification"
+    description = "A/B the bulk-dedup existence-check variants (full summary / id-only / dedup class / grouping / doc-gets) against a loaded corpus"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.vitorpamplona.quartz.eventstore.benchmark.DedupProbe")
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "2g"
+}
+
 tasks.register<JavaExec>("traceProbe") {
     group = "verification"
     description = "Dump Vespa query-execution plans (trace.explainLevel) for the named REQ shapes"

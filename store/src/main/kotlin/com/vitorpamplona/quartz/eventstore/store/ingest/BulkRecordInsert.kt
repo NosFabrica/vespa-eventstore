@@ -127,17 +127,20 @@ internal class BulkRecordInsert(
             }
         }
 
-        // Stage B — ids already stored. The chunk queries are independent
-        // reads, so they fan out with BOUNDED concurrency. Serialized round
-        // trips starve the batch, but unbounded fan-out measurably 504s the
-        // engine's summary stage.
+        // Stage B — ids already stored, via the EXISTENCE check (membership
+        // only, no summaries: at mirror hit rates ~99% of these ids come back,
+        // and materializing each one's full document to read its id back was
+        // the single largest ingest cost — see EventIndex.existingIds). The
+        // chunk queries are independent reads, so they fan out with BOUNDED
+        // concurrency. Serialized round trips starve the batch, but unbounded
+        // fan-out measurably 504s the engine's summary stage.
         val stored = HashSet<String>()
         IngestStats.timed("dedup") {
             alive()
                 .map { events[it].id }
                 .chunked(CHECK_CHUNK)
-                .mapBounded(QUERY_FANOUT) { chunk -> index.search(EventQuery(ids = chunk)) }
-                .forEach { docs -> docs.forEach { stored += it.id } }
+                .mapBounded(QUERY_FANOUT) { chunk -> index.existingIds(chunk) }
+                .forEach { stored += it }
         }
         alive().forEach { i -> if (events[i].id in stored) outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.DUPLICATE) }
         return Plan(events, outcome)

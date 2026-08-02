@@ -317,6 +317,19 @@ schema event {
         }
     }
 
+    # Existence-only summary for the bulk-dedup preload: `id` alone. Every
+    # field here is an ATTRIBUTE, so Vespa serves this class straight from
+    # memory (the docsum "attribute combiner") — the disk summary store is
+    # never touched and content-node summary threads stay free for real REQs.
+    # The dedup stage asks "which of these 500 ids do I hold" and reads
+    # nothing but the id off each hit; filling the full document summary for
+    # ~99%-duplicate mirror traffic was the single largest ingest cost (see
+    # benchmark/README.md, "Dedup / existence-check A/B"). Adding a summary
+    # class is a deploy-only change: no re-feed, no reindex.
+    document-summary dedup {
+        summary id {}
+    }
+
     fieldset default {
         fields: name, display_name, about, nip05, lud16, website, search_primary, search_secondary, search_text, search_location
     }

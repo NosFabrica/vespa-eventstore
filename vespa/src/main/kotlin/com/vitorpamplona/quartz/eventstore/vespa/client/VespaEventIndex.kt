@@ -373,6 +373,45 @@ class VespaEventIndex(
             attempt(demoteNear(q))
         }
 
+    /**
+     * False from the first 400 naming the `dedup` document-summary: the serving
+     * schema predates it (deployIfAbsent never redeploys onto a serving
+     * cluster), so existence checks demote to the full-summary search — the
+     * pre-summary-class behavior, correct just slower. One failed query flips
+     * it for the life of this client; a schema redeploy plus restart restores
+     * the summary-free path. Same shape as [recencyProfileAvailable].
+     */
+    @Volatile private var dedupSummaryAvailable = true
+
+    /**
+     * The summary-free existence check: `select id` under the attribute-only
+     * `dedup` summary class ([EventYql.buildExistence]), so proton answers
+     * membership from the id attribute in memory — no disk summary fetch, no
+     * document reconstruction, ~99% less response to transfer and decode at
+     * the mirror workload's hit rate (measured: see benchmark/README.md,
+     * "Dedup / existence-check A/B"). Works identically under address-keying:
+     * the `id` ATTRIBUTE carries the event id whatever the docid is, which a
+     * document-API get here would not (an address-keyed replaceable is not at
+     * its id docid — the reason this stays on the search stack).
+     */
+    override suspend fun existingIds(ids: List<String>): Set<String> {
+        val vq = EventYql.buildExistence(ids) ?: return emptySet()
+        if (!dedupSummaryAvailable) return super.existingIds(ids)
+        val root =
+            try {
+                searchRoot(vq, hits = Int.MAX_VALUE)
+            } catch (e: IllegalArgumentException) {
+                // queryBody's status guard is a require(), hence IllegalArgument.
+                // A 400 naming the class proves the attempt used it — same
+                // reasoning as recencySafe; anything else propagates untouched.
+                val missingClass = e.message?.contains("400") == true && e.message?.contains(EventYql.SUMMARY_DEDUP) == true
+                if (!missingClass) throw e
+                dedupSummaryAvailable = false
+                return super.existingIds(ids)
+            }
+        return root.children.mapNotNullTo(HashSet()) { hit -> hit.fields?.id?.takeIf { it.isNotEmpty() } }
+    }
+
     override suspend fun search(query: EventQuery): List<EventDoc> {
         // Pure-id recall bypasses /search/: each id is a direct document-API key
         // lookup (~35% faster than a search over the id attribute here), which is

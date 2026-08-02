@@ -88,6 +88,34 @@ object EventYql {
     const val SUMMARY_FIELDS = "id, pubkey, created_at, kind, tags, content, sig, owner"
 
     /**
+     * The attribute-only document-summary in event.sd serving the existence
+     * check ([buildExistence]) — keep in sync with the schema.
+     */
+    const val SUMMARY_DEDUP = "dedup"
+
+    /**
+     * Existence-only recall for the bulk-dedup preload: `select id` under the
+     * [SUMMARY_DEDUP] summary class, so the engine answers set membership from
+     * the id ATTRIBUTE in memory and the disk summary store never runs. At the
+     * mirror workload's ~99% hit rate the [build] query returns ~ids.size FULL
+     * documents that the caller reads one field off; this returns just that
+     * field. No `order by` (membership is unordered — and the recency sort is
+     * pure cost here), no `limit` (an existence answer must be complete: a
+     * short page would be a wrong write upstream, not a small answer).
+     *
+     * Null when no valid 64-hex id remains — the constraint is unsatisfiable,
+     * so nothing exists (same contract as [build]).
+     */
+    fun buildExistence(ids: List<String>): VespaQuery? {
+        val clause = hexIn("id", ids) ?: return null
+        return VespaQuery(
+            yql = "select id from event where $clause",
+            params = mapOf("presentation.summary" to SUMMARY_DEDUP),
+            ranking = RANK_UNRANKED,
+        )
+    }
+
+    /**
      * True when [build] would auto-select [RANK_RECENCY] for [q]. The index
      * keys two behaviors on this: skipping the count-probe planner (match-phase
      * already owns these limits) and demoting to [RANK_UNRANKED] against a

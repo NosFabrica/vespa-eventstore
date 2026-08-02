@@ -111,6 +111,15 @@ class MockVespaEngine {
     @Volatile var rejectNearFields: Boolean = false
 
     /**
+     * Refuse queries carrying `presentation.summary=dedup` the way a schema
+     * deployed before the attribute-only existence summary does — real Vespa
+     * is HTTP 400 with `Summary 'dedup' does not exist` in the error body.
+     * The client must demote the existence check to the full-summary search
+     * and remember, not fail the batch.
+     */
+    @Volatile var rejectDedupSummary: Boolean = false
+
+    /**
      * Answer `ranking=recency` queries with only this many hits, marked
      * match-phase-degraded — real Vespa's documented under-delivery on an
      * unevenly distributed corpus ("you risk sometimes getting less than the
@@ -280,6 +289,13 @@ class MockVespaEngine {
             return Reply(400, """{"message":"Requested rank profile 'recency' is undefined for document type 'event'"}""")
         }
         val yql = params["yql"] ?: return Reply(400, """{"message":"missing yql"}""")
+        // The existence check rides a dedicated attribute-only summary class; a
+        // schema deployed before it 400s naming the class (verified against
+        // real Vespa: `Summary 'dedup' does not exist`).
+        val dedupSummary = params["presentation.summary"] == "dedup"
+        if (dedupSummary && rejectDedupSummary) {
+            return Reply(400, """{"root":{"errors":[{"code":4,"summary":"Invalid query parameter","message":"Summary 'dedup' does not exist"}]}}""")
+        }
         // A schema predating the near attribute fields: real Vespa rejects the
         // whole query the moment the YQL names an unknown field.
         if (rejectNearFields && "name_parts" in yql) {
@@ -323,6 +339,10 @@ class MockVespaEngine {
                 isKindHistogram -> kindHistogramChildren(matches.groupingBy { it.kind }.eachCount())
 
                 isCount -> countChildren(matches.size)
+
+                // The dedup summary class carries ONLY the id attribute — the
+                // client must resolve membership from that alone.
+                dedupSummary -> JsonArray(matches.take(served).map { doc -> buildJsonObject { put("fields", buildJsonObject { put("id", JsonPrimitive(doc.id)) }) } })
 
                 else -> JsonArray(matches.take(served).map { doc -> buildJsonObject { put("fields", doc.indexFields()) } })
             }
