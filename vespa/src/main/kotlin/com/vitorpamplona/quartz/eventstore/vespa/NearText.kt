@@ -46,7 +46,9 @@ import java.text.Normalizer
  * The COST is the reindex story: schema-side synthetic fields rebuild from
  * Vespa's own document store via a native reindex; feed-computed fields need
  * a RE-FEED of searchable docs to populate on an existing corpus. This repo
- * owns ingest end-to-end, so a re-feed is available wherever the store runs.
+ * owns ingest end-to-end, so a re-feed is available wherever the store runs:
+ * NostrSemanticsStore.reindexFullTextSearch detects docs whose stored arrays
+ * drift from this derivation and re-puts exactly those.
  *
  * Keep in lockstep with FuzzyWordGroup (which folds query words with the same
  * [fold]) and event.sd's field comments. All outputs are lowercase, folded,

@@ -69,6 +69,24 @@ data class EventDoc(
     val owner: HexKey = pubkey,
     val search: SearchFields = SearchFields.NONE,
 ) {
+    /**
+     * DECODE METADATA, not document state: the near-tier attribute arrays as
+     * actually STORED on the engine document this instance was decoded from.
+     * null = no evidence — constructed docs, and every search-summary path
+     * (the near fields carry no `| summary`, so their absence there says
+     * nothing). Only the document-API reads (get, the `[document]` visit) see
+     * the true stored fields and stamp this; an empty map from those paths
+     * means the doc genuinely holds NO near arrays — the pre-near-tier corpus
+     * the full-text reindex must re-feed ([SearchFields.nearFieldsWritten] is
+     * what a fresh put would write, so `stored != written` = stale).
+     *
+     * Deliberately NOT a constructor property: a doc's identity is the event
+     * plus its derived search surface, and two reads of the same logical doc
+     * (one via search, one via visit) must stay equal — this records what one
+     * read happened to see, so it stays outside equals/copy.
+     */
+    var storedNearFields: Map<String, List<String>>? = null
+
     /** [tags] as Quartz's `String[][]` shape, for its tag-array helpers and event reconstruction. */
     private fun tagsArray(): Array<Array<String>> = Array(tags.size) { tags[it].toTypedArray() }
 
@@ -141,9 +159,11 @@ data class EventDoc(
             // HERE rather than by a schema-side indexing expression so doc and
             // query share NearText's one normalization (diacritic folding —
             // string attributes match raw bytes) — see NearText for the full
-            // rationale. Existing corpora need a RE-FEED to populate these.
-            for ((field, elements) in search.nearFields()) {
-                if (elements.isNotEmpty()) put(field, JsonArray(elements.map(::JsonPrimitive)))
+            // rationale. Existing corpora need a RE-FEED to populate these;
+            // NostrSemanticsStore.reindexFullTextSearch is that re-feed (it
+            // compares [storedNearFields] against this derivation).
+            for ((field, elements) in search.nearFieldsWritten()) {
+                put(field, JsonArray(elements.map(::JsonPrimitive)))
             }
             // Always written. An absent numeric attribute reads as 0 in Vespa,
             // which would make "not yet expired" range queries impossible.
