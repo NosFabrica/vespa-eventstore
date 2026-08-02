@@ -115,7 +115,13 @@ class RankRegressionIT {
                         expect("dell", has = "ODELL", tier = "weak")
 
                         // --- diacritic folding + compound-name variants ---
-                        expect("jose", has = "José", tier = "near")
+                        // "jose" -> "José" is an EXACT hit, not near: Vespa's
+                        // linguistic pipeline folds diacritics on index fields,
+                        // so the exact clause matches the folded token and the
+                        // near tier (gated behind exact) never fires. The near
+                        // attributes still carry the fold for schemas/fields
+                        // without that pipeline (raw-byte attribute matching).
+                        expect("jose", has = "José", tier = "name")
                         expect("vitorp", has = "Vitor Pamplona", tier = "near")
                         expect("vitorp", has = "Vitor-Pamplona", tier = "near")
 
