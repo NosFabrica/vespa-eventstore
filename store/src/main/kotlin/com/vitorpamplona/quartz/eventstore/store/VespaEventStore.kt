@@ -113,6 +113,32 @@ class VespaEventStore internal constructor(
     ): TrustReconciler.TrustAudit = reconciler.verify(repair, onProgress)
 
     /**
+     * DELETE the orphan scores: every stored kind-30382 signed by a service that
+     * no stored kind-10040 names, for either dimension. Those cards can never
+     * become a tensor cell for any observer — they rank nothing, gate nothing
+     * and are never read — so a mirror that syncs 30382s by kind (and therefore
+     * pulls every publishing service on the network, not just the ones its users
+     * trust) can reclaim them wholesale.
+     *
+     * Pass [dryRun] to get the same report — which services, how many cards —
+     * with no writes.
+     *
+     * Two guardrails, both in [TrustReconciler.sweepOrphanScores]: a store with
+     * NO readable 10040 sweeps nothing (that state is indistinguishable from "no
+     * provider list has been mirrored yet", where deleting would take the whole
+     * score corpus), and a service some 10040 claims mid-sweep is dropped from
+     * the sweep at the next page boundary. Deletions take the writer lock a page
+     * at a time, so a long sweep shares the store with live ingest.
+     *
+     * This is an operator action and never automatic — [reconcileTrust] does not
+     * call it.
+     */
+    suspend fun sweepOrphanScores(
+        dryRun: Boolean = false,
+        onProgress: ((sweptServices: Int, totalOrphans: Int, scoresSwept: Int) -> Unit)? = null,
+    ): TrustReconciler.OrphanSweep = reconciler.sweepOrphanScores(dryRun, onProgress)
+
+    /**
      * The deferred-projection BARRIER: drain every queued trust reaction before
      * returning, so ranking reflects all inserts acked so far — the
      * read-your-writes moment a caller occasionally needs (a test, a "publish

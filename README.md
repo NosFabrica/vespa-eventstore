@@ -132,7 +132,7 @@ ingests like any other:
    tensor-cell lookup per candidate, independent of how large the observer's
    network is (300k ranked keys costs the same as 300).
 
-Two consequences worth knowing:
+Three consequences worth knowing:
 
 - **Listed is not enough — the score must clear the floor.** A subject the
   service ranked at 0 or 1 is in the d-tag list but below the default floor
@@ -145,6 +145,14 @@ Two consequences worth knowing:
   resolved, gated feeds return **nothing** (the gate fails closed here, unlike
   the no-observer case). When a 10040 changes, sync the named service's 30382
   corpus promptly.
+- **Cards from a service nobody named are dead storage.** A mirror that syncs
+  30382s by kind pulls every scoring service on the network, not just the ones
+  its users trust, and those cards can never become a cell for any observer.
+  `store.sweepOrphanScores()` deletes them (`dryRun = true` first, to see how
+  much it would free). It is an operator action, never automatic, and it
+  refuses to run at all while no 10040 is readable — that state is
+  indistinguishable from a corpus mirrored before its provider lists, where
+  sweeping would delete every score you hold.
 
 ## What's searchable
 

@@ -28,6 +28,7 @@ import com.vitorpamplona.quartz.eventstore.vespa.client.ReputationIndex
 import com.vitorpamplona.quartz.eventstore.vespa.doc.ReputationDoc
 import com.vitorpamplona.quartz.eventstore.vespa.mapBounded
 import com.vitorpamplona.quartz.eventstore.vespa.query.EventQuery
+import com.vitorpamplona.quartz.eventstore.vespa.query.EventYql
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import com.vitorpamplona.quartz.utils.Hex
 
@@ -37,6 +38,10 @@ import com.vitorpamplona.quartz.utils.Hex
  * its provider lists stays unprojected with nothing left to trip. This class
  * finds and re-derives that drift: [reconcile] per affected service (worth
  * running at startup), [rebuildAll] as the operator's hammer.
+ *
+ * It also owns the one trust-side operation that DELETES rather than repairs:
+ * [sweepOrphanScores] drops the kind-30382s signed by services no 10040 names,
+ * which can never become a tensor cell for anyone.
  *
  * Every MUTATING pass runs through [gate] — the store's writer lock. Without
  * it a reconcile racing live ingest can overwrite a concurrent write's fresh
@@ -58,6 +63,23 @@ class TrustReconciler internal constructor(
         val rebuilt: List<String>,
     ) {
         fun isClean() = rebuilt.isEmpty()
+    }
+
+    /** What [sweepOrphanScores] found — and, unless [dryRun], removed. */
+    data class OrphanSweep(
+        /** Distinct kind-30382 signers stored when the sweep started. */
+        val servicesSeen: Int,
+        /** The signers no stored 10040 names: swept, or (under [dryRun]) the ones that would be. Complete. */
+        val orphans: List<String>,
+        /** Cards deleted; under [dryRun], how many WOULD be. */
+        val scoresSwept: Int,
+        /** Candidates a 10040 claimed mid-sweep: left alone, and absent from [orphans]. */
+        val remapped: List<String>,
+        val dryRun: Boolean,
+        /** Whether the sweep refused to run because no 10040 attribution was readable — see [sweepOrphanScores]. */
+        val refused: Boolean,
+    ) {
+        fun isClean() = orphans.isEmpty() && remapped.isEmpty()
     }
 
     /**
@@ -309,6 +331,142 @@ class TrustReconciler internal constructor(
     }
 
     /**
+     * DELETE the orphan scores: every stored kind-30382 whose SIGNER no stored
+     * 10040 names, for either dimension.
+     *
+     * ## What makes them dead weight
+     *
+     * A card only becomes a tensor cell through the attribution map — the
+     * signer must appear in some observer's 10040 under `30382:rank` or
+     * `30382:followers` ([ProviderMap]). Cards from a service nobody named
+     * project nothing, rank nothing and gate nothing; they are storage and
+     * ingest cost with no read path. A mirroring relay accumulates them as a
+     * matter of course: it syncs 30382s by kind, so every service publishing on
+     * the network lands its whole corpus (hundreds of thousands of cards per
+     * service) whether or not a single user here trusts it.
+     *
+     * Unlike everything else in this class this is a DELETION, not a repair,
+     * and it is deliberately not automatic — [reconcile] never calls it.
+     *
+     * ## Why an empty attribution map REFUSES instead of deleting everything
+     *
+     * "No 10040 names it" and "no 10040 was readable" produce the identical
+     * candidate list, and the second is a real, observed state: a relay that
+     * mirrored its scores before its provider lists, or one asked one second
+     * too early, reads zero 10040s while holding millions of cards (see
+     * [ProviderMap.get], where the same ambiguity dictates the no-empty-cache
+     * rule). Sweeping there would delete the ENTIRE score corpus — irreversibly,
+     * on exactly the store the lists are still arriving at. So an empty map
+     * sweeps nothing and reports [OrphanSweep.refused]; an operator who really
+     * means it must first have at least one usable 10040 stored.
+     *
+     * ## Safety of the deletion itself
+     *
+     * The candidate list is a snapshot, so membership is RE-CHECKED under the
+     * writer lock ([gate]) before every page: a 10040 naming the service may
+     * have landed since, and its cards would then be carrying live cells. Such
+     * a service is dropped mid-sweep and reported as [OrphanSweep.remapped],
+     * keeping whatever pages already went — deleting a card of a service that IS
+     * mapped is the one outcome this must never produce. Pages that landed
+     * BEFORE that 10040 need no repair either: the list's own arrival queues its
+     * service walk ([TrustProjection]), which derives from what is stored when
+     * it runs, i.e. after those deletions.
+     *
+     * No re-derivation is needed for the orphans themselves — that is why this
+     * removes through the index it was given (the raw engine index in the
+     * shipped wiring) rather than through the projection: by definition an
+     * unmapped signer's cards contribute no cells, so deleting them cannot
+     * change any parent doc. (Stale cells from a service that WAS mapped and no
+     * longer is are drift, not a consequence of this sweep — [verify] finds and
+     * repairs them.)
+     *
+     * Expiry follows the same rule the projection applies: an already-expired
+     * 10040 attributes nothing (it is not served as a record), so a service
+     * named only by expired lists counts as an orphan here too.
+     *
+     * [dryRun] answers "how much would this free" — the candidate list plus a
+     * count per service, no writes at all.
+     */
+    suspend fun sweepOrphanScores(
+        dryRun: Boolean = false,
+        onProgress: ((sweptServices: Int, totalOrphans: Int, scoresSwept: Int) -> Unit)? = null,
+    ): OrphanSweep {
+        val providers = recompute.providerMap()
+        // The refusal above: no attribution readable = every service looks
+        // orphaned. Nothing is deleted and the caller is told why.
+        if (providers.isEmpty()) return OrphanSweep(0, emptyList(), 0, emptyList(), dryRun, refused = true)
+
+        // Server-side grouping over the whole card corpus (see
+        // EventIndex.distinctAuthors): the distinct signers out of millions of
+        // docs without reconstructing one of them. Completeness is load-bearing
+        // in the harmless direction only — a signer the grouping missed keeps
+        // its cards, it never causes a wrong deletion.
+        val signers = index.distinctAuthors(EventQuery(kinds = listOf(ContactCardEvent.KIND)))
+        val candidates = signers.filterNot(providers::maps)
+        onProgress?.invoke(0, candidates.size, 0)
+        if (candidates.isEmpty()) return OrphanSweep(signers.size, emptyList(), 0, emptyList(), dryRun, refused = false)
+
+        if (dryRun) {
+            // Counts only — engine-side, fanned out, and no lock taken anywhere.
+            val counted = candidates.mapBounded(QUERY_FANOUT) { index.count(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(it))) }
+            return OrphanSweep(signers.size, candidates, counted.sum(), emptyList(), dryRun = true, refused = false)
+        }
+
+        val swept = ArrayList<String>()
+        val remapped = ArrayList<String>()
+        var scores = 0
+        for (service in candidates) {
+            val page =
+                EventQuery(
+                    // No expiry cutoff: an expired orphan card is still stored,
+                    // and this pass exists to reclaim exactly that storage.
+                    kinds = listOf(ContactCardEvent.KIND),
+                    authors = listOf(service),
+                    limit = SWEEP_PAGE,
+                    // A sweep wants ANY page, so the explicit ranking opts out of
+                    // the recency planner's count probes (as NostrSemanticsStore's
+                    // sweep does) while compiling to identical YQL.
+                    ranking = EventYql.RANK_UNRANKED,
+                )
+            var stillOrphan = true
+            var rounds = 0
+            var drained = false
+            var lastPage: Set<String>? = null
+            while (!drained && rounds++ < MAX_SWEEP_ROUNDS) {
+                gate {
+                    // Re-read INSIDE the lock, per page: cached when unchanged,
+                    // and a 10040 committed since the snapshot must stop the
+                    // deletion at the first page boundary, not at the end.
+                    if (recompute.providerMap().maps(service)) {
+                        stillOrphan = false
+                        drained = true
+                        return@gate
+                    }
+                    val docs = index.search(page)
+                    if (docs.isEmpty()) {
+                        drained = true
+                        return@gate
+                    }
+                    val ids = docs.mapTo(HashSet()) { it.id }
+                    // An acked remove is visible to search (the EventIndex
+                    // contract), so an identical page means the deletes are not
+                    // landing. Fail LOUD: reporting freed storage that is still
+                    // stored is worse than stopping.
+                    check(ids != lastPage) { "orphan sweep is not shrinking: ${ids.size} scores by $service survived their own removal" }
+                    index.removeDocs(docs)
+                    scores += docs.size
+                    lastPage = ids
+                }
+                onProgress?.invoke(swept.size, candidates.size, scores)
+            }
+            check(drained) { "orphan sweep did not drain $service after $MAX_SWEEP_ROUNDS rounds of $SWEEP_PAGE" }
+            if (stillOrphan) swept += service else remapped += service
+            onProgress?.invoke(swept.size, candidates.size, scores)
+        }
+        return OrphanSweep(signers.size, swept, scores, remapped, dryRun = false, refused = false)
+    }
+
+    /**
      * Re-derive every parent doc from scratch (bootstrap over an existing
      * index), THEN sweep the parents the card walk cannot reach: a doc whose
      * subject has no stored cards left (its last card's removal crashed before
@@ -355,6 +513,16 @@ class TrustReconciler internal constructor(
 
         // Drift examples carried in the [TrustAudit] report; the COUNT is always complete.
         const val VERIFY_DRIFT_SAMPLES = 100
+
+        // Cards deleted per [sweepOrphanScores] round — one page read, one
+        // pipelined bulk delete, one lock hold. Same size the store's own sweep
+        // pages at; a 30382 is a small doc.
+        const val SWEEP_PAGE = 10_000
+
+        // Runaway backstop per service, not a delete cap (100M cards at the page
+        // above). Only reachable when a service keeps publishing INTO the sweep;
+        // deletes that stop landing are caught after one repeated page.
+        const val MAX_SWEEP_ROUNDS = 10_000
 
         /**
          * Expected-vs-stored equality for [verify]. Influence cells are int8 —
