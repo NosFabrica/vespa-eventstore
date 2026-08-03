@@ -26,7 +26,7 @@ tasks.test {
 
 mavenPublishing {
     coordinates(
-        groupId = "com.vitorpamplona.quartz.eventstore",
+        groupId = "com.nosfabrica.vespa.eventstore",
         artifactId = "store",
         version = libs.versions.app.get(),
     )

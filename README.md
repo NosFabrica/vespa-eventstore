@@ -262,7 +262,7 @@ place column:
 
 Anything Quartz parses to a `SearchableEvent` is indexed, current or future. The
 authoritative mapping is
-[`store/…/SearchExtractors.kt`](store/src/main/kotlin/com/vitorpamplona/quartz/eventstore/store/mapping/SearchExtractors.kt).
+[`store/…/SearchExtractors.kt`](store/src/main/kotlin/com/nosfabrica/vespa/eventstore/store/mapping/SearchExtractors.kt).
 
 ## Quick start
 
@@ -270,18 +270,18 @@ Vespa is a prerequisite, like a database — stand one up, then point the store 
 
 ```kotlin
 dependencies {
-    implementation("com.vitorpamplona.quartz.eventstore:store:1.0.0")
+    implementation("com.nosfabrica.vespa.eventstore:store:1.0.0")
 
     // Optional: in-memory test doubles (InMemoryEventIndex, MockVespaEngine),
     // so your own tests run with no Vespa instance.
-    testImplementation(testFixtures("com.vitorpamplona.quartz.eventstore:vespa:1.0.0"))
+    testImplementation(testFixtures("com.nosfabrica.vespa.eventstore:vespa:1.0.0"))
 }
 ```
 
-Published to Maven Central under the `com.vitorpamplona.quartz.eventstore` group.
+Published to Maven Central under the `com.nosfabrica.vespa.eventstore` group.
 
 ```kotlin
-import com.vitorpamplona.quartz.eventstore.store.VespaEventStore
+import com.nosfabrica.vespa.eventstore.store.VespaEventStore
 
 // Connects, and on a fresh Vespa deploys the bundled schema (autoDeploy, default on).
 VespaEventStore.open("http://localhost:8080").use { store ->

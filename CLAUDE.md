@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Vespa-backed implementation of Quartz's `IEventStore` (Quartz is the Nostr library from Amethyst) that filters and ranks everything — REQs, COUNTs, and NIP-50 search — through each connecting user's NIP-85 web of trust. Kotlin 2.4 / JDK 21, Gradle multi-module. Published to Maven Central as `com.vitorpamplona.quartz.eventstore:{store,vespa}`.
+A Vespa-backed implementation of Quartz's `IEventStore` (Quartz is the Nostr library from Amethyst) that filters and ranks everything — REQs, COUNTs, and NIP-50 search — through each connecting user's NIP-85 web of trust. Kotlin 2.4 / JDK 21, Gradle multi-module. Published to Maven Central as `com.nosfabrica.vespa.eventstore:{store,vespa}`.
 
 ## Commands
 
@@ -14,7 +14,7 @@ A Vespa-backed implementation of Quartz's `IEventStore` (Quartz is the Nostr lib
 ./gradlew spotlessApply    # fix formatting; run this before committing
 
 # Single test class / single test method:
-./gradlew :store:test --tests "com.vitorpamplona.quartz.eventstore.store.NostrSemanticsStoreTest"
+./gradlew :store:test --tests "com.nosfabrica.vespa.eventstore.store.NostrSemanticsStoreTest"
 ./gradlew :vespa:test --tests "*EventYqlTest.someMethodName"
 
 # Integration tests (real Vespa via testcontainers — needs a Docker daemon;

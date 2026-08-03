@@ -60,7 +60,7 @@ tasks.named<Copy>("processResources") {
 
 mavenPublishing {
     coordinates(
-        groupId = "com.vitorpamplona.quartz.eventstore",
+        groupId = "com.nosfabrica.vespa.eventstore",
         artifactId = "vespa",
         version = libs.versions.app.get(),
     )
