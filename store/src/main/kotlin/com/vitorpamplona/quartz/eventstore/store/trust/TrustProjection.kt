@@ -119,6 +119,8 @@ class TrustProjection(
     // paged walk and an OOM.
     override suspend fun distinctAuthors(query: EventQuery): Set<String> = inner.distinctAuthors(query)
 
+    override suspend fun countByAuthor(query: EventQuery): Map<String, Int> = inner.countByAuthor(query)
+
     override suspend fun scanAuthors(query: EventQuery): Set<String> = inner.scanAuthors(query)
 
     override suspend fun countDistinctAuthors(query: EventQuery): Int = inner.countDistinctAuthors(query)

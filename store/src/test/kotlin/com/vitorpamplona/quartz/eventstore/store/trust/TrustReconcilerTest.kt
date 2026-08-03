@@ -24,15 +24,19 @@ import com.vitorpamplona.quartz.eventstore.store.NostrSemanticsStore
 import com.vitorpamplona.quartz.eventstore.store.mapping.toDoc
 import com.vitorpamplona.quartz.eventstore.vespa.InMemoryEventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.InMemoryReputationIndex
+import com.vitorpamplona.quartz.eventstore.vespa.client.EventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.client.ReputationIndex
+import com.vitorpamplona.quartz.eventstore.vespa.doc.EventDoc
 import com.vitorpamplona.quartz.eventstore.vespa.doc.ReputationCells
 import com.vitorpamplona.quartz.eventstore.vespa.doc.ReputationDoc
+import com.vitorpamplona.quartz.eventstore.vespa.query.EventQuery
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -387,6 +391,117 @@ class TrustReconcilerTest {
             val audit = TrustReconciler(idx, reps, proj.recompute, proj.dirt).verify()
             assertTrue(audit.isClean(), "the queue was settled, not reported")
             assertEquals(mapOf(observer to 87), reps.get(subject)?.influenceScores)
+        }
+
+    // ---- sweepOrphanScores: the scores nobody's 10040 can ever attribute ------
+
+    @Test
+    fun `sweeps the cards of a service no 10040 names, and keeps the mapped one's`() =
+        runBlocking {
+            store.insert(list10040()) // names `service`, both dimensions
+            store.insert(card()) // mapped: projects, must survive
+            store.insert(card(signer = service2, about = "c1".repeat(32)))
+            store.insert(card(signer = service2, about = "c2".repeat(32)))
+
+            val report = reconciler.sweepOrphanScores()
+            assertEquals(listOf(service2), report.orphans)
+            assertEquals(2, report.scoresSwept)
+            assertEquals(2, report.servicesSeen, "both signers were examined")
+            assertEquals(0, index.count(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service2))), "the orphan corpus is gone")
+            assertEquals(1, index.count(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service))), "the mapped service is untouched")
+            assertEquals(mapOf(observer to 87), reputations.get(subject)?.influenceScores, "an orphan carried no cell, so none was lost")
+            assertTrue(reconciler.verify().isClean(), "the sweep leaves the projection consistent")
+            assertTrue(reconciler.sweepOrphanScores().isClean(), "second run finds nothing")
+        }
+
+    /** Named for ONE dimension is named: a followers-only provider is not an orphan. */
+    @Test
+    fun `a service named for a single dimension is not swept`() =
+        runBlocking {
+            store.insert(list10040()) // keeps the attribution map non-empty
+            store.insert(list10040(author = observer2, serviceKey = service2, types = listOf("30382:followers")))
+            store.insert(card(signer = service2, about = "c1".repeat(32)))
+
+            val report = reconciler.sweepOrphanScores()
+            assertTrue(report.isClean())
+            assertEquals(1, index.count(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service2))))
+        }
+
+    /**
+     * The footgun this refuses: "nobody named it" and "no 10040 is readable yet"
+     * produce the same candidate list, and the second is the mirror that stored
+     * its scores before its provider lists — sweeping there deletes the whole
+     * score corpus.
+     */
+    @Test
+    fun `an unreadable attribution map refuses the sweep instead of deleting everything`() =
+        runBlocking {
+            store.insert(card())
+            store.insert(card(signer = service2, about = "c1".repeat(32)))
+
+            val report = reconciler.sweepOrphanScores()
+            assertTrue(report.refused, "no 10040 stored -> nothing swept")
+            assertFalse(report.isClean(), "a refusal examined nothing; it is not an all-clear")
+            assertEquals(0, report.scoresSwept)
+            assertEquals(2, index.count(EventQuery(kinds = listOf(ContactCardEvent.KIND))), "every card survives")
+        }
+
+    @Test
+    fun `a dry run reports what it would free and writes nothing`() =
+        runBlocking {
+            store.insert(list10040())
+            store.insert(card())
+            store.insert(card(signer = service2, about = "c1".repeat(32)))
+            store.insert(card(signer = service2, about = "c2".repeat(32)))
+
+            val report = reconciler.sweepOrphanScores(dryRun = true)
+            assertTrue(report.dryRun)
+            assertEquals(listOf(service2), report.orphans)
+            assertEquals(2, report.scoresSwept, "the count it WOULD delete")
+            assertEquals(3, index.count(EventQuery(kinds = listOf(ContactCardEvent.KIND))), "no writes")
+        }
+
+    /**
+     * The race that must never delete a live provider's scores: a 10040 naming
+     * the candidate lands after the snapshot. The re-check inside the writer
+     * lock catches it at the page boundary.
+     */
+    @Test
+    fun `a service claimed mid-sweep is dropped from the sweep`() =
+        runBlocking {
+            store.insert(list10040()) // the map is readable, so the sweep runs
+            store.insert(card(signer = service2, about = "c1".repeat(32)))
+
+            var claimed = false
+            var inGate = false
+            val guarded =
+                object : EventIndex by index {
+                    override suspend fun removeDocs(docs: List<EventDoc>) {
+                        check(inGate) { "orphan deletion outside the writer lock" }
+                        index.removeDocs(docs)
+                    }
+                }
+            val racing =
+                TrustReconciler(guarded, reputations, projection.recompute, projection.dirt, gate = { body ->
+                    // A concurrent writer commits the 10040 just before the first
+                    // page takes the lock — through the store, so the attribution
+                    // cache is invalidated exactly as it would be live.
+                    if (!claimed) {
+                        claimed = true
+                        store.insert(list10040(author = observer2, serviceKey = service2))
+                    }
+                    inGate = true
+                    try {
+                        body()
+                    } finally {
+                        inGate = false
+                    }
+                })
+
+            val report = racing.sweepOrphanScores()
+            assertEquals(listOf(service2), report.remapped)
+            assertTrue(report.orphans.isEmpty(), "it was never swept")
+            assertEquals(1, index.count(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service2))), "its cards stand")
         }
 
     /** Every mutating reconciler batch must run inside the gate (the store's writer lock). */
