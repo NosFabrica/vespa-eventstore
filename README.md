@@ -311,7 +311,7 @@ VespaEventStore.open("http://localhost:8080").use { store ->
 ```
 
 For a commit snapshot, JitPack works:
-`com.github.vitorpamplona.vespa-eventstore:store:<commit>`.
+`com.github.NosFabrica.vespa-eventstore:store:<commit>`.
 
 ## Three things to know
 
@@ -435,20 +435,20 @@ version starting with `v` (`vX.Y.Z`) and push the tag.
 
 ## Contributing
 
-Issues can be logged on [GitHub issues](https://github.com/vitorpamplona/vespa-eventstore/issues). [Pull requests](https://github.com/vitorpamplona/vespa-eventstore/pulls) are very welcome.
+Issues can be logged on [GitHub issues](https://github.com/NosFabrica/vespa-eventstore/issues). [Pull requests](https://github.com/NosFabrica/vespa-eventstore/pulls) are very welcome.
 
 By contributing to this repository, you agree to license your work under the MIT license. Any work contributed where you are not the original author must contain its license header with the original author(s) and source.
 
 # Contributors
 
-<a align="center" href="https://github.com/vitorpamplona/vespa-eventstore/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=vitorpamplona/vespa-eventstore" />
+<a align="center" href="https://github.com/NosFabrica/vespa-eventstore/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=NosFabrica/vespa-eventstore" />
 </a>
 
 # MIT License
 
 <pre>
-Copyright (c) 2026 Vitor Pamplona
+Copyright (c) 2026 NosFabrica
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

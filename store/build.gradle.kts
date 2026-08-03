@@ -36,24 +36,23 @@ mavenPublishing {
         name = "Vespa Event Store"
         description = "A Vespa-backed Quartz IEventStore with trust-ranked NIP-50 search: the open() front door, Nostr storage semantics, and the NIP-85 trust projection."
         inceptionYear = "2026"
-        url = "https://github.com/vitorpamplona/vespa-eventstore/"
+        url = "https://github.com/NosFabrica/vespa-eventstore/"
         licenses {
             license {
                 name = "MIT License"
-                url = "https://github.com/vitorpamplona/vespa-eventstore/blob/main/LICENSE"
+                url = "https://github.com/NosFabrica/vespa-eventstore/blob/main/LICENSE"
             }
         }
         developers {
             developer {
-                id = "vitorpamplona"
-                name = "Vitor Pamplona"
-                url = "http://vitorpamplona.com"
-                email = "vitor@vitorpamplona.com"
+                id = "nosfabrica"
+                name = "NosFabrica"
+                url = "https://nosfabrica.com"
             }
         }
         scm {
-            url = "https://github.com/vitorpamplona/vespa-eventstore/"
-            connection = "https://github.com/vitorpamplona/vespa-eventstore/.git"
+            url = "https://github.com/NosFabrica/vespa-eventstore/"
+            connection = "https://github.com/NosFabrica/vespa-eventstore/.git"
         }
     }
 }
