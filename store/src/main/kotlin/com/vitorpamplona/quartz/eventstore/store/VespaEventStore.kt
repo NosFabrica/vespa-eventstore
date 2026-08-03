@@ -121,7 +121,12 @@ class VespaEventStore internal constructor(
      * trust) can reclaim them wholesale.
      *
      * Pass [dryRun] to get the same report — which services, how many cards —
-     * with no writes.
+     * with no writes. Both forms cost one grouping query up front; the dry run
+     * is nothing but that query.
+     *
+     * A deletion is not a tombstone. A mirror that keeps syncing 30382s by kind
+     * re-downloads what this freed, so pair the sweep with narrowing that sync
+     * to the services your 10040s actually name.
      *
      * Two guardrails, both in [TrustReconciler.sweepOrphanScores]: a store with
      * NO readable 10040 sweeps nothing (that state is indistinguishable from "no
@@ -135,7 +140,7 @@ class VespaEventStore internal constructor(
      */
     suspend fun sweepOrphanScores(
         dryRun: Boolean = false,
-        onProgress: ((sweptServices: Int, totalOrphans: Int, scoresSwept: Int) -> Unit)? = null,
+        onProgress: ((servicesDone: Int, totalServices: Int, scoresSwept: Int, totalScores: Int) -> Unit)? = null,
     ): TrustReconciler.OrphanSweep = reconciler.sweepOrphanScores(dryRun, onProgress)
 
     /**

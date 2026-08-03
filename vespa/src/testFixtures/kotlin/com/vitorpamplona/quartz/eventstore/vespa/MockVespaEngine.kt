@@ -320,10 +320,17 @@ class MockVespaEngine {
         // The distinct-author query (EventYql.buildDistinctCount): "… | all(group(pubkey) output(count()))".
         // Both grouping counts scan the FULL match set, so ignore the hit-limiting `limit 0`.
         // The kind histogram (EventYql.buildKindHistogram): "… | all(group(kind) max(N) each(output(count())))".
+        // The author list/histogram (EventYql.buildDistinctAuthors): "… |
+        // all(group(pubkey) each(output(count())))" — the SAME field as the
+        // distinct count, told apart by the `each(...)` that asks for one leaf
+        // group per author. Emitting the count shape for it would hand the
+        // client a grouplist with no group values, i.e. "no authors", for a
+        // query whose whole point is the values.
         val isCount = yql.contains("all(output(count()))")
-        val isDistinct = yql.contains("group(pubkey)")
+        val isAuthorHistogram = yql.contains("group(pubkey)") && yql.contains("each(output(count()))")
+        val isDistinct = yql.contains("group(pubkey)") && !isAuthorHistogram
         val isKindHistogram = yql.contains("group(kind)")
-        val grouped = isCount || isDistinct || isKindHistogram
+        val grouped = isCount || isDistinct || isAuthorHistogram || isKindHistogram
         val query = MockYql.parse(yql.substringBefore("|").trim(), params).let { if (grouped) it.copy(limit = null) else it }
         // The limit cut must be applied AFTER any tie scrambling: real Vespa's
         // single-key sort picks boundary-tie MEMBERSHIP arbitrarily, and a cut
@@ -350,7 +357,9 @@ class MockVespaEngine {
                 // grouping puts it — the client's recursive scan must find it there.
                 isDistinct -> groupCountChildren(matches.map { it.pubkey }.distinct().size)
 
-                isKindHistogram -> kindHistogramChildren(matches.groupingBy { it.kind }.eachCount())
+                isAuthorHistogram -> histogramChildren("pubkey", matches.groupingBy { it.pubkey }.eachCount().map { (k, v) -> JsonPrimitive(k) to v })
+
+                isKindHistogram -> histogramChildren("kind", matches.groupingBy { it.kind }.eachCount().map { (k, v) -> JsonPrimitive(k) to v })
 
                 isCount -> countChildren(matches.size)
 
@@ -447,8 +456,16 @@ class MockVespaEngine {
             ),
         )
 
-    /** `all(group(kind) each(output(count())))`: the group:root wraps a grouplist of one leaf group per kind, each with its `value` and `count()`. */
-    private fun kindHistogramChildren(counts: Map<Int, Int>): JsonArray =
+    /**
+     * `all(group([field]) each(output(count())))`: the group:root wraps a
+     * grouplist of one leaf group per value, each carrying its `value` and
+     * `count()` — the shape both the kind histogram and the author list come
+     * back in, differing only in the grouped field and its value type.
+     */
+    private fun histogramChildren(
+        field: String,
+        counts: List<Pair<JsonPrimitive, Int>>,
+    ): JsonArray =
         JsonArray(
             listOf(
                 buildJsonObject {
@@ -458,15 +475,15 @@ class MockVespaEngine {
                         JsonArray(
                             listOf(
                                 buildJsonObject {
-                                    put("id", JsonPrimitive("grouplist:kind"))
-                                    put("label", JsonPrimitive("kind"))
+                                    put("id", JsonPrimitive("grouplist:$field"))
+                                    put("label", JsonPrimitive(field))
                                     put(
                                         "children",
                                         JsonArray(
-                                            counts.map { (kind, count) ->
+                                            counts.map { (value, count) ->
                                                 buildJsonObject {
-                                                    put("id", JsonPrimitive("group:kind:$kind"))
-                                                    put("value", JsonPrimitive(kind))
+                                                    put("id", JsonPrimitive("group:$field:${value.content}"))
+                                                    put("value", value)
                                                     put("fields", buildJsonObject { put("count()", JsonPrimitive(count)) })
                                                 }
                                             },

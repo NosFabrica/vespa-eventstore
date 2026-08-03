@@ -1300,6 +1300,38 @@ class VespaEventIndex(
     }
 
     /**
+     * The same grouping as [distinctAuthors], keeping each group's `count()` —
+     * which [EventYql.buildDistinctAuthors] already asks for (a group needs a
+     * payload to be emitted at all) and [distinctAuthors] drops on the floor. So
+     * the author set WITH per-author doc counts costs exactly one query, the
+     * same one.
+     */
+    override suspend fun countByAuthor(query: EventQuery): Map<String, Int> =
+        nearSafe(query) { q ->
+            val root = EventYql.buildDistinctAuthors(q)?.let { queryRoot(it, hits = 0) } ?: return@nearSafe emptyMap()
+            val out = LinkedHashMap<String, Int>()
+
+            // Leaf `group:` nodes only — the same discriminator [distinctAuthors]
+            // uses, so an intermediate node carrying an aggregate can never be
+            // mistaken for an author.
+            fun collect(node: JsonObject) {
+                if (node["id"]?.jsonPrimitive?.content?.startsWith("group:") == true) {
+                    val author = (node["value"] as? JsonPrimitive)?.content
+                    val count =
+                        node["fields"]
+                            ?.jsonObject
+                            ?.get("count()")
+                            ?.jsonPrimitive
+                            ?.intOrNull
+                    if (author != null && count != null) out[author] = count
+                }
+                node["children"]?.jsonArray?.forEach { collect(it.jsonObject) }
+            }
+            collect(root)
+            out
+        }
+
+    /**
      * Complete author scan via the document-API visit (sliced and
      * continuation-paged, see [visitPages]), projecting only `pubkey`.
      * [distinctAuthors]'s grouping is complete too, but it materializes every

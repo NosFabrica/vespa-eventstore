@@ -36,6 +36,7 @@ import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -440,6 +441,7 @@ class TrustReconcilerTest {
 
             val report = reconciler.sweepOrphanScores()
             assertTrue(report.refused, "no 10040 stored -> nothing swept")
+            assertFalse(report.isClean(), "a refusal examined nothing; it is not an all-clear")
             assertEquals(0, report.scoresSwept)
             assertEquals(2, index.count(EventQuery(kinds = listOf(ContactCardEvent.KIND))), "every card survives")
         }

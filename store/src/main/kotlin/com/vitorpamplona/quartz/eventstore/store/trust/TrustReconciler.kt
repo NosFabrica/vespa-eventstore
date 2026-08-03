@@ -79,7 +79,12 @@ class TrustReconciler internal constructor(
         /** Whether the sweep refused to run because no 10040 attribution was readable — see [sweepOrphanScores]. */
         val refused: Boolean,
     ) {
-        fun isClean() = orphans.isEmpty() && remapped.isEmpty()
+        /**
+         * Nothing to do AND nothing skipped. A REFUSED sweep is never clean: it
+         * examined nothing, and reporting that as "no orphans" would turn the
+         * one state the guardrail exists for into a silent all-clear.
+         */
+        fun isClean() = !refused && orphans.isEmpty() && remapped.isEmpty()
     }
 
     /**
@@ -384,33 +389,43 @@ class TrustReconciler internal constructor(
      * 10040 attributes nothing (it is not served as a record), so a service
      * named only by expired lists counts as an orphan here too.
      *
-     * [dryRun] answers "how much would this free" — the candidate list plus a
-     * count per service, no writes at all.
+     * The re-check is bounded by the writer lock this process holds, so — like
+     * supersession and every other admission check (docs/multi-node-consistency.md)
+     * — it assumes ONE writer. A second process writing a 10040 concurrently
+     * neither takes this lock nor invalidates this process's attribution cache.
+     *
+     * A deletion is not a tombstone: nothing stops the same cards from arriving
+     * again. A mirror that syncs 30382s BY KIND re-downloads exactly what this
+     * freed, so the sweep is a companion to narrowing that sync (by the services
+     * the store's 10040s name), not a substitute for it.
+     *
+     * [dryRun] answers "how much would this free" — the same candidate list and
+     * exact totals, straight out of the one grouping query, with no writes.
      */
     suspend fun sweepOrphanScores(
         dryRun: Boolean = false,
-        onProgress: ((sweptServices: Int, totalOrphans: Int, scoresSwept: Int) -> Unit)? = null,
+        onProgress: ((servicesDone: Int, totalServices: Int, scoresSwept: Int, totalScores: Int) -> Unit)? = null,
     ): OrphanSweep {
         val providers = recompute.providerMap()
         // The refusal above: no attribution readable = every service looks
         // orphaned. Nothing is deleted and the caller is told why.
         if (providers.isEmpty()) return OrphanSweep(0, emptyList(), 0, emptyList(), dryRun, refused = true)
 
-        // Server-side grouping over the whole card corpus (see
-        // EventIndex.distinctAuthors): the distinct signers out of millions of
-        // docs without reconstructing one of them. Completeness is load-bearing
-        // in the harmless direction only — a signer the grouping missed keeps
-        // its cards, it never causes a wrong deletion.
-        val signers = index.distinctAuthors(EventQuery(kinds = listOf(ContactCardEvent.KIND)))
-        val candidates = signers.filterNot(providers::maps)
-        onProgress?.invoke(0, candidates.size, 0)
-        if (candidates.isEmpty()) return OrphanSweep(signers.size, emptyList(), 0, emptyList(), dryRun, refused = false)
+        // ONE server-side grouping over the whole card corpus (see
+        // EventIndex.countByAuthor): every signer AND its card count, out of
+        // millions of docs, without reconstructing one of them — the counts ride
+        // along in the same response, so the dry run needs no per-service query.
+        // Completeness is load-bearing in the harmless direction only: a signer
+        // the grouping missed keeps its cards, it never causes a wrong deletion.
+        val cardsBySigner = index.countByAuthor(EventQuery(kinds = listOf(ContactCardEvent.KIND)))
+        val candidates = cardsBySigner.keys.filterNot(providers::maps)
+        val doomed = candidates.sumOf { cardsBySigner[it] ?: 0 }
+        onProgress?.invoke(0, candidates.size, 0, doomed)
+        if (candidates.isEmpty()) return OrphanSweep(cardsBySigner.size, emptyList(), 0, emptyList(), dryRun, refused = false)
 
-        if (dryRun) {
-            // Counts only — engine-side, fanned out, and no lock taken anywhere.
-            val counted = candidates.mapBounded(QUERY_FANOUT) { index.count(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(it))) }
-            return OrphanSweep(signers.size, candidates, counted.sum(), emptyList(), dryRun = true, refused = false)
-        }
+        // The dry run is answered entirely by the grouping above — no further
+        // reads, no lock taken anywhere.
+        if (dryRun) return OrphanSweep(cardsBySigner.size, candidates, doomed, emptyList(), dryRun = true, refused = false)
 
         val swept = ArrayList<String>()
         val remapped = ArrayList<String>()
@@ -457,13 +472,16 @@ class TrustReconciler internal constructor(
                     scores += docs.size
                     lastPage = ids
                 }
-                onProgress?.invoke(swept.size, candidates.size, scores)
+                // PROCESSED services, not swept ones: a caller drawing a bar off
+                // this must still reach the total when a candidate turns out to
+                // be remapped.
+                onProgress?.invoke(swept.size + remapped.size, candidates.size, scores, doomed)
             }
             check(drained) { "orphan sweep did not drain $service after $MAX_SWEEP_ROUNDS rounds of $SWEEP_PAGE" }
             if (stillOrphan) swept += service else remapped += service
-            onProgress?.invoke(swept.size, candidates.size, scores)
+            onProgress?.invoke(swept.size + remapped.size, candidates.size, scores, doomed)
         }
-        return OrphanSweep(signers.size, swept, scores, remapped, dryRun = false, refused = false)
+        return OrphanSweep(cardsBySigner.size, swept, scores, remapped, dryRun = false, refused = false)
     }
 
     /**

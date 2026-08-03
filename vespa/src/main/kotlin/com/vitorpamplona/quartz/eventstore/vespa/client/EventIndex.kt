@@ -233,6 +233,17 @@ interface EventIndex : AutoCloseable {
     suspend fun distinctAuthors(query: EventQuery): Set<String> = search(query).mapTo(HashSet()) { it.pubkey }
 
     /**
+     * [distinctAuthors] with each author's DOC COUNT (author -> matches) — the
+     * same grouping, whose `count()` per group the engine already computes and
+     * [distinctAuthors] discards. The orphan-score sweep reads both from this
+     * one query: which services signed cards, and how many each has (its dry run
+     * would otherwise be a count query per candidate service — thousands, on a
+     * mirror). Keys are exactly [distinctAuthors]' set, so the same completeness
+     * argument applies. A decorator MUST delegate to its inner index.
+     */
+    suspend fun countByAuthor(query: EventQuery): Map<String, Int> = search(query).groupingBy { it.pubkey }.eachCount()
+
+    /**
      * Every distinct author of [query]'s match set, STREAMED. Both this and
      * [distinctAuthors] are complete (neither caps groups), but the grouping
      * builds its whole answer in one engine response, while this pages a visit

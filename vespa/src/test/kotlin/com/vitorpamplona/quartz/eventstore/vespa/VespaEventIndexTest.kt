@@ -338,6 +338,50 @@ class VespaEventIndexTest {
             assertEquals(reference.countDistinctAuthors(content), index.countDistinctAuthors(content))
         }
 
+    /**
+     * The author VALUES, not their number — the grouping the orphan-score sweep
+     * builds its candidate list from. A truncated or value-less answer here
+     * would leave orphans behind, so this pins the leaf `group:pubkey:…` parse
+     * over the wire (its YQL shares `group(pubkey)` with the distinct COUNT,
+     * which returns no values at all).
+     */
+    @Test
+    fun `distinctAuthors returns every author value`() =
+        runBlocking {
+            val alice = "a1".repeat(32)
+            val bob = "b2".repeat(32)
+            val carol = "c3".repeat(32)
+            seed(
+                doc(kind = 30382, pubkey = alice),
+                doc(kind = 30382, pubkey = alice),
+                doc(kind = 30382, pubkey = bob),
+                doc(kind = 30382, pubkey = carol),
+                doc(kind = 1, pubkey = "d4".repeat(32)), // another kind: not an author of these
+            )
+            val cards = EventQuery(kinds = listOf(30382))
+            assertEquals(setOf(alice, bob, carol), index.distinctAuthors(cards))
+            assertEquals(reference.distinctAuthors(cards), index.distinctAuthors(cards))
+        }
+
+    /** The same grouping keeping each group's count() — one query for both halves of what the sweep needs. */
+    @Test
+    fun `countByAuthor returns each author's doc count`() =
+        runBlocking {
+            val alice = "a1".repeat(32)
+            val bob = "b2".repeat(32)
+            seed(
+                doc(kind = 30382, pubkey = alice),
+                doc(kind = 30382, pubkey = alice),
+                doc(kind = 30382, pubkey = alice),
+                doc(kind = 30382, pubkey = bob),
+                doc(kind = 1, pubkey = bob), // filtered out by the kind, so bob counts once
+            )
+            val cards = EventQuery(kinds = listOf(30382))
+            assertEquals(mapOf(alice to 3, bob to 1), index.countByAuthor(cards))
+            assertEquals(reference.countByAuthor(cards), index.countByAuthor(cards))
+            assertEquals(index.distinctAuthors(cards), index.countByAuthor(cards).keys, "same set as the values-only form")
+        }
+
     /** The per-kind histogram: one entry per kind with its doc count, over the wire, agreeing with the spec. */
     @Test
     fun `countByKind histograms the corpus by kind`() =
