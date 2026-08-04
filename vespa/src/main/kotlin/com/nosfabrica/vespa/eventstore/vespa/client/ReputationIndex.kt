@@ -36,12 +36,10 @@ interface ReputationIndex : AutoCloseable {
 
     /**
      * Upsert single tensor cells on the subjects' parents, creating missing
-     * parents. This is the insert path's ZERO-READ alternative to a full [put]
-     * (Vespa's tensor `add` update). The caller must only send values that are
-     * current-best for their (subject, observer); the store's supersession
-     * provides exactly that at insert time. Same-subject updates apply in list
-     * order. The default implementation is read-modify-write (the in-memory
-     * spec).
+     * parents — the insert path's ZERO-READ alternative to a full [put] (Vespa
+     * tensor `add`). Callers must only send current-best values for their
+     * (subject, observer); same-subject updates apply in list order. The
+     * default is read-modify-write (the in-memory spec).
      */
     suspend fun updateCells(updates: List<ReputationCells>) =
         updates.forEach { u ->
@@ -57,11 +55,10 @@ interface ReputationIndex : AutoCloseable {
     suspend fun remove(pubkey: String)
 
     /**
-     * Stream every stored reputation doc's pubkey, paged. This is the walk the
-     * orphan sweep needs: a parent whose subject has no stored cards left can
-     * only be found from the REPUTATION corpus — no event walk can enumerate
-     * it. [onPage] returns whether to continue; false stops the walk early.
-     * Order is engine-defined.
+     * Stream every stored reputation pubkey, paged — the orphan sweep's walk:
+     * a parent whose subject has no cards left is only findable from the
+     * REPUTATION corpus. [onPage] returns whether to continue; order is
+     * engine-defined.
      */
     suspend fun visitPubkeys(onPage: suspend (List<String>) -> Boolean)
 }

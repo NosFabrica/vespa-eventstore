@@ -21,10 +21,9 @@
 package com.nosfabrica.vespa.eventstore.vespa
 
 /**
- * The Vespa application package (event + reputation schemas and their rank
- * profiles), bundled into this jar as a zip by the build. It is the deploy
- * artifact the store's schema must be running before any query works — shipped
- * with the code so the two versions can never drift.
+ * The Vespa application package (event + reputation schemas, rank profiles),
+ * bundled into this jar as a zip by the build — shipped with the code so
+ * schema and code can never drift.
  */
 object VespaApp {
     /** Classpath location of the bundled package (see vespa/build.gradle.kts). */

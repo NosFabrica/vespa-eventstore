@@ -38,25 +38,15 @@ import kotlinx.serialization.json.long
 import kotlinx.serialization.json.put
 
 /**
- * One live Nostr event as a Vespa `event` document (docid = [id]). The NIP-01
- * fields are held LOSSLESSLY. The signature is over the canonical serialization
- * of these exact values, so [toEventJson] can rebuild a complete event that
- * clients re-verify. There is no separate raw-blob copy.
- *
- * [tags] is the exact tag array. The queryable `tag_index` field ([tagIndex])
- * is a derived, lossy view: single-letter tag names only, first value only. It
- * is used for `#x` filter recall and never for reconstruction.
- *
- * The store maps its events into this and verifies signatures BEFORE
- * constructing one, so everything in the index is assumed already verified.
- * NIP-01 serialization and the tag-derived reads go through the Quartz [Event]
- * this doc reconstructs ([toEventJson], [expiresAt], [dTag]).
- *
- * [owner] and [search] are DERIVED fields the store computes with Nostr
- * knowledge. The owner is the pubkey Nostr semantics key off: the gift-wrap
- * recipient for kind 1059, else the author. [search] is the kind-specific
- * decomposition of searchable kinds into the schema's search fields. All-null
- * means the event is invisible to NIP-50 search.
+ * One live Nostr event as a Vespa `event` document (docid = [id]). NIP-01
+ * fields are held LOSSLESSLY — the signature is over these exact values, so
+ * [toEventJson] rebuilds a complete event clients re-verify; no raw-blob copy.
+ * [tags] is the exact tag array; the queryable `tag_index` ([tagIndex]) is a
+ * derived, lossy view (single-letter names, first values) for `#x` recall,
+ * never reconstruction. Signatures are verified BEFORE construction — the
+ * index holds only verified events. [owner] and [search] are store-derived:
+ * owner is the pubkey semantics key off (gift-wrap recipient for kind 1059,
+ * else the author); [search] all-null means invisible to NIP-50 search.
  */
 data class EventDoc(
     val id: HexKey,
@@ -71,19 +61,13 @@ data class EventDoc(
 ) {
     /**
      * DECODE METADATA, not document state: the near-tier attribute arrays as
-     * actually STORED on the engine document this instance was decoded from.
-     * null = no evidence — constructed docs, and every search-summary path
-     * (the near fields carry no `| summary`, so their absence there says
-     * nothing). Only the document-API reads (get, the `[document]` visit) see
-     * the true stored fields and stamp this; an empty map from those paths
-     * means the doc genuinely holds NO near arrays — the pre-near-tier corpus
-     * the full-text reindex must re-feed ([SearchFields.nearFieldsWritten] is
-     * what a fresh put would write, so `stored != written` = stale).
-     *
-     * Deliberately NOT a constructor property: a doc's identity is the event
-     * plus its derived search surface, and two reads of the same logical doc
-     * (one via search, one via visit) must stay equal — this records what one
-     * read happened to see, so it stays outside equals/copy.
+     * actually STORED on the engine doc this was decoded from. null = no
+     * evidence (constructed docs; search summaries, which don't carry them).
+     * An empty map from a document-API read means genuinely none stored — the
+     * pre-near-tier corpus the full-text reindex must re-feed (stale when
+     * != [SearchFields.nearFieldsWritten]). Deliberately NOT a constructor
+     * property: it records what one read saw, and two reads of the same
+     * logical doc must stay equal — so it lives outside equals/copy.
      */
     var storedNearFields: Map<String, List<String>>? = null
 
@@ -91,9 +75,9 @@ data class EventDoc(
     private fun tagsArray(): Array<Array<String>> = Array(tags.size) { tags[it].toTypedArray() }
 
     /**
-     * The queryable `"<letter>:<value>"` pairs. One per tag whose name is a
-     * single ASCII letter (the names NIP-01 `#x` filters can address) and that
-     * has a value. Everything else still round-trips through [tags].
+     * The queryable `"<letter>:<value>"` pairs: one per single-ASCII-letter tag
+     * name (what NIP-01 `#x` filters can address) with a value. Everything else
+     * still round-trips through [tags].
      */
     fun tagIndex(): List<String> =
         tags.mapNotNull { tag ->
@@ -103,10 +87,8 @@ data class EventDoc(
         }
 
     /**
-     * The NIP-40 expiration timestamp; null = never expires. A direct scan over
-     * [tags] — same result as Quartz's `String[][].expiration()` (first
-     * `expiration` tag with a parseable value) without the per-call `String[][]`
-     * deep copy [tagsArray] would make. Called on every put (see [indexFields]).
+     * The NIP-40 expiration; null = never. Direct scan matching Quartz's
+     * `expiration()` without [tagsArray]'s deep copy — called on every put.
      */
     fun expiresAt(): Long? =
         tags.firstNotNullOfOrNull { tag ->
@@ -115,9 +97,8 @@ data class EventDoc(
 
     /**
      * The `d` tag value, or "" when absent — the addressable bucketing key
-     * (missing == empty). A direct scan over [tags], matching Quartz's
-     * `String[][].dTag()` (`firstTagValue("d") ?: ""`) with no `String[][]` copy;
-     * this is on the address/supersession hot path.
+     * (missing == empty). Direct scan matching Quartz's `dTag()` with no
+     * `String[][]` copy; on the address/supersession hot path.
      */
     fun dTagOrEmpty(): String = tags.firstOrNull { it.size > 1 && it[0] == "d" }?.get(1) ?: ""
 
@@ -125,10 +106,9 @@ data class EventDoc(
     fun dTag(): String? = dTagOrEmpty().takeIf { it.isNotEmpty() }
 
     /**
-     * The NIP-01 address (`kind:pubkey[:dtag]`) for replaceable/addressable
-     * kinds; null for regular events. This is the natural unique key those kinds
-     * supersede on — and, under address-keyed storage, their document id.
-     * Replaceables use the fixed empty d-tag; addressables use their `d` value.
+     * The NIP-01 address (`kind:pubkey[:dtag]`) replaceable/addressable kinds
+     * supersede on — and their docid under address-keyed storage; null for
+     * regular events. Replaceables use the fixed empty d-tag.
      */
     fun addressOrNull(): String? =
         when {
@@ -149,19 +129,15 @@ data class EventDoc(
             put("content", content)
             put("sig", sig)
             put("owner", owner)
-            // Reference to the author's ranking state (the global reputation
-            // parent), which controls how any kind ranks by the observer's
-            // trust in its author. It is purely pubkey-derived, so it's stamped
-            // here rather than by an extractor.
+            // The author's ranking state (global reputation parent) — purely
+            // pubkey-derived, so stamped here rather than by an extractor.
             put("author_ref", "id:reputation:reputation::$pubkey")
             for ((field, value) in search.fields()) put(field, value)
-            // The near-tier attribute arrays (prefix/fuzzy targets), derived
-            // HERE rather than by a schema-side indexing expression so doc and
-            // query share NearText's one normalization (diacritic folding —
-            // string attributes match raw bytes) — see NearText for the full
-            // rationale. Existing corpora need a RE-FEED to populate these;
-            // NostrSemanticsStore.reindexFullTextSearch is that re-feed (it
-            // compares [storedNearFields] against this derivation).
+            // Near-tier attribute arrays (prefix/fuzzy targets), derived HERE
+            // rather than schema-side so doc and query share NearText's one
+            // normalization (see NearText). Existing corpora need a RE-FEED —
+            // NostrSemanticsStore.reindexFullTextSearch compares
+            // [storedNearFields] against this derivation.
             for ((field, elements) in search.nearFieldsWritten()) {
                 put(field, JsonArray(elements.map(::JsonPrimitive)))
             }
@@ -174,11 +150,10 @@ data class EventDoc(
     fun toEventJson(): String = Event(id, pubkey, createdAt, kind, tagsArray(), content, sig).toJson()
 
     /**
-     * This doc as a Quartz [RawEvent]: the wire event with `tags` kept as its
-     * canonical JSON string. A raw recall path hands this straight to a relay's
-     * serializer (which splices `jsonTags` verbatim), so no per-tag object is
-     * ever built or re-serialized. The Vespa client overrides its recall to build
-     * the RawEvent from the decoded summary directly, skipping even this EventDoc.
+     * This doc as a Quartz [RawEvent] (`tags` kept as its canonical JSON
+     * string), spliced verbatim by a relay's serializer — no per-tag object
+     * built or re-serialized. The Vespa client builds RawEvents from decoded
+     * summaries directly, skipping even this EventDoc.
      */
     fun toRawEvent(): RawEvent = RawEvent(id, pubkey, createdAt, kind, tagsAsJson().toString(), content, sig)
 
@@ -216,10 +191,9 @@ data class EventDoc(
                         .jsonArray
                         .map { tag -> tag.jsonArray.map { it.jsonPrimitive.content } },
                 content = fields["content"]?.jsonPrimitive?.content ?: "",
-                // Tolerant like `content` above: Vespa OMITS empty-string fields from
-                // query summaries, so an unsigned rumor (sig == "") comes back with no
-                // `sig` key at all. getValue would throw and the hit would silently
-                // vanish from search results. Default to "" instead.
+                // Vespa OMITS empty-string fields from summaries: an unsigned
+                // rumor (sig == "") arrives with no `sig` key — default to ""
+                // instead of letting getValue throw and silently drop the hit.
                 sig = fields["sig"]?.jsonPrimitive?.content ?: "",
                 owner = fields["owner"]?.jsonPrimitive?.content ?: pubkey,
                 search = SearchFields.fromFields { fields[it]?.jsonPrimitive?.content },

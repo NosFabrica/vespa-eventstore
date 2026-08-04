@@ -35,8 +35,8 @@ import java.time.Duration
 
 /**
  * The real [ReputationIndex]: the `reputation` document type over Vespa HTTP —
- * literally the same wiring as [VespaEventIndex]: writes through [VespaFeed],
- * reads through [VespaHttp].
+ * writes through [VespaFeed], reads through [VespaHttp], same wiring as
+ * [VespaEventIndex].
  */
 class VespaReputationIndex(
     private val baseUrl: String = System.getenv("VESPA_URL") ?: "http://localhost:8080",
@@ -70,10 +70,9 @@ class VespaReputationIndex(
     }
 
     /**
-     * Pipelined tensor-cell upserts (Vespa `add` update, create-if-missing).
-     * `add` overwrites an existing cell and creates absent ones. The feed
-     * client keeps per-document ordering, so same-subject updates land in list
-     * order, which is exactly the [ReputationIndex.updateCells] contract.
+     * Pipelined tensor-cell upserts (Vespa `add`, create-if-missing; `add`
+     * overwrites existing cells). The feed client keeps per-document ordering,
+     * satisfying [ReputationIndex.updateCells]'s list-order contract.
      */
     override suspend fun updateCells(updates: List<ReputationCells>) {
         updates
@@ -101,11 +100,9 @@ class VespaReputationIndex(
     }
 
     /**
-     * The document-API visit over the reputation corpus, projecting only
-     * `pubkey` — the paged walk the orphan sweep runs. Same shape as the event
-     * client's paged visit: one continuation chain, the server timing out under
-     * the client's read deadline so a slow page returns partial + continuation
-     * instead of dying.
+     * Document-API visit projecting only `pubkey` — the orphan sweep's paged
+     * walk. The server times out under the client's read deadline, so a slow
+     * page returns partial + continuation instead of dying.
      */
     override suspend fun visitPubkeys(onPage: suspend (List<String>) -> Boolean) {
         val base =

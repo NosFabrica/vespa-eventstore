@@ -41,39 +41,25 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 /**
- * The READ-side transport to Vespa: how request bytes move and how they fail,
- * with no knowledge of what any request means. [VespaEventIndex] and
- * [VespaReputationIndex] decide WHAT to ask; this class owns the three
- * transport-correctness decisions:
- *
- *  - clear-text HTTP/2 by PRIOR KNOWLEDGE (Vespa's container serves h2c only
- *    that way, not via the `Upgrade` handshake — a negotiating client silently
- *    falls back to HTTP/1.1 and one TCP connection per in-flight read);
- *  - NO read/call deadline, with HTTP/2 PING liveness instead (an unbounded
- *    query is allowed to take as long as it takes; a dead peer still surfaces
- *    in seconds as a retryable failure);
- *  - brief retries for transient overload (5xx load-shedding, 429 pushback,
- *    transport IOExceptions), so one failed page cannot kill a multi-hour walk.
+ * The READ-side transport to Vespa: how bytes move and fail, with no knowledge
+ * of what a request means ([VespaEventIndex]/[VespaReputationIndex] decide
+ * that). Owns three transport-correctness decisions: clear-text HTTP/2 by
+ * prior knowledge (the only way Vespa serves h2c), no read/call deadline (with
+ * HTTP/2 PING liveness instead), and brief retries for transient overload
+ * (5xx/429/IOException) so one failed page cannot kill a multi-hour walk.
  */
 internal class VespaHttp {
-    // OkHttp pinned to clear-text HTTP/2 by PRIOR KNOWLEDGE: Vespa's container
-    // serves h2c only via prior knowledge, not the `Upgrade: h2c` handshake the
-    // JDK HttpClient uses — so the JDK client silently ran every query on
-    // HTTP/1.1 (one TCP connection per in-flight read). Prior-knowledge h2c
-    // makes concurrent reads multiplex over a single connection, matching the
-    // feed client's write path. No fallback list: every endpoint here is Vespa.
+    // Prior-knowledge h2c: Vespa serves h2c only that way, not via the
+    // `Upgrade` handshake — a negotiating client (e.g. the JDK HttpClient)
+    // silently falls back to HTTP/1.1, one TCP connection per in-flight read.
+    // No fallback list: every endpoint here is Vespa.
     private val http =
         OkHttpClient
             .Builder()
-            // Every request this client makes goes to ONE host, so OkHttp's
-            // per-host default of 5 is the real ceiling — not maxRequests. The
-            // whole store was capped at five concurrent engine requests, shared
-            // by every snapshot visit, every search and every count.
-            //
-            // With no read deadline (below), five requests that never return
-            // wedge the store permanently. Observed: three snapshots frozen at
-            // 94k, 2.5M and 3.1M ids with zero visit requests reaching the
-            // engine for minutes, the relay idle at 2.5% CPU.
+            // Every request goes to ONE host, so OkHttp's per-host default of 5
+            // was the real ceiling; with no read deadline (below), five wedged
+            // requests froze the store permanently (observed: snapshots stalled
+            // for minutes, relay idle at 2.5% CPU).
             .dispatcher(
                 Dispatcher().apply {
                     maxRequests = MAX_CONCURRENT_REQUESTS
@@ -82,50 +68,32 @@ internal class VespaHttp {
             ).protocols(listOf(Protocol.H2_PRIOR_KNOWLEDGE))
             .connectTimeout(Duration.ofSeconds(5))
             .writeTimeout(Duration.ofSeconds(60))
-            // NO read or whole-call deadline. A query with no `limit` asks for the
-            // whole match set and is allowed to take as long as that takes — any
-            // finite deadline here is a duration cap on the CALLER's query, decided
-            // by the library, and OkHttp cannot tell "engine still matching" from
-            // "connection idle" (both are just no-bytes-yet on the socket).
-            //
-            // A dead peer is caught without capping duration: HTTP/2 PING frames.
-            // Unanswered pings fail the connection, so a black-holed socket still
-            // surfaces as a retryable IOException in seconds rather than hanging
-            // forever — which is what the deadlines were really there to catch.
+            // NO read/call deadline: an unlimited query may legitimately take as
+            // long as it takes, and OkHttp cannot tell "engine still matching"
+            // from "connection dead". Dead peers are caught by HTTP/2 PINGs
+            // instead — unanswered pings fail the connection as a retryable
+            // IOException in seconds.
             .readTimeout(Duration.ZERO)
             .callTimeout(Duration.ZERO)
             .pingInterval(Duration.ofSeconds(PING_INTERVAL_SECONDS))
             // Vespa is local; never route through the egress proxy.
             .proxy(Proxy.NO_PROXY)
-            // TCP_NODELAY. OkHttp never sets it (verified against okhttp-jvm
-            // 5.4.0: no reference to the option anywhere), so its sockets keep
-            // Java's default — Nagle ON — while the JDK HttpClient turns it off.
-            // On this request/response protocol Nagle only ADDS latency: a
-            // multi-segment POST (a 500-id existence query is a ~35KB body) can
-            // stall a full delayed-ACK quantum (~40ms) mid-upload waiting for an
-            // ACK the peer is deliberately withholding. Measured (benchmark
-            // transportProbe): a 500-id existence query through docker-proxy
-            // drops 55.6ms -> 10.7ms with NODELAY; on a direct link 26.2ms
-            // mean / 78ms p95 -> 10.1 / 11.3 — the stall is deterministic
-            // behind a userspace proxy hop and tail-shaped on a direct one.
-            // Writes are already frame-batched by okio/h2c, so there is no
-            // small-write flood for Nagle to be saving us from.
+            // TCP_NODELAY: OkHttp never sets it, so Nagle stays ON and a
+            // multi-segment POST (a 500-id existence query is ~35KB) can stall
+            // a delayed-ACK quantum (~40ms) mid-upload. Measured (benchmark
+            // transportProbe): 55.6ms -> 10.7ms via docker-proxy; 26.2ms mean /
+            // 78ms p95 -> ~10 / 11 direct. Writes are already frame-batched by
+            // okio/h2c, so Nagle has nothing to save us from.
             .socketFactory(NoDelaySocketFactory)
             .build()
 
     /**
-     * The visit walk's client: the query client plus a READ timeout, which
-     * visits need and queries must not have. A query is one response that may
-     * legitimately take minutes of engine time before its first byte, so the
-     * query client carries no read deadline. A visit is the opposite shape:
-     * page responses are small and continuous, and a streamed slice delivers
-     * lines steadily — silence means a wedged visitor session, not a
-     * hard-working engine. Measured live: enough concurrent visitor sessions
-     * wedge a small node's document API mid-response, HTTP/2 pings keep the
-     * connection "alive" (they are answered; it is the response that never
-     * comes), and without a read deadline the walk hangs FOREVER. With one,
-     * the wedge surfaces as an IOException that the paged retry / streamed
-     * resume machinery handles — recover or fail loudly, never hang.
+     * The visit walk's client: [http] plus a READ timeout, which visits need
+     * and queries must not have. Visit pages are small and stream steadily, so
+     * silence means a wedged visitor session (measured live: pings stay
+     * answered while the response never comes — without a deadline the walk
+     * hangs FOREVER). The timeout surfaces the wedge as an IOException the
+     * paged retry / streamed resume machinery handles.
      */
     private val visitHttp =
         http
@@ -177,17 +145,11 @@ internal class VespaHttp {
         )
 
     /**
-     * Send [req], briefly retrying transient overload: 5xx (the engine sheds
-     * load under heavy concurrent summary fills) AND 429 (the document API
-     * rejects past 256 enqueued requests — pushback, not failure). Shared by the
-     * query, get, and visit paths. The full-corpus visit walk is exactly a place
-     * where one 504/429 page must not abort the whole scan.
-     *
-     * Transport [IOException]s are retried on the same budget. A response body that
-     * stalls past the read timeout is the same class of transient overload as a 503
-     * — the engine was too busy to finish streaming — and it arrives as an exception
-     * rather than a status code, so treating it as fatal would abort a visit walk
-     * for a condition the next attempt usually clears.
+     * Send [req], briefly retrying transient overload: 5xx (engine load-shed),
+     * 429 (document-API pushback past 256 enqueued — not failure), and
+     * transport [IOException]s (a body stalling past the read timeout is the
+     * same overload arriving as an exception). Shared by every read path — one
+     * 504/429 page must not abort a full-corpus walk.
      */
     private suspend fun send(
         req: Request,
@@ -222,19 +184,12 @@ internal class VespaHttp {
     }
 
     /**
-     * Bridge OkHttp's async [Call.enqueue] to a cancellable suspend. The body is
-     * read on OkHttp's callback thread (inside [Response.use] so the connection is
-     * released), so the whole read stays non-blocking, exactly as the old
-     * `sendAsync(...).await()` did.
-     *
-     * [onResponse] must complete the continuation on EVERY path, including a body
-     * read that throws. OkHttp sets its internal `signalledCallback` flag *before*
-     * invoking [onResponse], so anything thrown in here is only logged
-     * ("Callback failure for call to …", at INFO) and is NEVER routed to
-     * [onFailure]. An unguarded `body.string()` that times out mid-stream would
-     * therefore leave this coroutine suspended forever — the same
-     * hang-behind-the-single-writer-store deadlock that the feed's per-operation
-     * timeout guards on the write path, reached by a different door.
+     * Bridge OkHttp's async [Call.enqueue] to a cancellable suspend; the body
+     * is read on the callback thread inside [Response.use]. INVARIANT:
+     * [onResponse] must complete the continuation on EVERY path — OkHttp never
+     * routes an exception thrown there to [onFailure] (only logs it), so an
+     * unguarded body read that throws would leave this coroutine suspended
+     * forever, hanging the single-writer store.
      */
     private suspend fun Call.await(): HttpResp =
         suspendCancellableCoroutine { cont ->
@@ -294,31 +249,23 @@ internal class VespaHttp {
     }
 
     private companion object {
-        /**
-         * Concurrent requests to the engine, total and per host — the same
-         * number, because every request goes to the same host and the per-host
-         * limit is therefore the only one that binds.
-         */
+        /** Concurrent engine requests, total and per host — one host, so the per-host limit is the one that binds. */
         const val MAX_CONCURRENT_REQUESTS = 1024
 
         /** Brief 5xx retries per query (transient engine load-shedding, not correctness). */
         const val QUERY_RETRIES = 3
 
         /**
-         * Read deadline for visit requests ([visitHttp]): pages are small and
-         * streams deliver continuously, so this much silence means a wedged
-         * visitor session, not a busy engine. Generous enough for a loaded
-         * node's worst honest page.
+         * Visit read deadline ([visitHttp]): pages stream continuously, so this
+         * much silence means a wedged visitor session, not a busy engine.
          */
         const val VISIT_READ_TIMEOUT_SECONDS = 120L
 
         /**
-         * Liveness probe on the read connection, in place of the read/whole-call
-         * deadlines a query is no longer allowed to have. Unanswered HTTP/2 PINGs
-         * fail the connection with a ProtocolException, which [send] retries — so
-         * a severed or black-holed socket is caught in seconds while a
-         * legitimately long query runs undisturbed. That distinction is the whole
-         * point: a deadline cannot make it, a ping can.
+         * Liveness in place of read deadlines: unanswered HTTP/2 PINGs fail the
+         * connection with a ProtocolException [send] retries, so a black-holed
+         * socket dies in seconds while a legitimately long query runs
+         * undisturbed — a distinction a deadline cannot make.
          */
         const val PING_INTERVAL_SECONDS = 15L
     }

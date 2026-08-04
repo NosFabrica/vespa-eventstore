@@ -24,16 +24,12 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Process-wide wall-time accounting for the ingest pipeline's named stages. It
- * answers the question "the writer is busy 100%, but WHERE?". Stages
- * self-register on first use. [gauge] renders per-stage seconds since its last
- * call (a delta, not a running total) for a status-line breakdown like
- *
- *   stages dedup 1.2s guards 8.4s versions 22.1s write 9.0s proj.fetch 18.3s proj.write 4.1s
- *
- * It is global on purpose. The store and the projection are separate modules
- * composed per process, and threading a stats object through both APIs would
- * couple them for what is strictly observability.
+ * Process-wide wall-time accounting for the ingest pipeline's named stages —
+ * answers "the writer is busy 100%, but WHERE?". Stages self-register on first
+ * use; [gauge] renders per-stage seconds since its last call. Global on
+ * purpose: store and projection are separate modules composed per process, and
+ * threading a stats object through both APIs would couple them for what is
+ * strictly observability.
  */
 object IngestStats {
     private val stages = ConcurrentHashMap<String, AtomicLong>()

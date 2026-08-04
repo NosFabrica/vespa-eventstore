@@ -23,25 +23,14 @@ import com.nosfabrica.vespa.eventstore.vespa.NearText
 import com.nosfabrica.vespa.eventstore.vespa.WHITESPACE
 
 /**
- * The derived, kind-specific search surface of one event: what the store's
- * extractors decompose a searchable event into. All-null means the event is
- * invisible to NIP-50 search.
- *
- * There are two groups, LARGELY disjoint per kind, which is what lets the
- * schema's rank profiles compose them as a plain sum (see event.sd):
- *
- *  - the kind-0 profile group ([name]..[website]), with each field's role:
- *    name/displayName primary, nip05/lud16 identity (IDF), about/website
- *    affiliation;
- *  - the generic tiers for every other kind: [primary] (title/subject-like),
- *    [secondary] (summary/hashtag-like), [text] (the body), plus [location]
- *    (place names, filled systemically from any kind's `location` tags).
- *
- * The disjointness is not strict: a kind may also fill a profile ROLE column
- * when it carries that data — an app handler (kind 31990) fills the whole
- * profile group, and a repo/podcast/stream fills [website] for the
- * affiliation-domain treatment. The schema composes the groups with max()/sum,
- * so the overlap stays well-defined.
+ * The derived, kind-specific search surface of one event; all-null = invisible
+ * to NIP-50 search. Two groups, LARGELY disjoint per kind — which lets the
+ * schema's rank profiles compose them as a plain sum (event.sd): the kind-0
+ * profile group ([name]..[website]: name/displayName primary, nip05/lud16
+ * identity, about/website affiliation) and the generic tiers ([primary],
+ * [secondary], [text], plus [location] from any kind's `location` tags).
+ * Disjointness is not strict — e.g. kind 31990 fills the whole profile group —
+ * and the schema's max()/sum keeps the overlap well-defined.
  */
 data class SearchFields(
     val name: String? = null,
@@ -71,30 +60,15 @@ data class SearchFields(
         }
 
     /**
-     * Naive recall check for the in-memory reference index, following the
-     * word-group YQL's AND shape: EVERY query word must substring-match SOME
-     * field — a doc matching only "vitor" never recalls "vitor pamplona".
-     * Different words may land in different fields; ranking, not recall,
-     * decides what floats. Substring containment also absorbs the YQL's
-     * joined/pair concatenation variants: a word covered by a concatenated
-     * handle ("vitor" in "vitorpamplona") is a substring of it.
-     *
-     * Per word, substring is a deliberately LOOSER superset of the real
-     * engine's matchers, not a model of them: Vespa matches exact whole
-     * tokens, word prefixes (via the *_parts and *_tokens attributes), a
-     * length-gated typo budget, and the AND-trigram nets — but NOT arbitrary
-     * infix ("dell" does not recall "ODELL" there, while it does here), and
-     * conversely fuzzy can recall what substring misses ("Odelll" -> ODELL).
-     * NIP-50 search is excluded from strict parity for exactly this reason;
-     * this reference answers "could a reasonable engine recall it", and
-     * ranking is Vespa's.
-     *
-     * The one place looseness must NOT apply: a word with no letter or digit
-     * ("⚡") is erased by tokenization on the engine side, so EventYql drops
-     * it from the required set (and an all-such-words query provably matches
-     * nothing). Substring COULD find the emoji in raw content — but requiring
-     * here what the engine cannot see would make reference and engine
-     * disagree on whole-query recall now that words are AND'd.
+     * Naive recall check for the in-memory reference, following the word-group
+     * YQL's AND shape: EVERY query word must substring-match SOME field (words
+     * may land in different fields; ranking decides what floats). Per word,
+     * substring is a deliberately LOOSER superset of the engine's matchers
+     * (whole tokens, prefixes, typo budget, trigram nets — but not arbitrary
+     * infix) — the reason NIP-50 search is excluded from strict parity. One
+     * place looseness must NOT apply: a word with no letter/digit ("⚡") is
+     * erased by engine tokenization and EventYql drops it too — requiring it
+     * here would split reference and engine on whole-query recall.
      */
     fun matches(term: String): Boolean {
         val words =
@@ -110,21 +84,15 @@ data class SearchFields(
     /**
      * Exact-adjacency check for the in-memory reference — the engine's
      * phrase-grammar term, both polarities: a REQUIRED quoted phrase
-     * ([EventQuery.phrases]) matches iff this is true, and a `-word`
-     * exclusion ([EventQuery.notSearch]) drops the doc iff it is. True when
-     * [phrase]'s folded tokens appear ADJACENTLY, in order, in some field.
-     * Unlike [matches] this deliberately mirrors ONLY the engine's exact
-     * side — whole tokens (split at non-alphanumerics), folded like the
-     * index (NearText.fold), no substring reach: "-ode" must NOT drop a doc
-     * whose text merely contains "model", and a quoted "ode" must not FIND
-     * one, while adjacency keeps a punctuated unit ("e-cash") one phrase, as
-     * the grammar does. Residual divergences are accepted — the same reason
-     * NIP-50 recall is excluded from strict parity: Vespa's stemming on the
-     * prose fields cuts BOTH polarities loose of this check (a required
-     * "runs" can match "running" there, and — the sharper edge — "-runs" can
-     * EXCLUDE "running", over-excluding relative to this reference; see the
-     * EventQuery.notSearch KDoc), and its CJK segmenter splits runs this
-     * treats as one token.
+     * ([EventQuery.phrases]) matches iff true, a `-word` exclusion
+     * ([EventQuery.notSearch]) drops the doc iff true. True when [phrase]'s
+     * folded tokens appear ADJACENTLY, in order, in some field. Unlike
+     * [matches] this mirrors ONLY the engine's exact side — whole tokens,
+     * folded like the index, no substring reach ("-ode" must NOT drop a doc
+     * containing "model"). Residual divergences (engine stemming cuts both
+     * polarities loose — see the EventQuery.notSearch KDoc — and CJK
+     * segmentation splits runs) are accepted, same reason NIP-50 recall is
+     * outside strict parity.
      */
     fun containsPhrase(phrase: String): Boolean {
         val wanted = tokensOf(NearText.fold(phrase))
@@ -152,24 +120,16 @@ data class SearchFields(
     }
 
     /**
-     * The near-tier attribute arrays (event.sd: prefix/fuzzy match targets),
-     * derived from the searchable text via [NearText] — folded, split at two
-     * granularities, merged across the fields nothing downstream needs to
-     * tell apart. name+display_name share one pair (a near hit is a near hit
-     * whichever carried it); search_primary gets the generic-tier pair;
-     * search_secondary gets a TOKENS-only column ("bitco" -> #bitcoin —
-     * hashtags and summaries deserve prefix reach, but parts-splitting prose
-     * would flood the dictionary for no query shape anyone types).
-     *
-     * affil_tokens is the identity/affiliation column (nip05, lud16, website,
-     * about), [NearText.parts]-split so email/URL SEGMENTS become elements —
-     * "vitor@vitorpamplona.com" -> [vitor, vitorpamplona, com] — because
-     * that is what the exact clauses tokenize those fields into: any doc a
-     * finished word reaches through them must stay reachable while the word
-     * is still being typed ("Vitor Pamp" must not drop the
-     * amethyst@vitorpamplona.com profiles that "Vitor Pamplona" returns; the
-     * 2026-08-02 as-you-type report, SearchPrefixLadderIT). Identity fields
-     * come FIRST so [NearText.MAX_ELEMENTS] trims bio prose, never the
+     * The near-tier attribute arrays (event.sd prefix/fuzzy targets), derived
+     * via [NearText] — folded, split, merged across fields nothing downstream
+     * tells apart. name+display_name share one pair; search_primary gets the
+     * generic-tier pair; search_secondary is TOKENS-only ("bitco" -> #bitcoin;
+     * parts-splitting prose would flood the dictionary). affil_tokens (nip05,
+     * lud16, website, about) is [NearText.parts]-split so email/URL SEGMENTS
+     * become elements, matching what the exact clauses tokenize those fields
+     * into: any doc a finished word reaches must stay reachable mid-typing
+     * (the 2026-08-02 as-you-type report; SearchPrefixLadderIT). Identity
+     * fields come FIRST so [NearText.MAX_ELEMENTS] trims bio prose, never
      * identity segments.
      */
     fun nearFields(): Map<String, List<String>> =
@@ -191,10 +151,9 @@ data class SearchFields(
         }
 
     /**
-     * [nearFields] minus empty arrays — exactly the entries a put writes
-     * ([EventDoc.indexFields] never feeds an empty array, and Vespa omits
-     * absent fields on read), so "stored == this" is the feed-parity test the
-     * reindex uses to catch a corpus fed before the near tier existed.
+     * [nearFields] minus empty arrays — exactly what a put writes, so
+     * "stored == this" is the feed-parity test the reindex uses to catch a
+     * corpus fed before the near tier existed.
      */
     fun nearFieldsWritten(): Map<String, List<String>> = nearFields().filterValues { it.isNotEmpty() }
 
@@ -221,11 +180,9 @@ data class SearchFields(
         val NONE = SearchFields()
 
         /**
-         * Rebuild from a doc field map (the [fields] shape). Empty strings
-         * normalize back to null: [fields] feeds "" for an absent name/
-         * display_name sibling (see there), and real Vespa omits empty-string
-         * fields from summaries anyway — so "" and absent are the same state,
-         * and folding them keeps round-trips lossless.
+         * Rebuild from a doc field map (the [fields] shape). "" normalizes to
+         * null — "" and absent are the same state (see [normalized]) — keeping
+         * round-trips lossless.
          */
         fun fromFields(get: (String) -> String?): SearchFields {
             fun at(field: String): String? = get(field)?.takeIf { it.isNotEmpty() }

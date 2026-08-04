@@ -32,14 +32,12 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.putJsonObject
 
 /**
- * One pubkey's ranking state: the `reputation` GLOBAL parent document every event
- * references (`author_ref`) and imports for trust-weighted ranking. It is NOT
- * an event. The trust projection derives it from stored kind-30382s and
- * rewrites it whole on every change (recompute, not cell surgery), so it can be
- * rebuilt from the event corpus at any time.
- *
- * Tensor cells are keyed by OBSERVER pubkey: [influenceScores] = rank
- * (influence*100, 0..100), [followerCounts] = verified-follower count.
+ * One pubkey's ranking state: the `reputation` GLOBAL parent doc every event
+ * imports for trust-weighted ranking (`author_ref`). NOT an event — the trust
+ * projection derives it from stored kind-30382s and rewrites it whole on
+ * change, so it is rebuildable from the event corpus at any time. Tensor cells
+ * key by OBSERVER pubkey: [influenceScores] = rank (influence*100, 0..100),
+ * [followerCounts] = verified-follower count.
  */
 data class ReputationDoc(
     val pubkey: HexKey,
@@ -59,9 +57,9 @@ data class ReputationDoc(
 
     companion object {
         /**
-         * Parse a document-API `fields` object back into a doc. Mapped tensors
-         * arrive in TWO shapes: the short object form we feed (`{obs: v}`) and
-         * the verbose form document-API GETs render (`{"type": …, "cells": {obs: v}}`).
+         * Parse a document-API `fields` object. Mapped tensors arrive in TWO
+         * shapes: the short form we feed (`{obs: v}`) and the verbose
+         * `{"type": …, "cells": …}` form document-API GETs render.
          */
         fun fromSummary(fields: JsonObject): ReputationDoc =
             ReputationDoc(
@@ -75,9 +73,9 @@ data class ReputationDoc(
 }
 
 /**
- * One score card's contribution to [subject]'s parent doc: the [observer]'s
- * cells, applied as a partial UPDATE with no read and no full-doc rewrite. Null
- * fields leave the corresponding tensor untouched.
+ * One score card's contribution to [subject]'s parent: the [observer]'s cells,
+ * applied as a partial UPDATE — no read, no full-doc rewrite. Null fields
+ * leave the corresponding tensor untouched.
  */
 data class ReputationCells(
     val subject: String,

@@ -24,12 +24,9 @@ import com.nosfabrica.vespa.eventstore.vespa.doc.EventDoc
 
 /**
  * One search hit with its ranking explanation ([VespaEventIndex.searchScored]):
- * the engine's relevance score and the match TIER the hit arrived through —
- * `"name"` (exact whole-token), `"near"` (prefix/typo on the *_parts and
- * *_tokens attributes), `"weak"` (bounded infix / hashtag prefix), `"identity"`
- * (nip05/lud16), `"affiliation"` (bio/website), `"gram"` (trigram net only) —
- * or null when the profile served no match-features. The inspector/harness
- * surface: a hit labeled by its band instead of being an opaque position.
+ * the engine's relevance score and the match TIER it arrived through ("name",
+ * "near", "weak", "identity", "affiliation", "gram"), or null when the profile
+ * served no match-features. The inspector/harness surface.
  */
 data class ScoredHit(
     val doc: EventDoc,

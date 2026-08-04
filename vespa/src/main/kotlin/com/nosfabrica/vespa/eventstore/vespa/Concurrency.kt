@@ -30,25 +30,20 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 
 /**
- * How many engine queries a batch stage keeps in flight. Serialized round trips
- * starve a batch, but UNBOUNDED fan-out is worse: a dozen concurrent
- * multi-thousand-summary queries time out proton's summary stage (`504 Summary
- * data is incomplete`). This is measured, not hypothetical — but it was
- * measured on heavy bulk-stage queries; a multi-filter REQ's per-filter
- * queries are far lighter, so `VESPA_QUERY_FANOUT` lets a deployment raise it
- * for its own hardware.
+ * Engine queries a batch stage keeps in flight. UNBOUNDED fan-out times out
+ * proton's summary stage (`504 Summary data is incomplete`) — measured, on
+ * heavy bulk-stage queries; lighter per-filter REQ queries can raise it via
+ * `VESPA_QUERY_FANOUT` for a deployment's own hardware.
  */
 val QUERY_FANOUT: Int = System.getenv("VESPA_QUERY_FANOUT")?.toIntOrNull()?.coerceAtLeast(1) ?: 4
 
 /**
  * Fan-out for address-keyed conditional PUTs ([EventIndex.putIfNewer]) in the
- * bulk path. Unlike [QUERY_FANOUT], these are WRITES — they pipeline safely over
- * the feed client's HTTP/2 streams (no summary-stage 504), so this runs far
- * higher to keep the conditional puts in flight the way the raw feed does.
- * Overridable via VESPA_PUT_FANOUT for deployment tuning. 32 is the measured
- * sweet spot on the dev box: the draft-churn A/B climbs 4→16 (939→1157 EPS) then
- * plateaus, and 64 regresses slightly (scheduling overhead) — beyond ~16 the
- * store's per-batch dedup read, not the put concurrency, is the limiter.
+ * bulk path. WRITES pipeline safely over the feed client's HTTP/2 streams (no
+ * summary-stage 504), so this runs far higher than [QUERY_FANOUT]. 32 is the
+ * measured sweet spot: the draft-churn A/B climbs 4→16 (939→1157 EPS) then
+ * plateaus, 64 regresses slightly — beyond ~16 the per-batch dedup read is
+ * the limiter. Overridable via VESPA_PUT_FANOUT.
  */
 val PUT_FANOUT: Int = System.getenv("VESPA_PUT_FANOUT")?.toIntOrNull() ?: 32
 
@@ -64,16 +59,10 @@ suspend fun <T, R> List<T>.mapBounded(
 
 /**
  * Like [mapBounded], but folds each result into [consume] as it arrives and
- * keeps none of them.
- *
- * For stages whose results are an intermediate: a fan-out that recalls tens of
- * docs per item holds `items × docs` alive when the results are collected, and
- * that product is what runs a heap out — not the item list the batch size was
- * chosen to bound. Consuming as they land keeps only what is in flight,
- * `concurrency × docs`.
- *
- * [consume] is serialized, so it may fold into an ordinary unsynchronized
- * accumulator. Results arrive in completion order, not list order.
+ * keeps none: collecting a fan-out that recalls tens of docs per item holds
+ * `items × docs` alive — the product that runs a heap out — where consuming
+ * keeps only `concurrency × docs`. [consume] is serialized (an unsynchronized
+ * accumulator is fine); results arrive in completion order, not list order.
  */
 suspend fun <T, R> List<T>.forEachBounded(
     concurrency: Int,

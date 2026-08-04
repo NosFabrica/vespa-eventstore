@@ -27,17 +27,13 @@ import com.vitorpamplona.quartz.utils.Hex
 
 /**
  * The in-memory reference [EventIndex]: a map of docs plus a direct
- * interpretation of [EventQuery]'s matching semantics. It is the executable
- * spec the real Vespa client must agree with (same fields [EventYql] queries),
- * and what store/relay tests run against without a Vespa container.
- *
- * Search-term matching is a naive case-insensitive substring over the derived
- * search fields — recall-equivalent for tests (docs with no search fields are
- * invisible to search, like SQLite's FTS table); real ranking is Vespa's job.
- * That includes the observer gate: [EventQuery.minRank]/[EventQuery.observer]
- * are ignored here (the reference holds no trust scores), so gated queries
- * recall UNGATED, newest first — tests of the gate's engine-side dropping
- * belong against real Vespa, not this reference.
+ * interpretation of [EventQuery]'s matching semantics — the executable spec
+ * the real Vespa client must agree with (same fields [EventYql] queries), run
+ * by store/relay tests without a Vespa container. Search-term matching is a
+ * naive case-insensitive substring over the derived search fields
+ * (recall-equivalent; ranking is Vespa's job), and the observer gate
+ * ([EventQuery.minRank]/[EventQuery.observer]) is ignored — gated queries
+ * recall UNGATED here, so gate tests belong against real Vespa.
  */
 class InMemoryEventIndex(
     // Test hook: exercise the bulk path's putIfNewer branch (the address-keyed
@@ -88,18 +84,16 @@ class InMemoryEventIndex(
     fun size(): Int = synchronized(docs) { docs.size }
 
     /**
-     * The query's list constraints, compiled to hash sets ONCE per scan. Matching
-     * runs per doc over the whole map (this is the O(n)-scan reference), so list
-     * membership must not be O(list) too: a 300-author follow-feed filter over a
-     * 30k corpus would otherwise burn ~9M string compares per query. Semantics
-     * are identical to the direct interpretation — "v in list" ⇔ "v in set".
+     * List constraints compiled to hash sets ONCE per scan: matching runs per
+     * doc over the whole map, so membership must not be O(list) too (a
+     * 300-author filter over 30k docs would burn ~9M string compares).
+     * Semantics identical to the direct interpretation.
      */
     private class Compiled(
         private val q: EventQuery,
     ) {
         // Key constraints normalize exactly as EventYql.hexIn: lowercase, valid
-        // 64-hex only — an uppercase-hex filter must match here iff it matches
-        // on the real engine. A constraint whose values are ALL invalid is
+        // 64-hex only. A constraint whose values are ALL invalid is
         // unsatisfiable (hexIn returns null), not unconstrained.
         private val ids = q.ids.normHex()
         private val kinds = q.kinds.toHashSet()
@@ -134,10 +128,9 @@ class InMemoryEventIndex(
                 (q.expiresBefore == null || (d.expiresAt()?.let { it < q.expiresBefore } == true)) &&
                 (q.notExpiredAt == null || (d.expiresAt() ?: EventDoc.NO_EXPIRATION) > q.notExpiredAt) &&
                 (q.search.isNullOrBlank() || d.search.matches(q.search.trim())) &&
-                // Phrases and exclusions share the exact-adjacency check
-                // (SearchFields.containsPhrase), never the loose substring the
-                // positive words allow — mirroring the engine, where both are
-                // the same phrase-grammar term, required or negated.
+                // Phrases and exclusions share the exact-adjacency check, never
+                // the loose substring positive words get — mirroring the engine,
+                // where both are the same phrase-grammar term.
                 q.phrases.all { d.search.containsPhrase(it) } &&
                 q.notSearch.none { d.search.containsPhrase(it) }
         }
