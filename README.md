@@ -373,36 +373,51 @@ run with no Vespa instance up, so `./gradlew test` needs nothing external.
 Publishing uses the [vanniktech Maven Publish](https://github.com/vanniktech/gradle-maven-publish-plugin)
 plugin (the same one Quartz ships to Central with).
 
-Install GnuPG and generate a key:
+Install GnuPG and generate a signing key. Use `--full-generate-key`, not
+`--gen-key`: only the former lets you choose RSA 4096 and an expiry.
 
 ```bash
-gpg --gen-key
+gpg --full-generate-key
 ```
 
-Run `gpg --list-keys` to show your GPG keys.
-
-Distribute the public key:
+Then read back the *long* key id — `gpg --list-keys` prints a short form that
+the commands below will not accept:
 
 ```bash
-gpg --keyserver keyserver.ubuntu.com --send-keys <pubkey>
+gpg --list-secret-keys --keyid-format=long
 ```
 
-Export your private key to a file:
+Distribute the public key. Central verifies each signature against the public
+keyservers, so a release fails until this has propagated (a few minutes):
 
 ```bash
-gpg --export-secret-keys > ~/.gnupg/secring.gpg
+gpg --keyserver keyserver.ubuntu.com --send-keys <key-id>
 ```
 
-Generate a User Token on Maven Central.
+Generate a **User Token** on Maven Central (Portal → View Account → Generate
+User Token). This is not your portal login — the plugin wants the token's
+generated username/password pair, and the login pair fails with a 401.
+
+Export the private key. Both the full armored block and a stripped single-line
+form are accepted: the plugin passes the value straight to Gradle's
+`useInMemoryPgpKeys`, which parses either.
+
+```bash
+# Full armored block — for GitHub secrets, which hold multi-line values fine.
+gpg --export-secret-keys --armor <key-id>
+
+# Stripped to one line — for gradle.properties, which cannot hold a multi-line
+# value. Drops the BEGIN/END armor lines and the trailing CRC.
+gpg --export-secret-keys --armor <key-id> | grep -v '^-----' | grep -v '^=' | tr -d '\n'
+```
 
 To publish from local, add the following fields to your `~/.gradle/gradle.properties` file:
 
 ```properties
-mavenCentralUsername=<maven user>
-mavenCentralPassword=<maven password>
-signing.keyId=<gpg key id>
-signing.password=<gpg key passphrase>
-signing.secretKeyRingFile=<yourhome>/.gnupg/secring.gpg
+mavenCentralUsername=<token username>
+mavenCentralPassword=<token password>
+signingInMemoryKey=<private key, stripped to one line>
+signingInMemoryKeyPassword=<gpg key passphrase>
 ```
 
 Then run:
@@ -411,20 +426,20 @@ Then run:
 ./gradlew publishAllPublicationsToMavenCentral --no-configuration-cache
 ```
 
-To publish from GitHub Actions, export your private key as a base64 string:
-
-```bash
-gpg --export-secret-keys --armor <key-id> ~/.gnupg/secring.gpg | grep -v '\-\-' | grep -v '^=.' | tr -d '\n'
-```
-
-and add the following secrets to your GitHub secrets:
+To publish from GitHub Actions, add the same four values as repository secrets:
 
 ```properties
-SONATYPE_USERNAME=<maven user>
-SONATYPE_PASSWORD=<maven password>
-SIGNING_PRIVATE_KEY=<base64versionOfTheFile>
+SONATYPE_USERNAME=<token username>
+SONATYPE_PASSWORD=<token password>
+SIGNING_PRIVATE_KEY=<private key, armored>
 SIGNING_PASSWORD=<gpg key passphrase>
 ```
+
+GitHub secrets are write-only — you cannot read one back out. Keep the private
+key and its passphrase somewhere recoverable, or a future release will have to
+be signed by a new key. (That is survivable: Central does not require the same
+key across releases, and already-published artifacts stay verifiable as long as
+the old public key remains on the keyservers.)
 
 - **CI** (`.github/workflows/build.yml`) runs `./gradlew build` on every push and PR to `main`.
 - **Release** (`.github/workflows/create-release.yml`) publishes to Maven Central on a
