@@ -27,47 +27,32 @@ import com.nosfabrica.vespa.eventstore.vespa.query.EventQuery
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 
 /**
- * The trust projection's WORK LEDGER — crash safety and (optionally) deferral
- * for every trust-mutating op.
+ * The trust projection's WORK LEDGER — crash safety and optional deferral for
+ * every trust-mutating op. The unit is [Dirt], DECLARATIVE ("re-derive these
+ * subjects, re-walk these services"): re-derivation is a pure function of the
+ * store's CURRENT state under the writer lock, so dirt coalesces across ops
+ * and every drain schedule converges to the same tensors.
  *
- * The unit of work is [Dirt], and it is DECLARATIVE: "re-derive these
- * subjects", "re-walk these services". Re-derivation is a pure function of the
- * store's CURRENT state executed under the writer lock, so dirt can be
- * accumulated, coalesced across ops, and drained at any later time — every
- * schedule converges to the same tensors. That one property is what makes both
- * jobs of this class sound:
+ * CRASH SAFETY: the event and projection writes are separate acks, and dedup
+ * fires a write trigger exactly once, so a failure between them used to be
+ * permanent drift (the retry comes back all-duplicates). [guarded] persists
+ * what the op could invalidate BEFORE touching anything; the marker clears
+ * only once the projection has caught up. A surviving marker IS the drift, named.
  *
- *  - CRASH SAFETY. The event write and the projection write are separate acks,
- *    and dedup fires a write trigger exactly once, so a failure between them
- *    used to be permanent drift: the events are stored, and the retry comes
- *    back all-duplicates, which never reaches the projection. [guarded]
- *    persists what the op could invalidate (its INSURANCE) before touching
- *    anything, and the marker only clears once the projection has caught up.
- *    A marker that survives IS the drift, named.
+ * DEFERRAL: with a drain signal attached ([deferTo]), the expensive reactions
+ * leave [guarded] as pending work for a background [drain] — writes return
+ * fast, storms coalesce into one re-derivation, and ranking lags by the drain
+ * cycle ([drain] is also the explicit barrier). Without a signal, work settles
+ * inline before returning — the read-your-writes behavior the unit tests assert.
  *
- *  - DEFERRAL. With a drain signal attached ([deferTo]), the expensive
- *    reactions — a 10040's service walk (minutes under the writer lock), a
- *    retraction's re-derive, a sweep's re-derives — leave [guarded] as PENDING
- *    work for a background [drain] instead of running inline. Inserts return
- *    after the event write plus one small pipelined marker update; a storm of
- *    updates about the same subjects coalesces into one re-derivation; and a
- *    superseded 10040's two walks collapse into one over the union. Ranking
- *    then lags writes by the drain cycle (bounded, and [drain] is also the
- *    explicit barrier) instead of being read-your-writes. Without a signal,
- *    [guarded] settles the work inline before returning — the read-your-writes
- *    behavior every projection unit test asserts.
+ * The marker is one [ReputationDoc] under [MARKER_KEY] — non-hex, so no card
+ * can collide with it ([subjectOf] admits only 64-hex). Subjects ride the
+ * influence cells, services the follower cells; small dirt persists as
+ * pipelined cell ADDs, a bulk batch's as one marker-doc put ([DELTA_ADD_MAX]).
  *
- * The marker is one [ReputationDoc] under [MARKER_KEY] — a non-hex id no card
- * can collide with, since [subjectOf] admits only 64-hex subjects. Dirty
- * subjects ride the influence cells, dirty services the follower cells. The
- * write-ahead persist is sized to the delta: small dirt (live traffic) goes as
- * pipelined tensor-cell ADDs — no read, no doc rewrite, and an op whose dirt
- * is already pending persists NOTHING — while a bulk batch's dirt goes as one
- * marker-doc put (see [DELTA_ADD_MAX]).
- *
- * Every entry point except the gated parts of [drain] runs under the store's
- * single writer lock, which is what makes the plain fields here safe; [drain]
- * takes the same lock per bounded batch through its gate.
+ * Every entry point except [drain]'s gated parts runs under the store's single
+ * writer lock — what makes the plain fields here safe; [drain] takes the same
+ * lock per bounded batch through its gate.
  */
 internal class DirtLedger(
     private val reputations: ReputationIndex,
@@ -89,18 +74,14 @@ internal class DirtLedger(
         }
     }
 
-    /**
-     * Unhealed work: null until the persisted marker has been read once (a
-     * previous PROCESS may have crashed or shut down with work queued).
-     */
+    /** Unhealed work: null until the persisted marker (a previous process's leftovers) has been read once. */
     private var pending: Dirt? = null
 
     /**
-     * True while dirt inherited from a PREVIOUS process is unhealed. That
-     * process may have died between writing a 10040 and invalidating the
-     * provider-map cache, so the heal must drop the cache even when the dirt
-     * names no services. In-process dirt never needs this — the 10040 write
-     * paths invalidate inline.
+     * True while dirt inherited from a PREVIOUS process is unhealed: it may
+     * have died between writing a 10040 and invalidating the provider-map
+     * cache, so the heal must drop the cache even when the dirt names no
+     * services. In-process dirt invalidates inline.
      */
     private var inherited = false
 
@@ -108,31 +89,25 @@ internal class DirtLedger(
     private var signal: (() -> Unit)? = null
 
     /**
-     * Switch to DEFERRED mode: [guarded] leaves its work pending and fires
-     * [onWork] instead of healing inline; the owner runs [drain] on the signal.
-     * Fire it once at startup too — a marker left by the previous process is
-     * only discovered by draining.
+     * Switch to DEFERRED mode: [guarded] leaves work pending and fires [onWork];
+     * the owner runs [drain] on the signal — and once at startup too, since a
+     * previous process's marker is only discovered by draining.
      */
     fun deferTo(onWork: () -> Unit) {
         signal = onWork
     }
 
     /**
-     * Run [block] — the event write plus any cheap inline projection — bracketed
+     * Run [block] (the event write plus any cheap inline projection) bracketed
      * by the ledger. [insurance] is everything the op COULD leave stale if it
      * dies partway (persisted write-ahead); [block] returns the WORK actually
-     * left to do, which the insurance must COVER: each work subject is either
-     * named directly, or reachable through an insurance service's walk (the
-     * capped-batch case — every retracted subject has a batch card, so its
-     * author's walk re-derives it). On failure the whole insurance becomes
-     * pending — the failed op's retry is all-duplicates and can never repair
-     * it, so the next settle or [drain] must.
-     *
-     * The persisted marker may transiently OVER-cover: it holds insurance the
-     * op finished inline, until the next [drain]'s final rewrite shrinks it to
-     * exactly the pending work. Deliberate — narrowing it here would cost a
-     * doc-sized write per batch, while over-coverage only costs a crash some
-     * redundant (idempotent) re-derives.
+     * left, which the insurance must COVER — named directly, or reachable
+     * through an insured service's walk. On failure the whole insurance becomes
+     * pending: the retry is all-duplicates and can never repair it, so the next
+     * settle or [drain] must. The marker may transiently OVER-cover until a
+     * drain's final rewrite — deliberate: narrowing here would cost a doc-sized
+     * write per batch, while over-coverage only costs a crash some redundant
+     * (idempotent) re-derives.
      */
     suspend fun <T> guarded(
         insurance: Dirt,
@@ -141,11 +116,10 @@ internal class DirtLedger(
         val before = load()
         val delta = insurance - before
         if (!delta.isEmpty()) {
-            // Write-ahead. A small delta (a single, a removal) is pipelined cell
-            // ADDs — no read, no doc rewrite, and a storm about the same
-            // subjects persists once. A large one (a bulk batch's subjects) is
-            // ONE marker-doc put: cell-adds are one feed op per entry, which at
-            // batch size would rival the event writes they insure.
+            // Write-ahead: a small delta is pipelined cell ADDs (no read, no doc
+            // rewrite; already-pending dirt persists nothing); a bulk batch's is
+            // ONE marker-doc put — per-entry ops at batch size would rival the
+            // event writes they insure.
             if (delta.subjects.size + delta.services.size <= DELTA_ADD_MAX) persistDelta(delta) else persist(before + insurance)
         }
         val work: Dirt
@@ -156,9 +130,8 @@ internal class DirtLedger(
             work = r.second
         } catch (t: Throwable) {
             pending = before + insurance
-            // In deferred mode, wake the drainer even though the op failed: its
-            // retry loop is how a transient engine failure's dirt gets repaired
-            // without waiting for the next successful write.
+            // Wake the drainer even though the op failed: its retry loop repairs
+            // a transient failure's dirt without waiting for the next write.
             signal?.invoke()
             throw t
         }
@@ -174,17 +147,14 @@ internal class DirtLedger(
     }
 
     /**
-     * Heal everything pending, in gated batches: snapshot the pending dirt,
-     * re-derive its subjects ([TrustRecompute.recomputeBatch], empties removed —
-     * which also deletes a parent whose last card died with a crashed removal),
-     * re-walk its services, then subtract the snapshot and shrink the marker.
-     * Loops until a snapshot comes back empty, so work deferred WHILE draining
-     * is picked up before returning. Idempotent; throws with the marker intact
-     * (and the work still pending) if a repair step fails.
-     *
-     * [gate] wraps each mutating batch. Callers already holding the writer lock
-     * pass identity; the background drainer and the reconciler pass the store's
-     * lock so a minutes-long walk shares it with ingest instead of stalling it.
+     * Heal everything pending, in gated batches: snapshot, re-derive its
+     * subjects (empties removed — also deletes a parent whose last card died
+     * with a crashed removal), re-walk its services, then subtract the snapshot
+     * and shrink the marker. Loops until a snapshot is empty, so work deferred
+     * WHILE draining is picked up. Idempotent; throws with the marker intact if
+     * a repair step fails. [gate] wraps each mutating batch — identity when the
+     * caller already holds the writer lock; the background drainer and the
+     * reconciler pass the store's lock so a long walk shares it with ingest.
      */
     suspend fun drain(gate: suspend (suspend () -> Unit) -> Unit) {
         while (true) {
@@ -232,11 +202,9 @@ internal class DirtLedger(
 
     companion object {
         /**
-         * The marker's document id. Deliberately NOT 64-hex: [subjectOf] filters
-         * subjects to 64-hex, so no event can name this id and the marker can
-         * never collide with (or be clobbered by) a real subject's parent doc.
-         * It also never joins ranking — the reputation import matches event
-         * author pubkeys, which are hex.
+         * The marker's document id — deliberately NOT 64-hex, so no event can
+         * name it ([subjectOf] filters to 64-hex): it never collides with a
+         * real subject's parent doc and never joins ranking.
          */
         const val MARKER_KEY = "projection-dirty"
 
@@ -244,10 +212,9 @@ internal class DirtLedger(
         private const val DRAIN_BATCH = 20_000
 
         /**
-         * Largest write-ahead delta persisted as per-cell feed ADDs; anything
-         * bigger takes one marker-doc put instead. Adds win for the small dirt
-         * of live traffic (usually one cell, often zero); a doc put wins for a
-         * bulk batch, where per-entry ops would rival the event writes.
+         * Largest write-ahead delta persisted as per-cell feed ADDs; bigger
+         * takes one marker-doc put. Adds win for live traffic's small dirt; a
+         * doc put wins for bulk, where per-entry ops rival the event writes.
          */
         private const val DELTA_ADD_MAX = 64
 

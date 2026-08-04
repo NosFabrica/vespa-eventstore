@@ -33,21 +33,17 @@ import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import com.vitorpamplona.quartz.utils.Hex
 
 /**
- * The repair tool for a projection no write can reach — [TrustProjection]
- * derives on WRITE, and a trigger only fires once, so a corpus stored before
- * its provider lists stays unprojected with nothing left to trip. This class
- * finds and re-derives that drift: [reconcile] per affected service (worth
- * running at startup), [rebuildAll] as the operator's hammer.
+ * Repair for projection drift no write can reach — [TrustProjection] derives
+ * on WRITE and a trigger only fires once, so a corpus stored before its
+ * provider lists stays unprojected with nothing left to trip. [reconcile]
+ * repairs per affected service (worth running at startup); [rebuildAll] is the
+ * operator's hammer. Also owns the one trust-side DELETION: [sweepOrphanScores]
+ * drops the 30382s signed by services no 10040 names.
  *
- * It also owns the one trust-side operation that DELETES rather than repairs:
- * [sweepOrphanScores] drops the kind-30382s signed by services no 10040 names,
- * which can never become a tensor cell for anyone.
- *
- * Every MUTATING pass runs through [gate] — the store's writer lock. Without
- * it a reconcile racing live ingest can overwrite a concurrent write's fresh
- * derivation with one computed from pre-write state, drift no later trigger
- * repairs. The gate wraps each bounded batch, not the whole walk, so a
- * minutes-long rebuild shares the lock with ingest instead of stalling it.
+ * Every MUTATING pass runs through [gate] — the store's writer lock — else a
+ * reconcile racing live ingest can overwrite a fresh derivation with one from
+ * pre-write state, drift no later trigger repairs. The gate wraps each bounded
+ * batch, not the whole walk, so a long rebuild shares the lock with ingest.
  */
 class TrustReconciler internal constructor(
     private val index: EventIndex,
@@ -80,9 +76,9 @@ class TrustReconciler internal constructor(
         val refused: Boolean,
     ) {
         /**
-         * Nothing to do AND nothing skipped. A REFUSED sweep is never clean: it
-         * examined nothing, and reporting that as "no orphans" would turn the
-         * one state the guardrail exists for into a silent all-clear.
+         * Nothing to do AND nothing skipped. A REFUSED sweep is never clean —
+         * reporting it as "no orphans" would turn the one state the guardrail
+         * exists for into a silent all-clear.
          */
         fun isClean() = !refused && orphans.isEmpty() && remapped.isEmpty()
     }
@@ -115,40 +111,24 @@ class TrustReconciler internal constructor(
     }
 
     /**
-     * FULL audit: does every reputation doc match its 10040+30382 counterparts?
+     * FULL audit: does every reputation doc match its 10040+30382 records?
+     * Queued deferred work is drained first — that is lag, not drift. Then:
      *
-     * Answers it from both directions. First the queued deferred work is
-     * drained — that is lag, not drift, and auditing through it would report
-     * every in-flight subject. Then:
+     *  1. COMPLETENESS: every subject with stored 30382s is re-derived
+     *     ([TrustRecompute.deriveBatch]) and compared against the stored parent
+     *     — catches missing docs, stale cells, wrong observers, leftovers.
+     *  2. ORPHANS: every stored parent's pubkey is checked against a
+     *     [GuardBloom] of the subjects phase 1 saw. No false negatives, so
+     *     "not seen" proves the doc had no records; a false positive (1e-6)
+     *     can only HIDE an orphan, never invent drift.
      *
-     *  1. COMPLETENESS: every subject with stored 30382s is re-derived from the
-     *     records ([TrustRecompute.deriveBatch] — the same pure derivation the
-     *     projection writes, including the current 10040 attribution) and
-     *     compared against the stored parent. Catches missing docs, stale
-     *     cells, wrong observers, and leftovers for retracted subjects.
-     *  2. ORPHANS: every stored parent's pubkey is streamed
-     *     ([ReputationIndex.visitPubkeys]) and checked against a Bloom filter
-     *     of the subjects phase 1 saw. [GuardBloom] has NO false negatives, so
-     *     "not seen" proves the doc had no records when phase 1 passed. (A
-     *     false positive can only HIDE an orphan — at the configured 1e-6 rate
-     *     — never invent drift; the same filter also dedups subjects whose
-     *     cards span visit pages.)
-     *
-     * Both phases SCREEN lock-free — millions of clean subjects must not take
-     * the writer lock at all — and only the suspects are re-judged under the
-     * gate ([confirm]): queued work is drained first (a write racing the
-     * screen is lag, not drift), then the suspect is re-derived and re-read
-     * atomically against writers. Only confirmed drift is counted, so a live
-     * store cannot produce false positives; the cost is a short lock hold per
-     * suspect batch, zero on a clean store.
-     *
-     * Follower cells are compared at float32 precision — that is how the engine
-     * stores them, and comparing doubles would report storage rounding as drift.
-     *
-     * [repair] re-derives exactly the confirmed subjects in place (same gate),
-     * the targeted alternative to [rebuildAll]. Cost of the audit itself: one
-     * read of every 30382 plus one get per scored subject — no writes beyond
-     * the drains (and the repairs, when asked).
+     * Both phases SCREEN lock-free — millions of clean subjects take no lock —
+     * and only suspects are re-judged under the gate ([confirm]) after another
+     * drain, re-derived and re-read atomically against writers, so a live
+     * store cannot produce false positives. Follower cells compare at float32
+     * (the stored precision; doubles would report engine rounding as drift).
+     * [repair] re-derives exactly the confirmed subjects in place — the
+     * targeted alternative to [rebuildAll].
      */
     suspend fun verify(
         repair: Boolean = false,
@@ -207,10 +187,9 @@ class TrustReconciler internal constructor(
         screenBatch()
 
         // Phase 2 — orphans: stored parents phase 1 never derived. The non-hex
-        // filter keeps the ledger's dirt marker out of the audit. Candidates go
-        // through the same gated confirm — a subject whose first records landed
-        // mid-audit re-derives non-empty there and is judged like any other,
-        // not miscalled an orphan.
+        // filter keeps the ledger's dirt marker out. Candidates go through the
+        // same gated confirm — a subject whose first records landed mid-audit
+        // is judged there, not miscalled an orphan.
         var parentsChecked = 0
         reputations.visitPubkeys { page ->
             parentsChecked += page.count { Hex.isHex64(it) }
@@ -221,62 +200,33 @@ class TrustReconciler internal constructor(
     }
 
     /**
-     * Re-derive the services whose scores are not projected under every observer
-     * currently mapped to them. Drains the [DirtLedger] first: a marker left by
-     * a crashed process — or by a deferred-mode shutdown with work still
-     * queued — names drift EXACTLY, and repairing it here means a restart heals
+     * Re-derive the services whose scores are not projected under every
+     * observer currently mapped to them. Drains the [DirtLedger] first: a
+     * marker left by a crashed process names drift EXACTLY, so a restart heals
      * before ranked search serves stale cells.
      *
-     * ## Why this is needed at all
+     * Needed because derivation happens on WRITE and a trigger only fires once:
+     * dedup rejects an already-held event before the projection sees it, so a
+     * card skipped because its service had no 10040 yet stays unprojected as
+     * long as both events remain stored. Mirrors hit this as a matter of course
+     * (scores outnumber lists by ~4 orders of magnitude and arrive first),
+     * leaving a projection that is empty, correct-looking, and unable to repair
+     * itself.
      *
-     * Derivation happens on WRITE: [TrustProjection.putAll] projects the cards
-     * in the batch, and a 10040 arriving re-walks the services it names. Both
-     * are triggers, and a trigger only fires once. Dedup rejects an event the
-     * store already holds BEFORE the projection sees it, so once a corpus is
-     * stored neither trigger can fire again — a card skipped because its
-     * service had no 10040 yet stays unprojected for as long as both events
-     * remain in the store.
+     * Check: per mapped service, sample a few cards and ask, per observer PER
+     * DIMENSION ([TrustProviders]), whether a sampled subject carries that
+     * observer's cell in the tensor the mapping owns. Only cards that ASSERT a
+     * dimension can prove it unprojected (else a corpus that never carries the
+     * mapped tag would re-walk on every startup); checking observers rather
+     * than mere existence also catches a RE-MAPPED service. Sampling settles it
+     * because the never-triggered failure is all-or-nothing per (service,
+     * observer); PARTIAL drift is the dirty marker's job, repaired exactly by
+     * [DirtLedger.drain]. A sample landing on retracted subjects just costs one
+     * idempotent walk.
      *
-     * A mirror hits this as a matter of course: scores outnumber provider lists
-     * by four orders of magnitude and arrive first, and the run that finally
-     * writes the 10040 may be one in which every score is already a duplicate.
-     * The result is a projection that is empty, correct-looking and unable to
-     * repair itself — every ranked search returns nothing, with no error anywhere.
-     *
-     * ## What it checks
-     *
-     * A service is projected when its subjects carry a cell for EACH of its
-     * observers — the observer set, because a popular provider is named by many
-     * 10040s and every one of those users must rank through it. So for each
-     * mapped service this samples a few of its cards and asks, per observer PER
-     * DIMENSION ([TrustProviders]), whether a sampled subject has that
-     * observer's cell in the tensor the mapping owns — rank-mapped observers
-     * are checked against influence cells, followers-mapped ones against
-     * follower cells. Only sampled cards that ASSERT a dimension (carry its
-     * tag) can prove it unprojected: a corpus whose cards never carry the
-     * mapped tag projects nothing, and treating that as drift would re-walk
-     * the service on every startup. Checking observers rather than mere
-     * existence is what also catches a RE-MAPPED service: its subjects have
-     * docs, but the cells belong to the previous observer.
-     *
-     * Sampling, not counting, because the alternative is reading every card. A
-     * service whose sample happens to land on retracted subjects is re-derived
-     * needlessly, which costs one walk and is idempotent. The opposite error —
-     * calling an unprojected service clean — would need a sampled subject to be
-     * projected while the rest are not. The never-triggered failure this hunts
-     * is all-or-nothing per (service, observer), so the sample settles it;
-     * PARTIAL drift (a batch that failed mid-corpus) is not left to sampling at
-     * all — the dirty marker names it and [DirtLedger.drain] repairs it exactly.
-     *
-     * ## Progress
-     *
-     * Sampling is FANNED OUT (bounded), so [onProgress] reports once before it
-     * and once after; the expensive phase — the per-service rebuild walks, one
-     * of which can cost a full six-figure visit — stays serial and reports
-     * `(total, total, rebuilt, derivedInService)` as its subjects are
-     * re-derived, so a caller shows movement through exactly the slow part.
-     * `total` is known up front, so a caller can show a real fraction rather
-     * than a spinner.
+     * [onProgress] reports before and after the fanned-out sampling; the serial
+     * rebuild walks report `(total, total, rebuilt, derivedInService)` so a
+     * caller can show a real fraction through exactly the slow part.
      */
     suspend fun reconcile(
         samplesPerService: Int = DEFAULT_RECONCILE_SAMPLES,
@@ -288,11 +238,9 @@ class TrustReconciler internal constructor(
         val total = providers.services.size
         onProgress?.invoke(0, total, 0, 0)
 
-        // Phase 1 — sampling, fanned out: pure reads with no ordering
-        // dependency, so hundreds of mapped services cost a few round-trip
-        // waves instead of ~4 serial round trips each, on every startup,
-        // in front of ranked search working. null = nothing stored for the
-        // service; true/false = sampled projected/unprojected.
+        // Phase 1 — sampling, fanned out: pure reads, no ordering dependency.
+        // null = nothing stored for the service; true/false = sampled
+        // projected/unprojected.
         val cutoff = nowSecs()
         val verdicts =
             providers.services.toList().mapBounded(QUERY_FANOUT) { service ->
@@ -301,10 +249,8 @@ class TrustReconciler internal constructor(
                         EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service), limit = samplesPerService, notExpiredAt = cutoff),
                     )
                 if (sample.isEmpty()) return@mapBounded null
-                // Per dimension: only sampled cards that CARRY a tag can prove
-                // that tag's tensor unprojected — a mapped corpus whose cards
-                // never assert the dimension derives nothing there, and calling
-                // that drift would re-walk the service on every startup.
+                // Only sampled cards that CARRY a tag can prove that dimension
+                // unprojected — else every startup would re-walk the service.
                 val cards = sample.mapNotNull { doc -> subjectOf(doc)?.let { s -> (doc.toEvent() as? ContactCardEvent)?.let { s to it } } }
                 val rankSubjects = cards.filter { it.second.boundedRank() != null }.map { it.first }.distinct()
                 val followerSubjects = cards.filter { it.second.followerCount() != null }.map { it.first }.distinct()
@@ -337,70 +283,33 @@ class TrustReconciler internal constructor(
 
     /**
      * DELETE the orphan scores: every stored kind-30382 whose SIGNER no stored
-     * 10040 names, for either dimension.
+     * 10040 names, either dimension. Unmapped cards project nothing, rank
+     * nothing, gate nothing — a relay mirroring 30382s by kind accumulates them
+     * by the hundreds of thousands per service. A DELETION, not a repair, and
+     * deliberately never automatic — [reconcile] never calls it.
      *
-     * ## What makes them dead weight
+     * REFUSAL invariant: "no 10040 names it" and "no 10040 was readable"
+     * produce the identical candidate list, and the second is a real, observed
+     * state (a corpus mirrored before its provider lists — the same ambiguity
+     * behind [ProviderMap.get]'s no-empty-cache rule). Sweeping there would
+     * irreversibly delete the ENTIRE score corpus, so an empty attribution map
+     * sweeps nothing and reports [OrphanSweep.refused].
      *
-     * A card only becomes a tensor cell through the attribution map — the
-     * signer must appear in some observer's 10040 under `30382:rank` or
-     * `30382:followers` ([ProviderMap]). Cards from a service nobody named
-     * project nothing, rank nothing and gate nothing; they are storage and
-     * ingest cost with no read path. A mirroring relay accumulates them as a
-     * matter of course: it syncs 30382s by kind, so every service publishing on
-     * the network lands its whole corpus (hundreds of thousands of cards per
-     * service) whether or not a single user here trusts it.
+     * Safety: the candidate list is a snapshot, so membership is RE-CHECKED
+     * under [gate] before every page — a 10040 landing mid-sweep drops its
+     * service ([OrphanSweep.remapped]); deleting a mapped service's card is the
+     * one outcome this must never produce. Pages deleted before that 10040 need
+     * no repair: the list's arrival queues its service walk, which derives from
+     * post-deletion state. The orphans themselves need no re-derivation
+     * (unmapped signers contribute no cells), which is why this removes through
+     * the raw index, not the projection; stale cells from a formerly-mapped
+     * service are [verify]'s job. Expired 10040s attribute nothing, matching
+     * the projection. The re-check assumes ONE writer — this process's lock
+     * (docs/multi-node-consistency.md).
      *
-     * Unlike everything else in this class this is a DELETION, not a repair,
-     * and it is deliberately not automatic — [reconcile] never calls it.
-     *
-     * ## Why an empty attribution map REFUSES instead of deleting everything
-     *
-     * "No 10040 names it" and "no 10040 was readable" produce the identical
-     * candidate list, and the second is a real, observed state: a relay that
-     * mirrored its scores before its provider lists, or one asked one second
-     * too early, reads zero 10040s while holding millions of cards (see
-     * [ProviderMap.get], where the same ambiguity dictates the no-empty-cache
-     * rule). Sweeping there would delete the ENTIRE score corpus — irreversibly,
-     * on exactly the store the lists are still arriving at. So an empty map
-     * sweeps nothing and reports [OrphanSweep.refused]; an operator who really
-     * means it must first have at least one usable 10040 stored.
-     *
-     * ## Safety of the deletion itself
-     *
-     * The candidate list is a snapshot, so membership is RE-CHECKED under the
-     * writer lock ([gate]) before every page: a 10040 naming the service may
-     * have landed since, and its cards would then be carrying live cells. Such
-     * a service is dropped mid-sweep and reported as [OrphanSweep.remapped],
-     * keeping whatever pages already went — deleting a card of a service that IS
-     * mapped is the one outcome this must never produce. Pages that landed
-     * BEFORE that 10040 need no repair either: the list's own arrival queues its
-     * service walk ([TrustProjection]), which derives from what is stored when
-     * it runs, i.e. after those deletions.
-     *
-     * No re-derivation is needed for the orphans themselves — that is why this
-     * removes through the index it was given (the raw engine index in the
-     * shipped wiring) rather than through the projection: by definition an
-     * unmapped signer's cards contribute no cells, so deleting them cannot
-     * change any parent doc. (Stale cells from a service that WAS mapped and no
-     * longer is are drift, not a consequence of this sweep — [verify] finds and
-     * repairs them.)
-     *
-     * Expiry follows the same rule the projection applies: an already-expired
-     * 10040 attributes nothing (it is not served as a record), so a service
-     * named only by expired lists counts as an orphan here too.
-     *
-     * The re-check is bounded by the writer lock this process holds, so — like
-     * supersession and every other admission check (docs/multi-node-consistency.md)
-     * — it assumes ONE writer. A second process writing a 10040 concurrently
-     * neither takes this lock nor invalidates this process's attribution cache.
-     *
-     * A deletion is not a tombstone: nothing stops the same cards from arriving
-     * again. A mirror that syncs 30382s BY KIND re-downloads exactly what this
-     * freed, so the sweep is a companion to narrowing that sync (by the services
-     * the store's 10040s name), not a substitute for it.
-     *
-     * [dryRun] answers "how much would this free" — the same candidate list and
-     * exact totals, straight out of the one grouping query, with no writes.
+     * A deletion is not a tombstone: a by-kind mirror re-downloads what this
+     * freed — a companion to narrowing that sync, not a substitute. [dryRun]
+     * answers "how much would this free" from the one grouping query, no writes.
      */
     suspend fun sweepOrphanScores(
         dryRun: Boolean = false,
@@ -411,12 +320,10 @@ class TrustReconciler internal constructor(
         // orphaned. Nothing is deleted and the caller is told why.
         if (providers.isEmpty()) return OrphanSweep(0, emptyList(), 0, emptyList(), dryRun, refused = true)
 
-        // ONE server-side grouping over the whole card corpus (see
-        // EventIndex.countByAuthor): every signer AND its card count, out of
-        // millions of docs, without reconstructing one of them — the counts ride
-        // along in the same response, so the dry run needs no per-service query.
-        // Completeness is load-bearing in the harmless direction only: a signer
-        // the grouping missed keeps its cards, it never causes a wrong deletion.
+        // ONE server-side grouping (EventIndex.countByAuthor): every signer and
+        // its card count with no doc reconstruction, so the dry run needs no
+        // per-service query. A signer the grouping missed keeps its cards —
+        // completeness only matters in the harmless direction.
         val cardsBySigner = index.countByAuthor(EventQuery(kinds = listOf(ContactCardEvent.KIND)))
         val candidates = cardsBySigner.keys.filterNot(providers::maps)
         val doomed = candidates.sumOf { cardsBySigner[it] ?: 0 }
@@ -438,9 +345,8 @@ class TrustReconciler internal constructor(
                     kinds = listOf(ContactCardEvent.KIND),
                     authors = listOf(service),
                     limit = SWEEP_PAGE,
-                    // A sweep wants ANY page, so the explicit ranking opts out of
-                    // the recency planner's count probes (as NostrSemanticsStore's
-                    // sweep does) while compiling to identical YQL.
+                    // A sweep wants ANY page: explicit ranking opts out of the
+                    // recency planner's count probes, compiling to identical YQL.
                     ranking = EventYql.RANK_UNRANKED,
                 )
             var stillOrphan = true
@@ -449,9 +355,9 @@ class TrustReconciler internal constructor(
             var lastPage: Set<String>? = null
             while (!drained && rounds++ < MAX_SWEEP_ROUNDS) {
                 gate {
-                    // Re-read INSIDE the lock, per page: cached when unchanged,
-                    // and a 10040 committed since the snapshot must stop the
-                    // deletion at the first page boundary, not at the end.
+                    // Re-read INSIDE the lock, per page: a 10040 committed since
+                    // the snapshot must stop the deletion at the first page
+                    // boundary, not at the end.
                     if (recompute.providerMap().maps(service)) {
                         stillOrphan = false
                         drained = true
@@ -463,18 +369,16 @@ class TrustReconciler internal constructor(
                         return@gate
                     }
                     val ids = docs.mapTo(HashSet()) { it.id }
-                    // An acked remove is visible to search (the EventIndex
-                    // contract), so an identical page means the deletes are not
-                    // landing. Fail LOUD: reporting freed storage that is still
-                    // stored is worse than stopping.
+                    // An acked remove is visible to search (EventIndex contract),
+                    // so an identical page means deletes are not landing. Fail
+                    // LOUD rather than report freed storage that is still stored.
                     check(ids != lastPage) { "orphan sweep is not shrinking: ${ids.size} scores by $service survived their own removal" }
                     index.removeDocs(docs)
                     scores += docs.size
                     lastPage = ids
                 }
-                // PROCESSED services, not swept ones: a caller drawing a bar off
-                // this must still reach the total when a candidate turns out to
-                // be remapped.
+                // PROCESSED services, not swept ones: a progress bar must still
+                // reach the total when a candidate turns out remapped.
                 onProgress?.invoke(swept.size + remapped.size, candidates.size, scores, doomed)
             }
             check(drained) { "orphan sweep did not drain $service after $MAX_SWEEP_ROUNDS rounds of $SWEEP_PAGE" }
@@ -485,14 +389,11 @@ class TrustReconciler internal constructor(
     }
 
     /**
-     * Re-derive every parent doc from scratch (bootstrap over an existing
-     * index), THEN sweep the parents the card walk cannot reach: a doc whose
-     * subject has no stored cards left (its last card's removal crashed before
-     * the recompute) is enumerated from the REPUTATION corpus and re-derived to
-     * empty, which removes it. Without that second pass an orphan survives even
-     * this hammer — the card walk, by construction, only visits subjects that
-     * still have cards. Bounded only by the corpus — [reconcile] does the same
-     * repair per affected service and normally finds nothing to do.
+     * Re-derive every parent doc from scratch, THEN sweep the parents the card
+     * walk cannot reach: a doc whose subject has no cards left (its last card's
+     * removal crashed pre-recompute) is enumerated from the REPUTATION corpus
+     * and re-derived to empty, which removes it — the card walk by construction
+     * only visits subjects that still have cards. Bounded only by the corpus.
      */
     suspend fun rebuildAll() {
         recompute.recomputeWalk(EventQuery(kinds = listOf(ContactCardEvent.KIND)), gate = gate)
@@ -515,11 +416,8 @@ class TrustReconciler internal constructor(
     }
 
     private companion object {
-        // Cards sampled per service by [reconcile]. The question it answers is
-        // "did this service's scores get projected at all", and the
-        // never-triggered failure is all-or-nothing per (service, observer), so
-        // a handful settles it; the cost is one small query plus a few key
-        // lookups per mapped service.
+        // Cards sampled per service by [reconcile]: the never-triggered failure
+        // is all-or-nothing per (service, observer), so a handful settles it.
         const val DEFAULT_RECONCILE_SAMPLES = 3
 
         // Subjects per orphan-sweep re-derive round (memory-bounded, like
@@ -532,22 +430,19 @@ class TrustReconciler internal constructor(
         // Drift examples carried in the [TrustAudit] report; the COUNT is always complete.
         const val VERIFY_DRIFT_SAMPLES = 100
 
-        // Cards deleted per [sweepOrphanScores] round — one page read, one
-        // pipelined bulk delete, one lock hold. Same size the store's own sweep
-        // pages at; a 30382 is a small doc.
+        // Cards deleted per [sweepOrphanScores] round — one page read, one bulk
+        // delete, one lock hold. Same size the store's own sweep pages at.
         const val SWEEP_PAGE = 10_000
 
         // Runaway backstop per service, not a delete cap (100M cards at the page
-        // above). Only reachable when a service keeps publishing INTO the sweep;
-        // deletes that stop landing are caught after one repeated page.
+        // above); only reachable when a service keeps publishing INTO the sweep.
         const val MAX_SWEEP_ROUNDS = 10_000
 
         /**
-         * Expected-vs-stored equality for [verify]. Influence cells are int8 —
-         * exact. Follower cells are stored as float32, so they are compared at
-         * that precision; a double-precision compare would call the engine's
-         * own rounding "drift". A subject whose derivation is EMPTY matches
-         * exactly a missing doc.
+         * Expected-vs-stored equality for [verify]. Influence cells (int8) are
+         * exact; follower cells compare at their stored float32 precision — a
+         * double compare would call engine rounding "drift". An EMPTY
+         * derivation matches exactly a missing doc.
          */
         fun matches(
             expected: ReputationDoc?,

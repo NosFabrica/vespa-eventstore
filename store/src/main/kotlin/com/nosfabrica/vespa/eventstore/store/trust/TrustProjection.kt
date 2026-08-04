@@ -36,34 +36,23 @@ import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEve
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 
 /**
- * Maintains the `reputation` parent documents — the per-pubkey trust tensors the
- * schema imports into every event's ranking. It works as an [EventIndex]
- * DECORATOR: it wraps the index the store writes through, so every mutation that
- * touches trust data triggers a recompute.
+ * Maintains the `reputation` parent documents (per-pubkey trust tensors the
+ * schema imports into ranking) as an [EventIndex] DECORATOR: every deletion
+ * style — supersession, kind-5, vanish, sweeps — funnels into [put]/[remove]
+ * here, so the tensors stay current with ZERO deletion-specific code.
  *
- * Observing the index (not the events) is the whole trick. The store's semantic
- * machinery — supersession, kind-5, vanish, sweeps, admin deletes — all funnels
- * into [put]/[remove] calls here, so every deletion style updates the tensors
- * with ZERO deletion-specific code.
- *
- * This class decides WHAT each mutation invalidates; the work itself is
- * declarative [DirtLedger.Dirt] settled through the ledger — inline by default
- * (read-your-writes, and what every unit test asserts), or DEFERRED to a
- * background drain when a signal is attached ([DirtLedger.deferTo]). Deferral
- * needs no event ordering: HOW a subject is re-derived ([TrustRecompute]) reads
- * the store's CURRENT state under the writer lock, so any drain schedule
- * converges — the price is only that ranking lags writes by the drain cycle.
- * The one order-sensitive projection write, the bulk zero-read cell update,
- * stays inline in BOTH modes for exactly that reason (and because it is already
- * the cheap path). The startup repair for drift no write can reach (a corpus
- * mirrored before its provider lists) is [TrustReconciler].
- *
- * Every trust-mutating op runs [DirtLedger.guarded]: the event write and the
- * projection write are separate acks, and dedup means a trigger fires once — a
- * crash between them used to be PERMANENT drift (the retry comes back
- * all-duplicates and never reaches this decorator). The ledger persists what
- * the op invalidates before it starts and repairs it at the next settle,
- * drain, or reconcile.
+ * Each mutation's invalidation is declared as [DirtLedger.Dirt] — settled
+ * inline (read-your-writes; what the unit tests assert) or deferred to a
+ * background drain ([DirtLedger.deferTo]). Deferral needs no event ordering:
+ * [TrustRecompute] re-derives from the store's CURRENT state under the writer
+ * lock, so any drain schedule converges; only the order-sensitive bulk
+ * zero-read cell update stays inline in both modes. Every trust-mutating op
+ * runs [DirtLedger.guarded]: the event and projection writes are separate acks
+ * and dedup fires a trigger only once, so a crash between them would be
+ * PERMANENT drift (the retry comes back all-duplicates) — the ledger persists
+ * what the op invalidates before it starts and repairs it at the next settle,
+ * drain, or reconcile. Drift no write trigger can see is [TrustReconciler]'s
+ * job.
  */
 class TrustProjection(
     private val inner: EventIndex,
@@ -82,9 +71,8 @@ class TrustProjection(
 
     override suspend fun existingIds(ids: List<String>): Set<String> = inner.existingIds(ids)
 
-    // MUST delegate, not ride the interface default: the default would call this
-    // decorator's search() (parsed EventDocs) and lose the inner client's raw
-    // passthrough — the whole point of the raw path (see EventIndex.rawSearch).
+    // MUST delegate, not ride the interface default, which would route through
+    // this decorator's search() and lose the raw passthrough (see EventIndex.rawSearch).
     override suspend fun rawSearch(query: EventQuery): List<RawEvent> = inner.rawSearch(query)
 
     override suspend fun visitIds(
@@ -100,23 +88,18 @@ class TrustProjection(
 
     override suspend fun count(query: EventQuery): Int = inner.count(query)
 
-    // MUST forward like the walks above: the interface default re-lists the
-    // ENTIRE corpus through this decorator's search() per page — the exact
-    // O(corpus²) shape the visit-backed reindex replaced, resurrected one
-    // layer up. Pure read; nothing to react to.
+    // MUST forward: the interface default re-lists the ENTIRE corpus through
+    // this decorator's search() per page — O(corpus²). Pure read; nothing to react to.
     override suspend fun visitDocsPage(
         query: EventQuery,
         resumeFrom: String?,
         maxDocs: Int,
     ): DocsPage = inner.visitDocsPage(query, resumeFrom, maxDocs)
 
-    // The author/kind aggregates below MUST forward to inner, not ride the
-    // interface default: the default reconstructs the whole match set through
-    // this decorator's search() just to project one field, where the real client
-    // answers server-side (a grouping) or streams (a visit). scanAuthors in
-    // particular backs the guard-owner Bloom preload, which walks the ENTIRE
-    // corpus — materializing that as documents is the difference between a
-    // paged walk and an OOM.
+    // The aggregates below MUST forward to inner: the interface defaults
+    // materialize the whole match set via search() where the real client groups
+    // or streams server-side. scanAuthors backs the guard-owner Bloom preload
+    // over the ENTIRE corpus — materializing that is an OOM, not a paged walk.
     override suspend fun distinctAuthors(query: EventQuery): Set<String> = inner.distinctAuthors(query)
 
     override suspend fun countByAuthor(query: EventQuery): Map<String, Int> = inner.countByAuthor(query)
@@ -132,16 +115,12 @@ class TrustProjection(
         reputations.close()
     }
 
-    // NOTE — this decorator deliberately does NOT forward supersedesViaPut or
-    // override putIfNewer, so it rides the read-then-supersede default (which
-    // routes through this put()/remove(), recording dirt for BOTH the superseded
-    // old version and the new one). The engine's address-keyed conditional put
-    // (VespaEventIndex under VESPA_ADDRESS_KEYED) is a single atomic op that never
-    // exposes the removed old doc, so a 10040 that drops a service would leave that
-    // service's stored scores un-reattributed, and a bulk card load would lose the
-    // zero-read putAll cell update below. The conditional-put fast path therefore
-    // engages only on an undecorated index; through the trust projection,
-    // supersession stays read-based to keep the tensors consistent.
+    // NOTE — deliberately does NOT forward supersedesViaPut or override
+    // putIfNewer: the read-then-supersede default routes through this
+    // put()/remove(), recording dirt for BOTH old and new versions. The engine's
+    // atomic conditional put never exposes the removed old doc, so through this
+    // decorator supersession must stay read-based to keep the tensors consistent
+    // (the fast path engages only on an undecorated index).
     override suspend fun put(doc: EventDoc) {
         val work = opDirt(doc)
         dirt.guarded(work) {
@@ -154,33 +133,23 @@ class TrustProjection(
     }
 
     /**
-     * The bulk path writes ranking with ZERO reads. The store's supersession
-     * guarantees every card reaching this putAll is the NEWEST version of its
-     * (service, subject) address, so its rank/followers can be applied as a
-     * tensor-cell UPDATE ([ReputationIndex.updateCells]) directly — inline in
-     * both ledger modes; deferring it would need an ordered durable queue where
-     * everything else here needs none. Measured on an 11M-card load, re-deriving
-     * parents from re-fetched cards was 44% of the entire ingest wall clock.
+     * The bulk path writes ranking with ZERO reads: supersession guarantees each
+     * card here is the newest for its (service, subject) address, so
+     * rank/followers apply as tensor-cell UPDATEs ([ReputationIndex.updateCells])
+     * — inline in both ledger modes (deferring would need an ordered durable
+     * queue). Measured: re-deriving from re-fetched cards was 44% of an 11M-card
+     * ingest's wall clock.
      *
-     * Attribution is PER DIMENSION ([TrustProviders]): the card's rank tag
-     * updates the influence cell of every observer naming its signer under
-     * `30382:rank`, its followers tag the follower cell of those naming it
-     * under `30382:followers` — a user may pick different services for the two,
-     * and a rank provider's followers tag must not clobber the follower
-     * provider's value. A shared provider (the NIP-85 norm) fans out to every
-     * observer trusting it, exactly as [TrustRecompute]'s derive does; a cell's
-     * null side leaves the other tensor untouched, which under per-dimension
-     * ownership is correct — that cell belongs to the other provider's cards.
-     *
-     * Semantics note (many services -> one observer's cell): the cards are
-     * applied in the same (created_at, then lowest-id-wins) order the full
-     * derivation folds in, so WITHIN a batch the two paths agree; across
-     * batches the cell holds the last-arriving batch's winner, which a full
-     * derivation may order differently. Bounded arbitrariness, an order of
-     * magnitude cheaper than reading. A RETRACTION (a card missing a tag its
-     * signer is mapped for) can't be applied blindly, because another service's
-     * card may still back the cell — those rare subjects become re-derive work,
-     * as do the 10040s' service walks; deletions always did.
+     * Attribution is PER DIMENSION ([TrustProviders]): rank tags update
+     * influence cells for `30382:rank` observers, followers tags the follower
+     * cells for `30382:followers` observers; a cell's null side leaves the other
+     * tensor untouched (that cell belongs to the other provider's cards). Cards
+     * apply in the derive's fold order, so WITHIN a batch the two paths agree;
+     * across batches the cell holds the last batch's winner — bounded
+     * arbitrariness, an order of magnitude cheaper than reading. A RETRACTION
+     * (a card missing a tag its signer is mapped for) can't apply blindly —
+     * another service's card may still back the cell — so those subjects become
+     * re-derive work, as do the 10040s' service walks.
      */
     override suspend fun putAll(docs: List<EventDoc>) {
         dirt.guarded(putDirt(docs)) {
@@ -193,8 +162,7 @@ class TrustProjection(
             val updates = ArrayList<ReputationCells>(cards.size)
             val retracted = LinkedHashSet<String>()
             // Same fold order as the derive (newest wins, ties to the LOWEST id),
-            // so a same-batch conflict between two services of one observer lands
-            // the same cell a full re-derivation would.
+            // so a same-batch conflict lands the cell a full re-derivation would.
             for (doc in cards.sortedWith(compareBy<EventDoc> { it.createdAt }.thenByDescending { it.id })) {
                 val subject = subjectOf(doc) ?: continue
                 val rankObservers = providers.rank[doc.pubkey].orEmpty()
@@ -204,21 +172,16 @@ class TrustProjection(
                 val influence = card?.boundedRank()
                 val followers = card?.followerCount()?.toDouble()
                 if ((rankObservers.isNotEmpty() && influence == null) || (followerObservers.isNotEmpty() && followers == null)) {
-                    // A card MISSING a tag its signer is MAPPED for can't take the
-                    // zero-read cell update. updateCells only ADDS cells, so the
-                    // missing dimension's prior cell would linger (bulk would
-                    // diverge from the derive, which drops it). Any such partial or
-                    // full retraction becomes read-based re-derive work, which
-                    // rebuilds the subject's whole doc from the newest stored
-                    // cards. A card that fails reconstruction lands here too —
-                    // freezing its cells on a parse regression would be silent
-                    // drift.
+                    // updateCells only ADDS cells, so a missing mapped dimension
+                    // would leave its prior cell lingering (diverging from the
+                    // derive, which drops it). Retractions — and cards that fail
+                    // reconstruction, else a parse regression is silent drift —
+                    // become read-based re-derive work instead.
                     retracted += subject
                     continue
                 }
-                // Union fan-out, one partial cell per observer: only the mapped
-                // dimension(s) carry a value — an unmapped dimension stays null so
-                // the other provider's cell survives.
+                // One partial cell per observer: an unmapped dimension stays null
+                // so the other provider's cell survives.
                 (rankObservers + followerObservers).forEach { observer ->
                     updates +=
                         ReputationCells(
@@ -249,10 +212,8 @@ class TrustProjection(
 
     /**
      * Bulk remove by id: only TRUST docs (30382/10040) can invalidate the
-     * projection, so read back just those — chunked kind-filtered searches,
-     * never a get per id (a million-deletion sweep would pay a round trip per
-     * doomed doc to learn it was a plain note). Then delete pipelined and
-     * record ONE work set for the whole batch.
+     * projection, so read back just those via chunked kind-filtered searches —
+     * never a get per id — then delete pipelined with ONE work set for the batch.
      */
     override suspend fun removeAll(ids: List<String>) {
         val docs =
@@ -269,9 +230,8 @@ class TrustProjection(
     }
 
     /**
-     * Bulk remove for callers that already HOLD the doomed docs (the store's
-     * sweep just searched them; the mixed bulk path preloaded them): ZERO reads
-     * — the docs themselves say what each removal invalidates.
+     * Bulk remove for callers that already HOLD the doomed docs: ZERO reads —
+     * the docs themselves say what each removal invalidates.
      */
     override suspend fun removeDocs(docs: List<EventDoc>) {
         val work = removeDirt(docs)
@@ -291,13 +251,12 @@ class TrustProjection(
         }
 
     /**
-     * What a PUT of [docs] could leave stale, for the crash insurance. Card
-     * subjects are recorded exactly while they fit [DIRT_SUBJECT_CAP] (repair =
-     * one cheap batched re-derive); a bigger batch records the cards' SERVICES
-     * instead — a few keys however large the batch, repaired by re-walking each
-     * service (safe for puts: the cards exist in the store, so the walk reaches
-     * every touched subject). 10040s always record their rank services, since
-     * their blast radius is every subject those services ever scored.
+     * Crash insurance for a PUT of [docs]. Card subjects are recorded exactly
+     * while they fit [DIRT_SUBJECT_CAP]; a bigger batch records the cards'
+     * SERVICES instead — few keys however large the batch, repaired by
+     * re-walking each service (safe for puts: the stored cards make the walk
+     * reach every touched subject). 10040s always record their services — their
+     * blast radius is every subject those services ever scored.
      */
     private fun putDirt(docs: List<EventDoc>): DirtLedger.Dirt {
         val subjects = LinkedHashSet<String>()
@@ -311,11 +270,11 @@ class TrustProjection(
     }
 
     /**
-     * What a REMOVE of [docs] invalidates. Card subjects are recorded exactly
-     * and NEVER coarsened to services: a removed card may have been its
-     * subject's last, and a service re-walk enumerates subjects from stored
-     * cards — it can never reach a subject with none left, whose parent doc
-     * would linger as an orphan. The exact re-derive removes it.
+     * What a REMOVE of [docs] invalidates. Card subjects are recorded exactly,
+     * NEVER coarsened to services: a removed card may have been its subject's
+     * last, and a service re-walk (enumerating from stored cards) can never
+     * reach a subject with none left — only the exact re-derive removes its
+     * orphaned parent doc.
      */
     private fun removeDirt(docs: List<EventDoc>): DirtLedger.Dirt {
         val subjects = LinkedHashSet<String>()
@@ -332,10 +291,9 @@ class TrustProjection(
         const val REMOVE_CHUNK = 500
 
         /**
-         * Max subjects persisted per put insurance before coarsening to services.
-         * Bounds the marker write (~64 bytes/subject) to noise against the batch
-         * it brackets, while keeping the precise (and much cheaper) repair for
-         * every normally-sized batch.
+         * Max subjects persisted per put insurance before coarsening to services
+         * — bounds the marker write to noise against the batch it brackets while
+         * keeping the precise, cheaper repair for normally-sized batches.
          */
         const val DIRT_SUBJECT_CAP = 5_000
     }

@@ -34,31 +34,21 @@ import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import com.vitorpamplona.quartz.utils.Hex
 
 /**
- * HOW a reputation parent doc is (re)derived — the engine [TrustProjection]'s
- * write triggers and [TrustReconciler]'s repairs both drive. It owns the
- * service->observers attribution map ([ProviderMap]) and the three shapes of
- * recompute: one subject, a batch of subjects, and a streaming walk over a
- * whole score corpus.
+ * HOW a reputation parent doc is (re)derived — driven by [TrustProjection]'s
+ * write triggers and [TrustReconciler]'s repairs. Owns the service->observers
+ * attribution map ([ProviderMap]) and three recompute shapes: one subject, a
+ * batch, and a streaming walk over a whole score corpus.
  *
  * Recompute, never cell surgery: a change re-derives the SUBJECT's whole
- * [ReputationDoc] from the stored kind-30382s about them —
- *
- *   subject's 30382s (d = subject) -> signer is a SERVICE key
- *   -> observers, PER DIMENSION ([TrustProviders]): the `rank` tag credits the
- *      kind-10040 authors whose `30382:rank` entry lists that service key, the
- *      `followers` tag those whose `30382:followers` entry does — a user may
- *      pick different services for the two (NIP-85: cells are keyed by the
- *      OBSERVER, never the signer; a popular provider is named by many
- *      observers and scores every one)
- *   -> influence_scores{observer} = rank tag, follower_counts{observer} =
- *      followers tag; a version missing a tag contributes nothing to that
- *      dimension (the provider retracted the score).
- *
- * Already-expired cards (NIP-40) contribute nothing: the store never serves
- * them as records, so they must not keep scoring — the derive queries carry
- * the same expiry cutoff every read path applies.
- *
- * Idempotent and self-healing; when no cells are left the parent doc is removed.
+ * [ReputationDoc] from the stored 30382s about them. The signer is a SERVICE
+ * key; PER DIMENSION ([TrustProviders]) the `rank` tag credits the observers
+ * naming that service under `30382:rank`, the `followers` tag those under
+ * `30382:followers` — cells are keyed by the OBSERVER, never the signer, and a
+ * popular provider scores every observer naming it. A version missing a tag
+ * contributes nothing to that dimension (retraction); already-expired cards
+ * (NIP-40) contribute nothing — the derive queries carry the same expiry
+ * cutoff every read path applies. Idempotent and self-healing; when no cells
+ * are left the parent doc is removed.
  */
 internal class TrustRecompute(
     private val inner: EventIndex,
@@ -72,20 +62,16 @@ internal class TrustRecompute(
     suspend fun providerMap(): TrustProviders = providers.get()
 
     /**
-     * Drop the cached attribution map. Call after ANY 10040 write or removal —
-     * the write paths do it inline (even when the service walk itself is
-     * deferred), and [DirtLedger.drain] does it again for dirt inherited from a
-     * crashed process, whose dying op may never have gotten this far.
+     * Drop the cached attribution map after ANY 10040 write or removal — the
+     * write paths do it inline (even with the walk deferred); [DirtLedger.drain]
+     * repeats it for dirt inherited from a crashed process that may have died first.
      */
     fun invalidateProviders() = providers.invalidate()
 
     /**
-     * The batched recompute behind every [DirtLedger] drain and the walks. The
-     * touched subjects' score docs are fetched back in CHUNKED,
-     * concurrency-BOUNDED queries: hundreds of subjects per round trip, a few
-     * round trips in flight (unbounded fan-out measurably times the engine
-     * out). Every parent is derived locally, and the results are written through
-     * one pipelined [ReputationIndex.putAll].
+     * The batched recompute behind every [DirtLedger] drain and the walks:
+     * chunked, concurrency-bounded fetches (unbounded fan-out measurably times
+     * the engine out), local derivation, one pipelined [ReputationIndex.putAll].
      */
     suspend fun recomputeBatch(
         subjects: List<String>,
@@ -100,31 +86,20 @@ internal class TrustRecompute(
     }
 
     /**
-     * The read side of [recomputeBatch], alone: what each subject's parent doc
-     * SHOULD be, derived from the stored records — no writes. Subjects whose
-     * derivation is empty are simply absent from the result. This is also what
+     * The read side of [recomputeBatch]: what each subject's parent doc SHOULD
+     * be — no writes; empty derivations are absent from the result. Also what
      * [TrustReconciler]'s verify audits against.
      */
     suspend fun deriveBatch(
         subjects: List<String>,
         serviceProviders: TrustProviders,
     ): Map<String, ReputationDoc> {
-        // Derived per CHUNK, not per batch. A chunk's query returns every score
-        // for its 50 subjects — complete, since the query carries no limit — so a
-        // subject can be derived the moment its chunk lands, and those docs are
-        // then free.
-        //
-        // Collecting first is what the batch size looks like it bounds and does
-        // not: subjects are cheap (20k × 64 chars), while the docs they recall are
-        // ~75x more numerous and orders of magnitude larger. Holding a whole
-        // batch's recall meant ~1.5M docs live at once — hundreds of MB, on the
-        // ingest path. Per chunk it is `QUERY_FANOUT × FETCH_CHUNK × recall`,
-        // about a hundredth of that, and independent of the batch size.
-        //
-        // The derived docs DO accumulate across the batch, deliberately: they
-        // carry a cell per MAPPED observer only (a handful, where the recall spans
-        // every service that ever scored the subject), so they are small, and one
-        // pipelined write per batch beats one per chunk.
+        // Derived per CHUNK, not per batch: each chunk's query is complete, so
+        // its docs are freed as soon as it lands. Holding a whole batch's recall
+        // meant ~1.5M docs live (hundreds of MB) on the ingest path; per chunk
+        // it is QUERY_FANOUT × FETCH_CHUNK × recall, independent of batch size.
+        // The derived docs DO accumulate deliberately — small (one cell per
+        // MAPPED observer), and one pipelined write per batch beats one per chunk.
         val derived = LinkedHashMap<String, ReputationDoc>(subjects.size * 2)
         val cutoff = nowSecs()
         IngestStats.timed("proj.fetch") {
@@ -151,24 +126,20 @@ internal class TrustRecompute(
 
     /**
      * Visit every score doc matching [query] and re-derive the subjects in
-     * bounded batches, STREAMING. The subject buffer is flushed and cleared every
-     * [RECOMPUTE_BATCH] distinct subjects rather than collecting the whole corpus
-     * first. Otherwise a full rebuild — or a large provider's 10040 change —
-     * would hold millions of subject strings in memory (an OOM on the exact
-     * "scale-safe" path). A subject whose cards span a batch boundary is
-     * re-derived (idempotent), which is cheaper than an unbounded dedup set.
+     * bounded batches, STREAMING: the buffer flushes every [RECOMPUTE_BATCH]
+     * distinct subjects, else a full rebuild would hold millions of subject
+     * strings (an OOM on the exact "scale-safe" path). A subject spanning a
+     * batch boundary is re-derived twice — idempotent, cheaper than an
+     * unbounded dedup set. The enumeration carries NO expiry cutoff: an expired
+     * card's subject must still re-derive so its stale cells DROP (the derive
+     * fetch applies the cutoff).
      *
-     * The enumeration deliberately carries NO expiry cutoff: an expired card's
-     * subject must still be re-derived so its stale cells DROP (the derive
-     * fetch applies the cutoff — see [recomputeBatch]).
-     *
-     * [gate] wraps each mutating flush — identity for the write path, which
-     * already holds the store's writer lock; [TrustReconciler] passes the real
-     * lock so a minutes-long walk mutates in short locked bursts instead of
-     * racing live inserts. The provider map is re-read INSIDE the gate on every
-     * flush (cached, so it costs nothing when unchanged): a 10040 committed
-     * mid-walk by a concurrent writer must not be overwritten by derivations
-     * from a walk-start snapshot of the map.
+     * [gate] wraps each mutating flush — identity on the write path (already
+     * under the writer lock); [TrustReconciler] passes the real lock so a long
+     * walk mutates in short bursts instead of racing live inserts. The provider
+     * map is re-read INSIDE the gate each flush (cached, free when unchanged):
+     * a 10040 committed mid-walk must not be overwritten by derivations from a
+     * walk-start snapshot of the map.
      */
     suspend fun recomputeWalk(
         query: EventQuery,
@@ -183,8 +154,7 @@ internal class TrustRecompute(
                 gate { recomputeBatch(buffer.toList(), providers.get(), removeEmpties = true) }
                 derived += buffer.size
                 buffer.clear()
-                // After the batch, not after the page: a subject is only actually
-                // re-derived once its batch is written, and reporting on the page
+                // Reported after the batch is written, not per page — the page
                 // would run ahead of the work.
                 onSubjects?.invoke(derived)
             }
@@ -205,22 +175,17 @@ internal class TrustRecompute(
     ): ReputationDoc {
         val influence = LinkedHashMap<String, Int>()
         val followers = LinkedHashMap<String, Double>()
-        // Folded OLDEST-first so the NEWEST card wins each (observer, dimension)
-        // cell — deterministic, where the previous engine-order fold made a
-        // rebuild able to change served scores with no event changing. Ties go
-        // to the LOWEST id (sorted after it, so it overwrites), matching the
-        // store's replaceable-winner rule.
+        // Folded OLDEST-first so the NEWEST card wins each cell — deterministic
+        // (an engine-order fold let rebuilds change served scores with no event
+        // changing). Ties go to the LOWEST id (sorted after, so it overwrites),
+        // matching the store's replaceable-winner rule.
         for (doc in docs.sortedWith(DERIVE_ORDER)) {
-            // Direct by-kind reconstruction — no toEventJson()/fromJson round
-            // trip; this runs once per fetched card across every recompute walk.
+            // Direct by-kind reconstruction — no JSON round trip; runs once per
+            // fetched card across every recompute walk.
             val card = doc.toEvent() as? ContactCardEvent ?: continue
-            // Each dimension attributes on its own map: the card's rank tag
-            // counts only for observers who named its signer under `30382:rank`,
-            // its followers tag only for those who named it under
-            // `30382:followers` — a rank provider's followers tag must not
-            // shadow the value the user's chosen follower provider asserts.
-            // EVERY observer naming the service gets the cell — a shared
-            // provider scores each of the users who trust it, not one winner.
+            // Per-dimension attribution: a rank provider's followers tag must
+            // not shadow the chosen follower provider's value. EVERY observer
+            // naming the service gets the cell — not one winner.
             serviceProviders.rank[card.pubKey]?.let { observers ->
                 card.boundedRank()?.let { rank -> observers.forEach { influence[it] = rank } }
             }
@@ -232,12 +197,10 @@ internal class TrustRecompute(
     }
 
     private companion object {
-        // Subjects per batched score-fetch query. Sized for DENSE subjects: a
-        // real NIP-85 corpus scores each subject from dozens of service keys
-        // (~50 observed), so 100 subjects already recall ~5k docs. Chunking
-        // keeps each response bounded, and keeps the derivation correct on a
-        // deployment that lowered the engine's hit cap (which truncates
-        // silently, with no error to notice).
+        // Subjects per batched score-fetch, sized for DENSE subjects (~50
+        // services each observed, so 100 subjects recall ~5k docs). Chunking
+        // bounds each response and keeps the derivation correct under a lowered
+        // engine hit cap, which truncates silently.
         const val FETCH_CHUNK = 50
 
         // Subjects per recompute round in a full walk (memory-bounded batches).
@@ -249,11 +212,10 @@ internal class TrustRecompute(
 }
 
 /**
- * The 30382's d tag is the SUBJECT the score is about — a pubkey, so only a
- * 64-hex value counts. Anything else can never join an event author in ranking
- * (the reputation import matches the author's hex pubkey exactly), and
- * admitting arbitrary strings would let a crafted card collide with the
- * projection's own bookkeeping ids ([DirtLedger]).
+ * The 30382's d tag is the SUBJECT — a pubkey, so only 64-hex counts. Anything
+ * else can never join ranking (the reputation import matches hex author keys),
+ * and admitting arbitrary strings would let a crafted card collide with the
+ * projection's bookkeeping ids ([DirtLedger]).
  */
 internal fun subjectOf(doc: EventDoc): String? =
     doc.tags
@@ -262,17 +224,12 @@ internal fun subjectOf(doc: EventDoc): String? =
         ?.takeIf { Hex.isHex64(it) }
 
 /**
- * The card's rank tag clamped to the served 0..100 scale. Providers are not
- * trusted to stay on-scale, and both bounds are load-bearing engine-side: a
- * NEGATIVE score sits below even `include:spam`'s min_rank=0 floor (the
- * "keep everything" opt-out — INCLUDE_SPAM_MIN_RANK in FilterMapping), so it
- * would silently drop the author from the one query shape that promises not
- * to drop anyone; an OVER-SCALE score would distort wot_mult()'s calibrated
- * tier-crossing thresholds, which are derived against the 0..100 span
- * (event.sd clamps its side of the curve to the same bound) — letting a
- * weaker match tier outrank a stronger one on less than the intended
- * overwhelming trust advantage. Clamped at EVERY read
- * of the tag — the projection's fast path, its bulk path, and the recompute
- * derive must land the same cell value or [TrustReconciler] reads drift.
+ * The card's rank tag clamped to the served 0..100 scale — providers are not
+ * trusted to stay on-scale, and both bounds are load-bearing: a NEGATIVE score
+ * sits below `include:spam`'s min_rank=0 floor and would silently drop the
+ * author from the one query shape that promises not to drop anyone; an
+ * OVER-SCALE score would distort wot_mult()'s calibrated 0..100 tier-crossing
+ * thresholds. Clamped at EVERY read of the tag — the fast path, the bulk path,
+ * and the derive must land the same cell value or [TrustReconciler] reads drift.
  */
 internal fun ContactCardEvent.boundedRank(): Int? = rank()?.coerceIn(0, 100)
