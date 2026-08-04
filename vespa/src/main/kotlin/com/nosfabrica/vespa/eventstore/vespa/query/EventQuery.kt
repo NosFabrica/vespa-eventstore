@@ -52,93 +52,71 @@ data class EventQuery(
     val search: String? = null,
     /**
      * Quoted-phrase requirements — the engine half of the store's
-     * `"exact words"` syntax. Each entry must appear in some search field as
-     * ADJACENT tokens, in order, matched exactly (one phrase-grammar term
-     * over the `default` fieldset) with none of [search]'s prefix/fuzzy/typo
-     * reach — quoting a single word is the opt-out from fuzzy matching (but
-     * NOT from the schema's stemming on the prose fields: `"runs"` still
-     * matches "running" there — see the [notSearch] KDoc, same mechanics).
-     * Phrases are positive search text: they make a query ranked exactly as
-     * [search] terms do, so a phrase-only query is a relevance-ordered
-     * search — unlike a [notSearch]-only one, which is plain recall. A
-     * phrase with nothing any index can hold ("⚡") is an unsatisfiable
-     * requirement — the query provably matches nothing, the same rule
-     * [search] words follow (and the opposite of [notSearch], where such a
-     * word is vacuous).
+     * `"exact words"` syntax. Each entry must appear as ADJACENT tokens, in
+     * order, matched exactly, with none of [search]'s prefix/fuzzy reach;
+     * quoting a single word opts out of fuzzy matching (but NOT the schema's
+     * stemming on prose fields). Phrases are positive search text, so a
+     * phrase-only query is a relevance-ordered search. A phrase no index can
+     * hold ("⚡") is unsatisfiable — provably no match, same rule as [search]
+     * words (and the opposite of [notSearch], where such a word is vacuous).
      */
     val phrases: List<String> = emptyList(),
     /**
      * Words that must NOT match any search field — the engine half of the
-     * store's `-word` search syntax, which splits exclusions off [search]
-     * before the query gets here (an engine-level word in [search] is always
-     * a requirement, never syntax). Exclusion is deliberately EXACT: one
-     * negated tokenized term per word over the schema's `default` fieldset,
-     * none of the prefix/fuzzy/trigram reach the positive side has — a loose
-     * matcher can only over-exclude, and a hit wrongly dropped is invisible
-     * to the user in a way a wrongly kept one is not. One looseness DOES
-     * ride along engine-side: the prose fields (about/search_text/… — see
-     * event.sd; the name-tier fields are `stemming: none`) index STEMMED
-     * tokens, so on those fields "-runs" also drops "running". That is
-     * index-side and unavoidable from the query (a `stem:false` term would
-     * stop matching even the exact word against a stemmed index); the
-     * in-memory reference does not model it. Docs without search fields
-     * (kinds NIP-50 can't see) contain no word and are never excluded.
+     * store's `-word` syntax (the store splits exclusions off [search]).
+     * Exclusion is deliberately EXACT: one negated tokenized term per word,
+     * none of the positive side's prefix/fuzzy/trigram reach — a loose
+     * matcher can only over-exclude, and a wrongly dropped hit is invisible
+     * in a way a wrongly kept one is not. One index-side looseness remains:
+     * the prose fields index STEMMED tokens, so "-runs" also drops "running"
+     * there (unavoidable from the query; the in-memory reference does not
+     * model it). Docs without search fields are never excluded.
      */
     val notSearch: List<String> = emptyList(),
     /**
      * The ranking lens: the 64-hex pubkey whose web-of-trust weighs and gates
-     * hits (the NIP-42-authenticated user, the NIP-50 `observer:` search
-     * token, or the operator's default). Emitted as the `user_q` ranking
-     * feature on every profile that reads trust — searches AND the gated
-     * plain-recall profiles ([EventYql.RANK_RECENCY_GATED]); never on
-     * unranked/recency recall. When absent, a search falls back to pure-text
-     * relevance ([EventYql.RANK_TEXT]) and no trust gate is applied anywhere —
-     * trust features fail open, not closed.
+     * hits (NIP-42 auth, the NIP-50 `observer:` token, or the operator's
+     * default). Emitted as `user_q` on every trust-reading profile; never on
+     * unranked/recency recall. When absent, a search falls back to pure text
+     * ([EventYql.RANK_TEXT]) and no trust gate is applied anywhere — trust
+     * features fail open, not closed.
      */
     val observer: String? = null,
     /**
      * Rank-profile override (the NIP-50 `sort:` extension): one of the
-     * schema's profiles — [EventYql.RANK_DESC] / [EventYql.RANK_ASC] /
-     * [EventYql.RANK_FILTERED] / [EventYql.RANK_FOLLOWERS] /
-     * [EventYql.RANK_TEXT] / [EventYql.RANK_RECENCY_GATED]. Null = the default
-     * ([EventYql.RANK_SEARCH] with a term, unranked recency without). A
-     * non-null ranking with no term is a trust-ordered match-all ("who does my
-     * observer rank highest").
+     * schema's profiles (e.g. [EventYql.RANK_DESC], [EventYql.RANK_TEXT]).
+     * Null = the default ([EventYql.RANK_SEARCH] with a term, unranked recency
+     * without). A non-null ranking with no term is a trust-ordered match-all.
      */
     val ranking: String? = null,
     /**
-     * NIP-50 `include:spam`: the query's opt-out from caller-applied default
-     * trust gates. The YQL builder ignores it — [minRank] is the actual gate —
-     * it exists so a caller resolving an out-of-band observer AFTER the filter
-     * mapping (NostrSemanticsStore's recall gate) can still honor the opt-out.
+     * NIP-50 `include:spam`: opt-out from caller-applied default trust gates.
+     * The YQL builder ignores it ([minRank] is the actual gate); it exists so
+     * a caller resolving an observer AFTER filter mapping can still honor it.
      */
     val includeSpam: Boolean = false,
     /**
      * The per-observer trust floor, emitted as query(min_rank). Every trust
-     * profile gates on it, and the default profile's wot_mult() zeroes anything
-     * below it. Set from NIP-50 `filter:rank:…`, or from the spam-filter
-     * default — which `include:spam` LOWERS to 0 rather than removes: min_rank
-     * is also the ANCHOR of wot_mult()'s trust curve, so a trust-ranked
-     * query must always send some floor (0 = keep everything). Null here means
-     * the schema's fail-open default (-1e9) applies, which no-ops the gates
-     * but flattens the default profile's boost to a constant — trust stops
-     * ordering the hits.
+     * profile gates on it; the default profile's wot_mult() zeroes anything
+     * below it. `include:spam` LOWERS it to 0 rather than removes it —
+     * min_rank also ANCHORS wot_mult()'s trust curve, so a trust-ranked query
+     * must always send some floor. Null = the schema's fail-open default
+     * (-1e9): gates no-op, but trust stops ordering the hits.
      */
     val minRank: Double? = null,
     /**
-     * Overrides a two-phase rank profile's rerank window for this query
-     * (`ranking.rerankCount`, PER CONTENT NODE). Null = the profile's own
-     * setting; meaningless (and ignored by the engine) on single-phase
-     * profiles. Exists for the ranking A/B harness — production queries
+     * Overrides a two-phase profile's rerank window (`ranking.rerankCount`,
+     * PER CONTENT NODE). Null = the profile's own setting; ignored on
+     * single-phase profiles. For the ranking A/B harness — production queries
      * should trust the profile.
      */
     val rerankCount: Int? = null,
     /**
-     * Emit the direct prefix/fuzzy terms against the schema's *_parts /
-     * *_tokens attribute fields (the near tier). On by default; the client
-     * flips it off ONLY as a compatibility demotion when the serving schema
-     * predates those fields — any query referencing them is then HTTP 400 on
-     * every search (see VespaEventIndex.nearSafe). Not a caller-facing knob.
+     * Emit the direct prefix/fuzzy terms against the *_parts / *_tokens
+     * attribute fields (the near tier). On by default; the client flips it off
+     * ONLY as a compatibility demotion when the serving schema predates those
+     * fields (any reference is then HTTP 400 — see VespaEventIndex.nearSafe).
+     * Not a caller-facing knob.
      */
     val nearMatching: Boolean = true,
 )

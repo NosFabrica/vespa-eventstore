@@ -23,36 +23,19 @@ package com.nosfabrica.vespa.eventstore.vespa
 import java.text.Normalizer
 
 /**
- * Feed-side derivation of the near-match attribute fields (name_parts /
- * name_tokens / search_primary_parts / search_primary_tokens /
- * search_secondary_tokens in event.sd) and the matching query-side fold.
+ * Feed-side derivation of the near-match attribute fields (*_parts /
+ * *_tokens in event.sd) and the matching query-side fold. Computed in the
+ * feed, not a schema-side indexing expression: string ATTRIBUTES match raw
+ * bytes, so doc and query side must share ONE fold ([fold]: NFKD, strip
+ * combining marks, lowercase) or "jose" could never prefix-match "josé";
+ * the schema-side merge also nulls out on missing inputs, and these
+ * tokenizations don't fit the indexing language. The cost: populating an
+ * existing corpus needs a RE-FEED, not a native reindex —
+ * NostrSemanticsStore.reindexFullTextSearch re-puts exactly the drifted docs.
  *
- * Computed HERE, in the feed, rather than by a schema-side indexing
- * expression, for three reasons:
- *
- *  1. NORMALIZATION SYMMETRY. Vespa's linguistic pipeline folds diacritics on
- *     `index` fields but string ATTRIBUTES match raw bytes (uncased only), so
- *     a schema-side split would leave "jose" unable to prefix-match "josé".
- *     Deriving in Kotlin lets doc side and query side share ONE fold
- *     ([fold]): NFKD, strip combining marks, lowercase.
- *  2. NULL SAFETY. The schema-side form (`input name . " " . input
- *     display_name | split …`) nulls the whole expression when either input
- *     is missing, which forced the feed to write empty-string siblings. Here
- *     the merge is plain Kotlin over whatever fields exist.
- *  3. EXPRESSIVENESS. The tokenizations below (alnum-stripped compound
- *     variants, whole-name concatenation, CJK run suffixes) don't fit the
- *     indexing language's regex `split` at all.
- *
- * The COST is the reindex story: schema-side synthetic fields rebuild from
- * Vespa's own document store via a native reindex; feed-computed fields need
- * a RE-FEED of searchable docs to populate on an existing corpus. This repo
- * owns ingest end-to-end, so a re-feed is available wherever the store runs:
- * NostrSemanticsStore.reindexFullTextSearch detects docs whose stored arrays
- * drift from this derivation and re-puts exactly those.
- *
- * Keep in lockstep with FuzzyWordGroup (which folds query words with the same
- * [fold]) and event.sd's field comments. All outputs are lowercase, folded,
- * distinct, and length-capped — attribute dictionaries index every element.
+ * Keep in lockstep with FuzzyWordGroup (same [fold] on query words) and
+ * event.sd's field comments. All outputs are lowercase, folded, distinct,
+ * and length-capped — attribute dictionaries index every element.
  */
 object NearText {
     /** Elements longer than this are dropped (a "name" that long is data noise, not a name). */
@@ -65,10 +48,9 @@ object NearText {
     const val MAX_CJK_SUFFIX_RUN = 8
 
     /**
-     * The shared normalization: NFKD-decompose, drop combining marks, then
-     * lowercase. "José" -> "jose", "VÍTOR" -> "vitor", full-width forms fold
-     * to ASCII via NFKD's compatibility mapping. CJK is untouched (NFKD is
-     * identity there, and case doesn't apply).
+     * The shared normalization: NFKD-decompose, drop combining marks,
+     * lowercase. "José" -> "jose"; full-width forms fold to ASCII; CJK is
+     * untouched.
      */
     fun fold(s: String): String =
         Normalizer
@@ -77,30 +59,21 @@ object NearText {
             .lowercase()
 
     /**
-     * The *_parts granularity: every word START inside the string becomes an
-     * element — split at camelCase transitions ("BitcoinMemeTreasury" ->
-     * [bitcoin, meme, treasury]), at any non-letter/digit run, and CJK runs
-     * additionally emit their suffixes ("中村太郎" -> [中村太郎, 村太郎, 太郎, 郎])
-     * so a given-name query can reach an unsegmented CJK full name — there
-     * are no spaces to split on, and a prefix anchored at the run start
-     * cannot see "太郎" otherwise.
-     *
-     * This is what makes "meme" find "BitcoinMemeTreasury" and "lover" find
-     * "CoffeeLover". Elements are folded ([fold]) after splitting — the camel
-     * rule needs the original case.
+     * The *_parts granularity: every word START becomes an element — split at
+     * camelCase transitions ("BitcoinMemeTreasury" -> [bitcoin, meme,
+     * treasury]) and non-letter/digit runs; CJK runs also emit their suffixes
+     * so a given-name query can reach an unsegmented CJK full name. Folded
+     * ([fold]) AFTER splitting — the camel rule needs the original case.
      */
     fun parts(s: String): List<String> = cap(splitCamelAndSeparators(s).flatMap { withCjkSuffixes(it) }.map(::fold))
 
     /**
-     * The *_tokens granularity: whole whitespace-delimited tokens, kept
-     * intact so a compound-name prefix works ("vitorp" -> "vitorpamplona" —
-     * the parts split regresses that case). Each token also emits an
-     * alnum-only variant when separators decorate it ("vitor-pamplona" ->
-     * "vitorpamplona"), and multi-token strings emit the whole-name
-     * concatenation ("Vitor Pamplona" -> "vitorpamplona") — the doc-side
-     * mirror of the query builder's joined variant, so a single-word
-     * compound query prefix-matches a spaced name without spending the typo
-     * budget. CJK tokens ride the same suffix expansion as [parts].
+     * The *_tokens granularity: whole whitespace-delimited tokens kept intact
+     * ("vitorp" -> "vitorpamplona"), plus an alnum-only variant when
+     * separators decorate a token ("vitor-pamplona"), plus the whole-name
+     * concatenation for multi-token strings — the doc-side mirror of the
+     * query builder's joined variant. CJK tokens ride the same suffix
+     * expansion as [parts].
      */
     fun tokens(s: String): List<String> {
         val raw = s.split(WHITESPACE).filter { it.isNotEmpty() }
@@ -120,11 +93,7 @@ object NearText {
         return cap(out.map(::fold))
     }
 
-    /**
-     * Merge one derived field from several source strings (name +
-     * display_name, or every secondary text), preserving order, dropping
-     * duplicates and over-long elements.
-     */
+    /** Merge one derived field from several source strings, preserving order, dropping duplicates and over-long elements. */
     fun merge(vararg lists: List<String>): List<String> = cap(lists.asList().flatten())
 
     /** Query-side: the folded form a near clause should carry. */
@@ -143,10 +112,9 @@ object NearText {
             .takeIf { it.isNotEmpty() && it != s }
 
     /**
-     * Split at any non-letter/digit run, at lower/digit->Upper transitions,
-     * and before the last capital of an ALLCAPS->Capitalized boundary
-     * ("HTTPServer" -> [HTTP, Server]) — the same three boundaries the
-     * original schema-side regex drew, in code instead of lookarounds.
+     * Split at non-letter/digit runs, lower/digit->Upper transitions, and
+     * before the last capital of an ALLCAPS->Capitalized boundary
+     * ("HTTPServer" -> [HTTP, Server]).
      */
     private fun splitCamelAndSeparators(s: String): List<String> {
         val out = ArrayList<String>()
@@ -172,8 +140,7 @@ object NearText {
     /**
      * A part plus, when it is a short CJK run, its proper suffixes — CJK
      * names have no case or separators to split on, so suffixes are the only
-     * way "太郎" (the given name) reaches "中村太郎". Non-CJK parts pass
-     * through alone.
+     * way "太郎" reaches "中村太郎". Non-CJK parts pass through alone.
      */
     private fun withCjkSuffixes(part: String): List<String> {
         if (part.isEmpty() || part.length > MAX_CJK_SUFFIX_RUN || !part.all(::isCjk)) return listOf(part)

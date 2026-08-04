@@ -25,16 +25,14 @@ import com.vitorpamplona.quartz.utils.Hex
 
 /**
  * Builds YQL over the `event` schema from an [EventQuery]. Returns null when
- * the query provably matches nothing, so the caller can answer with an empty
- * result (EOSE) instead of asking Vespa. That happens for an id/author
- * constraint with no valid 64-hex entries, a non-single-letter tag name, or
- * limit 0.
+ * the query provably matches nothing (no valid 64-hex id/author, a
+ * non-single-letter tag name, limit 0), so the caller answers empty (EOSE)
+ * without asking Vespa.
  *
- * Injection safety: ids and authors only reach the YQL after 64-hex
- * validation. Every other caller-supplied string is either escaped ([quote])
- * or passed out-of-band as a query parameter (the search words). The one
- * exception is the trigram literals, which are filtered to alphanumeric
- * characters only.
+ * Injection safety: ids and authors reach the YQL only after 64-hex
+ * validation; every other caller-supplied string is escaped ([quote]) or
+ * passed out-of-band as a query parameter; trigram literals are filtered to
+ * alphanumeric characters only.
  */
 object EventYql {
     /** Vespa's built-in no-scoring profile — filters without a search term. */
@@ -50,21 +48,15 @@ object EventYql {
     const val RANK_FILTERED = "rank_filtered"
 
     /**
-     * NIP-01 recency order with the trust floor applied: score IS created_at,
-     * below-floor authors are dropped. The store stamps this on plain (non-
-     * search) recall when an observer resolves — the always-on spam gate for
-     * feeds — and on the no-terms `filter:rank:` match-all.
-     *
-     * This is the MATCH-PHASE variant, sized for the dominant REQ shape
-     * (small recent limits): the engine keeps only the newest ~
-     * [MATCH_PHASE_MAX_HITS] candidates per node before gating, so a bare
-     * gated feed query costs the same as ungated recency. [build] demotes
-     * shapes the cut can't serve exactly (no limit, limit past the headroom,
-     * deep-past `until`) to [RANK_RECENCY_GATED_EXACT], and the client reruns
-     * a degraded-and-unproven page on the exact profile
-     * (VespaEventIndex.recallRoot). The count-probe planner still excludes
-     * both variants: its windows are proven against the UNGATED match set,
-     * which the gate breaks.
+     * NIP-01 recency order with the trust floor: score IS created_at,
+     * below-floor authors dropped — the always-on spam gate for feeds and the
+     * no-terms `filter:rank:` match-all. MATCH-PHASE variant: the engine keeps
+     * only the newest ~[MATCH_PHASE_MAX_HITS] candidates per node before
+     * gating. [build] demotes shapes the cut can't serve exactly to
+     * [RANK_RECENCY_GATED_EXACT]; a degraded-and-unproven page reruns on the
+     * exact profile (VespaEventIndex.recallRoot). The count-probe planner
+     * excludes both variants: its windows are proven against the UNGATED
+     * match set, which the gate breaks.
      */
     const val RANK_RECENCY_GATED = "recency_gated"
 
@@ -82,13 +74,10 @@ object EventYql {
 
     /**
      * Match-phase profile for LIMIT'D unranked recall: keeps only the
-     * ~[MATCH_PHASE_MAX_HITS] newest candidates during matching instead of
-     * ranking every posting the filter matches — the engine-side rescue for
-     * the bare recency scans the count-guarded planner could not window.
-     * Selected only when the limit sits at [MATCH_PHASE_HEADROOM]x or more
-     * under max-hits, so the true top-`limit` always survives the cut; the
-     * response arrives match-phase-degraded, which the client accepts only
-     * for this profile and [RANK_RECENCY_GATED].
+     * ~[MATCH_PHASE_MAX_HITS] newest candidates during matching. Selected only
+     * when the limit sits [MATCH_PHASE_HEADROOM]x or more under max-hits, so
+     * the true top-`limit` always survives the cut; the client accepts a
+     * match-phase-degraded response only for this profile and [RANK_RECENCY_GATED].
      */
     const val RANK_RECENCY = "recency"
 
@@ -99,13 +88,11 @@ object EventYql {
     const val MATCH_PHASE_HEADROOM = 10
 
     /**
-     * The summary fields a hit actually needs to reconstruct its event
-     * ([com.nosfabrica.vespa.eventstore.vespa.doc.EventDoc.fromSummary]). Selecting these instead of `*`
-     * omits the BM25 index fields (search_text — a full COPY of content for notes
-     * — name, about, the _gram views, expires_at, …) from the returned summary: on
-     * a plain 200-hit note scan that is ~35% fewer bytes to transfer and parse,
-     * and far more on long-form content where search_text dwarfs everything else.
-     * The omitted fields are index/ranking inputs, never part of the served event.
+     * The summary fields needed to reconstruct an event
+     * ([com.nosfabrica.vespa.eventstore.vespa.doc.EventDoc.fromSummary]).
+     * Selecting these instead of `*` omits the BM25 index fields — ~35% fewer
+     * bytes on a plain 200-hit note scan, far more on long-form. The omitted
+     * fields are index/ranking inputs, never part of the served event.
      */
     const val SUMMARY_FIELDS = "id, pubkey, created_at, kind, tags, content, sig, owner"
 
@@ -116,17 +103,12 @@ object EventYql {
     const val SUMMARY_DEDUP = "dedup"
 
     /**
-     * Existence-only recall for the bulk-dedup preload: `select id` under the
-     * [SUMMARY_DEDUP] summary class, so the engine answers set membership from
-     * the id ATTRIBUTE in memory and the disk summary store never runs. At the
-     * mirror workload's ~99% hit rate the [build] query returns ~ids.size FULL
-     * documents that the caller reads one field off; this returns just that
-     * field. No `order by` (membership is unordered — and the recency sort is
-     * pure cost here), no `limit` (an existence answer must be complete: a
-     * short page would be a wrong write upstream, not a small answer).
-     *
-     * Null when no valid 64-hex id remains — the constraint is unsatisfiable,
-     * so nothing exists (same contract as [build]).
+     * Existence-only recall for the bulk-dedup preload: `select id` under
+     * [SUMMARY_DEDUP], answered from the id ATTRIBUTE in memory — the disk
+     * summary store never runs. No `order by` (membership is unordered), no
+     * `limit` (an existence answer must be complete: a short page would be a
+     * wrong write upstream). Null when no valid 64-hex id remains — the
+     * constraint is unsatisfiable, so nothing exists (same contract as [build]).
      */
     fun buildExistence(ids: List<String>): VespaQuery? {
         val clause = hexIn("id", ids) ?: return null
@@ -139,17 +121,11 @@ object EventYql {
 
     /**
      * True when [build] would auto-select [RANK_RECENCY] for [q]. The index
-     * keys two behaviors on this: skipping the count-probe planner (match-phase
-     * already owns these limits) and demoting to [RANK_UNRANKED] against a
-     * serving schema that predates the profile.
-     *
-     * A deep-past `until` (until-based REQ pagination reaching old history) is
-     * EXCLUDED: it is exactly the anchor a newest-first match-phase cut is
-     * hostile to — the cut lands above the wanted window, the page comes back
-     * short, and the client's exactness rerun pays the full scan the profile
-     * was meant to avoid. Left out of the profile, those shapes fall to the
-     * count-probe planner, whose windows anchor at `until` and work at any
-     * depth.
+     * keys two behaviors on this: skipping the count-probe planner and
+     * demoting to [RANK_UNRANKED] against a serving schema that predates the
+     * profile. A deep-past `until` is EXCLUDED: the newest-first match-phase
+     * cut lands above the wanted window and forces the full-scan rerun; those
+     * shapes fall to the count-probe planner, whose windows anchor at `until`.
      */
     fun usesRecencyProfile(q: EventQuery): Boolean =
         q.ranking == null &&
@@ -163,15 +139,12 @@ object EventYql {
 
     /**
      * True when [build] keeps a [RANK_RECENCY_GATED] query on the match-phase
-     * variant instead of demoting it to [RANK_RECENCY_GATED_EXACT]. The same
-     * shape gate as [usesRecencyProfile] (small limit with 10x headroom under
-     * max-hits, `until` recent or absent), for the same reasons — with one
-     * addition the ungated profile doesn't need: the headroom must also absorb
-     * the gate's drops, so a shape that qualifies can still come back
-     * degraded-and-short when fewer than `limit` of the ~[MATCH_PHASE_MAX_HITS]
-     * newest candidates are trusted. That case reruns exact
-     * (VespaEventIndex.recallRoot); it is paid only on heavily-spammed corpora
-     * or near-empty trust graphs, not on the routine feed query.
+     * variant instead of demoting it to [RANK_RECENCY_GATED_EXACT]. Same shape
+     * gate as [usesRecencyProfile], but the headroom must also absorb the
+     * gate's drops: a qualifying shape can still come back degraded-and-short
+     * when too few of the newest candidates are trusted — that case reruns
+     * exact (VespaEventIndex.recallRoot), paid only on heavily-spammed corpora
+     * or near-empty trust graphs.
      */
     fun usesGatedMatchPhase(q: EventQuery): Boolean =
         q.ranking == RANK_RECENCY_GATED &&
@@ -182,20 +155,15 @@ object EventYql {
         val params = LinkedHashMap<String, String>()
         val clauses = filterClauses(q, params) ?: return null
 
-        // Trust ranking needs an observer: user_q weights the author's scores and
-        // min_rank gates against them. With no observer both are meaningless — and
-        // an unguarded min_rank would gate every hit against a zero score, i.e.
-        // return nothing — so a search with no observer defaults to pure text and
-        // emits neither feature. An explicit sort:/filter: still selects its
-        // profile, but degrades to match-tier order (no trust) without an observer.
+        // Trust ranking needs an observer: without one, an unguarded min_rank
+        // would gate every hit against a zero score and return nothing — so a
+        // search with no observer defaults to pure text and emits neither
+        // feature. An explicit sort:/filter: keeps its profile but loses trust.
         val observer = q.observer?.lowercase()?.takeIf(Hex::isHex64)
         val requested =
             q.ranking ?: when {
-                // Limit'd unranked recall rides the match-phase profile: same
-                // `order by`, but the engine keeps only the newest candidates
-                // during matching instead of ranking every posting. Gated to
-                // limits with 10x headroom under the profile's max-hits so the
-                // top-`limit` always survives. (Keep in sync with [usesRecencyProfile].)
+                // Limit'd unranked recall rides the match-phase profile.
+                // (Keep in sync with [usesRecencyProfile].)
                 usesRecencyProfile(q) -> RANK_RECENCY
 
                 // Phrases are search text: a phrase-only query ranks like any
@@ -206,10 +174,9 @@ object EventYql {
 
                 else -> RANK_TEXT
             }
-        // Gated recall's match-phase cut is only sound for the shapes
-        // [usesGatedMatchPhase] admits — an unlimited or deep-until query under
-        // the cut would silently lose every hit older than the newest ~max-hits
-        // candidates, so those demote to the full-scan variant.
+        // The match-phase cut is only sound for shapes [usesGatedMatchPhase]
+        // admits — others would silently lose every hit older than the newest
+        // ~max-hits candidates, so they demote to the full-scan variant.
         val ranking = if (requested == RANK_RECENCY_GATED && !usesGatedMatchPhase(q)) RANK_RECENCY_GATED_EXACT else requested
         if (ranking != RANK_UNRANKED && ranking != RANK_RECENCY && observer != null) {
             params["ranking.features.query(user_q)"] = "{$observer:1.0}"
@@ -219,25 +186,16 @@ object EventYql {
         q.rerankCount?.let { params["ranking.rerankCount"] = it.toString() }
 
         val where = whereOf(clauses)
-        // No text and no rank profile = plain relay REQ semantics: newest
-        // first, no scoring. Anything ranked keeps Vespa's score order.
-        // (RANK_RECENCY is unranked-with-match-phase: same order contract.)
-        // The id tiebreak makes a limit's cut deterministic when it falls inside
-        // a created_at tie — the same (created_at desc, id asc) order the
-        // EventIndex contract promises and the client-side sorts apply.
-        // created_at ONLY — no engine-side id tiebreak. Compound-sorting by the
-        // id STRING attribute made every full-scan recall pay UCA collation
-        // over the whole match set (measured 0.22s -> 1.3s on 2M matches). The
-        // client restores the exact `created_at desc, id asc` contract from
-        // the RETURNED page instead: it overfetches a small slack so the
-        // boundary timestamp's tie group arrives complete, resolves the rare
-        // overflow with a [t,t] window query, and sorts the page in memory —
-        // see VespaEventIndex.recallSummaries.
+        // Plain recall orders newest first; anything ranked keeps Vespa's
+        // score order. created_at ONLY — an engine-side id tiebreak (compound
+        // sort on the id STRING attribute) paid UCA collation over the whole
+        // match set (measured 0.22s -> 1.3s on 2M matches). The client
+        // restores the exact `created_at desc, id asc` contract from the
+        // RETURNED page instead — see VespaEventIndex.recallSummaries.
         val order = if (ranking == RANK_UNRANKED || ranking == RANK_RECENCY) " order by created_at desc" else ""
         val limit = q.limit?.let { if (it <= 0) return null else " limit $it" } ?: ""
         return VespaQuery(
-            // Only the reconstruction fields, not `*`: the returned summary skips the
-            // BM25 index fields (see [SUMMARY_FIELDS]) that a served event never carries.
+            // Reconstruction fields only, not `*` — see [SUMMARY_FIELDS].
             yql = "select $SUMMARY_FIELDS from event where $where$order$limit",
             params = params,
             ranking = ranking,
@@ -245,20 +203,16 @@ object EventYql {
     }
 
     /**
-     * An EXACT-count query: the same filters, a grouping `count()`, and NO
-     * `order by`. Sorting by an attribute trips Vespa's match-phase on a large
-     * corpus (it stops after a slice), which caps the reported `totalCount` — so
-     * [build]'s recency `order by` would undercount by 10x+. Grouping count over
-     * the full, unranked match set is exact.
+     * An EXACT-count query: same filters, a grouping `count()`, NO `order by` —
+     * attribute sorting trips Vespa's match-phase on a large corpus and caps
+     * `totalCount` (10x+ undercount). Grouping over the unranked match set is exact.
      */
     fun buildCount(q: EventQuery): VespaQuery? = grouping(q, "all(output(count()))")
 
     /**
-     * A DISTINCT-value count over [field] (an attribute): the same filters, a
-     * grouping that outputs `count()` on the group LIST — i.e. the number of
-     * distinct values, not the number of docs. No `order by` (same match-phase
-     * reasoning as [buildCount]). Used by status/metrics callers to count the
-     * distinct pubkeys with content. Null when the filter provably matches nothing.
+     * A DISTINCT-value count over [field] (an attribute): `count()` on the
+     * group LIST — distinct values, not docs. Used by status/metrics callers.
+     * Null when the filter provably matches nothing.
      */
     fun buildDistinctCount(
         q: EventQuery,
@@ -266,50 +220,30 @@ object EventYql {
     ): VespaQuery? = grouping(q, "all(group($field) output(count()))")
 
     /**
-     * DISTINCT authors of the match set: the same filters, unranked, grouped by
-     * `pubkey`, emitting each group's value. Server-side aggregation returns only
-     * the distinct pubkeys, however large the match set — the point of not
-     * reconstructing every doc. (`pubkey` is an attribute, so it is groupable;
-     * `each(output(count()))` gives each group a payload so Vespa emits it.)
-     * Unlike [buildDistinctCount] this returns the author VALUES, not just a count.
-     *
-     * No `max()`: EVERY distinct author comes back. [grouping] and the bundled
-     * query profile between them disable the engine's group ceilings so this
-     * stays complete however high the cardinality goes — a truncated author set
-     * would make the orphan-score sweep silently under-delete.
+     * DISTINCT authors of the match set, aggregated server-side — unlike
+     * [buildDistinctCount] this returns the author VALUES. No `max()`: EVERY
+     * distinct author comes back; [grouping] and the bundled query profile
+     * disable the engine's group ceilings, since a truncated author set would
+     * make the orphan-score sweep silently under-delete.
      */
     fun buildDistinctAuthors(q: EventQuery): VespaQuery? = grouping(q, "all(group(pubkey) each(output(count())))")
 
-    /**
-     * A per-KIND histogram: the same filters, grouped by kind with a `count()`
-     * on each group. No `order by` (same match-phase reasoning as [buildCount]).
-     * Used by status/metrics callers to show the corpus shape (top kinds by
-     * volume). Null when the filter provably matches nothing.
-     */
+    /** Per-KIND histogram: grouped by kind, a `count()` per group. Used by status/metrics callers. Null when the filter provably matches nothing. */
     fun buildKindHistogram(q: EventQuery): VespaQuery? = grouping(q, "all(group(kind) each(output(count())))")
 
     /**
-     * The shared shape of every aggregation query ([buildCount],
-     * [buildDistinctCount], [buildDistinctAuthors], [buildKindHistogram]): the
-     * same filter WHERE clause, `limit 0` (no hits, only the grouping), the
-     * given [pipeline] grouping expression, and NO `order by` — sorting by an
-     * attribute trips Vespa's match-phase on a large corpus and caps the reported
-     * totals. Unranked. Null when the filter provably matches nothing.
+     * The shared shape of every aggregation query: the filter WHERE clause,
+     * `limit 0`, the [pipeline] grouping, NO `order by` (attribute sorting
+     * trips match-phase and caps totals), unranked. Null when the filter
+     * provably matches nothing.
      *
      * The per-request group ceilings are disabled ([UNLIMITED_GROUPS]) so an
-     * aggregation answers over the WHOLE match set. These are not optional
-     * politeness: a pipeline with no `max()` otherwise returns
-     * `grouping.defaultMaxGroups` groups — TEN.
-     *
-     * The third ceiling, `grouping.globalMaxGroups`, must be disabled TOO —
-     * while it is on, Vespa fails a `max()`-less pipeline outright ("Cannot
-     * return unbounded number of groups") instead of truncating it. But it
-     * CANNOT be sent from here: Vespa's `GroupingQueryParser.validate` rejects
-     * any request carrying it with `grouping.globalMaxGroups must be specified
-     * in a query profile`, a 400 on every aggregation. So it lives in the
-     * bundled query profile (`vespa/app/search/query-profiles/default.xml`) —
-     * the only place the engine accepts it — and a deployment that replaces
-     * that profile must carry the field over.
+     * aggregation answers over the WHOLE match set — a `max()`-less pipeline
+     * otherwise returns `grouping.defaultMaxGroups` groups (TEN). The third
+     * ceiling, `grouping.globalMaxGroups`, must be disabled too but CANNOT be
+     * sent per-request (Vespa 400s any request carrying it): it lives in the
+     * bundled query profile (`vespa/app/search/query-profiles/default.xml`),
+     * and a deployment that replaces that profile must carry the field over.
      */
     private fun grouping(
         q: EventQuery,
@@ -334,9 +268,8 @@ object EventYql {
     const val UNLIMITED_GROUPS = "-1"
 
     /**
-     * The one grouping ceiling Vespa refuses to take from a request: it must come
-     * from a query profile, so it is NOT in [grouping]'s params. Named here for
-     * the guard that keeps it out.
+     * The one grouping ceiling Vespa only accepts from a query profile — NOT
+     * in [grouping]'s params. Named here for the guard that keeps it out.
      */
     const val GLOBAL_MAX_GROUPS = "grouping.globalMaxGroups"
 
@@ -363,21 +296,12 @@ object EventYql {
         q.expiresBefore?.let { clauses += "expires_at < $it" }
         q.notExpiredAt?.let { clauses += "expires_at > $it" }
 
-        // Every word the caller typed goes into the query. A long search term is
-        // slower — that is the caller's call to make, not ours to silently make
-        // for them by dropping words and answering a question they didn't ask.
-        //
-        // The one exception is a word with NO letter or digit ("⚡", "//"):
-        // tokenization erases it from every matcher's view — userInput emits no
-        // term for it, NearText folds it away, the trigram filter drops it — so
-        // no index can hold it and no clause can require it. Under the AND'd
-        // word groups such a word is not harmless dead weight (as it was under
-        // OR): its empty requirement would leave the whole conjunction to
-        // Vespa's null-term handling. Dropping it mirrors exactly what indexing
-        // did to the doc side; a query that is ONLY such words asked for
-        // something no index holds — provably no match, like an all-invalid
-        // hex filter. (SearchFields.matches applies the same filter — the
-        // reference must not require what the engine cannot see.)
+        // Every word the caller typed goes into the query — never silently
+        // dropped for speed. Exception: a word with NO letter or digit ("⚡")
+        // is erased by tokenization on the doc side too, so no index holds it
+        // and its empty requirement would fall to Vespa's null-term handling;
+        // it is dropped, and a query that is ONLY such words is provably no
+        // match. (SearchFields.matches applies the same filter.)
         val words =
             q.search
                 ?.trim()
@@ -393,12 +317,10 @@ object EventYql {
         }
 
         // Quoted phrases ([EventQuery.phrases]): one REQUIRED phrase-grammar
-        // term per entry, against the `default` fieldset, the text out-of-band
-        // like everything else. Exact and adjacent by construction — no fuzzy
-        // word group, that is the point of quoting. The phrase rides RAW:
-        // Vespa's tokenizer drops what indexing dropped ("new ⚡ york" is the
-        // phrase [new, york], exactly what the doc side holds), so only the
-        // ALL-erased phrase needs the words' unsatisfiable-requirement rule.
+        // term per entry against the `default` fieldset, text out-of-band. No
+        // fuzzy word group — exact and adjacent is the point of quoting. The
+        // phrase rides RAW (the tokenizer drops what indexing dropped), so
+        // only an ALL-erased phrase needs the unsatisfiable-requirement rule.
         q.phrases.forEachIndexed { i, phrase ->
             if (phrase.none(Char::isLetterOrDigit)) return null
             params["p$i"] = phrase
@@ -406,17 +328,12 @@ object EventYql {
         }
 
         // Exclusions ([EventQuery.notSearch]): one negated term per word,
-        // against the `default` fieldset (every search field at once), the
-        // word out-of-band like the positive side. Deliberately NOT the fuzzy
-        // word group — see the field's KDoc: exclusion must never out-reach
-        // what the user literally typed. grammar:"phrase" keeps a punctuated
-        // word ("e-cash") one adjacent unit instead of an anywhere-in-doc AND
-        // of its tokens; for a single token the two are identical. A word
-        // tokenization erased doc-side ("⚡") is the positive-side rule's
-        // mirror image with the opposite outcome: there the requirement was
-        // unsatisfiable (provably no match), here it is vacuous — no index
-        // holds the word, so no doc can be excluded by it, and the clause is
-        // simply dropped.
+        // out-of-band, deliberately NOT the fuzzy word group — exclusion must
+        // never out-reach what the user literally typed. grammar:"phrase"
+        // keeps a punctuated word ("e-cash") one adjacent unit. A tokenization-
+        // erased word ("⚡") is vacuous here (no index holds it, so nothing
+        // can be excluded by it) and is simply dropped — the mirror of the
+        // positive-side rule.
         q.notSearch
             .filter { w -> w.any(Char::isLetterOrDigit) }
             .forEachIndexed { i, word ->
@@ -428,10 +345,8 @@ object EventYql {
 
     /**
      * The WHERE text for [clauses]. A negation-only list gets an explicit
-     * `true` companion: YQL's `!` is AND-NOT sugar, so a negation needs a
-     * positive side to subtract from — match-all, spelled out. (Reached by a
-     * query whose only constraints are exclusions: `notSearch`- or
-     * `notKinds`-only.)
+     * `true` companion: YQL's `!` is AND-NOT sugar and needs a positive side
+     * to subtract from.
      */
     private fun whereOf(clauses: List<String>): String =
         when {
@@ -445,14 +360,10 @@ object EventYql {
      * tagsAll). Null when it can't match: tag_index only holds single-letter
      * names, and a present-but-empty value list matches nothing.
      *
-     * The OR case compiles to the `in` operator, not an OR-chain of `contains`:
-     * `tag_index` is a fast-search attribute, and `in` resolves the whole value
-     * list through one dictionary-backed iterator where an OR tree pays a
-     * per-term iterator plus the OR merge — the difference grows with the list,
-     * and relay tag lists run to hundreds of values (a `#p` notification REQ
-     * carries the observer's whole follow list). Semantics are identical:
-     * `in` on an array attribute matches any element, exactly like the OR of
-     * `contains`. AND (tagsAll) has no `in` form; it stays a `contains` chain.
+     * The OR case compiles to `in`, not an OR-chain of `contains`: one
+     * dictionary-backed iterator vs per-term iterators plus the OR merge — the
+     * gap grows with the list, and relay tag lists run to hundreds of values.
+     * Semantics on an array attribute are identical. AND has no `in` form.
      */
     private fun tagClause(
         name: String,

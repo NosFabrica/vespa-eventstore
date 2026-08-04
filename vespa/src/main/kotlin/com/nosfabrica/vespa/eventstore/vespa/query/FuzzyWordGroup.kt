@@ -23,74 +23,48 @@ package com.nosfabrica.vespa.eventstore.vespa.query
 import com.nosfabrica.vespa.eventstore.vespa.NearText
 
 /**
- * Per-word recall, extended with the generic tier fields. This is the
- * drift-prone half of [EventYql]. It must stay in lockstep with the schema's
- * search fields and match ladder, so it is isolated here from the generic
- * NIP-01/NIP-50 filter-to-YQL assembly. MockVespaEngine's parser guards against
- * drift.
+ * Per-word recall over the schema's search fields and match ladder — the
+ * drift-prone half of [EventYql], isolated here; MockVespaEngine's parser
+ * guards against drift.
  *
- * There is one match group per query word, and the groups are AND'd: EVERY
- * word must land somewhere on the doc — "Vitor Pamplona" no longer recalls
- * every Vitor and every Pamplona. Within its group a word still matches
- * loosely (any field, through exact/prefix/fuzzy/trigram alike, so a typo'd
- * word still counts as present), and ranking sorts the full-coverage results
- * out. Two extra groups keep concatenated handles reachable for multi-word
- * queries: a joined-CamelCase variant for 2+ words ("John Carvalho" finds
- * @johncarvalho), which satisfies every word at once and is therefore OR'd
- * against the whole conjunction; and adjacent-pair concatenations for 3+
- * words, each standing in for exactly its two words inside the conjunction.
+ * One match group per query word, AND'd: EVERY word must land somewhere on
+ * the doc. Within its group a word matches loosely (any field, through
+ * exact/prefix/fuzzy/trigram alike); ranking sorts the full-coverage results
+ * out. Two synthetic groups keep concatenated handles reachable: a joined
+ * variant for 2+ words ("John Carvalho" finds @johncarvalho), OR'd against
+ * the whole conjunction since it satisfies every word at once; and
+ * adjacent-pair concatenations for 3+ words, each standing in for its two words.
  *
- * Words go out-of-band as query parameters, never inlined, so no escaping is
- * needed: @w0..@wN carry the words AS TYPED (for the exact clauses, whose
- * index fields run Vespa's own linguistic folding) and @f0..@fN carry the
- * [NearText.foldWord]-folded forms (for the near clauses, whose ATTRIBUTE
- * fields match raw bytes — the fold must match the feed's, or "jose" can
- * never reach "josé"). The trigram literals are filtered to alphanumeric
- * characters, which makes them safe to embed.
+ * Injection safety: words go out-of-band as query parameters, never inlined —
+ * @w0..@wN AS TYPED (exact clauses; index fields fold linguistically) and
+ * @f0..@fN [NearText.foldWord]-folded (near clauses; ATTRIBUTE fields match
+ * raw bytes, so the fold must match the feed's or "jose" never reaches
+ * "josé"). Trigram literals are filtered to alphanumerics — safe to embed.
  *
- * PREFIX / FUZZY are DIRECT terms against the schema's *_parts / *_tokens
- * attribute fields — never annotations on `userInput()`. Ported from
- * Brainstorm's 2026-07-30 root-cause (brainstorm_server#64, verified against a
- * real Vespa): both matchers need TWO things this builder was missing —
- *
- *  1. a DIRECT term. `userInput()` silently drops `prefix`/`fuzzy` annotations
- *     from the terms it builds, so `({defaultIndex:"name",prefix:true}
- *     userInput(@w))` ran as a plain exact match, with no error, ever.
- *  2. an ATTRIBUTE field. Against an `index` field the direct form is rejected
- *     outright ("'name' is not an attribute field: Prefix matching is not
- *     supported"; fuzzy() is HTTP 400).
- *
- * Cause 1 masked cause 2 by turning it into a no-op, which is why "Ode" and
- * "Odel" could never find "ODELL" and nothing ever surfaced. The INDEX fields
- * themselves (about/website/nip05/lud16 included) stay exact-only — a prefix
- * or fuzzy term against them is an ERROR, not a no-op; their prefix reach
- * lives on the affil_tokens attribute sibling ([PREFIX_ONLY_FIELDS]).
+ * PREFIX / FUZZY must be DIRECT terms against ATTRIBUTE fields (*_parts /
+ * *_tokens), never annotations on `userInput()`: userInput silently DROPS
+ * prefix/fuzzy annotations (a no-op, no error), and the direct form against
+ * an `index` field is rejected outright (HTTP 400). The INDEX fields stay
+ * exact-only; their prefix reach lives on the attribute siblings
+ * ([PREFIX_ONLY_FIELDS]).
  */
 internal object FuzzyWordGroup {
     /**
-     * The attribute fields prefix AND fuzzy terms match against (see
-     * event.sd; fed by NearText). name_parts/name_tokens merge name +
-     * display_name; the search_primary pair is the generic-tier twin. Both
-     * granularities are load-bearing: *_parts splits at every word start
-     * ("meme" finds "BitcoinMemeTreasury"), *_tokens keeps whole tokens plus
-     * their joined variants ("vitorp" prefixes "vitorpamplona" for
-     * "VitorPamplona", "Vitor-Pamplona" and "Vitor Pamplona" alike).
+     * The attribute fields prefix AND fuzzy terms match against (fed by
+     * NearText). Both granularities are load-bearing: *_parts splits at every
+     * word start ("meme" finds "BitcoinMemeTreasury"), *_tokens keeps whole
+     * tokens plus joined variants ("vitorp" prefixes "vitorpamplona").
      */
     val NEAR_FIELDS = listOf("name_parts", "name_tokens", "search_primary_parts", "search_primary_tokens")
 
     /**
      * Prefix-ONLY attribute fields: hashtag/summary tokens ("bitco" ->
      * #bitcoin) and the identity/affiliation segments of nip05/lud16/website/
-     * about ("vitorpamp" -> amethyst@vitorpamplona.com). The affil column is
-     * what keeps recall CONTINUOUS while a name is being typed: the docs the
-     * finished word reaches through those fields' exact clauses must not
-     * vanish for every prefix of it — most of that reach rides the
-     * joined-variant prefix ("Vitor Pamp" -> @fwj "vitorpamp" ->
-     * "vitorpamplona"), which only sees attribute fields (the 2026-08-02
-     * as-you-type ladder report; SearchPrefixLadderIT). No fuzzy on either —
-     * secondary/affiliation text builds a much larger dictionary than names
-     * do, and a typo'd hashtag or domain is not a query shape worth the
-     * dictionary walk. Scored by the schema's WEAK tier, not the near tier.
+     * about. The affil column keeps recall CONTINUOUS while a name is being
+     * typed — docs the finished word reaches must not vanish for its prefixes
+     * (SearchPrefixLadderIT). No fuzzy on either: this text builds a much
+     * larger dictionary than names, and a typo'd hashtag or domain isn't
+     * worth the walk. Scored by the schema's WEAK tier, not the near tier.
      */
     val PREFIX_ONLY_FIELDS = listOf("search_secondary_tokens", "affil_tokens")
 
@@ -105,38 +79,31 @@ internal object FuzzyWordGroup {
     const val MAX_TYPO_EDITS = 3
 
     /**
-     * Minimum word length for a prefix clause. Prefix is a posting-list scan
-     * over every term sharing the prefix, so 1-2 Latin characters would sweep
-     * a large slice of a big corpus for no precision gain. 3 also matches the
-     * trigram floor, so nothing that previously worked stops working.
+     * Minimum word length for a prefix clause: 1-2 Latin characters would
+     * sweep a large corpus slice for no precision gain, and 3 matches the
+     * trigram floor.
      */
     const val MIN_PREFIX_LEN = 3
 
     /**
-     * ...but 3 is a LATIN heuristic. A 2-character CJK query ("中村") is as
-     * specific as a 5-6 character Latin one, and a flat 3 makes such names
-     * unfindable. Any word carrying a non-ASCII character gets the lower
-     * floor; those dictionaries are sparse enough that it stays cheap.
+     * ...but 3 is a LATIN heuristic: a 2-character CJK query ("中村") is as
+     * specific as 5-6 Latin characters. Any word with a non-ASCII character
+     * gets the lower floor; those dictionaries are sparse enough to stay cheap.
      */
     const val MIN_PREFIX_LEN_NON_ASCII = 2
 
     /**
      * Minimum AND'd trigrams for the NAME-side infix nets (word >= 4 chars).
-     * AND-of-trigrams is a near-substring test whose selectivity grows with
-     * the query — "dell" (del ∧ ell) reaches ODELL without the unbounded OR
-     * net's noise ("ode" pulled in "model" and "code"; the OR net is gone).
-     * 2 is the floor that keeps "dell"-length infixes reachable; the schema
-     * scores these hits in the WEAK tier, under every anchored match.
+     * AND-of-trigrams is a near-substring test — "dell" (del ∧ ell) reaches
+     * ODELL without the old OR net's noise. 2 keeps "dell"-length infixes
+     * reachable; hits score in the WEAK tier, under every anchored match.
      */
     const val MIN_AND_GRAMS_NAME = 2
 
     /**
-     * Minimum AND'd trigrams for the long-TEXT nets (about_gram /
-     * search_secondary_gram; word >= 5 chars). Long fields contain far more
-     * trigrams, so at one or two the AND degenerates into a bare substring
-     * test — upstream measured "ode" reaching a bio reading "hosted by
-     * ODELL". Short words still reach those fields through their exact
-     * clause.
+     * Minimum AND'd trigrams for the long-TEXT nets (word >= 5 chars): long
+     * fields hold far more trigrams, so fewer degenerates into a bare
+     * substring test. Short words still reach those fields via their exact clause.
      */
     const val MIN_AND_GRAMS_TEXT = 3
 
@@ -145,20 +112,12 @@ internal object FuzzyWordGroup {
      * [params] with the out-of-band words.
      *
      * Each adjacent-pair concatenation covers exactly ITS two words, so it is
-     * OR'd into both words' requirements and nowhere else: a "johncarvalho"
-     * hit stands in for "john" and "carvalho", but "dev" still has to match
-     * on its own. The joined variant covers EVERY word at once, which lets it
-     * hoist out of the conjunction — `∧ (reqᵢ ∨ joined)` ≡ `(∧ reqᵢ) ∨
-     * joined` — so its group is emitted ONCE instead of once per word
-     * (duplicate identical terms would also inflate matchCount, i.e. the
-     * exact tier's text score, for every doc the variant matches).
-     *
-     * The pair groups' two-way ride is the accepted residual of that concern:
-     * a pair covers two words, not all, so it cannot hoist without
-     * duplicating the real word groups instead (which carry the fuzzy
-     * matchers — far worse). The cost is bounded — synthetic groups are
-     * exact+prefix only, the shape needs 3+ words, and only docs actually
-     * matching the concatenation see the inflated matchCount.
+     * OR'd into both words' requirements and nowhere else. The joined variant
+     * covers EVERY word at once, so it hoists out of the conjunction and is
+     * emitted ONCE — duplicates would inflate matchCount (the exact tier's
+     * text score). The pair groups' two-way ride is the accepted residual:
+     * bounded, since synthetic groups are exact+prefix only, the shape needs
+     * 3+ words, and only docs matching the concatenation see it.
      */
     fun clause(
         words: List<String>,
@@ -195,24 +154,19 @@ internal object FuzzyWordGroup {
     fun leansOnGrams(words: List<String>): Boolean = words.minOf { it.length } <= 3
 
     /**
-     * One word's match clauses: the exact clause per search field, the direct
-     * prefix/fuzzy terms against the near attributes, the prefix-only
-     * hashtag/summary clause, and the AND-gram nets.
+     * One word's match clauses: exact per search field, direct prefix/fuzzy
+     * against the near attributes, the prefix-only clause, the AND-gram nets.
      *
-     * [synthetic] marks the joined / adjacent-pair CONCATENATIONS built in
-     * [clause], not words the user typed. They get exact + prefix but NO fuzzy
-     * and no trigrams: a 3-word query builds a 20+ character concatenation
-     * that would draw the TOP typo budget — the single most expensive matcher
-     * (it walks the attribute dictionary) — for a token nobody typed. Prefix
-     * on the concatenation is cheap and does the useful work ("vitor pamplona"
-     * → @vitorpamplona), so it stays. The concatenation's trigrams are a
-     * superset of the words' own, so the nets would add noise without reach.
+     * [synthetic] marks the concatenations built in [clause]: exact + prefix
+     * but NO fuzzy (a 20+ char concatenation would draw the top typo budget —
+     * the most expensive matcher — for a token nobody typed) and no trigrams
+     * (the concatenation's grams are a superset of the words' own: noise, no
+     * reach).
      *
-     * [nearFields] off drops every clause that references the near/weak
-     * attribute fields — the compatibility demotion for a serving schema that
-     * predates them, where any reference is HTTP 400 (see
-     * VespaEventIndex.nearSafe). The gram nets are NOT gated: the *_gram
-     * fields predate the near tier and exist on every deployed schema.
+     * [nearFields] off drops every clause referencing the near/weak attribute
+     * fields — the compatibility demotion for a schema that predates them,
+     * where any reference is HTTP 400 (see VespaEventIndex.nearSafe). The
+     * gram nets are NOT gated: *_gram fields exist on every deployed schema.
      */
     private fun wordGroup(
         name: String,
@@ -224,9 +178,8 @@ internal object FuzzyWordGroup {
         val clauses = ArrayList<String>()
         for (field in SEARCH_FIELDS) clauses += exactClause(field, "@$name", roleOf(field))
         if (nearFields) {
-            // The folded twin rides out-of-band too, under the f-prefixed name.
-            // Floors and budgets are computed on the FOLDED form — that is the
-            // string the attribute dictionaries actually hold.
+            // The folded twin rides out-of-band too. Floors and budgets use
+            // the FOLDED form — the string the attribute dictionaries hold.
             val folded = NearText.foldWord(literal)
             params["f$name"] = folded
             clauses += nearClauses("@f$name", folded, allowFuzzy = !synthetic)
@@ -243,12 +196,10 @@ internal object FuzzyWordGroup {
     }
 
     /**
-     * The EXACT clause for one (field, word), against the INDEX field via
-     * userInput(). This is what feeds matchCount(name)/matchCount(…), i.e. the
-     * schema's exact tier. The labels feed itemRawScore(mtch_*) in the
-     * profiles' match-features; prefix/fuzzy are NOT emitted here — they are
-     * per-word, not per-field, and go to the merged attribute fields via
-     * [nearClauses].
+     * The EXACT clause for one (field, word) via userInput() — feeds
+     * matchCount(field), the schema's exact tier; labels feed
+     * itemRawScore(mtch_*). Prefix/fuzzy are per-word, not per-field, and go
+     * to the merged attribute fields via [nearClauses].
      */
     private fun exactClause(
         field: String,
@@ -265,20 +216,12 @@ internal object FuzzyWordGroup {
     }
 
     /**
-     * The direct prefix + fuzzy terms for one FOLDED word, against the near
-     * attributes. Emitted ONCE per word (not per source field) because the
-     * attribute fields already merge their sources. These feed
-     * matchCount(name_parts)/…, i.e. the schema's near tier — which is how an
-     * exact hit still ranks above a prefix or typo hit. The prefix-only
-     * hashtag/summary field feeds matchCount(search_secondary_tokens), the
-     * schema's weak tier.
-     *
-     * prefixLength:2 — the first two characters must match exactly, which also
-     * bounds how much of the attribute dictionary the fuzzy matcher walks.
+     * The direct prefix + fuzzy terms for one FOLDED word, emitted ONCE per
+     * word (the attribute fields already merge their sources). These feed the
+     * schema's near tier — how an exact hit still ranks above a prefix or
+     * typo hit. prefixLength:2 bounds the fuzzy matcher's dictionary walk.
      * Only the TOP edit budget is emitted: maxEditDistance:N subsumes every
-     * smaller N, so per-tier clauses would be duplicate matching work (the
-     * match_quality labels they once fed are inert — itemRawScore never
-     * populates for plain text terms).
+     * smaller N, so per-tier clauses would be duplicate matching work.
      */
     private fun nearClauses(
         param: String,
@@ -310,9 +253,8 @@ internal object FuzzyWordGroup {
         gramField: String,
         minGrams: Int,
     ): String? {
-        // Lowercase: the *_gram fields are lowercase-indexed, so uppercased
-        // trigrams from a capitalized query word ("Vitor") would never match
-        // and the net would go silently dead for mixed-case input.
+        // Lowercase: the *_gram fields are lowercase-indexed — uppercased
+        // trigrams from "Vitor" would silently never match.
         val grams = trigrams(word.lowercase())
         if (grams.size < minGrams) return null
         return grams.joinToString(" and ", prefix = "(", postfix = ")") { "$gramField contains \"$it\"" }
@@ -325,21 +267,12 @@ internal object FuzzyWordGroup {
             .filter { gram -> gram.all(Char::isLetterOrDigit) }
 
     /**
-     * Per-word typo budget, length-gated and capped at [MAX_TYPO_EDITS]. The
-     * gating is the point: an edit budget is only meaningful as a FRACTION of
-     * the word — 3 edits against a 6-letter word matches a different word, not
-     * a typo (upstream measured "odelll" → "Odessa"). Every tier holds the
-     * ratio near ~22-25%, where Meilisearch sits:
-     *
-     *     <4     0 edits   any edit on a 3-letter word is a different word
-     *     4-8    1         25% .. 12%
-     *     9-12   2         22% .. 17%
-     *     >=13   3         23% .. less    <- the ceiling, long handles only
-     *
-     * This budget does NOT govern prefix matching, which is a different
-     * relation: "vitorp" → "VitorPamplona" appends 7 characters but is an
-     * unfinished word, not 7 typos. Prefix is bounded by [minPrefixLen] and by
-     * being anchored at the start.
+     * Per-word typo budget, capped at [MAX_TYPO_EDITS] and length-gated: an
+     * edit budget is only meaningful as a FRACTION of the word (~22-25% per
+     * tier, where Meilisearch sits) — 3 edits on a 6-letter word matches a
+     * different word, not a typo. Does NOT govern prefix matching: an
+     * unfinished word is not typos; prefix is bounded by [minPrefixLen] and
+     * start-anchoring.
      */
     private fun wordMaxEdits(word: String): Int =
         minOf(
@@ -355,11 +288,9 @@ internal object FuzzyWordGroup {
     private enum class Role { PRIMARY, AFFILIATION, RECALL }
 
     /**
-     * Field roles for the exact clause's label. Primary is the name-tier
-     * fields: nip05/lud16 are @-address identity fields, and search_primary is
-     * the generic-tier twin. Affiliation is bio and website, whose exact
-     * clause is labeled mtch_affil. Recall is everything else, which matches
-     * without labeling.
+     * Field roles for the exact clause's label: PRIMARY = name-tier fields
+     * (mtch_exact), AFFILIATION = bio/website (mtch_affil), RECALL = the
+     * rest, unlabeled.
      */
     private fun roleOf(field: String): Role =
         when (field) {
@@ -372,10 +303,9 @@ internal object FuzzyWordGroup {
         listOf("name", "display_name", "about", "nip05", "lud16", "website", "search_primary", "search_secondary", "search_text", "search_location")
 
     /**
-     * The name-side gram fields, now matched ONLY by the tight AND net (the
-     * unbounded OR net — anything sharing one trigram — is gone for good;
-     * "ode" recalled "model" and "code" through it). matchCount on these
-     * feeds the schema's weak tier via infix_gram_match().
+     * Name-side gram fields, matched ONLY by the tight AND net (the unbounded
+     * OR net recalled "model" for "ode" and is gone for good). matchCount
+     * feeds the weak tier via infix_gram_match().
      */
     private val INFIX_GRAM_FIELDS = listOf("name_gram", "display_name_gram", "search_primary_gram")
 

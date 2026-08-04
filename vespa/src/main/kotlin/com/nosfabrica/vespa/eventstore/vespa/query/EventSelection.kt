@@ -23,22 +23,17 @@ package com.nosfabrica.vespa.eventstore.vespa.query
 import com.vitorpamplona.quartz.utils.Hex
 
 /**
- * Builds a Vespa *document selection* from an [EventQuery]. A selection is the
- * expression language the document-API visit scans with: a streaming read over
- * the whole corpus, no result cap, no ranking. Only attribute-shaped
- * constraints translate: kinds, authors, owners, since/until, and the
- * not-yet-expired guard (`expires_at` is always materialized, so a plain range
- * works).
+ * Builds a Vespa *document selection* from an [EventQuery] — the expression
+ * the document-API visit scans with (streaming, no result cap, no ranking).
+ * Only attribute-shaped constraints translate: kinds, authors, owners,
+ * since/until, and the not-yet-expired guard.
  *
- * Returns null when [q] carries anything a selection can't (or shouldn't)
- * express: ids, tags, a search constraint of any polarity (words, quoted
- * phrases, or the `notSearch` exclusions — a selection sees no derived search
- * fields, so a silently dropped exclusion
- * would stream exactly the docs the query subtracted), a limit, the
- * expiry-sweep bound, or a non-64-hex key. In that case the caller falls back
- * to the ranked `/search/` path, which handles all of those. Keys are
- * validated to 64-hex BEFORE they are quoted into the expression (same
- * injection rule as [EventYql]).
+ * Returns null when [q] carries anything a selection can't express — ids,
+ * tags, any search constraint (including `notSearch`: a silently dropped
+ * exclusion would stream exactly the docs the query subtracted), a limit, the
+ * expiry-sweep bound, or a non-64-hex key — and the caller falls back to the
+ * ranked `/search/` path. Keys are validated to 64-hex BEFORE they are quoted
+ * into the expression (same injection rule as [EventYql]).
  */
 object EventSelection {
     fun build(q: EventQuery): String? {
@@ -46,8 +41,7 @@ object EventSelection {
         if (!q.search.isNullOrBlank() || q.phrases.isNotEmpty() || q.notSearch.isNotEmpty() || q.limit != null || q.expiresBefore != null) return null
         val clauses = ArrayList<String>()
         if (q.kinds.isNotEmpty()) clauses += q.kinds.joinToString(" or ", "(", ")") { "event.kind==$it" }
-        // Translated, never dropped: this builder's contract is "null for what a
-        // selection can't express", and a silently missing exclusion would stream
+        // Translated, never dropped: a silently missing exclusion would stream
         // the excluded kinds into whatever walk asked to skip them.
         if (q.notKinds.isNotEmpty()) clauses += q.notKinds.joinToString(" and ", "(", ")") { "event.kind!=$it" }
         if (q.authors.isNotEmpty()) clauses += keyGroup("pubkey", q.authors) ?: return null
