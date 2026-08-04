@@ -33,7 +33,7 @@ A Vespa-backed implementation of Quartz's `IEventStore` (Quartz is the Nostr lib
 Three modules, layered strictly bottom-up:
 
 - **`:engine`** — the engine layer: the ports and shared helpers at the package root (`EventIndex`, `ReputationIndex`, `InMemoryEventIndex`, `ScoredHit`), document shapes (`doc/`), the `EventQuery` → YQL compiler (`query/`), and the Vespa client (`client/` — `VespaEventIndex` reads via OkHttp h2c, writes via Vespa's official feed client; `VespaReputationIndex`) plus the bundled Vespa application package.
-- **`:store`** — Nostr semantics on top: `NostrSemanticsStore` (the `IEventStore` implementation), the NIP-85 trust projection (`trust/`), per-kind search extraction (`mapping/SearchExtractors`), and `VespaEventStore.open()` — the public front door.
+- **`:store`** — Nostr semantics on top: `NostrSemanticsStore` (the `IEventStore` implementation), the NIP-85 trust projection (`trust/`), per-kind search extraction (a thin wrapper over Quartz's `SearchFieldExtractor` in `mapping/SearchExtractors`), and `VespaEventStore.open()` — the public front door.
 - **`:benchmark`** — not published. Perf harness + the parity/rank-regression integration tests (the CI correctness gates).
 
 The stack `open()` assembles: `NostrSemanticsStore( TrustProjection( VespaEventIndex + VespaReputationIndex ) )`. Consumers only ever see the Quartz `IEventStore` interface.
@@ -60,7 +60,7 @@ The per-event `insert()` path pays admission-probe round trips; `batchInsert()` 
 
 ### Search
 
-Only kinds Quartz parses as `SearchableEvent` are searchable. `SearchExtractors` maps each kind to weighted fields (primary/secondary/body — the authoritative kind table is in README). Search-string extensions (`observer:`, `sort:rank`, `filter:rank:gte:N`, `include:spam`, and the `-word` / `"exact phrase"` term syntax) are interpreted by the store; ranking profiles live in `event.sd`. When changing ranking: cases live in `benchmark/rank_cases.json` (add one for every reported bad search), A/B with `./gradlew :benchmark:rankAb` against a live Vespa (no redeploy needed), and `RankRegressionIT` must stay green.
+Only kinds Quartz parses as `SearchableEvent` are searchable. The per-kind decomposition lives UPSTREAM in Quartz (`SearchFieldExtractor`/`IndexableFields`, beside the kinds themselves); `mapping/SearchExtractors` is this store's thin wrapper applying Vespa sanitization and the join/weighting policy (the kind table is in README). Search-string extensions (`observer:`, `sort:rank`, `filter:rank:gte:N`, `include:spam`, and the `-word` / `"exact phrase"` term syntax) are interpreted by the store; ranking profiles live in `event.sd`. When changing ranking: cases live in `benchmark/rank_cases.json` (add one for every reported bad search), A/B with `./gradlew :benchmark:rankAb` against a live Vespa (no redeploy needed), and `RankRegressionIT` must stay green.
 
 ## Conventions
 

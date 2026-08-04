@@ -25,8 +25,8 @@ import com.vitorpamplona.quartz.nip01Core.core.Address
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.core.isAddressable
 import com.vitorpamplona.quartz.nip01Core.core.isReplaceable
+import com.vitorpamplona.quartz.nip01Core.store.owner
 import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
-import com.vitorpamplona.quartz.nip59Giftwrap.wraps.GiftWrapEvent
 import com.vitorpamplona.quartz.utils.EventFactory
 
 /*
@@ -53,9 +53,6 @@ internal fun Event.toDoc(): EventDoc =
         owner = owner(),
         search = SearchExtractors.extract(this),
     )
-
-/** The pubkey Nostr semantics key off: the gift-wrap recipient, else the author. */
-internal fun Event.owner(): String = (this as? GiftWrapEvent)?.recipientPubKey() ?: pubKey
 
 /**
  * The NIP-01 address for replaceable/addressable kinds; null for regular

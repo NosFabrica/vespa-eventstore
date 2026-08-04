@@ -22,6 +22,3 @@ package com.nosfabrica.vespa.eventstore.engine
 
 /** Splits on any run of whitespace. */
 internal val WHITESPACE = Regex("\\s+")
-
-/** True for a single ASCII-letter tag name — the space NIP-01 `#x` filters address and `tag_index` holds. */
-internal fun isSingleLetterTagName(name: String): Boolean = name.length == 1 && (name[0] in 'a'..'z' || name[0] in 'A'..'Z')

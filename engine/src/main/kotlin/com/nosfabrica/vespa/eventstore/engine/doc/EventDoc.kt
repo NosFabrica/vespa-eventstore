@@ -19,13 +19,13 @@
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 package com.nosfabrica.vespa.eventstore.engine.doc
-import com.nosfabrica.vespa.eventstore.engine.isSingleLetterTagName
 import com.vitorpamplona.quartz.nip01Core.core.Address
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.core.HexKey
 import com.vitorpamplona.quartz.nip01Core.core.isAddressable
 import com.vitorpamplona.quartz.nip01Core.core.isReplaceable
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
+import com.vitorpamplona.quartz.nip01Core.tags.isIndexableTagName
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -83,7 +83,7 @@ data class EventDoc(
         tags.mapNotNull { tag ->
             val name = tag.getOrNull(0) ?: return@mapNotNull null
             val value = tag.getOrNull(1) ?: return@mapNotNull null
-            if (isSingleLetterTagName(name)) "$name:$value" else null
+            if (isIndexableTagName(name)) "$name:$value" else null
         }
 
     /**

@@ -13,7 +13,7 @@ mavenPublish = "0.37.0"
 # `idleTimeoutMs` (source-breaking for named-argument callers). This store calls
 # none of them, and nothing in the range touches IEventStore or SearchableEvent,
 # so the store contract and the search extractors are unaffected.
-quartz = "1622bd7109" # NEXT BUMP: SearchQuery now parses quotes/minus itself - FilterMapping MUST switch to parsed.phrases/notTerms or -word exclusions are silently lost (see FilterMapping.toEventQuery)
+quartz = "c029b271e7" # NIP-50 grammar in SearchQuery, SearchFieldExtractor/IndexableFields, RejectionReason, Event.owner()/supersedes(), isIndexableTagName - the store consumes these upstream now
 coroutines = "1.11.0"
 serialization = "1.11.0"
 sqlite = "2.7.0"

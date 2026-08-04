@@ -20,7 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore.engine.query
 import com.nosfabrica.vespa.eventstore.engine.WHITESPACE
-import com.nosfabrica.vespa.eventstore.engine.isSingleLetterTagName
+import com.vitorpamplona.quartz.nip01Core.tags.isIndexableTagName
 import com.vitorpamplona.quartz.utils.Hex
 
 /**
@@ -370,7 +370,7 @@ object EventYql {
         values: List<String>,
         op: String,
     ): String? {
-        if (!isSingleLetterTagName(name)) return null
+        if (!isIndexableTagName(name)) return null
         if (values.isEmpty()) return null
         if (op == "or" && values.size > 1) {
             return values.joinToString(", ", prefix = "tag_index in (", postfix = ")") { v -> quote("$name:$v") }

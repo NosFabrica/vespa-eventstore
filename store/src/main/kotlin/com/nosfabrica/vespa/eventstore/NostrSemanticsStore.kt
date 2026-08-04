@@ -32,7 +32,6 @@ import com.nosfabrica.vespa.eventstore.ingest.GuardOwners
 import com.nosfabrica.vespa.eventstore.mapping.DEFAULT_MIN_RANK
 import com.nosfabrica.vespa.eventstore.mapping.SearchExtractors
 import com.nosfabrica.vespa.eventstore.mapping.VespaText
-import com.nosfabrica.vespa.eventstore.mapping.owner
 import com.nosfabrica.vespa.eventstore.mapping.toDoc
 import com.nosfabrica.vespa.eventstore.mapping.toEvent
 import com.nosfabrica.vespa.eventstore.mapping.toEventQuery
@@ -48,6 +47,7 @@ import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import com.vitorpamplona.quartz.nip01Core.store.StoreQueryContext
+import com.vitorpamplona.quartz.nip01Core.store.owner
 import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
 import com.vitorpamplona.quartz.nip40Expiration.isExpired
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent

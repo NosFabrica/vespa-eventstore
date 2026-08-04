@@ -129,7 +129,7 @@ class SearchExtractorsTest {
         val tags = arrayOf(arrayOf("title", "Ubuntu ISO"), arrayOf("file", "ubuntu-24.04.iso"), arrayOf("file", "readme.txt"), arrayOf("tracker", "udp://tracker.example.com:80"))
         val fields = SearchExtractors.extract(TorrentEvent("b".repeat(64), alice, 1L, tags, "linux distro", ""))
         assertEquals(
-            SearchFields(primary = "Ubuntu ISO", secondary = "ubuntu-24.04.iso readme.txt", text = "linux distro", website = "udp://tracker.example.com:80"),
+            SearchFields(primary = "Ubuntu ISO", secondary = "ubuntu-24.04.iso\nreadme.txt", text = "linux distro", website = "udp://tracker.example.com:80"),
             fields,
         )
     }

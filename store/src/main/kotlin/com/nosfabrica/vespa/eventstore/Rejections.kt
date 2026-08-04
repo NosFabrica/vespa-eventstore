@@ -20,19 +20,21 @@
  */
 package com.nosfabrica.vespa.eventstore
 
+import com.vitorpamplona.quartz.nip01Core.store.RejectionReason
+
 /** A SEMANTIC insert rejection (duplicate, replaced, or blocked). Transient engine failures are NOT this; they propagate. */
 class RejectedException(
     message: String,
 ) : Exception(message)
 
-/** The insert-rejection reasons, shared by the per-event and bulk paths so the two can never drift. */
+/** The insert-rejection reasons — Quartz's shared vocabulary plus the one Vespa-specific reason. */
 internal object Rejections {
-    const val EXPIRED = "blocked: Cannot insert an expired event"
-    const val DUPLICATE = "duplicate: already have this event"
-    const val DELETED = "blocked: a deletion event exists"
-    const val VANISHED = "blocked: a request to vanish event exists"
-    const val REPLACED = "replaced: a newer version exists"
-    const val INSERT_FAILED = "error: insert failed"
+    const val EXPIRED = RejectionReason.EXPIRED
+    const val DUPLICATE = RejectionReason.DUPLICATE
+    const val DELETED = RejectionReason.DELETED
+    const val VANISHED = RejectionReason.VANISHED
+    const val REPLACED = RejectionReason.REPLACED
+    const val INSERT_FAILED = RejectionReason.INSERT_FAILED
 
     // One constant string, not one per field/code point: callers tally
     // rejections by reason, and a per-event reason fragments that tally.
