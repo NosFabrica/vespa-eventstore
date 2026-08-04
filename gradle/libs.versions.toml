@@ -5,16 +5,17 @@ app = "1.0.0"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"
 # Quartz from JitPack (amethyst @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
-# c029b271e7 = amethyst PR #3854 "nip50Search: search grammar + weighted field
-# extraction; nip01Core: shared store-semantics rules" (2026-08-04): SearchQuery
-# parses the "phrase"/-word syntax itself, SearchFieldExtractor/IndexableFields
-# carry the per-kind decomposition, RejectionReason standardizes rejection
-# wording, and Event.owner()/supersedes()/isIndexableTagName become shared rules
-# — this store consumes all of it (FilterMapping, SearchExtractors, and
-# Rejections delegate upstream). Prev 9231195890 (2026-08-04, PR #3853: the
-# quartz codebase skills imported into .claude/skills/ here — #3854 touched no
-# skill files, so they are current for this pin too).
-quartz = "c029b271e7"
+# 1a25557bdb = amethyst PR #3855 "quartz/geode: sync accessories from vespa-relay,
+# InsertOutcome.Failed contract, mirror resume coverage" (2026-08-04): the
+# batchInsert contract now splits the event's fault (Rejected — final, safe to
+# drop) from the store's fault (new InsertOutcome.Failed — caller must re-offer);
+# our bulk paths' never-decided fallback maps to Failed accordingly. The rest
+# (SyncBands/PagingProgress relay-client accessories, geode mirror resume) is
+# unused here. Prev c029b271e7 (2026-08-04, PR #3854: search grammar + weighted
+# field extraction, shared store-semantics rules — FilterMapping,
+# SearchExtractors, and Rejections delegate upstream). #3855 touched no skill
+# files, so the .claude/skills imported at 9231195890 are current for this pin.
+quartz = "1a25557bdb"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 sqlite = "2.7.0"
