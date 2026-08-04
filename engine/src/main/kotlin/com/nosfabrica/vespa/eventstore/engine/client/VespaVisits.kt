@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore.engine.client
 
+import com.nosfabrica.vespa.eventstore.engine.DocsPage
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async

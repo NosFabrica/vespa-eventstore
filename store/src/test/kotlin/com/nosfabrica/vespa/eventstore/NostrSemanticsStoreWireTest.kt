@@ -20,8 +20,8 @@
  */
 package com.nosfabrica.vespa.eventstore
 
+import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.MockVespaEngine
-import com.nosfabrica.vespa.eventstore.engine.client.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.client.VespaEventIndex
 import kotlin.test.AfterTest
 

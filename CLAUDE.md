@@ -32,7 +32,7 @@ A Vespa-backed implementation of Quartz's `IEventStore` (Quartz is the Nostr lib
 
 Three modules, layered strictly bottom-up:
 
-- **`:engine`** — the engine layer, Nostr-agnostic-ish plumbing: document shapes (`doc/EventDoc`, `doc/ReputationDoc`), the `EventQuery` → YQL compiler (`query/EventYql`), the HTTP clients (`client/VespaEventIndex` reads via OkHttp h2c, writes via Vespa's official feed client; `client/VespaReputationIndex`), and the bundled Vespa application package.
+- **`:engine`** — the engine layer: the ports and shared helpers at the package root (`EventIndex`, `ReputationIndex`, `InMemoryEventIndex`, `ScoredHit`), document shapes (`doc/`), the `EventQuery` → YQL compiler (`query/`), and the Vespa client (`client/` — `VespaEventIndex` reads via OkHttp h2c, writes via Vespa's official feed client; `VespaReputationIndex`) plus the bundled Vespa application package.
 - **`:store`** — Nostr semantics on top: `NostrSemanticsStore` (the `IEventStore` implementation), the NIP-85 trust projection (`trust/`), per-kind search extraction (`mapping/SearchExtractors`), and `VespaEventStore.open()` — the public front door.
 - **`:benchmark`** — not published. Perf harness + the parity/rank-regression integration tests (the CI correctness gates).
 
@@ -40,7 +40,7 @@ The stack `open()` assembles: `NostrSemanticsStore( TrustProjection( VespaEventI
 
 ### The engine port and its executable spec
 
-`EventIndex` (`:engine`, `client/EventIndex.kt`) is the seam everything hangs on: get/put/remove + `EventQuery` recall, with a hard contract — read-your-writes per document, and an **acked put is visible to search**. That contract is what makes the store's query-then-write logic sound. There are two implementations: the real Vespa client, and `InMemoryEventIndex`, which is the **executable specification** of `EventQuery` matching semantics — store tests run against it with no Vespa. `MockVespaEngine` (testFixtures, a Jetty h2c server) additionally exercises the real HTTP clients' wire format.
+`EventIndex` (`:engine`, `EventIndex.kt`) is the seam everything hangs on: get/put/remove + `EventQuery` recall, with a hard contract — read-your-writes per document, and an **acked put is visible to search**. That contract is what makes the store's query-then-write logic sound. There are two implementations: the real Vespa client, and `InMemoryEventIndex`, which is the **executable specification** of `EventQuery` matching semantics — store tests run against it with no Vespa. `MockVespaEngine` (testFixtures, a Jetty h2c server) additionally exercises the real HTTP clients' wire format.
 
 **Known blind spot**: the in-memory reference and the mock can miss real-Vespa-only divergences (e.g. Vespa omits empty-string fields from summaries; string attributes match uncased unless `match: cased`). Anything touching YQL, summaries, or the schema needs the integration gate (`-Pintegration`): `VespaParityIT` asserts exact result parity with Quartz's SQLite store (127/127 checks), `RankRegressionIT` pins search-ranking quality against a canonical corpus, `ObserverGateIT` pins the observer gate engine-side (trust-gated recall, both gated profiles), `OrphanSweepIT` pins the orphan-score sweep (the `distinctAuthors` grouping decides what gets deleted) — the mock cannot rank or gate.
 

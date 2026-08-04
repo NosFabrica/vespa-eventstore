@@ -23,10 +23,10 @@ package com.nosfabrica.vespa.eventstore.ingest
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.RejectedException
 import com.nosfabrica.vespa.eventstore.Rejections
+import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.QUERY_FANOUT
-import com.nosfabrica.vespa.eventstore.engine.client.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.mapping.addressOrNull

@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.eventstore.engine.client
 import ai.vespa.feed.client.DocumentId
 import ai.vespa.feed.client.OperationParameters
+import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationCells
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import kotlinx.coroutines.future.await

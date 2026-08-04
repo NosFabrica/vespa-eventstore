@@ -22,6 +22,10 @@ package com.nosfabrica.vespa.eventstore.engine.client
 import ai.vespa.feed.client.DocumentId
 import ai.vespa.feed.client.OperationParameters
 import ai.vespa.feed.client.Result
+import com.nosfabrica.vespa.eventstore.engine.DocRef
+import com.nosfabrica.vespa.eventstore.engine.DocsPage
+import com.nosfabrica.vespa.eventstore.engine.EventIndex
+import com.nosfabrica.vespa.eventstore.engine.ScoredHit
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
