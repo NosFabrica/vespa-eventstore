@@ -1,6 +1,6 @@
 [versions]
 kotlin = "2.4.0"
-# The library version published to Maven Central (com.vitorpamplona.quartz.eventstore:*).
+# The library version published to Maven Central (com.nosfabrica.vespa.eventstore:*).
 app = "1.0.0"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"

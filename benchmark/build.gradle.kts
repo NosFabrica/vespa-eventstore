@@ -43,7 +43,7 @@ kotlin {
 }
 
 application {
-    mainClass.set("com.vitorpamplona.quartz.eventstore.benchmark.EventStoreBenchmark")
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.EventStoreBenchmark")
 }
 
 // Search-ranking A/B harness (see RankAb.kt): runs the fixed rank_cases.json
@@ -53,7 +53,7 @@ tasks.register<JavaExec>("rankAb") {
     group = "verification"
     description = "A/B Vespa ranking knobs against the fixed regression case set"
     classpath = sourceSets["main"].runtimeClasspath
-    mainClass.set("com.vitorpamplona.quartz.eventstore.benchmark.RankAb")
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.RankAb")
     // JavaExec's default working dir is THIS subproject (benchmark/), where the
     // documented default --cases path 'benchmark/rank_cases.json' would resolve
     // to benchmark/benchmark/... and NoSuchFile. Run from the repo root so the
@@ -72,7 +72,7 @@ tasks.register<JavaExec>("visitBench") {
     group = "verification"
     description = "A/B the full-corpus visit transports (paged serial / sliced / streamed) against a real Vespa"
     classpath = sourceSets["main"].runtimeClasspath
-    mainClass.set("com.vitorpamplona.quartz.eventstore.benchmark.VisitBench")
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.VisitBench")
     maxHeapSize = System.getenv("BENCH_HEAP") ?: "2g"
 }
 
@@ -80,7 +80,7 @@ tasks.register<JavaExec>("queryBench") {
     group = "verification"
     description = "Latency + exact-correctness check of search/count shapes over the visitBench corpus"
     classpath = sourceSets["main"].runtimeClasspath
-    mainClass.set("com.vitorpamplona.quartz.eventstore.benchmark.QueryBench")
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.QueryBench")
     maxHeapSize = System.getenv("BENCH_HEAP") ?: "3g"
 }
 
@@ -88,7 +88,7 @@ tasks.register<JavaExec>("searchBench") {
     group = "verification"
     description = "NIP-50 search latency: term shapes, trigram/fuzzy, filters, profiles, text vs text2 (self-feeding corpus)"
     classpath = sourceSets["main"].runtimeClasspath
-    mainClass.set("com.vitorpamplona.quartz.eventstore.benchmark.SearchBench")
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.SearchBench")
     maxHeapSize = System.getenv("BENCH_HEAP") ?: "3g"
 }
 
@@ -96,7 +96,7 @@ tasks.register<JavaExec>("corpusLoad") {
     group = "verification"
     description = "Load the deterministic NostrCorpus into a live store (setup for the workload benches)"
     classpath = sourceSets["main"].runtimeClasspath
-    mainClass.set("com.vitorpamplona.quartz.eventstore.benchmark.CorpusLoad")
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.CorpusLoad")
     maxHeapSize = System.getenv("BENCH_HEAP") ?: "2g"
 }
 
@@ -104,7 +104,7 @@ tasks.register<JavaExec>("multiFilterBench") {
     group = "verification"
     description = "Store-level multi-filter REQ latency vs the serialized single-filter sum (A/B VESPA_QUERY_FANOUT)"
     classpath = sourceSets["main"].runtimeClasspath
-    mainClass.set("com.vitorpamplona.quartz.eventstore.benchmark.MultiFilterBench")
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.MultiFilterBench")
     maxHeapSize = System.getenv("BENCH_HEAP") ?: "3g"
 }
 
@@ -112,7 +112,7 @@ tasks.register<JavaExec>("dedupProbe") {
     group = "verification"
     description = "A/B the bulk-dedup existence-check variants (full summary / id-only / dedup class / grouping / doc-gets) against a loaded corpus"
     classpath = sourceSets["main"].runtimeClasspath
-    mainClass.set("com.vitorpamplona.quartz.eventstore.benchmark.DedupProbe")
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.DedupProbe")
     maxHeapSize = System.getenv("BENCH_HEAP") ?: "2g"
 }
 
@@ -120,7 +120,7 @@ tasks.register<JavaExec>("transportProbe") {
     group = "verification"
     description = "A/B the read transports (JDK h1 / OkHttp h1 / OkHttp h2c) on identical existence queries"
     classpath = sourceSets["main"].runtimeClasspath
-    mainClass.set("com.vitorpamplona.quartz.eventstore.benchmark.TransportProbe")
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.TransportProbe")
     maxHeapSize = System.getenv("BENCH_HEAP") ?: "1g"
 }
 
@@ -128,6 +128,6 @@ tasks.register<JavaExec>("traceProbe") {
     group = "verification"
     description = "Dump Vespa query-execution plans (trace.explainLevel) for the named REQ shapes"
     classpath = sourceSets["main"].runtimeClasspath
-    mainClass.set("com.vitorpamplona.quartz.eventstore.benchmark.TraceProbe")
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.TraceProbe")
     maxHeapSize = System.getenv("BENCH_HEAP") ?: "2g"
 }

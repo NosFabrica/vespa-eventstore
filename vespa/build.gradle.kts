@@ -60,7 +60,7 @@ tasks.named<Copy>("processResources") {
 
 mavenPublishing {
     coordinates(
-        groupId = "com.vitorpamplona.quartz.eventstore",
+        groupId = "com.nosfabrica.vespa.eventstore",
         artifactId = "vespa",
         version = libs.versions.app.get(),
     )
@@ -70,24 +70,23 @@ mavenPublishing {
         name = "Vespa Event Store: engine"
         description = "Vespa document shapes, EventQuery -> YQL, the Vespa clients, and the bundled Vespa application package."
         inceptionYear = "2026"
-        url = "https://github.com/vitorpamplona/vespa-eventstore/"
+        url = "https://github.com/NosFabrica/vespa-eventstore/"
         licenses {
             license {
                 name = "MIT License"
-                url = "https://github.com/vitorpamplona/vespa-eventstore/blob/main/LICENSE"
+                url = "https://github.com/NosFabrica/vespa-eventstore/blob/main/LICENSE"
             }
         }
         developers {
             developer {
-                id = "vitorpamplona"
-                name = "Vitor Pamplona"
-                url = "http://vitorpamplona.com"
-                email = "vitor@vitorpamplona.com"
+                id = "nosfabrica"
+                name = "NosFabrica"
+                url = "https://nosfabrica.com"
             }
         }
         scm {
-            url = "https://github.com/vitorpamplona/vespa-eventstore/"
-            connection = "https://github.com/vitorpamplona/vespa-eventstore/.git"
+            url = "https://github.com/NosFabrica/vespa-eventstore/"
+            connection = "https://github.com/NosFabrica/vespa-eventstore/.git"
         }
     }
 }
