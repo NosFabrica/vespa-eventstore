@@ -83,6 +83,12 @@ internal fun Filter.toEventQuery(): EventQuery? {
     // the EventQuery seam a search word is always a requirement, never syntax:
     // the pure-negative case arrives with search=null and takes every
     // plain-recall path instead of masquerading as a ranked search.
+    // PIN-BUMP TRAP: once the pinned Quartz carries the quote/minus-aware
+    // SearchQuery (branch claude/nip50-grammar-extractor-rejections), parse()
+    // strips -word tokens into parsed.notTerms itself and splitMinusWords
+    // finds nothing — silently losing every exclusion. At that bump, delete
+    // liftQuotedSpans/splitMinusWords and consume parsed.phrases/notPhrases/
+    // notTerms directly.
     val quoted = liftQuotedSpans(search.orEmpty())
     val parsed = SearchQuery.parse(quoted.residual)
     val words = splitMinusWords(parsed.terms)

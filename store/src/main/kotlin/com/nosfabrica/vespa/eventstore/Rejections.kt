@@ -32,7 +32,7 @@ internal object Rejections {
     const val DELETED = "blocked: a deletion event exists"
     const val VANISHED = "blocked: a request to vanish event exists"
     const val REPLACED = "replaced: a newer version exists"
-    const val INSERT_FAILED = "insert failed"
+    const val INSERT_FAILED = "error: insert failed"
 
     // One constant string, not one per field/code point: callers tally
     // rejections by reason, and a per-event reason fragments that tally.
