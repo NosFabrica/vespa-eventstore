@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Vespa-backed implementation of Quartz's `IEventStore` (Quartz is the Nostr library from Amethyst) that filters and ranks everything — REQs, COUNTs, and NIP-50 search — through each connecting user's NIP-85 web of trust. Kotlin 2.4 / JDK 21, Gradle multi-module. Published to Maven Central as `com.nosfabrica.vespa.eventstore:{store,vespa}`.
+A Vespa-backed implementation of Quartz's `IEventStore` (Quartz is the Nostr library from Amethyst) that filters and ranks everything — REQs, COUNTs, and NIP-50 search — through each connecting user's NIP-85 web of trust. Kotlin 2.4 / JDK 21, Gradle multi-module. Published to Maven Central as `com.nosfabrica.vespa.eventstore:{store,engine}`.
 
 ## Commands
 
@@ -14,8 +14,8 @@ A Vespa-backed implementation of Quartz's `IEventStore` (Quartz is the Nostr lib
 ./gradlew spotlessApply    # fix formatting; run this before committing
 
 # Single test class / single test method:
-./gradlew :store:test --tests "com.nosfabrica.vespa.eventstore.store.NostrSemanticsStoreTest"
-./gradlew :vespa:test --tests "*EventYqlTest.someMethodName"
+./gradlew :store:test --tests "com.nosfabrica.vespa.eventstore.NostrSemanticsStoreTest"
+./gradlew :engine:test --tests "*EventYqlTest.someMethodName"
 
 # Integration tests (real Vespa via testcontainers — needs a Docker daemon;
 # excluded from the default build, self-skip without Docker):
@@ -32,7 +32,7 @@ A Vespa-backed implementation of Quartz's `IEventStore` (Quartz is the Nostr lib
 
 Three modules, layered strictly bottom-up:
 
-- **`:vespa`** — the engine layer, Nostr-agnostic-ish plumbing: document shapes (`doc/EventDoc`, `doc/ReputationDoc`), the `EventQuery` → YQL compiler (`query/EventYql`), the HTTP clients (`client/VespaEventIndex` reads via OkHttp h2c, writes via Vespa's official feed client; `client/VespaReputationIndex`), and the bundled Vespa application package.
+- **`:engine`** — the engine layer, Nostr-agnostic-ish plumbing: document shapes (`doc/EventDoc`, `doc/ReputationDoc`), the `EventQuery` → YQL compiler (`query/EventYql`), the HTTP clients (`client/VespaEventIndex` reads via OkHttp h2c, writes via Vespa's official feed client; `client/VespaReputationIndex`), and the bundled Vespa application package.
 - **`:store`** — Nostr semantics on top: `NostrSemanticsStore` (the `IEventStore` implementation), the NIP-85 trust projection (`trust/`), per-kind search extraction (`mapping/SearchExtractors`), and `VespaEventStore.open()` — the public front door.
 - **`:benchmark`** — not published. Perf harness + the parity/rank-regression integration tests (the CI correctness gates).
 
@@ -40,7 +40,7 @@ The stack `open()` assembles: `NostrSemanticsStore( TrustProjection( VespaEventI
 
 ### The engine port and its executable spec
 
-`EventIndex` (`:vespa`, `client/EventIndex.kt`) is the seam everything hangs on: get/put/remove + `EventQuery` recall, with a hard contract — read-your-writes per document, and an **acked put is visible to search**. That contract is what makes the store's query-then-write logic sound. There are two implementations: the real Vespa client, and `InMemoryEventIndex`, which is the **executable specification** of `EventQuery` matching semantics — store tests run against it with no Vespa. `MockVespaEngine` (testFixtures, a Jetty h2c server) additionally exercises the real HTTP clients' wire format.
+`EventIndex` (`:engine`, `client/EventIndex.kt`) is the seam everything hangs on: get/put/remove + `EventQuery` recall, with a hard contract — read-your-writes per document, and an **acked put is visible to search**. That contract is what makes the store's query-then-write logic sound. There are two implementations: the real Vespa client, and `InMemoryEventIndex`, which is the **executable specification** of `EventQuery` matching semantics — store tests run against it with no Vespa. `MockVespaEngine` (testFixtures, a Jetty h2c server) additionally exercises the real HTTP clients' wire format.
 
 **Known blind spot**: the in-memory reference and the mock can miss real-Vespa-only divergences (e.g. Vespa omits empty-string fields from summaries; string attributes match uncased unless `match: cased`). Anything touching YQL, summaries, or the schema needs the integration gate (`-Pintegration`): `VespaParityIT` asserts exact result parity with Quartz's SQLite store (127/127 checks), `RankRegressionIT` pins search-ranking quality against a canonical corpus, `ObserverGateIT` pins the observer gate engine-side (trust-gated recall, both gated profiles), `OrphanSweepIT` pins the orphan-score sweep (the `distinctAuthors` grouping decides what gets deleted) — the mock cannot rank or gate.
 
@@ -56,7 +56,7 @@ The per-event `insert()` path pays admission-probe round trips; `batchInsert()` 
 
 ### The schema ships with the code
 
-`vespa/app/` (`schemas/event.sd`, `schemas/reputation.sd`, `services.xml`) is the single source of truth; the build zips it into the `:vespa` jar as `vespa-app.zip` and `open(autoDeploy = true)` deploys it to a fresh Vespa. Schema and query builder can therefore never drift — **a schema change and the Kotlin that depends on it must land together**, and needs the integration tests since only a real Vespa executes the schema.
+`engine/app/` (`schemas/event.sd`, `schemas/reputation.sd`, `services.xml`) is the single source of truth; the build zips it into the `:engine` jar as `vespa-app.zip` and `open(autoDeploy = true)` deploys it to a fresh Vespa. Schema and query builder can therefore never drift — **a schema change and the Kotlin that depends on it must land together**, and needs the integration tests since only a real Vespa executes the schema.
 
 ### Search
 

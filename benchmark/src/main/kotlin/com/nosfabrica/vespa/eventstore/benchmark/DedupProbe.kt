@@ -20,10 +20,10 @@
  */
 package com.nosfabrica.vespa.eventstore.benchmark
 
-import com.nosfabrica.vespa.eventstore.vespa.client.VespaEventIndex
-import com.nosfabrica.vespa.eventstore.vespa.mapBounded
-import com.nosfabrica.vespa.eventstore.vespa.query.EventQuery
-import com.nosfabrica.vespa.eventstore.vespa.query.EventYql
+import com.nosfabrica.vespa.eventstore.engine.client.VespaEventIndex
+import com.nosfabrica.vespa.eventstore.engine.mapBounded
+import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
+import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob

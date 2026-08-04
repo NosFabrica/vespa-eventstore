@@ -20,8 +20,8 @@
  */
 package com.nosfabrica.vespa.eventstore.benchmark
 
-import com.nosfabrica.vespa.eventstore.vespa.query.EventQuery
-import com.nosfabrica.vespa.eventstore.vespa.query.EventYql
+import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
+import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive

@@ -24,7 +24,7 @@ import ai.vespa.feed.client.DocumentId
 import ai.vespa.feed.client.FeedClientBuilder
 import ai.vespa.feed.client.OperationParameters
 import ai.vespa.feed.client.Result
-import com.nosfabrica.vespa.eventstore.store.VespaEventStore
+import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import kotlinx.coroutines.runBlocking
 import java.net.URI

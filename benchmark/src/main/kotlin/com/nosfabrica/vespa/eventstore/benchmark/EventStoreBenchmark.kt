@@ -110,9 +110,9 @@ object EventStoreBenchmark {
             val n = env("BENCH_PROFILE_SIZE", 20_000)
             val band = System.getenv("BENCH_ID_BAND")?.toLongOrNull(16) ?: 0xE0L
             val events = NostrCorpus.generate(NostrCorpus.Config(size = n, seed = seed + 31, idBand = band))
-            com.nosfabrica.vespa.eventstore.store.VespaEventStore.open(vespaUrl).use { store ->
-                com.nosfabrica.vespa.eventstore.vespa.IngestStats
-                    .gauge() // reset the deltas
+            com.nosfabrica.vespa.eventstore.VespaEventStore.open(vespaUrl).use { store ->
+                com.nosfabrica.vespa.eventstore.engine.IngestStats
+                    .statusLine() // reset the deltas
                 val nanos =
                     kotlin.system.measureNanoTime {
                         runBlocking { events.chunked(batch).forEach { store.batchInsert(it) } }
@@ -120,10 +120,10 @@ object EventStoreBenchmark {
                 val secs = nanos / 1e9
                 println(String.format("ingested %d events (batch %d) in %.1fs = %.0f events/sec", n, batch, secs, n / secs))
                 println(
-                    com.nosfabrica.vespa.eventstore.vespa.IngestStats
+                    com.nosfabrica.vespa.eventstore.engine.IngestStats
                         .dump(),
                 )
-                println(store.feedGauge())
+                println(store.feedStatus())
             }
             return
         }

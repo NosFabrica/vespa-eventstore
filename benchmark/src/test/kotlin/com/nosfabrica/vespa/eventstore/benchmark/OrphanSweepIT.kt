@@ -20,8 +20,8 @@
  */
 package com.nosfabrica.vespa.eventstore.benchmark
 
-import com.nosfabrica.vespa.eventstore.store.VespaEventStore
-import com.nosfabrica.vespa.eventstore.vespa.query.EventQuery
+import com.nosfabrica.vespa.eventstore.VespaEventStore
+import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import kotlinx.coroutines.delay
@@ -110,7 +110,7 @@ class OrphanSweepIT {
                             assertEquals(CARDS_PER_SERVICE, storedCards(store), "only the named service's cards remain")
                             assertEquals(
                                 CARDS_PER_SERVICE,
-                                store.events.count(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(MAPPED_SERVICE))),
+                                store.eventIndex.count(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(MAPPED_SERVICE))),
                                 "and they are the named service's",
                             )
 
@@ -126,7 +126,7 @@ class OrphanSweepIT {
 
     // ------------------------------------------------------------------
 
-    private suspend fun storedCards(store: VespaEventStore) = store.events.count(EventQuery(kinds = listOf(ContactCardEvent.KIND)))
+    private suspend fun storedCards(store: VespaEventStore) = store.eventIndex.count(EventQuery(kinds = listOf(ContactCardEvent.KIND)))
 
     /** Poll until every fed card is searchable — the grouping must see the whole corpus. */
     private suspend fun awaitCards(
