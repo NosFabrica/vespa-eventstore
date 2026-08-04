@@ -30,35 +30,25 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /**
- * The owners with a stored tombstone, and the owners with a stored vanish — the
- * keys that let the admission path SKIP its NIP-09 and NIP-62 guard probes for
- * everyone else, which is nearly everyone (content authors seldom publish
- * deletions). Each guard probe queries kind-5/62 docs whose AUTHOR is the
- * inserted event's owner, so "no stored guard doc of that kind by this author"
- * proves that probe would come back empty.
+ * The owners with a stored tombstone / stored vanish — the keys that let the
+ * admission path SKIP its NIP-09/NIP-62 guard probes for everyone else (nearly
+ * everyone). Each probe queries kind-5/62 docs by author, so "no stored guard
+ * doc of that kind by this author" proves the probe would come back empty.
  *
- * TWO blooms, not one: vanishers are orders of magnitude rarer than deleters,
- * and the two probes gate independently. A conflated set forces the vanish
- * probe on every deleter's event — on a deletion-heavy sync that is one wasted
- * query (or an O(snapshot) scan in the bulk replay) per event, proving over and
- * over that owners who never vanished didn't vanish.
+ * TWO blooms, not one: vanishers are far rarer than deleters and the probes
+ * gate independently; a conflated set forces the vanish probe on every
+ * deleter's event.
  *
- * Why this is safe:
- *  - OVER-flagging (an owner in a set with no live guard) only costs a probe.
- *  - UNDER-flagging cannot happen within the store's write model: the sets are
- *    preloaded from the engine (two corpus walks, run concurrently) and every
- *    guard this store subsequently stores is added via [noteDeletionStored] /
- *    [noteVanishStored]. A single writer — or one owner-sharded lane, since
- *    lanes never insert another lane's owners (docs/multi-node-consistency.md)
- *    — therefore always sees its owners' guards.
- *  - Scale: the flagged owners live in [GuardBloom]s, not exact sets, so a
- *    relay with millions of distinct deleters costs a few MB and the guard-skip
- *    KEEPS WORKING. The Bloom's no-false-negative property is exactly the
- *    UNDER-flag prohibition above; a false positive is just the harmless
- *    over-flag (a wasted probe). The load must be EXHAUSTIVE and it walks the
- *    WHOLE corpus, so it uses [EventIndex.scanAuthors] — the continuation-paged
- *    visit — rather than [EventIndex.distinctAuthors], whose grouping is equally
- *    complete but builds its entire answer in one response.
+ * Safety:
+ *  - OVER-flagging only costs a probe. UNDER-flagging cannot happen within the
+ *    store's write model: the sets are preloaded from the engine, every guard
+ *    subsequently stored is added via [noteDeletionStored]/[noteVanishStored],
+ *    and a single writer — or one owner-sharded lane
+ *    (docs/multi-node-consistency.md) — always sees its owners' guards.
+ *  - [GuardBloom]s scale to millions of deleters in a few MB; the Bloom's
+ *    no-false-negative property is exactly the under-flag prohibition. The
+ *    load must be EXHAUSTIVE, so it uses the continuation-paged
+ *    [EventIndex.scanAuthors], not [EventIndex.distinctAuthors] (one-response).
  *  - A FOREIGN feeder writing kind 5/62 directly to the engine bypasses the
  *    note hooks; that deployment must set `GUARD_OWNERS_DISABLE=1` so every
  *    insert probes.
@@ -74,10 +64,9 @@ internal class GuardOwners(
     @Volatile
     private var blooms: Blooms? = null
 
-    // Config-only now (a foreign direct-feeder deployment). No longer tripped by
-    // deleter cardinality — the Bloom scales where the old exact set gave up.
-    // Accepts "1" as well as "true": the docs above prescribe =1, and a kill
-    // switch that silently ignores its documented value re-accepts deleted events.
+    // Config-only (foreign direct-feeder deployments). Accepts "1" as well as
+    // "true": the docs prescribe =1, and a kill switch that silently ignores
+    // its documented value re-accepts deleted events.
     @Volatile
     private var disabled = System.getenv("GUARD_OWNERS_DISABLE").let { it == "1" || it?.toBooleanStrictOrNull() == true }
 
@@ -126,8 +115,8 @@ internal class GuardOwners(
         if (disabled) return null
         loadLock.withLock {
             blooms?.let { return it }
-            // The two corpus walks are independent, so they run CONCURRENTLY:
-            // the first-insert stall is one walk's wall time, not two in series.
+            // Independent corpus walks run CONCURRENTLY: the first-insert
+            // stall is one walk's wall time, not two in series.
             val b =
                 coroutineScope {
                     val deleters = async { index.scanAuthors(EventQuery(kinds = listOf(DeletionEvent.KIND))) }

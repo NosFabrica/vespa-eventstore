@@ -45,28 +45,23 @@ import com.vitorpamplona.quartz.nip40Expiration.isExpired
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 
 /**
- * The bulk insert fast path for one run of plain events (no kind 5/62) —
- * batches that CONTAIN deletions/vanishes take [BulkMixedInsert] instead. It
- * enforces the same Nostr rules as the per-event [NostrSemanticsStore] path, but
- * with BATCHED I/O. The per-event path costs 3–5 engine round trips per event,
- * which is useless against a million-event sync. Stages:
+ * The bulk insert fast path for one run of plain events (no kind 5/62 — those
+ * batches take [BulkMixedInsert]). Same Nostr rules as the per-event
+ * [NostrSemanticsStore] path (3–5 round trips per event), but with BATCHED I/O:
  *
- *  A. local checks (ephemeral accepted-not-stored, expired rejected, later
- *     copies of an id already in this run rejected as duplicates);
+ *  A. local checks (ephemeral accepted-not-stored, expired, in-run duplicates);
  *  B. one `id in (…)` duplicate query per [CHECK_CHUNK], fanned out bounded;
- *  C. per-owner tombstone/vanish guards (one query per owner chunk) — read in
- *     [commit], UNDER the writer lock, never in [plan]: a kind 5/62 committed
- *     by a neighbouring batch between a lock-free guard read and this batch's
- *     writes would resurrect the events it covers. The [GuardOwners] gate
- *     keeps the locked cost at zero for the common batch with no flagged
- *     owners;
- *  D. per-address supersession resolved IN RUN ORDER. Existing versions are
- *     fetched per (kind, author), and losers inside the run are
- *     Accepted-then-superseded exactly as sequential inserts would end up;
+ *  C. per-owner tombstone/vanish guards — read in [commit], UNDER the writer
+ *     lock, never in [plan]: a kind 5/62 committed by a neighbouring batch
+ *     between a lock-free guard read and this batch's writes would resurrect
+ *     the events it covers. [GuardOwners] keeps the locked cost at zero for
+ *     the common no-flagged-owners batch;
+ *  D. per-address supersession resolved IN RUN ORDER, ending exactly where
+ *     sequential inserts would;
  *  E. one pipelined [EventIndex.putAll] of the survivors.
  *
  * Every stage read is unbounded — batched I/O may not trade exactness for
- * speed, and a short page here would be a wrong write, not a small answer.
+ * speed; a short page here would be a wrong write, not a small answer.
  */
 internal class BulkRecordInsert(
     private val index: EventIndex,
@@ -74,11 +69,10 @@ internal class BulkRecordInsert(
     private val guards: GuardOwners,
 ) {
     /**
-     * What [plan] resolved from its LOCK-FREE reads (stages A–B), handed to
-     * [commit] to finish under the single writer lock. Dedup can race here —
-     * a duplicate that slips past is an idempotent re-put of identical bytes.
-     * The guard and supersession reads canNOT race: both decide against the
-     * store's current state, so they run in [commit], atomic with the writes.
+     * What [plan] resolved lock-free (stages A–B). Dedup can race — a slipped
+     * duplicate is an idempotent re-put of identical bytes. The guard and
+     * supersession reads canNOT race: they decide against the store's current
+     * state, so they run in [commit], atomic with the writes.
      */
     internal class Plan(
         val events: List<Event>,
@@ -89,9 +83,8 @@ internal class BulkRecordInsert(
     suspend fun run(events: List<Event>): List<IEventStore.InsertOutcome> = commit(plan(events))
 
     /**
-     * The LOCK-FREE half: stages A–B (local checks, dedup) — reads whose staleness
-     * is harmless (see [Plan]) — so parallel relays' batches overlap them. The
-     * guard and supersession reads belong to [commit], under the lock.
+     * The LOCK-FREE half: stages A–B, reads whose staleness is harmless (see
+     * [Plan]), so parallel relays' batches overlap them.
      */
     suspend fun plan(events: List<Event>): Plan {
         val outcome = arrayOfNulls<IEventStore.InsertOutcome>(events.size)
@@ -99,8 +92,8 @@ internal class BulkRecordInsert(
         fun alive() = events.indices.filter { outcome[it] == null }
 
         // Stage A — no I/O: ephemeral accepted-not-stored, expired rejected,
-        // later copies of an id already in this run rejected as duplicates, and
-        // text the engine will not accept rejected before it can throw.
+        // in-run duplicate ids rejected, unstorable text rejected before it
+        // can throw in the feed client.
         val seen = HashSet<String>()
         events.forEachIndexed { i, e ->
             when {
@@ -116,11 +109,9 @@ internal class BulkRecordInsert(
                     outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.DUPLICATE)
                 }
 
-                // Last of the free checks: it walks the content, where the others
-                // only read a field. Still cheap next to the round trip it saves —
-                // and far cheaper than the alternative, which is the feed client
-                // throwing mid-batch and taking every event beside it down. See
-                // [VespaText].
+                // Last of the free checks (it walks the content) — still far
+                // cheaper than the feed client throwing mid-batch and taking
+                // every event beside it down. See [VespaText].
                 VespaText.firstIllegalField(e) != null -> {
                     outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.UNSTORABLE_TEXT)
                 }
@@ -128,12 +119,10 @@ internal class BulkRecordInsert(
         }
 
         // Stage B — ids already stored, via the EXISTENCE check (membership
-        // only, no summaries: at mirror hit rates ~99% of these ids come back,
-        // and materializing each one's full document to read its id back was
-        // the single largest ingest cost — see EventIndex.existingIds). The
-        // chunk queries are independent reads, so they fan out with BOUNDED
-        // concurrency. Serialized round trips starve the batch, but unbounded
-        // fan-out measurably 504s the engine's summary stage.
+        // only, no summaries: materializing full documents to read ids back was
+        // the single largest ingest cost — see EventIndex.existingIds). Chunks
+        // fan out with BOUNDED concurrency: serialized round trips starve the
+        // batch, unbounded fan-out measurably 504s the engine's summary stage.
         val stored = HashSet<String>()
         IngestStats.timed("dedup") {
             alive()
@@ -147,11 +136,10 @@ internal class BulkRecordInsert(
     }
 
     /**
-     * The LOCKED half: the tombstone/vanish guards and the supersession
-     * read+resolve — both must see every prior commit's writes, so they run
-     * under the single writer lock — then the pipelined writes. Kept as short
-     * as the semantics allow: the guard queries vanish for unflagged owners
-     * (the common batch), and an empty remove or put set skips its round trip.
+     * The LOCKED half: guards and supersession read+resolve — both must see
+     * every prior commit's writes, so they run under the single writer lock —
+     * then the pipelined writes. Kept short: guard queries vanish for unflagged
+     * owners, and an empty remove/put set skips its round trip.
      */
     suspend fun commit(plan: Plan): List<IEventStore.InsertOutcome> {
         val events = plan.events
@@ -159,19 +147,15 @@ internal class BulkRecordInsert(
 
         fun alive() = events.indices.filter { outcome[it] == null }
 
-        // Stage C — tombstone + vanish guards, BATCHED by owner: one deletion query
-        // and one vanish query per CHECK_CHUNK of owners (then bucketed by author),
-        // NOT one pair per owner. A content batch touches ~500 owners; per-owner that
-        // was ~1000 round trips at QUERY_FANOUT=4 — the ingest's real bottleneck —
-        // now it is a handful. Nothing caps the guard queries, so the batched view
-        // is exact by construction — there is no "the page may have cut this short"
-        // case left to fall back from.
+        // Stage C — tombstone + vanish guards, BATCHED by owner: one query pair
+        // per CHECK_CHUNK of owners, not per owner (per-owner was ~1000 round
+        // trips per content batch — the ingest's real bottleneck). Nothing caps
+        // the guard queries, so the batched view is exact by construction.
         val owners = alive().groupBy { events[it].owner() }
         val guardSets =
             IngestStats.timed("guards") {
-                // Only owners with a stored tombstone/vanish can have guard
-                // docs at all (GuardOwners); everyone else's sets are provably
-                // empty — usually ALL of a content batch, skipping both queries.
+                // Unflagged owners (GuardOwners) have provably empty guard sets
+                // — usually ALL of a content batch, skipping both queries.
                 // Gated independently: deleters vastly outnumber vanishers, so
                 // the vanish query usually disappears even in a flagged batch.
                 val flaggedDeleters = guards.filterFlaggedDeleters(owners.keys)
@@ -229,14 +213,12 @@ internal class BulkRecordInsert(
 
         // Stage D — supersession per replaceable address.
         if (index.supersedesViaPut) {
-            // The address-keyed engine enforces newest-wins per put, so replay
-            // each address's run through putIfNewer IN ORDER — identical to the
-            // per-event path, so outcomes match the read path exactly: an event
-            // that loses to the stored version OR to an earlier same-batch version
-            // comes back false and is REPLACED. Different addresses run
-            // concurrently; a single address stays sequential (each put depends on
-            // the previous). Replaceable winners are written by putIfNewer itself;
-            // toPut carries only the regular events.
+            // The address-keyed engine enforces newest-wins per put: replay each
+            // address's run through putIfNewer IN ORDER, identical to the
+            // per-event path (a loser comes back false and is REPLACED).
+            // Different addresses run concurrently; a single address stays
+            // sequential. putIfNewer writes replaceable winners itself; toPut
+            // carries only the regular events.
             IngestStats.timed("versions") {
                 // Conditional puts are writes — fan out much wider than QUERY_FANOUT
                 // (which is capped for searches) so they pipeline like the raw feed.
@@ -267,12 +249,10 @@ internal class BulkRecordInsert(
                         add(EventQuery(kinds = listOf(kind), authors = authors))
                     }
                 }
-                // Addressables recall PER (kind, author), never across authors. A
-                // multi-author (authors x d-tags) query is a CROSS PRODUCT. In a
-                // dense corpus (dozens of service keys scoring the same subjects)
-                // that recalls authors×ds real docs — an unbounded response on
-                // the ingest hot path, and missed existing versions on any
-                // deployment that capped hits (it truncates silently). One
+                // Addressables recall PER (kind, author), never across authors:
+                // a multi-author (authors x d-tags) query is a CROSS PRODUCT —
+                // unbounded on the ingest hot path, and silently truncated
+                // (missed versions) on a deployment that caps hits. One
                 // author's d-set is bounded.
                 for ((ka, keys) in addressable.groupBy { it.first to it.second }) {
                     val (kind, author) = ka
@@ -280,11 +260,10 @@ internal class BulkRecordInsert(
                     ds.chunked(CHECK_CHUNK).forEach { chunk ->
                         add(EventQuery(kinds = listOf(kind), authors = listOf(author), tags = mapOf("d" to chunk)))
                     }
-                    // Empty d: a stored version with NO d tag at all carries no
-                    // "d:" pair in tag_index, so the d-keyed query above can never
-                    // recall it. Go broad by (kind, author) — the same fallback
-                    // the per-event path (EventIndex.putIfNewer) and the mixed
-                    // preload apply. Bounded: one author's docs of one kind.
+                    // Empty d: a stored version with NO d tag carries no "d:"
+                    // pair in tag_index, so the d-keyed query above can never
+                    // recall it. Go broad by (kind, author) — same fallback as
+                    // putIfNewer and the mixed preload; bounded to one author.
                     if (keys.any { it.third.isNullOrEmpty() }) add(EventQuery(kinds = listOf(kind), authors = listOf(author)))
                 }
             }
@@ -345,11 +324,9 @@ internal class BulkRecordInsert(
     }
 
     /**
-     * Every guard event of [kind] (deletion or vanish) for [owners], bucketed by
-     * author. One query per [CHECK_CHUNK] of owners rather than one per owner.
-     * The chunking is purely about how wide one round trip is: no query here
-     * carries a limit, so a chunk always comes back whole and one prolific
-     * deleter cannot crowd out the other owners in its chunk.
+     * Every guard event of [kind] for [owners], bucketed by author. One query
+     * per [CHECK_CHUNK] of owners; no query carries a limit, so a chunk always
+     * comes back whole and one prolific deleter cannot crowd out its chunk.
      */
     private suspend fun guardDocs(
         owners: Collection<String>,
@@ -369,14 +346,12 @@ internal class BulkRecordInsert(
         const val CHECK_CHUNK = 500
 
         /**
-         * Stage B's dedup chunk width alone — the guard/version queries keep
-         * [CHECK_CHUNK]; their shapes were never measured at other widths.
-         * The measured curve (benchmark/README.md, dedup A/B): existence
-         * throughput still climbs at 2000 ids/chunk (~1.5x the 500 default at
-         * fan-out 4), but each query occupies the engine longer, which is the
-         * read-starvation lever — so the DEFAULT stays at the width the
-         * REQ-latency A/B was measured at, and `VESPA_DEDUP_CHUNK` lets a
-         * deployment that values sync speed over read latency widen it.
+         * Stage B's dedup chunk width alone (guard/version queries keep
+         * [CHECK_CHUNK]). Measured (benchmark/README.md, dedup A/B): throughput
+         * still climbs at 2000 ids/chunk (~1.5x), but wider queries occupy the
+         * engine longer and starve reads — so the default stays at the width
+         * the REQ-latency A/B was measured at, and `VESPA_DEDUP_CHUNK` lets a
+         * sync-speed-first deployment widen it.
          */
         val DEDUP_CHUNK: Int = System.getenv("VESPA_DEDUP_CHUNK")?.toIntOrNull()?.coerceAtLeast(1) ?: CHECK_CHUNK
     }

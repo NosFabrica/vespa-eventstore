@@ -37,37 +37,24 @@ import kotlinx.coroutines.launch
 import java.net.URI
 
 /**
- * The library's public handle AND front door: a ready [IEventStore] backed by
- * Vespa. [open] wires the whole NostrSemanticsStore(TrustProjection(VespaEventIndex,
- * VespaReputationIndex)) stack over a running Vespa in one call (plus, by default,
- * a first-run schema deploy), and this handle delegates the entire [IEventStore]
- * surface to it — so a consumer programs against the Quartz interface and never
- * sees the stack.
- *
- * Vespa itself is a prerequisite, like a database: point [open] at one that is
- * already running.
- *
- * Closeable (via [IEventStore]'s AutoCloseable), so `open(...).use { ... }` works.
+ * The library's public handle and front door: [open] wires the whole
+ * NostrSemanticsStore(TrustProjection(VespaEventIndex, VespaReputationIndex))
+ * stack over a running Vespa (deploying the schema on first run by default) and
+ * delegates the full [IEventStore] surface to it. Vespa itself is a
+ * prerequisite, like a database. Closeable, so `open(...).use { ... }` works.
  */
 class VespaEventStore internal constructor(
     /**
-     * The concrete store — the [IEventStore] this handle delegates, exposed for
-     * the Vespa-specific capabilities that live beyond the Quartz interface (e.g.
-     * `distinctDTags`, used by trust-graph walks). Most consumers can ignore it
-     * and use this handle directly as an [IEventStore].
+     * The concrete store, exposed for Vespa-specific capabilities beyond the
+     * Quartz interface (e.g. `distinctDTags`).
      */
     val store: NostrSemanticsStore,
     /**
-     * The raw engine index, NOT trust-projected. Reads through it skip the
-     * projection decorator — status/health metrics query it directly, since they
-     * only count and never mutate trust data.
+     * The raw engine index, NOT trust-projected — for status/health metrics
+     * that only count and never mutate trust data.
      */
     val events: VespaEventIndex,
-    /**
-     * The repair tool for the trust view over [events]. Held here because the
-     * view is derived on WRITE and therefore cannot always repair itself: see
-     * [reconcileTrust].
-     */
+    /** Repair tool for the trust view over [events]; see [reconcileTrust]. */
     private val reconciler: TrustReconciler,
     /** The projection, for the deferred-mode drain barrier ([awaitTrustProjection]). */
     private val trust: TrustProjection,
@@ -78,34 +65,28 @@ class VespaEventStore internal constructor(
     fun feedGauge(): String = events.feedGauge()
 
     /**
-     * Repair the trust view: drain any projection work a crashed or shut-down
-     * process left queued (see DirtLedger), then re-derive any service whose
-     * scores are not projected under EVERY observer currently naming it, and
-     * report what it had to fix.
-     *
-     * Worth running at startup. The projection is maintained by write triggers,
-     * and dedup means an event already in the store never reaches them again —
-     * so a corpus that was mirrored before its provider lists arrived stays
-     * unprojected, silently, and every ranked search comes back empty.
+     * Repair the trust view: drain queued projection work a crashed process left
+     * behind (see DirtLedger), then re-derive any service whose scores are not
+     * projected under every observer naming it. Worth running at startup — dedup
+     * means a corpus mirrored before its provider lists arrived stays silently
+     * unprojected, and every ranked search comes back empty.
      */
     suspend fun reconcileTrust(onProgress: ((inspected: Int, total: Int, rebuilt: Int, derivedInService: Int) -> Unit)? = null): TrustReconciler.Reconciliation = reconciler.reconcile(onProgress = onProgress)
 
     /**
-     * Re-derive the WHOLE trust view from the stored scores. Bounded only by the
-     * corpus, so this is the operator's hammer — [reconcileTrust] does the same
-     * repair per affected service and normally finds nothing to do.
+     * Re-derive the WHOLE trust view from the stored scores — the operator's
+     * hammer, bounded only by the corpus. [reconcileTrust] does the same repair
+     * per affected service and normally finds nothing to do.
      */
     suspend fun rebuildTrust() = reconciler.rebuildAll()
 
     /**
-     * FULL audit: does every reputation doc match its 10040+30382 records?
-     * Drains any queued deferred work (lag, not drift), then compares the
-     * stored parent of every scored subject against a fresh derivation from the
-     * records, and sweeps the reputation corpus for orphan docs with no records
-     * behind them. Read-only beyond that drain; with [repair] the drifted
-     * subjects are re-derived in place — the targeted alternative to
-     * [rebuildTrust]. The report carries complete counts and the first examples
-     * of each mismatch. See [TrustReconciler.verify] for the full contract.
+     * Full audit: does every reputation doc match its 10040+30382 records?
+     * Drains queued deferred work (lag, not drift), compares each stored parent
+     * against a fresh derivation, and finds orphan docs with no records behind
+     * them. Read-only beyond that drain; with [repair], drifted subjects are
+     * re-derived in place — the targeted alternative to [rebuildTrust]. See
+     * [TrustReconciler.verify] for the full contract.
      */
     suspend fun verifyTrust(
         repair: Boolean = false,
@@ -113,30 +94,18 @@ class VespaEventStore internal constructor(
     ): TrustReconciler.TrustAudit = reconciler.verify(repair, onProgress)
 
     /**
-     * DELETE the orphan scores: every stored kind-30382 signed by a service that
-     * no stored kind-10040 names, for either dimension. Those cards can never
-     * become a tensor cell for any observer — they rank nothing, gate nothing
-     * and are never read — so a mirror that syncs 30382s by kind (and therefore
-     * pulls every publishing service on the network, not just the ones its users
-     * trust) can reclaim them wholesale.
+     * DELETE the orphan scores: every stored kind-30382 signed by a service no
+     * stored kind-10040 names. Those cards can never become a tensor cell for
+     * any observer, so a mirror that syncs 30382s by kind can reclaim them
+     * wholesale. [dryRun] gives the same report with no writes; it is not a
+     * tombstone, so pair the sweep with narrowing the sync.
      *
-     * Pass [dryRun] to get the same report — which services, how many cards —
-     * with no writes. Both forms cost one grouping query up front; the dry run
-     * is nothing but that query.
-     *
-     * A deletion is not a tombstone. A mirror that keeps syncing 30382s by kind
-     * re-downloads what this freed, so pair the sweep with narrowing that sync
-     * to the services your 10040s actually name.
-     *
-     * Two guardrails, both in [TrustReconciler.sweepOrphanScores]: a store with
-     * NO readable 10040 sweeps nothing (that state is indistinguishable from "no
-     * provider list has been mirrored yet", where deleting would take the whole
-     * score corpus), and a service some 10040 claims mid-sweep is dropped from
-     * the sweep at the next page boundary. Deletions take the writer lock a page
-     * at a time, so a long sweep shares the store with live ingest.
-     *
-     * This is an operator action and never automatic — [reconcileTrust] does not
-     * call it.
+     * Guardrails (in [TrustReconciler.sweepOrphanScores]): a store with NO
+     * readable 10040 sweeps nothing — indistinguishable from "no provider list
+     * mirrored yet", where deleting would take the whole score corpus — and a
+     * service claimed mid-sweep is dropped at the next page boundary. Deletions
+     * take the writer lock a page at a time, sharing the store with live
+     * ingest. Operator action only — [reconcileTrust] never calls it.
      */
     suspend fun sweepOrphanScores(
         dryRun: Boolean = false,
@@ -144,23 +113,17 @@ class VespaEventStore internal constructor(
     ): TrustReconciler.OrphanSweep = reconciler.sweepOrphanScores(dryRun, onProgress)
 
     /**
-     * The deferred-projection BARRIER: drain every queued trust reaction before
-     * returning, so ranking reflects all inserts acked so far — the
-     * read-your-writes moment a caller occasionally needs (a test, a "publish
-     * then search" API) under a store opened with `deferTrustProjection`. A
-     * no-op when the queue is empty, and safe alongside the background drainer
-     * (draining is idempotent; both take the writer lock per batch). With
-     * deferral off this returns immediately — inline settles leave no queue.
-     * Note the barrier chases the queue: under a sustained stream of trust
-     * writes it keeps draining until a pass finds nothing new, so it bounds
-     * "everything acked BEFORE the call", not the writes racing it.
+     * The deferred-projection barrier: drain every queued trust reaction so
+     * ranking reflects all inserts acked before the call (not the writes racing
+     * it — the drain chases the queue until a pass finds nothing new). Safe
+     * alongside the background drainer (draining is idempotent; both take the
+     * writer lock per batch); a no-op with deferral off.
      */
     suspend fun awaitTrustProjection() = trust.dirt.drain { store.withWriteLock(it) }
 
     override fun close() {
-        // Stop the drainer FIRST, then the store: queued work survives in the
-        // persisted marker and is drained by the next open's startup signal (or
-        // reconcileTrust) — shutdown must not block on a six-figure walk.
+        // Drainer first: queued work survives in the persisted marker for the
+        // next open — shutdown must not block on a six-figure walk.
         drainScope?.cancel()
         store.close()
     }
@@ -169,41 +132,25 @@ class VespaEventStore internal constructor(
         /**
          * Open a store over the Vespa at [url] (its query/document endpoint).
          *
-         * With [autoDeploy] (the default), the bundled schema is deployed to
-         * [configUrl] the first time — a fresh Vespa becomes queryable with no
-         * separate deploy step. Turn it off when an operator owns schema deployment
-         * out of band; then a missing schema surfaces as a query error, not a silent
-         * one. [configUrl] defaults to the config server's conventional :19071 on the
-         * same host as [url].
+         * [autoDeploy] (default) deploys the bundled schema to [configUrl] on
+         * first contact; turn it off when an operator owns schema deployment.
+         * [relay] is the store's own relay url (NIP-62 vanish scope / NIP-42
+         * identity); null for a bare store. [endpoints] names every container
+         * endpoint of a multi-container cluster — the feed client spreads its
+         * HTTP/2 connections across all of them, which beats one load-balancer
+         * address (see docs/scaling.md).
          *
-         * [relay] is the store's own relay url (NIP-62 vanish scope / NIP-42 identity)
-         * when it sits behind a relay; leave it null for a bare store.
+         * [deferTrustProjection] (default ON) moves the projection's read-based
+         * reactions (a 10040's service walk can hold the writer lock for
+         * minutes) onto a background drainer. Inserts get faster and reactions
+         * coalesce; ranked search lags trust writes by the drain cycle — the
+         * events themselves are always read-your-writes, and
+         * [awaitTrustProjection] is the explicit barrier. Correctness is
+         * identical in both modes: the same crash-safe persisted marker is
+         * drained here, at the next write, or by [reconcileTrust].
          *
-         * [endpoints] names EVERY container endpoint of a multi-container
-         * cluster: the feed client spreads its HTTP/2 connections across all of
-         * them and reads round-robin, which beats funnelling writes through one
-         * load-balancer address. Empty (the default) = just [url]. See
-         * docs/scaling.md; a multi-node deployment pairs this with
-         * `autoDeploy = false` and an operator-owned application package.
-         *
-         * [deferTrustProjection] (default ON) moves the trust projection's
-         * read-based reactions — a 10040's service walk (which could otherwise
-         * hold the writer lock for minutes), single-score re-derives, retraction
-         * and deletion re-derives — off the insert path onto a background
-         * drainer that batches them under the writer lock. Inserts get faster
-         * and reactions about the same subjects coalesce; the cost is that
-         * ranked search lags trust writes by the drain cycle (the events
-         * themselves are always read-your-writes). [awaitTrustProjection] is
-         * the explicit barrier. The bulk zero-read cell path stays inline
-         * either way, so mirror ingest keeps immediate ranking. Turn OFF for
-         * strict read-your-writes ranking on every insert. Correctness is
-         * identical in both modes: the work queue is the same crash-safe
-         * persisted marker, drained here, at the next write, or by
-         * [reconcileTrust] — whichever comes first.
-         *
-         * The store imposes no result cap of its own: a filter with a `limit`
-         * gets that many events, one without gets every match. Bounding what a
-         * query costs belongs to whoever writes the filter.
+         * The store imposes no result cap of its own: bounding a query's cost
+         * belongs to whoever writes the filter.
          */
         fun open(
             url: String = "http://localhost:8080",
@@ -229,11 +176,10 @@ class VespaEventStore internal constructor(
 
         /**
          * The deferred-mode drain worker: a CONFLATED signal (a burst of writes
-         * = one wake-up; drain always processes everything pending anyway) and
-         * one loop that drains on each signal, retrying with a fixed backoff on
-         * engine failure — the marker keeps the work, so a failed drain loses
-         * nothing. Fired once at startup: work a previous process left queued
-         * must not wait for the first write.
+         * = one wake-up; drain processes everything pending anyway), retrying
+         * with fixed backoff on engine failure — the marker keeps the work, so
+         * a failed drain loses nothing. Fired once at startup so work a
+         * previous process left queued doesn't wait for the first write.
          */
         private fun startDrainer(
             trust: TrustProjection,

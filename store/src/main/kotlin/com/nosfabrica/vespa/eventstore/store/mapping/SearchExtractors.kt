@@ -95,48 +95,31 @@ import com.vitorpamplona.quartz.nipF4Podcasts.metadata.PodcastMetadataEvent
 
 /**
  * Decomposes every Quartz [SearchableEvent] into the schema's search fields by
- * priority tier: title-like accessors go to the primary tier,
- * summary/description/hashtags to the secondary, and the body to the tertiary.
+ * priority tier: title-like accessors primary, summary/description/hashtags
+ * secondary, body tertiary. Each explicit branch splits exactly the accessors
+ * that kind's `indexableContent()` concatenates — mirror Quartz changes here.
+ * Kinds without an explicit branch fall back to the [SearchableEvent] branch
+ * (whole `indexableContent()` in the tertiary tier), so EVERY searchable kind,
+ * current or future, is imported.
  *
- * Each explicit branch splits exactly the accessors that kind's
- * `indexableContent()` concatenates. When Quartz adds a field to one of those,
- * mirror it here.
+ * A kind may also fill the profile *role* columns when it carries that shape:
+ * kind 31990 goes through the kind-0 columns wholesale, and any kind with a
+ * homepage/site URL fills [SearchFields.website]. The rank profiles compose
+ * role columns with `max()`/sum, so this cross-kind reuse is safe.
  *
- * Kinds whose indexableContent is a single string fall back to the
- * [SearchableEvent] branch, which lands `indexableContent()` in the tertiary
- * tier. This covers plain-content kinds (comments, chats, patches, zaps,
- * statuses…) and single-accessor kinds. So EVERY searchable kind Quartz knows,
- * current or future, is imported; the explicit branches only add field-priority
- * structure on top.
- *
- * Beyond the tiers, a kind may also fill the profile *role* columns when it
- * carries that shape of data: kind 31990 (app handler) is a full UserMetadata
- * clone and goes through the kind-0 columns wholesale, and any kind with a
- * homepage/site URL (git repos, podcasts, live streams) fills [SearchFields.website]
- * so it inherits the affiliation-domain treatment. The schema's rank profiles
- * compose the role columns with `max()`/sum, so this cross-kind reuse is safe.
- *
- * Two signals are filled SYSTEMICALLY for every tier kind, in a post-pass, so
- * they never depend on a branch remembering them (see [extract]): the event's
- * hashtags fold into the secondary tier, and its `location` tags into
- * [SearchFields.location]. The per-kind branches therefore no longer add
- * hashtags themselves.
- *
- * Non-searchable kinds return [SearchFields.NONE] and stay invisible to NIP-50.
- *
- * Extractors are derived data: changing one rolls out with
- * `reindexFullTextSearch`, with no resync.
+ * Hashtags (secondary tier) and `location` tags ([SearchFields.location]) are
+ * filled SYSTEMICALLY in a post-pass ([extract]), never by the branches.
+ * Non-searchable kinds return [SearchFields.NONE]. Extractors are derived
+ * data: changes roll out with `reindexFullTextSearch`, no resync.
  */
 object SearchExtractors {
     fun extract(event: Event): SearchFields = augment(event, base(event))
 
     /**
-     * Systemic post-pass over the per-kind [base]: fold the event's hashtags
-     * into the secondary tier and its `location` tags into the location column,
-     * for EVERY tier kind at once — so keyword and place-name recall don't
-     * depend on each kind's branch remembering to add them. Reputation-shaped kinds
-     * (kind 0, app handlers) own their columns and are left untouched;
-     * non-searchable kinds stay invisible.
+     * Systemic post-pass: fold hashtags into the secondary tier and `location`
+     * tags into the location column for every tier kind, so recall never
+     * depends on a branch remembering them. Profile-shaped kinds (kind 0, app
+     * handlers) own their columns and are left untouched.
      */
     private fun augment(
         event: Event,
@@ -437,11 +420,9 @@ object SearchExtractors {
                 tiers(event.name(), null, event.content)
             }
 
-            // kind 31990 — the app handler's metadata IS a UserMetadata clone
-            // (name/displayName/about/nip05/lud16/website), so route it through
-            // the same profile columns as kind 0 instead of flattening it into
-            // the generic tiers. An app's @-handle and site then get the same
-            // identity/affiliation treatment a person's do.
+            // kind 31990 — the app handler's metadata IS a UserMetadata clone,
+            // so route it through the kind-0 profile columns: an app's
+            // @-handle and site get the same treatment a person's do.
             is AppDefinitionEvent -> {
                 val md = event.appMetaData()
                 if (md == null) {
@@ -484,12 +465,10 @@ object SearchExtractors {
     ) = SearchFields(primary = clean(primary), secondary = clean(secondary), text = clean(text), website = clean(website))
 
     /**
-     * Trim, drop empties — and strip what the engine will not store.
-     *
-     * The scrub belongs here, at the single funnel every derived string passes
-     * through, rather than at each call site: `content` is JSON, so an illegal
-     * code point is invisible until it is parsed out of it, and one that reaches
-     * the feed costs the entire batch. See [VespaText.sanitize].
+     * Trim, drop empties, and strip what the engine will not store — at the
+     * single funnel every derived string passes through: `content` is JSON, so
+     * an illegal code point is invisible until parsed out, and one reaching the
+     * feed costs the entire batch. See [VespaText.sanitize].
      */
     private fun clean(s: String?): String? = s?.let { VespaText.sanitize(it) }?.trim()?.ifEmpty { null }
 

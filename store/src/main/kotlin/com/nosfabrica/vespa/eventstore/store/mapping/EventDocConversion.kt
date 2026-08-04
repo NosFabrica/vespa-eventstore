@@ -70,23 +70,13 @@ internal fun Event.addressOrNull(): String? =
     }
 
 /**
- * Rebuild a stored [EventDoc] into its typed Quartz [Event] — the query result path.
- *
- * The obvious `Event.fromJson(toEventJson())` reconstructs by SERIALIZING the doc
- * to a JSON string and PARSING it back, once per returned event — and on a hot
- * query path that string + parse is the single biggest source of garbage
- * (measured ~8x slower and ~5x more allocation per event than building it
- * directly).
- *
- * [EventFactory.create] is Quartz's OWN by-kind dispatch — the same registry
- * `fromJson` uses to pick the subclass (kind 1 -> TextNoteEvent, 0 ->
- * MetadataEvent, …) — but invoked straight from the stored fields, with no JSON
- * in the middle. It covers every known kind and returns a base [Event] for the
- * rest, so this is both faster AND complete: no hand-maintained kind table, and
- * the result is identical to what `fromJson` would have produced (pinned by
- * `EventDocConversionTest`). Those subclass constructors only store the seven
- * NIP-01 fields; every derived view is computed lazily, so a directly-built
- * instance is indistinguishable from a parsed one.
+ * Rebuild a stored [EventDoc] into its typed Quartz [Event] — the query result
+ * path. Uses [EventFactory.create], Quartz's own by-kind dispatch, straight from
+ * the stored fields: the obvious `Event.fromJson(toEventJson())` round-trips
+ * through a JSON string per event (measured ~8x slower, ~5x more allocation).
+ * The result is identical to what `fromJson` would produce (pinned by
+ * `EventDocConversionTest`) — subclass constructors store only the seven NIP-01
+ * fields and compute derived views lazily.
  */
 internal fun EventDoc.toEvent(): Event = EventFactory.create(id, pubkey, createdAt, kind, tagsAsArray(), content, sig)
 

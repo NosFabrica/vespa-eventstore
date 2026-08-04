@@ -41,20 +41,14 @@ import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 
 /**
- * The bulk path for a batch that CONTAINS deletions/vanishes — pure-record
- * batches take [BulkRecordInsert] instead. Run-splitting on every kind 5/62
- * would leave nothing to batch (an outbox stream is ~98% kind 5), collapsing
- * ingest to per-event speed. Instead: batch-read the working set those events
- * touch, REPLAY the sequential [NostrSemanticsStore.insert] rules against an
- * in-memory snapshot (zero I/O, so intra-batch ordering — a deletion targeting
- * an earlier event, a tombstone blocking a later one — is preserved for free),
- * then write the net diff back in bulk. Correct BY CONSTRUCTION: the replay
- * runs the same code the per-event path does.
- *
- * Turns the per-event path's O(events × round trips) into O(working-set
- * reads) + one pipelined write — the difference between weeks and hours on a
- * deletion-heavy sync. Runs under the writer lock (query-then-write stays
- * atomic); moving the preload reads out of it is a further refinement.
+ * The bulk path for a batch that CONTAINS deletions/vanishes (pure-record
+ * batches take [BulkRecordInsert]). Run-splitting on every kind 5/62 would
+ * collapse ingest to per-event speed (an outbox stream is ~98% kind 5), so
+ * instead: batch-read the working set, REPLAY the sequential
+ * [NostrSemanticsStore.insert] rules against an in-memory snapshot (preserving
+ * intra-batch ordering for free), then write the net diff in bulk. Correct by
+ * construction — the replay runs the same code the per-event path does. Runs
+ * under the writer lock, so query-then-write stays atomic.
  */
 internal class BulkMixedInsert(
     private val index: EventIndex,
@@ -98,11 +92,10 @@ internal class BulkMixedInsert(
 
     /**
      * Load every stored doc [run]'s replay could read — a SUPERSET of what the
-     * per-event insert's queries touch for this batch: existing ids (dup +
-     * deletion e-tag targets), the owners' tombstones/vanishes (guards +
-     * immunity), the records' address versions (supersession), each deletion's
-     * a-tag targets, and each vanish owner's history (the sweep). All fanned out
-     * as independent reads; the replay then needs no further I/O.
+     * per-event insert's queries touch: existing ids, the owners'
+     * tombstones/vanishes, address versions, deletion a-tag targets, and each
+     * vanish owner's history. Fanned out as independent reads; the replay then
+     * needs no further I/O.
      */
     private suspend fun preloadWorkingSet(
         snapshot: InMemoryEventIndex,
@@ -114,11 +107,10 @@ internal class BulkMixedInsert(
         val batchIds = events.map { it.id }
         val batchAddresses = events.mapNotNull { it.addressOrNull() }.distinct()
         val records = events.filter { it !is DeletionEvent && it !is RequestToVanishEvent }
-        // Only owners that provably HAVE a stored tombstone/vanish can guard this
-        // batch (GuardOwners) — for everyone else the probes come back empty, so
-        // skip them. A content batch touches ~500 owners but almost none are
-        // flagged, turning ~3 heavy queries/owner-chunk into zero. Gated per
-        // guard kind, the same as the per-event path and BulkRecordInsert.
+        // Only owners with a provably stored tombstone/vanish (GuardOwners) can
+        // guard this batch; everyone else's probes come back empty, so skip
+        // them — turning ~3 heavy queries/owner-chunk into zero. Gated per
+        // guard kind, same as the per-event path and BulkRecordInsert.
         val flaggedDeleters = guards.filterFlaggedDeleters(owners)
         val flaggedVanishers = guards.filterFlaggedVanishers(owners)
 
@@ -153,11 +145,10 @@ internal class BulkMixedInsert(
                     if (evs.any { it.tags.dTag().isNullOrEmpty() }) add(EventQuery(kinds = listOf(ka.first), authors = listOf(ka.second)))
                 }
 
-                // Deletion a-tag targets: the author's events of that kind —
-                // grouped by kind and CHUNKED by author like every other preload
-                // shape, never one query per (kind, author) pair (a 10k mixed
-                // batch can carry thousands of pairs; unchunked that was
-                // thousands of round trips under the writer lock).
+                // Deletion a-tag targets: grouped by kind and chunked by author
+                // like the other preload shapes — never one query per
+                // (kind, author) pair, which was thousands of round trips under
+                // the writer lock on a 10k mixed batch.
                 deletions
                     .flatMap { it.deleteAddresses() }
                     .filter { it.kind.isAddressable() || it.kind.isReplaceable() }

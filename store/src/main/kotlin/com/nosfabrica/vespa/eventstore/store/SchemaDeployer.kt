@@ -29,12 +29,8 @@ import java.time.Duration
 
 /**
  * Applies the bundled Vespa application package ([VespaApp]) to a running config
- * server. Standing up Vespa is the operator's job — like a database, it is a
- * prerequisite — but the SCHEMA travels with the code, so the store can deploy it
- * itself instead of asking the caller to run `vespa deploy` out of band.
- *
- * Uses only the JDK HTTP client (no curl/tar dependency), so it works anywhere the
- * store runs.
+ * server — the schema travels with the code, so no out-of-band `vespa deploy`.
+ * JDK HTTP client only (no curl/tar), so it works anywhere the store runs.
  */
 class SchemaDeployer(
     private val configUrl: String,
@@ -45,16 +41,11 @@ class SchemaDeployer(
             .build(),
 ) {
     /**
-     * If no application is already serving at [queryUrl], deploy the bundled
-     * package AND wait until it is actually serving. This is the "migrate on first
-     * run" path [VespaEventStore.open] takes: a fresh Vespa gets the schema; one
-     * that already serves an app is left untouched (a schema upgrade is an explicit
-     * [deploy], not a silent redeploy on every boot).
-     *
-     * The wait matters: `prepareandactivate` returns as soon as the config is
-     * activated, but Vespa's query/document container takes seconds more to start
-     * serving. Building the feed client before then fails its handshake — so [open]
-     * would hand back a store that can't talk to Vespa. [awaitServing] closes that gap.
+     * If nothing is serving at [queryUrl], deploy the bundled package and wait
+     * until it actually serves. A Vespa already serving an app is left untouched
+     * (a schema upgrade is an explicit [deploy], not a silent redeploy on boot).
+     * The wait matters: `prepareandactivate` returns before the container serves,
+     * and building the feed client in that gap fails its handshake.
      */
     fun deployIfAbsent(queryUrl: String) {
         if (isServing(queryUrl)) return
@@ -62,11 +53,7 @@ class SchemaDeployer(
         awaitServing(queryUrl)
     }
 
-    /**
-     * Block until an application is serving at [queryUrl] (or throw after [timeout]).
-     * Polls [isServing] — a fresh deploy needs a few seconds before the query
-     * container answers.
-     */
+    /** Poll [isServing] until an application serves at [queryUrl], or throw after [timeout]. */
     fun awaitServing(
         queryUrl: String,
         timeout: Duration = Duration.ofMinutes(2),
@@ -93,10 +80,9 @@ class SchemaDeployer(
         }.getOrDefault(false)
 
     /**
-     * POST the [zip] package to the config server's prepareandactivate endpoint —
-     * the same request `vespa deploy` makes, JDK-native. Throws on any
-     * non-2xx so a failed deploy surfaces instead of a store that silently can't
-     * query. Returns the config server's response body.
+     * POST the [zip] package to prepareandactivate — the same request `vespa
+     * deploy` makes. Throws on non-2xx so a failed deploy surfaces instead of a
+     * store that silently can't query. Returns the response body.
      */
     fun deploy(zip: ByteArray = VespaApp.zipBytes()): String {
         val req =

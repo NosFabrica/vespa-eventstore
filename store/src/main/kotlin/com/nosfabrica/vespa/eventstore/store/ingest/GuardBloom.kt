@@ -24,28 +24,20 @@ import java.util.concurrent.atomic.AtomicLongArray
 
 /**
  * A fixed-capacity, concurrent Bloom filter over owner keys — the scalable
- * backing for [GuardOwners], replacing an exact `HashSet` that had to give up
- * (and disable the guard-skip) past 10k distinct deleters.
+ * backing for [GuardOwners] (an exact `HashSet` gave up past 10k deleters).
  *
- * The ONLY property [GuardOwners] relies on for correctness is **no false
- * negatives**: [mightContain] returns `false` only for a key that was provably
- * never [add]ed, so skipping the guard probe on a `false` can never skip a
- * needed one. A Bloom filter guarantees exactly that — `false` means at least
- * one of the key's bits is unset, which is impossible after [add]. A false
- * POSITIVE (all bits collide) only costs a wasted probe — the same over-flag
- * cost the exact set's design already accepted — so a higher fill just trades
- * memory for probe count, NEVER for correctness.
+ * The ONLY correctness property [GuardOwners] relies on is **no false
+ * negatives**: [mightContain] returns `false` only for a key provably never
+ * [add]ed, so skipping a guard probe on `false` can never skip a needed one.
+ * A false POSITIVE only costs a wasted probe; overfill trades memory for probe
+ * count, never correctness.
  *
- * Thread-safe by construction: bits live in an [AtomicLongArray]; [add] ORs each
- * word atomically and [mightContain] reads words plainly (AtomicLongArray reads
- * carry volatile visibility). Concurrent add-of-X / test-of-Y is safe — Y's bits
- * that X does not touch are unaffected, and per the store's one-write-lane-per-
- * owner model no other lane tests X while X's own guard is being recorded.
+ * Thread-safe: [add] ORs words atomically in an [AtomicLongArray], reads carry
+ * volatile visibility, and per the store's one-write-lane-per-owner model no
+ * other lane tests X while X's own guard is being recorded.
  *
  * Sizing follows the standard Bloom optima for [expectedInsertions] at [fpp]:
  *   m = -n ln p / (ln 2)^2 bits,  k = round(m/n · ln 2) hashes.
- * Overfilling past [expectedInsertions] degrades gracefully — the false-positive
- * rate climbs (more wasted probes) but never yields a false negative.
  */
 internal class GuardBloom(
     expectedInsertions: Int,
