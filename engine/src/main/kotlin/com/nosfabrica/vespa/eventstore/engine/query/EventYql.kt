@@ -242,7 +242,7 @@ object EventYql {
      * otherwise returns `grouping.defaultMaxGroups` groups (TEN). The third
      * ceiling, `grouping.globalMaxGroups`, must be disabled too but CANNOT be
      * sent per-request (Vespa 400s any request carrying it): it lives in the
-     * bundled query profile (`vespa/app/search/query-profiles/default.xml`),
+     * bundled query profile (`engine/app/search/query-profiles/default.xml`),
      * and a deployment that replaces that profile must carry the field over.
      */
     private fun grouping(

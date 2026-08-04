@@ -262,7 +262,7 @@ place column:
 
 Anything Quartz parses to a `SearchableEvent` is indexed, current or future. The
 authoritative mapping is
-[`store/…/SearchExtractors.kt`](store/src/main/kotlin/com/nosfabrica/vespa/eventstore/store/mapping/SearchExtractors.kt).
+[`store/…/SearchExtractors.kt`](store/src/main/kotlin/com/nosfabrica/vespa/eventstore/mapping/SearchExtractors.kt).
 
 ## Quick start
 
@@ -272,7 +272,7 @@ Vespa is a prerequisite, like a database — stand one up, then point the store 
 dependencies {
     implementation("com.nosfabrica.vespa.eventstore:store:1.0.0")
 
-    // Optional: in-memory test doubles (InMemoryEventIndex, MockVespaEngine),
+    // Optional: the wire-level test double (MockVespaEngine); InMemoryEventIndex ships in the engine artifact itself,
     // so your own tests run with no Vespa instance.
     testImplementation(testFixtures("com.nosfabrica.vespa.eventstore:engine:1.0.0"))
 }
@@ -365,7 +365,7 @@ Run the full test suite:
 ./gradlew test
 ```
 
-The `:engine` testFixtures (`InMemoryEventIndex`, `MockVespaEngine`) let the tests
+`InMemoryEventIndex` (in the engine artifact) and the `:engine` testFixtures (`MockVespaEngine`) let the tests
 run with no Vespa instance up, so `./gradlew test` needs nothing external.
 
 ## Publishing

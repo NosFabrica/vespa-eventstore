@@ -8,7 +8,7 @@ plugins {
     alias(libs.plugins.kotlin.jvm) apply false
     alias(libs.plugins.kotlin.serialization) apply false
     alias(libs.plugins.diffplug.spotless)
-    // Load once on the root classpath; the publishable modules apply it (see :vespa/:store).
+    // Load once on the root classpath; the publishable modules apply it (see :engine/:store).
     alias(libs.plugins.vanniktech.mavenPublish) apply false
 }
 

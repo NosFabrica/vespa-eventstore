@@ -32,5 +32,5 @@ object VespaApp {
     /** The zipped application package bytes, ready to POST to a Vespa config server. */
     fun zipBytes(): ByteArray =
         VespaApp::class.java.getResourceAsStream(RESOURCE)?.use { it.readBytes() }
-            ?: error("bundled Vespa application package not found on the classpath ($RESOURCE) - is :vespa on the runtime classpath?")
+            ?: error("bundled Vespa application package not found on the classpath ($RESOURCE) - is :engine on the runtime classpath?")
 }

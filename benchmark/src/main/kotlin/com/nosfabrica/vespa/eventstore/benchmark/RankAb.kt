@@ -44,7 +44,7 @@ import java.nio.file.Path
  * `query()` input, so a candidate config is just extra
  * `ranking.features.query(...)` params on the request — NO deploy, NO
  * reindex, NO re-feed. Once a config wins, its values become the new
- * defaults in vespa/app/schemas/event.sd.
+ * defaults in engine/app/schemas/event.sd.
  *
  * The YQL is built by [EventYql] itself — imported, never reimplemented — so
  * what this sends is byte-identical to what the library sends in production.
@@ -71,7 +71,7 @@ object RankAb {
             "baseline" to mapOf(),
             // The event.sd defaults as of the near-tier work. Use against a
             // cluster that has NOT been upgraded yet to preview the shipped
-            // change. KEEP IN SYNC with vespa/app/schemas/event.sd.
+            // change. KEEP IN SYNC with engine/app/schemas/event.sd.
             "shipped" to
                 mapOf(
                     "w_name_tier" to 130000.0,

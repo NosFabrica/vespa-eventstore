@@ -140,7 +140,7 @@ class VespaReputationIndex(
         /** Docs asked for per visit response (Vespa's per-request ceiling is 1024). */
         const val VISIT_PAGE = 1024
 
-        /** Server-side visit timeout, strictly under VespaHttp's visit read deadline (see VespaEventIndex.pagedWalk). */
+        /** Server-side visit timeout, strictly under VespaHttp's visit read deadline (see VespaVisits.pagedWalk). */
         const val VISIT_SERVER_TIMEOUT_SECONDS = 90L
 
         /** Backend buckets read in parallel per visit page — the event walk's measured default. */

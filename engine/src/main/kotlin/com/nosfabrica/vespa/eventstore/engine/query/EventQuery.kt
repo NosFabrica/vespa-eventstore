@@ -115,7 +115,7 @@ data class EventQuery(
      * Emit the direct prefix/fuzzy terms against the *_parts / *_tokens
      * attribute fields (the near tier). On by default; the client flips it off
      * ONLY as a compatibility demotion when the serving schema predates those
-     * fields (any reference is then HTTP 400 — see VespaEventIndex.nearSafe).
+     * fields (any reference is then HTTP 400 — see SchemaFallbacks.withNearFallback).
      * Not a caller-facing knob.
      */
     val nearMatching: Boolean = true,

@@ -165,7 +165,7 @@ internal object FuzzyWordGroup {
      *
      * [nearFields] off drops every clause referencing the near/weak attribute
      * fields — the compatibility demotion for a schema that predates them,
-     * where any reference is HTTP 400 (see VespaEventIndex.nearSafe). The
+     * where any reference is HTTP 400 (see SchemaFallbacks.withNearFallback). The
      * gram nets are NOT gated: *_gram fields exist on every deployed schema.
      */
     private fun wordGroup(

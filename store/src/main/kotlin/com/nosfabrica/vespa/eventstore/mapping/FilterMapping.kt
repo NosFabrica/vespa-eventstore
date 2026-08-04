@@ -29,7 +29,7 @@ import com.vitorpamplona.quartz.utils.Hex
 /*
  * NIP-01/NIP-50 filter -> engine query translation. A pure mapping with no
  * store state: the Quartz REQ Filter (with the NIP-50 sort:/filter:/include:spam
- * extensions) becomes the Nostr-agnostic EventQuery the :vespa module builds YQL
+ * extensions) becomes the Nostr-agnostic EventQuery the :engine module builds YQL
  * from.
  */
 

@@ -529,7 +529,7 @@ much), so only structural changes are reliably attributable. Two landed:
    [transport section](#the-read-transport-okhttp-needed-tcp_nodelay-transportprobe).
 
 Everything is gated by the parity harness (now **127/127**, including the
-list-shaped specs) and the vespa test suite. Measured id-lookup gain from (2):
+list-shaped specs) and the engine test suite. Measured id-lookup gain from (2):
 **+34–65 %** across runs. Server-side matching and the NIP-50 ranking cost are
 inherent to the engine and were left alone (search relevance is a feature, not
 overhead to cut).
@@ -970,7 +970,7 @@ The per-event `insert()` path ran its three independent admission reads — dedu
 NIP-09 tombstone, NIP-62 vanish — strictly in series. They now fire concurrently
 and are checked in the original precedence, so a per-event insert pays one round
 trip's latency for the guards instead of three (the bulk `batchInsert` path,
-which already batches these, is untouched). All 135 store+vespa tests, including
+which already batches these, is untouched). All 135 store+engine tests, including
 the full NIP-09/40/62 semantics suite, still pass.
 
 ### Vespa config studied
@@ -1035,7 +1035,7 @@ events), and noise on local disk.
 | `numthreadspersearch` | 1 (above) | already throughput-optimal for concurrent serving; raise only for latency-critical single-query deployments |
 | `paged` attributes | not run | **scale** lever, not speed — mmap/disk-backed attributes let the corpus grow past RAM (the corpus-past-SQLite story), at read cost |
 | match-phase early-terminate | not run | **trap** — approximate; caps `totalCount` and can miss the newest, breaking exact-newest-N REQ semantics |
-| feeding concurrency / feed-client conns | 1.0 / 8×256 | already maxed (services.xml + `VespaEventIndex`) |
+| feeding concurrency / feed-client conns | 1.0 / 8×256 | already maxed (services.xml + `VespaFeed`) |
 
 **Bottom line: no single-node config knob meaningfully speeds ingest here** — the
 cost is the jdisc container tier's per-document marshalling, not a tunable, and
@@ -1136,7 +1136,7 @@ Building this harness turned up a spec-compliance difference. NIP-09 says:
 Given N (note), D1 (kind 5 deleting N), D2 (kind 5 deleting D1):
 
 - **This store keeps `[D1, D2]`** — D2 targeting the deletion D1 is a no-op, per
-  spec. (`NostrSemanticsStore.applyDeletion` skips kind-5/kind-62 targets.)
+  spec. (`Deletions.applyDeletion` skips kind-5/kind-62 targets.)
 - **Quartz's SQLite store keeps `[D2]`** — it has no such guard and erases D1,
   **violating NIP-09**. (Confirmed in `sqlite/DeletionRequestModule.kt`: the
   delete-by-id path has no kind-5/62 exclusion.)

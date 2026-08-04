@@ -4,7 +4,7 @@ plugins {
 }
 
 dependencies {
-    // The store implements Quartz's IEventStore on top of :vespa's engine
+    // The store implements Quartz's IEventStore on top of :engine's
     // port — both appear in its public API.
     api(libs.quartz)
     api(project(":engine"))
