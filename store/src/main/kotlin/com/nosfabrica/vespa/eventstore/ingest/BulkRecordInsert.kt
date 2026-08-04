@@ -232,7 +232,10 @@ internal class BulkRecordInsert(
             }
             if (toPut.isNotEmpty()) index.putAll(toPut.values.map { it.toDoc() })
             alive().forEach { i -> outcome[i] = IEventStore.InsertOutcome.Accepted }
-            return outcome.map { it ?: IEventStore.InsertOutcome.Rejected(Rejections.INSERT_FAILED) }
+            // A row this run never decided is the STORE's fault, not the event's:
+            // Failed tells the caller to re-offer it, where Rejected would say
+            // dropping it is safe.
+            return outcome.map { it ?: IEventStore.InsertOutcome.Failed(Rejections.INSERT_FAILED) }
         }
 
         // Read-then-supersede (default): existing versions for every touched
@@ -320,7 +323,10 @@ internal class BulkRecordInsert(
         // into write / proj.fetch / proj.write.)
         if (toPut.isNotEmpty()) index.putAll(toPut.values.map { it.toDoc() })
         alive().forEach { i -> outcome[i] = IEventStore.InsertOutcome.Accepted }
-        return outcome.map { it ?: IEventStore.InsertOutcome.Rejected(Rejections.INSERT_FAILED) }
+        // A row this run never decided is the STORE's fault, not the event's:
+        // Failed tells the caller to re-offer it, where Rejected would say
+        // dropping it is safe.
+        return outcome.map { it ?: IEventStore.InsertOutcome.Failed(Rejections.INSERT_FAILED) }
     }
 
     /**
