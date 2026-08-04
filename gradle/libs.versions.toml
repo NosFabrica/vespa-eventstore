@@ -5,15 +5,16 @@ app = "1.0.0"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"
 # Quartz from JitPack (amethyst @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
-# 1622bd7109 = amethyst PR #3850 "standardize timeout semantics to idle windows
-# across all accessory APIs" (2026-08-03); prev bf41e75b78 (2026-08-02, PR #3848:
-# COUNT stopped inheriting the default page size). The range is confined to the
-# relay-client accessories — every fetchAll*/fetchFirst/count wait is now an idle
-# window reset by relay progress, and their `timeoutMs` is renamed
-# `idleTimeoutMs` (source-breaking for named-argument callers). This store calls
-# none of them, and nothing in the range touches IEventStore or SearchableEvent,
-# so the store contract and the search extractors are unaffected.
-quartz = "c029b271e7" # NIP-50 grammar in SearchQuery, SearchFieldExtractor/IndexableFields, RejectionReason, Event.owner()/supersedes(), isIndexableTagName - the store consumes these upstream now
+# c029b271e7 = amethyst PR #3854 "nip50Search: search grammar + weighted field
+# extraction; nip01Core: shared store-semantics rules" (2026-08-04): SearchQuery
+# parses the "phrase"/-word syntax itself, SearchFieldExtractor/IndexableFields
+# carry the per-kind decomposition, RejectionReason standardizes rejection
+# wording, and Event.owner()/supersedes()/isIndexableTagName become shared rules
+# — this store consumes all of it (FilterMapping, SearchExtractors, and
+# Rejections delegate upstream). Prev 9231195890 (2026-08-04, PR #3853: the
+# quartz codebase skills imported into .claude/skills/ here — #3854 touched no
+# skill files, so they are current for this pin too).
+quartz = "c029b271e7"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 sqlite = "2.7.0"
