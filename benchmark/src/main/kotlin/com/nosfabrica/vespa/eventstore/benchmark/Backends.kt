@@ -20,8 +20,8 @@
  */
 package com.nosfabrica.vespa.eventstore.benchmark
 
-import com.nosfabrica.vespa.eventstore.store.NostrSemanticsStore
-import com.nosfabrica.vespa.eventstore.vespa.InMemoryEventIndex
+import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
+import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.sqlite.EventStore as SqliteEventStore
 

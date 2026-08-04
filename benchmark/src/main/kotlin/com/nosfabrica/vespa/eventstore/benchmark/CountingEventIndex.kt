@@ -20,10 +20,10 @@
  */
 package com.nosfabrica.vespa.eventstore.benchmark
 
-import com.nosfabrica.vespa.eventstore.vespa.client.DocRef
-import com.nosfabrica.vespa.eventstore.vespa.client.EventIndex
-import com.nosfabrica.vespa.eventstore.vespa.doc.EventDoc
-import com.nosfabrica.vespa.eventstore.vespa.query.EventQuery
+import com.nosfabrica.vespa.eventstore.engine.DocRef
+import com.nosfabrica.vespa.eventstore.engine.EventIndex
+import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
+import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import java.util.concurrent.atomic.AtomicLong
 
 /**

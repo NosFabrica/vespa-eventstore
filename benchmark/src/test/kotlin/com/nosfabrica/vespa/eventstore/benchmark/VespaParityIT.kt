@@ -20,7 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore.benchmark
 
-import com.nosfabrica.vespa.eventstore.store.VespaEventStore
+import com.nosfabrica.vespa.eventstore.VespaEventStore
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Tag

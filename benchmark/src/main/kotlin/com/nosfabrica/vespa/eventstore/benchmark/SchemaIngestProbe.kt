@@ -20,8 +20,8 @@
  */
 package com.nosfabrica.vespa.eventstore.benchmark
 
-import com.nosfabrica.vespa.eventstore.vespa.client.VespaEventIndex
-import com.nosfabrica.vespa.eventstore.vespa.doc.EventDoc
+import com.nosfabrica.vespa.eventstore.engine.client.VespaEventIndex
+import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import kotlinx.coroutines.runBlocking
 import kotlin.system.measureNanoTime
 
@@ -63,7 +63,7 @@ object SchemaIngestProbe {
             val nanos = measureNanoTime { runBlocking { docs.chunked(batch).forEach { idx.putAll(it) } } }
             val secs = nanos / 1e9
             println(String.format("schema-ingest (warm): fed %d docs (batch %d) in %.1fs = %.0f events/sec", size, batch, secs, size / secs))
-            println(idx.feedGauge())
+            println(idx.feedStatus())
         }
     }
 }

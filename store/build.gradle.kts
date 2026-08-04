@@ -4,13 +4,13 @@ plugins {
 }
 
 dependencies {
-    // The store implements Quartz's IEventStore on top of :vespa's engine
+    // The store implements Quartz's IEventStore on top of :engine's
     // port — both appear in its public API.
     api(libs.quartz)
-    api(project(":vespa"))
+    api(project(":engine"))
     implementation(libs.kotlinx.coroutines)
     testImplementation(kotlin("test"))
-    testImplementation(testFixtures(project(":vespa")))
+    testImplementation(testFixtures(project(":engine")))
     // Virtual-time test clock: measures read/write serialization deterministically
     // by injecting per-round-trip delays into the index (see BatchIngestConcurrencyTest).
     testImplementation(libs.kotlinx.coroutines.test)

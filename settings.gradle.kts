@@ -17,9 +17,9 @@ dependencyResolutionManagement {
 rootProject.name = "vespa-eventstore"
 
 // A Vespa-backed Quartz IEventStore with trust-ranked NIP-50 search.
-//   :vespa — document shapes, YQL query building, the Vespa clients, the bundled app package
+//   :engine — document shapes, YQL query building, the Vespa clients, the bundled app package
 //   :store — Quartz IEventStore semantics on top, the trust projection, and the open() front door
 //   :benchmark — head-to-head insert/query benchmark vs Quartz's SQLite store (not published)
-include(":vespa")
+include(":engine")
 include(":store")
 include(":benchmark")

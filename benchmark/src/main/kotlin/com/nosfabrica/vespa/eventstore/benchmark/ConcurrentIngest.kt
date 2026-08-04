@@ -20,7 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore.benchmark
 
-import com.nosfabrica.vespa.eventstore.store.VespaEventStore
+import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope

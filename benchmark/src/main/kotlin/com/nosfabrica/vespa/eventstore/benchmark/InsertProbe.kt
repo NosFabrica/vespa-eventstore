@@ -20,7 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore.benchmark
 
-import com.nosfabrica.vespa.eventstore.store.VespaEventStore
+import com.nosfabrica.vespa.eventstore.VespaEventStore
 import kotlinx.coroutines.runBlocking
 import kotlin.system.measureNanoTime
 

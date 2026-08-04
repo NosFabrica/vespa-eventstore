@@ -67,7 +67,7 @@ deployment, that invariant must survive:
 ## Workflow
 
 1. **Extract the bundled package** for your library version — it is inside
-   the `:vespa` jar as `vespa-app.zip` (`unzip vespa-x.y.z.jar vespa-app.zip`
+   the `:engine` jar as `vespa-app.zip` (`unzip engine-x.y.z.jar vespa-app.zip`
    then unzip that), or programmatically via `VespaApp.zipBytes()`.
 2. **Replace `services.xml`** with your topology —
    [`services-multinode-example.xml`](services-multinode-example.xml) is an

@@ -20,8 +20,8 @@
  */
 package com.nosfabrica.vespa.eventstore.benchmark
 
-import com.nosfabrica.vespa.eventstore.store.VespaEventStore
-import com.nosfabrica.vespa.eventstore.vespa.query.EventQuery
+import com.nosfabrica.vespa.eventstore.VespaEventStore
+import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import kotlinx.coroutines.runBlocking
 import kotlin.system.measureNanoTime
 
@@ -79,7 +79,7 @@ object RankQuality {
             )
 
             VespaEventStore.open(url).use { store ->
-                val index = store.events
+                val index = store.eventIndex
 
                 suspend fun ids(
                     term: String,

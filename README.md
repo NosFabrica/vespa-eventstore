@@ -262,7 +262,7 @@ place column:
 
 Anything Quartz parses to a `SearchableEvent` is indexed, current or future. The
 authoritative mapping is
-[`store/…/SearchExtractors.kt`](store/src/main/kotlin/com/nosfabrica/vespa/eventstore/store/mapping/SearchExtractors.kt).
+[`store/…/SearchExtractors.kt`](store/src/main/kotlin/com/nosfabrica/vespa/eventstore/mapping/SearchExtractors.kt).
 
 ## Quick start
 
@@ -272,16 +272,16 @@ Vespa is a prerequisite, like a database — stand one up, then point the store 
 dependencies {
     implementation("com.nosfabrica.vespa.eventstore:store:1.0.0")
 
-    // Optional: in-memory test doubles (InMemoryEventIndex, MockVespaEngine),
+    // Optional: the wire-level test double (MockVespaEngine); InMemoryEventIndex ships in the engine artifact itself,
     // so your own tests run with no Vespa instance.
-    testImplementation(testFixtures("com.nosfabrica.vespa.eventstore:vespa:1.0.0"))
+    testImplementation(testFixtures("com.nosfabrica.vespa.eventstore:engine:1.0.0"))
 }
 ```
 
 Published to Maven Central under the `com.nosfabrica.vespa.eventstore` group.
 
 ```kotlin
-import com.nosfabrica.vespa.eventstore.store.VespaEventStore
+import com.nosfabrica.vespa.eventstore.VespaEventStore
 
 // Connects, and on a fresh Vespa deploys the bundled schema (autoDeploy, default on).
 VespaEventStore.open("http://localhost:8080").use { store ->
@@ -326,7 +326,7 @@ For a commit snapshot, JitPack works:
   events *and* unsigned rumors (NIP-59 inner events, drafts). Verifying signed
   network input is the caller's job, at ingress.
 - **The schema ships with the code.** The Vespa application package is bundled into
-  the `:vespa` jar and `open(autoDeploy = true)` deploys it to a fresh Vespa on first
+  the `:engine` jar and `open(autoDeploy = true)` deploys it to a fresh Vespa on first
   run — so the schema and the query builder can never drift. An operator who owns
   deployment out of band can pass `autoDeploy = false` — that is also the path to a
   multi-node cluster: [`docs/scaling.md`](docs/scaling.md) is the operator guide
@@ -365,7 +365,7 @@ Run the full test suite:
 ./gradlew test
 ```
 
-The `:vespa` testFixtures (`InMemoryEventIndex`, `MockVespaEngine`) let the tests
+`InMemoryEventIndex` (in the engine artifact) and the `:engine` testFixtures (`MockVespaEngine`) let the tests
 run with no Vespa instance up, so `./gradlew test` needs nothing external.
 
 ## Publishing

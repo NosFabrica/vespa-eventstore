@@ -20,7 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore.benchmark
 
-import com.nosfabrica.vespa.eventstore.vespa.query.EventYql
+import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import okhttp3.MediaType.Companion.toMediaType

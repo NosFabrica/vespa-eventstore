@@ -20,10 +20,10 @@
  */
 package com.nosfabrica.vespa.eventstore.benchmark
 
-import com.nosfabrica.vespa.eventstore.store.VespaEventStore
-import com.nosfabrica.vespa.eventstore.vespa.client.VespaEventIndex
-import com.nosfabrica.vespa.eventstore.vespa.doc.EventDoc
-import com.nosfabrica.vespa.eventstore.vespa.query.EventQuery
+import com.nosfabrica.vespa.eventstore.VespaEventStore
+import com.nosfabrica.vespa.eventstore.engine.client.VespaEventIndex
+import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
+import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
