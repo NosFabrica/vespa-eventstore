@@ -12,6 +12,17 @@
      not trimmed. Int.MAX_VALUE is how you say "don't cap"; the only bound left
      is the caller's own `limit` (and the host's memory).
 
+     The sentinel itself is FREE — measured 2026-08-05, 3000-doc corpus, median
+     of 25. Vespa sizes its hit collector from what actually MATCHES, not from
+     what was asked for, so a selective query pays nothing for a huge ceiling
+     (12 matches: 10.07ms at hits=50, 6.66ms at hits=2147483647) and a broad one
+     pays for the docs it RETURNS, not the ceiling (3000 matches: 29.47ms at
+     hits=3000, 24.74ms at hits=2147483647). Cost tracks the answer's size,
+     which is what "return everything" means and cannot be traded away — so a
+     limit-less REQ is not an exposure to be capped here. Accepting any limit,
+     including none, is the store contract: IEventStore.query() returns a List,
+     so materializing the match set is inherent, not a choice this layer makes.
+
      grouping.globalMaxGroups: while this ceiling is on, Vespa fails any
      grouping pipeline that has no max() outright ("Cannot return unbounded
      number of groups"). Every aggregation this store issues — count, distinct

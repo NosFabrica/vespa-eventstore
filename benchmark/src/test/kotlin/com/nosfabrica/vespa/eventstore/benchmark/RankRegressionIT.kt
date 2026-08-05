@@ -86,6 +86,218 @@ class RankRegressionIT {
             profile(19, name = "ODELL mirror", pubkey = pk(19)),
             // A well-but-not-top-trusted bio mention — must NOT cross above the foil.
             profile(20, name = "fan zine", about = "all things ODELL, unofficial", pubkey = pk(20)),
+            // --- the 2026-08-05 "amethyst" report: whole-field exactness inside
+            // the token band. Field-for-field the four docs from the reported
+            // export, and they share ONE author (pk(21)) on purpose: wot_mult()
+            // is then identical across them and the order is text ALONE. 21/24
+            // are the exact hits (the app handler's profile name and the
+            // application's primary field ARE the query); 22/23 merely contain
+            // it, and repeat it across secondary and body — the shape that won.
+            doc(
+                21,
+                kind = 31990,
+                pubkey = pk(21),
+                search = SearchFields(name = "Amethyst", about = "Nostr client for Android", website = "https://amethyst.social/"),
+            ),
+            doc(
+                22,
+                kind = 41,
+                pubkey = pk(21),
+                search =
+                    SearchFields(
+                        primary = "Amethyst Devs",
+                        secondary = "Channel for coders and designers to discuss Amethyst development.",
+                    ),
+            ),
+            doc(
+                23,
+                kind = 30023,
+                pubkey = pk(21),
+                search =
+                    SearchFields(
+                        primary = "Schedule posts for later in Amethyst",
+                        secondary = "amethyst grownostr",
+                        text =
+                            "There's no magic server in the cloud holding your post. Your phone publishes it, and then your " +
+                                "#amethyst, on your phone, wakes up and fires it off to the relays. Turn on always-on " +
+                                "notifications: this keeps a small background service alive so #amethyst can wake up on " +
+                                "schedule and post even while the app is closed. #amethyst checks for due posts on a " +
+                                "15-minute cycle. The next time you open #amethyst with a working internet connection, any " +
+                                "overdue scheduled posts get published.",
+                    ),
+            ),
+            doc(
+                24,
+                kind = 32267,
+                pubkey = pk(21),
+                search =
+                    SearchFields(
+                        primary = "Amethyst",
+                        secondary = "The all-in-one Nostr client social-network nostr",
+                        text = "A privacy-focused Nostr client for Android. Built-in TOR support, the most configurable relay system.",
+                    ),
+            ),
+            // --- the 2026-08-05 "Avi Burra" / "Jon Gordon" reports: a perfect
+            // match losing to a long title by a ONE- OR TWO-POINT trust gap.
+            // Unlike the amethyst pair these have DIFFERENT authors, near the
+            // top of the scale where wot_mult() is steepest — 98-vs-100 is
+            // +5.7% and 96-vs-97 is +2.9%, both larger than any within-band
+            // text signal short of a rung. Fields are the reported ones.
+            doc(
+                25,
+                kind = 0,
+                pubkey = pk(25),
+                search =
+                    SearchFields(
+                        name = "AviBurra",
+                        displayName = "Avi Burra",
+                        about = "Chronicler of the Sovereign Age",
+                        nip05 = "avi@nip21.media",
+                        lud16 = "avi@primal.net",
+                        website = "casanostra.ink",
+                    ),
+            ),
+            doc(
+                26,
+                kind = 30023,
+                pubkey = pk(26),
+                search =
+                    SearchFields(
+                        primary = "Do You Want a Seat at the Table? Join Avi Burra's Journey to Paraguay!",
+                        text =
+                            "Avi was born in India and moved to New York a few months after 9/11. Avi wanted to create " +
+                                "something that welcomed people in without turning it into a lecture. Avi left his fiat job " +
+                                "on July 4th. For Avi, Finding Home is a way to show lives full of creativity and purpose. " +
+                                "Avi is currently at 82% of his goal, and Avi will share meals with shop owners in Paraguay.",
+                    ),
+            ),
+            doc(
+                27,
+                kind = 0,
+                pubkey = pk(27),
+                search =
+                    SearchFields(
+                        name = "thebitcoinyogi",
+                        displayName = "Jon Gordon",
+                        about = "Bringing bitcoin and nostr to healthcare and Chicago",
+                        nip05 = "jon@soundhsa.com",
+                        lud16 = "thebitcoinyogi@primal.net",
+                        website = "https://www.soundhsa.com",
+                    ),
+            ),
+            doc(
+                28,
+                kind = 34235,
+                pubkey = pk(28),
+                search =
+                    SearchFields(
+                        primary = "Take a Look Into the Future of Healthcare, It's Purple and Orange | Jon Gordon",
+                        secondary = "Where to find Jon Gordon: Satoshi Health Advisors, NosFabrica",
+                        text = "Where to find Jon Gordon: Satoshi Health Advisors and NosFabrica. You can hear this episode on Fountain.",
+                    ),
+            ),
+            // --- the 2026-08-05 "Primal" report: the SINGLE-word shape, and the
+            // starkest evidence of what the token band degenerates to. The
+            // reported 40 hits came back in EXACT author-trust order —
+            // 99,99,99,99,98,97,97,97,97,97,97,96,… — with the account whose
+            // name IS "primal" at #6 behind four trust-99 articles. Every hit
+            // scores the same w_name_tier and no within-band text signal is
+            // worth a single trust point, so the sort is trust and nothing
+            // else. Single-word queries also make queryCompleteness a constant
+            // 1.0, leaving fieldCompleteness to carry perfect_match() alone.
+            doc(
+                29,
+                kind = 0,
+                pubkey = pk(29),
+                search =
+                    SearchFields(
+                        name = "primal",
+                        displayName = "primal",
+                        about = "The official Primal account",
+                        nip05 = "primal@primal.net",
+                        lud16 = "primal@primal.net",
+                    ),
+            ),
+            doc(
+                30,
+                kind = 30023,
+                pubkey = pk(30),
+                search =
+                    SearchFields(
+                        primary = "Introducing Primal for iOS",
+                        text =
+                            "What happens when you integrate a Nostr client with a bitcoin lightning wallet? They both get " +
+                                "massively better. Primal for iOS is now available on the App Store.",
+                    ),
+            ),
+            // Same author as 29, primary field ALSO exactly the query: a follow
+            // set titled "Primal". It is a genuine perfect match, so the rung
+            // lifts it too — the profile stays ahead only on its identity
+            // credit (nip05/lud16 primal@…, ~50×bm25 against the set's zero;
+            // the gram terms that could offset it are capped at gram_cap).
+            // Deliberately here to keep that margin under test. What is NOT
+            // asserted is where the SET lands relative to the trust-99
+            // article: the rung puts it above, and whether a kind-30000 set
+            // belongs in the name tier at all is an extractor question
+            // (upstream, in Quartz's SearchFieldExtractor), not a ranking one.
+            doc(31, kind = 30000, pubkey = pk(29), search = SearchFields(primary = "Primal")),
+            // --- the 2026-08-05 "Jack" report: an AMBIGUOUS query. The four
+            // cases above each have one obviously-right answer; "Jack" has
+            // three accounts literally named jack and a dozen real people
+            // named Jack Something, so the rung cannot pick a winner — it can
+            // only put the whole-field matches above the fragments and let
+            // trust order what remains. Two shapes the others never reach:
+            //   * SEVERAL simultaneous perfect matches (32, 34) — the rung
+            //     saturates and trust is the tie-break, which is correct.
+            //   * a perfect match that must overturn a HIGHER-trust partial
+            //     (34 at trust 97 over 33 at trust 100). The previous reports
+            //     only ever asked the rung to beat +1 or +2 points; this asks
+            //     for 3, and bounds how much it may buy.
+            // 33 also pins a sibling-field split: its `name` (jacksweeney) is
+            // reachable only through the NEAR tier, its display_name matches
+            // exactly, so the doc must arrive in the token band.
+            doc(
+                32,
+                kind = 0,
+                pubkey = pk(32),
+                search = SearchFields(name = "Jack", displayName = "jack (n/acc)", nip05 = "jack@chakany.systems"),
+            ),
+            doc(
+                33,
+                kind = 0,
+                pubkey = pk(33),
+                search = SearchFields(name = "jacksweeney", displayName = "jack sweeney", nip05 = "jacksweeney@nostrplebs.com"),
+            ),
+            doc(34, kind = 0, pubkey = pk(34), search = SearchFields(name = "jack", nip05 = "jack@primal.net")),
+            // --- B1/B2 probes (2026-08-05 audit), ONE author so trust cancels:
+            // 40 spells the query, 42 reverses it, 41 concatenates it. Before
+            // the audit 40 and 42 were bit-identical (text_score() never
+            // carried the w_proximity term relevance() has, so the default
+            // profile was blind to word order) and 40 read perfect_match 0.667
+            // rather than 1.0 (fieldMatch's queryCompleteness divides by the
+            // SYNTHETIC terms FuzzyWordGroup adds, which a normally-spelled
+            // doc can never match).
+            doc(40, kind = 0, pubkey = pk(40), search = SearchFields(name = "Jon Gordon", about = "bitcoin")),
+            doc(41, kind = 0, pubkey = pk(40), search = SearchFields(name = "JonGordon", about = "bitcoin")),
+            doc(42, kind = 0, pubkey = pk(40), search = SearchFields(name = "Gordon Jon", about = "bitcoin")),
+            // 43 is the MIXED-FIELD trap: its `name` reverses the query (best
+            // coverage, worst order) while its display_name holds the query in
+            // order inside a longer string (worst coverage, best order). Taking
+            // each factor's max independently across fields scores it a perfect
+            // 1.0 and floats it above 40, which is exactly what the first cut of
+            // order_factor() did — measured, it ranked FIRST. Every factor must
+            // come from the SAME field.
+            doc(43, kind = 0, pubkey = pk(40), search = SearchFields(name = "Gordon Jon", displayName = "Jon Gordon Fan Club", about = "bitcoin")),
+            doc(
+                35,
+                kind = 30023,
+                pubkey = pk(35),
+                search =
+                    SearchFields(
+                        primary = "Dr. Jack Kruse on Artificial Light, Sunlight, and Health: Podcast Summary",
+                        text = "Dr. Jack Kruse on why artificial light is the problem and sunlight is the fix.",
+                    ),
+            ),
         )
 
     @Test
@@ -184,9 +396,15 @@ class RankRegressionIT {
                         assertEquals("Ode", rnames.first(), "exact match on top under the default profile: $rnames")
                         assertTrue("ODELL" in rnames, "the near hit must survive text_score_cutoff: $rnames")
                         assertEquals("near", ranked.first { nameOf(it.doc) == "ODELL" }.tier)
+                        // NOT a test of the second-phase exactness rule, despite
+                        // the shape: both docs are single-field profiles, so the
+                        // fieldLength division in name_text() already separates
+                        // them and this passes with w_exactness_pop=0. The rule
+                        // itself is pinned by the "amethyst" case below, where the
+                        // tail runs the other way. Kept as the ordering contract.
                         assertTrue(
                             rnames.indexOf("Ode") < rnames.indexOf("Ode Fan Club"),
-                            "second-phase exactness keeps the whole-field match on top: $rnames",
+                            "the whole-field match stays on top under the default profile: $rnames",
                         )
 
                         // --- sort:followers — verified-follower order within tiers ---
@@ -216,6 +434,29 @@ class RankRegressionIT {
                                     ReputationDoc(pk(15), influenceScores = mapOf(OBSERVER to 97)),
                                     ReputationDoc(pk(19), influenceScores = mapOf(OBSERVER to 13)),
                                     ReputationDoc(pk(20), influenceScores = mapOf(OBSERVER to 77)),
+                                    // The "amethyst" case: ONE author for all four
+                                    // docs, at the top of the scale — wot_mult()
+                                    // ≈ 237000, the worst case for a boost that
+                                    // rides the second phase un-multiplied.
+                                    ReputationDoc(pk(21), influenceScores = mapOf(OBSERVER to 100)),
+                                    // The "Avi Burra" / "Jon Gordon" cases: the
+                                    // reported trust pairs, verbatim. Both put the
+                                    // partial match ONE or TWO points ahead — the
+                                    // margin wot_mult() turns into +5.7% / +2.9%.
+                                    ReputationDoc(pk(25), influenceScores = mapOf(OBSERVER to 98)),
+                                    ReputationDoc(pk(26), influenceScores = mapOf(OBSERVER to 100)),
+                                    ReputationDoc(pk(27), influenceScores = mapOf(OBSERVER to 96)),
+                                    ReputationDoc(pk(28), influenceScores = mapOf(OBSERVER to 97)),
+                                    // The "Primal" case: the reported pair, two points apart.
+                                    ReputationDoc(pk(29), influenceScores = mapOf(OBSERVER to 97)),
+                                    ReputationDoc(pk(30), influenceScores = mapOf(OBSERVER to 99)),
+                                    // The "Jack" case: 34 must overturn 33 on
+                                    // exactness despite giving up 3 points.
+                                    ReputationDoc(pk(32), influenceScores = mapOf(OBSERVER to 100)),
+                                    ReputationDoc(pk(33), influenceScores = mapOf(OBSERVER to 100)),
+                                    ReputationDoc(pk(34), influenceScores = mapOf(OBSERVER to 97)),
+                                    ReputationDoc(pk(35), influenceScores = mapOf(OBSERVER to 98)),
+                                    ReputationDoc(pk(40), influenceScores = mapOf(OBSERVER to 50)),
                                 ),
                             )
                         }
@@ -288,6 +529,151 @@ class RankRegressionIT {
                         )
                         assertEquals("affiliation", lensed.first { nameOf(it.doc) == "podcaster" }.tier)
 
+                        // --- whole-field exactness inside the TOKEN band (2026-08-05 "amethyst") ---
+                        // Reported: searching "amethyst" put the app handler
+                        // NAMED Amethyst at #4 and the application whose primary
+                        // field is Amethyst at #6, under a channel ("Amethyst
+                        // Devs") and two articles ("Schedule posts for later in
+                        // Amethyst") — the FIRST TWO by the same author, so trust
+                        // explained nothing. Inside the token band every hit
+                        // scores the same w_name_tier; what then ordered them was
+                        // the additive tail, where tier_text() sums UNCAPPED
+                        // secondary + body bm25 a one-word field has no columns to
+                        // collect, against the single-digit bm25/fieldLength^1.5
+                        // that is the only term favouring the exact hit.
+                        // exactness() exists to overrule exactly this, but at 40
+                        // points added AFTER the ×wot_mult first phase it was
+                        // worth 40/237000 text points here — see the second phase
+                        // in `search`. Same query the report ran: the store's own
+                        // min_rank (DEFAULT_MIN_RANK) and no explicit profile, so
+                        // this also pins EventYql's choice of `search`.
+                        val amethyst =
+                            indexRef.searchScored(
+                                EventQuery(search = "amethyst", observer = OBSERVER, minRank = 2.0),
+                            )
+                        val anames = amethyst.map { nameOf(it.doc) }
+                        val aorder = amethyst.map { it.doc.id }
+                        assertTrue(
+                            aorder.indexOf(id(21)) < aorder.indexOf(id(22)) && aorder.indexOf(id(21)) < aorder.indexOf(id(23)),
+                            "the profile name that IS the query must beat the names that merely contain it: $anames",
+                        )
+                        assertTrue(
+                            aorder.indexOf(id(24)) < aorder.indexOf(id(22)) && aorder.indexOf(id(24)) < aorder.indexOf(id(23)),
+                            "the primary field that IS the query must beat the titles that merely contain it: $anames",
+                        )
+                        // The tail it has to overrule is at its largest on the
+                        // article: title + hashtags + a body repeating the term.
+                        assertTrue(
+                            aorder.indexOf(id(22)) < aorder.indexOf(id(23)),
+                            "two extra columns must not outrank a one-word primary field: $anames",
+                        )
+                        // All four arrive through the SAME band — the fix reorders
+                        // within it and must not manufacture a new tier.
+                        assertTrue(
+                            amethyst.filter { it.doc.id in setOf(id(21), id(22), id(23), id(24)) }.all { it.tier == "name" },
+                            "every amethyst doc must arrive through the token band: ${amethyst.map { it.doc.id to it.tier }}",
+                        )
+
+                        // --- a perfect match outranks a better-trusted partial (2026-08-05) ---
+                        // Both reports are the same shape as the amethyst case
+                        // with the one control removed: DIFFERENT authors, a
+                        // one- or two-point trust gap the wrong way. That gap
+                        // is not small where wot_mult() is steep — d(score)/
+                        // score = w_wot_pow × Δtrust/(trust − min_rank), so
+                        // ~2.8% per point up here, more than the whole
+                        // words+exactness tie-breaker can offer. The perfect
+                        // match has to be a RUNG (w_perfect_pop) to survive it.
+                        // Trust still crosses the rung on a real advantage —
+                        // the odell bounds above pin that from both sides, and
+                        // they are what caps w_perfect_pop.
+                        for (
+                        (query, perfect, partial) in
+                        listOf(
+                            Triple("Avi Burra", id(25), id(26)),
+                            Triple("Jon Gordon", id(27), id(28)),
+                            // Single word: queryCompleteness is a constant 1.0,
+                            // so fieldCompleteness carries the rung alone.
+                            Triple("primal", id(29), id(30)),
+                            Triple("jack", id(32), id(35)),
+                        )
+                        ) {
+                            val hits = indexRef.searchScored(EventQuery(search = query, observer = OBSERVER, minRank = 2.0))
+                            val labels = hits.map { nameOf(it.doc) }
+                            val ids = hits.map { it.doc.id }
+                            assertEquals(
+                                perfect,
+                                ids.firstOrNull(),
+                                "\"$query\" is the whole primary field of $perfect — it must rank first: $labels",
+                            )
+                            assertTrue(
+                                ids.indexOf(perfect) < ids.indexOf(partial),
+                                "a better-trusted partial title must not outrank the perfect match for \"$query\": $labels",
+                            )
+                        }
+
+                        // --- how much trust a whole-field match may overturn ---
+                        // The "Jack" report's ambiguous shape. A perfect match
+                        // at trust 97 must beat a HALF match at trust 100 (the
+                        // rung is (130200+109000)/(130200+56000) = 1.285, so it
+                        // survives a trust-delta ratio up to 1.285^(1/2.7) =
+                        // 1.096 — and up here the whole 0..100 scale cannot
+                        // supply that, which is why a top-trust perfect match
+                        // is effectively unbeatable by a fragment while a
+                        // trust-20 one is not). The bound BELOW is the same
+                        // ladder the odell case pins, from the other side.
+                        val jack = indexRef.searchScored(EventQuery(search = "jack", observer = OBSERVER, minRank = 2.0))
+                        val jorder = jack.map { it.doc.id }
+                        val jlabels = jack.map { nameOf(it.doc) }
+                        assertTrue(
+                            jorder.indexOf(id(34)) < jorder.indexOf(id(33)),
+                            "a trust-97 whole-field match must overturn a trust-100 half match: $jlabels",
+                        )
+                        assertTrue(
+                            jorder.indexOf(id(33)) < jorder.indexOf(id(35)),
+                            "a half match still beats a fragment of a long title at comparable trust: $jlabels",
+                        )
+                        // The exact hit on display_name decides the band even
+                        // though `name` (jacksweeney) is only a NEAR hit.
+                        assertEquals("name", jack.first { it.doc.id == id(33) }.tier)
+
+                        // --- word ORDER and the whole-field rung (2026-08-05 audit) ---
+                        // Same author, so this is text alone. 40 spells the
+                        // query and must beat 42, which reverses it: order_factor
+                        // halves the rung for a wrong-order field, gated on
+                        // n_words > 1 so the single-word odell ceiling above is
+                        // untouched by construction. 41 (the concatenation) is a
+                        // KNOWN 0.5 — it matches only the joined synthetic term,
+                        // indistinguishable from a doc named "Jon" inside a rank
+                        // expression.
+                        val jg = indexRef.searchScored(EventQuery(search = "Jon Gordon", observer = OBSERVER, minRank = 2.0))
+                        val jgOrder = jg.map { it.doc.id }
+                        assertTrue(
+                            jgOrder.indexOf(id(40)) < jgOrder.indexOf(id(42)),
+                            "the field that spells the query must beat the one that reverses it: ${jg.map { nameOf(it.doc) }}",
+                        )
+                        assertTrue(
+                            id(41) in jgOrder,
+                            "the concatenation must still recall: ${jg.map { nameOf(it.doc) }}",
+                        )
+                        assertTrue(
+                            jgOrder.indexOf(id(40)) < jgOrder.indexOf(id(43)),
+                            "coverage and order must come from the SAME field: ${jg.map { nameOf(it.doc) }}",
+                        )
+
+                        // A quoted PHRASE is one query item spanning several
+                        // field tokens, so the rung's coverage halves must be
+                        // item-granular (n_words counts phrases) and
+                        // token-granular (fieldCompleteness) respectively. With
+                        // matchCount/fieldLength and no n_words this read 0.5 on
+                        // a field the phrase covers completely — the most
+                        // explicit exactness a user can ask for, paid half.
+                        val phrase = indexRef.searchScored(EventQuery(phrases = listOf("Jon Gordon"), observer = OBSERVER, minRank = 2.0))
+                        assertEquals(
+                            id(40),
+                            phrase.map { it.doc.id }.firstOrNull(),
+                            "an exact-phrase match on the whole field must rank first: ${phrase.map { nameOf(it.doc) }}",
+                        )
+
                         // --- typo bound: over-budget hits never match ---
                         absent("odelll", "Odessa")
                     }
@@ -345,8 +731,12 @@ class RankRegressionIT {
         assertTrue(name !in hits, "\"$query\" must NOT recall $name (unbounded-matcher noise): $hits")
     }
 
-    /** The doc's name, resolved by id from the seeded corpus (summaries don't carry search fields). */
-    private fun nameOf(doc: EventDoc): String = corpus.first { it.id == doc.id }.search.name ?: doc.id
+    /**
+     * The doc's label, resolved by id from the seeded corpus (summaries don't
+     * carry search fields): the profile name, else the generic tier's primary
+     * field, so a failure message reads the same for both groups.
+     */
+    private fun nameOf(doc: EventDoc): String = corpus.first { it.id == doc.id }.search.let { it.name ?: it.primary } ?: doc.id
 
     private fun id(n: Int) = n.toString(16).padStart(64, '0')
 

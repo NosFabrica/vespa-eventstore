@@ -314,6 +314,8 @@ object EventYql {
             clauses += FuzzyWordGroup.clause(matchable, params, nearFields = q.nearMatching)
             // Short queries lean harder on the trigram safety net.
             params["ranking.features.query(w_gram)"] = if (FuzzyWordGroup.leansOnGrams(matchable)) "8.0" else "2.0"
+            // (n_words rides below — it counts phrases too, so it cannot live
+            // inside this words-only branch.)
         }
 
         // Quoted phrases ([EventQuery.phrases]): one REQUIRED phrase-grammar
@@ -326,6 +328,23 @@ object EventYql {
             params["p$i"] = phrase
             clauses += "({defaultIndex:\"default\",grammar:\"phrase\"}userInput(@p$i))"
         }
+
+        // How many things the USER asked for — matchable words PLUS quoted
+        // phrases. The schema's perfect_match() rung needs this because it
+        // cannot count them itself:
+        //  - fieldMatch's own queryCompleteness divides by every term in the
+        //    tree, and [FuzzyWordGroup] adds SYNTHETIC ones (a joined variant
+        //    at 2+ words, adjacent-pair concatenations at 3+, each emitted
+        //    twice) that a normally-spelled doc can never match. A whole-field
+        //    match read 2/3 at two words and 1/4 at three.
+        //  - matchCount counts query ITEMS, and a quoted phrase is ONE item
+        //    however many words it spans, so phrases count 1 each here. Leaving
+        //    them out entirely (the first cut) left the feature unsent on a
+        //    phrase-only query, where the schema default of 1 happened to be
+        //    right for one phrase and wrong for two.
+        // Both measured on a live Vespa, 2026-08-05.
+        val queryItems = matchable.size + q.phrases.size
+        if (queryItems > 0) params["ranking.features.query(n_words)"] = queryItems.toString()
 
         // Exclusions ([EventQuery.notSearch]): one negated term per word,
         // out-of-band, deliberately NOT the fuzzy word group — exclusion must

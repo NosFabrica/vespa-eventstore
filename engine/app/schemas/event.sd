@@ -326,8 +326,14 @@ schema event {
     }
 
     # Discriminative (AND-matched) trigram net for the secondary tier — the same
-    # typo-recall safety net `about` has (about_gram), extended to every kind's
-    # summary/description so a misspelled query still recalls them.
+    # net `about` has (about_gram), extended to every kind's summary/description.
+    # INFIX reach, not typo reach: see secondary_text() for the measurement.
+    # COST, same measurement: stripping every gram clause cut multi-word query
+    # latency ~19-20% at 45k docs (7% on a single common word). The name-side
+    # nets earn that back through the weak tier ("dell" -> ODELL, pinned by
+    # RankRegressionIT); these two long-text nets have NO test pinning what
+    # their recall is worth, and they are ~40% of the gram terms a multi-word
+    # query emits. Weigh them before adding more.
     field search_secondary_gram type string {
         indexing: input search_secondary | index
         index: enable-bm25
@@ -467,26 +473,118 @@ schema event {
             # second phase over the top rerank-count hits — fieldMatch is a
             # per-hit positional analysis, and elementCompleteness walks the
             # matched elements; neither belongs in a first phase that scores
-            # every match. The SUM of these weights must stay UNDER the
-            # smallest EQUAL-TRUST inter-band gap so precision reorders hits
-            # WITHIN a band and never crosses bands on its own. The tightest
-            # gap is near floor 23000 minus weak ceiling (4000+80) = 18920 at
-            # wot_mult()=1, and it only widens with trust (the multiply
-            # scales the band gap; the boost stays additive) — the shipped
-            # 60+40 = 100 fits with room. Trust itself DOES cross bands by
-            # design (see wot_mult); next to those order-of-magnitude moves
-            # the boost is noise. Re-check the gap if any tier weight moves.
+            # every match.
             #     w_words       reward for matching MORE of a multi-word query
             #                   (fieldMatch queryCompleteness, 0..1) —
             #                   Meilisearch's #1 "words" rule
             #     w_exactness   reward when the query covers the WHOLE field
             #                   ("Ode" the full name above "Ode Fan Club";
             #                   fieldMatch fieldCompleteness, 0..1)
+            #
+            # THE BOOST CANNOT CROSS A BAND, whatever its weight: both
+            # features read fieldMatch over name/display_name/search_primary —
+            # INDEX fields only the EXACT clauses reach. A near hit lands on
+            # the *_parts/*_tokens ATTRIBUTES, a weak hit on the *_gram
+            # fields, an affiliation hit on about/website; fieldMatch reads 0
+            # on all three, so a non-zero boost implies any_token_match()=1.
+            # The boost only ever lifts a hit that is ALREADY in the top band,
+            # relative to the rest of that band. (The original 60+40=100 was
+            # sized against the smallest equal-trust inter-band gap — near
+            # floor 23000 minus weak ceiling 4080 = 18920 — a bound this
+            # argument shows was never the binding constraint.)
+            #
+            # What the budget must actually clear is the WITHIN-band tail the
+            # boost is there to overrule: primary_text() plus the UNCAPPED
+            # 0.4·secondary_text() + 0.15·bm25(search_text) that tier_text()
+            # sums. That tail runs to a few hundred points for a doc carrying
+            # the term in title AND hashtags AND body, while the only term
+            # rewarding a one-token field is bm25/pow(fieldLength,1.5) —
+            # single digits. 100 lost that race (the 2026-08-05 "amethyst"
+            # report: an app handler NAMED Amethyst under three docs that
+            # merely mention it, same author, same trust).
             query(w_words) double: 60.0
             query(w_exactness) double: 40.0
-            # The text profiles' band gaps are only ~70-80 wide, so the same
-            # boost rides in scaled: 100 × 0.25 = 25 < the near/weak gap.
+            # The text profiles' band gaps are only ~70-80 wide. The boost
+            # can't cross them either (see above), but relevance() has no
+            # trust multiply and its within-band tail is the same handful of
+            # bm25 points, so the modest scaled budget still clears it:
+            # 100 × 0.25 = 25.
             query(w_precision_scale_text) double: 0.25
+            # The `search` profile's OWN precision weights. Two things force a
+            # separate pair from w_words/w_exactness:
+            #  - SCALE. Its bands are text_score() × wot_mult(), and the boost
+            #    rides in multiplied by the same wot_mult (see the second
+            #    phase there) so the boost-to-band ratio is trust-invariant.
+            #    Added RAW, as it was until 2026-08-05, the effective weight
+            #    is w_exactness/wot_mult() — 40 points at the trust floor,
+            #    0.00017 at trust 100 (1+98^2.7 ≈ 237000). The rule was dead
+            #    for every author anyone actually trusts, which is backwards.
+            #  - HEADROOM. Multiplied bands are ~130000 wide against the text
+            #    profile's 1100, so the same ratio buys a budget three orders
+            #    of magnitude larger — enough to overrule the bm25 tail
+            #    outright instead of losing to it by single digits.
+            # 3000+6000 = 9000 is ~7% of the token band: decisive against the
+            # tail, invisible next to the order-of-magnitude moves trust makes
+            # (a 13-trust name match sits ~650× a 0-trust one). Only
+            # w_exactness_pop separates docs on a SINGLE-word query — both
+            # read queryCompleteness 1.0 — so it carries the larger half.
+            query(w_words_pop) double: 3000.0
+            query(w_exactness_pop) double: 6000.0
+            # w_perfect_pop — the PERFECT-MATCH rung. The pair above is a
+            # tie-breaker, and a tie-breaker is the wrong shape: wot_mult() is
+            # convex, so near the top of the 0..100 scale a ONE-POINT trust
+            # difference is worth more than the whole 9000. d(score)/score =
+            # w_wot_pow × Δtrust/(trust − min_rank): at trust ~97 that is
+            # 2.7/95 ≈ 2.8% per point, against the 3.8% the pair can offer.
+            # Both 2026-08-05 reports land exactly there — a trust-100 article
+            # titled "…Join Avi Burra's Journey to Paraguay!" over the
+            # trust-98 profile Avi Burra (+5.7% from trust), a trust-97 video
+            # titled "…| Jon Gordon" over the trust-96 profile Jon Gordon
+            # (+2.9%). A perfect match has to be a RUNG that enters the
+            # crossing calculus, not a nudge that a rounding error in trust
+            # out-buys.
+            #
+            # BOUNDED ABOVE by the calibrated bio→name crossing (see
+            # query(w_name_tier)): the rung lifts the NAME band, so it widens
+            # the bio→name ratio and raises the trust advantage a bio mention
+            # needs to cross. The odell case pins the tightest point — the
+            # 97-trust bio mention must stay above the 13-trust "ODELL mirror"
+            # — and mirror is a HALF match (perfect_match 0.5), so the ceiling
+            # falls out of its total boost:
+            #     bio band × wot_mult(97) / wot_mult(13) − mirror_text
+            #       = 550.0 × 218601 / 648.6 − 130115 = 55153 max boost
+            #     w_perfect_pop ≤ (55153 − w_words_pop − w_exactness_pop/2) / 0.5
+            #       = 98306
+            # MEASURED, not estimated: the bio band is 550.0 (w_affil_tier_text
+            # plus a w_about fallback that rounds to nothing here) — an earlier
+            # pass read the "550 + ~130" note at query(w_name_tier) as a band of
+            # 680, put the ceiling at ~185000, and shipped 100000, which flipped
+            # the odell pin by 0.45% on a live Vespa. Trust the run, not the
+            # arithmetic. 80000 sits 19% under the measured ceiling (5.2% margin
+            # on the pin itself) and still gives a perfect match +26..37% over a
+            # long-title partial across all five 2026-08-05 reports.
+            #
+            # The rung is multiplied by trust like every other, so it buys
+            # exactness headroom without buying spam any: a trust-3 perfect
+            # match stays four orders of magnitude below a trust-50 partial.
+            # RE-MEASURE THIS CEILING (do not re-derive it on paper) if
+            # w_affil_tier_text, w_about, w_wot_pow or the tier weights move.
+            query(w_perfect_pop) double: 80000.0
+            # Word count as TYPED, sent by EventYql on every search with terms
+            # (see the n_words comment there). 1.0 is the fail-safe default: a
+            # sender that omits it degrades perfect_match() to "the field is
+            # covered by whatever matched", never to a divide-by-zero, and the
+            # order factor switches off — the same behaviour a genuine
+            # single-word query gets.
+            query(n_words) double: 1.0
+            # Floor under order_factor(): how much of the perfect-match rung a
+            # RIGHT-WORDS-WRONG-ORDER field keeps. 0 would make order absolute
+            # ("Gordon Jon" scores as if it never matched the band at all,
+            # which overstates a real-world naming difference — "Pamplona
+            # Vitor" is the same person). 0.5 halves the rung, enough to put
+            # the correctly-ordered field first at equal trust while leaving
+            # the reversed one comfortably inside the token band.
+            query(w_order_floor) double: 0.5
             query(w_identity) double: 50.0
             query(w_wot) double: 1.0
             # Exponent of wot_mult()'s trust curve. Sets how much trust
@@ -743,6 +841,98 @@ schema event {
             expression: query(w_words) * words_coverage() + query(w_exactness) * exactness()
         }
 
+        # A PERFECT match on one primary field: the query covers the whole
+        # field AND the field covers the whole query. Per-field PRODUCT, then
+        # max — deliberately not max(queryCompleteness) × max(fieldCompleteness)
+        # the way words_coverage()/exactness() read them, which can take the
+        # two halves from DIFFERENT fields and call a doc perfect that matched
+        # half the query in a short name and the other half in a long title.
+        # Partial credit is the product, so it degrades smoothly: a whole-query
+        # match on a 13-token title reads 0.15, a half-query match on a 2-token
+        # name reads 0.5, the field that IS the query reads 1.0.
+        #
+        # NOT fieldMatch's own queryCompleteness (which this shipped with on
+        # 2026-08-05 and which was wrong): it divides by every term in the
+        # query tree, and FuzzyWordGroup adds synthetic ones — a joined variant
+        # at 2+ words, adjacent-pair concatenations at 3+, each emitted twice —
+        # that a normally-spelled doc can never match. An exact whole-field
+        # match measured 0.667 at two words and 0.25 at three, so the rung was
+        # underpaid by a third and got worse the longer the query. matchCount
+        # over query(n_words) counts only what the user typed. Clamped because
+        # matchCount CAN exceed both bounds: the duplicated pair groups count
+        # twice, and a doc may match more terms than the field has tokens.
+        #
+        # KNOWN LIMIT: a compound-name hit ("JonGordon" for "Jon Gordon") match-
+        # es exactly one term — the joined variant — so it reads 0.5, the same
+        # as a doc named "Jon". The two are indistinguishable from inside a rank
+        # expression (both are matchCount 1 on a 1-token field), and the
+        # itemRawScore ladder that could label them is inert (§11.1). 0.5 beats
+        # the 0.333 fieldMatch gave it; recall for that shape is SearchPrefix-
+        # LadderIT's job, not this rung's.
+        # PER FIELD, and every factor read from THAT field — the whole point.
+        # Taking each factor's max independently across fields is the bug this
+        # function exists to avoid, and re-committing it is easy: the first cut
+        # of the order factor below maxed orderness globally while the coverage
+        # maxed per field, so a doc whose `name` REVERSED the query kept full
+        # credit because its display_name happened to contain the query in
+        # order inside a longer string (measured: it outranked the doc that
+        # spelled the name correctly). Any new factor goes INSIDE here.
+        #
+        #   coverage of the QUERY   matchCount / n_words, clamped. matchCount
+        #                           counts query ITEMS, so n_words counts items
+        #                           too (words + phrases) — see EventYql.
+        #   coverage of the FIELD   fieldMatch fieldCompleteness, which is
+        #                           TOKEN-granular. matchCount/fieldLength is
+        #                           not a substitute: a 2-word PHRASE is ONE
+        #                           item matching TWO field tokens, so the
+        #                           ratio read 0.5 on a field the phrase covers
+        #                           completely — quoted search, the most
+        #                           explicit exactness a user can ask for, paid
+        #                           half the rung.
+        #   order                   see order_of().
+        function field_perfect(f) {
+            expression: min(1.0, matchCount(f) / max(1.0, query(n_words))) * fieldMatch(f).fieldCompleteness * order_of(f)
+        }
+
+        # Word ORDER, for multi-word queries only. fieldMatch(f).orderness is
+        # the in-order fraction of matched term pairs, so a field holding the
+        # query's words BACKWARDS scores below one holding them as typed
+        # ("Gordon Jon" vs "Jon Gordon", which were bit-identical before this —
+        # text_score() never carried the w_proximity term relevance() has, so
+        # the observer-lensed default profile, the one nearly every search
+        # uses, was blind to order entirely).
+        #
+        # Gated on n_words > 1 and folded INTO field_perfect() per field
+        # rather than added beside it. Both deliberate: with one word there are no pairs to
+        # order, so orderness is a constant that would buy nothing while eating
+        # the odell ceiling — which is a SINGLE-word case, so this gate leaves
+        # that calibration untouched by construction. Folding in (rather than a
+        # separate additive term) also means order can only ever REDUCE a
+        # perfect match, never manufacture headroom.
+        function order_of(f) {
+            expression {
+                if (query(n_words) > 1,
+                    query(w_order_floor) + (1.0 - query(w_order_floor)) * fieldMatch(f).orderness,
+                    1.0)
+            }
+        }
+
+        function perfect_match() {
+            expression: max(max(field_perfect(name), field_perfect(display_name)), field_perfect(search_primary))
+        }
+
+        # The precision rules at the `search` profile's scale — see
+        # query(w_words_pop) and query(w_perfect_pop). Kept a separate function,
+        # not a scale factor on precision_boost(), so the text profiles'
+        # calibration and the multiplied profile's can move independently.
+        function precision_boost_pop() {
+            expression {
+                query(w_words_pop) * words_coverage()
+                + query(w_exactness_pop) * exactness()
+                + query(w_perfect_pop) * perfect_match()
+            }
+        }
+
         # ---- generic-tier extension: the generic tier group (non-profile kinds). ----
         # Same shape as the name math so magnitudes stay cross-kind
         # comparable: an exact title/subject token match ~ an exact name match.
@@ -762,9 +952,18 @@ schema event {
             }
         }
 
-        # Secondary tier text: bm25 plus its discriminative gram net — the same
-        # typo-recall treatment about_text() gives bios, extended to every kind's
-        # summary/description. Uncapped, exactly like about_text().
+        # Secondary tier text: bm25 plus its discriminative gram net, extended to
+        # every kind's summary/description the way about_text() covers bios.
+        # Uncapped, exactly like about_text().
+        #
+        # That net is an INFIX matcher, NOT the typo net this comment used to
+        # claim. Measured on a live Vespa (2026-08-05, 45k-doc corpus): with the
+        # AND-gram clauses stripped from the query, typo recall was UNCHANGED
+        # (50 vs 50 on a trailing substitution, 35 vs 35 on a middle one — the
+        # fuzzy() terms on the *_parts/*_tokens attributes are what recover a
+        # typo) while infix recall collapsed 11 -> 0. It could not be otherwise:
+        # the net ANDs every trigram of the query word, and a substitution
+        # destroys three consecutive trigrams, so the AND can never hold.
         function secondary_text() {
             expression {
                 bm25(search_secondary)
@@ -1021,21 +1220,35 @@ schema event {
         }
 
         # Precision pass over the top hits only: the expensive per-hit
-        # signals (words rule, exactness, within-near ordering) reorder
-        # WITHIN a band — precision_boost() is additive AFTER the trust
-        # multiply and bounded under the smallest tier gap, so band
-        # membership is exactly the first phase's. Dropped hits (cutoff /
-        # rank-score-drop-limit) never reach this phase.
+        # signals (words rule, exactness) reorder WITHIN a band — the boost is
+        # non-zero only for hits already in the token band (see
+        # query(w_words_pop)), so band membership is exactly the first
+        # phase's. Dropped hits (cutoff / rank-score-drop-limit) never reach
+        # this phase.
+        #
+        # × wot_mult(): the first phase is MULTIPLICATIVE in trust, so a raw
+        # additive boost is worth w/wot_mult() text points — 40 at the trust
+        # floor, 0.00017 at trust 100. Scaling it by the same multiplier the
+        # bands carry makes the boost-to-band ratio trust-invariant, which is
+        # what "reorders within a band" was always supposed to mean. The
+        # multiply is recomputed here rather than threaded through firstPhase:
+        # a tensor dot plus a pow over ≤ rerank-count hits, against the
+        # fieldMatch analysis this phase already pays for.
         second-phase {
-            expression: firstPhase + precision_boost()
+            expression: firstPhase + precision_boost_pop() * wot_mult()
             rerank-count: 1000
         }
 
         # Surface the decisive signals so the API/inspector can show WHY a hit
-        # ranked where it did (text bands + the trust multiplier).
+        # ranked where it did (text bands + the trust multiplier). perfect_match
+        # earns its place here: since 2026-08-05 it is what orders hits INSIDE
+        # the token band, so "why is this above that" is unanswerable without
+        # it. It costs nothing extra — the second phase already computes the
+        # fieldMatch analysis it reads.
         match-features {
             user_score
             verified_followers
+            perfect_match
             name_match
             identity_match
             identity_text
