@@ -163,6 +163,14 @@ carry different weight: a **primary** field (a title or name) outweighs a
 name and identity fields. When you supply an observer, the matches are weighted
 and spam-gated by that observer's web of trust.
 
+Matching is **language-neutral**: text is folded and tokenized but never stemmed,
+so a note is findable by its own words whatever language it is written in. (The
+engine stems a document by the language it *detects* while queries carry none, so
+stemming would silently make every non-English note unreachable — see the
+`stemming: none` note in `schemas/event.sd`.) One gap remains: scripts the engine
+does not segment, CJK above all, are not reachable inside a body — a CJK *name*
+still is.
+
 The kinds it indexes and the fields it reads from each (highest weight first).
 Kinds with no title to split out are indexed by their full `content`; on every
 kind, hashtags also fold into the secondary tier and `location` tags into the

@@ -337,6 +337,10 @@ class RankRegressionIT {
                         text = "a body that says none of the words above",
                     ),
             ),
+            // The CJK-body pin (see the known-limitation block in runCase):
+            // prose in a script the default linguistics cannot segment. Its
+            // author is trusted, so only tokenization can explain a miss.
+            doc(46, kind = 1, pubkey = pk(44), search = SearchFields(text = "中村太郎は東京で新しい会社を設立しました。")),
             doc(
                 35,
                 kind = 30023,
@@ -818,13 +822,26 @@ class RankRegressionIT {
                                 Triple("vitor", id(44), "weak"),
                                 Triple("ai", id(45), "weak"),
                                 Triple("quilombola", id(45), "weak"),
-                                // Doc 44's body is PORTUGUESE, and "futebol" is
-                                // the only word in it an English-stemmed query
-                                // can still reach — see the known-limitation
-                                // block below for why. It is here, not there,
-                                // because it is the one row of that doc which
-                                // proves the body rung reaches real prose.
+                                // Doc 44's body is PORTUGUESE. Until the text
+                                // fields were set `stemming: none`, "futebol"
+                                // was the ONLY word here an English-stemmed
+                                // query could reach — Vespa stems a document
+                                // with its DETECTED language and a query as
+                                // English, so the two only ever met on a word
+                                // with no suffix to strip. These rows are the
+                                // regression for that: the reported query, its
+                                // words one at a time, ASCII and accented.
                                 Triple("futebol", id(44), "body"),
+                                Triple("esposa", id(44), "body"),
+                                Triple("crise", id(44), "body"),
+                                Triple("influencer", id(44), "body"),
+                                Triple("desabafa", id(44), "body"),
+                                Triple("divorcio", id(44), "body"),
+                                Triple("divórcio", id(44), "body"),
+                                Triple("atenção", id(44), "body"),
+                                Triple("divorcio desabafa", id(44), "body"),
+                                Triple("divórcio desabafa", id(44), "body"),
+                                Triple("divórcio e desabafa", id(44), "body"),
                             )
                     assertEquals(
                         ladder.associate { (query, _, tier) -> query to tier },
@@ -832,44 +849,34 @@ class RankRegressionIT {
                         "every searchable column must be reachable under the observer lens, through its own tier",
                     )
 
-                    // --- KNOWN LIMITATION, PINNED AS A BUG: non-English body
-                    // text is unsearchable. This block asserts what the engine
+                    // --- KNOWN LIMITATION, PINNED AS A BUG: CJK body text is
+                    // still unsearchable. This block asserts what the engine
                     // DOES, not what it should do. Fix the cause and it fails —
-                    // that is the point.
+                    // that is the point, and its message says to delete it.
                     //
-                    // Vespa detects a DOCUMENT's language and stems the index
-                    // terms with it; a query carries no language and is stemmed
-                    // as ENGLISH. Nothing in this repo sets either side (no
-                    // `language` field, no `set_language`, no model.language),
-                    // so for a Portuguese note the two stemmers never meet —
-                    // except on a word with no suffix to strip, which is why
-                    // "futebol" above is the single survivor.
+                    // The Portuguese half of this problem is fixed (the rows in
+                    // the ladder above): the text fields now carry
+                    // `stemming: none`, so a document's DETECTED language can no
+                    // longer stem its index terms away from an English-stemmed
+                    // query. Tokenization is a different layer and still
+                    // language-driven, and the default linguistics does not
+                    // SEGMENT CJK at all — a Japanese sentence is one token, so
+                    // no query reaches inside it.
                     //
-                    // Measured against a live Vespa holding this corpus
-                    // (2026-08-05), same words, only the query language differs:
-                    //     default (en)          futebol 1, esposa 0, crise 0,
-                    //                           desabafa 0, divorcio 0
-                    //     model.language=pt     futebol 1, esposa 1, crise 1,
-                    //                           desabafa 1, divorcio 1
-                    // Reproduce:
-                    //   curl -sG localhost:8080/search/ --data-urlencode \
-                    //     'yql=select id from event where search_text contains "esposa"' \
-                    //     --data-urlencode ranking=unranked [--data-urlencode model.language=pt]
+                    // Measured on a live Vespa, before and after the stemming
+                    // change, identical both times: 中村太郎 0, 東京 0, 会社 0.
+                    // Fixing it needs a CJK-capable linguistics component
+                    // (Vespa's OpenNLP bundle or similar), which is a
+                    // deployment/dependency decision, not a schema one.
                     //
-                    // SCOPE: this is not the rung's doing and predates it — the
-                    // rung is proven above by murbaneth/delvarion/futebol. It
-                    // means the note that prompted this work still will not come
-                    // back for its own words, because they are Portuguese. The
-                    // fix (force one language on both sides, or `stemming: none`
-                    // on the text fields, and re-index) changes recall for the
-                    // whole corpus, so it needs its own measurement — parked in
-                    // benchmark/rank_cases.json.
-                    val nonEnglish =
-                        listOf("esposa", "crise", "influencer", "desabafa", "divorcio", "divórcio", "atenção", "divórcio e desabafa")
+                    // Profile NAMES in CJK are unaffected and keep working —
+                    // "中村" -> "中村太郎" passes above — because they ride
+                    // NearText's raw-byte attributes, not Vespa's tokenizer.
+                    val cjk = listOf("中村太郎", "東京", "会社")
                     assertEquals(
-                        nonEnglish.associateWith { "MISSING" },
-                        nonEnglish.associate { it to tierOfHit(it, id(44)) },
-                        "non-English body recall is BROKEN and pinned here; if this fails, someone fixed it — delete this block",
+                        cjk.associateWith { "MISSING" },
+                        cjk.associate { it to tierOfHit(it, id(46)) },
+                        "CJK body recall is BROKEN and pinned here; if this fails, someone fixed it — delete this block",
                     )
 
                     // --- typo bound: over-budget hits never match ---

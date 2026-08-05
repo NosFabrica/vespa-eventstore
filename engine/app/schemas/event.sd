@@ -129,6 +129,48 @@ schema event {
 
         # ---- per-kind search fields (populated by the store's extractors) ----
 
+        # STEMMING IS OFF ON EVERY TEXT FIELD BELOW (`stemming: none`).
+        #
+        # name/display_name/search_primary always opted out, as proper-noun
+        # fields. The rest joined them on 2026-08-05, for a different and
+        # bigger reason: Vespa stems a document's index terms with the
+        # DOCUMENT's language — which it DETECTS — while a query carries no
+        # language and is stemmed as English. Nothing sets either side (no
+        # `language` field, no set_language, no model.language), so on a
+        # multilingual corpus the two sides silently disagree and a document
+        # becomes unreachable by its own words. MEASURED on a live Vespa with
+        # a Portuguese note, same words, only the query language differing:
+        #     default (en)        futebol 1, esposa 0, crise 0, desabafa 0
+        #     model.language=pt   futebol 1, esposa 1, crise 1, desabafa 1
+        # Only "futebol" survived — the one word with no suffix the Portuguese
+        # stemmer strips. That is not a corner case: it is every non-English
+        # note in the corpus, and it is why the 2026-08-05 "divórcio e
+        # desabafa" report needed more than the body rung to come back.
+        #
+        # `stemming: none` makes both sides raw (still folded and tokenized),
+        # so they agree by construction, in any language. The alternative —
+        # forcing one language on documents — also worked in measurement but
+        # pins TOKENIZATION too, which would foreclose ever segmenting CJK
+        # properly. What is given up here is nothing measurable: English
+        # stemming was already inert on this deployment ("wolf" does not find
+        # "wolves", "run" does not find "running"), before and after.
+        #
+        # STILL BROKEN, deliberately out of scope: CJK BODY text. Segmentation
+        # is tokenization, not stemming, and the default linguistics does not
+        # segment CJK — a Japanese sentence is one token. Needs a CJK-capable
+        # linguistics component. Pinned in RankRegressionIT so a fix trips it.
+        # (CJK profile NAMES are unaffected: they ride NearText's raw-byte
+        # attributes, which never went through Vespa's tokenizer at all.)
+        #
+        # UPGRADE COST: this is an indexing change. A FRESH deploy is
+        # unaffected — verified: `open(autoDeploy = true)` against an empty
+        # Vespa is accepted with no validation override. Redeploying over an
+        # EXISTING cluster needs a `validation-overrides.xml` allowing
+        # `indexing-change`, and a re-index for old documents to pick up the
+        # new terms. NostrSemanticsStore.reindexFullTextSearch will NOT do it
+        # — it re-puts only docs whose near-tier arrays drifted, and those are
+        # unchanged here; use Vespa's own reindexing.
+        #
         # kind 0 — the Brainstorm profile group. Field roles from
         # vespa_query.py: primary = name/display_name/nip05/lud16,
         # affiliation = about/website. Per NIP-24 the deprecated `username`
@@ -150,21 +192,25 @@ schema event {
         field about type string {
             indexing: index | summary
             index: enable-bm25
+            stemming: none
         }
 
         field nip05 type string {
             indexing: index | summary
             index: enable-bm25
+            stemming: none
         }
 
         field lud16 type string {
             indexing: index | summary
             index: enable-bm25
+            stemming: none
         }
 
         field website type string {
             indexing: index | summary
             index: enable-bm25
+            stemming: none
         }
 
         # every other searchable kind — the generic tiers. What lands where is
@@ -181,11 +227,13 @@ schema event {
         field search_secondary type string {
             indexing: index | summary
             index: enable-bm25
+            stemming: none
         }
 
         field search_text type string {
             indexing: index | summary
             index: enable-bm25
+            stemming: none
         }
 
         # Place names, filled systemically from any kind's `location` tags
@@ -194,6 +242,7 @@ schema event {
         field search_location type string {
             indexing: index | summary
             index: enable-bm25
+            stemming: none
         }
 
         # ---- near-tier attribute targets (prefix / fuzzy match fields) ----
@@ -883,13 +932,14 @@ schema event {
         # same deletion tier_body_match() documents, since
         # query(w_secondary) × bm25 does not reach text_score_cutoff either.
         # Three ways the attribute misses a word the index field holds:
-        #   * STEMMING, the reachable one. search_secondary is stemmed
-        #     (`stemming: best`, this schema's default — unlike name/
-        #     display_name/search_primary, which opt out); the attribute is
-        #     raw folded bytes. Query "bitcoiners" against the hashtag
-        #     "#bitcoiner" matches the index and NOT the prefix column, since
-        #     "bitcoiner" does not start with "bitcoiners". Asymmetric, so it
-        #     hides: the singular finds the plural and looks fine.
+        #   * STEMMING — CLOSED as of 2026-08-05, kept here because the shape
+        #     is what the other two share. search_secondary used to be stemmed
+        #     (`stemming: best`) while the attribute is raw folded bytes, so
+        #     "bitcoiners" reached the index and not the prefix column. Every
+        #     text field now carries `stemming: none` (see the field
+        #     definitions), for a much larger reason — an index term stemmed
+        #     by the DOCUMENT's language cannot meet a query stemmed as
+        #     English — and that closed this route as a side effect.
         #   * SHORT WORDS. FuzzyWordGroup emits no prefix clause under
         #     MIN_PREFIX_LEN (3 Latin / 2 non-ASCII) and no gram clause under
         #     MIN_AND_GRAMS_TEXT, so "#ai" was reachable by nothing but its
