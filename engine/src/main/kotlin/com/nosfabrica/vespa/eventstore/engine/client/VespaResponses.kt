@@ -182,6 +182,8 @@ internal class VespaSummary(
     @SerialName("created_at") val createdAt: Long = 0,
     val kind: Int = 0,
     val tags: String = "[]",
+    /** Only the `idtimetag` summary projects this — see [EventYql.buildIdTime]. */
+    @SerialName("tag_index") val tagIndex: List<String>? = null,
     val content: String = "",
     val sig: String = "",
     val owner: String? = null,

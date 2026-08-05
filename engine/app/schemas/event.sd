@@ -405,6 +405,22 @@ schema event {
         summary id {}
     }
 
+    # The negentropy/sync snapshot projection. Attributes only, so a walk of
+    # millions of matches never touches the document store or disk summaries —
+    # the id comes from the attribute, not the docid, and created_at is what
+    # the cursor pages on. See VespaEventIndex.visitIds.
+    document-summary idtime {
+        summary id {}
+        summary created_at {}
+    }
+
+    # Same, plus the tag_index an addressable-corpus walk keys its `d` tag on.
+    document-summary idtimetag {
+        summary id {}
+        summary created_at {}
+        summary tag_index {}
+    }
+
     fieldset default {
         fields: name, display_name, about, nip05, lud16, website, search_primary, search_secondary, search_text, search_location
     }
