@@ -863,12 +863,29 @@ schema event {
         # itemRawScore ladder that could label them is inert (§11.1). 0.5 beats
         # the 0.333 fieldMatch gave it; recall for that shape is SearchPrefix-
         # LadderIT's job, not this rung's.
+        # PER FIELD, and every factor read from THAT field — the whole point.
+        # Taking each factor's max independently across fields is the bug this
+        # function exists to avoid, and re-committing it is easy: the first cut
+        # of the order factor below maxed orderness globally while the coverage
+        # maxed per field, so a doc whose `name` REVERSED the query kept full
+        # credit because its display_name happened to contain the query in
+        # order inside a longer string (measured: it outranked the doc that
+        # spelled the name correctly). Any new factor goes INSIDE here.
+        #
+        #   coverage of the QUERY   matchCount / n_words, clamped. matchCount
+        #                           counts query ITEMS, so n_words counts items
+        #                           too (words + phrases) — see EventYql.
+        #   coverage of the FIELD   fieldMatch fieldCompleteness, which is
+        #                           TOKEN-granular. matchCount/fieldLength is
+        #                           not a substitute: a 2-word PHRASE is ONE
+        #                           item matching TWO field tokens, so the
+        #                           ratio read 0.5 on a field the phrase covers
+        #                           completely — quoted search, the most
+        #                           explicit exactness a user can ask for, paid
+        #                           half the rung.
+        #   order                   see order_of().
         function field_perfect(f) {
-            expression {
-                if (fieldLength(f) > 0,
-                    min(1.0, matchCount(f) / max(1.0, query(n_words))) * min(1.0, matchCount(f) / fieldLength(f)),
-                    0)
-            }
+            expression: min(1.0, matchCount(f) / max(1.0, query(n_words))) * fieldMatch(f).fieldCompleteness * order_of(f)
         }
 
         # Word ORDER, for multi-word queries only. fieldMatch(f).orderness is
@@ -879,23 +896,23 @@ schema event {
         # the observer-lensed default profile, the one nearly every search
         # uses, was blind to order entirely).
         #
-        # Gated on n_words > 1 and folded INTO the rung rather than added
-        # beside it. Both deliberate: with one word there are no pairs to
+        # Gated on n_words > 1 and folded INTO field_perfect() per field
+        # rather than added beside it. Both deliberate: with one word there are no pairs to
         # order, so orderness is a constant that would buy nothing while eating
         # the odell ceiling — which is a SINGLE-word case, so this gate leaves
         # that calibration untouched by construction. Folding in (rather than a
         # separate additive term) also means order can only ever REDUCE a
         # perfect match, never manufacture headroom.
-        function order_factor() {
+        function order_of(f) {
             expression {
                 if (query(n_words) > 1,
-                    query(w_order_floor) + (1.0 - query(w_order_floor)) * max(fieldMatch(name).orderness, max(fieldMatch(display_name).orderness, fieldMatch(search_primary).orderness)),
+                    query(w_order_floor) + (1.0 - query(w_order_floor)) * fieldMatch(f).orderness,
                     1.0)
             }
         }
 
         function perfect_match() {
-            expression: max(max(field_perfect(name), field_perfect(display_name)), field_perfect(search_primary)) * order_factor()
+            expression: max(max(field_perfect(name), field_perfect(display_name)), field_perfect(search_primary))
         }
 
         # The precision rules at the `search` profile's scale — see
@@ -1217,7 +1234,6 @@ schema event {
             user_score
             verified_followers
             perfect_match
-            order_factor
             name_match
             identity_match
             identity_text

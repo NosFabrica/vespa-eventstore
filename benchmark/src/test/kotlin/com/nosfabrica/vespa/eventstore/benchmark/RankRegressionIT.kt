@@ -280,6 +280,14 @@ class RankRegressionIT {
             doc(40, kind = 0, pubkey = pk(40), search = SearchFields(name = "Jon Gordon", about = "bitcoin")),
             doc(41, kind = 0, pubkey = pk(40), search = SearchFields(name = "JonGordon", about = "bitcoin")),
             doc(42, kind = 0, pubkey = pk(40), search = SearchFields(name = "Gordon Jon", about = "bitcoin")),
+            // 43 is the MIXED-FIELD trap: its `name` reverses the query (best
+            // coverage, worst order) while its display_name holds the query in
+            // order inside a longer string (worst coverage, best order). Taking
+            // each factor's max independently across fields scores it a perfect
+            // 1.0 and floats it above 40, which is exactly what the first cut of
+            // order_factor() did — measured, it ranked FIRST. Every factor must
+            // come from the SAME field.
+            doc(43, kind = 0, pubkey = pk(40), search = SearchFields(name = "Gordon Jon", displayName = "Jon Gordon Fan Club", about = "bitcoin")),
             doc(
                 35,
                 kind = 30023,
@@ -646,6 +654,24 @@ class RankRegressionIT {
                         assertTrue(
                             id(41) in jgOrder,
                             "the concatenation must still recall: ${jg.map { nameOf(it.doc) }}",
+                        )
+                        assertTrue(
+                            jgOrder.indexOf(id(40)) < jgOrder.indexOf(id(43)),
+                            "coverage and order must come from the SAME field: ${jg.map { nameOf(it.doc) }}",
+                        )
+
+                        // A quoted PHRASE is one query item spanning several
+                        // field tokens, so the rung's coverage halves must be
+                        // item-granular (n_words counts phrases) and
+                        // token-granular (fieldCompleteness) respectively. With
+                        // matchCount/fieldLength and no n_words this read 0.5 on
+                        // a field the phrase covers completely — the most
+                        // explicit exactness a user can ask for, paid half.
+                        val phrase = indexRef.searchScored(EventQuery(phrases = listOf("Jon Gordon"), observer = OBSERVER, minRank = 2.0))
+                        assertEquals(
+                            id(40),
+                            phrase.map { it.doc.id }.firstOrNull(),
+                            "an exact-phrase match on the whole field must rank first: ${phrase.map { nameOf(it.doc) }}",
                         )
 
                         // --- typo bound: over-budget hits never match ---
