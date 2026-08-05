@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.eventstore
 
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.QUERY_FANOUT
+import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
@@ -274,7 +275,7 @@ class NostrSemanticsStore(
         val observer = coroutineContext[StoreQueryContext]?.observer
         val cutoff = nowSecs()
         val queries = filters.mapNotNull { it.toExpiryQuery(cutoff, observer) }
-        val ordered = recallOrdered(queries, NEWEST_FIRST, EventDoc::id) { index.search(it) }
+        val ordered = recallOrdered(queries, NEWEST_FIRST, EventDoc::id, { index.search(it) }, { index.searchRanked(it) })
         // Reconstruct via Quartz's by-kind factory straight from the stored
         // fields, skipping the serialize+parse round trip; see [toEvent].
         return ordered.map { it.toEvent() } as List<T>
@@ -282,29 +283,73 @@ class NostrSemanticsStore(
 
     /**
      * Recall every query concurrently (bounded), dedup across queries, and
-     * order the result. NIP-50: a searching query's hits stay in the engine's
-     * RELEVANCE order; plain queries keep NIP-01 recency — PER QUERY, so a
-     * plain filter riding beside a searching one is still served newest-first.
+     * order the result — ONE order over the union, not one order per filter.
+     *
+     * NIP-50 asks for relevance order and NIP-01 for recency, and a REQ can
+     * carry both kinds of filter at once, so there are three cases:
+     *
+     *  - **No query ranked.** The union is merged and sorted `created_at desc,
+     *    id asc` — the NIP-01 order, applied across filters.
+     *  - **Every query ranked, by the SAME profile.** The union is merged on
+     *    the engine's relevance, ties broken by recency. This is what a reader
+     *    means by "the most trusted results for #nostr": the filters are four
+     *    ways of asking one question, and their answers belong in one order.
+     *    It costs the scores, which is why [EventIndex.searchRanked] exists.
+     *  - **Mixed, or ranked by different profiles.** Each query's hits keep
+     *    their own order and the runs are concatenated, as before. A relevance
+     *    score and a timestamp share no scale, and neither do two profiles'
+     *    scores — interleaving them would be inventing a comparison. This is
+     *    the honest floor, not a good answer; a client that wants one order
+     *    should ask one question.
+     *
+     * The multi-filter union used to take the last branch ALWAYS as soon as one
+     * filter was ranked: a search page asking `#t`, `#l` and two comment
+     * filters for the same topic got its most-trusted hits for the first
+     * filter, then started again from the top of the trust scale for the
+     * second. Every seam read as a ranking mistake.
+     *
+     * Dedup is by id and keeps the BEST copy: sorting before [distinctBy] means
+     * an event that answered two filters survives at its higher score.
      */
     private suspend fun <R> recallOrdered(
         queries: List<EventQuery>,
         newestFirst: Comparator<R>,
         idOf: (R) -> String,
         searchOne: suspend (EventQuery) -> List<R>,
+        searchRankedOne: suspend (EventQuery) -> List<Ranked<R>>,
     ): List<R> {
-        val results =
-            when (queries.size) {
-                0 -> return emptyList()
-                1 -> listOf(searchOne(queries[0]))
-                else -> queries.mapBounded(QUERY_FANOUT) { searchOne(it) }
-            }
-        if (queries.none { it.keepsEngineOrder() }) {
-            val combined = results.flatten()
-            val unique = if (queries.size > 1) combined.distinctBy(idOf) else combined
-            return unique.sortedWith(newestFirst)
+        if (queries.isEmpty()) return emptyList()
+        // One filter is the ordinary REQ and never needs a score: its engine
+        // order IS the answer, and asking for scores would wrap every hit on
+        // the hottest read a relay serves.
+        if (queries.size == 1) {
+            val hits = searchOne(queries[0])
+            return if (queries[0].keepsEngineOrder()) hits else hits.sortedWith(newestFirst)
         }
+        if (queries.none { it.keepsEngineOrder() }) {
+            return queries
+                .mapBounded(QUERY_FANOUT) { searchOne(it) }
+                .flatten()
+                .distinctBy(idOf)
+                .sortedWith(newestFirst)
+        }
+        if (queries.all { it.keepsEngineOrder() } && queries.mapTo(HashSet()) { it.ranking }.size == 1) {
+            val scored = queries.mapBounded(QUERY_FANOUT) { searchRankedOne(it) }.flatten()
+            // An engine that does not rank (the in-memory reference) says so
+            // with a null rather than a fabricated constant. Its hits are
+            // already newest-first, so recency is the merge that keeps them
+            // coherent — and the caller is told nothing that is not true.
+            if (scored.any { it.score == null }) {
+                return scored.map { it.hit }.distinctBy(idOf).sortedWith(newestFirst)
+            }
+            return scored
+                .sortedWith(compareByDescending<Ranked<R>> { it.score }.thenBy(newestFirst) { it.hit })
+                .map { it.hit }
+                .distinctBy(idOf)
+        }
+        val results = queries.mapBounded(QUERY_FANOUT) { searchOne(it) }
         val ordered = queries.zip(results).flatMap { (q, hits) -> if (q.keepsEngineOrder()) hits else hits.sortedWith(newestFirst) }
-        return if (queries.size > 1) ordered.distinctBy(idOf) else ordered
+        return ordered.distinctBy(idOf)
     }
 
     /**
@@ -321,7 +366,7 @@ class NostrSemanticsStore(
         val observer = coroutineContext[StoreQueryContext]?.observer
         val cutoff = nowSecs()
         val queries = filters.mapNotNull { it.toExpiryQuery(cutoff, observer) }
-        recallOrdered(queries, RAW_NEWEST_FIRST, RawEvent::id) { index.rawSearch(it) }.forEach(onEach)
+        recallOrdered(queries, RAW_NEWEST_FIRST, RawEvent::id, { index.rawSearch(it) }, { index.rawSearchRanked(it) }).forEach(onEach)
     }
 
     override suspend fun <T : Event> query(

@@ -25,6 +25,7 @@ import ai.vespa.feed.client.Result
 import com.nosfabrica.vespa.eventstore.engine.DocRef
 import com.nosfabrica.vespa.eventstore.engine.DocsPage
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
+import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.ScoredHit
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.mapBounded
@@ -312,14 +313,7 @@ class VespaEventIndex(
      * created_at), so they take the same path.
      */
     private suspend fun recallSummaries(q: EventQuery): List<VespaSummary> {
-        val recencyOrdered =
-            (q.ranking == null && q.search.isNullOrBlank() && q.phrases.isEmpty()) ||
-                q.ranking == EventYql.RANK_UNRANKED ||
-                q.ranking == EventYql.RANK_RECENCY ||
-                q.usesGatedProfile()
-        if (!recencyOrdered) {
-            return recallRoot(q)?.children?.mapNotNull { it.fields }?.filter { it.id.isNotEmpty() } ?: emptyList()
-        }
+        if (!q.isRecencyOrdered()) return rankedHits(q).mapNotNull { it.fields }
         val limit = q.limit
         if (limit == null) {
             val all = recallRoot(q)?.children?.mapNotNull { it.fields }?.filter { it.id.isNotEmpty() } ?: emptyList()
@@ -354,6 +348,48 @@ class VespaEventIndex(
         }
         return hits.sortedWith(SUMMARY_NEWEST_FIRST).take(limit)
     }
+
+    /**
+     * Whether the engine's hit order for [this] is recency rather than a rank
+     * score — which is also whether there IS a score worth carrying. The gated
+     * profiles rank BY created_at, so they count as recency here.
+     */
+    private fun EventQuery.isRecencyOrdered(): Boolean =
+        (ranking == null && search.isNullOrBlank() && phrases.isEmpty()) ||
+            ranking == EventYql.RANK_UNRANKED ||
+            ranking == EventYql.RANK_RECENCY ||
+            usesGatedProfile()
+
+    /** The engine's hits for a query it ORDERS — no recency machinery, and the relevance still attached. */
+    private suspend fun rankedHits(q: EventQuery): List<SearchHit> = recallRoot(q)?.children?.filter { !it.fields?.id.isNullOrEmpty() } ?: emptyList()
+
+    /**
+     * [searchRanked]/[rawSearchRanked]: the same recall as [search], with each
+     * hit's relevance kept so the caller can merge across queries.
+     *
+     * A recency-ordered query has no score to give and takes the ordinary path
+     * — including its tie-slack overfetch, which the ranked branch does not
+     * need and must not lose.
+     */
+    private suspend fun <R : Any> rankedRecall(
+        query: EventQuery,
+        project: (VespaSummary) -> R?,
+    ): List<Ranked<R>> =
+        fallbacks.withNearFallback(query) { qn ->
+            fallbacks.withProfileFallback(planner.plan(fallbacks.demoteGated(qn))) { q ->
+                if (q.isRecencyOrdered()) {
+                    recallSummaries(q).mapNotNull { project(it) }.map { Ranked(it, null) }
+                } else {
+                    rankedHits(q).mapNotNull { hit -> hit.fields?.let(project)?.let { Ranked(it, hit.relevance) } }
+                }
+            }
+        }
+
+    // A pure-id lookup never reaches the search endpoint (it is a document-API
+    // key fetch) and has no relevance to report; the plain paths answer it.
+    override suspend fun searchRanked(query: EventQuery): List<Ranked<EventDoc>> = if (query.isPureIdLookup()) search(query).map { Ranked(it, null) } else rankedRecall(query) { it.toDoc() }
+
+    override suspend fun rawSearchRanked(query: EventQuery): List<Ranked<RawEvent>> = if (query.isPureIdLookup()) rawSearch(query).map { Ranked(it, null) } else rankedRecall(query) { it.toRaw() }
 
     /**
      * The recall query, guarded against match-phase UNDER-DELIVERY. A
