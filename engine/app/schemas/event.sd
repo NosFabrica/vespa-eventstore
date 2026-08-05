@@ -1151,10 +1151,15 @@ schema event {
         }
 
         # Surface the decisive signals so the API/inspector can show WHY a hit
-        # ranked where it did (text bands + the trust multiplier).
+        # ranked where it did (text bands + the trust multiplier). perfect_match
+        # earns its place here: since 2026-08-05 it is what orders hits INSIDE
+        # the token band, so "why is this above that" is unanswerable without
+        # it. It costs nothing extra — the second phase already computes the
+        # fieldMatch analysis it reads.
         match-features {
             user_score
             verified_followers
+            perfect_match
             name_match
             identity_match
             identity_text
