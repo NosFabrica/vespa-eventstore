@@ -564,6 +564,21 @@ schema event {
             # RE-MEASURE THIS CEILING (do not re-derive it on paper) if
             # w_affil_tier_text, w_about, w_wot_pow or the tier weights move.
             query(w_perfect_pop) double: 80000.0
+            # Word count as TYPED, sent by EventYql on every search with terms
+            # (see the n_words comment there). 1.0 is the fail-safe default: a
+            # sender that omits it degrades perfect_match() to "the field is
+            # covered by whatever matched", never to a divide-by-zero, and the
+            # order factor switches off — the same behaviour a genuine
+            # single-word query gets.
+            query(n_words) double: 1.0
+            # Floor under order_factor(): how much of the perfect-match rung a
+            # RIGHT-WORDS-WRONG-ORDER field keeps. 0 would make order absolute
+            # ("Gordon Jon" scores as if it never matched the band at all,
+            # which overstates a real-world naming difference — "Pamplona
+            # Vitor" is the same person). 0.5 halves the rung, enough to put
+            # the correctly-ordered field first at equal trust while leaving
+            # the reversed one comfortably inside the token band.
+            query(w_order_floor) double: 0.5
             query(w_identity) double: 50.0
             query(w_wot) double: 1.0
             # Exponent of wot_mult()'s trust curve. Sets how much trust
@@ -829,16 +844,58 @@ schema event {
         # Partial credit is the product, so it degrades smoothly: a whole-query
         # match on a 13-token title reads 0.15, a half-query match on a 2-token
         # name reads 0.5, the field that IS the query reads 1.0.
-        function perfect_match() {
+        #
+        # NOT fieldMatch's own queryCompleteness (which this shipped with on
+        # 2026-08-05 and which was wrong): it divides by every term in the
+        # query tree, and FuzzyWordGroup adds synthetic ones — a joined variant
+        # at 2+ words, adjacent-pair concatenations at 3+, each emitted twice —
+        # that a normally-spelled doc can never match. An exact whole-field
+        # match measured 0.667 at two words and 0.25 at three, so the rung was
+        # underpaid by a third and got worse the longer the query. matchCount
+        # over query(n_words) counts only what the user typed. Clamped because
+        # matchCount CAN exceed both bounds: the duplicated pair groups count
+        # twice, and a doc may match more terms than the field has tokens.
+        #
+        # KNOWN LIMIT: a compound-name hit ("JonGordon" for "Jon Gordon") match-
+        # es exactly one term — the joined variant — so it reads 0.5, the same
+        # as a doc named "Jon". The two are indistinguishable from inside a rank
+        # expression (both are matchCount 1 on a 1-token field), and the
+        # itemRawScore ladder that could label them is inert (§11.1). 0.5 beats
+        # the 0.333 fieldMatch gave it; recall for that shape is SearchPrefix-
+        # LadderIT's job, not this rung's.
+        function field_perfect(f) {
             expression {
-                max(
-                    max(
-                        fieldMatch(name).queryCompleteness * fieldMatch(name).fieldCompleteness,
-                        fieldMatch(display_name).queryCompleteness * fieldMatch(display_name).fieldCompleteness
-                    ),
-                    fieldMatch(search_primary).queryCompleteness * fieldMatch(search_primary).fieldCompleteness
-                )
+                if (fieldLength(f) > 0,
+                    min(1.0, matchCount(f) / max(1.0, query(n_words))) * min(1.0, matchCount(f) / fieldLength(f)),
+                    0)
             }
+        }
+
+        # Word ORDER, for multi-word queries only. fieldMatch(f).orderness is
+        # the in-order fraction of matched term pairs, so a field holding the
+        # query's words BACKWARDS scores below one holding them as typed
+        # ("Gordon Jon" vs "Jon Gordon", which were bit-identical before this —
+        # text_score() never carried the w_proximity term relevance() has, so
+        # the observer-lensed default profile, the one nearly every search
+        # uses, was blind to order entirely).
+        #
+        # Gated on n_words > 1 and folded INTO the rung rather than added
+        # beside it. Both deliberate: with one word there are no pairs to
+        # order, so orderness is a constant that would buy nothing while eating
+        # the odell ceiling — which is a SINGLE-word case, so this gate leaves
+        # that calibration untouched by construction. Folding in (rather than a
+        # separate additive term) also means order can only ever REDUCE a
+        # perfect match, never manufacture headroom.
+        function order_factor() {
+            expression {
+                if (query(n_words) > 1,
+                    query(w_order_floor) + (1.0 - query(w_order_floor)) * max(fieldMatch(name).orderness, max(fieldMatch(display_name).orderness, fieldMatch(search_primary).orderness)),
+                    1.0)
+            }
+        }
+
+        function perfect_match() {
+            expression: max(max(field_perfect(name), field_perfect(display_name)), field_perfect(search_primary)) * order_factor()
         }
 
         # The precision rules at the `search` profile's scale — see
@@ -1160,6 +1217,7 @@ schema event {
             user_score
             verified_followers
             perfect_match
+            order_factor
             name_match
             identity_match
             identity_text

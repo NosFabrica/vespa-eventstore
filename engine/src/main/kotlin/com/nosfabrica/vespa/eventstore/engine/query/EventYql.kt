@@ -314,6 +314,16 @@ object EventYql {
             clauses += FuzzyWordGroup.clause(matchable, params, nearFields = q.nearMatching)
             // Short queries lean harder on the trigram safety net.
             params["ranking.features.query(w_gram)"] = if (FuzzyWordGroup.leansOnGrams(matchable)) "8.0" else "2.0"
+            // How many words the USER typed. The schema's perfect_match() rung
+            // needs it because it cannot count them itself: fieldMatch's
+            // queryCompleteness divides by every term in the tree, and
+            // [FuzzyWordGroup] adds SYNTHETIC ones — a joined variant at 2+
+            // words, adjacent-pair concatenations at 3+, each emitted twice.
+            // Those can never match a doc that spells the name normally, so
+            // they sat in the denominator and made a whole-field match read
+            // 2/3 at two words and 1/4 at three (measured 2026-08-05). Counting
+            // the real words client-side is the only place the truth exists.
+            params["ranking.features.query(n_words)"] = matchable.size.toString()
         }
 
         // Quoted phrases ([EventQuery.phrases]): one REQUIRED phrase-grammar

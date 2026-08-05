@@ -87,6 +87,7 @@ object RankAb {
                     "w_words_pop" to 3000.0,
                     "w_exactness_pop" to 6000.0,
                     "w_perfect_pop" to 80000.0,
+                    "w_order_floor" to 0.5,
                     "w_wot_pow" to 2.7,
                 ),
             // Individual levers, to attribute any movement.
@@ -100,6 +101,8 @@ object RankAb {
             // turn. Sweep it against the odell crossing bound, whose ceiling
             // (98306) was MEASURED on a live Vespa, not derived on paper.
             "perfect_off" to mapOf("w_perfect_pop" to 0.0),
+            // Word order off — what the default profile did before the audit.
+            "order_off" to mapOf("w_order_floor" to 1.0),
             "perfect_max" to mapOf("w_perfect_pop" to 98000.0),
             "cutoff_50" to mapOf("text_score_cutoff" to 50.0),
             // Isolate the trust multiplier — the "is it ranking or is it data" test.

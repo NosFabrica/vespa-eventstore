@@ -269,6 +269,17 @@ class RankRegressionIT {
                 search = SearchFields(name = "jacksweeney", displayName = "jack sweeney", nip05 = "jacksweeney@nostrplebs.com"),
             ),
             doc(34, kind = 0, pubkey = pk(34), search = SearchFields(name = "jack", nip05 = "jack@primal.net")),
+            // --- B1/B2 probes (2026-08-05 audit), ONE author so trust cancels:
+            // 40 spells the query, 42 reverses it, 41 concatenates it. Before
+            // the audit 40 and 42 were bit-identical (text_score() never
+            // carried the w_proximity term relevance() has, so the default
+            // profile was blind to word order) and 40 read perfect_match 0.667
+            // rather than 1.0 (fieldMatch's queryCompleteness divides by the
+            // SYNTHETIC terms FuzzyWordGroup adds, which a normally-spelled
+            // doc can never match).
+            doc(40, kind = 0, pubkey = pk(40), search = SearchFields(name = "Jon Gordon", about = "bitcoin")),
+            doc(41, kind = 0, pubkey = pk(40), search = SearchFields(name = "JonGordon", about = "bitcoin")),
+            doc(42, kind = 0, pubkey = pk(40), search = SearchFields(name = "Gordon Jon", about = "bitcoin")),
             doc(
                 35,
                 kind = 30023,
@@ -437,6 +448,7 @@ class RankRegressionIT {
                                     ReputationDoc(pk(33), influenceScores = mapOf(OBSERVER to 100)),
                                     ReputationDoc(pk(34), influenceScores = mapOf(OBSERVER to 97)),
                                     ReputationDoc(pk(35), influenceScores = mapOf(OBSERVER to 98)),
+                                    ReputationDoc(pk(40), influenceScores = mapOf(OBSERVER to 50)),
                                 ),
                             )
                         }
@@ -615,6 +627,26 @@ class RankRegressionIT {
                         // The exact hit on display_name decides the band even
                         // though `name` (jacksweeney) is only a NEAR hit.
                         assertEquals("name", jack.first { it.doc.id == id(33) }.tier)
+
+                        // --- word ORDER and the whole-field rung (2026-08-05 audit) ---
+                        // Same author, so this is text alone. 40 spells the
+                        // query and must beat 42, which reverses it: order_factor
+                        // halves the rung for a wrong-order field, gated on
+                        // n_words > 1 so the single-word odell ceiling above is
+                        // untouched by construction. 41 (the concatenation) is a
+                        // KNOWN 0.5 — it matches only the joined synthetic term,
+                        // indistinguishable from a doc named "Jon" inside a rank
+                        // expression.
+                        val jg = indexRef.searchScored(EventQuery(search = "Jon Gordon", observer = OBSERVER, minRank = 2.0))
+                        val jgOrder = jg.map { it.doc.id }
+                        assertTrue(
+                            jgOrder.indexOf(id(40)) < jgOrder.indexOf(id(42)),
+                            "the field that spells the query must beat the one that reverses it: ${jg.map { nameOf(it.doc) }}",
+                        )
+                        assertTrue(
+                            id(41) in jgOrder,
+                            "the concatenation must still recall: ${jg.map { nameOf(it.doc) }}",
+                        )
 
                         // --- typo bound: over-budget hits never match ---
                         absent("odelll", "Odessa")
