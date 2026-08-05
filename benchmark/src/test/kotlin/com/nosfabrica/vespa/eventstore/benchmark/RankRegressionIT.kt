@@ -768,63 +768,53 @@ class RankRegressionIT {
                         "at equal trust, the field the phrase covers WHOLLY beats the one it covers partly: ${phrase.map { nameOf(it.doc) }}",
                     )
 
-                    // --- a BODY-only match must survive the cutoff (2026-08-05) ---
-                    // The whole report in one query: three words that appear
-                    // verbatim in doc 44's content, under the same lens that
-                    // found it by hashtag. Before tier_body_match() the only
-                    // credit search_text earned was query(w_content) × bm25 —
-                    // low tens against text_score_cutoff's 100 — so `search`
-                    // scored the hit 0.0 and rank-score-drop-limit removed it.
-                    // Asserted under the DEFAULT profile with an observer,
-                    // because that is the only profile the cutoff lives in
-                    // (`text` never dropped the hit, which is why this looked
-                    // like an indexing bug and was not one).
-                    val body = indexRef.searchScored(EventQuery(search = "divórcio e desabafa", observer = OBSERVER, minRank = 2.0))
-                    assertTrue(
-                        body.any { it.doc.id == id(44) },
-                        "a match in the note BODY must survive text_score_cutoff: ${body.map { nameOf(it.doc) }}",
-                    )
-                    assertEquals("body", body.first { it.doc.id == id(44) }.tier)
-                    // The rung must not promote the body past a hashtag/title
-                    // route: the same doc still arrives WEAK for the hashtag
-                    // word, which is the tier above it.
-                    val hashtag = indexRef.searchScored(EventQuery(search = "vitor", observer = OBSERVER, minRank = 2.0))
-                    assertEquals(
-                        "weak",
-                        hashtag.first { it.doc.id == id(44) }.tier,
-                        "a hashtag prefix outranks the body it also matches: ${hashtag.map { it.doc.id to it.tier }}",
-                    )
-
-                    // --- an EXACT secondary match the attribute can't mirror ---
-                    // Both routes the weak tier used to miss because it read
-                    // search_secondary_tokens and not search_secondary: a word
-                    // under the prefix floor, and a word past NearText's
-                    // element cap. Neither emits a prefix or a gram clause, so
-                    // before secondary_match() the exact clause recalled the
-                    // doc and the ranking then deleted it.
-                    for (word in listOf("ai", "quilombola")) {
-                        val hits = indexRef.searchScored(EventQuery(search = word, observer = OBSERVER, minRank = 2.0))
-                        assertTrue(
-                            hits.any { it.doc.id == id(45) },
-                            "\"$word\" matches search_secondary exactly and must survive text_score_cutoff: ${hits.map { it.doc.id }}",
+                    // --- the rungs the 2026-08-05 audit added, in ONE picture ---
+                    //   "divórcio e desabafa"  three words that are doc 44's
+                    //     content verbatim, under the same lens that found it
+                    //     by hashtag. Before tier_body_match() search_text
+                    //     earned only query(w_content) × bm25 — low tens
+                    //     against text_score_cutoff's 100 — so `search` scored
+                    //     the hit 0.0 and rank-score-drop-limit removed it.
+                    //   "vitor"  the SAME doc, which must still arrive WEAK
+                    //     through its hashtag: the body rung must not promote
+                    //     a body past the tier above it.
+                    //   "ai" / "quilombola"  exact matches on search_secondary
+                    //     that its NearText attribute cannot mirror (under the
+                    //     prefix floor; past the element cap).
+                    // Asserted under the DEFAULT profile with an observer —
+                    // the only profile the cutoff lives in, which is why this
+                    // read as an indexing bug and was not one.
+                    //
+                    // Collected into one comparison rather than asserted one
+                    // by one: a per-case assertion stops at the first mismatch
+                    // and hides the rest, and these run only in CI against a
+                    // real Vespa, so each round trip has to be worth a full
+                    // answer.
+                    val audited =
+                        listOf(
+                            Triple("divórcio e desabafa", id(44), "body"),
+                            Triple("vitor", id(44), "weak"),
+                            Triple("ai", id(45), "weak"),
+                            Triple("quilombola", id(45), "weak"),
                         )
-                        assertEquals("weak", hits.first { it.doc.id == id(45) }.tier, "\"$word\" must arrive through the secondary tier")
-                    }
+                    assertEquals(
+                        audited.associate { (query, _, tier) -> query to tier },
+                        audited.associate { (query, docId, _) -> query to tierOfHit(query, docId) },
+                        "the audit's rungs: each query must reach its doc through the named tier",
+                    )
 
                     // --- THE RECALL FLOOR: every column, one at a time ---
                     // See FLOOR_CASES. Under the lensed profile, because the
                     // cutoff only exists there — a rungless column reads as
                     // "the relay doesn't have it", which is why three of them
-                    // went unnoticed for two weeks.
-                    for (case in FLOOR_CASES) {
-                        val hits = indexRef.searchScored(EventQuery(search = case.token, observer = OBSERVER, minRank = 2.0))
-                        val hit = hits.firstOrNull { it.doc.id == id(case.n) }
-                        assertTrue(
-                            hit != null,
-                            "\"${case.token}\" lives only in one column and must be findable under the observer lens: ${hits.map { it.doc.id }}",
-                        )
-                        assertEquals(case.tier, hit.tier, "\"${case.token}\" arrived through the wrong tier")
-                    }
+                    // went unnoticed for two weeks. One comparison for the
+                    // same reason as above: a failure should print the whole
+                    // ladder, not just its first broken rung.
+                    assertEquals(
+                        FLOOR_CASES.associate { it.token to it.tier },
+                        FLOOR_CASES.associate { it.token to tierOfHit(it.token, id(it.n)) },
+                        "every searchable column must be reachable under the observer lens, through its own tier",
+                    )
 
                     // --- typo bound: over-budget hits never match ---
                     absent("odelll", "Odessa")
@@ -846,6 +836,22 @@ class RankRegressionIT {
         }
         error("corpus never became searchable")
     }
+
+    /**
+     * The tier [docId] arrives through for [query] under the observer lens —
+     * the DEFAULT profile, the only one carrying text_score_cutoff. "MISSING"
+     * rather than null when the doc does not come back at all, so a recall
+     * failure and a mis-tiered hit read the same way in one map comparison
+     * instead of one masking the other.
+     */
+    private suspend fun tierOfHit(
+        query: String,
+        docId: String,
+    ): String =
+        indexRef
+            .searchScored(EventQuery(search = query, observer = OBSERVER, minRank = DEFAULT_IT_MIN_RANK))
+            .firstOrNull { it.doc.id == docId }
+            ?.tier ?: "MISSING"
 
     private suspend fun search(text: String) = searchWith(text, EventYql.RANK_TEXT)
 
@@ -927,6 +933,9 @@ class RankRegressionIT {
     private companion object {
         const val QUERY_PORT = 8080
         const val CONFIG_PORT = 19071
+
+        /** The store's own floor (FilterMapping.DEFAULT_MIN_RANK), so these queries are shaped like the reported ones. */
+        const val DEFAULT_IT_MIN_RANK = 2.0
 
         /**
          * THE RECALL-FLOOR MATRIX: one doc per searchable column, each
