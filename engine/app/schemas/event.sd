@@ -1415,7 +1415,6 @@ schema event {
             near_name_match
             any_near_match
             weak_match
-            identity_match
             affiliation_match
             tier_body_match
         }
@@ -1470,7 +1469,6 @@ schema event {
             identity_match
             identity_text
             any_token_match
-            identity_match
             loose_name_match
             near_name_match
             any_near_match

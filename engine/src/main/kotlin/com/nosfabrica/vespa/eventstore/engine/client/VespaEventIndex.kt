@@ -494,7 +494,11 @@ class VespaEventIndex(
 
             on("weak_match") -> "weak"
 
-            on("affiliation_match_text") || on("affiliation_match") -> "affiliation"
+            // One gate now: affiliation_match_text was the DEFAULT profile's
+            // fork of this, forced by has_token_match counting identity while
+            // that profile's band did not. Identity is a rung of its own, so
+            // the fork is gone and so is the feature name.
+            on("affiliation_match") -> "affiliation"
 
             // Same RUNG as affiliation (event.sd max()es the two into one
             // weight), a different route: the profile group's bio/website vs
