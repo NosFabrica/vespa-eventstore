@@ -5,17 +5,23 @@ app = "1.0.0"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"
 # Quartz from JitPack (amethyst @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
-# 1a25557bdb = amethyst PR #3855 "quartz/geode: sync accessories from vespa-relay,
-# InsertOutcome.Failed contract, mirror resume coverage" (2026-08-04): the
-# batchInsert contract now splits the event's fault (Rejected — final, safe to
-# drop) from the store's fault (new InsertOutcome.Failed — caller must re-offer);
-# our bulk paths' never-decided fallback maps to Failed accordingly. The rest
-# (SyncBands/PagingProgress relay-client accessories, geode mirror resume) is
-# unused here. Prev c029b271e7 (2026-08-04, PR #3854: search grammar + weighted
-# field extraction, shared store-semantics rules — FilterMapping,
-# SearchExtractors, and Rejections delegate upstream). #3855 touched no skill
-# files, so the .claude/skills imported at 9231195890 are current for this pin.
-quartz = "1a25557bdb"
+# a58289b62c = amethyst PRs #3856/#3857/#3859 (2026-08-05), all relay-transport
+# work — nothing in this range touches the store contract, filter semantics, or
+# the searchable-kind table, so the parity and rank gates are unaffected. The one
+# type we share with it is NormalizedRelayUrl (a data carrier on our insert paths):
+# #3859 anchors url parsing to the authority and canonicalizes IPv6 hosts, so
+# isLocalHost/isOnion stop being substring guesses (`wss://evil.com/127.0.0.1` no
+# longer reads as local, `wss://host.onion:8080/` now does read as onion) and
+# isOverlayNetwork() is added for Yggdrasil-style meshes; #3857 hardens
+# RelayUrlNormalizer against urls that can never be relays and adds the NIP-66
+# prober / cached NIP-11 fetcher, #3856 fixes FiltersChanged — both unused here.
+# normalize()/normalizeOrNull() keep their signatures; our ws://localhost relays
+# still normalize. Prev 1a25557bdb (2026-08-04, PR #3855: batchInsert splits the
+# event's fault — Rejected, final — from the store's fault — InsertOutcome.Failed,
+# caller must re-offer; our bulk paths' never-decided fallback maps to Failed).
+# This range touched no skill files, so the .claude/skills imported at 9231195890
+# are current for this pin.
+quartz = "a58289b62c"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 sqlite = "2.7.0"
