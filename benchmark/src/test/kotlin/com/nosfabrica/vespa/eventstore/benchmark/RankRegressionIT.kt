@@ -311,6 +311,32 @@ class RankRegressionIT {
                                 "o jogador de futebol Vitor Roque.",
                     ),
             ),
+            // --- the secondary tier's OTHER rungless routes (2026-08-05 audit).
+            // The weak tier read only search_secondary_tokens, a NearText
+            // attribute, so an exact match on the search_secondary INDEX
+            // field that the attribute cannot mirror arrived with no rung and
+            // died at text_score_cutoff exactly as the body did. Two of the
+            // three routes are decided by THIS repo's constants, so they are
+            // pinnable; the third (stemming — search_secondary is stemmed,
+            // the attribute is raw bytes, so "bitcoiners" reaches the index
+            // and not the prefix column) depends on the engine's stemmer and
+            // is left to the comment in event.sd.
+            //   * "ai" is under FuzzyWordGroup.MIN_PREFIX_LEN, so NO prefix
+            //     clause is emitted at all, and under MIN_AND_GRAMS_TEXT, so
+            //     no gram clause either — the exact clause is the only route.
+            //   * "quilombola" sits past NearText.MAX_ELEMENTS (48) in the
+            //     token array below (50 fillers precede it), so the attribute
+            //     does not carry it while the index field carries every word.
+            doc(
+                45,
+                kind = 1,
+                pubkey = pk(45),
+                search =
+                    SearchFields(
+                        secondary = (1..50).joinToString(" ") { "fill%02d".format(it) } + " ai quilombola",
+                        text = "a body that says none of the words above",
+                    ),
+            ),
             doc(
                 35,
                 kind = 30023,
@@ -507,6 +533,8 @@ class RankRegressionIT {
                                 // text_score_cutoff, and it must clear the store's own
                                 // min_rank (2) as it did in the report.
                                 ReputationDoc(pk(44), influenceScores = mapOf(OBSERVER to 8)),
+                                // The secondary-rung case: same low score, same reason.
+                                ReputationDoc(pk(45), influenceScores = mapOf(OBSERVER to 8)),
                             ),
                         )
                     }
@@ -763,6 +791,22 @@ class RankRegressionIT {
                         hashtag.first { it.doc.id == id(44) }.tier,
                         "a hashtag prefix outranks the body it also matches: ${hashtag.map { it.doc.id to it.tier }}",
                     )
+
+                    // --- an EXACT secondary match the attribute can't mirror ---
+                    // Both routes the weak tier used to miss because it read
+                    // search_secondary_tokens and not search_secondary: a word
+                    // under the prefix floor, and a word past NearText's
+                    // element cap. Neither emits a prefix or a gram clause, so
+                    // before secondary_match() the exact clause recalled the
+                    // doc and the ranking then deleted it.
+                    for (word in listOf("ai", "quilombola")) {
+                        val hits = indexRef.searchScored(EventQuery(search = word, observer = OBSERVER, minRank = 2.0))
+                        assertTrue(
+                            hits.any { it.doc.id == id(45) },
+                            "\"$word\" matches search_secondary exactly and must survive text_score_cutoff: ${hits.map { it.doc.id }}",
+                        )
+                        assertEquals("weak", hits.first { it.doc.id == id(45) }.tier, "\"$word\" must arrive through the secondary tier")
+                    }
 
                     // --- typo bound: over-budget hits never match ---
                     absent("odelll", "Odessa")

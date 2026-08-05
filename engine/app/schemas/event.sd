@@ -758,6 +758,23 @@ schema event {
         # IDF-aware identity handles: bm25 is tf*IDF, so a token shared by
         # thousands of nip05s (primal, gmail, com) scores ~0 while a unique
         # handle scores high — "the more a word is used, the smaller the score".
+        #
+        # KNOWN HOLE (2026-08-05 audit, deliberately NOT fixed here). nip05 and
+        # lud16 are the last matchable columns with no rung of their own, and
+        # the dilution above is meant to push a common-domain match DOWN, not
+        # to delete it — but text_score() has a cutoff, so below
+        # query(w_identity) × bm25 ≈ 2 it deletes. Worse, matchCount on either
+        # field flips has_token_match(), hence any_token_match(), which GATES
+        # weak_match() and tier_body_match() — so an identity match also
+        # suppresses the affil_tokens weak-tier column that exists for exactly
+        # these fields. A doc whose only match is a common handle token
+        # therefore scores ~0 and is dropped, where it should merely rank last.
+        # Reachability is low (bm25 ≈ 2 needs the token in ~13%+ of the WHOLE
+        # corpus, and such docs usually match a name or bio too), which is why
+        # it is recorded rather than patched: the fix needs profile-specific
+        # gates (relevance() puts identity IN the token band, so relaxing the
+        # shared gate would stack two rungs there) and therefore a live A/B —
+        # see benchmark/rank_cases.json.
         function identity_text() {
             expression: bm25(nip05) + bm25(lud16)
         }
@@ -823,8 +840,9 @@ schema event {
         # INFIX net FuzzyWordGroup emits (the unbounded OR net is off): every
         # trigram of the query word must appear in the name, a near-substring
         # test — "dell" reaches ODELL, "ode" (too few trigrams) reaches
-        # nothing. search_secondary_tokens carries hashtag/summary token
-        # prefixes ("bitco" -> #bitcoin); affil_tokens carries identity/
+        # nothing. search_secondary/search_secondary_tokens carry the
+        # hashtag/summary tier, exact and by token prefix ("bitco" ->
+        # #bitcoin); affil_tokens carries identity/
         # affiliation segment prefixes ("vitorpamp" ->
         # amethyst@vitorpamplona.com — the as-you-type continuity column).
         # All are real signals with a bound, weaker than an anchored prefix
@@ -835,8 +853,31 @@ schema event {
             expression: if(matchCount(name_gram) > 0 || matchCount(display_name_gram) > 0 || matchCount(search_primary_gram) > 0, 1, 0)
         }
 
-        function secondary_prefix_match() {
-            expression: if(matchCount(search_secondary_tokens) > 0, 1, 0)
+        # The secondary tier's rung. BOTH columns, deliberately: the INDEX
+        # field is what the exact clause matches, the *_tokens ATTRIBUTE is
+        # what the prefix clause matches, and reading only the attribute meant
+        # a whole class of genuine exact matches arrived with NO rung — the
+        # same deletion tier_body_match() documents, since
+        # query(w_secondary) × bm25 does not reach text_score_cutoff either.
+        # Three ways the attribute misses a word the index field holds:
+        #   * STEMMING, the reachable one. search_secondary is stemmed
+        #     (`stemming: best`, this schema's default — unlike name/
+        #     display_name/search_primary, which opt out); the attribute is
+        #     raw folded bytes. Query "bitcoiners" against the hashtag
+        #     "#bitcoiner" matches the index and NOT the prefix column, since
+        #     "bitcoiner" does not start with "bitcoiners". Asymmetric, so it
+        #     hides: the singular finds the plural and looks fine.
+        #   * SHORT WORDS. FuzzyWordGroup emits no prefix clause under
+        #     MIN_PREFIX_LEN (3 Latin / 2 non-ASCII) and no gram clause under
+        #     MIN_AND_GRAMS_TEXT, so "#ai" was reachable by nothing but its
+        #     exact clause.
+        #   * THE ELEMENT CAP. NearText.tokens stops at MAX_ELEMENTS (48), so
+        #     a long summary/description loses its tail from the attribute
+        #     while the index field keeps every word.
+        # Strictly additive: every doc the prefix column already reached still
+        # reaches the same tier at the same weight, so no band moves.
+        function secondary_match() {
+            expression: if(matchCount(search_secondary) > 0 || matchCount(search_secondary_tokens) > 0, 1, 0)
         }
 
         # Gated on the bio/website EXACT match: a finished word is trivially a
@@ -852,7 +893,7 @@ schema event {
         }
 
         function weak_match() {
-            expression: if(any_token_match() > 0 || any_near_match() > 0, 0, if(infix_gram_match() > 0 || secondary_prefix_match() > 0 || affil_prefix_match() > 0, 1, 0))
+            expression: if(any_token_match() > 0 || any_near_match() > 0, 0, if(infix_gram_match() > 0 || secondary_match() > 0 || affil_prefix_match() > 0, 1, 0))
         }
 
         # ---- second-phase precision signals ----
