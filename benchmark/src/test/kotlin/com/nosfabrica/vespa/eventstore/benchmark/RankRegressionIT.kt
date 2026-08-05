@@ -1016,11 +1016,11 @@ class RankRegressionIT {
          * ever asked the plain question "is each column reachable at all".
          *
          * The tiers are asserted, not just presence, so this doubles as an
-         * executable picture of the ladder. Two rows record known state
-         * rather than desired state: nip05/lud16 report "name" because
-         * matchCount on either flips has_token_match (see identity_text() in
-         * event.sd) — when identity gets its own rung those two become
-         * "identity", and this matrix is where that lands.
+         * executable picture of the ladder — including that nip05/lud16 arrive
+         * as "identity" in the WEAK band and not as "name": a shared domain is
+         * not a naming claim, and identity_text()'s IDF dilution orders those
+         * hits from within their band rather than deciding whether they rank
+         * at all (see identity_text() in event.sd).
          *
          * LIMIT, deliberate: the tokens are rare, so this proves each column
          * is REACHABLE, not that it survives at low IDF. The identity cliff
@@ -1034,8 +1034,8 @@ class RankRegressionIT {
                 FloorCase(60, 0, "zoxlarn", "name", SearchFields(name = "zoxlarn")),
                 FloorCase(61, 0, "quibrith", "name", SearchFields(displayName = "quibrith")),
                 FloorCase(62, 0, "vandreth", "affiliation", SearchFields(about = "vandreth")),
-                FloorCase(63, 0, "kelmoraq", "name", SearchFields(nip05 = "kelmoraq@thrandil.invalid")),
-                FloorCase(64, 0, "brivvoth", "name", SearchFields(lud16 = "brivvoth@thrandil.invalid")),
+                FloorCase(63, 0, "kelmoraq", "identity", SearchFields(nip05 = "kelmoraq@thrandil.invalid")),
+                FloorCase(64, 0, "brivvoth", "identity", SearchFields(lud16 = "brivvoth@thrandil.invalid")),
                 FloorCase(65, 0, "plentharn", "affiliation", SearchFields(website = "https://plentharn.invalid")),
                 FloorCase(66, 1, "xanthorel", "name", SearchFields(primary = "xanthorel")),
                 FloorCase(67, 1, "grintavos", "weak", SearchFields(secondary = "grintavos")),

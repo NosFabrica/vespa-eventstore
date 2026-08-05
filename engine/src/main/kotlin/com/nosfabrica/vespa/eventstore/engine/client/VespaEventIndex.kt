@@ -442,13 +442,21 @@ class VespaEventIndex(
 
         fun on(feature: String): Boolean = ((mf[feature] as? JsonPrimitive)?.content?.toDoubleOrNull() ?: 0.0) > 0.0
         return when {
-            on("any_token_match") || on("name_match") || on("has_token_match") -> "name"
+            on("any_token_match") || on("name_match") -> "name"
 
             on("any_near_match") || on("near_name_match") -> "near"
 
-            on("weak_match") -> "weak"
-
+            // BEFORE weak, and that ordering is the whole point. identity_match
+            // means nip05/lud16 matched; weak_match is also 1 for such a doc
+            // (identity is one of the weak band's signals), so testing weak
+            // first would swallow the more specific route — which is exactly
+            // how this branch stayed unreachable from the day it was written:
+            // identity implied the old has_token_match, so "name" claimed it.
+            // The doc scores in the weak band either way; this only names the
+            // route that got it there.
             on("identity_match") -> "identity"
+
+            on("weak_match") -> "weak"
 
             on("affiliation_match_text") || on("affiliation_match") -> "affiliation"
 

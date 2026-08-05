@@ -740,22 +740,14 @@ schema event {
         # nearly — is scored by that tier alone (tiers must never stack, or
         # they reorder each other's bands; see affiliation_match).
         function secondary_active() {
-            expression: if(has_token_match() > 0 || any_near_match() > 0 || weak_match() > 0, 0, 1)
-        }
-
-        # A "real" token match — an EXACT whole-token hit in an indexed name or
-        # identity field; trigram-only recall doesn't feed matchCount, and
-        # prefix/fuzzy hits land on the *_parts/*_tokens attributes instead
-        # (near_name_match), so this counts exact hits only.
-        function has_token_match() {
-            expression: if(matchCount(name) > 0 || matchCount(display_name) > 0 || matchCount(nip05) > 0 || matchCount(lud16) > 0, 1, 0)
+            expression: if(any_token_match() > 0 || any_near_match() > 0 || weak_match() > 0, 0, 1)
         }
 
         # Graded match quality from the labeled query clauses (vespa_query.py
         # _field_clauses): 4=exact, 3=prefix, 2=1-typo, 1=2-typo, 0=gram-only.
         # KNOWN-INERT: itemRawScore does not populate for plain text terms
         # (Brainstorm staging, 2026-06-30) — degrades safely to 0; the coarse
-        # has_token_match tier still applies. Kept for the day Vespa populates
+        # any_token_match tier still applies. Kept for the day Vespa populates
         # term raw scores or the verbatim-field rework (§11.1) lands.
         function match_quality() {
             expression: if(itemRawScore(mtch_exact) > 0, 4, if(itemRawScore(mtch_prefix) > 0, 3, if(itemRawScore(mtch_fz1) > 0, 2, if(itemRawScore(mtch_fz2) > 0, 1, 0))))
@@ -801,7 +793,7 @@ schema event {
         # ladder — upstream measured a prefix hit whose bio also matched
         # (700 + 550 = 1250) ranking ABOVE the exact name match (1100).
         function affiliation_match() {
-            expression: if(has_token_match() > 0 || any_near_match() > 0 || weak_match() > 0, 0, if(matchCount(about) > 0 || matchCount(website) > 0, 1, 0))
+            expression: if(any_token_match() > 0 || any_near_match() > 0 || weak_match() > 0, 0, if(matchCount(about) > 0 || matchCount(website) > 0, 1, 0))
         }
 
         # Multi-word proximity over the primary fields (0..1): Meilisearch's
@@ -823,30 +815,30 @@ schema event {
         # thousands of nip05s (primal, gmail, com) scores ~0 while a unique
         # handle scores high — "the more a word is used, the smaller the score".
         #
-        # KNOWN HOLE (2026-08-05 audit, deliberately NOT fixed here). nip05 and
-        # lud16 are the last matchable columns with no rung of their own, and
-        # the dilution above is meant to push a common-domain match DOWN, not
-        # to delete it — but text_score() has a cutoff, so below
-        # query(w_identity) × bm25 ≈ 2 it deletes. Worse, matchCount on either
-        # field flips has_token_match(), hence any_token_match(), which GATES
-        # weak_match() and tier_body_match() — so an identity match also
-        # suppresses the affil_tokens weak-tier column that exists for exactly
-        # these fields. A doc whose only match is a common handle token
-        # therefore scores ~0 — and until floored_text_score() existed, was
-        # DELETED for it.
+        # THE RUNG AND THE DILUTION DO DIFFERENT JOBS (2026-08-05 audit).
+        # bm25 alone decides BOTH whether a hit ranks and where, and that
+        # conflation was the bug: a common-domain match diluted to ~0 was meant
+        # to rank LAST, but text_score() has a cutoff, so it was deleted
+        # instead. Worse, matchCount on either field flipped the old
+        # has_token_match(), hence any_token_match(), which gates weak_match()
+        # and tier_body_match() — so an identity match suppressed every rung
+        # beneath it, including affil_tokens, the weak column built for these
+        # very fields.
         #
-        # The survival half is closed: matchCount on either field answers
-        # real_match(), so such a hit is floored at the cutoff and arrives
-        # last instead of not at all. What remains is PLACEMENT — identity is
-        # the one column still riding the floor net instead of a rung of its
-        # own, which also means tierOf reports it as "name" (identity_match
-        # implies has_token_match, so the "identity" label is unreachable).
-        # The real fix is to make the token band name_match() ||
-        # tier_token_match() in BOTH profiles and give identity its own rung,
-        # which retires the affiliation_match/affiliation_match_text fork this
-        # same asymmetry forced. That MOVES bands (relevance() puts identity
-        # in the token band today), so it needs a live A/B — parked in
-        # benchmark/rank_cases.json.
+        # Split in two now. weak_match() carries identity as one of its
+        # signals, so BAND membership is categorical: a doc whose handle
+        # matched is in the weak band whatever its IDF. identity_text() then
+        # orders it from WITHIN that band, which is all the dilution was ever
+        # for — a unique handle sorts above a mass-hosted domain, and neither
+        # can reach the name band, since any_token_match() no longer counts
+        # them. `vitorpamplona` matching a nip05 is evidence about a person;
+        # `com` matching one is not, and the two now differ by hundreds of
+        # points inside one band instead of by presence or absence.
+        #
+        # No new weight: the weak tier is where an UNFINISHED word touching
+        # these fields already landed (affil_tokens prefix), so a finished word
+        # landing in the same band is consistency, not promotion — and it needs
+        # no recalibration, the same argument tier_body_match() rests on.
         function identity_text() {
             expression: bm25(nip05) + bm25(lud16)
         }
@@ -885,26 +877,6 @@ schema event {
         # disjoint per kind, so max() is exact.
         function any_near_match() {
             expression: max(near_name_match(), tier_near_match())
-        }
-
-        # Affiliation gate for the DEFAULT profile only. Identical to
-        # affiliation_match() except it gates on name_match() instead of
-        # has_token_match() (which ALSO counts nip05/lud16): a doc whose only
-        # match is a COMMON nip05 domain (identity_text ~ 0) must not lose the
-        # bio-affiliation credit it genuinely earned — with the old gate it
-        # could fall under text_score_cutoff and vanish while the same profile
-        # without the matching nip05 ranked normally. affiliation_match() and
-        # secondary_active() keep the old gate: relevance() and the rank_*
-        # profiles are built on them.
-        function affiliation_match_text() {
-            expression: if(name_match() > 0 || near_name_match() > 0 || weak_match() > 0, 0, if(matchCount(about) > 0 || matchCount(website) > 0, 1, 0))
-        }
-
-        # about-fallback gate for the DEFAULT profile: contribute only when
-        # nothing better matched (no name, no near, no identity, no
-        # affiliation) — same common-nip05 reasoning as affiliation_match_text.
-        function secondary_active_text() {
-            expression: if(name_match() > 0 || near_name_match() > 0 || weak_match() > 0 || identity_match() > 0 || affiliation_match_text() > 0, 0, 1)
         }
 
         # ---- the weak tier: bounded infix + hashtag/summary/affil prefix ----
@@ -966,7 +938,7 @@ schema event {
         }
 
         function weak_match() {
-            expression: if(any_token_match() > 0 || any_near_match() > 0, 0, if(infix_gram_match() > 0 || secondary_match() > 0 || affil_prefix_match() > 0, 1, 0))
+            expression: if(any_token_match() > 0 || any_near_match() > 0, 0, if(infix_gram_match() > 0 || secondary_match() > 0 || affil_prefix_match() > 0 || identity_match() > 0, 1, 0))
         }
 
         # ---- second-phase precision signals ----
@@ -1172,8 +1144,20 @@ schema event {
 
         # ---- composites (profile group + tier group; disjoint per kind) ----
 
+        # THE TOKEN BAND: a whole-token match on a NAME or a TITLE, and
+        # nothing else. nip05/lud16 used to be counted here through
+        # has_token_match(), which is now retired, because they are not a
+        # naming claim — a thousand accounts share primal.net. text_score()
+        # always knew that and used name_match() for the band; the trouble was
+        # that the SAME has_token_match() also gated weak_match(),
+        # tier_body_match() and the affiliation rungs, so an identity match
+        # silently suppressed every rung BELOW it — including affil_tokens,
+        # the weak column built for those very fields — and left the doc with
+        # nothing but query(w_identity) x identity_text(). Identity now sits in
+        # the weak band on its own (see weak_match) and identity_text() orders
+        # it from WITHIN, which is what the IDF dilution was always for.
         function any_token_match() {
-            expression: max(has_token_match(), tier_token_match())
+            expression: max(name_match(), tier_token_match())
         }
 
         # Did the query match a REAL column — one of the ten fields the
@@ -1230,8 +1214,8 @@ schema event {
                 + weak_match() * query(w_weak_tier)
                 + primary_text()
                 + query(w_identity) * identity_text()
-                + max(affiliation_match_text(), tier_body_match()) * query(w_affil_tier_text)
-                + secondary_active_text() * query(w_about) * about_text()
+                + max(affiliation_match(), tier_body_match()) * query(w_affil_tier_text)
+                + secondary_active() * query(w_about) * about_text()
                 + tier_text()
             }
         }
@@ -1293,8 +1277,8 @@ schema event {
             name_text
             display_name_text
             about_text
-            has_token_match
             any_token_match
+            identity_match
             near_name_match
             any_near_match
             weak_match
@@ -1426,8 +1410,8 @@ schema event {
         match-features {
             user_score
             verified_followers
-            has_token_match
             any_token_match
+            identity_match
             near_name_match
             any_near_match
             weak_match
@@ -1485,16 +1469,14 @@ schema event {
             name_match
             identity_match
             identity_text
-            has_token_match
             any_token_match
+            identity_match
             loose_name_match
             near_name_match
             any_near_match
             weak_match
             affiliation_match
-            affiliation_match_text
             tier_body_match
-            secondary_active_text
             real_match
             text_score
             wot_mult
