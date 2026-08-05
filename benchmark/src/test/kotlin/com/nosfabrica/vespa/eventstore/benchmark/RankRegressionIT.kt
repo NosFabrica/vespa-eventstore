@@ -790,29 +790,41 @@ class RankRegressionIT {
                     // and hides the rest, and these run only in CI against a
                     // real Vespa, so each round trip has to be worth a full
                     // answer.
-                    val audited =
-                        listOf(
-                            Triple("divórcio e desabafa", id(44), "body"),
-                            Triple("vitor", id(44), "weak"),
-                            Triple("ai", id(45), "weak"),
-                            Triple("quilombola", id(45), "weak"),
-                        )
+                    // ONE comparison for the audit's rungs AND the recall-floor
+                    // matrix (FLOOR_CASES). They were two assertEquals calls
+                    // for exactly one CI run, and the first one throwing meant
+                    // the matrix never executed — so a six-minute round trip
+                    // against the only engine that can answer these bought
+                    // half a picture. Every row now reports, pass or fail.
+                    //
+                    // The last three rows are a DISCRIMINATOR ladder, kept
+                    // permanently because each rung is a real recall contract.
+                    // The reported query is "divórcio e desabafa"; index-side
+                    // diacritic folding is already proven above ("jose" ->
+                    // "José"), so reading the three together says which layer
+                    // broke without another round trip:
+                    //   ASCII, 2 words     fails -> the body rung is dead
+                    //   accented, 2 words  fails alone -> the QUERY side does
+                    //                      not fold what the index folded
+                    //   accented, 3 words  fails alone -> the 1-character word
+                    //                      is unmatchable, and an unmatchable
+                    //                      word in FuzzyWordGroup's conjunction
+                    //                      takes the whole query down with it
+                    //                      (the rule EventYql already applies
+                    //                      to letter-less words like "⚡").
+                    val ladder =
+                        FLOOR_CASES.map { Triple(it.token, id(it.n), it.tier) } +
+                            listOf(
+                                Triple("vitor", id(44), "weak"),
+                                Triple("ai", id(45), "weak"),
+                                Triple("quilombola", id(45), "weak"),
+                                Triple("divorcio desabafa", id(44), "body"),
+                                Triple("divórcio desabafa", id(44), "body"),
+                                Triple("divórcio e desabafa", id(44), "body"),
+                            )
                     assertEquals(
-                        audited.associate { (query, _, tier) -> query to tier },
-                        audited.associate { (query, docId, _) -> query to tierOfHit(query, docId) },
-                        "the audit's rungs: each query must reach its doc through the named tier",
-                    )
-
-                    // --- THE RECALL FLOOR: every column, one at a time ---
-                    // See FLOOR_CASES. Under the lensed profile, because the
-                    // cutoff only exists there — a rungless column reads as
-                    // "the relay doesn't have it", which is why three of them
-                    // went unnoticed for two weeks. One comparison for the
-                    // same reason as above: a failure should print the whole
-                    // ladder, not just its first broken rung.
-                    assertEquals(
-                        FLOOR_CASES.associate { it.token to it.tier },
-                        FLOOR_CASES.associate { it.token to tierOfHit(it.token, id(it.n)) },
+                        ladder.associate { (query, _, tier) -> query to tier },
+                        ladder.associate { (query, docId, _) -> query to tierOfHit(query, docId) },
                         "every searchable column must be reachable under the observer lens, through its own tier",
                     )
 
