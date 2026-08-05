@@ -620,6 +620,12 @@ schema event {
             # tens, so every body-only hit landed under this cutoff and was
             # deleted. Any column added to text_score() as bare bm25, with no
             # rung of its own, inherits that bug — see tier_body_match().
+            #
+            # This value is now ALSO the floor under a real match
+            # (floored_text_score), so the failure mode of forgetting a rung
+            # is "ranks last" rather than "vanishes". Raising it therefore
+            # raises the floor band with it; the two must stay one number, or
+            # the gap between them reopens exactly the hole the floor closes.
             query(text_score_cutoff) double: 100.0
             # Tier-group weights (generic-tier extension, non-profile kinds).
             query(w_secondary) double: 0.4
@@ -768,13 +774,21 @@ schema event {
         # weak_match() and tier_body_match() — so an identity match also
         # suppresses the affil_tokens weak-tier column that exists for exactly
         # these fields. A doc whose only match is a common handle token
-        # therefore scores ~0 and is dropped, where it should merely rank last.
-        # Reachability is low (bm25 ≈ 2 needs the token in ~13%+ of the WHOLE
-        # corpus, and such docs usually match a name or bio too), which is why
-        # it is recorded rather than patched: the fix needs profile-specific
-        # gates (relevance() puts identity IN the token band, so relaxing the
-        # shared gate would stack two rungs there) and therefore a live A/B —
-        # see benchmark/rank_cases.json.
+        # therefore scores ~0 — and until floored_text_score() existed, was
+        # DELETED for it.
+        #
+        # The survival half is closed: matchCount on either field answers
+        # real_match(), so such a hit is floored at the cutoff and arrives
+        # last instead of not at all. What remains is PLACEMENT — identity is
+        # the one column still riding the floor net instead of a rung of its
+        # own, which also means tierOf reports it as "name" (identity_match
+        # implies has_token_match, so the "identity" label is unreachable).
+        # The real fix is to make the token band name_match() ||
+        # tier_token_match() in BOTH profiles and give identity its own rung,
+        # which retires the affiliation_match/affiliation_match_text fork this
+        # same asymmetry forced. That MOVES bands (relevance() puts identity
+        # in the token band today), so it needs a live A/B — parked in
+        # benchmark/rank_cases.json.
         function identity_text() {
             expression: bm25(nip05) + bm25(lud16)
         }
@@ -1075,6 +1089,49 @@ schema event {
             expression: max(has_token_match(), tier_token_match())
         }
 
+        # Did the query match a REAL column — one of the ten fields the
+        # `default` fieldset and FuzzyWordGroup.SEARCH_FIELDS agree on? Keep
+        # the list in sync with both; VespaAppTest fails the build if a column
+        # the query builder searches is missing here.
+        #
+        # This is the honest form of the question text_score_cutoff has always
+        # been asking. The cutoff separates a real match from gram-only noise,
+        # but it asks by PROXY — "is the score big enough" — and the proxy is
+        # what broke three times (search_text and search_location had no rung
+        # until 2026-08-05, search_secondary's rung read an attribute that can
+        # withhold a word the index field holds, nip05/lud16 still have none).
+        # Every one of those was a genuine match scored below 100 and DELETED.
+        # The gram fields and the near attributes are deliberately absent from
+        # this sum: a trigram or prefix hit never sets matchCount on a column,
+        # so gram-only noise still answers 0 here and still dies at the cutoff
+        # — which is exactly the line the cutoff was drawing at.
+        function real_match() {
+            expression: if(matchCount(name) + matchCount(display_name) + matchCount(about) + matchCount(nip05) + matchCount(lud16) + matchCount(website) + matchCount(search_primary) + matchCount(search_secondary) + matchCount(search_text) + matchCount(search_location) > 0, 1, 0)
+        }
+
+        # text_score() with the cutoff applied only where it belongs: a real
+        # match is FLOORED at the cutoff, never dropped. "Ranks last" is what
+        # the cutoff's own comment always claimed it did, and what the tier
+        # ladder is for; deletion was never the intent for anything that
+        # actually matched.
+        #
+        # The floor IS query(text_score_cutoff), not a weight of its own —
+        # deliberately, so this cannot move a single hit that survives today:
+        # a surviving doc scores >= the cutoff, and max() is then a no-op on
+        # it. The only docs whose score changes are the ones currently mapped
+        # to 0.0 and deleted, which arrive at the bottom of the ranking
+        # instead. A doc that lands ON the floor has no rung, so it also has
+        # no within-band text signal to order it — trust (wot_mult) orders the
+        # floor band, which is the right fallback for "we know it matched, we
+        # don't know why it's good".
+        #
+        # A forgotten column is therefore a RANKING bug from here on, not a
+        # recall outage. Give every column a real rung anyway — the floor is
+        # the net under the ladder, not a rung.
+        function floored_text_score() {
+            expression: if(real_match() > 0, max(text_score(), query(text_score_cutoff)), if(text_score() < query(text_score_cutoff), 0.0, text_score()))
+        }
+
         # IDF-diluted TEXT score for the default profile — the thing that gets
         # MULTIPLIED by trust. All terms are text; common tokens and gram-only
         # noise stay low so trust can't float them. (Brainstorm text_score()
@@ -1304,7 +1361,7 @@ schema event {
     # behavior is unchanged.)
     rank-profile search inherits text_relevance {
         first-phase {
-            expression: if(text_score() < query(text_score_cutoff), 0.0, text_score() * wot_mult())
+            expression: floored_text_score() * wot_mult()
             rank-score-drop-limit: 0.5
         }
 
@@ -1351,6 +1408,7 @@ schema event {
             affiliation_match_text
             tier_body_match
             secondary_active_text
+            real_match
             text_score
             wot_mult
             name_text

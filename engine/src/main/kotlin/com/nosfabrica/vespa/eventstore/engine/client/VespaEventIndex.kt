@@ -459,6 +459,14 @@ class VespaEventIndex(
             // tiers above already do.
             on("tier_body_match") -> "body"
 
+            // Matched a real column but NO rung claimed it — the floor band
+            // (event.sd floored_text_score). Checked last on purpose:
+            // real_match is 1 for every branch above too, so it only means
+            // "unclaimed" once they have all failed. A hit landing here is a
+            // ranking gap worth reporting, unlike "gram" — a doc no column
+            // matched at all.
+            on("real_match") -> "floor"
+
             else -> "gram"
         }
     }

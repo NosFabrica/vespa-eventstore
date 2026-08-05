@@ -67,7 +67,7 @@
   {
     "query": "primal.net",
     "expect": "",
-    "note": "PARKED — the last rungless column (see identity_text() in event.sd). A doc whose ONLY match is a common nip05/lud16 token scores query(w_identity) × bm25, and below ~2 bm25 points text_score_cutoff deletes it instead of ranking it last; the identity match also flips has_token_match, which gates away the affil_tokens weak column meant for these fields. Needs profile-specific gates (relevance() puts identity IN the token band, so a shared relaxation would stack rungs there) and a live A/B on a real corpus — reproduce with a query whose only reach is a domain token shared by >10% of documents."
+    "note": "PARKED — the last rungless column (see identity_text() in event.sd). SURVIVAL is fixed: matchCount on nip05/lud16 answers real_match(), so floored_text_score() floors such a hit at the cutoff instead of deleting it. What is left is PLACEMENT — identity rides the floor net rather than a rung, so a unique handle and a mass-hosted domain land in the same band, and tierOf reports both as \"name\" (identity_match implies has_token_match, so the \"identity\" label is unreachable). The fix is to make the token band name_match() || tier_token_match() in BOTH profiles and give identity its own rung, which also retires the affiliation_match/affiliation_match_text fork the same asymmetry forced. It MOVES bands (relevance() puts identity in the token band today), so it needs a live A/B — reproduce with a query whose only reach is a domain token shared by >10% of documents, and check the ordering of a unique handle against a bio mention."
   },
   {
     "query": "amethyst",

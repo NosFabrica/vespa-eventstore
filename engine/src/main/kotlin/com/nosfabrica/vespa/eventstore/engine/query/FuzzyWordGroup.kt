@@ -299,7 +299,15 @@ internal object FuzzyWordGroup {
             else -> Role.RECALL
         }
 
-    private val SEARCH_FIELDS =
+    /**
+     * Every column an exact clause searches — the recall surface. NOT private:
+     * VespaAppTest reads it back against the shipped schema, so a column added
+     * here without a `fieldset default` entry and a `real_match()` term fails
+     * the build. That check is the standing guard for the 2026-08-05 audit's
+     * finding — a searchable column with no rung is deleted by
+     * text_score_cutoff, not merely ranked low.
+     */
+    val SEARCH_FIELDS =
         listOf("name", "display_name", "about", "nip05", "lud16", "website", "search_primary", "search_secondary", "search_text", "search_location")
 
     /**

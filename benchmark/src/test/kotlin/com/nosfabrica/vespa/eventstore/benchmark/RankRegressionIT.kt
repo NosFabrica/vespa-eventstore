@@ -347,7 +347,7 @@ class RankRegressionIT {
                         text = "Dr. Jack Kruse on why artificial light is the problem and sunlight is the fix.",
                     ),
             ),
-        )
+        ) + FLOOR_CASES.map { doc(it.n, kind = it.kind, pubkey = pk(60), search = it.search) }
 
     @Test
     fun `prefix, typo, infix, folded and CJK shapes land in the right tier and order`() {
@@ -535,6 +535,9 @@ class RankRegressionIT {
                                 ReputationDoc(pk(44), influenceScores = mapOf(OBSERVER to 8)),
                                 // The secondary-rung case: same low score, same reason.
                                 ReputationDoc(pk(45), influenceScores = mapOf(OBSERVER to 8)),
+                                // The recall-floor matrix: ONE author for all ten rows, so
+                                // the matrix measures the ladder and never trust.
+                                ReputationDoc(pk(60), influenceScores = mapOf(OBSERVER to 50)),
                             ),
                         )
                     }
@@ -808,6 +811,21 @@ class RankRegressionIT {
                         assertEquals("weak", hits.first { it.doc.id == id(45) }.tier, "\"$word\" must arrive through the secondary tier")
                     }
 
+                    // --- THE RECALL FLOOR: every column, one at a time ---
+                    // See FLOOR_CASES. Under the lensed profile, because the
+                    // cutoff only exists there — a rungless column reads as
+                    // "the relay doesn't have it", which is why three of them
+                    // went unnoticed for two weeks.
+                    for (case in FLOOR_CASES) {
+                        val hits = indexRef.searchScored(EventQuery(search = case.token, observer = OBSERVER, minRank = 2.0))
+                        val hit = hits.firstOrNull { it.doc.id == id(case.n) }
+                        assertTrue(
+                            hit != null,
+                            "\"${case.token}\" lives only in one column and must be findable under the observer lens: ${hits.map { it.doc.id }}",
+                        )
+                        assertEquals(case.tier, hit.tier, "\"${case.token}\" arrived through the wrong tier")
+                    }
+
                     // --- typo bound: over-budget hits never match ---
                     absent("odelll", "Odessa")
                 }
@@ -897,9 +915,61 @@ class RankRegressionIT {
         search = search,
     )
 
+    /** One recall-floor row: a nonsense token living in exactly one column, and the tier it must arrive through. */
+    private data class FloorCase(
+        val n: Int,
+        val kind: Int,
+        val token: String,
+        val tier: String,
+        val search: SearchFields,
+    )
+
     private companion object {
         const val QUERY_PORT = 8080
         const val CONFIG_PORT = 19071
+
+        /**
+         * THE RECALL-FLOOR MATRIX: one doc per searchable column, each
+         * carrying a nonsense token in THAT COLUMN ALONE. Asserted under the
+         * observer-lensed `search` profile — the only one with
+         * text_score_cutoff, and therefore the only one where a column
+         * without a rung is not ranked low but DELETED.
+         *
+         * This is the standing answer to the 2026-08-05 audit. Three columns
+         * had been silently unfindable under a lens (search_text and
+         * search_location outright; search_secondary whenever its NearText
+         * attribute could not mirror a word the index field held), and the
+         * reason no gate saw it is that the corpus above grew case-by-case
+         * from reported bugs — every one of which was about NAMES. Nothing
+         * ever asked the plain question "is each column reachable at all".
+         *
+         * The tiers are asserted, not just presence, so this doubles as an
+         * executable picture of the ladder. Two rows record known state
+         * rather than desired state: nip05/lud16 report "name" because
+         * matchCount on either flips has_token_match (see identity_text() in
+         * event.sd) — when identity gets its own rung those two become
+         * "identity", and this matrix is where that lands.
+         *
+         * LIMIT, deliberate: the tokens are rare, so this proves each column
+         * is REACHABLE, not that it survives at low IDF. The identity cliff
+         * (a domain token common enough that query(w_identity) × bm25 falls
+         * under the cutoff) needs a corpus skewed on purpose and is covered
+         * by floored_text_score() instead — hence the "floor" tier, which
+         * nothing here should currently return.
+         */
+        val FLOOR_CASES =
+            listOf(
+                FloorCase(60, 0, "zoxlarn", "name", SearchFields(name = "zoxlarn")),
+                FloorCase(61, 0, "quibrith", "name", SearchFields(displayName = "quibrith")),
+                FloorCase(62, 0, "vandreth", "affiliation", SearchFields(about = "vandreth")),
+                FloorCase(63, 0, "kelmoraq", "name", SearchFields(nip05 = "kelmoraq@thrandil.invalid")),
+                FloorCase(64, 0, "brivvoth", "name", SearchFields(lud16 = "brivvoth@thrandil.invalid")),
+                FloorCase(65, 0, "plentharn", "affiliation", SearchFields(website = "https://plentharn.invalid")),
+                FloorCase(66, 1, "xanthorel", "name", SearchFields(primary = "xanthorel")),
+                FloorCase(67, 1, "grintavos", "weak", SearchFields(secondary = "grintavos")),
+                FloorCase(68, 1, "murbaneth", "body", SearchFields(text = "murbaneth")),
+                FloorCase(69, 1, "delvarion", "body", SearchFields(location = "delvarion")),
+            )
 
         /** The ranking lens for the sort:followers case — cells are keyed by observer. */
         val OBSERVER = "c".repeat(64)
