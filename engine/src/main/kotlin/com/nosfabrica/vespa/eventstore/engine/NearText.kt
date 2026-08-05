@@ -65,7 +65,7 @@ object NearText {
      * so a given-name query can reach an unsegmented CJK full name. Folded
      * ([fold]) AFTER splitting — the camel rule needs the original case.
      */
-    fun parts(s: String): List<String> = cap(splitCamelAndSeparators(s).flatMap { withCjkSuffixes(it) }.map(::fold))
+    fun parts(s: String): List<String> = cap(splitCamelAndSeparators(s).asSequence().flatMap { withCjkSuffixes(it) })
 
     /**
      * The *_tokens granularity: whole whitespace-delimited tokens kept intact
@@ -77,33 +77,62 @@ object NearText {
      */
     fun tokens(s: String): List<String> {
         val raw = s.split(WHITESPACE).filter { it.isNotEmpty() }
-        val out = ArrayList<String>()
-        for (t in raw) {
-            out += t
-            alnumOnly(t)?.let { out += it }
-            out += withCjkSuffixes(t).drop(1)
-        }
-        if (raw.size >= 2) {
-            raw
-                .joinToString("")
-                .filter(Char::isLetterOrDigit)
-                .takeIf { it.isNotEmpty() }
-                ?.let { out += it }
-        }
-        return cap(out.map(::fold))
+        return cap(
+            sequence {
+                for (t in raw) {
+                    yield(t)
+                    alnumOnly(t)?.let { yield(it) }
+                    yieldAll(withCjkSuffixes(t).drop(1))
+                }
+                // The whole-name concatenation trails the tokens, so on a long
+                // field [cap] has already filled up and this is never reached —
+                // which is the point of building it lazily: joining a
+                // thousand-word description to then discard it was pure waste.
+                if (raw.size >= 2) {
+                    raw
+                        .joinToString("")
+                        .filter(Char::isLetterOrDigit)
+                        .takeIf { it.isNotEmpty() }
+                        ?.let { yield(it) }
+                }
+            },
+        )
     }
 
     /** Merge one derived field from several source strings, preserving order, dropping duplicates and over-long elements. */
-    fun merge(vararg lists: List<String>): List<String> = cap(lists.asList().flatten())
+    fun merge(vararg lists: List<String>): List<String> = cap(lists.asSequence().flatMap { it })
 
     /** Query-side: the folded form a near clause should carry. */
     fun foldWord(word: String): String = fold(word)
 
-    private fun cap(elements: List<String>): List<String> =
-        elements
-            .filter { it.isNotEmpty() && it.length <= MAX_ELEMENT_LEN }
-            .distinct()
-            .take(MAX_ELEMENTS)
+    /**
+     * Fold, drop what no dictionary should hold, de-duplicate, and STOP at
+     * [MAX_ELEMENTS] — the output is bounded, so the work is too.
+     *
+     * Takes a Sequence, not a List, deliberately. These run on the feed path
+     * for every doc, and the sources are not short: `search_secondary` carries
+     * summaries, descriptions and rule text, and the expansions multiply it
+     * (a token yields its alnum variant, a CJK run yields up to
+     * [MAX_CJK_SUFFIX_RUN] suffixes). Materializing all of that to keep 48
+     * elements meant O(field) allocation — and in [tokens], concatenating the
+     * entire field — for a result that was decided by its first few dozen
+     * words. Laziness makes the cost O(MAX_ELEMENTS) instead, with byte-for-
+     * byte the same output: fold-then-filter-then-distinct in the same order,
+     * cut at the same point.
+     *
+     * [fold] is idempotent (NFKD of decomposed text is itself; lowercase
+     * likewise), so [merge] re-folding already-folded inputs is a no-op.
+     */
+    private fun cap(elements: Sequence<String>): List<String> {
+        val out = LinkedHashSet<String>()
+        for (raw in elements) {
+            val e = fold(raw)
+            if (e.isEmpty() || e.length > MAX_ELEMENT_LEN) continue
+            out += e
+            if (out.size == MAX_ELEMENTS) break
+        }
+        return out.toList()
+    }
 
     /** "vitor-pamplona" -> "vitorpamplona"; null when stripping changes nothing or empties it. */
     private fun alnumOnly(s: String): String? =
