@@ -84,12 +84,16 @@ object RankAb {
                     "text_score_cutoff" to 100.0,
                     "w_words" to 60.0,
                     "w_exactness" to 40.0,
+                    "w_words_pop" to 3000.0,
+                    "w_exactness_pop" to 6000.0,
                     "w_wot_pow" to 2.7,
                 ),
             // Individual levers, to attribute any movement.
             "near_off" to mapOf("w_near_tier" to 0.0, "w_near_tier_text" to 0.0, "w_pop_near_tier" to 0.0),
             "weak_off" to mapOf("w_weak_tier" to 0.0, "w_weak_tier_text" to 0.0, "w_pop_weak_tier" to 0.0),
-            "precision_off" to mapOf("w_words" to 0.0, "w_exactness" to 0.0),
+            // Both weight pairs: the text profiles read w_words/w_exactness,
+            // `search` reads the _pop pair (different scale — see event.sd).
+            "precision_off" to mapOf("w_words" to 0.0, "w_exactness" to 0.0, "w_words_pop" to 0.0, "w_exactness_pop" to 0.0),
             "cutoff_50" to mapOf("text_score_cutoff" to 50.0),
             // Isolate the trust multiplier — the "is it ranking or is it data" test.
             "no_trust" to mapOf("w_wot" to 0.0),

@@ -467,26 +467,63 @@ schema event {
             # second phase over the top rerank-count hits — fieldMatch is a
             # per-hit positional analysis, and elementCompleteness walks the
             # matched elements; neither belongs in a first phase that scores
-            # every match. The SUM of these weights must stay UNDER the
-            # smallest EQUAL-TRUST inter-band gap so precision reorders hits
-            # WITHIN a band and never crosses bands on its own. The tightest
-            # gap is near floor 23000 minus weak ceiling (4000+80) = 18920 at
-            # wot_mult()=1, and it only widens with trust (the multiply
-            # scales the band gap; the boost stays additive) — the shipped
-            # 60+40 = 100 fits with room. Trust itself DOES cross bands by
-            # design (see wot_mult); next to those order-of-magnitude moves
-            # the boost is noise. Re-check the gap if any tier weight moves.
+            # every match.
             #     w_words       reward for matching MORE of a multi-word query
             #                   (fieldMatch queryCompleteness, 0..1) —
             #                   Meilisearch's #1 "words" rule
             #     w_exactness   reward when the query covers the WHOLE field
             #                   ("Ode" the full name above "Ode Fan Club";
             #                   fieldMatch fieldCompleteness, 0..1)
+            #
+            # THE BOOST CANNOT CROSS A BAND, whatever its weight: both
+            # features read fieldMatch over name/display_name/search_primary —
+            # INDEX fields only the EXACT clauses reach. A near hit lands on
+            # the *_parts/*_tokens ATTRIBUTES, a weak hit on the *_gram
+            # fields, an affiliation hit on about/website; fieldMatch reads 0
+            # on all three, so a non-zero boost implies any_token_match()=1.
+            # The boost only ever lifts a hit that is ALREADY in the top band,
+            # relative to the rest of that band. (The original 60+40=100 was
+            # sized against the smallest equal-trust inter-band gap — near
+            # floor 23000 minus weak ceiling 4080 = 18920 — a bound this
+            # argument shows was never the binding constraint.)
+            #
+            # What the budget must actually clear is the WITHIN-band tail the
+            # boost is there to overrule: primary_text() plus the UNCAPPED
+            # 0.4·secondary_text() + 0.15·bm25(search_text) that tier_text()
+            # sums. That tail runs to a few hundred points for a doc carrying
+            # the term in title AND hashtags AND body, while the only term
+            # rewarding a one-token field is bm25/pow(fieldLength,1.5) —
+            # single digits. 100 lost that race (the 2026-08-05 "amethyst"
+            # report: an app handler NAMED Amethyst under three docs that
+            # merely mention it, same author, same trust).
             query(w_words) double: 60.0
             query(w_exactness) double: 40.0
-            # The text profiles' band gaps are only ~70-80 wide, so the same
-            # boost rides in scaled: 100 × 0.25 = 25 < the near/weak gap.
+            # The text profiles' band gaps are only ~70-80 wide. The boost
+            # can't cross them either (see above), but relevance() has no
+            # trust multiply and its within-band tail is the same handful of
+            # bm25 points, so the modest scaled budget still clears it:
+            # 100 × 0.25 = 25.
             query(w_precision_scale_text) double: 0.25
+            # The `search` profile's OWN precision weights. Two things force a
+            # separate pair from w_words/w_exactness:
+            #  - SCALE. Its bands are text_score() × wot_mult(), and the boost
+            #    rides in multiplied by the same wot_mult (see the second
+            #    phase there) so the boost-to-band ratio is trust-invariant.
+            #    Added RAW, as it was until 2026-08-05, the effective weight
+            #    is w_exactness/wot_mult() — 40 points at the trust floor,
+            #    0.00017 at trust 100 (1+98^2.7 ≈ 237000). The rule was dead
+            #    for every author anyone actually trusts, which is backwards.
+            #  - HEADROOM. Multiplied bands are ~130000 wide against the text
+            #    profile's 1100, so the same ratio buys a budget three orders
+            #    of magnitude larger — enough to overrule the bm25 tail
+            #    outright instead of losing to it by single digits.
+            # 3000+6000 = 9000 is ~7% of the token band: decisive against the
+            # tail, invisible next to the order-of-magnitude moves trust makes
+            # (a 13-trust name match sits ~650× a 0-trust one). Only
+            # w_exactness_pop separates docs on a SINGLE-word query — both
+            # read queryCompleteness 1.0 — so it carries the larger half.
+            query(w_words_pop) double: 3000.0
+            query(w_exactness_pop) double: 6000.0
             query(w_identity) double: 50.0
             query(w_wot) double: 1.0
             # Exponent of wot_mult()'s trust curve. Sets how much trust
@@ -741,6 +778,14 @@ schema event {
         # near band, order falls to primary_text()/trust as before.
         function precision_boost() {
             expression: query(w_words) * words_coverage() + query(w_exactness) * exactness()
+        }
+
+        # The same two rules at the `search` profile's scale — see
+        # query(w_words_pop). Kept a separate function, not a scale factor on
+        # precision_boost(), so the text profiles' calibration and the
+        # multiplied profile's can move independently.
+        function precision_boost_pop() {
+            expression: query(w_words_pop) * words_coverage() + query(w_exactness_pop) * exactness()
         }
 
         # ---- generic-tier extension: the generic tier group (non-profile kinds). ----
@@ -1021,13 +1066,22 @@ schema event {
         }
 
         # Precision pass over the top hits only: the expensive per-hit
-        # signals (words rule, exactness, within-near ordering) reorder
-        # WITHIN a band — precision_boost() is additive AFTER the trust
-        # multiply and bounded under the smallest tier gap, so band
-        # membership is exactly the first phase's. Dropped hits (cutoff /
-        # rank-score-drop-limit) never reach this phase.
+        # signals (words rule, exactness) reorder WITHIN a band — the boost is
+        # non-zero only for hits already in the token band (see
+        # query(w_words_pop)), so band membership is exactly the first
+        # phase's. Dropped hits (cutoff / rank-score-drop-limit) never reach
+        # this phase.
+        #
+        # × wot_mult(): the first phase is MULTIPLICATIVE in trust, so a raw
+        # additive boost is worth w/wot_mult() text points — 40 at the trust
+        # floor, 0.00017 at trust 100. Scaling it by the same multiplier the
+        # bands carry makes the boost-to-band ratio trust-invariant, which is
+        # what "reorders within a band" was always supposed to mean. The
+        # multiply is recomputed here rather than threaded through firstPhase:
+        # a tensor dot plus a pow over ≤ rerank-count hits, against the
+        # fieldMatch analysis this phase already pays for.
         second-phase {
-            expression: firstPhase + precision_boost()
+            expression: firstPhase + precision_boost_pop() * wot_mult()
             rerank-count: 1000
         }
 

@@ -86,6 +86,57 @@ class RankRegressionIT {
             profile(19, name = "ODELL mirror", pubkey = pk(19)),
             // A well-but-not-top-trusted bio mention — must NOT cross above the foil.
             profile(20, name = "fan zine", about = "all things ODELL, unofficial", pubkey = pk(20)),
+            // --- the 2026-08-05 "amethyst" report: whole-field exactness inside
+            // the token band. Field-for-field the four docs from the reported
+            // export, and they share ONE author (pk(21)) on purpose: wot_mult()
+            // is then identical across them and the order is text ALONE. 21/24
+            // are the exact hits (the app handler's profile name and the
+            // application's primary field ARE the query); 22/23 merely contain
+            // it, and repeat it across secondary and body — the shape that won.
+            doc(
+                21,
+                kind = 31990,
+                pubkey = pk(21),
+                search = SearchFields(name = "Amethyst", about = "Nostr client for Android", website = "https://amethyst.social/"),
+            ),
+            doc(
+                22,
+                kind = 41,
+                pubkey = pk(21),
+                search =
+                    SearchFields(
+                        primary = "Amethyst Devs",
+                        secondary = "Channel for coders and designers to discuss Amethyst development.",
+                    ),
+            ),
+            doc(
+                23,
+                kind = 30023,
+                pubkey = pk(21),
+                search =
+                    SearchFields(
+                        primary = "Schedule posts for later in Amethyst",
+                        secondary = "amethyst grownostr",
+                        text =
+                            "There's no magic server in the cloud holding your post. Your phone publishes it, and then your " +
+                                "#amethyst, on your phone, wakes up and fires it off to the relays. Turn on always-on " +
+                                "notifications: this keeps a small background service alive so #amethyst can wake up on " +
+                                "schedule and post even while the app is closed. #amethyst checks for due posts on a " +
+                                "15-minute cycle. The next time you open #amethyst with a working internet connection, any " +
+                                "overdue scheduled posts get published.",
+                    ),
+            ),
+            doc(
+                24,
+                kind = 32267,
+                pubkey = pk(21),
+                search =
+                    SearchFields(
+                        primary = "Amethyst",
+                        secondary = "The all-in-one Nostr client social-network nostr",
+                        text = "A privacy-focused Nostr client for Android. Built-in TOR support, the most configurable relay system.",
+                    ),
+            ),
         )
 
     @Test
@@ -184,9 +235,15 @@ class RankRegressionIT {
                         assertEquals("Ode", rnames.first(), "exact match on top under the default profile: $rnames")
                         assertTrue("ODELL" in rnames, "the near hit must survive text_score_cutoff: $rnames")
                         assertEquals("near", ranked.first { nameOf(it.doc) == "ODELL" }.tier)
+                        // NOT a test of the second-phase exactness rule, despite
+                        // the shape: both docs are single-field profiles, so the
+                        // fieldLength division in name_text() already separates
+                        // them and this passes with w_exactness_pop=0. The rule
+                        // itself is pinned by the "amethyst" case below, where the
+                        // tail runs the other way. Kept as the ordering contract.
                         assertTrue(
                             rnames.indexOf("Ode") < rnames.indexOf("Ode Fan Club"),
-                            "second-phase exactness keeps the whole-field match on top: $rnames",
+                            "the whole-field match stays on top under the default profile: $rnames",
                         )
 
                         // --- sort:followers — verified-follower order within tiers ---
@@ -216,6 +273,11 @@ class RankRegressionIT {
                                     ReputationDoc(pk(15), influenceScores = mapOf(OBSERVER to 97)),
                                     ReputationDoc(pk(19), influenceScores = mapOf(OBSERVER to 13)),
                                     ReputationDoc(pk(20), influenceScores = mapOf(OBSERVER to 77)),
+                                    // The "amethyst" case: ONE author for all four
+                                    // docs, at the top of the scale — wot_mult()
+                                    // ≈ 237000, the worst case for a boost that
+                                    // rides the second phase un-multiplied.
+                                    ReputationDoc(pk(21), influenceScores = mapOf(OBSERVER to 100)),
                                 ),
                             )
                         }
@@ -288,6 +350,51 @@ class RankRegressionIT {
                         )
                         assertEquals("affiliation", lensed.first { nameOf(it.doc) == "podcaster" }.tier)
 
+                        // --- whole-field exactness inside the TOKEN band (2026-08-05 "amethyst") ---
+                        // Reported: searching "amethyst" put the app handler
+                        // NAMED Amethyst at #4 and the application whose primary
+                        // field is Amethyst at #6, under a channel ("Amethyst
+                        // Devs") and two articles ("Schedule posts for later in
+                        // Amethyst") — the FIRST TWO by the same author, so trust
+                        // explained nothing. Inside the token band every hit
+                        // scores the same w_name_tier; what then ordered them was
+                        // the additive tail, where tier_text() sums UNCAPPED
+                        // secondary + body bm25 a one-word field has no columns to
+                        // collect, against the single-digit bm25/fieldLength^1.5
+                        // that is the only term favouring the exact hit.
+                        // exactness() exists to overrule exactly this, but at 40
+                        // points added AFTER the ×wot_mult first phase it was
+                        // worth 40/237000 text points here — see the second phase
+                        // in `search`. Same query the report ran: the store's own
+                        // min_rank (DEFAULT_MIN_RANK) and no explicit profile, so
+                        // this also pins EventYql's choice of `search`.
+                        val amethyst =
+                            indexRef.searchScored(
+                                EventQuery(search = "amethyst", observer = OBSERVER, minRank = 2.0),
+                            )
+                        val anames = amethyst.map { nameOf(it.doc) }
+                        val aorder = amethyst.map { it.doc.id }
+                        assertTrue(
+                            aorder.indexOf(id(21)) < aorder.indexOf(id(22)) && aorder.indexOf(id(21)) < aorder.indexOf(id(23)),
+                            "the profile name that IS the query must beat the names that merely contain it: $anames",
+                        )
+                        assertTrue(
+                            aorder.indexOf(id(24)) < aorder.indexOf(id(22)) && aorder.indexOf(id(24)) < aorder.indexOf(id(23)),
+                            "the primary field that IS the query must beat the titles that merely contain it: $anames",
+                        )
+                        // The tail it has to overrule is at its largest on the
+                        // article: title + hashtags + a body repeating the term.
+                        assertTrue(
+                            aorder.indexOf(id(22)) < aorder.indexOf(id(23)),
+                            "two extra columns must not outrank a one-word primary field: $anames",
+                        )
+                        // All four arrive through the SAME band — the fix reorders
+                        // within it and must not manufacture a new tier.
+                        assertTrue(
+                            amethyst.filter { it.doc.id in setOf(id(21), id(22), id(23), id(24)) }.all { it.tier == "name" },
+                            "every amethyst doc must arrive through the token band: ${amethyst.map { it.doc.id to it.tier }}",
+                        )
+
                         // --- typo bound: over-budget hits never match ---
                         absent("odelll", "Odessa")
                     }
@@ -345,8 +452,12 @@ class RankRegressionIT {
         assertTrue(name !in hits, "\"$query\" must NOT recall $name (unbounded-matcher noise): $hits")
     }
 
-    /** The doc's name, resolved by id from the seeded corpus (summaries don't carry search fields). */
-    private fun nameOf(doc: EventDoc): String = corpus.first { it.id == doc.id }.search.name ?: doc.id
+    /**
+     * The doc's label, resolved by id from the seeded corpus (summaries don't
+     * carry search fields): the profile name, else the generic tier's primary
+     * field, so a failure message reads the same for both groups.
+     */
+    private fun nameOf(doc: EventDoc): String = corpus.first { it.id == doc.id }.search.let { it.name ?: it.primary } ?: doc.id
 
     private fun id(n: Int) = n.toString(16).padStart(64, '0')
 
