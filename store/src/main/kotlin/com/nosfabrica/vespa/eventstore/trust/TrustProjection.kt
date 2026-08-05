@@ -25,6 +25,7 @@ import com.nosfabrica.vespa.eventstore.engine.DocsPage
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.QUERY_FANOUT
+import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationCells
@@ -74,6 +75,15 @@ class TrustProjection(
     // MUST delegate, not ride the interface default, which would route through
     // this decorator's search() and lose the raw passthrough (see EventIndex.rawSearch).
     override suspend fun rawSearch(query: EventQuery): List<RawEvent> = inner.rawSearch(query)
+
+    // Same rule, and this one is the PRODUCTION stack's only decorator: riding
+    // the default here would route through search()/rawSearch() above and hand
+    // the store null scores for every hit — so a multi-filter REQ would fall
+    // back to recency and the relevance merge would exist, pass its tests, and
+    // never once run against Vespa. Delegation is the whole feature.
+    override suspend fun searchRanked(query: EventQuery): List<Ranked<EventDoc>> = inner.searchRanked(query)
+
+    override suspend fun rawSearchRanked(query: EventQuery): List<Ranked<RawEvent>> = inner.rawSearchRanked(query)
 
     override suspend fun visitIds(
         query: EventQuery,

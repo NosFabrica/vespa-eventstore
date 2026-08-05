@@ -96,6 +96,26 @@ interface EventIndex : AutoCloseable {
     suspend fun rawSearch(query: EventQuery): List<RawEvent> = search(query).map { it.toRawEvent() }
 
     /**
+     * [search], each hit carrying the engine's relevance — the recall a caller
+     * asks for when it must MERGE the hits of several RANKED queries into one
+     * order. Within a single query the engine's order already is the answer;
+     * across two, there is nothing to merge on unless the number comes back
+     * with the hit.
+     *
+     * The default answers with null scores, which is the honest answer for an
+     * engine that does not rank (the in-memory reference sorts by recency) —
+     * see [Ranked] on why a fabricated constant would be worse than a null.
+     *
+     * It costs a wrapper per hit, so callers ask for it only where they will
+     * use it: the store stays on [search] for every single-query recall, which
+     * is every recall a relay serves that is not a multi-filter REQ.
+     */
+    suspend fun searchRanked(query: EventQuery): List<Ranked<EventDoc>> = search(query).map { Ranked(it, null) }
+
+    /** [rawSearch] with the scores [searchRanked] carries — the same merge, on the raw read path. */
+    suspend fun rawSearchRanked(query: EventQuery): List<Ranked<RawEvent>> = rawSearch(query).map { Ranked(it, null) }
+
+    /**
      * Stream EVERY match's (id, created_at) — the full-corpus walk behind
      * negentropy snapshots and sync diffs. No result cap; the real client
      * pages a document-API visit, and order across pages is engine-defined.
