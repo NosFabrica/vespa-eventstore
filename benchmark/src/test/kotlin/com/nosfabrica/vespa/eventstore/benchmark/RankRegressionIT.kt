@@ -690,10 +690,23 @@ class RankRegressionIT {
                     // a field the phrase covers completely — the most
                     // explicit exactness a user can ask for, paid half.
                     val phrase = indexRef.searchScored(EventQuery(phrases = listOf("Jon Gordon"), observer = OBSERVER, minRank = 2.0))
+                    val phraseOrder = phrase.map { it.doc.id }
+                    // 27 and 40 are BOTH whole-field phrase matches; 27 wins on
+                    // trust (96 vs 50), which is the ladder working as designed.
+                    // The coverage claim therefore has to be made where trust is
+                    // CONTROLLED — 40 vs 43, one author — because that is the
+                    // only comparison the phrase fix actually moves. Asserting
+                    // 40 first instead was the 2026-08-05 CI failure: it had
+                    // been checked against an isolated four-doc corpus in which
+                    // 27 did not exist.
                     assertEquals(
-                        id(40),
-                        phrase.map { it.doc.id }.firstOrNull(),
-                        "an exact-phrase match on the whole field must rank first: ${phrase.map { nameOf(it.doc) }}",
+                        id(27),
+                        phraseOrder.firstOrNull(),
+                        "the best-trusted whole-field phrase match must rank first: ${phrase.map { nameOf(it.doc) }}",
+                    )
+                    assertTrue(
+                        phraseOrder.indexOf(id(40)) < phraseOrder.indexOf(id(43)),
+                        "at equal trust, the field the phrase covers WHOLLY beats the one it covers partly: ${phrase.map { nameOf(it.doc) }}",
                     )
 
                     // --- typo bound: over-budget hits never match ---
