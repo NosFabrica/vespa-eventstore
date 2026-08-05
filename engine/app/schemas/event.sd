@@ -326,8 +326,14 @@ schema event {
     }
 
     # Discriminative (AND-matched) trigram net for the secondary tier — the same
-    # typo-recall safety net `about` has (about_gram), extended to every kind's
-    # summary/description so a misspelled query still recalls them.
+    # net `about` has (about_gram), extended to every kind's summary/description.
+    # INFIX reach, not typo reach: see secondary_text() for the measurement.
+    # COST, same measurement: stripping every gram clause cut multi-word query
+    # latency ~19-20% at 45k docs (7% on a single common word). The name-side
+    # nets earn that back through the weak tier ("dell" -> ODELL, pinned by
+    # RankRegressionIT); these two long-text nets have NO test pinning what
+    # their recall is worth, and they are ~40% of the gram terms a multi-word
+    # query emits. Weigh them before adding more.
     field search_secondary_gram type string {
         indexing: input search_secondary | index
         index: enable-bm25
@@ -946,9 +952,18 @@ schema event {
             }
         }
 
-        # Secondary tier text: bm25 plus its discriminative gram net — the same
-        # typo-recall treatment about_text() gives bios, extended to every kind's
-        # summary/description. Uncapped, exactly like about_text().
+        # Secondary tier text: bm25 plus its discriminative gram net, extended to
+        # every kind's summary/description the way about_text() covers bios.
+        # Uncapped, exactly like about_text().
+        #
+        # That net is an INFIX matcher, NOT the typo net this comment used to
+        # claim. Measured on a live Vespa (2026-08-05, 45k-doc corpus): with the
+        # AND-gram clauses stripped from the query, typo recall was UNCHANGED
+        # (50 vs 50 on a trailing substitution, 35 vs 35 on a middle one — the
+        # fuzzy() terms on the *_parts/*_tokens attributes are what recover a
+        # typo) while infix recall collapsed 11 -> 0. It could not be otherwise:
+        # the net ANDs every trigram of the query word, and a substitution
+        # destroys three consecutive trigrams, so the AND can never hold.
         function secondary_text() {
             expression {
                 bm25(search_secondary)
