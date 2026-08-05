@@ -22,8 +22,10 @@ package com.nosfabrica.vespa.eventstore.benchmark
 
 import com.nosfabrica.vespa.eventstore.engine.DocRef
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
+import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
+import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -92,6 +94,20 @@ class CountingEventIndex(
     override suspend fun search(query: EventQuery): List<EventDoc> {
         searches.incrementAndGet()
         return inner.search(query)
+    }
+
+    // Counted as the search it is, and DELEGATED: riding the default would
+    // route through search() above — same count, but null scores, so a
+    // benchmark of a multi-filter REQ would measure the recency merge instead
+    // of the relevance one the relay actually runs.
+    override suspend fun searchRanked(query: EventQuery): List<Ranked<EventDoc>> {
+        searches.incrementAndGet()
+        return inner.searchRanked(query)
+    }
+
+    override suspend fun rawSearchRanked(query: EventQuery): List<Ranked<RawEvent>> {
+        searches.incrementAndGet()
+        return inner.rawSearchRanked(query)
     }
 
     override suspend fun count(query: EventQuery): Int {
