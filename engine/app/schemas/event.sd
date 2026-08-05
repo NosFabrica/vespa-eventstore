@@ -129,6 +129,48 @@ schema event {
 
         # ---- per-kind search fields (populated by the store's extractors) ----
 
+        # STEMMING IS OFF ON EVERY TEXT FIELD BELOW (`stemming: none`).
+        #
+        # name/display_name/search_primary always opted out, as proper-noun
+        # fields. The rest joined them on 2026-08-05, for a different and
+        # bigger reason: Vespa stems a document's index terms with the
+        # DOCUMENT's language — which it DETECTS — while a query carries no
+        # language and is stemmed as English. Nothing sets either side (no
+        # `language` field, no set_language, no model.language), so on a
+        # multilingual corpus the two sides silently disagree and a document
+        # becomes unreachable by its own words. MEASURED on a live Vespa with
+        # a Portuguese note, same words, only the query language differing:
+        #     default (en)        futebol 1, esposa 0, crise 0, desabafa 0
+        #     model.language=pt   futebol 1, esposa 1, crise 1, desabafa 1
+        # Only "futebol" survived — the one word with no suffix the Portuguese
+        # stemmer strips. That is not a corner case: it is every non-English
+        # note in the corpus, and it is why the 2026-08-05 "divórcio e
+        # desabafa" report needed more than the body rung to come back.
+        #
+        # `stemming: none` makes both sides raw (still folded and tokenized),
+        # so they agree by construction, in any language. The alternative —
+        # forcing one language on documents — also worked in measurement but
+        # pins TOKENIZATION too, which would foreclose ever segmenting CJK
+        # properly. What is given up here is nothing measurable: English
+        # stemming was already inert on this deployment ("wolf" does not find
+        # "wolves", "run" does not find "running"), before and after.
+        #
+        # STILL BROKEN, deliberately out of scope: CJK BODY text. Segmentation
+        # is tokenization, not stemming, and the default linguistics does not
+        # segment CJK — a Japanese sentence is one token. Needs a CJK-capable
+        # linguistics component. Pinned in RankRegressionIT so a fix trips it.
+        # (CJK profile NAMES are unaffected: they ride NearText's raw-byte
+        # attributes, which never went through Vespa's tokenizer at all.)
+        #
+        # UPGRADE COST: this is an indexing change. A FRESH deploy is
+        # unaffected — verified: `open(autoDeploy = true)` against an empty
+        # Vespa is accepted with no validation override. Redeploying over an
+        # EXISTING cluster needs a `validation-overrides.xml` allowing
+        # `indexing-change`, and a re-index for old documents to pick up the
+        # new terms. NostrSemanticsStore.reindexFullTextSearch will NOT do it
+        # — it re-puts only docs whose near-tier arrays drifted, and those are
+        # unchanged here; use Vespa's own reindexing.
+        #
         # kind 0 — the Brainstorm profile group. Field roles from
         # vespa_query.py: primary = name/display_name/nip05/lud16,
         # affiliation = about/website. Per NIP-24 the deprecated `username`
@@ -150,21 +192,25 @@ schema event {
         field about type string {
             indexing: index | summary
             index: enable-bm25
+            stemming: none
         }
 
         field nip05 type string {
             indexing: index | summary
             index: enable-bm25
+            stemming: none
         }
 
         field lud16 type string {
             indexing: index | summary
             index: enable-bm25
+            stemming: none
         }
 
         field website type string {
             indexing: index | summary
             index: enable-bm25
+            stemming: none
         }
 
         # every other searchable kind — the generic tiers. What lands where is
@@ -181,11 +227,13 @@ schema event {
         field search_secondary type string {
             indexing: index | summary
             index: enable-bm25
+            stemming: none
         }
 
         field search_text type string {
             indexing: index | summary
             index: enable-bm25
+            stemming: none
         }
 
         # Place names, filled systemically from any kind's `location` tags
@@ -194,6 +242,7 @@ schema event {
         field search_location type string {
             indexing: index | summary
             index: enable-bm25
+            stemming: none
         }
 
         # ---- near-tier attribute targets (prefix / fuzzy match fields) ----
@@ -420,7 +469,10 @@ schema event {
             # At EQUAL trust the four rungs — exact > near > weak >
             # affiliation — still order strictly, each rung ~×5.6 the one
             # below (Brainstorm measured 126 bio-only accounts above the
-            # account literally named "coffee" before rungs existed at all):
+            # account literally named "coffee" before rungs existed at all).
+            # The bio band is SHARED with the body/location rung
+            # (tier_body_match(), max()'d into the same weight, not summed),
+            # so a kind has four rungs whichever group it fills:
             #     bio  band    = 550 + ~130 (about fallback)
             #     weak floor   = w_weak_tier   =      4 000   (~×5.7 bio)
             #     near floor   = w_near_tier   =     23 000   (~×5.75 weak)
@@ -609,6 +661,20 @@ schema event {
             # about fallback ~13 ≈ 93) and BELOW every real tier (affiliation
             # 550, near 4000). Corpus-dependent (bm25 scales with corpus
             # statistics) — re-check against real data after a reindex.
+            #
+            # "Nothing real lives down there" is a claim about RUNGS, and it
+            # held only because every column HAD one — which search_text and
+            # search_location did not until 2026-08-05. Their bare
+            # query(w_content)/query(w_location) × bm25 tops out in the low
+            # tens, so every body-only hit landed under this cutoff and was
+            # deleted. Any column added to text_score() as bare bm25, with no
+            # rung of its own, inherits that bug — see tier_body_match().
+            #
+            # This value is now ALSO the floor under a real match
+            # (floored_text_score), so the failure mode of forgetting a rung
+            # is "ranks last" rather than "vanishes". Raising it therefore
+            # raises the floor band with it; the two must stay one number, or
+            # the gap between them reopens exactly the hole the floor closes.
             query(text_score_cutoff) double: 100.0
             # Tier-group weights (generic-tier extension, non-profile kinds).
             query(w_secondary) double: 0.4
@@ -647,10 +713,19 @@ schema event {
         # about: IDF-aware only (bm25), no flat matchCount term — rare bio
         # terms find affiliated people, common words don't surface
         # bio-mentioners over name-bearers.
+        #
+        # The gram term is CAPPED at query(gram_cap), like every other gram
+        # term in this schema (2026-08-05 audit). It had been uncapped, and
+        # text_score_cutoff derives its own safety from the assumption that
+        # none of them are — see the ceiling arithmetic there. `about` alone
+        # never actually crossed (query(w_about) is 0.1, so a MEASURED
+        # about_text of 282 was worth 28 text points), but leaving one term
+        # uncapped keeps the cutoff's justification false, and the identical
+        # term on the secondary tier DID cross.
         function about_text() {
             expression {
                 bm25(about)
-                + query(w_gram) * bm25(about_gram)
+                + min(query(w_gram) * bm25(about_gram), query(gram_cap))
             }
         }
 
@@ -665,25 +740,52 @@ schema event {
         # nearly — is scored by that tier alone (tiers must never stack, or
         # they reorder each other's bands; see affiliation_match).
         function secondary_active() {
-            expression: if(has_token_match() > 0 || any_near_match() > 0 || weak_match() > 0, 0, 1)
-        }
-
-        # A "real" token match — an EXACT whole-token hit in an indexed name or
-        # identity field; trigram-only recall doesn't feed matchCount, and
-        # prefix/fuzzy hits land on the *_parts/*_tokens attributes instead
-        # (near_name_match), so this counts exact hits only.
-        function has_token_match() {
-            expression: if(matchCount(name) > 0 || matchCount(display_name) > 0 || matchCount(nip05) > 0 || matchCount(lud16) > 0, 1, 0)
+            expression: if(any_token_match() > 0 || any_near_match() > 0 || weak_match() > 0, 0, 1)
         }
 
         # Graded match quality from the labeled query clauses (vespa_query.py
         # _field_clauses): 4=exact, 3=prefix, 2=1-typo, 1=2-typo, 0=gram-only.
         # KNOWN-INERT: itemRawScore does not populate for plain text terms
         # (Brainstorm staging, 2026-06-30) — degrades safely to 0; the coarse
-        # has_token_match tier still applies. Kept for the day Vespa populates
+        # any_token_match tier still applies. Kept for the day Vespa populates
         # term raw scores or the verbatim-field rework (§11.1) lands.
         function match_quality() {
             expression: if(itemRawScore(mtch_exact) > 0, 4, if(itemRawScore(mtch_prefix) > 0, 3, if(itemRawScore(mtch_fz1) > 0, 2, if(itemRawScore(mtch_fz2) > 0, 1, 0))))
+        }
+
+        # A BODY match with nothing better — the generic-tier twin of
+        # affiliation_match(). `search_text` (a note's content, an article's
+        # body) and `search_location` are to a non-profile kind exactly what
+        # `about` is to a profile, and until 2026-08-05 they were the only
+        # matchable columns in this schema with NO rung at all: their entire
+        # contribution was query(w_content)/query(w_location) × bm25, single
+        # digits to low tens. Against text_score_cutoff (100) that is not a
+        # weak score, it is a DELETED one — the `search` profile maps
+        # below-cutoff to 0.0 and rank-score-drop-limit removes the hit. Body
+        # search was therefore structurally dead under the observer-lensed
+        # default: a kind 1 was findable by its NIP-14 subject and its
+        # hashtags and by nothing else, and the many kinds whose ONLY indexed
+        # column is content (9, 14, 24, 42, 1111, …) were unfindable outright.
+        # No arithmetic reaches the cutoff either — 0.15 × bm25 needs
+        # bm25(search_text) ≈ 667, where a rare term contributes single digits.
+        # (Reported 2026-08-05: a kind 1 reading "Esposa de Vitor Roque pede
+        # divórcio e desabafa sobre crise" came back for the query "vitor" —
+        # through its #VItor-roque hashtag, the weak tier — but not for
+        # "divórcio e desabafa", which is its content verbatim.)
+        #
+        # Deliberately the SAME rung as the bio band (w_affil_tier_text in the
+        # text profiles, w_affil_tier in the trust-sorted ones) rather than a
+        # new one: a word in a body is the same KIND of evidence as a word in
+        # a bio — long prose, no naming claim — and an equal-height rung with
+        # a mutually exclusive gate leaves every RATIO in the ladder
+        # derivation at query(w_name_tier) untouched, so nothing needs
+        # recalibrating. Gated on every tier above so tiers never stack, and
+        # OR'd into the affiliation rung with max() rather than summed: the
+        # two groups are disjoint per kind (the argument any_token_match()
+        # already rests on), and where a kind does fill both, one rung is what
+        # the ladder means.
+        function tier_body_match() {
+            expression: if(any_token_match() > 0 || any_near_match() > 0 || weak_match() > 0, 0, if(matchCount(search_text) > 0 || matchCount(search_location) > 0, 1, 0))
         }
 
         # A bio/website affiliation match WITHOUT any name-field token match.
@@ -691,7 +793,7 @@ schema event {
         # ladder — upstream measured a prefix hit whose bio also matched
         # (700 + 550 = 1250) ranking ABOVE the exact name match (1100).
         function affiliation_match() {
-            expression: if(has_token_match() > 0 || any_near_match() > 0 || weak_match() > 0, 0, if(matchCount(about) > 0 || matchCount(website) > 0, 1, 0))
+            expression: if(any_token_match() > 0 || any_near_match() > 0 || weak_match() > 0, 0, if(matchCount(about) > 0 || matchCount(website) > 0, 1, 0))
         }
 
         # Multi-word proximity over the primary fields (0..1): Meilisearch's
@@ -712,6 +814,31 @@ schema event {
         # IDF-aware identity handles: bm25 is tf*IDF, so a token shared by
         # thousands of nip05s (primal, gmail, com) scores ~0 while a unique
         # handle scores high — "the more a word is used, the smaller the score".
+        #
+        # THE RUNG AND THE DILUTION DO DIFFERENT JOBS (2026-08-05 audit).
+        # bm25 alone decides BOTH whether a hit ranks and where, and that
+        # conflation was the bug: a common-domain match diluted to ~0 was meant
+        # to rank LAST, but text_score() has a cutoff, so it was deleted
+        # instead. Worse, matchCount on either field flipped the old
+        # has_token_match(), hence any_token_match(), which gates weak_match()
+        # and tier_body_match() — so an identity match suppressed every rung
+        # beneath it, including affil_tokens, the weak column built for these
+        # very fields.
+        #
+        # Split in two now. weak_match() carries identity as one of its
+        # signals, so BAND membership is categorical: a doc whose handle
+        # matched is in the weak band whatever its IDF. identity_text() then
+        # orders it from WITHIN that band, which is all the dilution was ever
+        # for — a unique handle sorts above a mass-hosted domain, and neither
+        # can reach the name band, since any_token_match() no longer counts
+        # them. `vitorpamplona` matching a nip05 is evidence about a person;
+        # `com` matching one is not, and the two now differ by hundreds of
+        # points inside one band instead of by presence or absence.
+        #
+        # No new weight: the weak tier is where an UNFINISHED word touching
+        # these fields already landed (affil_tokens prefix), so a finished word
+        # landing in the same band is consistency, not promotion — and it needs
+        # no recalibration, the same argument tier_body_match() rests on.
         function identity_text() {
             expression: bm25(nip05) + bm25(lud16)
         }
@@ -752,33 +879,14 @@ schema event {
             expression: max(near_name_match(), tier_near_match())
         }
 
-        # Affiliation gate for the DEFAULT profile only. Identical to
-        # affiliation_match() except it gates on name_match() instead of
-        # has_token_match() (which ALSO counts nip05/lud16): a doc whose only
-        # match is a COMMON nip05 domain (identity_text ~ 0) must not lose the
-        # bio-affiliation credit it genuinely earned — with the old gate it
-        # could fall under text_score_cutoff and vanish while the same profile
-        # without the matching nip05 ranked normally. affiliation_match() and
-        # secondary_active() keep the old gate: relevance() and the rank_*
-        # profiles are built on them.
-        function affiliation_match_text() {
-            expression: if(name_match() > 0 || near_name_match() > 0 || weak_match() > 0, 0, if(matchCount(about) > 0 || matchCount(website) > 0, 1, 0))
-        }
-
-        # about-fallback gate for the DEFAULT profile: contribute only when
-        # nothing better matched (no name, no near, no identity, no
-        # affiliation) — same common-nip05 reasoning as affiliation_match_text.
-        function secondary_active_text() {
-            expression: if(name_match() > 0 || near_name_match() > 0 || weak_match() > 0 || identity_match() > 0 || affiliation_match_text() > 0, 0, 1)
-        }
-
         # ---- the weak tier: bounded infix + hashtag/summary/affil prefix ----
         # matchCount on the *_gram fields only fires for the AND-of-trigrams
         # INFIX net FuzzyWordGroup emits (the unbounded OR net is off): every
         # trigram of the query word must appear in the name, a near-substring
         # test — "dell" reaches ODELL, "ode" (too few trigrams) reaches
-        # nothing. search_secondary_tokens carries hashtag/summary token
-        # prefixes ("bitco" -> #bitcoin); affil_tokens carries identity/
+        # nothing. search_secondary/search_secondary_tokens carry the
+        # hashtag/summary tier, exact and by token prefix ("bitco" ->
+        # #bitcoin); affil_tokens carries identity/
         # affiliation segment prefixes ("vitorpamp" ->
         # amethyst@vitorpamplona.com — the as-you-type continuity column).
         # All are real signals with a bound, weaker than an anchored prefix
@@ -789,8 +897,32 @@ schema event {
             expression: if(matchCount(name_gram) > 0 || matchCount(display_name_gram) > 0 || matchCount(search_primary_gram) > 0, 1, 0)
         }
 
-        function secondary_prefix_match() {
-            expression: if(matchCount(search_secondary_tokens) > 0, 1, 0)
+        # The secondary tier's rung. BOTH columns, deliberately: the INDEX
+        # field is what the exact clause matches, the *_tokens ATTRIBUTE is
+        # what the prefix clause matches, and reading only the attribute meant
+        # a whole class of genuine exact matches arrived with NO rung — the
+        # same deletion tier_body_match() documents, since
+        # query(w_secondary) × bm25 does not reach text_score_cutoff either.
+        # Three ways the attribute misses a word the index field holds:
+        #   * STEMMING — CLOSED as of 2026-08-05, kept here because the shape
+        #     is what the other two share. search_secondary used to be stemmed
+        #     (`stemming: best`) while the attribute is raw folded bytes, so
+        #     "bitcoiners" reached the index and not the prefix column. Every
+        #     text field now carries `stemming: none` (see the field
+        #     definitions), for a much larger reason — an index term stemmed
+        #     by the DOCUMENT's language cannot meet a query stemmed as
+        #     English — and that closed this route as a side effect.
+        #   * SHORT WORDS. FuzzyWordGroup emits no prefix clause under
+        #     MIN_PREFIX_LEN (3 Latin / 2 non-ASCII) and no gram clause under
+        #     MIN_AND_GRAMS_TEXT, so "#ai" was reachable by nothing but its
+        #     exact clause.
+        #   * THE ELEMENT CAP. NearText.tokens stops at MAX_ELEMENTS (48), so
+        #     a long summary/description loses its tail from the attribute
+        #     while the index field keeps every word.
+        # Strictly additive: every doc the prefix column already reached still
+        # reaches the same tier at the same weight, so no band moves.
+        function secondary_match() {
+            expression: if(matchCount(search_secondary) > 0 || matchCount(search_secondary_tokens) > 0, 1, 0)
         }
 
         # Gated on the bio/website EXACT match: a finished word is trivially a
@@ -806,7 +938,7 @@ schema event {
         }
 
         function weak_match() {
-            expression: if(any_token_match() > 0 || any_near_match() > 0, 0, if(infix_gram_match() > 0 || secondary_prefix_match() > 0 || affil_prefix_match() > 0, 1, 0))
+            expression: if(any_token_match() > 0 || any_near_match() > 0, 0, if(infix_gram_match() > 0 || secondary_match() > 0 || affil_prefix_match() > 0 || identity_match() > 0, 1, 0))
         }
 
         # ---- second-phase precision signals ----
@@ -964,10 +1096,38 @@ schema event {
         # typo) while infix recall collapsed 11 -> 0. It could not be otherwise:
         # the net ANDs every trigram of the query word, and a substitution
         # destroys three consecutive trigrams, so the AND can never hold.
+        #
+        # The gram term is CAPPED at query(gram_cap). Uncapped, this was the
+        # one term that let GRAM-ONLY noise cross text_score_cutoff, whose
+        # comment claims a gram ceiling of ~93 — arithmetic that silently
+        # assumed every gram term is bounded, and two were not.
+        #
+        # MEASURED on a live Vespa (2026-08-05), docs whose search_secondary
+        # contains the query word ONLY as an infix inside a larger token, so
+        # the exact clause and the *_tokens prefix clause both miss and the
+        # AND-gram net is the only route (real_match 0 on every row):
+        #     word            w_gram  text_score uncapped -> capped
+        #     bitcoin (5 gr)   2.0        18 - 20            same
+        #     bitcoin          8.0        74 - 78            same
+        #     extraordinary    2.0        37 - 43            same
+        #     extraordinary    8.0      149 - 172  ->  32    CROSSED 100
+        # At the real cutoff the last row went from "returned as a hit" to
+        # dropped. w_gram flips to 8.0 whenever the SHORTEST word of a query
+        # is <= 3 characters (EventYql/leansOnGrams) and then applies to every
+        # word, so "de extraordinary" is enough to trigger it — the long word
+        # supplies the trigram count and the short one supplies the weight.
+        # The cap ceiling is query(w_secondary) x gram_cap = 0.4 x 80 = 32,
+        # which is where the capped column lands, exactly as intended.
+        #
+        # RankRegressionIT is green with the cap: no calibrated case (the
+        # odell crossing bounds, amethyst exactness, the perfect-match rung,
+        # jack, word order, phrase) moves, because a doc that matches
+        # exactly is scored by its own tier and the gram term is a small
+        # additive tail on top.
         function secondary_text() {
             expression {
                 bm25(search_secondary)
-                + query(w_gram) * bm25(search_secondary_gram)
+                + min(query(w_gram) * bm25(search_secondary_gram), query(gram_cap))
             }
         }
 
@@ -984,8 +1144,63 @@ schema event {
 
         # ---- composites (profile group + tier group; disjoint per kind) ----
 
+        # THE TOKEN BAND: a whole-token match on a NAME or a TITLE, and
+        # nothing else. nip05/lud16 used to be counted here through
+        # has_token_match(), which is now retired, because they are not a
+        # naming claim — a thousand accounts share primal.net. text_score()
+        # always knew that and used name_match() for the band; the trouble was
+        # that the SAME has_token_match() also gated weak_match(),
+        # tier_body_match() and the affiliation rungs, so an identity match
+        # silently suppressed every rung BELOW it — including affil_tokens,
+        # the weak column built for those very fields — and left the doc with
+        # nothing but query(w_identity) x identity_text(). Identity now sits in
+        # the weak band on its own (see weak_match) and identity_text() orders
+        # it from WITHIN, which is what the IDF dilution was always for.
         function any_token_match() {
-            expression: max(has_token_match(), tier_token_match())
+            expression: max(name_match(), tier_token_match())
+        }
+
+        # Did the query match a REAL column — one of the ten fields the
+        # `default` fieldset and FuzzyWordGroup.SEARCH_FIELDS agree on? Keep
+        # the list in sync with both; VespaAppTest fails the build if a column
+        # the query builder searches is missing here.
+        #
+        # This is the honest form of the question text_score_cutoff has always
+        # been asking. The cutoff separates a real match from gram-only noise,
+        # but it asks by PROXY — "is the score big enough" — and the proxy is
+        # what broke three times (search_text and search_location had no rung
+        # until 2026-08-05, search_secondary's rung read an attribute that can
+        # withhold a word the index field holds, nip05/lud16 still have none).
+        # Every one of those was a genuine match scored below 100 and DELETED.
+        # The gram fields and the near attributes are deliberately absent from
+        # this sum: a trigram or prefix hit never sets matchCount on a column,
+        # so gram-only noise still answers 0 here and still dies at the cutoff
+        # — which is exactly the line the cutoff was drawing at.
+        function real_match() {
+            expression: if(matchCount(name) + matchCount(display_name) + matchCount(about) + matchCount(nip05) + matchCount(lud16) + matchCount(website) + matchCount(search_primary) + matchCount(search_secondary) + matchCount(search_text) + matchCount(search_location) > 0, 1, 0)
+        }
+
+        # text_score() with the cutoff applied only where it belongs: a real
+        # match is FLOORED at the cutoff, never dropped. "Ranks last" is what
+        # the cutoff's own comment always claimed it did, and what the tier
+        # ladder is for; deletion was never the intent for anything that
+        # actually matched.
+        #
+        # The floor IS query(text_score_cutoff), not a weight of its own —
+        # deliberately, so this cannot move a single hit that survives today:
+        # a surviving doc scores >= the cutoff, and max() is then a no-op on
+        # it. The only docs whose score changes are the ones currently mapped
+        # to 0.0 and deleted, which arrive at the bottom of the ranking
+        # instead. A doc that lands ON the floor has no rung, so it also has
+        # no within-band text signal to order it — trust (wot_mult) orders the
+        # floor band, which is the right fallback for "we know it matched, we
+        # don't know why it's good".
+        #
+        # A forgotten column is therefore a RANKING bug from here on, not a
+        # recall outage. Give every column a real rung anyway — the floor is
+        # the net under the ladder, not a rung.
+        function floored_text_score() {
+            expression: if(real_match() > 0, max(text_score(), query(text_score_cutoff)), if(text_score() < query(text_score_cutoff), 0.0, text_score()))
         }
 
         # IDF-diluted TEXT score for the default profile — the thing that gets
@@ -999,8 +1214,8 @@ schema event {
                 + weak_match() * query(w_weak_tier)
                 + primary_text()
                 + query(w_identity) * identity_text()
-                + affiliation_match_text() * query(w_affil_tier_text)
-                + secondary_active_text() * query(w_about) * about_text()
+                + max(affiliation_match(), tier_body_match()) * query(w_affil_tier_text)
+                + secondary_active() * query(w_about) * about_text()
                 + tier_text()
             }
         }
@@ -1042,7 +1257,7 @@ schema event {
                 + any_near_match() * query(w_near_tier_text)
                 + weak_match() * query(w_weak_tier_text)
                 + match_quality() * query(w_match_step)
-                + affiliation_match() * query(w_affil_tier_text)
+                + max(affiliation_match(), tier_body_match()) * query(w_affil_tier_text)
                 + query(w_proximity) * proximity()
                 + primary_text()
                 + tier_primary_text()
@@ -1062,13 +1277,14 @@ schema event {
             name_text
             display_name_text
             about_text
-            has_token_match
             any_token_match
+            identity_match
             near_name_match
             any_near_match
             weak_match
             match_quality
             affiliation_match
+            tier_body_match
             itemRawScore(mtch_exact)
             itemRawScore(mtch_prefix)
             itemRawScore(mtch_fz1)
@@ -1153,7 +1369,7 @@ schema event {
     # ordering inside a tier (Meilisearch's `typo` over `sort`).
     rank-profile rank_desc inherits text_relevance {
         first-phase {
-            expression: if(user_score() >= query(min_rank), any_token_match() * query(w_pop_token_tier) + any_near_match() * query(w_pop_near_tier) + weak_match() * query(w_pop_weak_tier) + match_quality() * query(w_pop_match_step) + affiliation_match() * query(w_affil_tier) + user_score(), -1000000000.0)
+            expression: if(user_score() >= query(min_rank), any_token_match() * query(w_pop_token_tier) + any_near_match() * query(w_pop_near_tier) + weak_match() * query(w_pop_weak_tier) + match_quality() * query(w_pop_match_step) + max(affiliation_match(), tier_body_match()) * query(w_affil_tier) + user_score(), -1000000000.0)
             rank-score-drop-limit: -1000000.0
         }
     }
@@ -1161,7 +1377,7 @@ schema event {
     # sort:rank:asc: ascending trust WITHIN each (still-descending) match tier.
     rank-profile rank_asc inherits text_relevance {
         first-phase {
-            expression: if(user_score() >= query(min_rank), any_token_match() * query(w_pop_token_tier) + any_near_match() * query(w_pop_near_tier) + weak_match() * query(w_pop_weak_tier) + match_quality() * query(w_pop_match_step) + affiliation_match() * query(w_affil_tier) - user_score(), -1000000000.0)
+            expression: if(user_score() >= query(min_rank), any_token_match() * query(w_pop_token_tier) + any_near_match() * query(w_pop_near_tier) + weak_match() * query(w_pop_weak_tier) + match_quality() * query(w_pop_match_step) + max(affiliation_match(), tier_body_match()) * query(w_affil_tier) - user_score(), -1000000000.0)
             rank-score-drop-limit: -1000000.0
         }
     }
@@ -1187,20 +1403,20 @@ schema event {
         }
 
         first-phase {
-            expression: if(user_score() >= query(min_rank), any_token_match() * query(w_pop_token_tier) + any_near_match() * query(w_pop_near_tier) + weak_match() * query(w_pop_weak_tier) + match_quality() * query(w_pop_match_step) + affiliation_match() * query(w_affil_tier) + follower_key(), -1000000000.0)
+            expression: if(user_score() >= query(min_rank), any_token_match() * query(w_pop_token_tier) + any_near_match() * query(w_pop_near_tier) + weak_match() * query(w_pop_weak_tier) + match_quality() * query(w_pop_match_step) + max(affiliation_match(), tier_body_match()) * query(w_affil_tier) + follower_key(), -1000000000.0)
             rank-score-drop-limit: -1000000.0
         }
 
         match-features {
             user_score
             verified_followers
-            has_token_match
             any_token_match
+            identity_match
             near_name_match
             any_near_match
             weak_match
-            identity_match
             affiliation_match
+            tier_body_match
         }
     }
 
@@ -1215,7 +1431,7 @@ schema event {
     # behavior is unchanged.)
     rank-profile search inherits text_relevance {
         first-phase {
-            expression: if(text_score() < query(text_score_cutoff), 0.0, text_score() * wot_mult())
+            expression: floored_text_score() * wot_mult()
             rank-score-drop-limit: 0.5
         }
 
@@ -1252,15 +1468,14 @@ schema event {
             name_match
             identity_match
             identity_text
-            has_token_match
             any_token_match
             loose_name_match
             near_name_match
             any_near_match
             weak_match
             affiliation_match
-            affiliation_match_text
-            secondary_active_text
+            tier_body_match
+            real_match
             text_score
             wot_mult
             name_text
@@ -1291,7 +1506,7 @@ schema event {
                 any_token_match() * 1100
                 + any_near_match() * query(w_near_tier_text)
                 + weak_match() * query(w_weak_tier_text)
-                + affiliation_match() * query(w_affil_tier_text)
+                + max(affiliation_match(), tier_body_match()) * query(w_affil_tier_text)
                 + primary_text()
                 + tier_primary_text()
                 + query(w_secondary) * secondary_text()

@@ -478,11 +478,43 @@ class VespaEventIndex(
 
         fun on(feature: String): Boolean = ((mf[feature] as? JsonPrimitive)?.content?.toDoubleOrNull() ?: 0.0) > 0.0
         return when {
-            on("any_token_match") || on("name_match") || on("has_token_match") -> "name"
+            on("any_token_match") || on("name_match") -> "name"
+
             on("any_near_match") || on("near_name_match") -> "near"
-            on("weak_match") -> "weak"
+
+            // BEFORE weak, and that ordering is the whole point. identity_match
+            // means nip05/lud16 matched; weak_match is also 1 for such a doc
+            // (identity is one of the weak band's signals), so testing weak
+            // first would swallow the more specific route — which is exactly
+            // how this branch stayed unreachable from the day it was written:
+            // identity implied the old has_token_match, so "name" claimed it.
+            // The doc scores in the weak band either way; this only names the
+            // route that got it there.
             on("identity_match") -> "identity"
-            on("affiliation_match_text") || on("affiliation_match") -> "affiliation"
+
+            on("weak_match") -> "weak"
+
+            // One gate now: affiliation_match_text was the DEFAULT profile's
+            // fork of this, forced by has_token_match counting identity while
+            // that profile's band did not. Identity is a rung of its own, so
+            // the fork is gone and so is the feature name.
+            on("affiliation_match") -> "affiliation"
+
+            // Same RUNG as affiliation (event.sd max()es the two into one
+            // weight), a different route: the profile group's bio/website vs
+            // the generic group's body/location. Ordered after it so a doc
+            // that somehow fills both reports the profile-side label, as the
+            // tiers above already do.
+            on("tier_body_match") -> "body"
+
+            // Matched a real column but NO rung claimed it — the floor band
+            // (event.sd floored_text_score). Checked last on purpose:
+            // real_match is 1 for every branch above too, so it only means
+            // "unclaimed" once they have all failed. A hit landing here is a
+            // ranking gap worth reporting, unlike "gram" — a doc no column
+            // matched at all.
+            on("real_match") -> "floor"
+
             else -> "gram"
         }
     }

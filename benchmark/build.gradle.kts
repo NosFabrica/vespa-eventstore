@@ -36,6 +36,22 @@ tasks.test {
         // (the CI 'integration' job does); it self-skips without a Docker daemon.
         if (!project.hasProperty("integration")) excludeTags("integration")
     }
+
+    // These tests are the CI-only correctness gates: the ONLY place the rank
+    // profiles run against a real Vespa, and nobody can reproduce a failure
+    // locally without a Docker daemon. Gradle's default output gives just the
+    // exception class and a line number — and for an assertion inside
+    // `runBlocking` that line is the coroutine frame, not the assertion — so a
+    // red integration job said "RankRegressionIT failed somewhere" and nothing
+    // more. The message IS the diagnosis for a rank regression ("expected
+    // <body> but was <weak>"), so print it.
+    testLogging {
+        events("failed")
+        exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+        showExceptions = true
+        showCauses = true
+        showStackTraces = true
+    }
 }
 
 kotlin {

@@ -92,6 +92,22 @@ class NearTextTest {
         assertFalse(long.any { it.length > NearText.MAX_ELEMENT_LEN })
     }
 
+    /**
+     * The premise behind event.sd's secondary_match(): the near ATTRIBUTE is
+     * a bounded projection of the field, so a long summary/description keeps
+     * every word in the `search_secondary` INDEX and loses its tail here. The
+     * rung therefore cannot be read off the attribute alone — RankRegressionIT
+     * pins the engine-side half against a real Vespa.
+     */
+    @Test
+    fun `tokens drop the tail of a long field, so the attribute is not a rung oracle`() {
+        val secondary = (1..50).joinToString(" ") { "fill%02d".format(it) } + " ai quilombola"
+        val tokens = NearText.tokens(secondary)
+        assertEquals(NearText.MAX_ELEMENTS, tokens.size)
+        assertFalse("quilombola" in tokens, "past the element cap: $tokens")
+        assertFalse("ai" in tokens, "past the element cap: $tokens")
+    }
+
     @Test
     fun `merge unions sources in order without duplicates`() {
         assertEquals(

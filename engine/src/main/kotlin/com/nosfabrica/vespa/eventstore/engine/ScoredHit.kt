@@ -25,7 +25,7 @@ import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 /**
  * One search hit with its ranking explanation ([VespaEventIndex.searchScored]):
  * the engine's relevance score and the match TIER it arrived through ("name",
- * "near", "weak", "identity", "affiliation", "gram"), or null when the profile
+ * "near", "weak", "identity", "affiliation", "body", "floor", "gram"), or null when the profile
  * served no match-features. The inspector/harness surface.
  */
 data class ScoredHit(

@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore.engine
 
+import com.nosfabrica.vespa.eventstore.engine.query.FuzzyWordGroup
 import java.io.ByteArrayInputStream
 import java.util.zip.ZipInputStream
 import kotlin.test.Test
@@ -38,11 +39,63 @@ class VespaAppTest {
             }
         }
 
+    private fun entry(name: String): String {
+        ZipInputStream(ByteArrayInputStream(VespaApp.zipBytes())).use { zis ->
+            var e = zis.nextEntry
+            while (e != null) {
+                if (e.name == name) return zis.readBytes().decodeToString()
+                e = zis.nextEntry
+            }
+        }
+        error("$name is not in the bundled application package")
+    }
+
     @Test
     fun `the application package is on the classpath and carries the schemas`() {
         val names = entries(VespaApp.zipBytes())
         assertTrue("services.xml" in names, "package must declare its services: $names")
         assertTrue("schemas/event.sd" in names, "package must carry the event schema: $names")
         assertTrue("schemas/reputation.sd" in names, "package must carry the reputation schema: $names")
+    }
+
+    /**
+     * THE LADDER INVARIANT, checked statically against the SHIPPED schema:
+     * every column the query builder searches must be recallable (a `fieldset
+     * default` entry) AND accounted for by `real_match()`, the guard that
+     * floors a genuine match at text_score_cutoff instead of letting the
+     * cutoff delete it.
+     *
+     * This exists because the invariant used to live only in comments, and
+     * adding a column is one edit while giving it a rung is a different edit
+     * in a different part of a different file. It was missed three times (the
+     * 2026-08-05 audit: search_text and search_location had no rung at all,
+     * search_secondary's read an attribute that can withhold a word the index
+     * field holds, nip05/lud16 still ride the floor). A column added to
+     * SEARCH_FIELDS and nowhere else now fails the BUILD, with no Docker and
+     * no Vespa — the integration gate is where the rung itself gets proven
+     * (RankRegressionIT's recall-floor matrix), but this is what catches the
+     * omission at the moment it is written.
+     *
+     * Not asserted here: that the column has its own RUNG. That is a ranking
+     * property only a live engine can evaluate, and real_match() is
+     * deliberately the weaker, checkable half — the net, not the ladder.
+     */
+    @Test
+    fun `every searched column is in the default fieldset and the real-match guard`() {
+        val sd = entry("schemas/event.sd")
+        val fieldset = sd.substringAfter("fieldset default {").substringBefore("}")
+        val guard = sd.substringAfter("function real_match() {").substringBefore("}")
+        for (field in FuzzyWordGroup.SEARCH_FIELDS) {
+            // Word-bounded: "name" must not be satisfied by "display_name",
+            // nor "search_primary" by "search_primary_parts".
+            assertTrue(
+                Regex("\\b${Regex.escape(field)}\\b").containsMatchIn(fieldset),
+                "`$field` is searched but missing from `fieldset default` — it can never be recalled: $fieldset",
+            )
+            assertTrue(
+                "matchCount($field)" in guard,
+                "`$field` is searched but missing from real_match() — a match there is deleted by text_score_cutoff, not ranked: $guard",
+            )
+        }
     }
 }

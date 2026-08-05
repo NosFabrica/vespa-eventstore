@@ -76,7 +76,17 @@ import kotlin.test.assertEquals
 class SearchPrefixLadderIT {
     @Test
     fun `every prefix from Vitor P on returns what the full query returns`() {
-        assumeTrue(dockerAvailable(), "Docker not available — skipping the prefix ladder IT")
+        // Same escape hatch as RankRegressionIT, and for the same reason: a
+        // sandbox where testcontainers cannot select a strategy — even with a
+        // reachable daemon — otherwise cannot run this suite AT ALL, and this
+        // is the suite covering docs reached ONLY through nip05/lud16. Point
+        // VESPA_IT_URL at an already-running Vespa to iterate locally.
+        val external = System.getenv("VESPA_IT_URL")
+        assumeTrue(external != null || dockerAvailable(), "no VESPA_IT_URL and Docker not available — skipping the prefix ladder IT")
+        if (external != null) {
+            runCase(external.trimEnd('/'), external.trimEnd('/').replace(":8080", ":19071"))
+            return
+        }
 
         GenericContainer("vespaengine/vespa:latest")
             .withExposedPorts(QUERY_PORT, CONFIG_PORT)
@@ -84,51 +94,58 @@ class SearchPrefixLadderIT {
             .withStartupTimeout(Duration.ofMinutes(5))
             .use { vespa ->
                 vespa.start()
-                val queryUrl = "http://${vespa.host}:${vespa.getMappedPort(QUERY_PORT)}"
-                val configUrl = "http://${vespa.host}:${vespa.getMappedPort(CONFIG_PORT)}"
+                runCase(
+                    "http://${vespa.host}:${vespa.getMappedPort(QUERY_PORT)}",
+                    "http://${vespa.host}:${vespa.getMappedPort(CONFIG_PORT)}",
+                )
+            }
+    }
 
-                val store = VespaEventStore.open(url = queryUrl, autoDeploy = true, configUrl = configUrl)
-                store.use {
-                    runBlocking {
-                        val export = loadExport()
-                        store.batchInsert(export + fillers())
-                        // The report's AUTHOR SCORES, verbatim (npub -> hex),
-                        // keyed by the observer: Vitor ranking as himself.
-                        VespaReputationIndex(queryUrl).use { reputation ->
-                            reputation.putAll(
-                                SCORES.map { (pubkey, score) ->
-                                    ReputationDoc(pubkey, influenceScores = mapOf(OBSERVER to score))
-                                },
-                            )
-                        }
-                        awaitCorpus(store, export.size + FILLER_COUNT)
+    private fun runCase(
+        queryUrl: String,
+        configUrl: String,
+    ) {
+        val store = VespaEventStore.open(url = queryUrl, autoDeploy = true, configUrl = configUrl)
+        store.use {
+            runBlocking {
+                val export = loadExport()
+                store.batchInsert(export + fillers())
+                // The report's AUTHOR SCORES, verbatim (npub -> hex),
+                // keyed by the observer: Vitor ranking as himself.
+                VespaReputationIndex(queryUrl).use { reputation ->
+                    reputation.putAll(
+                        SCORES.map { (pubkey, score) ->
+                            ReputationDoc(pubkey, influenceScores = mapOf(OBSERVER to score))
+                        },
+                    )
+                }
+                awaitCorpus(store, export.size + FILLER_COUNT)
 
-                        val fullQuery = labels(search(store, FULL_QUERY))
-                        assertEquals(
-                            LABELS.values.toSet(),
-                            fullQuery.toSet(),
-                            "\"$FULL_QUERY\" must return the export's ten events: $fullQuery",
-                        )
+                val fullQuery = labels(search(store, FULL_QUERY))
+                assertEquals(
+                    LABELS.values.toSet(),
+                    fullQuery.toSet(),
+                    "\"$FULL_QUERY\" must return the export's ten events: $fullQuery",
+                )
 
-                        // The ladder: from "Vitor P" on, every keystroke keeps
-                        // the full result set — typing must never DROP a doc the
-                        // finished query returns.
-                        for (prefix in PREFIXES) {
-                            val hits = labels(search(store, prefix))
-                            assertEquals(
-                                LABELS.values.toSet(),
-                                hits.toSet(),
-                                "\"$prefix\" must already return everything \"$FULL_QUERY\" returns: $hits",
-                            )
-                            assertEquals(
-                                LABELS.getValue(OWN_PROFILE),
-                                hits.first(),
-                                "\"$prefix\" must rank the observer's own top-trust profile first: $hits",
-                            )
-                        }
-                    }
+                // The ladder: from "Vitor P" on, every keystroke keeps
+                // the full result set — typing must never DROP a doc the
+                // finished query returns.
+                for (prefix in PREFIXES) {
+                    val hits = labels(search(store, prefix))
+                    assertEquals(
+                        LABELS.values.toSet(),
+                        hits.toSet(),
+                        "\"$prefix\" must already return everything \"$FULL_QUERY\" returns: $hits",
+                    )
+                    assertEquals(
+                        LABELS.getValue(OWN_PROFILE),
+                        hits.first(),
+                        "\"$prefix\" must rank the observer's own top-trust profile first: $hits",
+                    )
                 }
             }
+        }
     }
 
     // ------------------------------------------------------------------
