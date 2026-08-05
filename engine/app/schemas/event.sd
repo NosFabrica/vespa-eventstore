@@ -420,7 +420,10 @@ schema event {
             # At EQUAL trust the four rungs — exact > near > weak >
             # affiliation — still order strictly, each rung ~×5.6 the one
             # below (Brainstorm measured 126 bio-only accounts above the
-            # account literally named "coffee" before rungs existed at all):
+            # account literally named "coffee" before rungs existed at all).
+            # The bio band is SHARED with the body/location rung
+            # (tier_body_match(), max()'d into the same weight, not summed),
+            # so a kind has four rungs whichever group it fills:
             #     bio  band    = 550 + ~130 (about fallback)
             #     weak floor   = w_weak_tier   =      4 000   (~×5.7 bio)
             #     near floor   = w_near_tier   =     23 000   (~×5.75 weak)
@@ -609,6 +612,14 @@ schema event {
             # about fallback ~13 ≈ 93) and BELOW every real tier (affiliation
             # 550, near 4000). Corpus-dependent (bm25 scales with corpus
             # statistics) — re-check against real data after a reindex.
+            #
+            # "Nothing real lives down there" is a claim about RUNGS, and it
+            # held only because every column HAD one — which search_text and
+            # search_location did not until 2026-08-05. Their bare
+            # query(w_content)/query(w_location) × bm25 tops out in the low
+            # tens, so every body-only hit landed under this cutoff and was
+            # deleted. Any column added to text_score() as bare bm25, with no
+            # rung of its own, inherits that bug — see tier_body_match().
             query(text_score_cutoff) double: 100.0
             # Tier-group weights (generic-tier extension, non-profile kinds).
             query(w_secondary) double: 0.4
@@ -684,6 +695,41 @@ schema event {
         # term raw scores or the verbatim-field rework (§11.1) lands.
         function match_quality() {
             expression: if(itemRawScore(mtch_exact) > 0, 4, if(itemRawScore(mtch_prefix) > 0, 3, if(itemRawScore(mtch_fz1) > 0, 2, if(itemRawScore(mtch_fz2) > 0, 1, 0))))
+        }
+
+        # A BODY match with nothing better — the generic-tier twin of
+        # affiliation_match(). `search_text` (a note's content, an article's
+        # body) and `search_location` are to a non-profile kind exactly what
+        # `about` is to a profile, and until 2026-08-05 they were the only
+        # matchable columns in this schema with NO rung at all: their entire
+        # contribution was query(w_content)/query(w_location) × bm25, single
+        # digits to low tens. Against text_score_cutoff (100) that is not a
+        # weak score, it is a DELETED one — the `search` profile maps
+        # below-cutoff to 0.0 and rank-score-drop-limit removes the hit. Body
+        # search was therefore structurally dead under the observer-lensed
+        # default: a kind 1 was findable by its NIP-14 subject and its
+        # hashtags and by nothing else, and the many kinds whose ONLY indexed
+        # column is content (9, 14, 24, 42, 1111, …) were unfindable outright.
+        # No arithmetic reaches the cutoff either — 0.15 × bm25 needs
+        # bm25(search_text) ≈ 667, where a rare term contributes single digits.
+        # (Reported 2026-08-05: a kind 1 reading "Esposa de Vitor Roque pede
+        # divórcio e desabafa sobre crise" came back for the query "vitor" —
+        # through its #VItor-roque hashtag, the weak tier — but not for
+        # "divórcio e desabafa", which is its content verbatim.)
+        #
+        # Deliberately the SAME rung as the bio band (w_affil_tier_text in the
+        # text profiles, w_affil_tier in the trust-sorted ones) rather than a
+        # new one: a word in a body is the same KIND of evidence as a word in
+        # a bio — long prose, no naming claim — and an equal-height rung with
+        # a mutually exclusive gate leaves every RATIO in the ladder
+        # derivation at query(w_name_tier) untouched, so nothing needs
+        # recalibrating. Gated on every tier above so tiers never stack, and
+        # OR'd into the affiliation rung with max() rather than summed: the
+        # two groups are disjoint per kind (the argument any_token_match()
+        # already rests on), and where a kind does fill both, one rung is what
+        # the ladder means.
+        function tier_body_match() {
+            expression: if(any_token_match() > 0 || any_near_match() > 0 || weak_match() > 0, 0, if(matchCount(search_text) > 0 || matchCount(search_location) > 0, 1, 0))
         }
 
         # A bio/website affiliation match WITHOUT any name-field token match.
@@ -999,7 +1045,7 @@ schema event {
                 + weak_match() * query(w_weak_tier)
                 + primary_text()
                 + query(w_identity) * identity_text()
-                + affiliation_match_text() * query(w_affil_tier_text)
+                + max(affiliation_match_text(), tier_body_match()) * query(w_affil_tier_text)
                 + secondary_active_text() * query(w_about) * about_text()
                 + tier_text()
             }
@@ -1042,7 +1088,7 @@ schema event {
                 + any_near_match() * query(w_near_tier_text)
                 + weak_match() * query(w_weak_tier_text)
                 + match_quality() * query(w_match_step)
-                + affiliation_match() * query(w_affil_tier_text)
+                + max(affiliation_match(), tier_body_match()) * query(w_affil_tier_text)
                 + query(w_proximity) * proximity()
                 + primary_text()
                 + tier_primary_text()
@@ -1069,6 +1115,7 @@ schema event {
             weak_match
             match_quality
             affiliation_match
+            tier_body_match
             itemRawScore(mtch_exact)
             itemRawScore(mtch_prefix)
             itemRawScore(mtch_fz1)
@@ -1153,7 +1200,7 @@ schema event {
     # ordering inside a tier (Meilisearch's `typo` over `sort`).
     rank-profile rank_desc inherits text_relevance {
         first-phase {
-            expression: if(user_score() >= query(min_rank), any_token_match() * query(w_pop_token_tier) + any_near_match() * query(w_pop_near_tier) + weak_match() * query(w_pop_weak_tier) + match_quality() * query(w_pop_match_step) + affiliation_match() * query(w_affil_tier) + user_score(), -1000000000.0)
+            expression: if(user_score() >= query(min_rank), any_token_match() * query(w_pop_token_tier) + any_near_match() * query(w_pop_near_tier) + weak_match() * query(w_pop_weak_tier) + match_quality() * query(w_pop_match_step) + max(affiliation_match(), tier_body_match()) * query(w_affil_tier) + user_score(), -1000000000.0)
             rank-score-drop-limit: -1000000.0
         }
     }
@@ -1161,7 +1208,7 @@ schema event {
     # sort:rank:asc: ascending trust WITHIN each (still-descending) match tier.
     rank-profile rank_asc inherits text_relevance {
         first-phase {
-            expression: if(user_score() >= query(min_rank), any_token_match() * query(w_pop_token_tier) + any_near_match() * query(w_pop_near_tier) + weak_match() * query(w_pop_weak_tier) + match_quality() * query(w_pop_match_step) + affiliation_match() * query(w_affil_tier) - user_score(), -1000000000.0)
+            expression: if(user_score() >= query(min_rank), any_token_match() * query(w_pop_token_tier) + any_near_match() * query(w_pop_near_tier) + weak_match() * query(w_pop_weak_tier) + match_quality() * query(w_pop_match_step) + max(affiliation_match(), tier_body_match()) * query(w_affil_tier) - user_score(), -1000000000.0)
             rank-score-drop-limit: -1000000.0
         }
     }
@@ -1187,7 +1234,7 @@ schema event {
         }
 
         first-phase {
-            expression: if(user_score() >= query(min_rank), any_token_match() * query(w_pop_token_tier) + any_near_match() * query(w_pop_near_tier) + weak_match() * query(w_pop_weak_tier) + match_quality() * query(w_pop_match_step) + affiliation_match() * query(w_affil_tier) + follower_key(), -1000000000.0)
+            expression: if(user_score() >= query(min_rank), any_token_match() * query(w_pop_token_tier) + any_near_match() * query(w_pop_near_tier) + weak_match() * query(w_pop_weak_tier) + match_quality() * query(w_pop_match_step) + max(affiliation_match(), tier_body_match()) * query(w_affil_tier) + follower_key(), -1000000000.0)
             rank-score-drop-limit: -1000000.0
         }
 
@@ -1201,6 +1248,7 @@ schema event {
             weak_match
             identity_match
             affiliation_match
+            tier_body_match
         }
     }
 
@@ -1260,6 +1308,7 @@ schema event {
             weak_match
             affiliation_match
             affiliation_match_text
+            tier_body_match
             secondary_active_text
             text_score
             wot_mult
@@ -1291,7 +1340,7 @@ schema event {
                 any_token_match() * 1100
                 + any_near_match() * query(w_near_tier_text)
                 + weak_match() * query(w_weak_tier_text)
-                + affiliation_match() * query(w_affil_tier_text)
+                + max(affiliation_match(), tier_body_match()) * query(w_affil_tier_text)
                 + primary_text()
                 + tier_primary_text()
                 + query(w_secondary) * secondary_text()

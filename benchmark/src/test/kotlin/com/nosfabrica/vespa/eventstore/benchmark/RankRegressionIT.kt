@@ -288,6 +288,29 @@ class RankRegressionIT {
             // order_factor() did — measured, it ranked FIRST. Every factor must
             // come from the SAME field.
             doc(43, kind = 0, pubkey = pk(40), search = SearchFields(name = "Gordon Jon", displayName = "Jon Gordon Fan Club", about = "bitcoin")),
+            // --- the 2026-08-05 "divórcio e desabafa" report: a hit whose
+            // ONLY match is the BODY. The reported kind 1 has no NIP-14
+            // subject, so its subject/title column is empty and everything it
+            // says lives in search_text; it came back for "vitor" (through
+            // the #VItor-roque hashtag, the weak tier) and NOT for three
+            // words that are its content verbatim. search_text had no rung —
+            // query(w_content) × bm25, a couple of points — so text_score()
+            // sat under text_score_cutoff and `search` dropped the hit
+            // outright. Fields are the reported event's, extracted the way
+            // SearchExtractors does it (t-tags -> secondary, content -> text).
+            doc(
+                44,
+                kind = 1,
+                pubkey = pk(44),
+                search =
+                    SearchFields(
+                        secondary = "Esportes VItor roque",
+                        text =
+                            "Esposa de Vitor Roque pede divórcio e desabafa sobre crise. A influencer digital Dayana Lins " +
+                                "chamou atenção nas redes sociais ao compartilhar aspectos íntimos de seu relacionamento com " +
+                                "o jogador de futebol Vitor Roque.",
+                    ),
+            ),
             doc(
                 35,
                 kind = 30023,
@@ -479,6 +502,11 @@ class RankRegressionIT {
                                 ReputationDoc(pk(34), influenceScores = mapOf(OBSERVER to 97)),
                                 ReputationDoc(pk(35), influenceScores = mapOf(OBSERVER to 98)),
                                 ReputationDoc(pk(40), influenceScores = mapOf(OBSERVER to 50)),
+                                // The body-match case: the reported author's score, 8 —
+                                // low enough that only a real rung can lift the hit over
+                                // text_score_cutoff, and it must clear the store's own
+                                // min_rank (2) as it did in the report.
+                                ReputationDoc(pk(44), influenceScores = mapOf(OBSERVER to 8)),
                             ),
                         )
                     }
@@ -707,6 +735,33 @@ class RankRegressionIT {
                     assertTrue(
                         phraseOrder.indexOf(id(40)) < phraseOrder.indexOf(id(43)),
                         "at equal trust, the field the phrase covers WHOLLY beats the one it covers partly: ${phrase.map { nameOf(it.doc) }}",
+                    )
+
+                    // --- a BODY-only match must survive the cutoff (2026-08-05) ---
+                    // The whole report in one query: three words that appear
+                    // verbatim in doc 44's content, under the same lens that
+                    // found it by hashtag. Before tier_body_match() the only
+                    // credit search_text earned was query(w_content) × bm25 —
+                    // low tens against text_score_cutoff's 100 — so `search`
+                    // scored the hit 0.0 and rank-score-drop-limit removed it.
+                    // Asserted under the DEFAULT profile with an observer,
+                    // because that is the only profile the cutoff lives in
+                    // (`text` never dropped the hit, which is why this looked
+                    // like an indexing bug and was not one).
+                    val body = indexRef.searchScored(EventQuery(search = "divórcio e desabafa", observer = OBSERVER, minRank = 2.0))
+                    assertTrue(
+                        body.any { it.doc.id == id(44) },
+                        "a match in the note BODY must survive text_score_cutoff: ${body.map { nameOf(it.doc) }}",
+                    )
+                    assertEquals("body", body.first { it.doc.id == id(44) }.tier)
+                    // The rung must not promote the body past a hashtag/title
+                    // route: the same doc still arrives WEAK for the hashtag
+                    // word, which is the tier above it.
+                    val hashtag = indexRef.searchScored(EventQuery(search = "vitor", observer = OBSERVER, minRank = 2.0))
+                    assertEquals(
+                        "weak",
+                        hashtag.first { it.doc.id == id(44) }.tier,
+                        "a hashtag prefix outranks the body it also matches: ${hashtag.map { it.doc.id to it.tier }}",
                     )
 
                     // --- typo bound: over-budget hits never match ---

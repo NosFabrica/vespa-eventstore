@@ -443,10 +443,22 @@ class VespaEventIndex(
         fun on(feature: String): Boolean = ((mf[feature] as? JsonPrimitive)?.content?.toDoubleOrNull() ?: 0.0) > 0.0
         return when {
             on("any_token_match") || on("name_match") || on("has_token_match") -> "name"
+
             on("any_near_match") || on("near_name_match") -> "near"
+
             on("weak_match") -> "weak"
+
             on("identity_match") -> "identity"
+
             on("affiliation_match_text") || on("affiliation_match") -> "affiliation"
+
+            // Same RUNG as affiliation (event.sd max()es the two into one
+            // weight), a different route: the profile group's bio/website vs
+            // the generic group's body/location. Ordered after it so a doc
+            // that somehow fills both reports the profile-side label, as the
+            // tiers above already do.
+            on("tier_body_match") -> "body"
+
             else -> "gram"
         }
     }
