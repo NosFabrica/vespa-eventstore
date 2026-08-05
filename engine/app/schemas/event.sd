@@ -524,6 +524,36 @@ schema event {
             # read queryCompleteness 1.0 — so it carries the larger half.
             query(w_words_pop) double: 3000.0
             query(w_exactness_pop) double: 6000.0
+            # w_perfect_pop — the PERFECT-MATCH rung. The pair above is a
+            # tie-breaker, and a tie-breaker is the wrong shape: wot_mult() is
+            # convex, so near the top of the 0..100 scale a ONE-POINT trust
+            # difference is worth more than the whole 9000. d(score)/score =
+            # w_wot_pow × Δtrust/(trust − min_rank): at trust ~97 that is
+            # 2.7/95 ≈ 2.8% per point, against the 3.8% the pair can offer.
+            # Both 2026-08-05 reports land exactly there — a trust-100 article
+            # titled "…Join Avi Burra's Journey to Paraguay!" over the
+            # trust-98 profile Avi Burra (+5.7% from trust), a trust-97 video
+            # titled "…| Jon Gordon" over the trust-96 profile Jon Gordon
+            # (+2.9%). A perfect match has to be a RUNG that enters the
+            # crossing calculus, not a nudge that a rounding error in trust
+            # out-buys.
+            #
+            # BOUNDED ABOVE by the calibrated bio→name crossing (see
+            # query(w_name_tier)): the rung lifts the NAME band, so it widens
+            # the bio→name ratio and raises the trust advantage a bio mention
+            # needs to cross. The odell case pins the tightest point — the
+            # 97-trust bio mention must stay above the 13-trust "ODELL mirror"
+            # — and mirror is a HALF match (perfect_match 0.5), so its total
+            # boost may not exceed 680×wot_mult(97)/wot_mult(13) − 130200 ≈
+            # 98850, i.e. w_perfect_pop ≤ ~185000. 100000 sits at ~46% margin
+            # under that ceiling and gives the perfect match +60% over a
+            # long-title partial — decisive against both reports' trust gaps,
+            # and still nothing against a real trust gap (a trust-3 perfect
+            # match stays four orders of magnitude below a trust-50 partial,
+            # because the rung is multiplied by trust like every other rung).
+            # RE-DERIVE THIS CEILING if w_affil_tier_text, w_about, w_wot_pow
+            # or the tier weights move.
+            query(w_perfect_pop) double: 100000.0
             query(w_identity) double: 50.0
             query(w_wot) double: 1.0
             # Exponent of wot_mult()'s trust curve. Sets how much trust
@@ -780,12 +810,37 @@ schema event {
             expression: query(w_words) * words_coverage() + query(w_exactness) * exactness()
         }
 
-        # The same two rules at the `search` profile's scale — see
-        # query(w_words_pop). Kept a separate function, not a scale factor on
-        # precision_boost(), so the text profiles' calibration and the
-        # multiplied profile's can move independently.
+        # A PERFECT match on one primary field: the query covers the whole
+        # field AND the field covers the whole query. Per-field PRODUCT, then
+        # max — deliberately not max(queryCompleteness) × max(fieldCompleteness)
+        # the way words_coverage()/exactness() read them, which can take the
+        # two halves from DIFFERENT fields and call a doc perfect that matched
+        # half the query in a short name and the other half in a long title.
+        # Partial credit is the product, so it degrades smoothly: a whole-query
+        # match on a 13-token title reads 0.15, a half-query match on a 2-token
+        # name reads 0.5, the field that IS the query reads 1.0.
+        function perfect_match() {
+            expression {
+                max(
+                    max(
+                        fieldMatch(name).queryCompleteness * fieldMatch(name).fieldCompleteness,
+                        fieldMatch(display_name).queryCompleteness * fieldMatch(display_name).fieldCompleteness
+                    ),
+                    fieldMatch(search_primary).queryCompleteness * fieldMatch(search_primary).fieldCompleteness
+                )
+            }
+        }
+
+        # The precision rules at the `search` profile's scale — see
+        # query(w_words_pop) and query(w_perfect_pop). Kept a separate function,
+        # not a scale factor on precision_boost(), so the text profiles'
+        # calibration and the multiplied profile's can move independently.
         function precision_boost_pop() {
-            expression: query(w_words_pop) * words_coverage() + query(w_exactness_pop) * exactness()
+            expression {
+                query(w_words_pop) * words_coverage()
+                + query(w_exactness_pop) * exactness()
+                + query(w_perfect_pop) * perfect_match()
+            }
         }
 
         # ---- generic-tier extension: the generic tier group (non-profile kinds). ----

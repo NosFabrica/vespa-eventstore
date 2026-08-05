@@ -86,6 +86,7 @@ object RankAb {
                     "w_exactness" to 40.0,
                     "w_words_pop" to 3000.0,
                     "w_exactness_pop" to 6000.0,
+                    "w_perfect_pop" to 100000.0,
                     "w_wot_pow" to 2.7,
                 ),
             // Individual levers, to attribute any movement.
@@ -93,7 +94,12 @@ object RankAb {
             "weak_off" to mapOf("w_weak_tier" to 0.0, "w_weak_tier_text" to 0.0, "w_pop_weak_tier" to 0.0),
             // Both weight pairs: the text profiles read w_words/w_exactness,
             // `search` reads the _pop pair (different scale — see event.sd).
-            "precision_off" to mapOf("w_words" to 0.0, "w_exactness" to 0.0, "w_words_pop" to 0.0, "w_exactness_pop" to 0.0),
+            "precision_off" to
+                mapOf("w_words" to 0.0, "w_exactness" to 0.0, "w_words_pop" to 0.0, "w_exactness_pop" to 0.0, "w_perfect_pop" to 0.0),
+            // The perfect-match rung alone — the lever the 2026-08-05 reports
+            // turn. Sweep it against the odell crossing bounds (ceiling ~185k).
+            "perfect_off" to mapOf("w_perfect_pop" to 0.0),
+            "perfect_max" to mapOf("w_perfect_pop" to 185000.0),
             "cutoff_50" to mapOf("text_score_cutoff" to 50.0),
             // Isolate the trust multiplier — the "is it ranking or is it data" test.
             "no_trust" to mapOf("w_wot" to 0.0),

@@ -137,6 +137,65 @@ class RankRegressionIT {
                         text = "A privacy-focused Nostr client for Android. Built-in TOR support, the most configurable relay system.",
                     ),
             ),
+            // --- the 2026-08-05 "Avi Burra" / "Jon Gordon" reports: a perfect
+            // match losing to a long title by a ONE- OR TWO-POINT trust gap.
+            // Unlike the amethyst pair these have DIFFERENT authors, near the
+            // top of the scale where wot_mult() is steepest — 98-vs-100 is
+            // +5.7% and 96-vs-97 is +2.9%, both larger than any within-band
+            // text signal short of a rung. Fields are the reported ones.
+            doc(
+                25,
+                kind = 0,
+                pubkey = pk(25),
+                search =
+                    SearchFields(
+                        name = "AviBurra",
+                        displayName = "Avi Burra",
+                        about = "Chronicler of the Sovereign Age",
+                        nip05 = "avi@nip21.media",
+                        lud16 = "avi@primal.net",
+                        website = "casanostra.ink",
+                    ),
+            ),
+            doc(
+                26,
+                kind = 30023,
+                pubkey = pk(26),
+                search =
+                    SearchFields(
+                        primary = "Do You Want a Seat at the Table? Join Avi Burra's Journey to Paraguay!",
+                        text =
+                            "Avi was born in India and moved to New York a few months after 9/11. Avi wanted to create " +
+                                "something that welcomed people in without turning it into a lecture. Avi left his fiat job " +
+                                "on July 4th. For Avi, Finding Home is a way to show lives full of creativity and purpose. " +
+                                "Avi is currently at 82% of his goal, and Avi will share meals with shop owners in Paraguay.",
+                    ),
+            ),
+            doc(
+                27,
+                kind = 0,
+                pubkey = pk(27),
+                search =
+                    SearchFields(
+                        name = "thebitcoinyogi",
+                        displayName = "Jon Gordon",
+                        about = "Bringing bitcoin and nostr to healthcare and Chicago",
+                        nip05 = "jon@soundhsa.com",
+                        lud16 = "thebitcoinyogi@primal.net",
+                        website = "https://www.soundhsa.com",
+                    ),
+            ),
+            doc(
+                28,
+                kind = 34235,
+                pubkey = pk(28),
+                search =
+                    SearchFields(
+                        primary = "Take a Look Into the Future of Healthcare, It's Purple and Orange | Jon Gordon",
+                        secondary = "Where to find Jon Gordon: Satoshi Health Advisors, NosFabrica",
+                        text = "Where to find Jon Gordon: Satoshi Health Advisors and NosFabrica. You can hear this episode on Fountain.",
+                    ),
+            ),
         )
 
     @Test
@@ -278,6 +337,14 @@ class RankRegressionIT {
                                     // ≈ 237000, the worst case for a boost that
                                     // rides the second phase un-multiplied.
                                     ReputationDoc(pk(21), influenceScores = mapOf(OBSERVER to 100)),
+                                    // The "Avi Burra" / "Jon Gordon" cases: the
+                                    // reported trust pairs, verbatim. Both put the
+                                    // partial match ONE or TWO points ahead — the
+                                    // margin wot_mult() turns into +5.7% / +2.9%.
+                                    ReputationDoc(pk(25), influenceScores = mapOf(OBSERVER to 98)),
+                                    ReputationDoc(pk(26), influenceScores = mapOf(OBSERVER to 100)),
+                                    ReputationDoc(pk(27), influenceScores = mapOf(OBSERVER to 96)),
+                                    ReputationDoc(pk(28), influenceScores = mapOf(OBSERVER to 97)),
                                 ),
                             )
                         }
@@ -394,6 +461,39 @@ class RankRegressionIT {
                             amethyst.filter { it.doc.id in setOf(id(21), id(22), id(23), id(24)) }.all { it.tier == "name" },
                             "every amethyst doc must arrive through the token band: ${amethyst.map { it.doc.id to it.tier }}",
                         )
+
+                        // --- a perfect match outranks a better-trusted partial (2026-08-05) ---
+                        // Both reports are the same shape as the amethyst case
+                        // with the one control removed: DIFFERENT authors, a
+                        // one- or two-point trust gap the wrong way. That gap
+                        // is not small where wot_mult() is steep — d(score)/
+                        // score = w_wot_pow × Δtrust/(trust − min_rank), so
+                        // ~2.8% per point up here, more than the whole
+                        // words+exactness tie-breaker can offer. The perfect
+                        // match has to be a RUNG (w_perfect_pop) to survive it.
+                        // Trust still crosses the rung on a real advantage —
+                        // the odell bounds above pin that from both sides, and
+                        // they are what caps w_perfect_pop.
+                        for (
+                        (query, perfect, partial) in
+                        listOf(
+                            Triple("Avi Burra", id(25), id(26)),
+                            Triple("Jon Gordon", id(27), id(28)),
+                        )
+                        ) {
+                            val hits = indexRef.searchScored(EventQuery(search = query, observer = OBSERVER, minRank = 2.0))
+                            val labels = hits.map { nameOf(it.doc) }
+                            val ids = hits.map { it.doc.id }
+                            assertEquals(
+                                perfect,
+                                ids.firstOrNull(),
+                                "\"$query\" is the whole primary field of $perfect — it must rank first: $labels",
+                            )
+                            assertTrue(
+                                ids.indexOf(perfect) < ids.indexOf(partial),
+                                "a better-trusted partial title must not outrank the perfect match for \"$query\": $labels",
+                            )
+                        }
 
                         // --- typo bound: over-budget hits never match ---
                         absent("odelll", "Odessa")

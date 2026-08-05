@@ -58,5 +58,15 @@
     "query": "amethyst",
     "expect": "08f6f27c",
     "note": "reported 2026-08-05 (sotamethyst export, observer npub1gcxzte5…): exact whole-field matches ranked BELOW titles that merely contain the word — the kind-31990 app handler NAMED Amethyst (08f6f27c) at #4 and the kind-32267 application whose primary field is Amethyst (32a99591) at #6, under a kind-41 channel 'Amethyst Devs' (075568e1) and two kind-30023 articles (9161cc2a, 2c683f9f). 08f6f27c and 075568e1 share author 460c25e682, so trust explained nothing: inside the token band every hit scores the same w_name_tier and the additive tail decides, where tier_text() sums UNCAPPED secondary + body bm25 that a one-word field has no columns to collect. exactness() is the rule for this, but added raw after the ×wot_mult first phase it was worth w_exactness/wot_mult ≈ 0.0002 text points. Fixed by w_words_pop/w_exactness_pop scaled by wot_mult in `search`'s second phase; RankRegressionIT pins the same four docs field-for-field with one shared author."
+  },
+  {
+    "query": "Avi Burra",
+    "expect": "672c8192",
+    "note": "reported 2026-08-05 (sotAviBurra export, observer npub1gcxzte5…): the profile Avi Burra (672c8192, display_name IS the query, author trust 98) ranked #2 under a trust-100 article titled 'Do You Want a Seat at the Table? Join Avi Burra's Journey to Paraguay!' (4dc74f54). Same band, and the text signals are within 0.3% — the whole 5.7% gap is wot_mult(100)/wot_mult(98). Because the curve is convex, near the top of the 0..100 scale ONE trust point is worth w_wot_pow×Δ/(trust−min_rank) ≈ 2.8%, more than the words+exactness tie-breaker (3.8%) can offer. Fixed by w_perfect_pop, a rung rather than a nudge. NOTE FOR RankAb: needs --observer <hex whose provider ranks 70c48e4b… 100 and b83a28b7… 98>."
+  },
+  {
+    "query": "Jon Gordon",
+    "expect": "b8f4618c",
+    "note": "reported 2026-08-05 (sotJonGordon export, same observer): the profile Jon Gordon (b8f4618c, display_name IS the query, author trust 96) ranked #2 under a trust-97 kind-34235 video titled 'Take a Look Into the Future of Healthcare, It's Purple and Orange | Jon Gordon' (3a2033c6), whose summary and body repeat the name. A ONE-point trust gap is +2.9% up here, against the 3.8% the words+exactness tie-breaker can offer — it scraped by on paper and lost in practice once the video's secondary+body tail is counted. Same fix as the Avi Burra case: w_perfect_pop. RankRegressionIT pins both reports field-for-field with the reported trust pairs."
   }
 ]
