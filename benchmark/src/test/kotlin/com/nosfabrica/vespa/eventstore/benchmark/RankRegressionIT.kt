@@ -241,6 +241,44 @@ class RankRegressionIT {
             // belongs in the name tier at all is an extractor question
             // (upstream, in Quartz's SearchFieldExtractor), not a ranking one.
             doc(31, kind = 30000, pubkey = pk(29), search = SearchFields(primary = "Primal")),
+            // --- the 2026-08-05 "Jack" report: an AMBIGUOUS query. The four
+            // cases above each have one obviously-right answer; "Jack" has
+            // three accounts literally named jack and a dozen real people
+            // named Jack Something, so the rung cannot pick a winner — it can
+            // only put the whole-field matches above the fragments and let
+            // trust order what remains. Two shapes the others never reach:
+            //   * SEVERAL simultaneous perfect matches (32, 34) — the rung
+            //     saturates and trust is the tie-break, which is correct.
+            //   * a perfect match that must overturn a HIGHER-trust partial
+            //     (34 at trust 97 over 33 at trust 100). The previous reports
+            //     only ever asked the rung to beat +1 or +2 points; this asks
+            //     for 3, and bounds how much it may buy.
+            // 33 also pins a sibling-field split: its `name` (jacksweeney) is
+            // reachable only through the NEAR tier, its display_name matches
+            // exactly, so the doc must arrive in the token band.
+            doc(
+                32,
+                kind = 0,
+                pubkey = pk(32),
+                search = SearchFields(name = "Jack", displayName = "jack (n/acc)", nip05 = "jack@chakany.systems"),
+            ),
+            doc(
+                33,
+                kind = 0,
+                pubkey = pk(33),
+                search = SearchFields(name = "jacksweeney", displayName = "jack sweeney", nip05 = "jacksweeney@nostrplebs.com"),
+            ),
+            doc(34, kind = 0, pubkey = pk(34), search = SearchFields(name = "jack", nip05 = "jack@primal.net")),
+            doc(
+                35,
+                kind = 30023,
+                pubkey = pk(35),
+                search =
+                    SearchFields(
+                        primary = "Dr. Jack Kruse on Artificial Light, Sunlight, and Health: Podcast Summary",
+                        text = "Dr. Jack Kruse on why artificial light is the problem and sunlight is the fix.",
+                    ),
+            ),
         )
 
     @Test
@@ -393,6 +431,12 @@ class RankRegressionIT {
                                     // The "Primal" case: the reported pair, two points apart.
                                     ReputationDoc(pk(29), influenceScores = mapOf(OBSERVER to 97)),
                                     ReputationDoc(pk(30), influenceScores = mapOf(OBSERVER to 99)),
+                                    // The "Jack" case: 34 must overturn 33 on
+                                    // exactness despite giving up 3 points.
+                                    ReputationDoc(pk(32), influenceScores = mapOf(OBSERVER to 100)),
+                                    ReputationDoc(pk(33), influenceScores = mapOf(OBSERVER to 100)),
+                                    ReputationDoc(pk(34), influenceScores = mapOf(OBSERVER to 97)),
+                                    ReputationDoc(pk(35), influenceScores = mapOf(OBSERVER to 98)),
                                 ),
                             )
                         }
@@ -530,6 +574,7 @@ class RankRegressionIT {
                             // Single word: queryCompleteness is a constant 1.0,
                             // so fieldCompleteness carries the rung alone.
                             Triple("primal", id(29), id(30)),
+                            Triple("jack", id(32), id(35)),
                         )
                         ) {
                             val hits = indexRef.searchScored(EventQuery(search = query, observer = OBSERVER, minRank = 2.0))
@@ -545,6 +590,31 @@ class RankRegressionIT {
                                 "a better-trusted partial title must not outrank the perfect match for \"$query\": $labels",
                             )
                         }
+
+                        // --- how much trust a whole-field match may overturn ---
+                        // The "Jack" report's ambiguous shape. A perfect match
+                        // at trust 97 must beat a HALF match at trust 100 (the
+                        // rung is (130200+109000)/(130200+56000) = 1.285, so it
+                        // survives a trust-delta ratio up to 1.285^(1/2.7) =
+                        // 1.096 — and up here the whole 0..100 scale cannot
+                        // supply that, which is why a top-trust perfect match
+                        // is effectively unbeatable by a fragment while a
+                        // trust-20 one is not). The bound BELOW is the same
+                        // ladder the odell case pins, from the other side.
+                        val jack = indexRef.searchScored(EventQuery(search = "jack", observer = OBSERVER, minRank = 2.0))
+                        val jorder = jack.map { it.doc.id }
+                        val jlabels = jack.map { nameOf(it.doc) }
+                        assertTrue(
+                            jorder.indexOf(id(34)) < jorder.indexOf(id(33)),
+                            "a trust-97 whole-field match must overturn a trust-100 half match: $jlabels",
+                        )
+                        assertTrue(
+                            jorder.indexOf(id(33)) < jorder.indexOf(id(35)),
+                            "a half match still beats a fragment of a long title at comparable trust: $jlabels",
+                        )
+                        // The exact hit on display_name decides the band even
+                        // though `name` (jacksweeney) is only a NEAR hit.
+                        assertEquals("name", jack.first { it.doc.id == id(33) }.tier)
 
                         // --- typo bound: over-budget hits never match ---
                         absent("odelll", "Odessa")

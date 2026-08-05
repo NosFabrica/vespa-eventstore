@@ -543,17 +543,27 @@ schema event {
             # the bio→name ratio and raises the trust advantage a bio mention
             # needs to cross. The odell case pins the tightest point — the
             # 97-trust bio mention must stay above the 13-trust "ODELL mirror"
-            # — and mirror is a HALF match (perfect_match 0.5), so its total
-            # boost may not exceed 680×wot_mult(97)/wot_mult(13) − 130200 ≈
-            # 98850, i.e. w_perfect_pop ≤ ~185000. 100000 sits at ~46% margin
-            # under that ceiling and gives the perfect match +60% over a
-            # long-title partial — decisive against both reports' trust gaps,
-            # and still nothing against a real trust gap (a trust-3 perfect
-            # match stays four orders of magnitude below a trust-50 partial,
-            # because the rung is multiplied by trust like every other rung).
-            # RE-DERIVE THIS CEILING if w_affil_tier_text, w_about, w_wot_pow
-            # or the tier weights move.
-            query(w_perfect_pop) double: 100000.0
+            # — and mirror is a HALF match (perfect_match 0.5), so the ceiling
+            # falls out of its total boost:
+            #     bio band × wot_mult(97) / wot_mult(13) − mirror_text
+            #       = 550.0 × 218601 / 648.6 − 130115 = 55153 max boost
+            #     w_perfect_pop ≤ (55153 − w_words_pop − w_exactness_pop/2) / 0.5
+            #       = 98306
+            # MEASURED, not estimated: the bio band is 550.0 (w_affil_tier_text
+            # plus a w_about fallback that rounds to nothing here) — an earlier
+            # pass read the "550 + ~130" note at query(w_name_tier) as a band of
+            # 680, put the ceiling at ~185000, and shipped 100000, which flipped
+            # the odell pin by 0.45% on a live Vespa. Trust the run, not the
+            # arithmetic. 80000 sits 19% under the measured ceiling (5.2% margin
+            # on the pin itself) and still gives a perfect match +26..37% over a
+            # long-title partial across all five 2026-08-05 reports.
+            #
+            # The rung is multiplied by trust like every other, so it buys
+            # exactness headroom without buying spam any: a trust-3 perfect
+            # match stays four orders of magnitude below a trust-50 partial.
+            # RE-MEASURE THIS CEILING (do not re-derive it on paper) if
+            # w_affil_tier_text, w_about, w_wot_pow or the tier weights move.
+            query(w_perfect_pop) double: 80000.0
             query(w_identity) double: 50.0
             query(w_wot) double: 1.0
             # Exponent of wot_mult()'s trust curve. Sets how much trust
