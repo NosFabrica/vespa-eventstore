@@ -664,10 +664,19 @@ schema event {
         # about: IDF-aware only (bm25), no flat matchCount term — rare bio
         # terms find affiliated people, common words don't surface
         # bio-mentioners over name-bearers.
+        #
+        # The gram term is CAPPED at query(gram_cap), like every other gram
+        # term in this schema (2026-08-05 audit). It had been uncapped, and
+        # text_score_cutoff derives its own safety from the assumption that
+        # none of them are — see the ceiling arithmetic there. `about` alone
+        # never actually crossed (query(w_about) is 0.1, so a MEASURED
+        # about_text of 282 was worth 28 text points), but leaving one term
+        # uncapped keeps the cutoff's justification false, and the identical
+        # term on the secondary tier DID cross.
         function about_text() {
             expression {
                 bm25(about)
-                + query(w_gram) * bm25(about_gram)
+                + min(query(w_gram) * bm25(about_gram), query(gram_cap))
             }
         }
 
@@ -1065,10 +1074,38 @@ schema event {
         # typo) while infix recall collapsed 11 -> 0. It could not be otherwise:
         # the net ANDs every trigram of the query word, and a substitution
         # destroys three consecutive trigrams, so the AND can never hold.
+        #
+        # The gram term is CAPPED at query(gram_cap). Uncapped, this was the
+        # one term that let GRAM-ONLY noise cross text_score_cutoff, whose
+        # comment claims a gram ceiling of ~93 — arithmetic that silently
+        # assumed every gram term is bounded, and two were not.
+        #
+        # MEASURED on a live Vespa (2026-08-05), docs whose search_secondary
+        # contains the query word ONLY as an infix inside a larger token, so
+        # the exact clause and the *_tokens prefix clause both miss and the
+        # AND-gram net is the only route (real_match 0 on every row):
+        #     word            w_gram  text_score uncapped -> capped
+        #     bitcoin (5 gr)   2.0        18 - 20            same
+        #     bitcoin          8.0        74 - 78            same
+        #     extraordinary    2.0        37 - 43            same
+        #     extraordinary    8.0      149 - 172  ->  32    CROSSED 100
+        # At the real cutoff the last row went from "returned as a hit" to
+        # dropped. w_gram flips to 8.0 whenever the SHORTEST word of a query
+        # is <= 3 characters (EventYql/leansOnGrams) and then applies to every
+        # word, so "de extraordinary" is enough to trigger it — the long word
+        # supplies the trigram count and the short one supplies the weight.
+        # The cap ceiling is query(w_secondary) x gram_cap = 0.4 x 80 = 32,
+        # which is where the capped column lands, exactly as intended.
+        #
+        # RankRegressionIT is green with the cap: no calibrated case (the
+        # odell crossing bounds, amethyst exactness, the perfect-match rung,
+        # jack, word order, phrase) moves, because a doc that matches
+        # exactly is scored by its own tier and the gram term is a small
+        # additive tail on top.
         function secondary_text() {
             expression {
                 bm25(search_secondary)
-                + query(w_gram) * bm25(search_secondary_gram)
+                + min(query(w_gram) * bm25(search_secondary_gram), query(gram_cap))
             }
         }
 
