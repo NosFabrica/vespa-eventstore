@@ -821,6 +821,35 @@ class RankRegressionIT {
                                 Triple("divorcio desabafa", id(44), "body"),
                                 Triple("divórcio desabafa", id(44), "body"),
                                 Triple("divórcio e desabafa", id(44), "body"),
+                                // SINGLE words from the same field, because the
+                                // three rows above all failed TOGETHER while
+                                // murbaneth/delvarion (body-only, one ASCII
+                                // word) passed — so the rung works and doc 44's
+                                // text specifically does not match. Doc 44
+                                // carries the corpus's only non-English prose,
+                                // and every failing row contains a word from
+                                // it. All eight live ONLY in search_text, so
+                                // all must arrive "body"; the PATTERN names the
+                                // mechanism:
+                                //   all MISSING            search_text is not
+                                //                          matchable on this doc
+                                //   English-shaped only    index-side stemming
+                                //                          is language-specific
+                                //                          while the query is
+                                //                          stemmed as English
+                                //   ASCII only             the query side does
+                                //                          not fold what the
+                                //                          index folded
+                                //   all present            the break is in the
+                                //                          multi-word conjunction
+                                Triple("esposa", id(44), "body"),
+                                Triple("crise", id(44), "body"),
+                                Triple("futebol", id(44), "body"),
+                                Triple("influencer", id(44), "body"),
+                                Triple("desabafa", id(44), "body"),
+                                Triple("divorcio", id(44), "body"),
+                                Triple("divórcio", id(44), "body"),
+                                Triple("atenção", id(44), "body"),
                             )
                     assertEquals(
                         ladder.associate { (query, _, tier) -> query to tier },
