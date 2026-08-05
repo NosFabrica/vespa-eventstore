@@ -196,6 +196,51 @@ class RankRegressionIT {
                         text = "Where to find Jon Gordon: Satoshi Health Advisors and NosFabrica. You can hear this episode on Fountain.",
                     ),
             ),
+            // --- the 2026-08-05 "Primal" report: the SINGLE-word shape, and the
+            // starkest evidence of what the token band degenerates to. The
+            // reported 40 hits came back in EXACT author-trust order —
+            // 99,99,99,99,98,97,97,97,97,97,97,96,… — with the account whose
+            // name IS "primal" at #6 behind four trust-99 articles. Every hit
+            // scores the same w_name_tier and no within-band text signal is
+            // worth a single trust point, so the sort is trust and nothing
+            // else. Single-word queries also make queryCompleteness a constant
+            // 1.0, leaving fieldCompleteness to carry perfect_match() alone.
+            doc(
+                29,
+                kind = 0,
+                pubkey = pk(29),
+                search =
+                    SearchFields(
+                        name = "primal",
+                        displayName = "primal",
+                        about = "The official Primal account",
+                        nip05 = "primal@primal.net",
+                        lud16 = "primal@primal.net",
+                    ),
+            ),
+            doc(
+                30,
+                kind = 30023,
+                pubkey = pk(30),
+                search =
+                    SearchFields(
+                        primary = "Introducing Primal for iOS",
+                        text =
+                            "What happens when you integrate a Nostr client with a bitcoin lightning wallet? They both get " +
+                                "massively better. Primal for iOS is now available on the App Store.",
+                    ),
+            ),
+            // Same author as 29, primary field ALSO exactly the query: a follow
+            // set titled "Primal". It is a genuine perfect match, so the rung
+            // lifts it too — the profile stays ahead only on its identity
+            // credit (nip05/lud16 primal@…, ~50×bm25 against the set's zero;
+            // the gram terms that could offset it are capped at gram_cap).
+            // Deliberately here to keep that margin under test. What is NOT
+            // asserted is where the SET lands relative to the trust-99
+            // article: the rung puts it above, and whether a kind-30000 set
+            // belongs in the name tier at all is an extractor question
+            // (upstream, in Quartz's SearchFieldExtractor), not a ranking one.
+            doc(31, kind = 30000, pubkey = pk(29), search = SearchFields(primary = "Primal")),
         )
 
     @Test
@@ -345,6 +390,9 @@ class RankRegressionIT {
                                     ReputationDoc(pk(26), influenceScores = mapOf(OBSERVER to 100)),
                                     ReputationDoc(pk(27), influenceScores = mapOf(OBSERVER to 96)),
                                     ReputationDoc(pk(28), influenceScores = mapOf(OBSERVER to 97)),
+                                    // The "Primal" case: the reported pair, two points apart.
+                                    ReputationDoc(pk(29), influenceScores = mapOf(OBSERVER to 97)),
+                                    ReputationDoc(pk(30), influenceScores = mapOf(OBSERVER to 99)),
                                 ),
                             )
                         }
@@ -479,6 +527,9 @@ class RankRegressionIT {
                         listOf(
                             Triple("Avi Burra", id(25), id(26)),
                             Triple("Jon Gordon", id(27), id(28)),
+                            // Single word: queryCompleteness is a constant 1.0,
+                            // so fieldCompleteness carries the rung alone.
+                            Triple("primal", id(29), id(30)),
                         )
                         ) {
                             val hits = indexRef.searchScored(EventQuery(search = query, observer = OBSERVER, minRank = 2.0))

@@ -68,5 +68,10 @@
     "query": "Jon Gordon",
     "expect": "b8f4618c",
     "note": "reported 2026-08-05 (sotJonGordon export, same observer): the profile Jon Gordon (b8f4618c, display_name IS the query, author trust 96) ranked #2 under a trust-97 kind-34235 video titled 'Take a Look Into the Future of Healthcare, It's Purple and Orange | Jon Gordon' (3a2033c6), whose summary and body repeat the name. A ONE-point trust gap is +2.9% up here, against the 3.8% the words+exactness tie-breaker can offer — it scraped by on paper and lost in practice once the video's secondary+body tail is counted. Same fix as the Avi Burra case: w_perfect_pop. RankRegressionIT pins both reports field-for-field with the reported trust pairs."
+  },
+  {
+    "query": "Primal",
+    "expect": "6de5328a",
+    "note": "reported 2026-08-05 (sotPrimal export, same observer): the account whose name IS 'primal' (6de5328a, trust 97) ranked #6. The 40 hits came back in EXACT author-trust order — 99,99,99,99,98,97,97,97,97,97,97,96,… — which is the clearest statement of the problem: inside the token band every hit scores the same w_name_tier and no within-band text signal is worth even one trust point, so relevance degenerates to a pure trust sort. Above it sat four trust-99 miljan articles ('Introducing Primal for iOS' and friends) and a trust-98 review. Single-word query, so queryCompleteness is a constant 1.0 and fieldCompleteness carries perfect_match() alone. SIDE EFFECT TO WATCH: the same author's kind-30000 follow set titled 'Primal' (2c3fd1ad) is also a perfect match and the rung lifts it just behind the profile — if that is unwanted it is an extractor decision (should a set's title be a primary search field?), not a ranking one. RankRegressionIT pins the profile above the trust-99 article and keeps the profile-vs-set margin under test."
   }
 ]
