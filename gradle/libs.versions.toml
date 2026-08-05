@@ -5,23 +5,25 @@ app = "1.0.0"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"
 # Quartz from JitPack (amethyst @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
-# a58289b62c = amethyst PRs #3856/#3857/#3859 (2026-08-05), all relay-transport
-# work — nothing in this range touches the store contract, filter semantics, or
-# the searchable-kind table, so the parity and rank gates are unaffected. The one
-# type we share with it is NormalizedRelayUrl (a data carrier on our insert paths):
-# #3859 anchors url parsing to the authority and canonicalizes IPv6 hosts, so
-# isLocalHost/isOnion stop being substring guesses (`wss://evil.com/127.0.0.1` no
-# longer reads as local, `wss://host.onion:8080/` now does read as onion) and
-# isOverlayNetwork() is added for Yggdrasil-style meshes; #3857 hardens
-# RelayUrlNormalizer against urls that can never be relays and adds the NIP-66
-# prober / cached NIP-11 fetcher, #3856 fixes FiltersChanged — both unused here.
-# normalize()/normalizeOrNull() keep their signatures; our ws://localhost relays
-# still normalize. Prev 1a25557bdb (2026-08-04, PR #3855: batchInsert splits the
-# event's fault — Rejected, final — from the store's fault — InsertOutcome.Failed,
-# caller must re-offer; our bulk paths' never-decided fallback maps to Failed).
-# This range touched no skill files, so the .claude/skills imported at 9231195890
-# are current for this pin.
-quartz = "a58289b62c"
+# 9373c0a22c = amethyst PRs #3860/#3862/#3863/#3864 (2026-08-05). Every changed
+# quartz file in this range is relay transport or url detection; IEventStore,
+# IndexableFields and SearchFieldExtractor are byte-identical to the previous pin,
+# so the store contract, filter semantics and the searchable-kind table are
+# untouched and the parity and rank gates are unaffected. The widest change,
+# #3863, makes the whole incoming-message chain suspending (WebSocketListener →
+# IRelayClient → NostrClient.onIncomingMessage → SubscriptionListener.onEvent) so
+# a listener can back-pressure the socket instead of buffering; that is a source-
+# breaking signature change for anyone implementing those interfaces, and we
+# implement none of them — we consume IEventStore, Filter, the event kinds and
+# SearchFieldExtractor, and never the relay client. #3862 gives SyncCoverage
+# per-kind bands (one interval could not speak for several kinds), #3860 fixes the
+# UrlDetector's punctuation/quote tails, #3864 is app-side IME padding, #3861 is
+# Crowdin — all unused here. Prev a58289b62c (2026-08-05, PRs #3856/#3857/#3859:
+# NormalizedRelayUrl parsing anchored to the authority, so isLocalHost/isOnion stop
+# being substring guesses and isOverlayNetwork() joins them; normalize() signatures
+# unchanged). This range touched no skill files, so the .claude/skills imported at
+# 9231195890 are current for this pin.
+quartz = "9373c0a22c"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 sqlite = "2.7.0"
