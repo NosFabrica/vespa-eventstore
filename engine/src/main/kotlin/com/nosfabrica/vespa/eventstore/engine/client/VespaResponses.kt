@@ -67,6 +67,11 @@ internal class SearchRoot(
  */
 @Serializable
 internal class SearchCoverage(
+    /**
+     * `docs == active` as the engine computes it. Decoded for the failure
+     * message — a refused response that calls itself full is exactly the one
+     * worth seeing — and deliberately NOT part of the verdict: see [undegraded].
+     */
     val full: Boolean = true,
     val coverage: Int = 100,
     val nodes: Int = 1,
@@ -77,8 +82,8 @@ internal class SearchCoverage(
         get() = (degraded?.get("match-phase") as? JsonPrimitive)?.content == "true"
 
     /**
-     * The engine reports complete coverage and names no degradation — whatever
-     * [full] says.
+     * The engine reports complete coverage and names no degradation — the whole
+     * question this guard asks, and deliberately not [full].
      *
      * `full` and [coverage] are computed from DIFFERENT denominators, so they
      * disagree at the boundary: `full` is `docs == active`, an exact equality,
@@ -93,12 +98,22 @@ internal class SearchCoverage(
      * the node stayed a hair short, which on a relay is every feed and every
      * empty search. There is nothing to act on there: no flag to carve out, and
      * a rerun comes back the same. So the guard asks what Vespa asks — is this
-     * degraded — and `full` stops being a veto on its own.
+     * degraded.
+     *
+     * The same two denominators break the other way too, which is why `full` is
+     * not consulted at all. `docs == active` while both sit BELOW targetActive —
+     * the ideal state holds documents that are not active anywhere yet — is
+     * `full: true` at a percentage as low as it likes, with `non-ideal-state`
+     * named in the block. Keying on `full` served that silently at ANY coverage:
+     * the guard refused the harmless spelling of "this node is short" and waved
+     * through the harmful one. One question answers both spellings.
      *
      * The residual is bounded by the rounding: at 100% at most 0.5% of the
-     * target is unsearched, and the write-path guards ([requireComplete]'s
-     * strict callers) wear that. The alternative is not a stricter store, it is
-     * a store that answers nothing.
+     * target went unsearched, so a page may under-deliver and a NIP-45 count may
+     * read that much low without either being refused. That is the price, and it
+     * is paid by the write-path guards too, since dedup and the NIP-09/62 probes
+     * come through here. The alternative is not a stricter store, it is a store
+     * that answers nothing while a node finishes settling.
      */
     val undegraded: Boolean
         get() = coverage >= 100 && degraded == null
@@ -112,17 +127,20 @@ internal class SearchCoverage(
      * for the cut and verify or rerun the page themselves.
      *
      * The question asked here is Vespa's own `isDegraded()`, not its `full`.
-     * The two are different questions and this guard used to key on the wrong
-     * one — see [undegraded].
+     * The two are different questions, and this guard used to key on the wrong
+     * one in BOTH directions — see [undegraded].
      */
     fun requireComplete(allowMatchPhase: Boolean = false) {
-        if (full || undegraded) return
+        if (undegraded) return
         // Vespa lists every degradation flag, false ones included — judge by
         // the flags actually SET.
         val set = degraded?.mapValues { (it.value as? JsonPrimitive)?.content == "true" }.orEmpty()
         val onlyMatchPhase = set["match-phase"] == true && set.none { (flag, on) -> on && flag != "match-phase" }
         require(allowMatchPhase && onlyMatchPhase) {
-            "vespa searched only $coverage% of the corpus (degraded: ${degraded ?: "unspecified"}); " +
+            // `full` rides along because a refused response that calls itself
+            // full is the confusing one, and naming the contradiction beats
+            // making the next reader rediscover the two denominators.
+            "vespa searched only $coverage% of the corpus (full: $full, degraded: ${degraded ?: "unspecified"}); " +
                 "the response is a PARTIAL answer, not a small one, so it is refused rather than returned"
         }
     }

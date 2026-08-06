@@ -177,6 +177,35 @@ class VespaCoverageTest {
         }
 
     /**
+     * The mirror shape, and the one keying on `full` used to serve at ANY
+     * percentage: `docs == active`, so the engine says `full: true`, but both
+     * below `targetActive` — documents the ideal state expects that are not
+     * active anywhere yet, which Vespa names `non-ideal-state`. Nothing can
+     * return those documents, so this is a partial answer whatever `full` says,
+     * and the guard that refuses partial answers has to refuse it.
+     *
+     * Both funnels: the limit'd feed shape (match-phase allowed, and this flag
+     * is not match-phase) and the count path, which checks coverage separately.
+     */
+    @Test
+    fun `a full response the engine names non-ideal-state on is refused`() =
+        runBlocking {
+            index.put(doc("1".repeat(64)))
+            mock.nonIdealStateCoverage = true
+
+            val failure = runCatching { index.search(EventQuery(limit = 10)) }.exceptionOrNull()
+            if (failure == null) fail("a response the engine calls degraded was served because it also called itself full")
+            assertTrue(
+                failure.message?.contains("full: true") == true,
+                "the message must name the contradiction it refused on, got: ${failure.message}",
+            )
+            assertTrue(
+                runCatching { index.count(EventQuery()) }.isFailure,
+                "a count over a corpus missing documents is not the count that was asked for",
+            )
+        }
+
+    /**
      * The relaxation is for the shape that names NO reason. A node that is both
      * a hair short AND degraded for a stated reason is still a partial answer —
      * the rounded-100 carve-out must not swallow the flag underneath it.

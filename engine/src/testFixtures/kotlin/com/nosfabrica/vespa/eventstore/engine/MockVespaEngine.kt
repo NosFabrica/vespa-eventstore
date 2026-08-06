@@ -100,6 +100,19 @@ class MockVespaEngine {
     @Volatile var roundedCompleteCoverage: Boolean = false
 
     /**
+     * The mirror of [roundedCompleteCoverage]: `docs == active`, so the engine
+     * says `full: TRUE`, but both sit below `targetActive` — documents the ideal
+     * state expects that are not active anywhere yet. Vespa reports that as a
+     * sub-100 percentage with `non-ideal-state` set (its
+     * `isDegradedByNonIdealState()`), i.e. a response that calls itself full
+     * while naming a real hole.
+     *
+     * [degradeCoverage] wins when both are set — an explicitly named reason is
+     * the more specific request.
+     */
+    @Volatile var nonIdealStateCoverage: Boolean = false
+
+    /**
      * Serve streamed visits (`stream=true`) the paged JSON shape instead of
      * JSON Lines — an older Vespa that doesn't speak the streamed protocol.
      * The client must detect the content type and fall back to the paged walk.
@@ -431,19 +444,31 @@ class MockVespaEngine {
      */
     private fun coverage(documents: Int): JsonObject =
         buildJsonObject {
-            val complete = degradeCoverage == null
             // A rounded-100 response is NOT full and carries no reason — the
-            // percentage and the flags stay exactly as a complete one's.
-            val full = complete && !roundedCompleteCoverage
-            put("coverage", JsonPrimitive(if (complete) 100 else 42))
+            // percentage and the flags stay exactly as a complete one's. A
+            // non-ideal-state one is the opposite: full, with a reason and a
+            // percentage under it. `resultsFull` tracks `full` the way Vespa's
+            // fullResultSets does.
+            val reason = degradeCoverage ?: NON_IDEAL_STATE.takeIf { nonIdealStateCoverage }
+            val full = degradeCoverage == null && !roundedCompleteCoverage
+            put(
+                "coverage",
+                JsonPrimitive(
+                    if (degradeCoverage != null) {
+                        42
+                    } else if (nonIdealStateCoverage) {
+                        60
+                    } else {
+                        100
+                    },
+                ),
+            )
             put("documents", JsonPrimitive(documents))
             put("full", JsonPrimitive(full))
             put("nodes", JsonPrimitive(1))
             put("results", JsonPrimitive(1))
             put("resultsFull", JsonPrimitive(if (full) 1 else 0))
-            degradeCoverage?.let { reason ->
-                put("degraded", buildJsonObject { put(reason, JsonPrimitive(true)) })
-            }
+            reason?.let { put("degraded", buildJsonObject { put(it, JsonPrimitive(true)) }) }
         }
 
     /** `all(output(count()))`: a single group:root node carrying the doc count() directly. */
@@ -663,6 +688,9 @@ class MockVespaEngine {
             }
 
     private companion object {
+        /** Vespa's flag for "the cluster is not in its ideal state" — the one degradation it names without a query having asked for anything. */
+        const val NON_IDEAL_STATE = "non-ideal-state"
+
         /** Max docs per visit response — small enough that tests always cross a page boundary. */
         const val VISIT_PAGE_CAP = 7
 
