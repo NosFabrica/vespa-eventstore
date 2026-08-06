@@ -139,6 +139,90 @@ class VespaCoverageTest {
             assertEquals(1_700_000_069L, hits.single().createdAt, "and it must be the newest doc")
         }
 
+    /**
+     * The shape that names NO reason, and the one that took the relay's feeds
+     * down: `full: false` at a rounded 100% with no `degraded` block.
+     *
+     * `full` is `docs == active`, an exact equality; the percentage rounds
+     * `docs / targetActive`; and Vespa emits `degraded` only when its own
+     * `isDegraded()` holds, which at a rounded 100% and no flag set it does
+     * not. A node a hair short of its target hits all three at once — and this
+     * guard, keyed on `full` alone, refused it with "vespa searched only 100%
+     * of the corpus (degraded: unspecified)". Every read on that relay, for as
+     * long as the node stayed short. Nothing there is actionable, so it is
+     * served.
+     *
+     * Both funnels, because they differ on [allowMatchPhase] and the bug was in
+     * neither branch of that: the limit'd shape is the empty-search feed
+     * (`recency`, match-phase allowed) and the unlimited one is plain recall.
+     */
+    @Test
+    fun `a not-full response the engine itself calls undegraded is served`() =
+        runBlocking {
+            index.put(doc("1".repeat(64)))
+            mock.roundedCompleteCoverage = true
+
+            assertEquals(1, index.search(EventQuery(limit = 10)).size, "the empty-search feed shape must be served")
+            assertEquals(1, index.search(EventQuery()).size, "and so must plain unlimited recall")
+        }
+
+    /** The grouping funnel checks coverage separately (queryRoot), so it needs its own proof. */
+    @Test
+    fun `the count path serves an undegraded not-full response too`() =
+        runBlocking {
+            index.put(doc("1".repeat(64)))
+            mock.roundedCompleteCoverage = true
+
+            assertEquals(1, index.count(EventQuery()), "a count must not refuse what the recall path serves")
+        }
+
+    /**
+     * The mirror shape, and the one keying on `full` used to serve at ANY
+     * percentage: `docs == active`, so the engine says `full: true`, but both
+     * below `targetActive` — documents the ideal state expects that are not
+     * active anywhere yet, which Vespa names `non-ideal-state`. Nothing can
+     * return those documents, so this is a partial answer whatever `full` says,
+     * and the guard that refuses partial answers has to refuse it.
+     *
+     * Both funnels: the limit'd feed shape (match-phase allowed, and this flag
+     * is not match-phase) and the count path, which checks coverage separately.
+     */
+    @Test
+    fun `a full response the engine names non-ideal-state on is refused`() =
+        runBlocking {
+            index.put(doc("1".repeat(64)))
+            mock.nonIdealStateCoverage = true
+
+            val failure = runCatching { index.search(EventQuery(limit = 10)) }.exceptionOrNull()
+            if (failure == null) fail("a response the engine calls degraded was served because it also called itself full")
+            assertTrue(
+                failure.message?.contains("full: true") == true,
+                "the message must name the contradiction it refused on, got: ${failure.message}",
+            )
+            assertTrue(
+                runCatching { index.count(EventQuery()) }.isFailure,
+                "a count over a corpus missing documents is not the count that was asked for",
+            )
+        }
+
+    /**
+     * The relaxation is for the shape that names NO reason. A node that is both
+     * a hair short AND degraded for a stated reason is still a partial answer —
+     * the rounded-100 carve-out must not swallow the flag underneath it.
+     */
+    @Test
+    fun `a named reason is refused even on the rounded-complete shape`() =
+        runBlocking {
+            index.put(doc("1".repeat(64)))
+            mock.roundedCompleteCoverage = true
+            mock.degradeCoverage = "timeout"
+
+            assertTrue(
+                runCatching { index.search(EventQuery()) }.isFailure,
+                "a stated degradation must outrank the not-full-but-undegraded carve-out",
+            )
+        }
+
     /** The carve-out is match-phase ONLY — a timeout on the same limit'd shape is still a partial answer. */
     @Test
     fun `a timeout partial is refused even on the limit'd recency shape`() =

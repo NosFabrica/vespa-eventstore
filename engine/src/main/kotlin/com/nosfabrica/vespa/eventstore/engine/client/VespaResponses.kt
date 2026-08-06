@@ -67,6 +67,11 @@ internal class SearchRoot(
  */
 @Serializable
 internal class SearchCoverage(
+    /**
+     * `docs == active` as the engine computes it. Decoded for the failure
+     * message — a refused response that calls itself full is exactly the one
+     * worth seeing — and deliberately NOT part of the verdict: see [undegraded].
+     */
     val full: Boolean = true,
     val coverage: Int = 100,
     val nodes: Int = 1,
@@ -77,21 +82,65 @@ internal class SearchCoverage(
         get() = (degraded?.get("match-phase") as? JsonPrimitive)?.content == "true"
 
     /**
+     * The engine reports complete coverage and names no degradation — the whole
+     * question this guard asks, and deliberately not [full].
+     *
+     * `full` and [coverage] are computed from DIFFERENT denominators, so they
+     * disagree at the boundary: `full` is `docs == active`, an exact equality,
+     * while the percentage rounds `docs / targetActive`. A node a hair short of
+     * its target — mid-redistribution, or still opening the last buckets after
+     * a restart — is `full: false` at 100%. And Vespa renders the `degraded`
+     * block only when its own `isDegraded()` holds, which at a rounded 100% and
+     * no flag set is false: the response arrives with no reason attached at all.
+     *
+     * Refusing that shape produced the self-contradicting "searched only 100% of
+     * the corpus (degraded: unspecified)" — and refused it on EVERY query while
+     * the node stayed a hair short, which on a relay is every feed and every
+     * empty search. There is nothing to act on there: no flag to carve out, and
+     * a rerun comes back the same. So the guard asks what Vespa asks — is this
+     * degraded.
+     *
+     * The same two denominators break the other way too, which is why `full` is
+     * not consulted at all. `docs == active` while both sit BELOW targetActive —
+     * the ideal state holds documents that are not active anywhere yet — is
+     * `full: true` at a percentage as low as it likes, with `non-ideal-state`
+     * named in the block. Keying on `full` served that silently at ANY coverage:
+     * the guard refused the harmless spelling of "this node is short" and waved
+     * through the harmful one. One question answers both spellings.
+     *
+     * The residual is bounded by the rounding: at 100% at most 0.5% of the
+     * target went unsearched, so a page may under-deliver and a NIP-45 count may
+     * read that much low without either being refused. That is the price, and it
+     * is paid by the write-path guards too, since dedup and the NIP-09/62 probes
+     * come through here. The alternative is not a stricter store, it is a store
+     * that answers nothing while a node finishes settling.
+     */
+    val undegraded: Boolean
+        get() = coverage >= 100 && degraded == null
+
+    /**
      * A degraded response is a WRONG answer, not a slow one: at every call site
      * it is indistinguishable from a filter that genuinely matched that few,
      * and the dedup/NIP-09/62 guards decide by "did the query find it" — a
      * partial answer could resurrect a deleted event. So it fails loudly.
      * One exception: [allowMatchPhase], for the match-phase profiles that ASK
      * for the cut and verify or rerun the page themselves.
+     *
+     * The question asked here is Vespa's own `isDegraded()`, not its `full`.
+     * The two are different questions, and this guard used to key on the wrong
+     * one in BOTH directions — see [undegraded].
      */
     fun requireComplete(allowMatchPhase: Boolean = false) {
-        if (full) return
+        if (undegraded) return
         // Vespa lists every degradation flag, false ones included — judge by
         // the flags actually SET.
         val set = degraded?.mapValues { (it.value as? JsonPrimitive)?.content == "true" }.orEmpty()
         val onlyMatchPhase = set["match-phase"] == true && set.none { (flag, on) -> on && flag != "match-phase" }
         require(allowMatchPhase && onlyMatchPhase) {
-            "vespa searched only $coverage% of the corpus (degraded: ${degraded ?: "unspecified"}); " +
+            // `full` rides along because a refused response that calls itself
+            // full is the confusing one, and naming the contradiction beats
+            // making the next reader rediscover the two denominators.
+            "vespa searched only $coverage% of the corpus (full: $full, degraded: ${degraded ?: "unspecified"}); " +
                 "the response is a PARTIAL answer, not a small one, so it is refused rather than returned"
         }
     }
