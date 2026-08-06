@@ -75,6 +75,10 @@ class VespaEventIndex(
      * connections across all of them. Reads round-robin per request.
      */
     endpoints: List<String> = emptyList(),
+    // Ids per cursor page of a snapshot walk (visitIds). Exposed so a test can
+    // drive the multi-page and tie-group paths without seeding tens of
+    // thousands of docs; production has no reason to change it.
+    private val idPageSize: Int = PAGE_IDS,
     /**
      * Independent STREAMED slices a full-corpus visit is split into, each
      * walked concurrently as its own JSON-Lines stream. Each slice is roughly
@@ -577,14 +581,95 @@ class VespaEventIndex(
     // ---- visits (full-corpus walks) -----------------------------------------
 
     /**
-     * The document-API visit: a streaming scan with a selection expression —
-     * exactly what a full-corpus id walk needs (it streams and does not rank).
-     * Queries a selection can't express fall back to the search default, which
-     * returns the same set in a single page. [onPage] is invoked serially;
-     * returning false stops the walk. Cross-page order is arbitrary, which the
-     * [EventIndex.visitIds] contract already grants.
+     * Every match's (id, created_at[, d tag]), paged on a created_at CURSOR
+     * through the attribute index.
+     *
+     * This used to be a document-API visit — a streaming scan that evaluates a
+     * selection per document, with no index behind it. That made cost grow as
+     * the filter got NARROWER, which is backwards: measured on a 42.5M-doc
+     * corpus, a one-author filter (0.35% of the corpus) took 11.5s to fill a
+     * 1000-doc page while an all-authors filter (47%) took 1.3s. The router's
+     * per-service snapshots are the narrow case, and there are hundreds of
+     * them per cycle. The same one-author set through the index: 9.1s for all
+     * 148,802 ids, against ~28 minutes for the scan.
+     *
+     * TIES ARE THE WHOLE DIFFICULTY, and they are not rare — one second in
+     * that corpus holds 41,329 events by a single author. A cursor of
+     * `created_at <= T` re-reads the same page forever if a tie group is wider
+     * than the page, and a cursor of `< T` silently drops the rest of the
+     * group. Both were observed. So this borrows [recallSummaries]'s
+     * resolution: overfetch by [TIE_SLACK], and only when the boundary group
+     * might be cut short pay one exact `[T, T]` window query for it. The
+     * engine sorts on created_at alone — a compound id sort pays UCA collation
+     * over the whole match set (0.22s -> 1.3s on 2M matches).
      */
     override suspend fun visitIds(
+        query: EventQuery,
+        withDTag: Boolean,
+        onPage: suspend (List<DocRef>) -> Boolean,
+    ) {
+        // A limit'd walk is the caller asking for a bounded page, not a full
+        // snapshot: hand it straight through, no cursor.
+        if (query.limit != null) return super.visitIds(query, withDTag, onPage)
+        // SHAPE decides, because neither path wins everywhere (measured on a
+        // 42.8M-doc corpus, sustained ids/s):
+        //
+        //   one author   visit    188  |  cursor 31,844   <- cursor, 169x
+        //   all 30382    visit  4,046  |  cursor    480   <- visit, 8.4x
+        //   all kind 1   visit  1,229  |  cursor  2,758   <- cursor, 2.2x
+        //
+        // What separates them is TIE DENSITY, not breadth: an unkeyed 30382
+        // walk hits seconds holding tens of thousands of docs (services
+        // bulk-publish scores on one timestamp) and each boundary group costs
+        // an unbounded window query, while kind 1 spreads over its seconds and
+        // pays none. A keyed walk is both selective — the case the scan is
+        // worst at, since it evaluates a selection per document — and narrow
+        // enough that its tie groups stay small. So: keyed goes through the
+        // index, unkeyed keeps the scan.
+        if (query.authors.isEmpty() && query.ids.isEmpty()) {
+            return visitIdsByScan(query, withDTag, onPage)
+        }
+        var until: Long? = query.until
+        while (true) {
+            val fetchLimit = idPageSize + TIE_SLACK
+            val hits = idTimeHits(query.copy(until = until, limit = fetchLimit), withDTag)
+            if (hits.isEmpty()) return
+
+            // Fewer than asked for: the engine ran out, so this range is
+            // complete and there is nothing older to cursor to.
+            if (hits.size < fetchLimit) {
+                onPage(hits)
+                return
+            }
+
+            val boundary = hits[idPageSize - 1].createdAt
+            // The boundary group arrived complete only if the engine already
+            // emitted something strictly older than it.
+            val page =
+                if (hits.last().createdAt < boundary) {
+                    hits.filter { it.createdAt >= boundary }
+                } else {
+                    // Unbounded [T,T] window: one second's group, however wide.
+                    // Sized by the engine, never by a guessed limit — a guessed
+                    // one truncates and the walk then steps past the remainder
+                    // without ever reporting a loss.
+                    hits.filter { it.createdAt > boundary } +
+                        idTimeHits(query.copy(since = boundary, until = boundary, limit = null), withDTag)
+                }
+            if (!onPage(page)) return
+            // Strictly past the group just emitted in full.
+            if (boundary <= (query.since ?: Long.MIN_VALUE)) return
+            until = boundary - 1
+        }
+    }
+
+    /**
+     * The document-API visit: a streaming scan with a selection expression,
+     * evaluated per document with no index behind it. Kept for UNKEYED walks,
+     * where it beats the cursor — see [visitIds] for the measurements.
+     * Queries a selection can't express fall back to the search default.
+     */
+    private suspend fun visitIdsByScan(
         query: EventQuery,
         withDTag: Boolean,
         onPage: suspend (List<DocRef>) -> Boolean,
@@ -608,6 +693,27 @@ class VespaEventIndex(
                 }
             page.isEmpty() || onPage(page)
         }
+    }
+
+    /** One [EventYql.buildIdTime] recall, decoded to [DocRef] and newest-first. */
+    private suspend fun idTimeHits(
+        q: EventQuery,
+        withDTag: Boolean,
+    ): List<DocRef> {
+        val vq = EventYql.buildIdTime(q, withDTag) ?: return emptyList()
+        return searchRoot(vq, hits = q.limit ?: Int.MAX_VALUE)
+            .children
+            .mapNotNull { hit ->
+                val f = hit.fields ?: return@mapNotNull null
+                if (f.id.isEmpty()) return@mapNotNull null
+                val dTag =
+                    if (withDTag) {
+                        f.tagIndex?.firstNotNullOfOrNull { t -> t.takeIf { it.startsWith("d:") }?.substring(2) }
+                    } else {
+                        null
+                    }
+                DocRef(f.id, f.createdAt, dTag)
+            }.sortedWith(compareByDescending<DocRef> { it.createdAt }.thenBy { it.id })
     }
 
     /**
@@ -772,6 +878,9 @@ class VespaEventIndex(
          * id tiebreak resolves in memory (see [recallSummaries]).
          */
         const val TIE_SLACK = 64
+
+        // Ids per cursor page of a snapshot walk — see visitIds.
+        const val PAGE_IDS = 2_000
 
         /** Hits a [searchScored] call fetches when the query names no limit — an inspection surface, not a recall path. */
         const val DEFAULT_SCORED_HITS = 100

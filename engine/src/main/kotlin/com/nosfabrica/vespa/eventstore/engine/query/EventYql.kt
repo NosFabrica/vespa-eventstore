@@ -102,6 +102,37 @@ object EventYql {
      */
     const val SUMMARY_DEDUP = "dedup"
 
+    // Attribute-only projections for snapshot walks — see buildIdTime.
+    const val SUMMARY_IDTIME = "idtime"
+    const val SUMMARY_IDTIME_TAG = "idtimetag"
+
+    /**
+     * The (id, created_at[, tag_index]) projection a snapshot walk pages on:
+     * attributes only, newest first, always UNRANKED.
+     *
+     * Unranked is load-bearing, not incidental. The recency profile's
+     * match-phase caps `totalCount` and can drop hits below its cut — see
+     * [buildCount] — which on a walk that must be COMPLETE would lose events
+     * silently. Unranked has no match phase, so `order by created_at desc`
+     * keeps full coverage on a large corpus (verified: a 6.0M-match filter
+     * over a 42.8M-doc corpus reported coverage full and a totalCount exactly
+     * equal to the grouping count).
+     */
+    fun buildIdTime(
+        q: EventQuery,
+        withDTag: Boolean = false,
+    ): VespaQuery? {
+        val params = LinkedHashMap<String, String>()
+        val clauses = filterClauses(q, params) ?: return null
+        val limit = q.limit?.let { if (it <= 0) return null else " limit $it" } ?: ""
+        params["presentation.summary"] = if (withDTag) SUMMARY_IDTIME_TAG else SUMMARY_IDTIME
+        return VespaQuery(
+            yql = "select ${if (withDTag) "id, created_at, tag_index" else "id, created_at"} from event where ${whereOf(clauses)} order by created_at desc$limit",
+            params = params,
+            ranking = RANK_UNRANKED,
+        )
+    }
+
     /**
      * Existence-only recall for the bulk-dedup preload: `select id` under
      * [SUMMARY_DEDUP], answered from the id ATTRIBUTE in memory — the disk

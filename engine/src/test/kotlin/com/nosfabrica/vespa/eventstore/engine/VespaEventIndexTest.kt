@@ -704,29 +704,106 @@ class VespaEventIndexTest {
             }
         }
 
-    /** The visit walk: the complete match set, across slices AND continuation pages. */
+    /**
+     * The snapshot walk: every match, across CURSOR pages.
+     *
+     * visitIds no longer rides the document-API visit — it pages the attribute
+     * index on a created_at cursor — so this asserts the property that
+     * actually matters (the union across pages is the exact match set) rather
+     * than the slicing of a mechanism it no longer uses. The visit's own slice
+     * and resume guarantees are still covered by the tags/authors walks.
+     */
     @Test
-    fun `visitIds streams every match through sliced continuation walks`() =
+    fun `visitIds streams every match across cursor pages`() =
         runBlocking {
             val bob = "b2".repeat(32)
-            // 100 docs across 8 slices (pinned — the default derives from host
-            // cores): by pigeonhole some slice holds more than one mock bucket
-            // (streamed) or page (paged), so the walk MUST cross continuation
-            // boundaries — and the union across slices must still be complete.
             seed(*(1..100).map { doc(kind = 30382, pubkey = bob) }.toTypedArray())
             seed(doc(kind = 1, pubkey = bob), doc(kind = 30382)) // outside the selection
-            val sliced = VespaEventIndex(mock.url, visitSlices = 8)
+            val paged = VespaEventIndex(mock.url, idPageSize = 10)
             try {
                 val pages = ArrayList<List<DocRef>>()
-                sliced.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(bob))) {
+                paged.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(bob))) {
                     pages += it
                     true
                 }
                 assertEquals(true, pages.size > 1, "expected a multi-page walk, got ${pages.size} page(s)")
                 val expected = reference.search(EventQuery(kinds = listOf(30382), authors = listOf(bob))).map { DocRef(it.id, it.createdAt) }
                 assertEquals(expected.sortedBy { it.id }, pages.flatten().sortedBy { it.id })
+                assertEquals(expected.size, pages.flatten().distinctBy { it.id }.size, "pages must not overlap")
             } finally {
-                sliced.close()
+                paged.close()
+            }
+        }
+
+    /**
+     * A tie group WIDER than the page is the case that silently loses data.
+     *
+     * Every doc shares one created_at, so a `created_at <= T` cursor re-reads
+     * the same page forever and a `< T` cursor drops the rest of the group.
+     * Both were observed against a live corpus, where one second held 41,329
+     * events by one author — the naive drain returned a clean-looking 54.78%
+     * of the set with no error. The walk must return the group EXACTLY once,
+     * whole, and then terminate.
+     */
+    @Test
+    fun `visitIds returns a tie group wider than the page exactly once`() =
+        runBlocking {
+            val bob = "b3".repeat(32)
+            seed(*(1..75).map { doc(kind = 30382, pubkey = bob, at = 5_000L) }.toTypedArray())
+            val paged = VespaEventIndex(mock.url, idPageSize = 10)
+            try {
+                val got = ArrayList<DocRef>()
+                paged.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(bob))) {
+                    got += it
+                    true
+                }
+                assertEquals(75, got.size, "the whole tie group, and no duplicates")
+                assertEquals(75, got.distinctBy { it.id }.size)
+            } finally {
+                paged.close()
+            }
+        }
+
+    /** A tie group straddling the page boundary: partly in the page, the rest behind it. */
+    @Test
+    fun `visitIds completes a tie group that straddles the page boundary`() =
+        runBlocking {
+            val bob = "b4".repeat(32)
+            // 30 newer singletons, then 40 sharing one second — the boundary at
+            // page size 10 lands inside neither cleanly on every page.
+            seed(*(1..30).map { doc(kind = 30382, pubkey = bob, at = (9_000 + it).toLong()) }.toTypedArray())
+            seed(*(1..40).map { doc(kind = 30382, pubkey = bob, at = 8_000L) }.toTypedArray())
+            val paged = VespaEventIndex(mock.url, idPageSize = 10)
+            try {
+                val got = ArrayList<DocRef>()
+                paged.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(bob))) {
+                    got += it
+                    true
+                }
+                assertEquals(70, got.distinctBy { it.id }.size, "every doc exactly once across the boundary")
+                assertEquals(40, got.count { it.createdAt == 8_000L }, "the whole tied second")
+            } finally {
+                paged.close()
+            }
+        }
+
+    /** `since` bounds the walk: the cursor must stop at it, not run to the epoch. */
+    @Test
+    fun `visitIds honours since`() =
+        runBlocking {
+            val bob = "b5".repeat(32)
+            seed(*(1..40).map { doc(kind = 30382, pubkey = bob, at = (7_000 + it).toLong()) }.toTypedArray())
+            val paged = VespaEventIndex(mock.url, idPageSize = 10)
+            try {
+                val got = ArrayList<DocRef>()
+                paged.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(bob), since = 7_021)) {
+                    got += it
+                    true
+                }
+                assertEquals(20, got.distinctBy { it.id }.size)
+                assertEquals(true, got.all { it.createdAt >= 7_021 })
+            } finally {
+                paged.close()
             }
         }
 
@@ -816,19 +893,25 @@ class VespaEventIndexTest {
             assertEquals(listOf<Map<String, List<String>>?>(null), index.search(EventQuery(kinds = listOf(0))).map { it.storedNearFields })
         }
 
-    /** onPage returning false stops the sliced walk early instead of scanning the whole corpus. */
+    /** onPage returning false stops the cursor walk early instead of paging the whole match set. */
     @Test
     fun `visitIds stops when the page callback declines to continue`() =
         runBlocking {
-            seed(*(1..100).map { doc(kind = 30382) }.toTypedArray())
-            val got = ArrayList<DocRef>()
-            index.visitIds(EventQuery(kinds = listOf(30382))) {
-                got += it
-                false // first page is enough — a capped snapshot stopping early
+            val bob = "b6".repeat(32)
+            // Keyed on an author so this drives the CURSOR path — an unkeyed
+            // query routes to the scan, whose early stop is a different loop.
+            seed(*(1..100).map { doc(kind = 30382, pubkey = bob) }.toTypedArray())
+            val paged = VespaEventIndex(mock.url, idPageSize = 10)
+            try {
+                val got = ArrayList<DocRef>()
+                paged.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(bob))) {
+                    got += it
+                    false // first page is enough — a capped snapshot stopping early
+                }
+                assertEquals(true, got.isNotEmpty() && got.size < 100, "expected a partial walk, got ${got.size} of 100")
+            } finally {
+                paged.close()
             }
-            // Exactly the one page the callback accepted; the cancelled slices
-            // must not deliver more after the stop.
-            assertEquals(true, got.isNotEmpty() && got.size < 100, "expected a partial walk, got ${got.size} of 100")
         }
 
     /** The projection's rebuild walk: d tags stream out with the ids. */
