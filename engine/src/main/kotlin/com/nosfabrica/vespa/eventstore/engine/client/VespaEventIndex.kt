@@ -611,22 +611,30 @@ class VespaEventIndex(
         // A limit'd walk is the caller asking for a bounded page, not a full
         // snapshot: hand it straight through, no cursor.
         if (query.limit != null) return super.visitIds(query, withDTag, onPage)
-        // SHAPE decides, because neither path wins everywhere (measured on a
-        // 42.8M-doc corpus, sustained ids/s):
+        // TIE DENSITY decides, and it is measured as the walk runs rather
+        // than guessed from the query's shape.
         //
-        //   one author   visit    188  |  cursor 31,844   <- cursor, 169x
-        //   all 30382    visit  4,046  |  cursor    480   <- visit, 8.4x
-        //   all kind 1   visit  1,229  |  cursor  2,758   <- cursor, 2.2x
+        // The first rule here keyed on shape — cursor for keyed walks, scan
+        // for unkeyed — from these sustained rates on a 42.8M-doc corpus:
         //
-        // What separates them is TIE DENSITY, not breadth: an unkeyed 30382
-        // walk hits seconds holding tens of thousands of docs (services
-        // bulk-publish scores on one timestamp) and each boundary group costs
-        // an unbounded window query, while kind 1 spreads over its seconds and
-        // pays none. A keyed walk is both selective — the case the scan is
-        // worst at, since it evaluates a selection per document — and narrow
-        // enough that its tie groups stay small. So: keyed goes through the
-        // index, unkeyed keeps the scan.
-        if (query.authors.isEmpty() && query.ids.isEmpty()) {
+        //   one author   scan    188  |  cursor 31,844   <- cursor, 169x
+        //   all 30382    scan  4,046  |  cursor    480   <- scan, 8.4x
+        //   all kind 1   scan  1,229  |  cursor  2,758   <- cursor, 2.2x
+        //
+        // But shape is a PROXY. What actually costs the cursor is a boundary
+        // group so wide it needs an unbounded [T,T] window query: unkeyed
+        // 30382 hits seconds holding tens of thousands of docs, because
+        // services bulk-publish scores on one timestamp, while unkeyed kind 1
+        // and kind 0/10002 spread over their seconds and pay nothing. Keying
+        // on shape therefore sent sparse unkeyed walks to the scan for no
+        // reason — measured on {kinds:[0,10002]}, 988 ids/s by cursor against
+        // 8 ids/s by scan while a disk-index fusion was running, a 123x loss
+        // that the shape rule could not see.
+        //
+        // So: start on the cursor, and fall back to the scan only once this
+        // walk has PROVEN itself tie-dense. A run of oversized boundary groups
+        // is the evidence; one wide second is not.
+        if (query.limit == null && !cursorSuitsThisWalk(query, withDTag)) {
             return visitIdsByScan(query, withDTag, onPage)
         }
         var until: Long? = query.until
@@ -694,6 +702,37 @@ class VespaEventIndex(
             page.isEmpty() || onPage(page)
         }
     }
+
+    /**
+     * Whether the cursor is the cheaper walk for [query], decided from the
+     * corpus rather than the query's shape.
+     *
+     * Samples one page and, when its boundary second is tied, how wide that
+     * group actually is. A group past [TIE_DENSE_FACTOR] pages means every
+     * boundary on this walk risks an unbounded window query, which is where
+     * the scan wins; anything narrower and the cursor wins by a wide margin.
+     * One sample query is a negligible cost against a walk of millions.
+     */
+    private suspend fun cursorSuitsThisWalk(
+        query: EventQuery,
+        withDTag: Boolean,
+    ): Boolean {
+        val probe = idTimeHits(query.copy(limit = idPageSize), withDTag)
+        // Short of a page: the whole match set is tiny, so the cursor's single
+        // round trip beats spinning up a visit.
+        if (probe.size < idPageSize) return true
+        val boundary = probe.last().createdAt
+        // Not tied at the boundary — no window query will ever be needed here.
+        if (probe.first().createdAt != boundary && probe.count { it.createdAt == boundary } == 1) return true
+        val group = countAt(query, boundary)
+        return group <= idPageSize * TIE_DENSE_FACTOR
+    }
+
+    /** How many of [query]'s matches share exactly [at] — the boundary group's true width. */
+    private suspend fun countAt(
+        query: EventQuery,
+        at: Long,
+    ): Int = count(query.copy(since = at, until = at, limit = null))
 
     /** One [EventYql.buildIdTime] recall, decoded to [DocRef] and newest-first. */
     private suspend fun idTimeHits(
@@ -881,6 +920,10 @@ class VespaEventIndex(
 
         // Ids per cursor page of a snapshot walk — see visitIds.
         const val PAGE_IDS = 2_000
+
+        // Pages' worth of one tied second past which the scan is the cheaper
+        // walk — see visitIds.
+        const val TIE_DENSE_FACTOR = 4
 
         /** Hits a [searchScored] call fetches when the query names no limit — an inspection surface, not a recall path. */
         const val DEFAULT_SCORED_HITS = 100

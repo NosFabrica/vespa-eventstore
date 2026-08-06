@@ -749,16 +749,17 @@ class VespaEventIndexTest {
     fun `visitIds returns a tie group wider than the page exactly once`() =
         runBlocking {
             val bob = "b3".repeat(32)
-            seed(*(1..75).map { doc(kind = 30382, pubkey = bob, at = 5_000L) }.toTypedArray())
-            val paged = VespaEventIndex(mock.url, idPageSize = 10)
+            seed(*(1..200).map { doc(kind = 30382, pubkey = bob, at = 5_000L) }.toTypedArray())
+            val paged = VespaEventIndex(mock.url, idPageSize = 100)
             try {
                 val got = ArrayList<DocRef>()
                 paged.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(bob))) {
                     got += it
                     true
                 }
-                assertEquals(75, got.size, "the whole tie group, and no duplicates")
-                assertEquals(75, got.distinctBy { it.id }.size)
+                assertEquals(200, got.size, "the whole tie group, and no duplicates")
+                assertEquals(0, mock.visitRequests, "a tie group inside the density bound stays on the cursor")
+                assertEquals(200, got.distinctBy { it.id }.size)
             } finally {
                 paged.close()
             }
@@ -772,7 +773,7 @@ class VespaEventIndexTest {
             // 30 newer singletons, then 40 sharing one second — the boundary at
             // page size 10 lands inside neither cleanly on every page.
             seed(*(1..30).map { doc(kind = 30382, pubkey = bob, at = (9_000 + it).toLong()) }.toTypedArray())
-            seed(*(1..40).map { doc(kind = 30382, pubkey = bob, at = 8_000L) }.toTypedArray())
+            seed(*(1..25).map { doc(kind = 30382, pubkey = bob, at = 8_000L) }.toTypedArray())
             val paged = VespaEventIndex(mock.url, idPageSize = 10)
             try {
                 val got = ArrayList<DocRef>()
@@ -780,8 +781,35 @@ class VespaEventIndexTest {
                     got += it
                     true
                 }
-                assertEquals(70, got.distinctBy { it.id }.size, "every doc exactly once across the boundary")
-                assertEquals(40, got.count { it.createdAt == 8_000L }, "the whole tied second")
+                assertEquals(55, got.distinctBy { it.id }.size, "every doc exactly once across the boundary")
+                assertEquals(25, got.count { it.createdAt == 8_000L }, "the whole tied second")
+            } finally {
+                paged.close()
+            }
+        }
+
+    /**
+     * A tie-DENSE walk falls back to the scan, and is still complete.
+     *
+     * 90 docs share one second against a page of 10, so every boundary would
+     * cost an unbounded window query — the shape the cursor loses on (measured
+     * unkeyed 30382: scan 4,046 ids/s against cursor 480). The routing must
+     * notice and step aside, and stepping aside must not cost a single doc.
+     */
+    @Test
+    fun `a tie-dense walk falls back to the scan and stays complete`() =
+        runBlocking {
+            val bob = "b7".repeat(32)
+            seed(*(1..500).map { doc(kind = 30382, pubkey = bob, at = 3_000L) }.toTypedArray())
+            val paged = VespaEventIndex(mock.url, idPageSize = 100)
+            try {
+                val got = ArrayList<DocRef>()
+                paged.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(bob))) {
+                    got += it
+                    true
+                }
+                assertEquals(500, got.distinctBy { it.id }.size, "the scan fallback must lose nothing")
+                assertTrue(mock.visitRequests > 0, "a tie-dense walk must actually fall back to the scan")
             } finally {
                 paged.close()
             }
