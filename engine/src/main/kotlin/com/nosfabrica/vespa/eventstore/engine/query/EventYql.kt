@@ -422,11 +422,37 @@ object EventYql {
     ): String? {
         if (!isIndexableTagName(name)) return null
         if (values.isEmpty()) return null
-        if (op == "or" && values.size > 1) {
-            return values.joinToString(", ", prefix = "tag_index in (", postfix = ")") { v -> quote("$name:$v") }
+        // A value [quote] cannot render is also a value no document can hold
+        // (see [isQuotable]), so it is unmatchable rather than an escaping
+        // problem. OR DROPS them — the same treatment [hexIn] gives invalid
+        // hex. AND cannot: every value must be present, so one unmatchable
+        // value makes the conjunction unsatisfiable, and dropping it would
+        // WIDEN the query into matching documents that lack the term.
+        val usable = values.filter(::isQuotable)
+        if (op == "and" && usable.size != values.size) return null
+        if (usable.isEmpty()) return null
+        if (op == "or" && usable.size > 1) {
+            return usable.joinToString(", ", prefix = "tag_index in (", postfix = ")") { v -> quote("$name:$v") }
         }
-        return values.joinToString(" $op ", prefix = "(", postfix = ")") { v -> "tag_index contains ${quote("$name:$v")}" }
+        return usable.joinToString(" $op ", prefix = "(", postfix = ")") { v -> "tag_index contains ${quote("$name:$v")}" }
     }
+
+    /**
+     * Whether [quote] can render [s] into a YQL literal at all.
+     *
+     * Of the C0 block only tab, LF and CR have an escape below — and those are
+     * exactly the three the engine will STORE, so a tag value carrying any
+     * other C0 character can never sit in `tag_index`: the store refuses the
+     * whole event first (its `VespaText.firstIllegalField`, which mirrors
+     * Vespa's own text rules). Unmatchable either way, so it never has to
+     * reach the literal raw.
+     *
+     * DEL and the C1 block are deliberately NOT excluded: Vespa stores them
+     * (mojibake'd Latin-1 lands there constantly), documents really do carry
+     * them, and dropping them here would silently stop those queries matching.
+     * They need no escape — they are not quote, backslash, or a line break.
+     */
+    private fun isQuotable(s: String): Boolean = s.none { it < ' ' && it != '\t' && it != '\n' && it != '\r' }
 
     /**
      * `field in (…)` over the valid 64-hex entries of [values] (normalized to
