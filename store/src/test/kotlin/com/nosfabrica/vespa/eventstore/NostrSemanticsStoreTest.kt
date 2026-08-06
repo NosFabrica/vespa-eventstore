@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore
 
+import com.nosfabrica.vespa.eventstore.engine.DocRef
 import com.nosfabrica.vespa.eventstore.engine.DocsPage
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
@@ -284,6 +285,108 @@ open class NostrSemanticsStoreTest {
             store.insert(ev)
             val snapshot = store.snapshotIdsForNegentropy(listOf(Filter(kinds = listOf(1))), maxEntries = null)
             assertEquals(listOf(42L to ev.id), snapshot.map { it.createdAt to it.id })
+        }
+
+    /**
+     * The real client PAGES its visit; [InMemoryEventIndex] hands everything
+     * over as ONE page, which would hide whether a cap actually STOPS the
+     * walk. This re-pages the reference walk and records every id it emits,
+     * so a test can assert on the work the walk DID, not just what it returned.
+     */
+    private fun pagingIndex(
+        inner: EventIndex,
+        pageSize: Int,
+        handed: MutableList<String>,
+    ): EventIndex =
+        object : EventIndex by inner {
+            override suspend fun visitIds(
+                query: EventQuery,
+                withDTag: Boolean,
+                onPage: suspend (List<DocRef>) -> Boolean,
+            ) {
+                val refs = mutableListOf<DocRef>()
+                inner.visitIds(query, withDTag) { page ->
+                    refs += page
+                    true
+                }
+                for (chunk in refs.chunked(pageSize)) {
+                    handed += chunk.map { it.id }
+                    if (!onPage(chunk)) return
+                }
+            }
+        }
+
+    /**
+     * STORE-N01: `maxEntries` is an overflow sentinel — at most maxEntries + 1
+     * — and it BOUNDS THE WALK, on a multi-filter snapshot as much as a
+     * single-filter one. A window-sizing probe that asked for a bound and got
+     * an unbounded corpus walk is the allocation the bound exists to prevent.
+     */
+    @Test
+    fun `negentropy snapshot cap stops a multi-filter walk`() =
+        runBlocking {
+            val inner = InMemoryEventIndex()
+            val handed = mutableListOf<String>()
+            val store = NostrSemanticsStore(pagingIndex(inner, pageSize = 2, handed), relay = "wss://sot.test/".normalizeRelayUrl())
+            repeat(10) { store.insert(note()) }
+            repeat(10) { store.insert(note(author = bob)) }
+
+            handed.clear()
+            val snapshot =
+                store.snapshotIdsForNegentropy(
+                    listOf(Filter(authors = listOf(alice)), Filter(authors = listOf(bob))),
+                    maxEntries = 3,
+                )
+
+            assertEquals(4, snapshot.size, "maxEntries + 1, the overflow sentinel")
+            // Two pages of alice and done — bob's filter is never even opened.
+            assertEquals(4, handed.size, "the walk stops at the cap instead of draining all 20 docs")
+        }
+
+    /**
+     * STORE-N01: the cap counts UNIQUE ids. A RAW-hit cap would stop the walk
+     * while the deduped union was still under budget, handing back a partial
+     * set the caller cannot distinguish from a complete one — here it would
+     * drop bob's note and report a whole, under-budget 5.
+     */
+    @Test
+    fun `negentropy snapshot cap counts deduped ids, not raw hits`() =
+        runBlocking {
+            val inner = InMemoryEventIndex()
+            val handed = mutableListOf<String>()
+            val store = NostrSemanticsStore(pagingIndex(inner, pageSize = 2, handed), relay = "wss://sot.test/".normalizeRelayUrl())
+            // Bob's note is the OLDEST, so the recency-ordered second filter
+            // reaches it only on its last page — after five duplicate hits.
+            val bobs = note(author = bob)
+            store.insert(bobs)
+            repeat(5) { store.insert(note()) }
+
+            val snapshot =
+                store.snapshotIdsForNegentropy(
+                    // alice's 5, then all 6: 11 raw hits over a 6-id union.
+                    listOf(Filter(authors = listOf(alice)), Filter(kinds = listOf(1))),
+                    maxEntries = 5,
+                )
+
+            assertEquals(6, snapshot.size, "the union is 6 — exactly one over budget")
+            assertTrue(snapshot.any { it.id == bobs.id }, "the union's last unique id must survive the cap")
+        }
+
+    /** STORE-N01: an uncapped multi-filter snapshot is still the deduped union. */
+    @Test
+    fun `negentropy snapshot dedups across filters`() =
+        runBlocking {
+            val a = note()
+            val b = note(author = bob)
+            store.insert(a)
+            store.insert(b)
+            val snapshot =
+                store.snapshotIdsForNegentropy(
+                    listOf(Filter(kinds = listOf(1)), Filter(authors = listOf(alice))),
+                    maxEntries = null,
+                )
+            assertEquals(2, snapshot.size, "alice's note matched both filters, and appears once")
+            assertEquals(setOf(a.id, b.id), snapshot.map { it.id }.toSet())
         }
 
     @Test

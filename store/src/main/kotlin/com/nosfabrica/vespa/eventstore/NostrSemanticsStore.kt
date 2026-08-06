@@ -492,11 +492,25 @@ class NostrSemanticsStore(
     }
 
     /**
-     * (created_at, id) pairs straight off the docs — no Event materialization
-     * and no result cap. Plain filters walk the corpus through the engine's
-     * visit, so a negentropy session sees the COMPLETE match set even when it
-     * dwarfs the search page limit. Searching or limit'd filters keep the
-     * search path, since their semantics live there.
+     * (created_at, id) pairs straight off the docs — no Event materialization.
+     * Plain filters walk the corpus through the engine's visit, so a
+     * negentropy session sees the COMPLETE match set even when it dwarfs the
+     * search page limit. Searching or limit'd filters keep the search path,
+     * since their semantics live there.
+     *
+     * [maxEntries] returns at most `maxEntries + 1` — one over, so the caller
+     * can tell "at budget" from "over budget" — and STOPS the walk there: a
+     * caller sizing a sync window only needs to learn the set exceeds its
+     * budget, not scan a 10M corpus to prove it. It bounds EVERY snapshot,
+     * single- or multi-filter; an unbounded walk from a caller that asked for
+     * a bound is how a window-sizing probe turns into the allocation it was
+     * meant to prevent.
+     *
+     * That cap counts UNIQUE ids, which is why cross-filter dedup runs INLINE
+     * instead of over the collected list at the end. Capping RAW hits would
+     * stop the walk while the deduped union was still under budget, and the
+     * caller would get a partial set indistinguishable from a complete one —
+     * silently dropping everything the unwalked filters would have added.
      *
      * [onProgress] fires after every page: the walk is the longest silent
      * phase a mirror has, and the page loop already knows the count.
@@ -507,27 +521,38 @@ class NostrSemanticsStore(
         onProgress: ((collected: Int) -> Unit)?,
     ): List<IdAndTime> {
         val all = ArrayList<IdAndTime>()
-        // A single-filter cap can stop the walk early: the caller only needs
-        // to learn the set exceeds the cap, not scan a 10M corpus to prove it.
-        // (Multi-filter needs the full set for cross-filter dedup.)
-        val cap = maxEntries?.takeIf { filters.size == 1 }?.plus(1)
+        // Only a multi-filter snapshot can repeat an id — one query never
+        // returns a doc twice — so the single-filter walk pays nothing here.
+        val seen = if (filters.size > 1) HashSet<String>() else null
+        val cap = maxEntries?.plus(1)
+
+        fun collect(
+            id: String,
+            createdAt: Long,
+        ) {
+            if (seen == null || seen.add(id)) all += IdAndTime(createdAt, id)
+        }
+
         // Exclude already-expired events (NIP-40), exactly as query/count do —
         // otherwise a peer keeps trying to reconcile events we refuse to serve.
         val cutoff = nowSecs()
         for (q in filters.mapNotNull { it.toExpiryQuery(cutoff) }) {
+            // Already over budget: the filters left can only add to the union.
+            if (cap != null && all.size >= cap) break
             if (q.search == null && q.limit == null) {
                 index.visitIds(q) { page ->
-                    page.forEach { all += IdAndTime(it.createdAt, it.id) }
+                    page.forEach { collect(it.id, it.createdAt) }
                     onProgress?.invoke(all.size)
                     cap == null || all.size < cap
                 }
             } else {
-                index.search(q).forEach { all += IdAndTime(it.createdAt, it.id) }
+                index.search(q).forEach { collect(it.id, it.createdAt) }
                 onProgress?.invoke(all.size)
             }
         }
-        val unique = if (filters.size > 1) all.distinctBy { it.id } else all
-        return if (maxEntries != null && unique.size > maxEntries + 1) unique.subList(0, maxEntries + 1) else unique
+        // A page (or a search, which has no page hook to stop on) can carry
+        // the count past the cap — trim to the sentinel the contract promises.
+        return if (cap != null && all.size > cap) all.subList(0, cap) else all
     }
 
     // ---- deletes ------------------------------------------------------------
