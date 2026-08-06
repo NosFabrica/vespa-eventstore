@@ -99,10 +99,20 @@ internal class Deletions(
         for (address in ev.deleteAddresses()) {
             if (address.pubKeyHex != ev.pubKey) continue
             if (!address.kind.isAddressable() && !address.kind.isReplaceable()) continue
+            val byAuthor = EventQuery(kinds = listOf(address.kind), authors = listOf(address.pubKeyHex), until = ev.createdAt)
+            // Narrow by non-empty d — the same pushdown EventIndex.putIfNewer
+            // and both bulk preloads apply. Without it, deleting ONE address
+            // pulls back every OTHER address of that kind by the same author,
+            // as full docs, in one list, under the store's writer lock, to keep
+            // at most one: a trust service holds ~150k 30382s. Broad stays
+            // correct for the two cases a d-keyed query cannot serve —
+            // replaceable kinds have ONE address whatever the a-tag's d part,
+            // and an empty d carries no "d:" pair in tag_index to match on.
+            val keyed = address.kind.isAddressable() && address.dTag.isNotEmpty()
             val victims =
                 index
-                    .search(EventQuery(kinds = listOf(address.kind), authors = listOf(address.pubKeyHex), until = ev.createdAt))
-                    // Replaceable kinds have ONE address regardless of the a-tag's d part.
+                    .search(if (keyed) byAuthor.copy(tags = mapOf("d" to listOf(address.dTag))) else byAuthor)
+                    // Still the exact match: it normalizes missing == empty d.
                     .filter { !address.kind.isAddressable() || it.dTagOrEmpty() == address.dTag }
             if (victims.isNotEmpty()) index.removeDocs(victims)
         }

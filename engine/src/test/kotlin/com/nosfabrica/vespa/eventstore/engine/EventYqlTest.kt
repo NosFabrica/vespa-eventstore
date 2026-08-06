@@ -208,6 +208,49 @@ class EventYqlTest {
         assertTrue(q.yql.contains("where true "), "the erased exclusion leaves plain recall untouched")
     }
 
+    /**
+     * The tag-value mirror of the erased-word rules above. A value the engine
+     * cannot STORE can never sit in tag_index — the store refuses the whole
+     * event carrying it — so it is unmatchable, not an escaping problem, and
+     * must never reach the YQL literal raw (quote() has no escape for it).
+     */
+    @Test
+    fun `an unstorable tag value is unmatchable, never rendered raw`() {
+        val bad = "sl\u0001ug"
+
+        // OR drops it and keeps the rest, exactly as hexIn drops invalid hex.
+        val kept = EventYql.build(EventQuery(tags = mapOf("d" to listOf(bad, "good"))))!!
+        assertTrue("tag_index contains \"d:good\"" in kept.yql, kept.yql)
+        assertFalse('\u0001' in kept.yql, "no raw control character in the literal: ${kept.yql}")
+
+        // Nothing usable left: the filter provably matches nothing.
+        assertNull(EventYql.build(EventQuery(tags = mapOf("d" to listOf(bad)))))
+
+        // AND cannot drop: every value must be present, so one unmatchable
+        // value sinks the conjunction. Dropping it would WIDEN the query to
+        // documents that lack the term entirely.
+        assertNull(EventYql.build(EventQuery(tagsAll = mapOf("d" to listOf(bad, "good")))))
+    }
+
+    /**
+     * DEL and the C1 block ARE storable — mojibake'd Latin-1 lands there
+     * constantly and documents really carry it — so those queries must still
+     * be built. They need no escape: not a quote, backslash, or line break.
+     */
+    @Test
+    fun `del and c1 tag values stay matchable`() {
+        val q = EventYql.build(EventQuery(tags = mapOf("d" to listOf("caf\u009e", "x\u007f"))))!!
+        assertTrue("d:caf\u009e" in q.yql, q.yql)
+        assertTrue("d:x\u007f" in q.yql, q.yql)
+    }
+
+    /** Tab, LF and CR survive storage AND have escapes, so they stay matchable — escaped, not dropped. */
+    @Test
+    fun `the three storable c0 characters are escaped, not dropped`() {
+        val q = EventYql.build(EventQuery(tags = mapOf("d" to listOf("a\tb\nc\rd"))))!!
+        assertTrue("""d:a\tb\nc\rd""" in q.yql, q.yql)
+    }
+
     @Test
     fun `an observer switches the search default to the trust profile`() {
         val text = EventYql.build(EventQuery(search = "vitor"))!!
