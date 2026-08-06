@@ -176,6 +176,24 @@ class VespaCoverageTest {
             assertEquals(1, index.count(EventQuery()), "a count must not refuse what the recall path serves")
         }
 
+    /**
+     * The relaxation is for the shape that names NO reason. A node that is both
+     * a hair short AND degraded for a stated reason is still a partial answer —
+     * the rounded-100 carve-out must not swallow the flag underneath it.
+     */
+    @Test
+    fun `a named reason is refused even on the rounded-complete shape`() =
+        runBlocking {
+            index.put(doc("1".repeat(64)))
+            mock.roundedCompleteCoverage = true
+            mock.degradeCoverage = "timeout"
+
+            assertTrue(
+                runCatching { index.search(EventQuery()) }.isFailure,
+                "a stated degradation must outrank the not-full-but-undegraded carve-out",
+            )
+        }
+
     /** The carve-out is match-phase ONLY — a timeout on the same limit'd shape is still a partial answer. */
     @Test
     fun `a timeout partial is refused even on the limit'd recency shape`() =
