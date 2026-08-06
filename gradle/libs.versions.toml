@@ -5,25 +5,32 @@ app = "1.0.0"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"
 # Quartz from JitPack (amethyst @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
-# 9373c0a22c = amethyst PRs #3860/#3862/#3863/#3864 (2026-08-05). Every changed
-# quartz file in this range is relay transport or url detection; IEventStore,
-# IndexableFields and SearchFieldExtractor are byte-identical to the previous pin,
-# so the store contract, filter semantics and the searchable-kind table are
-# untouched and the parity and rank gates are unaffected. The widest change,
-# #3863, makes the whole incoming-message chain suspending (WebSocketListener →
-# IRelayClient → NostrClient.onIncomingMessage → SubscriptionListener.onEvent) so
-# a listener can back-pressure the socket instead of buffering; that is a source-
-# breaking signature change for anyone implementing those interfaces, and we
-# implement none of them — we consume IEventStore, Filter, the event kinds and
-# SearchFieldExtractor, and never the relay client. #3862 gives SyncCoverage
-# per-kind bands (one interval could not speak for several kinds), #3860 fixes the
-# UrlDetector's punctuation/quote tails, #3864 is app-side IME padding, #3861 is
-# Crowdin — all unused here. Prev a58289b62c (2026-08-05, PRs #3856/#3857/#3859:
-# NormalizedRelayUrl parsing anchored to the authority, so isLocalHost/isOnion stop
-# being substring guesses and isOverlayNetwork() joins them; normalize() signatures
-# unchanged). This range touched no skill files, so the .claude/skills imported at
+# 7caf4a8a25 = amethyst PRs #3866/#3868/#3869/#3870/#3871 (2026-08-06). Only 15
+# quartz files changed and EVERY one is NIP-77 negentropy client/serialization;
+# IEventStore, SQLiteEventStore, IndexableFields and SearchFieldExtractor are
+# byte-identical to the previous pin, nothing under nip01Core/store or nip50Search
+# changed at all, so the store contract, filter semantics and the searchable-kind
+# table are untouched and the parity and rank gates are unaffected. We reference
+# none of the changed files.
+#
+# The reason to take this pin: #3871 lands the windowed negentropy sync this store
+# was built to feed. NegentropyLocalIndex (new) lets a caller answer a sync
+# window at a time — count(window) pre-splits BEFORE a round trip is spent, and
+# entriesFor(window) materialises only that window — so peak memory becomes one
+# window instead of the whole matching corpus. NegErrMessage (new) reads the
+# relay's own cap off a size refusal, from the non-standard 4th wire element or
+# from strfry's prose, so window sizing learns the number no NIP-11 field carries.
+# Both map onto what this store already exposes (count / snapshotIdsForNegentropy)
+# — wiring an adapter is a follow-up, not part of this bump.
+#
+# #3866 is a configurable left drawer, #3868 a file-header fallback, #3870 app-side
+# IME padding, #3869 Crowdin — all app-side and unused here. Prev 9373c0a22c
+# (2026-08-05, PRs #3860/#3862/#3863/#3864: the incoming-message chain became
+# suspending — source-breaking for implementors of the relay-client interfaces,
+# none of which we implement — plus per-kind SyncCoverage bands and UrlDetector
+# tails). This range touched no skill files, so the .claude/skills imported at
 # 9231195890 are current for this pin.
-quartz = "9373c0a22c"
+quartz = "7caf4a8a25"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 sqlite = "2.7.0"
