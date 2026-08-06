@@ -119,6 +119,13 @@ class MockVespaEngine {
     @Volatile var rejectNearFields: Boolean = false
 
     /**
+     * Document-API visit requests served. Both snapshot paths return the SAME
+     * ids, so only this distinguishes which one ran — a correctness assertion
+     * cannot, and the choice between them is worth 100x either way.
+     */
+    @Volatile var visitRequests: Int = 0
+
+    /**
      * Refuse queries carrying `presentation.summary=dedup` the way a schema
      * deployed before the attribute-only existence summary does — real Vespa
      * is HTTP 400 with `Summary 'dedup' does not exist` in the error body.
@@ -267,6 +274,7 @@ class MockVespaEngine {
 
             // The visit walk: /document/v1/…/docid (no doc id) with a selection.
             method == "GET" && path == docPrefix.removeSuffix("/") -> {
+                visitRequests++
                 visit(params(rawQuery.orEmpty()))
             }
 
