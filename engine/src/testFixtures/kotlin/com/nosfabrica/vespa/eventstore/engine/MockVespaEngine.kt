@@ -88,6 +88,18 @@ class MockVespaEngine {
     @Volatile var degradeCoverage: String? = null
 
     /**
+     * Answer every search the way a node a hair short of its target does:
+     * `full: false`, a percentage that ROUNDS to 100, and NO `degraded` block —
+     * Vespa omits it whenever its own `isDegraded()` is false, which at a
+     * rounded 100% with no flag set it is. The one coverage shape that arrives
+     * with no reason attached, and the one that used to refuse every read.
+     *
+     * Composes with [degradeCoverage]: a named reason still wins the percentage
+     * and the flags, so a genuinely degraded response stays degraded.
+     */
+    @Volatile var roundedCompleteCoverage: Boolean = false
+
+    /**
      * Serve streamed visits (`stream=true`) the paged JSON shape instead of
      * JSON Lines — an older Vespa that doesn't speak the streamed protocol.
      * The client must detect the content type and fall back to the paged walk.
@@ -420,12 +432,15 @@ class MockVespaEngine {
     private fun coverage(documents: Int): JsonObject =
         buildJsonObject {
             val complete = degradeCoverage == null
+            // A rounded-100 response is NOT full and carries no reason — the
+            // percentage and the flags stay exactly as a complete one's.
+            val full = complete && !roundedCompleteCoverage
             put("coverage", JsonPrimitive(if (complete) 100 else 42))
             put("documents", JsonPrimitive(documents))
-            put("full", JsonPrimitive(complete))
+            put("full", JsonPrimitive(full))
             put("nodes", JsonPrimitive(1))
             put("results", JsonPrimitive(1))
-            put("resultsFull", JsonPrimitive(if (complete) 1 else 0))
+            put("resultsFull", JsonPrimitive(if (full) 1 else 0))
             degradeCoverage?.let { reason ->
                 put("degraded", buildJsonObject { put(reason, JsonPrimitive(true)) })
             }

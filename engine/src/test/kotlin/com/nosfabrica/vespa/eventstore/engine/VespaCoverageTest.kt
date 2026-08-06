@@ -139,6 +139,43 @@ class VespaCoverageTest {
             assertEquals(1_700_000_069L, hits.single().createdAt, "and it must be the newest doc")
         }
 
+    /**
+     * The shape that names NO reason, and the one that took the relay's feeds
+     * down: `full: false` at a rounded 100% with no `degraded` block.
+     *
+     * `full` is `docs == active`, an exact equality; the percentage rounds
+     * `docs / targetActive`; and Vespa emits `degraded` only when its own
+     * `isDegraded()` holds, which at a rounded 100% and no flag set it does
+     * not. A node a hair short of its target hits all three at once — and this
+     * guard, keyed on `full` alone, refused it with "vespa searched only 100%
+     * of the corpus (degraded: unspecified)". Every read on that relay, for as
+     * long as the node stayed short. Nothing there is actionable, so it is
+     * served.
+     *
+     * Both funnels, because they differ on [allowMatchPhase] and the bug was in
+     * neither branch of that: the limit'd shape is the empty-search feed
+     * (`recency`, match-phase allowed) and the unlimited one is plain recall.
+     */
+    @Test
+    fun `a not-full response the engine itself calls undegraded is served`() =
+        runBlocking {
+            index.put(doc("1".repeat(64)))
+            mock.roundedCompleteCoverage = true
+
+            assertEquals(1, index.search(EventQuery(limit = 10)).size, "the empty-search feed shape must be served")
+            assertEquals(1, index.search(EventQuery()).size, "and so must plain unlimited recall")
+        }
+
+    /** The grouping funnel checks coverage separately (queryRoot), so it needs its own proof. */
+    @Test
+    fun `the count path serves an undegraded not-full response too`() =
+        runBlocking {
+            index.put(doc("1".repeat(64)))
+            mock.roundedCompleteCoverage = true
+
+            assertEquals(1, index.count(EventQuery()), "a count must not refuse what the recall path serves")
+        }
+
     /** The carve-out is match-phase ONLY — a timeout on the same limit'd shape is still a partial answer. */
     @Test
     fun `a timeout partial is refused even on the limit'd recency shape`() =

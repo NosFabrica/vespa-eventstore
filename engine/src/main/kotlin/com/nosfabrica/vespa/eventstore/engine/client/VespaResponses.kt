@@ -77,15 +77,46 @@ internal class SearchCoverage(
         get() = (degraded?.get("match-phase") as? JsonPrimitive)?.content == "true"
 
     /**
+     * The engine reports complete coverage and names no degradation — whatever
+     * [full] says.
+     *
+     * `full` and [coverage] are computed from DIFFERENT denominators, so they
+     * disagree at the boundary: `full` is `docs == active`, an exact equality,
+     * while the percentage rounds `docs / targetActive`. A node a hair short of
+     * its target — mid-redistribution, or still opening the last buckets after
+     * a restart — is `full: false` at 100%. And Vespa renders the `degraded`
+     * block only when its own `isDegraded()` holds, which at a rounded 100% and
+     * no flag set is false: the response arrives with no reason attached at all.
+     *
+     * Refusing that shape produced the self-contradicting "searched only 100% of
+     * the corpus (degraded: unspecified)" — and refused it on EVERY query while
+     * the node stayed a hair short, which on a relay is every feed and every
+     * empty search. There is nothing to act on there: no flag to carve out, and
+     * a rerun comes back the same. So the guard asks what Vespa asks — is this
+     * degraded — and `full` stops being a veto on its own.
+     *
+     * The residual is bounded by the rounding: at 100% at most 0.5% of the
+     * target is unsearched, and the write-path guards ([requireComplete]'s
+     * strict callers) wear that. The alternative is not a stricter store, it is
+     * a store that answers nothing.
+     */
+    val undegraded: Boolean
+        get() = coverage >= 100 && degraded == null
+
+    /**
      * A degraded response is a WRONG answer, not a slow one: at every call site
      * it is indistinguishable from a filter that genuinely matched that few,
      * and the dedup/NIP-09/62 guards decide by "did the query find it" — a
      * partial answer could resurrect a deleted event. So it fails loudly.
      * One exception: [allowMatchPhase], for the match-phase profiles that ASK
      * for the cut and verify or rerun the page themselves.
+     *
+     * The question asked here is Vespa's own `isDegraded()`, not its `full`.
+     * The two are different questions and this guard used to key on the wrong
+     * one — see [undegraded].
      */
     fun requireComplete(allowMatchPhase: Boolean = false) {
-        if (full) return
+        if (full || undegraded) return
         // Vespa lists every degradation flag, false ones included — judge by
         // the flags actually SET.
         val set = degraded?.mapValues { (it.value as? JsonPrimitive)?.content == "true" }.orEmpty()
