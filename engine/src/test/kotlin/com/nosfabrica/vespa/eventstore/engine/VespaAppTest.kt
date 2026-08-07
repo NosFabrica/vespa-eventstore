@@ -24,6 +24,9 @@ import com.nosfabrica.vespa.eventstore.engine.query.FuzzyWordGroup
 import java.io.ByteArrayInputStream
 import java.util.zip.ZipInputStream
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /** The Vespa application package is bundled into the jar and deployable — the deploy artifact ships with the code. */
@@ -39,8 +42,11 @@ class VespaAppTest {
             }
         }
 
-    private fun entry(name: String): String {
-        ZipInputStream(ByteArrayInputStream(VespaApp.zipBytes())).use { zis ->
+    private fun entry(
+        name: String,
+        zip: ByteArray = VespaApp.zipBytes(),
+    ): String {
+        ZipInputStream(ByteArrayInputStream(zip)).use { zis ->
             var e = zis.nextEntry
             while (e != null) {
                 if (e.name == name) return zis.readBytes().decodeToString()
@@ -48,6 +54,39 @@ class VespaAppTest {
             }
         }
         error("$name is not in the bundled application package")
+    }
+
+    @Test
+    fun `the shipped package declares an access log explicitly`() {
+        // Left to Vespa's default, access logging is on and invisible in the
+        // package — which is how it grew to 3.2 GB/hour unnoticed.
+        assertTrue(
+            """<accesslog type="json"""" in entry("services.xml"),
+            "services.xml must declare <accesslog> so the choice is reviewable and VESPA_ACCESS_LOG has an anchor",
+        )
+    }
+
+    @Test
+    fun `VESPA_ACCESS_LOG rewrites the type and leaves the rest of the package alone`() {
+        val off = VespaApp.zipBytes("disabled")
+        assertTrue("""<accesslog type="disabled" """ in entry("services.xml", off), "the type must be swapped")
+        assertTrue(""""json"""" !in entry("services.xml", off), "the old type must not survive")
+        // The rewrite streams every entry through a new zip; the schemas must
+        // come out the other side byte-identical or the deploy is broken.
+        assertEquals(entries(VespaApp.zipBytes()), entries(off), "rewriting must not add or drop entries")
+        assertEquals(entry("schemas/event.sd"), entry("schemas/event.sd", off), "only services.xml may change")
+    }
+
+    @Test
+    fun `an unset or blank VESPA_ACCESS_LOG ships the package as built`() {
+        assertContentEquals(VespaApp.zipBytes(), VespaApp.zipBytes(null), "unset must not rewrite")
+        assertContentEquals(VespaApp.zipBytes(), VespaApp.zipBytes("   "), "blank must not rewrite")
+    }
+
+    @Test
+    fun `an unknown VESPA_ACCESS_LOG fails loudly rather than deploying something else`() {
+        val e = assertFailsWith<IllegalArgumentException> { VespaApp.zipBytes("off") }
+        assertTrue("disabled" in (e.message ?: ""), "the error must name the valid types: ${e.message}")
     }
 
     @Test

@@ -4,6 +4,23 @@
   <container id="default" version="1.0">
     <search />
     <document-api />
+    <!-- One JSON line per HTTP request. Declared explicitly rather than left
+         to Vespa's default so it is VISIBLE and so VESPA_ACCESS_LOG can swap
+         the type at deploy time (see VespaApp.zipBytes).
+
+         It is not free, and the cost scales with the store's own traffic, not
+         with user traffic: the write path is read-heavy (dedup existence
+         checks, guard probes, supersession searches), so a mirroring
+         deployment logs mostly itself. Measured 2026-08-07 on a router
+         ingesting ~10-30k ev/s: ~500 req/s and ~3.2 GB/hour of access log,
+         rotated hourly and compressed but never pruned — enough to evict a
+         Kubernetes pod off an emptyDir sizeLimit roughly hourly.
+
+         Set VESPA_ACCESS_LOG=disabled where the HTTP client is your own
+         ingest and the useful record is the router's stats plus Vespa's
+         metrics. Keep json when real clients query this container and you
+         need per-request forensics. -->
+    <accesslog type="json" />
     <nodes>
       <node hostalias="node1" />
     </nodes>
