@@ -45,9 +45,17 @@ class VespaAppTest {
             }
         }
 
+    /**
+     * The package AS BUILT. Deliberately not `zipBytes()`: the no-arg overload
+     * reads VESPA_ACCESS_LOG, so every assertion built on it would quietly
+     * change meaning — and the shipped-package tests would FAIL — in a shell
+     * that happens to export the variable. The baseline has to be pinned.
+     */
+    private val shipped = VespaApp.zipBytes(null)
+
     private fun entry(
         name: String,
-        zip: ByteArray = VespaApp.zipBytes(),
+        zip: ByteArray = shipped,
     ): String {
         ZipInputStream(ByteArrayInputStream(zip)).use { zis ->
             var e = zis.nextEntry
@@ -98,7 +106,7 @@ class VespaAppTest {
 
         // The rewrite copies every entry through a new zip; the schemas must
         // come out the other side byte-identical or the deploy is broken.
-        assertEquals(entries(VespaApp.zipBytes()), entries(off), "rewriting must not add or drop entries")
+        assertEquals(entries(shipped), entries(off), "rewriting must not add or drop entries")
         assertEquals(entry("schemas/event.sd"), entry("schemas/event.sd", off), "only services.xml may change")
     }
 
@@ -107,22 +115,22 @@ class VespaAppTest {
         // The serializer reformats, so this pins that reformatting is all it
         // does: an injection that dropped the proton config or the resource
         // limits would deploy a differently-behaving engine, silently.
-        val shipped = parse(entry("services.xml"))
-        val off = parse(entry("services.xml", VespaApp.zipBytes("disabled")))
+        val shippedXml = parse(entry("services.xml"))
+        val offXml = parse(entry("services.xml", VespaApp.zipBytes("disabled")))
         for (tag in listOf("document", "config", "concurrency", "numthreadspersearch", "maxtlssize", "disk", "memory", "search", "document-api", "nodes")) {
             assertEquals(
-                shipped.getElementsByTagName(tag).length,
-                off.getElementsByTagName(tag).length,
+                shippedXml.getElementsByTagName(tag).length,
+                offXml.getElementsByTagName(tag).length,
                 "injecting the access log must not change <$tag>",
             )
         }
         assertEquals(
-            shipped
+            shippedXml
                 .child("content")
                 ?.child("config")
                 ?.child("concurrency")
                 ?.textContent,
-            off
+            offXml
                 .child("content")
                 ?.child("config")
                 ?.child("concurrency")
@@ -132,10 +140,15 @@ class VespaAppTest {
     }
 
     @Test
-    fun `unset, blank and the keep-default value ship the package as built`() {
-        assertContentEquals(VespaApp.zipBytes(), VespaApp.zipBytes(null), "unset must not rewrite")
-        assertContentEquals(VespaApp.zipBytes(), VespaApp.zipBytes("   "), "blank must not rewrite")
-        assertContentEquals(VespaApp.zipBytes(), VespaApp.zipBytes("default"), "default must not rewrite")
+    fun `blank and the keep-default value ship the package as built`() {
+        // No `zipBytes() == zipBytes(null)` case: with the variable unset those
+        // are the same call, and with it set to disabled they differ by design,
+        // so the assertion is either vacuous or wrong. What the no-arg overload
+        // adds — reading the environment — is not assertable from inside the
+        // JVM that reads it; the integration test deploys the rewritten package
+        // instead, which is the half that actually broke.
+        assertContentEquals(shipped, VespaApp.zipBytes("   "), "blank must not rewrite")
+        assertContentEquals(shipped, VespaApp.zipBytes("default"), "default must not rewrite")
     }
 
     @Test
@@ -191,7 +204,7 @@ class VespaAppTest {
 
     @Test
     fun `the application package is on the classpath and carries the schemas`() {
-        val names = entries(VespaApp.zipBytes())
+        val names = entries(shipped)
         assertTrue("services.xml" in names, "package must declare its services: $names")
         assertTrue("schemas/event.sd" in names, "package must carry the event schema: $names")
         assertTrue("schemas/reputation.sd" in names, "package must carry the reputation schema: $names")

@@ -77,8 +77,14 @@ object VespaApp {
      */
     fun zipBytes(): ByteArray = zipBytes(System.getenv(ACCESS_LOG_ENV))
 
-    /** [zipBytes] with the access-log choice passed in, so it is testable without the environment. */
-    internal fun zipBytes(accessLog: String?): ByteArray {
+    /**
+     * [zipBytes] with the access-log choice passed in rather than read from the
+     * environment — the programmatic form of [ACCESS_LOG_ENV], for an embedder
+     * that configures the store in code and for the integration test that has
+     * to DEPLOY the rewritten package (an env var cannot be set from inside the
+     * JVM that reads it). `null` or blank means "as built".
+     */
+    fun zipBytes(accessLog: String?): ByteArray {
         val raw =
             VespaApp::class.java.getResourceAsStream(RESOURCE)?.use { it.readBytes() }
                 ?: error("bundled Vespa application package not found on the classpath ($RESOURCE) - is :engine on the runtime classpath?")
