@@ -63,6 +63,17 @@ import kotlin.test.assertTrue
  *    unrelated reason — the negative only means something next to a positive
  *    that fires under the same assumptions.
  *
+ * BOTH CLAIMS ARE MADE ON A CLOCK, and that is not incidental. A container
+ * answers `/ApplicationStatus` with 200 CONTINUOUSLY across a reconfiguration —
+ * it never goes down — so `awaitServing` returns while the PREVIOUS package is
+ * still the live one. The first CI run of this test failed exactly there:
+ * traffic sent right after the redeploy landed on the disabled config and was
+ * not logged, and the control read that as "logging is broken". So the positive
+ * claim polls for the evidence itself, and the negative one drives traffic for
+ * a settle window before concluding, because an impatient negative — "nothing
+ * written" standing in for "nothing written YET" — is the one way this test
+ * could go green while proving nothing at all.
+ *
  * One container, two deploys. Tagged `integration`, excluded from the default
  * `:benchmark:test`; run with `-Pintegration` where Docker is available. Skips
  * cleanly without a daemon.
@@ -92,27 +103,75 @@ class AccessLogIT {
                 //    round-trip and the container kept its <search> handler: a
                 //    query is answered, not just a health endpoint.
                 assertEquals(200, query(queryUrl), "the disabled package must serve queries, not just activate")
-                repeat(REQUESTS) { query(queryUrl) }
 
+                // Absence is asserted over the SAME window the control below is
+                // given, and only after it. "Nothing was written" must not be
+                // allowed to mean "nothing was written YET" — an impatient
+                // negative is the one way this test could pass while proving
+                // nothing at all.
                 assertEquals(
                     "",
-                    accessLogFiles(vespa),
-                    "VESPA_ACCESS_LOG=disabled must write no access log, but Vespa wrote one after $REQUESTS requests",
+                    driveFor(vespa, queryUrl, SETTLE),
+                    "VESPA_ACCESS_LOG=disabled must write no access log, but Vespa wrote one",
                 )
 
-                // 3. THE POSITIVE CONTROL. Same container, same requests, same
+                // 3. THE POSITIVE CONTROL. Same container, same traffic, same
                 //    place looked at — only the package differs. If this does
                 //    not fire, the assertion above proved nothing.
                 deployer.deploy(VespaApp.zipBytes(null))
-                deployer.awaitServing(queryUrl)
-                repeat(REQUESTS) { query(queryUrl) }
-
+                // NOT awaitServing: /ApplicationStatus answers 200 CONTINUOUSLY
+                // across a config change, so it returns while the container is
+                // still running the previous package — traffic sent then lands
+                // on the disabled config and is not logged. That race is what
+                // failed this test on its first CI run. Poll for the evidence
+                // itself instead, which is the only thing that settles it.
+                val logs = awaitAccessLog(vespa, queryUrl)
                 assertTrue(
-                    accessLogFiles(vespa).isNotBlank(),
-                    "the package as built must still log — if it does not, the disabled assertion above is vacuous " +
-                        "(Vespa's default moved, or the log is no longer under $LOG_DIR)",
+                    logs.isNotBlank(),
+                    "the package as built must still log, and did not within $LOG_TIMEOUT — if that is genuine rather " +
+                        "than slow, the disabled assertion above is vacuous (Vespa's default moved, or the log is no " +
+                        "longer under $LOG_DIR)",
                 )
             }
+    }
+
+    /**
+     * Send traffic for [window], then report what has been logged. Used for the
+     * NEGATIVE claim, where there is nothing to poll for — absence only means
+     * something after giving the container as long to write as the positive
+     * control gets.
+     */
+    private fun driveFor(
+        vespa: GenericContainer<*>,
+        queryUrl: String,
+        window: Duration,
+    ): String {
+        val deadline = System.nanoTime() + window.toNanos()
+        do {
+            repeat(REQUESTS) { query(queryUrl) }
+            Thread.sleep(POLL.toMillis())
+        } while (System.nanoTime() < deadline)
+        return accessLogFiles(vespa)
+    }
+
+    /**
+     * Send traffic until an access log appears, or [LOG_TIMEOUT] passes.
+     * Polling the EVIDENCE rather than a readiness endpoint is deliberate: the
+     * container answers /ApplicationStatus throughout a reconfiguration, so
+     * there is nothing else that reliably says "the new package is live".
+     */
+    private fun awaitAccessLog(
+        vespa: GenericContainer<*>,
+        queryUrl: String,
+    ): String {
+        val deadline = System.nanoTime() + LOG_TIMEOUT.toNanos()
+        while (true) {
+            repeat(REQUESTS) { query(queryUrl) }
+            val files = accessLogFiles(vespa)
+            if (files.isNotBlank()) return files
+            if (System.nanoTime() >= deadline) return ""
+            Thread.sleep(POLL.toMillis())
+        }
     }
 
     /**
@@ -142,8 +201,17 @@ class AccessLogIT {
         /** Vespa's access logs live here; the container's own is `JsonAccessLog.default`. */
         const val LOG_DIR = "/opt/vespa/logs"
 
-        /** Enough traffic that a working access log certainly has something to write. */
+        /** Requests per round. A working access log writes one line each, so any round is enough to show up. */
         const val REQUESTS = 10
+
+        /** Gap between rounds. */
+        val POLL: Duration = Duration.ofSeconds(3)
+
+        /** How long the NEGATIVE claim drives traffic before concluding nothing is being logged. */
+        val SETTLE: Duration = Duration.ofSeconds(30)
+
+        /** How long the positive control waits for the reconfiguration to take effect. Generous: it is a restart. */
+        val LOG_TIMEOUT: Duration = Duration.ofMinutes(3)
 
         fun dockerAvailable(): Boolean = runCatching { DockerClientFactory.instance().isDockerAvailable }.getOrDefault(false)
     }
