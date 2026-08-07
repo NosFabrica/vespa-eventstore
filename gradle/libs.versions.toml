@@ -5,32 +5,31 @@ app = "1.0.0"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"
 # Quartz from JitPack (amethyst @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
-# 7caf4a8a25 = amethyst PRs #3866/#3868/#3869/#3870/#3871 (2026-08-06). Only 15
-# quartz files changed and EVERY one is NIP-77 negentropy client/serialization;
-# IEventStore, SQLiteEventStore, IndexableFields and SearchFieldExtractor are
-# byte-identical to the previous pin, nothing under nip01Core/store or nip50Search
-# changed at all, so the store contract, filter semantics and the searchable-kind
-# table are untouched and the parity and rank gates are unaffected. We reference
-# none of the changed files.
+# 35f96a936d = amethyst PR #3872 (2026-08-06). The whole range is TWO files, both
+# in nip01Core/relay/client/pool: PoolEventOutbox and a new scale test for it. The
+# outbox kept pending publishes in an immutable map rebuilt per send, so N
+# publishes copied 1+2+…+N (measured ~20.5ms of a 22.7ms/event budget at ~970k
+# entries resident, decaying as the backlog grew); it is now a LargeCache
+# (ConcurrentHashMap on JVM) with the relay set maintained asymmetrically —
+# additions exact, removals swept every 256 and whenever the outbox empties.
 #
-# The reason to take this pin: #3871 lands the windowed negentropy sync this store
-# was built to feed. NegentropyLocalIndex (new) lets a caller answer a sync
-# window at a time — count(window) pre-splits BEFORE a round trip is spent, and
-# entriesFor(window) materialises only that window — so peak memory becomes one
-# window instead of the whole matching corpus. NegErrMessage (new) reads the
-# relay's own cap off a size refusal, from the non-standard 4th wire element or
-# from strfry's prose, so window sizing learns the number no NIP-11 field carries.
-# Both map onto what this store already exposes (count / snapshotIdsForNegentropy)
-# — wiring an adapter is a follow-up, not part of this bump.
+# That is the relay client, which this store is not: we hold no outbox, and grep
+# finds no reference to PoolEventOutbox or anything under relay/client/pool. All
+# of it is private to the class besides — every public signature on PoolEventOutbox
+# is unchanged, so the range is not even source-breaking for callers that DO use
+# it. IEventStore, SQLiteEventStore, IndexableFields and SearchFieldExtractor are
+# byte-identical to the previous pin; nothing under nip01Core/store or nip50Search
+# was touched at all. The store contract, filter semantics and the searchable-kind
+# table carry over unchanged, and the parity and rank gates are unaffected. We take
+# it to stay on head, not for anything it gives this store.
 #
-# #3866 is a configurable left drawer, #3868 a file-header fallback, #3870 app-side
-# IME padding, #3869 Crowdin — all app-side and unused here. Prev 9373c0a22c
-# (2026-08-05, PRs #3860/#3862/#3863/#3864: the incoming-message chain became
-# suspending — source-breaking for implementors of the relay-client interfaces,
-# none of which we implement — plus per-kind SyncCoverage bands and UrlDetector
-# tails). This range touched no skill files, so the .claude/skills imported at
-# 9231195890 are current for this pin.
-quartz = "7caf4a8a25"
+# Prev 7caf4a8a25 (2026-08-06, PRs #3866/#3868/#3869/#3870/#3871: #3871 landed the
+# windowed negentropy sync this store was built to feed — NegentropyLocalIndex
+# answers one window at a time, NegErrMessage reads a relay's size cap off its own
+# refusal — both mapping onto count / snapshotIdsForNegentropy; wiring an adapter
+# is still a follow-up. The rest was app-side). This range touched no skill files,
+# so the .claude/skills imported at 9231195890 are current for this pin.
+quartz = "35f96a936d"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 sqlite = "2.7.0"
