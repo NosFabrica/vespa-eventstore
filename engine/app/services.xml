@@ -4,7 +4,9 @@
   <container id="default" version="1.0">
     <search />
     <document-api />
-    <!-- No <accesslog> element on purpose: Vespa's default (JSON, one line
+    <!-- This package SHIPS WITHOUT an <accesslog> element on purpose (if you
+         are reading a deployed copy that has one, it was injected below):
+         Vespa's default (JSON, one line
          per HTTP request, hourly rotation, zstd) is what most deployments
          want, and declaring it explicitly would oblige us to restate
          fileNamePattern and friends — Vespa rejects a configured access log

@@ -20,11 +20,17 @@
  */
 package com.nosfabrica.vespa.eventstore.engine
 
+import org.w3c.dom.Element
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
+import javax.xml.XMLConstants
+import javax.xml.parsers.DocumentBuilderFactory
+import javax.xml.transform.TransformerFactory
+import javax.xml.transform.dom.DOMSource
+import javax.xml.transform.stream.StreamResult
 
 /**
  * The Vespa application package (event + reputation schemas, rank profiles),
@@ -53,17 +59,17 @@ object VespaApp {
      * it), so anything other than "off" means owning defaults that are better
      * inherited. A deployment that wants to shape the log should say so in
      * services.xml, where the whole element is visible.
+     *
+     * "json" is NOT accepted even though it is what Vespa writes today. It
+     * would be a no-op that merely coincides with an upstream default, so the
+     * day that default moves the variable becomes a lie the operator cannot
+     * detect. The knob only claims what it actually enforces.
      */
-    val ACCESS_LOG_VALUES = setOf("default", "json", "disabled")
+    val ACCESS_LOG_VALUES = setOf("default", "disabled")
 
     private const val SERVICES = "services.xml"
-
-    /** Insert as the container's first child; `<nodes>` stays last, as Vespa's examples have it. */
-    private val CONTAINER_OPEN = Regex("""(<container\b[^>]*>)""")
-    private val COMMENT = Regex("""<!--.*?-->""", RegexOption.DOT_MATCHES_ALL)
-    private const val DISABLE_ELEMENT = """
-    <!-- injected by VespaApp: VESPA_ACCESS_LOG=disabled -->
-    <accesslog type="disabled" />"""
+    private const val CONTAINER = "container"
+    private const val ACCESSLOG = "accesslog"
 
     /**
      * The zipped application package bytes, ready to POST to a Vespa config
@@ -83,32 +89,86 @@ object VespaApp {
         }
         if (value != "disabled") return raw
 
-        return rewrite(raw) { name, body ->
-            if (name != SERVICES) {
-                body
-            } else {
-                // A silent no-op here would be the worst outcome: the operator
-                // sets the variable, the deploy succeeds, and the log keeps
-                // filling the disk. Fail instead if the anchor ever moves.
-                val open =
-                    CONTAINER_OPEN.find(body)
-                        ?: error("$SERVICES has no <container> element to configure — $ACCESS_LOG_ENV would be silently ignored")
-                // Comments stripped first: services.xml documents this very
-                // knob, and matching the tag name inside prose would refuse a
-                // perfectly good package.
-                require(!COMMENT.replace(body, "").contains("<accesslog")) {
-                    "$SERVICES already declares an access log; configure it there rather than via $ACCESS_LOG_ENV"
-                }
-                val at = open.range.last + 1
-                body.substring(0, at) + DISABLE_ELEMENT + body.substring(at)
-            }
-        }
+        return rewrite(raw, SERVICES, ::disableAccessLog)
     }
 
-    /** Stream the package through [transform], applied to each entry's text by name. */
+    /**
+     * Return [servicesXml] with `<accesslog type="disabled" />` as the
+     * container's first child (`<nodes>` stays last, as Vespa's examples have
+     * it). Parsed rather than string-spliced: services.xml DOCUMENTS this knob
+     * in prose, so a textual search for the tag name reads its own comment and
+     * refuses a perfectly good package — which is exactly what happened. A
+     * parser cannot see prose, and it checks the structure that actually
+     * matters (this container has no accesslog CHILD) instead of the weaker
+     * "the string appears nowhere in the file".
+     *
+     * The output is reformatted by the serializer — comments and existing
+     * indentation survive, but the XML declaration is rewritten and attribute
+     * quoting is normalized, so the deployed services.xml is not byte-equal to
+     * `engine/app/services.xml`. Only Vespa reads it; the unset path ships the
+     * package untouched, which is what keeps the ITs on the shipped bytes.
+     */
+    internal fun disableAccessLog(servicesXml: String): String {
+        val doc =
+            DocumentBuilderFactory
+                .newInstance()
+                .apply {
+                    // Our own file, but the parser is hardened anyway: nothing
+                    // in an application package needs a doctype or an entity.
+                    setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true)
+                    setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
+                    isXIncludeAware = false
+                    isExpandEntityReferences = false
+                }.newDocumentBuilder()
+                .parse(ByteArrayInputStream(servicesXml.encodeToByteArray()))
+
+        // A silent no-op here would be the worst outcome: the operator sets the
+        // variable, the deploy succeeds, and the log keeps filling the disk.
+        // Fail instead if the element this hangs off ever moves.
+        val containers = doc.getElementsByTagName(CONTAINER)
+        val container =
+            when (containers.length) {
+                1 -> containers.item(0) as Element
+
+                0 -> error("$SERVICES has no <$CONTAINER> element to configure — $ACCESS_LOG_ENV would be silently ignored")
+
+                // Which one to disable is a real choice, not a default to guess.
+                else -> error("$SERVICES declares ${containers.length} <$CONTAINER> elements — $ACCESS_LOG_ENV cannot pick one")
+            }
+        require(container.getElementsByTagName(ACCESSLOG).length == 0) {
+            "$SERVICES already declares an access log; configure it there rather than via $ACCESS_LOG_ENV"
+        }
+
+        // Indentation is written by hand rather than by the serializer: it only
+        // has to make the injected pair read like the file around it, and
+        // OutputKeys.INDENT would reflow every other element to get there.
+        val first = container.firstChild
+        container.insertBefore(doc.createTextNode("\n    "), first)
+        container.insertBefore(doc.createComment(" injected by VespaApp: $ACCESS_LOG_ENV=disabled "), first)
+        container.insertBefore(doc.createTextNode("\n    "), first)
+        container.insertBefore(doc.createElement(ACCESSLOG).apply { setAttribute("type", "disabled") }, first)
+
+        val out = ByteArrayOutputStream(servicesXml.length + 128)
+        // No OutputKeys.INDENT: the file is already indented and re-indenting
+        // would reflow every element, not just the injected one.
+        TransformerFactory
+            .newInstance()
+            .apply { setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true) }
+            .newTransformer()
+            .transform(DOMSource(doc), StreamResult(out))
+        return out.toByteArray().decodeToString()
+    }
+
+    /**
+     * Copy [zip] entry by entry, passing only [target] through [transform].
+     * Every other entry is copied as RAW BYTES — decoding them as text would
+     * silently replace anything that is not valid UTF-8 with U+FFFD, and the
+     * package carries schemas, not just this one file.
+     */
     private fun rewrite(
         zip: ByteArray,
-        transform: (name: String, body: String) -> String,
+        target: String,
+        transform: (body: String) -> String,
     ): ByteArray {
         val out = ByteArrayOutputStream(zip.size)
         ZipOutputStream(out).use { zos ->
@@ -116,7 +176,7 @@ object VespaApp {
                 var entry = zis.nextEntry
                 while (entry != null) {
                     val bytes = zis.readBytes()
-                    val body = transform(entry.name, bytes.decodeToString()).encodeToByteArray()
+                    val body = if (entry.name == target) transform(bytes.decodeToString()).encodeToByteArray() else bytes
                     // A fresh entry, so the sizes and CRC are recomputed for
                     // the rewritten bytes rather than copied from the source.
                     zos.putNextEntry(ZipEntry(entry.name))
