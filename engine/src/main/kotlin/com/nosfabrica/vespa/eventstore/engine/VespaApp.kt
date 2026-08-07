@@ -43,14 +43,27 @@ object VespaApp {
     /** Classpath location of the bundled package (see vespa/build.gradle.kts). */
     const val RESOURCE = "/vespa-app.zip"
 
-    /** Env var selecting the container's access-log type. Unset keeps what services.xml ships. */
+    /** Env var controlling the container's access log. Unset keeps Vespa's default. */
     const val ACCESS_LOG_ENV = "VESPA_ACCESS_LOG"
 
-    /** Vespa's accepted `<accesslog type=…>` values. `disabled` writes nothing. */
-    val ACCESS_LOG_TYPES = setOf("json", "vespa", "disabled")
+    /**
+     * Accepted values. Deliberately an OFF SWITCH rather than a passthrough of
+     * every `<accesslog type=…>` Vespa has: configuring the log at all obliges
+     * the package to restate `fileNamePattern` (Vespa fails the deploy without
+     * it), so anything other than "off" means owning defaults that are better
+     * inherited. A deployment that wants to shape the log should say so in
+     * services.xml, where the whole element is visible.
+     */
+    val ACCESS_LOG_VALUES = setOf("default", "json", "disabled")
 
     private const val SERVICES = "services.xml"
-    private val ACCESS_LOG_TYPE = Regex("""(<accesslog\s+type=")[^"]*(")""")
+
+    /** Insert as the container's first child; `<nodes>` stays last, as Vespa's examples have it. */
+    private val CONTAINER_OPEN = Regex("""(<container\b[^>]*>)""")
+    private val COMMENT = Regex("""<!--.*?-->""", RegexOption.DOT_MATCHES_ALL)
+    private const val DISABLE_ELEMENT = """
+    <!-- injected by VespaApp: VESPA_ACCESS_LOG=disabled -->
+    <accesslog type="disabled" />"""
 
     /**
      * The zipped application package bytes, ready to POST to a Vespa config
@@ -64,10 +77,11 @@ object VespaApp {
             VespaApp::class.java.getResourceAsStream(RESOURCE)?.use { it.readBytes() }
                 ?: error("bundled Vespa application package not found on the classpath ($RESOURCE) - is :engine on the runtime classpath?")
 
-        val type = accessLog?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: return raw
-        require(type in ACCESS_LOG_TYPES) {
-            "$ACCESS_LOG_ENV='$accessLog' is not a Vespa access-log type (${ACCESS_LOG_TYPES.sorted().joinToString(", ")})"
+        val value = accessLog?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: return raw
+        require(value in ACCESS_LOG_VALUES) {
+            "$ACCESS_LOG_ENV='$accessLog' is not one of ${ACCESS_LOG_VALUES.sorted().joinToString(", ")}"
         }
+        if (value != "disabled") return raw
 
         return rewrite(raw) { name, body ->
             if (name != SERVICES) {
@@ -76,10 +90,17 @@ object VespaApp {
                 // A silent no-op here would be the worst outcome: the operator
                 // sets the variable, the deploy succeeds, and the log keeps
                 // filling the disk. Fail instead if the anchor ever moves.
-                require(ACCESS_LOG_TYPE.containsMatchIn(body)) {
-                    "$SERVICES has no <accesslog type=\"…\"> to configure — $ACCESS_LOG_ENV would be silently ignored"
+                val open =
+                    CONTAINER_OPEN.find(body)
+                        ?: error("$SERVICES has no <container> element to configure — $ACCESS_LOG_ENV would be silently ignored")
+                // Comments stripped first: services.xml documents this very
+                // knob, and matching the tag name inside prose would refuse a
+                // perfectly good package.
+                require(!COMMENT.replace(body, "").contains("<accesslog")) {
+                    "$SERVICES already declares an access log; configure it there rather than via $ACCESS_LOG_ENV"
                 }
-                ACCESS_LOG_TYPE.replace(body) { m -> "${m.groupValues[1]}$type${m.groupValues[2]}" }
+                val at = open.range.last + 1
+                body.substring(0, at) + DISABLE_ELEMENT + body.substring(at)
             }
         }
     }

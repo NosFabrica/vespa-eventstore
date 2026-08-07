@@ -56,21 +56,30 @@ class VespaAppTest {
         error("$name is not in the bundled application package")
     }
 
+    /** services.xml documents this knob in prose, so only real markup counts. */
+    private fun withoutComments(xml: String) = xml.replace(Regex("<!--.*?-->", RegexOption.DOT_MATCHES_ALL), "")
+
     @Test
-    fun `the shipped package declares an access log explicitly`() {
-        // Left to Vespa's default, access logging is on and invisible in the
-        // package — which is how it grew to 3.2 GB/hour unnoticed.
+    fun `the shipped package leaves the access log to Vespa`() {
+        // Configuring an access log at all obliges the package to restate
+        // fileNamePattern — Vespa fails the deploy without one. Inheriting the
+        // default is what keeps services.xml free of that.
         assertTrue(
-            """<accesslog type="json"""" in entry("services.xml"),
-            "services.xml must declare <accesslog> so the choice is reviewable and VESPA_ACCESS_LOG has an anchor",
+            "<accesslog" !in withoutComments(entry("services.xml")),
+            "services.xml must not declare an access log; VESPA_ACCESS_LOG=disabled injects it",
         )
     }
 
     @Test
-    fun `VESPA_ACCESS_LOG rewrites the type and leaves the rest of the package alone`() {
+    fun `VESPA_ACCESS_LOG=disabled injects the element and leaves the rest of the package alone`() {
         val off = VespaApp.zipBytes("disabled")
-        assertTrue("""<accesslog type="disabled" """ in entry("services.xml", off), "the type must be swapped")
-        assertTrue(""""json"""" !in entry("services.xml", off), "the old type must not survive")
+        val services = entry("services.xml", off)
+        assertTrue("""<accesslog type="disabled" />""" in services, "the disable element must be injected: $services")
+        // Inside the container, not loose in <services> — Vespa would reject it.
+        assertTrue(
+            withoutComments(services).substringAfter("<container").substringBefore("</container>").contains("<accesslog"),
+            "the element must land inside <container>: $services",
+        )
         // The rewrite streams every entry through a new zip; the schemas must
         // come out the other side byte-identical or the deploy is broken.
         assertEquals(entries(VespaApp.zipBytes()), entries(off), "rewriting must not add or drop entries")
@@ -78,15 +87,17 @@ class VespaAppTest {
     }
 
     @Test
-    fun `an unset or blank VESPA_ACCESS_LOG ships the package as built`() {
+    fun `unset, blank and the keep-default values ship the package as built`() {
         assertContentEquals(VespaApp.zipBytes(), VespaApp.zipBytes(null), "unset must not rewrite")
         assertContentEquals(VespaApp.zipBytes(), VespaApp.zipBytes("   "), "blank must not rewrite")
+        assertContentEquals(VespaApp.zipBytes(), VespaApp.zipBytes("default"), "default must not rewrite")
+        assertContentEquals(VespaApp.zipBytes(), VespaApp.zipBytes("json"), "json is Vespa's default; must not rewrite")
     }
 
     @Test
     fun `an unknown VESPA_ACCESS_LOG fails loudly rather than deploying something else`() {
         val e = assertFailsWith<IllegalArgumentException> { VespaApp.zipBytes("off") }
-        assertTrue("disabled" in (e.message ?: ""), "the error must name the valid types: ${e.message}")
+        assertTrue("disabled" in (e.message ?: ""), "the error must name the valid values: ${e.message}")
     }
 
     @Test
