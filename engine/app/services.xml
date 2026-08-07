@@ -4,6 +4,27 @@
   <container id="default" version="1.0">
     <search />
     <document-api />
+    <!-- This package SHIPS WITHOUT an <accesslog> element on purpose (if you
+         are reading a deployed copy that has one, it was injected below):
+         Vespa's default (JSON, one line
+         per HTTP request, hourly rotation, zstd) is what most deployments
+         want, and declaring it explicitly would oblige us to restate
+         fileNamePattern and friends — Vespa rejects a configured access log
+         without one, so an explicit element means owning defaults we would
+         rather inherit.
+
+         It is not free, and the cost scales with the store's OWN traffic
+         rather than user traffic: the write path is read-heavy (dedup
+         existence checks, guard probes, supersession searches), so a
+         mirroring deployment logs mostly itself. Measured 2026-08-07 on a
+         router ingesting ~10-30k ev/s: ~500 req/s and ~3.2 GB/hour, rotated
+         and compressed but never pruned — enough to evict a Kubernetes pod
+         off an emptyDir sizeLimit roughly hourly.
+
+         Set VESPA_ACCESS_LOG=disabled and VespaApp.zipBytes() injects a
+         disabled accesslog element here at deploy time. Right where the HTTP
+         client is your own ingest and the useful record is the router's stats
+         plus Vespa's metrics. -->
     <nodes>
       <node hostalias="node1" />
     </nodes>
