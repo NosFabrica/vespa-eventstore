@@ -634,7 +634,8 @@ class VespaEventIndex(
         // So: start on the cursor, and fall back to the scan only once this
         // walk has PROVEN itself tie-dense. A run of oversized boundary groups
         // is the evidence; one wide second is not.
-        if (query.limit == null && !cursorSuitsThisWalk(query, withDTag)) {
+        // (`limit` is already known null — the bounded case returned above.)
+        if (!cursorSuitsThisWalk(query, withDTag)) {
             return visitIdsByScan(query, withDTag, onPage)
         }
         var until: Long? = query.until

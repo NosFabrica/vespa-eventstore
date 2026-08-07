@@ -295,7 +295,7 @@ internal class BulkRecordInsert(
             var bestInRun: Int? = null
             for (i in idxs) {
                 val e = events[i]
-                val lost = bestId != null && (bestAt > e.createdAt || (bestAt == e.createdAt && bestId!! < e.id))
+                val lost = bestId != null && (bestAt > e.createdAt || (bestAt == e.createdAt && bestId < e.id))
                 if (lost) {
                     outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.REPLACED)
                 } else {
