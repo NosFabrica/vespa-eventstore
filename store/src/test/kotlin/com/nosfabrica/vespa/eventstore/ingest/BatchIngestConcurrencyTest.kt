@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.eventstore.ingest
 
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
+import com.nosfabrica.vespa.eventstore.WriterTopology
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
@@ -191,19 +192,31 @@ class BatchIngestConcurrencyTest {
      * addresses, so their dedup reads have no reason to serialize. The
      * one-time guard-bloom load is warmed OUT of both measurements — it is a
      * per-process constant, not per-batch behavior.
+     *
+     * SINGLE_WRITER on purpose: this isolates the DEDUP-overlap property, and
+     * the guard stage's cost is mode-dependent. With the cache on, unflagged
+     * owners cost zero guard queries and the locked share is 2 of a batch's 3
+     * round trips; under the default SHARED_STRICT every commit pays a guard
+     * query pair under the lock, so the ratio here rises to 6.6x.
+     *
+     * Read that 6.6x as what it is — VIRTUAL time under simulated latency,
+     * i.e. the locked share of a commit, not throughput. Measured against a
+     * real single-node Vespa the two modes' `batchInsert` rates are
+     * indistinguishable (benchmark/README §2bb), because the engine write
+     * stage dominates a real commit in a way this scheduler does not model.
      */
     @Test
     fun `concurrent batches over disjoint addresses overlap their reads`() =
         runTest {
             seq = 0
-            val one = NostrSemanticsStore(LatencyEventIndex(InMemoryEventIndex(), lat), relay = relayUrl)
+            val one = NostrSemanticsStore(LatencyEventIndex(InMemoryEventIndex(), lat), relay = relayUrl, writers = WriterTopology.SINGLE_WRITER)
             one.batchInsert(scoreBatch(provider(9), count = 20))
             val t0 = testScheduler.currentTime
             one.batchInsert(scoreBatch(provider(0), count = 20)).let { }
             val single = testScheduler.currentTime - t0
 
             seq = 0
-            val many = NostrSemanticsStore(LatencyEventIndex(InMemoryEventIndex(), lat), relay = relayUrl)
+            val many = NostrSemanticsStore(LatencyEventIndex(InMemoryEventIndex(), lat), relay = relayUrl, writers = WriterTopology.SINGLE_WRITER)
             many.batchInsert(scoreBatch(provider(9), count = 20))
             val c = 8
             val batches = (0 until c).map { p -> scoreBatch(provider(p), count = 20) }

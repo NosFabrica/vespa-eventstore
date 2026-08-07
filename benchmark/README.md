@@ -217,6 +217,50 @@ single-node concurrency from one stream. **Net: concurrent publishers are not a
 reason to pick single-node Vespa; corpus size, read concurrency at scale, and
 search relevance are.**
 
+### 2bb. What the guard-owner cache actually costs (`BENCH_WRITERS=…`)
+
+`WriterTopology` decides whether the store may skip its NIP-09/NIP-62 admission
+probes, and the default (`SHARED_STRICT`) does not. That is a correctness
+choice — the cache's only failure is serving an event a tombstone covers — but
+it was defended with a reads/event number, so here is the ingest cost measured
+directly. `BENCH_WRITERS` selects the arm; run two arms back to back against
+the same live Vespa, each with its own `BENCH_ID_BAND`.
+
+**Per-event `insert()` (`BENCH_INSERT_PROBE=1`, 2k events, arms interleaved to
+cancel engine warming):**
+
+| arm | events/sec | p50 |
+|---|---:|---|
+| `SINGLE_WRITER` (cache on) | 142.6, 143.3, 143.8 — **~143** | 6.6ms |
+| `SHARED_STRICT` (default) | 135.9, 138.2, 136.6 — **~137** | 6.7–6.8ms |
+
+**~−4.5%, and p50 is unchanged.** That is the whole story of the per-event
+path: `insertLocked` fires the dup probe and both guard probes CONCURRENTLY
+(`async` inside one `coroutineScope`), so dropping the guard probes does not
+shorten the critical path — the dup probe still gates it. The cache's win was
+never latency; it is engine read capacity (reads/event 3.26 → 1.73), which is
+why the throughput delta is this small.
+
+**Bulk `batchInsert` — no measurable difference.** Single-stream
+(`BENCH_INGEST_PROFILE=1`, 20k events, batch 1000): strict 1269 / 1202 / 1433
+vs cached 1357 / 1300 / 1419 ev/s. The within-arm spread is larger than the
+between-arm gap, because the write stage (pipelined `putAll` awaiting acks) is
+~65–70% of wall time and 1000 events amortize the guard queries to ~2. The
+warmed concurrent harness says the same thing and then some — an early sample
+had cached at 2× strict, but re-running REVERSED it (strict 3098/3013 vs cached
+2690/2672 ev/s at conc 1), which is how you know the difference is noise on
+this path. Part of that reversal is real and worth knowing: `SINGLE_WRITER`
+pays a one-time exhaustive guard-set load per process, and that scan grows with
+the corpus, so on a large corpus the cache costs something at startup before it
+saves anything.
+
+> Correction to an earlier claim in this file and in `WriterTopology`'s KDoc:
+> the 5.7x → 6.6x figure from `BatchIngestConcurrencyTest` is a VIRTUAL-TIME
+> lock-contention ratio under simulated latency, not a throughput measurement.
+> It correctly describes the locked share of a commit rising from 2-of-3 round
+> trips to 3-of-4, but on a real single node that did not surface as an ev/s
+> difference. Do not quote it as an ingest cost.
+
 ### 2c. Draft-churn supersession — server-side conditional put (`BENCH_CONDPUT=1`)
 
 Clients re-save replaceable drafts constantly (every ~2 s per open editor), so a
@@ -1163,7 +1207,16 @@ SQLite bug to report upstream, not something to "fix" by breaking this store.
    (counterbalanced A/B, all runs within 2%) — the probes ran concurrently
    with the dup get, so this win is engine READ CAPACITY, not per-op latency:
    it pays under concurrent load, exactly where the mixed bench showed reads
-   and writes fighting.
+   and writes fighting. The cache is now **opt-in**, scoped by
+   `WriterTopology`: the default `SHARED_STRICT` caches nothing and probes
+   every insert, because skipping a probe is a pure read optimization whose
+   only failure is serving a deleted event. These numbers were measured with
+   the load-once cache — reproduce them with `open(writers = SINGLE_WRITER)`.
+   Measured ingest cost of the default is in §2bb: **~−4.5% on per-event
+   `insert()` (143 → 137 ev/s), and nothing measurable on `batchInsert`.**
+   `SHARED` gives the same per-insert skip as `SINGLE_WRITER` plus a periodic
+   corpus rebuild; a harness run longer than one interval pays that scan's read
+   load concurrently with whatever it is measuring.
 3. **Real-Vespa single-node ingest is COMPUTE-bound, not throttle-bound**
    (see the ingest stage profile above): the feed-window knobs are exhausted;
    chunk ~1000 × 2 streams is this box's ceiling and the remaining levers are

@@ -110,7 +110,7 @@ object EventStoreBenchmark {
             val n = env("BENCH_PROFILE_SIZE", 20_000)
             val band = System.getenv("BENCH_ID_BAND")?.toLongOrNull(16) ?: 0xE0L
             val events = NostrCorpus.generate(NostrCorpus.Config(size = n, seed = seed + 31, idBand = band))
-            com.nosfabrica.vespa.eventstore.VespaEventStore.open(vespaUrl).use { store ->
+            Backends.openVespa(vespaUrl).use { store ->
                 com.nosfabrica.vespa.eventstore.engine.IngestStats
                     .statusLine() // reset the deltas
                 val nanos =

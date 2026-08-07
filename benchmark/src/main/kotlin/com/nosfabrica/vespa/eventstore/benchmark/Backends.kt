@@ -21,6 +21,8 @@
 package com.nosfabrica.vespa.eventstore.benchmark
 
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
+import com.nosfabrica.vespa.eventstore.VespaEventStore
+import com.nosfabrica.vespa.eventstore.WriterTopology
 import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.sqlite.EventStore as SqliteEventStore
@@ -53,4 +55,24 @@ object Backends {
         val counting = CountingEventIndex(InMemoryEventIndex())
         return NostrSemanticsStore(counting, relay = null) to counting
     }
+
+    /**
+     * `BENCH_WRITERS` — the [WriterTopology] a live-Vespa bench opens with, so
+     * the guard-owner cache can be A/B'd without editing call sites. Unset =
+     * the product default (`SHARED_STRICT`, no cache, every insert probes);
+     * `SINGLE_WRITER` is the cached arm. This exists because the cache's cost
+     * is a claim about ingest speed, and a claim about speed should be
+     * reproducible by anyone with a Vespa and one env var.
+     */
+    fun benchWriters(): WriterTopology =
+        System.getenv("BENCH_WRITERS")?.trim()?.uppercase()?.let { name ->
+            WriterTopology.entries.firstOrNull { it.name == name }
+                ?: error("BENCH_WRITERS=$name is not one of ${WriterTopology.entries.joinToString { it.name }}")
+        } ?: WriterTopology.SHARED_STRICT
+
+    /** [VespaEventStore.open] honouring [benchWriters]. */
+    fun openVespa(
+        url: String,
+        autoDeploy: Boolean = true,
+    ) = VespaEventStore.open(url = url, autoDeploy = autoDeploy, writers = benchWriters())
 }

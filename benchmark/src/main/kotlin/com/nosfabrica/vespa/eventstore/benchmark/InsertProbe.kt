@@ -20,7 +20,6 @@
  */
 package com.nosfabrica.vespa.eventstore.benchmark
 
-import com.nosfabrica.vespa.eventstore.VespaEventStore
 import kotlinx.coroutines.runBlocking
 import kotlin.system.measureNanoTime
 
@@ -41,7 +40,7 @@ object InsertProbe {
     ) = runBlocking {
         println("insert probe @ $url  band=0x${band.toString(16)}  size=$size  seed=$seed")
         val events = NostrCorpus.generate(NostrCorpus.Config(size = size, seed = seed + 7, idBand = band))
-        VespaEventStore.open(url).use { store ->
+        Backends.openVespa(url).use { store ->
             Warmup.warm(store) // steady-state, not JIT warmup — see Warmup
             var ok = 0
             val freshLat = Latencies()

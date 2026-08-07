@@ -38,6 +38,61 @@ writes the same cluster — regardless of node count, including one node:
 There are no cross-document transactions to fix this engine-side — Vespa's
 conditions see only the one document they address.
 
+### A different second-writer failure: the guard-owner cache
+
+The two races above are *windows* — microseconds between one instance's probe
+and another's write. The guard-owner cache (`GuardOwners`) fails differently
+and needs its own answer:
+
+- it caches the owners that have a stored kind-5/62, so nearly every insert can
+  skip both admission probes;
+- it is loaded ONCE, lazily, and afterwards learns new guards only from writes
+  made through this store instance;
+- so a tombstone another writer stores is invisible to this instance **for the
+  rest of its process lifetime**, and every event that tombstone covers is
+  admitted and reported accepted. No concurrency required — the two writes can
+  be hours apart.
+
+The deployment that hits it is not exotic: two processes split **by role**
+(serving relay + sync router) rather than by owner, both touching the same
+authors, with the router mirroring kinds 5 and 62 from upstream relays.
+
+`WriterTopology` is how a deployment settles it, because no store can detect a
+sibling feeder:
+
+| | guard cache | a foreign tombstone is honoured | serves a deleted event? |
+|---|---|---|---|
+| `SHARED_STRICT` (default) | none; every insert probes | immediately | no |
+| `SINGLE_WRITER` | loaded once, never rebuilt | never — the mode asserts there are none | no, while the assertion holds |
+| `SHARED` | rebuilt every `guardRefreshSeconds` | within one rebuild | yes, inside that window |
+
+`SHARED_STRICT` is the default because the cache is **purely a performance
+device**. It never makes anything more correct — it only decides to skip a
+probe the store would otherwise run — so every one of its failures is in one
+direction: an event a tombstone covers is admitted, stored, and served. And
+nothing repairs that afterwards; re-delivering the tombstone hits the dedup
+gate before `applyDeletion`, so no re-sweep occurs. A deployment that has said
+nothing about its writers must not be trading that invariant for read capacity,
+so the savings are opted into by asserting a property of the deployment.
+
+`SINGLE_WRITER` is the fast path with no window at all — assert it when it is
+true. `SHARED` is for a multi-writer deployment that genuinely accepts a
+bounded window; read the bound honestly first, because it is
+`max(guardRefreshSeconds, rebuild duration)` and the rebuild is a document-API
+visit whose cost scales with the WHOLE corpus rather than with the number of
+guards (see `VespaEventIndex.visitIds`' measured scan rates — a full pass on a
+42.5M-doc corpus ran ~28 minutes). On a large corpus the rebuild duration is
+the binding term, measured in hours, not the configured interval.
+
+Rebuilds are union-only (a guard noted while the scan runs is folded into the
+replacement before it is published), so a refresh can never turn a flagged
+owner unflagged. `refreshGuardOwners()` is the on-demand barrier — worth
+calling after a sync round that mirrored guards.
+
+Note the shapes differ: owner-lane sharding fixes the races above completely,
+and it also satisfies `SINGLE_WRITER` — one lane sees all of its owners' guards.
+Role-split processes satisfy neither.
+
 ## The right sharding: one WRITE LANE per owner, not one node per pubkey
 
 The saving property of Nostr's semantics: **every constraint this store

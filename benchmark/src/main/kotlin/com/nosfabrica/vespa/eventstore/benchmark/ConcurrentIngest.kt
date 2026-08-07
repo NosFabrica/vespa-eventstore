@@ -75,7 +75,7 @@ object ConcurrentIngest {
                 val band = 0x40L + (if (engine == "sqlite") 0L else 0x20L) + li
                 val corpus = NostrCorpus.generate(NostrCorpus.Config(size = size, seed = seed + li, idBand = band))
                 val slices = partition(corpus, c)
-                val store: IEventStore = if (engine == "sqlite") Backends.sqliteMemory() else VespaEventStore.open(url!!)
+                val store: IEventStore = if (engine == "sqlite") Backends.sqliteMemory() else Backends.openVespa(url!!)
 
                 val ok = AtomicInteger()
                 val fail = AtomicInteger()
