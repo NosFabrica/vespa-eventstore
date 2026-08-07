@@ -196,10 +196,14 @@ class BatchIngestConcurrencyTest {
      * SINGLE_WRITER on purpose: this isolates the DEDUP-overlap property, and
      * the guard stage's cost is mode-dependent. With the cache on, unflagged
      * owners cost zero guard queries and the locked share is 2 of a batch's 3
-     * round trips. Under the default SHARED_STRICT there is no cache, so every
-     * commit pays a guard query pair under the lock — 3 locked of 4, measured
-     * 6.6x here against this test's 5.7x. That is a real cost of the default,
-     * recorded rather than asserted: it is throughput, not correctness.
+     * round trips; under the default SHARED_STRICT every commit pays a guard
+     * query pair under the lock, so the ratio here rises to 6.6x.
+     *
+     * Read that 6.6x as what it is — VIRTUAL time under simulated latency,
+     * i.e. the locked share of a commit, not throughput. Measured against a
+     * real single-node Vespa the two modes' `batchInsert` rates are
+     * indistinguishable (benchmark/README §2bb), because the engine write
+     * stage dominates a real commit in a way this scheduler does not model.
      */
     @Test
     fun `concurrent batches over disjoint addresses overlap their reads`() =

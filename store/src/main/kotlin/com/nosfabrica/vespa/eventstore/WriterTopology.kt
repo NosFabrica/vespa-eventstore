@@ -61,13 +61,16 @@ enum class WriterTopology {
      * thought about writers lands here. Equivalent to `GUARD_OWNERS_DISABLE=1`
      * (which forces this mode whatever the caller passed).
      *
-     * The cost is the measured guard-cache win, given up: reads/event 1.73 →
-     * 3.26 on the per-event insert path (docs/server-side-constraints.md). The
-     * bulk `batchInsert` path pays too, less obviously — its guard queries are
-     * amortized per BATCH rather than per event, but they stop being free and
-     * they sit UNDER the writer lock, so the locked share of a commit goes from
-     * 2 of 3 round trips to 3 of 4: 8 concurrent disjoint-owner batches
-     * serialize 6.6x instead of 5.7x (`BatchIngestConcurrencyTest`).
+     * The cost, measured against a live single-node Vespa (benchmark/README
+     * §2bb), is small: per-event `insert()` ~143 → ~137 events/sec (**−4.5%**)
+     * with p50 UNCHANGED, and no measurable difference on `batchInsert` (the
+     * write stage is ~65-70% of a bulk commit's wall time and 1000 events
+     * amortize the guard queries to ~2). Latency is unchanged because
+     * `insertLocked` fires the dup probe and both guard probes concurrently —
+     * dropping the guard probes never shortened the critical path. What the
+     * cache really bought was engine READ CAPACITY (reads/event 3.26 → 1.73,
+     * docs/server-side-constraints.md), which is a headroom argument, not a
+     * speed one — and not worth an invariant.
      */
     SHARED_STRICT,
 

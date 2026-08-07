@@ -159,7 +159,12 @@ guards, so it is scoped by `WriterTopology` (an argument to `open()`, since no
 store can detect a sibling feeder) and it is **opt-in**: the default is
 `SHARED_STRICT`, which caches nothing. The numbers above are therefore what a
 deployment gains by asserting `SINGLE_WRITER` (no staleness window while the
-assertion holds), not what it gets for free. `SHARED` keeps the savings for a
+assertion holds), not what it gets for free. Measured, that gain is smaller
+than the reads/event ratio suggests: **per-event `insert()` 143 → 137 ev/s
+(−4.5%) with p50 unchanged, and nothing measurable on `batchInsert`**
+(benchmark/README §2bb). The probes run concurrently with the dup probe, so
+they were never on the critical path — the cache buys read CAPACITY, not
+speed. `SHARED` keeps the savings for a
 multi-writer deployment at the price of a bounded window — see
 docs/multi-node-consistency.md, and note the bound is the REBUILD duration on a
 large corpus, not the configured interval. The reasoning behind the default:
