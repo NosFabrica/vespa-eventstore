@@ -321,22 +321,8 @@ VespaEventStore.open("http://localhost:8080").use { store ->
 For a commit snapshot, JitPack works:
 `com.github.NosFabrica.vespa-eventstore:store:<commit>`.
 
-## Four things to know
+## Three things to know
 
-- **The guard-probe skip is opt-in, because a deleted event is never served.**
-  The store can skip its NIP-09/NIP-62 admission probes for owners it has no
-  stored kind 5/62 for — a pure read optimization (reads/event 3.26 → 1.73)
-  whose only failure mode is admitting an event a tombstone covers. It learns
-  new guards from its own writes, so a second process feeding the same cluster
-  (a sync router beside a serving relay, a mirror pulling tombstones from
-  upstream) stores guards this one never hears about. Since no store can detect
-  a sibling feeder, `open(writers = …)` defaults to `WriterTopology.SHARED_STRICT`:
-  no cache, every insert probes, no window. Buy the savings back by asserting
-  `SINGLE_WRITER` — one store instance, or one lane of an owner-sharded fleet
-  ([`docs/multi-node-consistency.md`](docs/multi-node-consistency.md)) — which
-  also has no window while the assertion holds. `SHARED` is the middle ground
-  for a multi-writer deployment that accepts a *bounded* window, rebuilding the
-  cache every `guardRefreshSeconds`; `store.refreshGuardOwners()` forces one.
 - **Supplying an observer gates recall.** A query with a resolved observer —
   `observer:` token or `StoreQueryContext` — only returns authors that lens
   trusts at the floor or above, plain filters included (newest-first order is
