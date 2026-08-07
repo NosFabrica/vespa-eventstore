@@ -84,7 +84,10 @@ import kotlin.coroutines.coroutineContext
  * [Mutex], so query-then-write is atomic against other writers in this
  * process; and [EventIndex] guarantees an acked put is visible to search.
  * There are no cross-document transactions — [transaction] buffers and applies
- * sequentially without rollback.
+ * sequentially without rollback. Both properties are about writes THIS process
+ * makes; when another process feeds the same index, say so with [writers] —
+ * the guard-owner cache is the one piece of state that would otherwise trust
+ * this process's writes to be all of them.
  *
  * Events are NOT verified here; verification is the ingest path's job, once,
  * before insert.
@@ -93,6 +96,16 @@ class NostrSemanticsStore(
     private val index: EventIndex,
     override val relay: NormalizedRelayUrl? = null,
     private val nowSecs: () -> Long = { System.currentTimeMillis() / 1000 },
+    /**
+     * Whether anything ELSE writes [index]. The guard-owner cache is only
+     * self-maintaining for a writer that sees all of its owners' guards, so
+     * this is an assertion the caller must make — the store cannot see a
+     * second feeder. See [WriterTopology]; [WriterTopology.SHARED] (default)
+     * keeps the cache but rebuilds it every [guardRefreshMillis].
+     */
+    writers: WriterTopology = WriterTopology.SHARED,
+    /** Guard-cache rebuild cadence under [WriterTopology.SHARED]; 0 disables the refresher. */
+    guardRefreshMillis: Long = DEFAULT_GUARD_REFRESH_MILLIS,
     /** Events removed per sweep round (see [Deletions]). Internal — a test seam, like [nowSecs]. */
     internal val sweepPage: Int = 10_000,
 ) : IEventStore {
@@ -100,7 +113,7 @@ class NostrSemanticsStore(
 
     // Owners with any stored tombstone/vanish; everyone else's inserts skip the
     // NIP-09/62 guard probes entirely (see GuardOwners for the safety argument).
-    private val guards = GuardOwners(index)
+    private val guards = GuardOwners(index, writers, guardRefreshMillis)
 
     private val deletions = Deletions(index, relay, sweepPage)
 
@@ -623,7 +636,22 @@ class NostrSemanticsStore(
             FtsReindexProgress(cursor = page.continuation, processedThisBatch = page.docs.size, done = page.continuation == null)
         }
 
-    override fun close() = index.close()
+    /**
+     * Rebuild the guard-owner cache from the corpus NOW — the explicit barrier
+     * for the staleness [WriterTopology.SHARED] otherwise bounds by its refresh
+     * interval. Worth calling after a known foreign write (a sync round that
+     * mirrored kinds 5/62 from upstream), or to make a test deterministic
+     * instead of interval-bound. Costs one distinct-author scan per guard kind;
+     * union-only, so it can never unflag an owner.
+     */
+    suspend fun refreshGuardOwners() = guards.refresh()
+
+    override fun close() {
+        // Stops the guard refresher's background walks before the index it
+        // reads through goes away.
+        guards.close()
+        index.close()
+    }
 
     private companion object {
         // Runs at least this long take the bulk path; smaller ones aren't

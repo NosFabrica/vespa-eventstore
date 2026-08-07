@@ -321,8 +321,19 @@ VespaEventStore.open("http://localhost:8080").use { store ->
 For a commit snapshot, JitPack works:
 `com.github.NosFabrica.vespa-eventstore:store:<commit>`.
 
-## Three things to know
+## Four things to know
 
+- **Say whether something ELSE writes your Vespa.** `open(writers = …)`. The
+  store skips its NIP-09/NIP-62 admission probes for owners it has no stored
+  kind 5/62 for, and it learns new guards from its own writes — so a second
+  process feeding the same cluster (a sync router beside a serving relay, a
+  mirror pulling tombstones from upstream) stores guards this one never hears
+  about. The default, `WriterTopology.SHARED`, assumes exactly that and rebuilds
+  the cache every `guardRefreshSeconds` (300), so a foreign tombstone is honoured
+  within an interval. Assert `SINGLE_WRITER` — one store instance, or one lane of
+  an owner-sharded fleet ([`docs/multi-node-consistency.md`](docs/multi-node-consistency.md))
+  — to drop the rebuilds, or `SHARED_STRICT` to give up the cache and probe every
+  insert. `store.refreshGuardOwners()` forces a rebuild after a known foreign write.
 - **Supplying an observer gates recall.** A query with a resolved observer —
   `observer:` token or `StoreQueryContext` — only returns authors that lens
   trusts at the floor or above, plain filters included (newest-first order is

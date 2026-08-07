@@ -1163,7 +1163,13 @@ SQLite bug to report upstream, not something to "fix" by breaking this store.
    (counterbalanced A/B, all runs within 2%) — the probes ran concurrently
    with the dup get, so this win is engine READ CAPACITY, not per-op latency:
    it pays under concurrent load, exactly where the mixed bench showed reads
-   and writes fighting.
+   and writes fighting. The cache is now scoped by `WriterTopology`; these
+   numbers were measured with the load-once cache, which is what
+   `open(writers = SINGLE_WRITER)` gives — reproduce them with that. The
+   default `SHARED` is identical per insert (same skip, same reads/event) but
+   rebuilds the cache every `guardRefreshSeconds` (300) so a second writer's
+   tombstone can't be ignored forever; a harness run longer than one interval
+   pays that scan's read load concurrently with whatever it is measuring.
 3. **Real-Vespa single-node ingest is COMPUTE-bound, not throttle-bound**
    (see the ingest stage profile above): the feed-window knobs are exhausted;
    chunk ~1000 × 2 streams is this box's ceiling and the remaining levers are

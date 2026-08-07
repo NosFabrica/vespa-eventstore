@@ -38,6 +38,45 @@ writes the same cluster — regardless of node count, including one node:
 There are no cross-document transactions to fix this engine-side — Vespa's
 conditions see only the one document they address.
 
+### A different second-writer failure: the guard-owner cache
+
+The two races above are *windows* — microseconds between one instance's probe
+and another's write. The guard-owner cache (`GuardOwners`) fails differently
+and needs its own answer:
+
+- it caches the owners that have a stored kind-5/62, so nearly every insert can
+  skip both admission probes;
+- it is loaded ONCE, lazily, and afterwards learns new guards only from writes
+  made through this store instance;
+- so a tombstone another writer stores is invisible to this instance **for the
+  rest of its process lifetime**, and every event that tombstone covers is
+  admitted and reported accepted. No concurrency required — the two writes can
+  be hours apart.
+
+The deployment that hits it is not exotic: two processes split **by role**
+(serving relay + sync router) rather than by owner, both touching the same
+authors, with the router mirroring kinds 5 and 62 from upstream relays.
+
+`WriterTopology` is how a deployment settles it, because no store can detect a
+sibling feeder:
+
+| | guard cache | a foreign tombstone is honoured |
+|---|---|---|
+| `SINGLE_WRITER` | loaded once, never rebuilt | never — the mode asserts there are none |
+| `SHARED` (default) | rebuilt every `guardRefreshSeconds` | within one interval |
+| `SHARED_STRICT` | none; every insert probes | immediately |
+
+`SHARED` is the default precisely because the assertion `SINGLE_WRITER` makes
+is unverifiable: a deployment that says nothing gets staleness bounded by the
+interval instead of by the process. Rebuilds are union-only (a guard noted
+while the scan runs is folded into the replacement before it is published), so
+a refresh can never turn a flagged owner unflagged. `refreshGuardOwners()` is
+the on-demand barrier — worth calling after a sync round that mirrored guards.
+
+Note the shapes differ: owner-lane sharding fixes the races above completely,
+and it also satisfies `SINGLE_WRITER` — one lane sees all of its owners' guards.
+Role-split processes satisfy neither.
+
 ## The right sharding: one WRITE LANE per owner, not one node per pubkey
 
 The saving property of Nostr's semantics: **every constraint this store

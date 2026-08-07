@@ -121,6 +121,18 @@ class VespaEventStore internal constructor(
      */
     suspend fun awaitTrustProjection() = trust.dirt.drain { store.withWriteLock(it) }
 
+    /**
+     * The guard-cache barrier, the counterpart to [awaitTrustProjection] for
+     * NIP-09/NIP-62 admission: rebuild the set of owners with a stored
+     * tombstone/vanish from the corpus NOW, instead of waiting out
+     * `guardRefreshSeconds`. For a deployment where something ELSE writes this
+     * Vespa ([WriterTopology.SHARED]) and knows when — call it after a sync
+     * round that mirrored kinds 5/62, and the next insert honours what it
+     * brought in. Costs one distinct-author scan per guard kind; union-only, so
+     * it can never unflag an owner.
+     */
+    suspend fun refreshGuardOwners() = store.refreshGuardOwners()
+
     override fun close() {
         // Drainer first: queued work survives in the persisted marker for the
         // next open — shutdown must not block on a six-figure walk.
@@ -149,6 +161,15 @@ class VespaEventStore internal constructor(
          * identical in both modes: the same crash-safe persisted marker is
          * drained here, at the next write, or by [reconcileTrust].
          *
+         * [writers] states whether ANY OTHER process feeds this same Vespa —
+         * a second store instance, a sync router beside a serving relay, a
+         * mirror. It cannot be detected from here, so it defaults to the
+         * conservative [WriterTopology.SHARED], which keeps the guard-owner
+         * read savings but rebuilds that cache every [guardRefreshSeconds] so a
+         * foreign NIP-09/NIP-62 guard is honoured within an interval rather
+         * than never. A deployment that owns every write for its owners should
+         * say [WriterTopology.SINGLE_WRITER] and skip the rebuilds entirely.
+         *
          * The store imposes no result cap of its own: bounding a query's cost
          * belongs to whoever writes the filter.
          */
@@ -159,12 +180,20 @@ class VespaEventStore internal constructor(
             configUrl: String = deriveConfigUrl(url),
             endpoints: List<String> = emptyList(),
             deferTrustProjection: Boolean = true,
+            writers: WriterTopology = WriterTopology.SHARED,
+            guardRefreshSeconds: Long = DEFAULT_GUARD_REFRESH_MILLIS / 1000,
         ): VespaEventStore {
             if (autoDeploy) SchemaDeployer(configUrl).deployIfAbsent(url)
             val eventIndex = VespaEventIndex(url, endpoints = endpoints)
             val reputations = VespaReputationIndex(url)
             val trust = TrustProjection(eventIndex, reputations)
-            val store = NostrSemanticsStore(trust, relay = relay)
+            val store =
+                NostrSemanticsStore(
+                    trust,
+                    relay = relay,
+                    writers = writers,
+                    guardRefreshMillis = guardRefreshSeconds * 1000,
+                )
             // The reconciler's and drainer's mutating batches take the store's
             // writer lock (the gate): repairs must not race live inserts'
             // recomputes.
