@@ -100,10 +100,12 @@ class NostrSemanticsStore(
      * Whether anything ELSE writes [index]. The guard-owner cache is only
      * self-maintaining for a writer that sees all of its owners' guards, so
      * this is an assertion the caller must make — the store cannot see a
-     * second feeder. See [WriterTopology]; [WriterTopology.SHARED] (default)
-     * keeps the cache but rebuilds it every [guardRefreshMillis].
+     * second feeder. See [WriterTopology]. The default,
+     * [WriterTopology.SHARED_STRICT], caches nothing and probes every insert:
+     * skipping a guard probe is a pure performance choice, and it is not one
+     * this store makes on a caller's behalf.
      */
-    writers: WriterTopology = WriterTopology.SHARED,
+    writers: WriterTopology = WriterTopology.SHARED_STRICT,
     /** Guard-cache rebuild cadence under [WriterTopology.SHARED]; 0 disables the refresher. */
     guardRefreshMillis: Long = DEFAULT_GUARD_REFRESH_MILLIS,
     /** Events removed per sweep round (see [Deletions]). Internal — a test seam, like [nowSecs]. */

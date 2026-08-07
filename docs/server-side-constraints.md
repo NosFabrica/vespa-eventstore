@@ -156,12 +156,18 @@ read capacity under load.
 
 That cache only maintains itself for a writer that sees all of its owners'
 guards, so it is scoped by `WriterTopology` (an argument to `open()`, since no
-store can detect a sibling feeder). The default `SHARED` keeps the read savings
-and rebuilds the cache on an interval, bounding how long a foreign tombstone
-can be ignored — see docs/multi-node-consistency.md. The all-or-nothing escape
-hatch (`GUARD_OWNERS_DISABLE=1`, now `SHARED_STRICT`) is still there, and still
-costs the whole measured win, which is why it is not the answer to a second
-feeder. The docproc bundle remains the right tool when the goal is ENFORCEMENT
+store can detect a sibling feeder) and it is **opt-in**: the default is
+`SHARED_STRICT`, which caches nothing. The numbers above are therefore what a
+deployment gains by asserting `SINGLE_WRITER` (no staleness window while the
+assertion holds), not what it gets for free. `SHARED` keeps the savings for a
+multi-writer deployment at the price of a bounded window — see
+docs/multi-node-consistency.md, and note the bound is the REBUILD duration on a
+large corpus, not the configured interval. The reasoning behind the default:
+skipping a probe never makes anything more correct, so every failure of the
+cache is one-directional (an erased event admitted and served) and nothing
+re-sweeps it afterwards; that is not a trade to make on a caller's behalf.
+`GUARD_OWNERS_DISABLE=1` still forces `SHARED_STRICT` over any argument.
+The docproc bundle remains the right tool when the goal is ENFORCEMENT
 for multi-feeder deployments (it is the only mechanism that guards writes this
 store never sees, with no staleness window at all); as a pure performance lever
 it is now largely superseded. Address-keyed replaceables are now **shipped opt-in**

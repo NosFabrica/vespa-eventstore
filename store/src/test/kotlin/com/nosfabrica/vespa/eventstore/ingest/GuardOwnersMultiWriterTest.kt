@@ -90,7 +90,7 @@ class GuardOwnersMultiWriterTest {
         runBlocking {
             val index = InMemoryEventIndex()
             val a = NostrSemanticsStore(index, relay = relay)
-            val b = NostrSemanticsStore(index, relay = relay)
+            val b = NostrSemanticsStore(index, relay = relay, writers = WriterTopology.SHARED)
             val author = pk("a1")
             val covered = note(author)
 
@@ -120,7 +120,7 @@ class GuardOwnersMultiWriterTest {
         runBlocking {
             val index = InMemoryEventIndex()
             val a = NostrSemanticsStore(index, relay = relay)
-            val b = NostrSemanticsStore(index, relay = relay, guardRefreshMillis = 20)
+            val b = NostrSemanticsStore(index, relay = relay, writers = WriterTopology.SHARED, guardRefreshMillis = 20)
             val author = pk("a2")
             val covered = (0 until 200).map { note(author) }
 
@@ -143,9 +143,32 @@ class GuardOwnersMultiWriterTest {
         }
 
     /**
-     * The strict floor: no cache, so a foreign tombstone blocks on the very
-     * next insert with no interval at all. This is what `GUARD_OWNERS_DISABLE=1`
-     * buys, and the behaviour a deployment must not lose by moving off it.
+     * THE DEFAULT, pinned as a correctness property rather than a config
+     * detail: a caller who says nothing about writers must not be silently
+     * trading "a deleted event is never served" for read capacity. Constructed
+     * with no `writers` argument on purpose — if the default ever drifts back
+     * to a caching mode, this fails.
+     */
+    @Test
+    fun theDefaultTopologyBlocksImmediately() =
+        runBlocking {
+            val index = InMemoryEventIndex()
+            val a = NostrSemanticsStore(index, relay = relay)
+            val b = NostrSemanticsStore(index, relay = relay)
+            val author = pk("a6")
+            val covered = note(author)
+
+            b.insert(note(pk("c6")))
+            a.insert(tombstone(author, covered.id))
+
+            val rejected = assertFailsWith<RejectedException> { b.insert(covered) }
+            assertEquals(Rejections.DELETED, rejected.message, "the DEFAULT topology served a deleted event")
+            assertNull(index.get(covered.id))
+        }
+
+    /**
+     * The same floor named explicitly — what `GUARD_OWNERS_DISABLE=1` forces,
+     * and the behaviour a deployment must not lose by moving off that switch.
      */
     @Test
     fun strictTopologyBlocksImmediately() =

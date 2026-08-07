@@ -33,50 +33,74 @@ package com.nosfabrica.vespa.eventstore
  * re-admit what the other writer erased, forever. That is what this type makes
  * the caller state.
  *
- * It is deliberately NOT inferable: no store can see another process feeding
- * the same cluster. Defaulting to [SHARED] therefore means the deployment that
- * says nothing gets bounded staleness rather than an unbounded one, and the
- * process-lifetime cache is something a deployment opts into by asserting a
- * property of itself.
+ * THE CACHE IS PURELY A PERFORMANCE DEVICE. It never makes anything more
+ * correct: it only ever decides to SKIP a probe the store would otherwise run,
+ * so its every failure is in one direction — an event a tombstone covers gets
+ * admitted, stored, and served. And it does not self-correct: re-delivering
+ * the tombstone hits the dedup gate before `applyDeletion`, so nothing
+ * re-sweeps what was wrongly let in.
+ *
+ * Which is why the DEFAULT is [SHARED_STRICT], the mode that caches nothing.
+ * "A deleted event is never served" is an invariant, not a budget, so a
+ * deployment that says nothing about its topology must not be trading it for
+ * read capacity. The read savings are opted INTO by asserting a property of
+ * the deployment — [SINGLE_WRITER] if it is true (then there is no window at
+ * all), [SHARED] if a bounded one is genuinely acceptable.
  *
  * Orthogonal to the per-insert races in docs/multi-node-consistency.md (which
  * no cache setting fixes — those want one write lane per owner).
  */
 enum class WriterTopology {
     /**
+     * Other writers, or simply no claim about them: NEVER skip a guard probe.
+     * Every insert pays the NIP-09/NIP-62 admission reads. **The default.**
+     *
+     * A covered event is rejected at admission with no staleness window of any
+     * kind. Correct under every topology, and the only mode that needs no
+     * assertion to be correct — which is exactly why a caller who has not
+     * thought about writers lands here. Equivalent to `GUARD_OWNERS_DISABLE=1`
+     * (which forces this mode whatever the caller passed).
+     *
+     * The cost is the measured guard-cache win, given up: reads/event 1.73 →
+     * 3.26 on the per-event insert path (docs/server-side-constraints.md). The
+     * bulk `batchInsert` path pays too, less obviously — its guard queries are
+     * amortized per BATCH rather than per event, but they stop being free and
+     * they sit UNDER the writer lock, so the locked share of a commit goes from
+     * 2 of 3 round trips to 3 of 4: 8 concurrent disjoint-owner batches
+     * serialize 6.6x instead of 5.7x (`BatchIngestConcurrencyTest`).
+     */
+    SHARED_STRICT,
+
+    /**
      * This process is the ONLY writer for its owners — a single store instance,
      * or one lane of an owner-sharded fleet (docs/multi-node-consistency.md).
      *
      * The guard cache is then exact for the process's lifetime: it is loaded
      * once from the corpus and every guard stored afterwards is this process's
-     * own write. No refresh, no background grouping queries. The fastest and,
-     * under the asserted topology, fully sound.
+     * own write. No refresh, no background scans. The fast path with NO
+     * staleness window — but only while the assertion holds. Assert it falsely
+     * and a second writer's tombstones are ignored for as long as this process
+     * lives.
      */
     SINGLE_WRITER,
 
     /**
-     * OTHER processes write the same index (a sync router beside a relay, a
-     * second store instance, any foreign feeder) — the default, because a
-     * library cannot detect them.
+     * Other processes write the same index, AND a bounded window in which a
+     * foreign tombstone is not yet honoured is acceptable for this deployment.
      *
-     * The guard cache is kept, but rebuilt from the corpus on an interval, so a
-     * foreign tombstone is honoured after at most one refresh instead of never.
-     * Staleness becomes the interval, not the process lifetime; the hot-path
-     * read savings survive, at the cost of one distinct-author scan per guard
-     * kind per refresh, off the insert path. `refreshGuardOwners()` forces one.
+     * The guard cache is kept and rebuilt from the corpus on an interval, so a
+     * foreign guard takes effect after at most one refresh instead of never.
+     * The hot-path read savings survive, at the cost of one distinct-author
+     * scan per guard kind per refresh. `refreshGuardOwners()` forces one.
+     *
+     * Read the bound honestly before choosing this: it is
+     * `max(guardRefreshSeconds, rebuild duration)`, and the rebuild is a
+     * document-API visit whose cost scales with the WHOLE corpus, not with the
+     * number of guards. On a large corpus that is the binding term, and it is
+     * measured in hours. Until the rebuild is index-backed, prefer
+     * [SHARED_STRICT] for anything that must not serve a deleted event.
      */
     SHARED,
-
-    /**
-     * Other writers, and NO staleness window is acceptable: never skip a guard
-     * probe. Every insert pays the NIP-09/NIP-62 admission reads.
-     *
-     * The strict floor, equivalent to `GUARD_OWNERS_DISABLE=1` (which forces
-     * this mode whatever the caller passed). Correct under any topology; it
-     * gives up the measured reads/event win entirely (3.26 → 1.73, see
-     * docs/server-side-constraints.md), which is why it is not the default.
-     */
-    SHARED_STRICT,
 }
 
 /**

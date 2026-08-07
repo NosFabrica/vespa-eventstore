@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.eventstore.ingest
 
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
+import com.nosfabrica.vespa.eventstore.WriterTopology
 import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.normalizeRelayUrl
@@ -70,8 +71,9 @@ class GuardOwnersTest {
             plain.forEach { author -> store.insert(Event(id(), author, 1_000, 1, emptyArray(), "hi", "")) }
 
             // A FRESH GuardOwners over the same index — exercises the exhaustive
-            // scanAuthors load, not the write-time note*Stored path.
-            val guards = GuardOwners(index)
+            // scanAuthors load, not the write-time note*Stored path. SINGLE_WRITER
+            // because this asserts what the CACHE holds; the default caches nothing.
+            val guards = GuardOwners(index, WriterTopology.SINGLE_WRITER)
 
             deleters.forEach { author ->
                 assertTrue(guards.mightBeDeleted(author), "deleter $author not flagged — false negative")
@@ -101,7 +103,7 @@ class GuardOwnersTest {
     fun noteGuardStoredFlagsAfterLoad() =
         runBlocking {
             val index = InMemoryEventIndex()
-            val guards = GuardOwners(index)
+            val guards = GuardOwners(index, WriterTopology.SINGLE_WRITER)
             val author = pk("aa")
             // Trigger the (empty) load, then record guards as the write path would.
             assertFalse(guards.mightBeDeleted(author))

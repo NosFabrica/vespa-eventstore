@@ -1163,13 +1163,18 @@ SQLite bug to report upstream, not something to "fix" by breaking this store.
    (counterbalanced A/B, all runs within 2%) — the probes ran concurrently
    with the dup get, so this win is engine READ CAPACITY, not per-op latency:
    it pays under concurrent load, exactly where the mixed bench showed reads
-   and writes fighting. The cache is now scoped by `WriterTopology`; these
-   numbers were measured with the load-once cache, which is what
-   `open(writers = SINGLE_WRITER)` gives — reproduce them with that. The
-   default `SHARED` is identical per insert (same skip, same reads/event) but
-   rebuilds the cache every `guardRefreshSeconds` (300) so a second writer's
-   tombstone can't be ignored forever; a harness run longer than one interval
-   pays that scan's read load concurrently with whatever it is measuring.
+   and writes fighting. The cache is now **opt-in**, scoped by
+   `WriterTopology`: the default `SHARED_STRICT` caches nothing and probes
+   every insert, because skipping a probe is a pure read optimization whose
+   only failure is serving a deleted event. These numbers were measured with
+   the load-once cache — reproduce them with `open(writers = SINGLE_WRITER)`,
+   and read a default-configured run as the 3.26 baseline. The bulk path pays
+   under the default too: its guard queries are amortized per batch but no
+   longer free, and they sit under the writer lock, so 8 concurrent
+   disjoint-owner batches serialize **6.6x vs 5.7x** (`BatchIngestConcurrencyTest`,
+   virtual time). `SHARED` gives the same per-insert skip as `SINGLE_WRITER`
+   plus a periodic corpus rebuild; a harness run longer than one interval pays
+   that scan's read load concurrently with whatever it is measuring.
 3. **Real-Vespa single-node ingest is COMPUTE-bound, not throttle-bound**
    (see the ingest stage profile above): the feed-window knobs are exhausted;
    chunk ~1000 × 2 streams is this box's ceiling and the remaining levers are

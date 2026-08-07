@@ -70,17 +70,19 @@ import java.util.concurrent.atomic.AtomicBoolean
  * the two writes can be hours apart. [WriterTopology] is how the deployment
  * says which case it is:
  *
+ *  - [WriterTopology.SHARED_STRICT] (DEFAULT) — no cache at all; every insert
+ *    probes. Skipping a probe is a pure read optimization and its only failure
+ *    is admitting an erased event, so it is opted into, never assumed. Forced
+ *    by `GUARD_OWNERS_DISABLE=1` regardless of the argument.
  *  - [WriterTopology.SINGLE_WRITER] — load once, never refresh (the note hooks
- *    are then complete by construction).
- *  - [WriterTopology.SHARED] (default) — [refresh] rebuilds both sets from the
- *    corpus every [refreshMillis], so a foreign guard is honoured after at most
- *    one interval instead of never.
- *  - [WriterTopology.SHARED_STRICT] — no cache at all; every insert probes.
- *    Forced by `GUARD_OWNERS_DISABLE=1` regardless of the argument.
+ *    are then complete by construction, so there is no window).
+ *  - [WriterTopology.SHARED] — [refresh] rebuilds both sets from the corpus
+ *    every [refreshMillis], so a foreign guard is honoured after at most one
+ *    rebuild instead of never. A BOUNDED window, not no window.
  */
 internal class GuardOwners(
     private val index: EventIndex,
-    topology: WriterTopology = WriterTopology.SHARED,
+    topology: WriterTopology = WriterTopology.SHARED_STRICT,
     private val refreshMillis: Long = DEFAULT_GUARD_REFRESH_MILLIS,
 ) {
     private class Blooms(
