@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.eventstore
 
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
+import com.nosfabrica.vespa.eventstore.engine.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.QUERY_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
@@ -123,7 +124,60 @@ class NostrSemanticsStore(
 
     private val bulkMixed = BulkMixedInsert(index, relay, nowSecs, guards)
 
-    override suspend fun insert(event: Event) = writes.withLock { insertLocked(event) }
+    /** A writer-lock label's two [IngestStats] stage names, interned at construction. */
+    private class LockStage(
+        name: String,
+    ) {
+        val wait = "$name.wait"
+        val hold = "$name.hold"
+    }
+
+    /**
+     * Take [writes], booking the WAIT and the HOLD under separate
+     * [IngestStats] stages named for [stage].
+     *
+     * Split because the two answer different questions and only one of them
+     * was previously answerable. Every existing stage timer starts after the
+     * lock is already held, so a writer starved by another holder shows up as
+     * fast stages and a stalled pipeline — the status line says the ingest
+     * stages are cheap while ingest visibly is not, and nothing in it names
+     * the reason.
+     *
+     * That gap is not hypothetical: the deferred trust projection runs its
+     * re-derivation off the ingest path but INSIDE this lock (see
+     * DirtLedger.drain's gate), so `proj.fetch` and an ingest commit contend
+     * for one mutex while both look cheap individually. `lock.*.wait` is what
+     * makes that visible; `lock.*.hold` is what attributes it.
+     */
+    private suspend fun <T> locked(
+        stage: LockStage,
+        body: suspend () -> T,
+    ): T {
+        val requested = System.nanoTime()
+        var acquired = 0L
+        try {
+            return writes.withLock {
+                acquired = System.nanoTime()
+                body()
+            }
+        } finally {
+            // Booked AFTER the lock is released, on purpose. Recording inside
+            // it would put two map lookups and two atomic adds in the critical
+            // section this exists to measure — instrumentation lengthening
+            // what it reports. It also lets `hold` run to the actual release
+            // rather than to just-before-recording.
+            //
+            // acquired == 0 means we never got the lock (cancelled while
+            // waiting): there is no wait to attribute and no hold to report.
+            if (acquired != 0L) {
+                val released = System.nanoTime()
+                IngestStats.add(stage.wait, acquired - requested)
+                IngestStats.add(stage.hold, released - acquired)
+            }
+        }
+    }
+
+    override suspend fun insert(event: Event) = locked(LOCK_INGEST) { insertLocked(event) }
 
     /**
      * Run [body] under this store's single writer lock. For the trust
@@ -131,8 +185,12 @@ class NostrSemanticsStore(
      * corpus, and racing a live insert would let a derivation from pre-write
      * state land after the insert's own recompute. NOT reentrant (a plain
      * [Mutex]): never call from a path that already holds the lock.
+     *
+     * Booked under [LOCK_GATE], separately from ingest's own acquisitions: the
+     * callers are the projection drain and the reconciler, and telling their
+     * hold apart from ingest's is the entire point of the split.
      */
-    internal suspend fun <T> withWriteLock(body: suspend () -> T): T = writes.withLock { body() }
+    internal suspend fun <T> withWriteLock(body: suspend () -> T): T = locked(LOCK_GATE) { body() }
 
     /**
      * Batches take a BULK path — the per-event path costs 3–5 index round
@@ -150,12 +208,12 @@ class NostrSemanticsStore(
      * Sub-[BULK_MIN] batches aren't worth the setup and just loop [insertLocked].
      */
     override suspend fun batchInsert(events: List<Event>): List<IEventStore.InsertOutcome> {
-        if (events.size < BULK_MIN) return writes.withLock { events.map { tryInsertLocked(it) } }
+        if (events.size < BULK_MIN) return locked(LOCK_INGEST) { events.map { tryInsertLocked(it) } }
         return if (events.any { it is DeletionEvent || it is RequestToVanishEvent }) {
-            writes.withLock { bulkMixed.run(events) }
+            locked(LOCK_INGEST) { bulkMixed.run(events) }
         } else {
             val plan = bulkRecords.plan(events)
-            writes.withLock { bulkRecords.commit(plan) }
+            locked(LOCK_INGEST) { bulkRecords.commit(plan) }
         }
     }
 
@@ -178,7 +236,7 @@ class NostrSemanticsStore(
                 buffered += event
             }
         }.body()
-        writes.withLock { buffered.forEach { insertLocked(it) } }
+        locked(LOCK_INGEST) { buffered.forEach { insertLocked(it) } }
     }
 
     private suspend fun insertLocked(event: Event) {
@@ -575,12 +633,12 @@ class NostrSemanticsStore(
     override suspend fun delete(filter: Filter) = delete(listOf(filter))
 
     override suspend fun delete(filters: List<Filter>) {
-        writes.withLock { filters.mapNotNull { it.toEventQuery() }.forEach { deletions.sweep(it) } }
+        locked(LOCK_SWEEP) { filters.mapNotNull { it.toEventQuery() }.forEach { deletions.sweep(it) } }
     }
 
     override suspend fun deleteExpiredEvents() {
         // expiresBefore is strict (<): +1 makes "expires exactly now" due, per NIP-40.
-        writes.withLock { deletions.sweep(EventQuery(expiresBefore = nowSecs() + 1)) }
+        locked(LOCK_SWEEP) { deletions.sweep(EventQuery(expiresBefore = nowSecs() + 1)) }
     }
 
     // ---- full-text reindex --------------------------------------------------
@@ -616,7 +674,7 @@ class NostrSemanticsStore(
         resumeFrom: String?,
         batchSize: Int,
     ): FtsReindexProgress =
-        writes.withLock {
+        locked(LOCK_REINDEX) {
             val page = index.visitDocsPage(EventQuery(), resumeFrom, batchSize)
             // ONE pipelined write per page: serial awaited puts pay per-op ack
             // latency — hours of it on a churny reindex.
@@ -656,6 +714,22 @@ class NostrSemanticsStore(
     }
 
     private companion object {
+        /**
+         * Writer-lock stage labels. Named for the CALLER, not the operation:
+         * the question these exist to answer is which side of the contention
+         * a stall is on, and "ingest waited 40s while the gate held 40s" only
+         * reads that way if the two are separable.
+         *
+         * The two stage names are built ONCE per label rather than
+         * interpolated per acquisition — `insert()` takes this lock per event,
+         * and a String allocation on that path (originally inside the critical
+         * section, no less) is not what a measurement should cost.
+         */
+        val LOCK_INGEST = LockStage("lock.ingest")
+        val LOCK_GATE = LockStage("lock.gate")
+        val LOCK_SWEEP = LockStage("lock.sweep")
+        val LOCK_REINDEX = LockStage("lock.reindex")
+
         // Runs at least this long take the bulk path; smaller ones aren't
         // worth the setup and stay on the per-event path.
         const val BULK_MIN = 16
