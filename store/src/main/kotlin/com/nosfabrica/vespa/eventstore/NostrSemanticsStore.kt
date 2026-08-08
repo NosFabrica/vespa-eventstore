@@ -124,9 +124,17 @@ class NostrSemanticsStore(
 
     private val bulkMixed = BulkMixedInsert(index, relay, nowSecs, guards)
 
+    /** A writer-lock label's two [IngestStats] stage names, interned at construction. */
+    private class LockStage(
+        name: String,
+    ) {
+        val wait = "$name.wait"
+        val hold = "$name.hold"
+    }
+
     /**
      * Take [writes], booking the WAIT and the HOLD under separate
-     * [IngestStats] stages named for [label].
+     * [IngestStats] stages named for [stage].
      *
      * Split because the two answer different questions and only one of them
      * was previously answerable. Every existing stage timer starts after the
@@ -142,17 +150,29 @@ class NostrSemanticsStore(
      * makes that visible; `lock.*.hold` is what attributes it.
      */
     private suspend fun <T> locked(
-        label: String,
+        stage: LockStage,
         body: suspend () -> T,
     ): T {
         val requested = System.nanoTime()
-        return writes.withLock {
-            val acquired = System.nanoTime()
-            IngestStats.add("$label.wait", acquired - requested)
-            try {
+        var acquired = 0L
+        try {
+            return writes.withLock {
+                acquired = System.nanoTime()
                 body()
-            } finally {
-                IngestStats.add("$label.hold", System.nanoTime() - acquired)
+            }
+        } finally {
+            // Booked AFTER the lock is released, on purpose. Recording inside
+            // it would put two map lookups and two atomic adds in the critical
+            // section this exists to measure — instrumentation lengthening
+            // what it reports. It also lets `hold` run to the actual release
+            // rather than to just-before-recording.
+            //
+            // acquired == 0 means we never got the lock (cancelled while
+            // waiting): there is no wait to attribute and no hold to report.
+            if (acquired != 0L) {
+                val released = System.nanoTime()
+                IngestStats.add(stage.wait, acquired - requested)
+                IngestStats.add(stage.hold, released - acquired)
             }
         }
     }
@@ -699,11 +719,16 @@ class NostrSemanticsStore(
          * the question these exist to answer is which side of the contention
          * a stall is on, and "ingest waited 40s while the gate held 40s" only
          * reads that way if the two are separable.
+         *
+         * The two stage names are built ONCE per label rather than
+         * interpolated per acquisition — `insert()` takes this lock per event,
+         * and a String allocation on that path (originally inside the critical
+         * section, no less) is not what a measurement should cost.
          */
-        const val LOCK_INGEST = "lock.ingest"
-        const val LOCK_GATE = "lock.gate"
-        const val LOCK_SWEEP = "lock.sweep"
-        const val LOCK_REINDEX = "lock.reindex"
+        val LOCK_INGEST = LockStage("lock.ingest")
+        val LOCK_GATE = LockStage("lock.gate")
+        val LOCK_SWEEP = LockStage("lock.sweep")
+        val LOCK_REINDEX = LockStage("lock.reindex")
 
         // Runs at least this long take the bulk path; smaller ones aren't
         // worth the setup and stay on the per-event path.
