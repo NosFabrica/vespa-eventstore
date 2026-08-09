@@ -74,6 +74,15 @@ import kotlin.test.assertTrue
  * written" standing in for "nothing written YET" — is the one way this test
  * could go green while proving nothing at all.
  *
+ * The same reconfiguration also DROPS traffic: the query container's endpoint
+ * goes down and back up, so a request in flight is refused or cut off
+ * mid-response. That is what failed the second CI run — an IOException out of
+ * the polling loop, thrown by the very requests that were meant to poll through
+ * the restart. A dropped request is evidence of nothing, so it is retried; what
+ * is asserted instead is that each window landed traffic AT ALL, since a claim
+ * about the access log over requests the container never answered is exactly
+ * the vacuous kind this test is built to refuse.
+ *
  * One container, two deploys. Tagged `integration`, excluded from the default
  * `:benchmark:test`; run with `-Pintegration` where Docker is available. Skips
  * cleanly without a daemon.
@@ -109,9 +118,15 @@ class AccessLogIT {
                 // allowed to mean "nothing was written YET" — an impatient
                 // negative is the one way this test could pass while proving
                 // nothing at all.
+                val disabled = driveFor(vespa, queryUrl, SETTLE)
+                assertTrue(
+                    disabled.served > 0,
+                    "no request was answered during the $SETTLE window, so there was no traffic to log or not log — " +
+                        "the absence assertion below would be vacuous",
+                )
                 assertEquals(
                     "",
-                    driveFor(vespa, queryUrl, SETTLE),
+                    disabled.logs,
                     "VESPA_ACCESS_LOG=disabled must write no access log, but Vespa wrote one",
                 )
 
@@ -125,15 +140,28 @@ class AccessLogIT {
                 // on the disabled config and is not logged. That race is what
                 // failed this test on its first CI run. Poll for the evidence
                 // itself instead, which is the only thing that settles it.
-                val logs = awaitAccessLog(vespa, queryUrl)
+                val control = awaitAccessLog(vespa, queryUrl)
                 assertTrue(
-                    logs.isNotBlank(),
-                    "the package as built must still log, and did not within $LOG_TIMEOUT — if that is genuine rather " +
-                        "than slow, the disabled assertion above is vacuous (Vespa's default moved, or the log is no " +
-                        "longer under $LOG_DIR)",
+                    control.logs.isNotBlank(),
+                    "the package as built must still log, and did not within $LOG_TIMEOUT (${control.served} requests " +
+                        "answered in that window) — if that is genuine rather than slow, the disabled assertion above " +
+                        "is vacuous (Vespa's default moved, or the log is no longer under $LOG_DIR)",
                 )
             }
     }
+
+    /**
+     * The outcome of a traffic-driving window: what was logged, and how much of
+     * the traffic the container actually answered. Both halves are needed —
+     * either claim made over requests that never landed says nothing about the
+     * access log, so [served] is what keeps the claim from being vacuous.
+     */
+    private data class Drive(
+        /** Access-log files found at the end of the window, newline-separated; "" when none. */
+        val logs: String,
+        /** How many of the requests sent came back with a status code. */
+        val served: Int,
+    )
 
     /**
      * Send traffic for [window], then report what has been logged. Used for the
@@ -145,13 +173,14 @@ class AccessLogIT {
         vespa: GenericContainer<*>,
         queryUrl: String,
         window: Duration,
-    ): String {
+    ): Drive {
         val deadline = System.nanoTime() + window.toNanos()
+        var served = 0
         do {
-            repeat(REQUESTS) { query(queryUrl) }
+            repeat(REQUESTS) { if (tryQuery(queryUrl) != null) served++ }
             Thread.sleep(POLL.toMillis())
         } while (System.nanoTime() < deadline)
-        return accessLogFiles(vespa)
+        return Drive(accessLogFiles(vespa), served)
     }
 
     /**
@@ -163,13 +192,14 @@ class AccessLogIT {
     private fun awaitAccessLog(
         vespa: GenericContainer<*>,
         queryUrl: String,
-    ): String {
+    ): Drive {
         val deadline = System.nanoTime() + LOG_TIMEOUT.toNanos()
+        var served = 0
         while (true) {
-            repeat(REQUESTS) { query(queryUrl) }
+            repeat(REQUESTS) { if (tryQuery(queryUrl) != null) served++ }
             val files = accessLogFiles(vespa)
-            if (files.isNotBlank()) return files
-            if (System.nanoTime() >= deadline) return ""
+            if (files.isNotBlank()) return Drive(files, served)
+            if (System.nanoTime() >= deadline) return Drive("", served)
             Thread.sleep(POLL.toMillis())
         }
     }
@@ -187,12 +217,28 @@ class AccessLogIT {
 
     /** One search, returning the status code. The query itself is irrelevant — it is traffic to be logged or not. */
     private fun query(queryUrl: String): Int =
-        HttpClient
-            .newHttpClient()
+        HTTP
             .send(
-                HttpRequest.newBuilder(URI.create("$queryUrl/search/?yql=select+*+from+event+where+true&hits=1")).GET().build(),
+                HttpRequest
+                    .newBuilder(URI.create("$queryUrl/search/?yql=select+*+from+event+where+true&hits=1"))
+                    .timeout(REQUEST_TIMEOUT)
+                    .GET()
+                    .build(),
                 HttpResponse.BodyHandlers.discarding(),
             ).statusCode()
+
+    /**
+     * One search that tolerates not being answered, returning null when it was
+     * not. This is the OTHER face of the reconfiguration race the polling above
+     * exists for: activating a package takes the query container's HTTP endpoint
+     * down and back up, so a request in flight is refused or dropped mid-response
+     * ("HTTP/1.1 header parser received no bytes" — which is how this test failed
+     * in CI). Such a request is not evidence about the access log in either
+     * direction; it is traffic that never landed, so it is counted out and
+     * retried on the next round rather than failing the run. Both callers assert
+     * on [Drive.served] so a window that landed NO traffic still fails loudly.
+     */
+    private fun tryQuery(queryUrl: String): Int? = runCatching { query(queryUrl) }.getOrNull()
 
     companion object {
         const val QUERY_PORT = 8080
@@ -212,6 +258,25 @@ class AccessLogIT {
 
         /** How long the positive control waits for the reconfiguration to take effect. Generous: it is a restart. */
         val LOG_TIMEOUT: Duration = Duration.ofMinutes(3)
+
+        /**
+         * Per-request cap. A container mid-reconfiguration can accept a connection
+         * and then answer nothing; without this, one such request would sit on the
+         * default (unbounded) response timeout and eat the polling window it was
+         * supposed to be probing.
+         */
+        val REQUEST_TIMEOUT: Duration = Duration.ofSeconds(10)
+
+        /**
+         * One client for the whole test. `HttpClient.newHttpClient()` per request
+         * would spawn a selector thread and pool per call — hundreds of them over
+         * a three-minute poll, all held until GC.
+         */
+        val HTTP: HttpClient =
+            HttpClient
+                .newBuilder()
+                .connectTimeout(Duration.ofSeconds(5))
+                .build()
 
         fun dockerAvailable(): Boolean = runCatching { DockerClientFactory.instance().isDockerAvailable }.getOrDefault(false)
     }
