@@ -164,32 +164,37 @@ internal class BulkRecordInsert(
                 val vanishes = if (flaggedVanishers.isEmpty()) emptyMap() else guardDocs(flaggedVanishers, RequestToVanishEvent.KIND)
                 owners.keys.associateWith { (tombs[it].orEmpty() to vanishes[it].orEmpty()) }
             }
-        for ((owner, idxs) in owners) {
-            val (tombs, vanishes) = guardSets.getValue(owner)
-            // target -> the newest guarding tombstone's created_at.
-            val byId = HashMap<String, Long>()
-            val byAddress = HashMap<String, Long>()
-            tombs.forEach { doc ->
-                doc.tags.forEach { t ->
-                    if (t.size > 1) {
-                        when (t[0]) {
-                            "e" -> byId.merge(t[1], doc.createdAt, ::maxOf)
-                            "a" -> byAddress.merge(t[1], doc.createdAt, ::maxOf)
+        // Applying the guards, as opposed to fetching them (`guards`, above):
+        // one pass over every tombstone/vanish tag in the batch to build the
+        // per-owner id/address cutoffs. Pure CPU, inside the lock.
+        IngestStats.timed("guards.apply") {
+            for ((owner, idxs) in owners) {
+                val (tombs, vanishes) = guardSets.getValue(owner)
+                // target -> the newest guarding tombstone's created_at.
+                val byId = HashMap<String, Long>()
+                val byAddress = HashMap<String, Long>()
+                tombs.forEach { doc ->
+                    doc.tags.forEach { t ->
+                        if (t.size > 1) {
+                            when (t[0]) {
+                                "e" -> byId.merge(t[1], doc.createdAt, ::maxOf)
+                                "a" -> byAddress.merge(t[1], doc.createdAt, ::maxOf)
+                            }
                         }
                     }
                 }
-            }
-            val vanishAt =
-                vanishes
-                    .mapNotNull { doc -> (doc.toEvent() as? RequestToVanishEvent)?.takeIf { it.shouldVanishFrom(relay) }?.createdAt }
-                    .maxOrNull() ?: Long.MIN_VALUE
-            for (i in idxs) {
-                val e = events[i]
-                val guard = maxOf(byId[e.id] ?: Long.MIN_VALUE, e.addressOrNull()?.let { byAddress[it] } ?: Long.MIN_VALUE)
-                if (guard >= e.createdAt) {
-                    outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.DELETED)
-                } else if (e.createdAt <= vanishAt) {
-                    outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.VANISHED)
+                val vanishAt =
+                    vanishes
+                        .mapNotNull { doc -> (doc.toEvent() as? RequestToVanishEvent)?.takeIf { it.shouldVanishFrom(relay) }?.createdAt }
+                        .maxOrNull() ?: Long.MIN_VALUE
+                for (i in idxs) {
+                    val e = events[i]
+                    val guard = maxOf(byId[e.id] ?: Long.MIN_VALUE, e.addressOrNull()?.let { byAddress[it] } ?: Long.MIN_VALUE)
+                    if (guard >= e.createdAt) {
+                        outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.DELETED)
+                    } else if (e.createdAt <= vanishAt) {
+                        outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.VANISHED)
+                    }
                 }
             }
         }
@@ -285,33 +290,40 @@ internal class BulkRecordInsert(
         fun scheduleRemove(doc: EventDoc) {
             if (removeIds.add(doc.id)) removeFromStore += doc
         }
-        for ((key, idxs) in groups) {
-            val versions = existing[key].orEmpty()
-            // The run competes against the store's best. Every stored version
-            // strictly older than the final winner is swept.
-            var bestDoc: EventDoc? = versions.maxWithOrNull(compareBy<EventDoc> { it.createdAt }.thenByDescending { it.id })
-            var bestAt = versions.maxOfOrNull { it.createdAt } ?: Long.MIN_VALUE
-            var bestId = versions.filter { it.createdAt == bestAt }.minOfOrNull { it.id }
-            var bestInRun: Int? = null
-            for (i in idxs) {
-                val e = events[i]
-                val lost = bestId != null && (bestAt > e.createdAt || (bestAt == e.createdAt && bestId < e.id))
-                if (lost) {
-                    outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.REPLACED)
-                } else {
-                    // The previous best is superseded. An in-run best stays
-                    // Accepted but never lands; a stored best is removed.
-                    bestInRun?.let { toPut.remove(events[it].id) }
-                    bestDoc?.let { scheduleRemove(it) }
-                    bestDoc = null
-                    bestInRun = i
-                    bestAt = e.createdAt
-                    bestId = e.id
-                    toPut[e.id] = e
+        // The comparison itself, split out from the recall above: the query is
+        // timed as `versions`, but deciding the winner per address and listing
+        // what to sweep is plain CPU over the whole batch, and on a
+        // replaceable-heavy stream it runs inside the writer lock with every
+        // other worker queued behind it. Untimed, it was invisible.
+        IngestStats.timed("supersede") {
+            for ((key, idxs) in groups) {
+                val versions = existing[key].orEmpty()
+                // The run competes against the store's best. Every stored version
+                // strictly older than the final winner is swept.
+                var bestDoc: EventDoc? = versions.maxWithOrNull(compareBy<EventDoc> { it.createdAt }.thenByDescending { it.id })
+                var bestAt = versions.maxOfOrNull { it.createdAt } ?: Long.MIN_VALUE
+                var bestId = versions.filter { it.createdAt == bestAt }.minOfOrNull { it.id }
+                var bestInRun: Int? = null
+                for (i in idxs) {
+                    val e = events[i]
+                    val lost = bestId != null && (bestAt > e.createdAt || (bestAt == e.createdAt && bestId < e.id))
+                    if (lost) {
+                        outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.REPLACED)
+                    } else {
+                        // The previous best is superseded. An in-run best stays
+                        // Accepted but never lands; a stored best is removed.
+                        bestInRun?.let { toPut.remove(events[it].id) }
+                        bestDoc?.let { scheduleRemove(it) }
+                        bestDoc = null
+                        bestInRun = i
+                        bestAt = e.createdAt
+                        bestId = e.id
+                        toPut[e.id] = e
+                    }
                 }
+                // Older stored versions beyond the single best also fall (drift repair).
+                versions.forEach { doc -> if (doc.id != bestDoc?.id && doc.id !in removeIds) scheduleRemove(doc) }
             }
-            // Older stored versions beyond the single best also fall (drift repair).
-            versions.forEach { doc -> if (doc.id != bestDoc?.id && doc.id !in removeIds) scheduleRemove(doc) }
         }
         // Skip the round trip when nothing supersedes — the common case for a
         // fresh corpus (first-seen addresses remove nothing). The docs are in

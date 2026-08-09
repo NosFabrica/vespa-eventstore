@@ -246,7 +246,12 @@ class TrustProjection(
     override suspend fun removeDocs(docs: List<EventDoc>) {
         val work = removeDirt(docs)
         dirt.guarded(work) {
-            inner.removeDocs(docs)
+            // Timed for symmetry with putAll's `write`: this is the other half
+            // of a supersession — the sweep of the versions the winner
+            // replaced — and it runs on the same bulk path, inside the same
+            // writer lock. Without it the ingest breakdown showed the write
+            // and hid the delete, which reads as "the write is all there is".
+            IngestStats.timed("remove") { inner.removeDocs(docs) }
             if (docs.any { it.kind == TrustProviderListEvent.KIND }) recompute.invalidateProviders()
             Unit to work
         }
