@@ -5,30 +5,30 @@ app = "1.0.0"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"
 # Quartz from JitPack (amethyst @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
-# 875531afb0 = amethyst PR #3881 (2026-08-09), 23 commits. Quartz's share is 37
-# files in four areas, and this store imports from none of them:
+# a5507f9a4d = amethyst PR #3889 (2026-08-09), 24 commits. Quartz's share is 12
+# files in two areas, and this store imports from neither:
 #
-#   concord/ (cord02, cord04, cord05, cord06, crypto, envelope) — CORD-02 §2's
-#     staff-held control_root write gate, plus a control-plane key split; two new
-#     files (ControlRootWrap, ControlPlaneKeys). No new event kinds in the range.
-#   nip01Core/relay/client/accessories — SyncCoverage's `complete` moved OFF Band
-#     onto Span, i.e. per kind, because `legs()` hands each kind group its own ask
-#     and a walk that drained `kinds: [10002]` was claiming kind 0 too; Band.complete
-#     survives as a derived `all { it.complete }` for the state files. fetchAllPages
-#     now RETURNS a drained outcome instead of signalling by callback. Source-breaking
-#     for SyncCoverage/fetchAllPages callers, of which the only in-range one is
-#     geode's SyncCoverageFile, updated in the same PR.
-#   nip01Core/relay/client/single/basic/BasicRelayClient — OkHttp spells it
-#     "Canceled" with one L, so the "Cancelled" comparison never matched and
-#     client-initiated cancels were inflating the relay.connfails counter.
-#   nip66RelayMonitor/reachability — probe verdicts now merge into the record they
-#     replace instead of rebuilding it, with ownership/guard/timestamp rules.
-#   Plus one warning cleanup in relay/server/policies/LimitsPolicy (`it.limit!!` →
-#     `it.limit`); no behaviour, and Filter itself is untouched.
+#   concord/ (cord04Roles, cord05Invites, cord06Rekey) — the fixes that fell out of
+#     auditing Concord's soft-ban and Control Plane surface: the banlist is now
+#     honoured against the Control Plane itself (a banned staffer could still sign
+#     control events), compaction carries the authority-gated head rather than the
+#     raw chain head, and EditionFold no longer lets a stray edition pin a Control
+#     entity's version forever. Plus a perf skip of AuthorityResolver's second pass
+#     when it cannot change the outcome. No new event kinds, no new files outside
+#     tests.
+#   nip01Core/relay/client/accessories/NostrClientFetchAllPagesExt — two
+#     termination guards for a paged walk, both found on a live relay: the `until`
+#     cursor floors at epoch 0 (stepping below an unsigned timestamp means DRAINED,
+#     and keeps a negative `until` — which relays handle five different ways — off
+#     the wire), and a page whose every event came back NEWER than the `until` it
+#     asked for means the relay is ignoring the cursor, so the walk ends UNPAGEABLE
+#     instead of spinning ~5.5 pages a second forever. Purely additive: no
+#     signature change and no new `PagedFetchResult.End` constant, so unlike the
+#     previous pin's fetchAllPages work this one is not source-breaking.
 #
-# All of that is relay client/server plumbing and Concord group crypto, none of
-# which this store is: grep finds no reference to SyncCoverage, fetchAllPages,
-# LimitsPolicy, nip66 or Concord in any module here. Nothing under nip01Core/store,
+# Both areas are Concord group crypto and relay-client paging, neither of which
+# this store is: grep finds no reference to fetchAllPages, PagedFetchResult,
+# INostrClient or Concord in any module here. Nothing under nip01Core/store,
 # nip50Search, nip01Core/relay/filters or nip85TrustedAssertions was touched at all;
 # IEventStore, SQLiteEventStore, IndexableFields, SearchFieldExtractor and
 # SearchQuery are byte-identical to the previous pin, and the SearchableEvent set is
@@ -36,17 +36,17 @@ mavenPublish = "0.37.0"
 # table carry over unchanged, so the parity and rank gates are unaffected. No build
 # or dependency file moved in the range either — quartz/build.gradle.kts and the
 # root version catalog are untouched, so nothing transitive shifts under us. The
-# rest of the range is app-side (relay churn/traffic usage counters, Concord UI and
-# CLI, Crowdin translations). We take it to stay on head, not for anything it gives
-# this store.
+# rest of the range is app-side (notification grouping/dismissal, NIP-5D napplet
+# host alignment, the Concord audit docs). We take it to stay on head, not for
+# anything it gives this store.
 #
-# Prev f4640b6ea1 (2026-08-07, PR #3877: SyncCoverage's per-(relay, filter) map key
-# became a typed BandKey instead of a "$url $filterJson" string that copied and
-# rehashed the filter's json on every lookup; same relay-client bookkeeping, equally
-# unused here).
+# Prev 875531afb0 (2026-08-09, PR #3881: CORD-02 §2's staff-held control_root write
+# gate plus a control-plane key split, SyncCoverage's `complete` moving per-kind
+# onto Span, and fetchAllPages returning a drained outcome instead of signalling by
+# callback; same relay-client and Concord plumbing, equally unused here).
 # This range touched no skill files, so the .claude/skills imported at 9231195890
 # are current for this pin.
-quartz = "875531afb0"
+quartz = "a5507f9a4d"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 sqlite = "2.7.0"
