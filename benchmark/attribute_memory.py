@@ -73,10 +73,15 @@ DEFAULT_PARAMS = {
     "kind": {"u": 300, "v": 1, "vw": 0},
     "expires_at": {"u": 200_000, "v": 1, "vw": 0},
     "tag_index": {"u": 120_000_000, "v": 3.0, "vw": 60},
-    "name_parts": {"u": 4_000_000, "v": 0.05, "vw": 9},
-    "name_tokens": {"u": 4_000_000, "v": 0.05, "vw": 10},
-    "search_primary_parts": {"u": 20_000_000, "v": 0.9, "vw": 8},
-    "search_primary_tokens": {"u": 20_000_000, "v": 0.9, "vw": 9},
+    # the merged near columns (2026-08-11). `v` is the two granularities' sum
+    # MINUS their overlap, and the overlap is measured, not guessed:
+    # NearMergeSizingTest derives both from real extraction and reports the
+    # element reduction — 31.9% on a weighted mix of real name shapes (50% where
+    # the two derive the identical list), 42.6% on article titles. Applied
+    # conservatively here: the name column takes the mixed-shape figure rather
+    # than the synthetic corpus's 50%.
+    "name_near": {"u": 5_000_000, "v": 0.07, "vw": 10},
+    "search_primary_near": {"u": 25_000_000, "v": 1.08, "vw": 9},
     "search_secondary_tokens": {"u": 15_000_000, "v": 1.2, "vw": 9},
     "affil_tokens": {"u": 6_000_000, "v": 0.12, "vw": 10},
 }

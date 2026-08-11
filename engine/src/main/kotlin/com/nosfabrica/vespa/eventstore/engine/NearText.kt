@@ -44,6 +44,14 @@ object NearText {
     /** Cap on emitted elements per source string — bounds adversarial names. */
     const val MAX_ELEMENTS = 48
 
+    /**
+     * Cap on a [mergeNear] column, which carries two [MAX_ELEMENTS]-capped
+     * granularities. Exactly their sum, so merging can never drop an element
+     * the two separate columns held, and the per-document dictionary bound is
+     * the same 96 it was before the merge.
+     */
+    const val MAX_MERGED_ELEMENTS = 2 * MAX_ELEMENTS
+
     /** Longest CJK run that gets suffix expansion (runs are names; longer is prose). */
     const val MAX_CJK_SUFFIX_RUN = 8
 
@@ -102,6 +110,34 @@ object NearText {
     /** Merge one derived field from several source strings, preserving order, dropping duplicates and over-long elements. */
     fun merge(vararg lists: List<String>): List<String> = cap(lists.asSequence().flatMap { it })
 
+    /**
+     * The near column of one tier: [parts] and [tokens] of the same sources,
+     * de-duplicated into ONE array.
+     *
+     * Nothing downstream ever told the two granularities apart — the query
+     * builder emits an identical prefix clause and an identical fuzzy clause
+     * against each ([FuzzyWordGroup.NEAR_FIELDS]) and the schema only ever asks
+     * `matchCount(parts) > 0 || matchCount(tokens) > 0` — so two columns held a
+     * union that was OR'd back together at both ends. One column matches the
+     * same documents, ranks them into the same tier, halves the prefix/fuzzy
+     * clause count per query word (fuzzy is the most expensive matcher in the
+     * query), and drops a whole document vector per merged pair — 4.8 B/doc
+     * each, paid on EVERY document whether or not the field is filled
+     * (docs/attribute-memory.md).
+     *
+     * NO ELEMENT IS LOST, by construction rather than by measurement: each
+     * source list is capped at [MAX_ELEMENTS] before it gets here, so their
+     * union cannot exceed [MAX_MERGED_ELEMENTS] and the cap below never bites.
+     * The bound on what one document can put in the dictionary is unchanged
+     * too — it was 48+48 across two columns, it is 96 across one, and dedup
+     * usually leaves it far under (for a single-token name the two lists are
+     * identical, so the merged column is half the size of the pair).
+     */
+    fun mergeNear(
+        parts: List<String>,
+        tokens: List<String>,
+    ): List<String> = cap(sequenceOf(parts, tokens).flatMap { it }, MAX_MERGED_ELEMENTS)
+
     /** Query-side: the folded form a near clause should carry. */
     fun foldWord(word: String): String = fold(word)
 
@@ -123,13 +159,16 @@ object NearText {
      * [fold] is idempotent (NFKD of decomposed text is itself; lowercase
      * likewise), so [merge] re-folding already-folded inputs is a no-op.
      */
-    private fun cap(elements: Sequence<String>): List<String> {
+    private fun cap(
+        elements: Sequence<String>,
+        limit: Int = MAX_ELEMENTS,
+    ): List<String> {
         val out = LinkedHashSet<String>()
         for (raw in elements) {
             val e = fold(raw)
             if (e.isEmpty() || e.length > MAX_ELEMENT_LEN) continue
             out += e
-            if (out.size == MAX_ELEMENTS) break
+            if (out.size == limit) break
         }
         return out.toList()
     }

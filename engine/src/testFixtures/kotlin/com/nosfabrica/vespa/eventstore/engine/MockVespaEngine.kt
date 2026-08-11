@@ -135,9 +135,9 @@ class MockVespaEngine {
     @Volatile var rejectGatedProfile: Boolean = false
 
     /**
-     * Refuse any YQL referencing the near attribute fields (name_parts/…) the
+     * Refuse any YQL referencing the near attribute fields (name_near/…) the
      * way a schema deployed before the prefix/fuzzy fix does — real Vespa is
-     * HTTP 400 `Could not create query from YQL: Field 'name_parts' does not
+     * HTTP 400 `Could not create query from YQL: Field 'name_near' does not
      * exist` on EVERY search query that names the field. The client must
      * demote to exact + gram matching and remember, not fail the REQ.
      */
@@ -345,8 +345,8 @@ class MockVespaEngine {
         }
         // A schema predating the near attribute fields: real Vespa rejects the
         // whole query the moment the YQL names an unknown field.
-        if (rejectNearFields && "name_parts" in yql) {
-            return Reply(400, """{"message":"Could not create query from YQL: Field 'name_parts' does not exist."}""")
+        if (rejectNearFields && "name_near" in yql) {
+            return Reply(400, """{"message":"Could not create query from YQL: Field 'name_near' does not exist."}""")
         }
         val hits = params["hits"]?.toIntOrNull() ?: 10
         // The exact-count query (EventYql.buildCount): "… limit 0 | all(output(count()))".

@@ -71,48 +71,48 @@ Two consequences that decide everything below:
 
 Modelled at D = 176.7M with the corpus assumptions in
 `attribute_memory.py` (`DEFAULT_PARAMS` — each is labelled and each is
-checkable against the store; they are the only guesses here):
+checkable against the store; they are the only guesses here). This is the
+schema as it stands, i.e. **after** the near-column merge of §4.1; the state
+#69 reports ran the pre-merge schema and modelled at 59.5 GiB.
 
 | field | decl | total GiB | docvec | mvmap | enum values | dict | postings |
 |---|---|---:|---:|---:|---:|---:|---:|
 | `tag_index` | array\<string\> | 17.69 | 0.79 | 2.37 | 8.72 | 1.07 | 4.74 |
 | `id` | string | 16.79 | 0.79 | — | 13.63 | 1.58 | 0.79 |
 | `search_secondary_tokens` | array\<string\> | 4.00 | 0.79 | 0.95 | 0.23 | 0.13 | 1.90 |
-| `search_primary_tokens` | array\<string\> | 3.41 | 0.79 | 0.71 | 0.31 | 0.18 | 1.42 |
-| `search_primary_parts` | array\<string\> | 3.39 | 0.79 | 0.71 | 0.29 | 0.18 | 1.42 |
+| `search_primary_near` | array\<string\> | 3.96 | 0.79 | 0.85 | 0.39 | 0.22 | 1.71 |
 | `created_at` | long | 2.92 | 0.79 | — | 0.80 | 0.54 | 0.79 |
 | `pubkey` | string | 2.01 | 0.79 | — | 0.39 | 0.04 | 0.79 |
 | `owner` | string | 2.01 | 0.79 | — | 0.39 | 0.04 | 0.79 |
 | `expires_at` | long | 1.58 | 0.79 | — | 0.00 | 0.00 | 0.79 |
 | `kind` | int | 1.58 | 0.79 | — | 0.00 | 0.00 | 0.79 |
 | `affil_tokens` | array\<string\> | 1.23 | 0.79 | 0.09 | 0.10 | 0.05 | 0.19 |
-| `name_tokens` | array\<string\> | 1.01 | 0.79 | 0.04 | 0.07 | 0.04 | 0.08 |
-| `name_parts` | array\<string\> | 1.01 | 0.79 | 0.04 | 0.06 | 0.04 | 0.08 |
+| `name_near` | array\<string\> | 1.08 | 0.79 | 0.06 | 0.08 | 0.04 | 0.11 |
 | `author_ref` | reference | 0.90 | 0.79 | — | 0.09 | 0.02 | — |
-| **attributes** | | **59.5** | | | | | |
+| **attributes** | | **55.8** | | | | | |
 | document meta store | implicit | 4.9–8.6 | | | | | |
 
-≈ 64–68 GiB against 75 GiB measured; the rest is the memory index for the ten
-BM25 text fields, the `removed` sub-database's own meta store, the reverse
-mapping `author_ref` keeps (parent → child local ids, which Vespa publishes no
-formula for, so that row is a floor), and proton's fixed overhead. Close enough
-that the *ranking* is trustworthy, which is all a model is for. Four things fall
-out of it:
+The pre-merge model — 59.5 GiB of attributes, so ≈ 64–68 GiB all-in — against
+75 GiB measured; the rest is the memory index for the ten BM25 text fields, the
+`removed` sub-database's own meta store, the reverse mapping `author_ref` keeps
+(parent → child local ids, which Vespa publishes no formula for, so that row is
+a floor), and proton's fixed overhead. Close enough that the *ranking* is
+trustworthy, which is all a model is for. Four things fall out of it:
 
-**Two fields are 58% of it.** `id` and `tag_index` together model at 34.5 GiB.
+**Two fields are 60% of it.** `id` and `tag_index` together model at 34.5 GiB.
 Both for the same reason: an enum store holding 64-character hex, once per
 distinct value, and `id` has no repeats by construction — its 13.6 GiB enum
 store is 176.7M copies of a string that is *already the document id*.
 
-**Every attribute costs 4.8 B/doc before it holds anything.** Fourteen document
-vectors × 0.79 GiB = 11 GiB of pure per-document slots. The six near-tier arrays
-pay theirs on all 176.7M documents even though only kind-0s and titled kinds
-fill them — this is Vespa's *"`fast-search` causes a memory increase even for
-empty fields"*, and it is why "the field is usually empty" is not an argument
-for keeping a column.
+**Every attribute costs 4.8 B/doc before it holds anything.** Twelve document
+vectors × 0.79 GiB = 9.5 GiB of pure per-document slots (fourteen and 11 GiB
+before the merge). The near-tier arrays pay theirs on all 176.7M documents even
+though only kind-0s and titled kinds fill them — this is Vespa's *"`fast-search`
+causes a memory increase even for empty fields"*, and it is why "the field is
+usually empty" is not an argument for keeping a column.
 
-**18.5 GiB of the total cannot be paged at all** (dictionaries + posting lists).
-Paging *every* attribute in the schema would free ~41 GiB and leave ~19 GiB —
+**17.1 GiB of the total cannot be paged at all** (dictionaries + posting lists).
+Paging *every* attribute in the schema would free ~39 GiB and leave ~17 GiB —
 which is the ceiling on the whole `paged` strategy, before counting what it
 costs.
 
@@ -128,8 +128,8 @@ change costs.
 
 **Restart is the peak, not steady state.** Loading a multivalue attribute
 allocates an extra `D · V · 12` transiently (local doc id + enum value + weight
-per value). At the modelled V that is ~6.4 GiB for `tag_index` and ~6.8 GiB
-across the near-tier arrays — ~13 GiB of transient allocation on top of a
+per value). At the modelled V that is ~5.9 GiB for `tag_index` and ~4.9 GiB
+across the near-tier arrays — ~11 GiB of transient allocation on top of a
 steady state already at 94% of the limit. A cluster that OOM-kills at steady
 state will OOM *harder* during the restart that follows, which is the shape of
 "six kills in 28 hours".
@@ -150,7 +150,7 @@ what turns a page fault into a per-result disk seek.
 | `owner` | NIP-09 / NIP-62 guard reads | — | leave alone; 2 GiB, load-bearing for deletion semantics |
 | `expires_at` | ANDed into **every** query (`expires_at > now`) plus the sweep | — | **drop `fast-search`** — see below |
 | `author_ref` | — | imported tensors, read per ranked hit | leave alone; already the cheapest column |
-| `name_parts`, `name_tokens`, `search_primary_parts`, `search_primary_tokens` | prefix + fuzzy, search queries only | — | **merge the pairs** — see below. Paging them is the pattern Vespa warns about (fuzzy walks the dictionary comparing paged strings) |
+| `name_near`, `search_primary_near` | prefix + fuzzy, search queries only | — | the four columns these replaced are §4.1, landed. Do not page them: fuzzy walks the dictionary comparing the paged strings |
 | `search_secondary_tokens`, `affil_tokens` | prefix only, search queries only | — | the only defensible `paged` candidates in the schema, and worth ~2.5 GiB (see §4.4) |
 
 ## 4. Ranked candidates
@@ -159,27 +159,66 @@ Savings are modelled, not measured. Every one of them needs the number from
 `attribute_memory.py --metrics` first — the ranking is stable under the
 assumptions, the absolute numbers are not.
 
-### 4.1 Merge the four near-tier columns into two — ~3–4 GiB, no semantic change
+### 4.1 Merge the four near-tier columns into two — 3.78 GiB — **LANDED**
 
-`name_parts` and `name_tokens` are **never distinguished**, anywhere:
-`FuzzyWordGroup` emits an identical prefix clause and an identical fuzzy clause
-against each (`NEAR_FIELDS`), and `event.sd` only ever asks
+`name_parts` and `name_tokens` were **never distinguished**, anywhere:
+`FuzzyWordGroup` emitted an identical prefix clause and an identical fuzzy
+clause against each (`NEAR_FIELDS`), and `event.sd` only ever asked
 `matchCount(name_parts) > 0 || matchCount(name_tokens) > 0`
 (`loose_name_match`). Same for `search_primary_parts`/`search_primary_tokens`
-(`tier_loose_match`). Two columns holding a union that is then OR'd back
-together.
+(`tier_loose_match`). Two columns holding a union that was OR'd back together at
+both ends. They are now `name_near` and `search_primary_near`
+(`NearText.mergeNear`).
 
-Merging each pair into one array — `NearText.merge` already deduplicates —
-removes two document vectors (1.58 GiB) plus whatever the two granularities
-overlap in the multivalue mapping, postings and enum store (for the very common
-single-token name, `parts` and `tokens` are the *same list*). It also **halves
-the prefix and fuzzy clause count per query word**, and fuzzy is the most
-expensive matcher in the query.
+**Nothing is lost, by construction rather than by measurement.** Each source
+list is capped at `MAX_ELEMENTS` (48) *before* the merge, so their union cannot
+exceed `MAX_MERGED_ELEMENTS` (96) and the cap never bites — the merged column is
+exactly `(parts + tokens).distinct()`. `NearTextTest` pins that equality over
+every derivation code path plus the shapes that stress both caps (120-word
+field, CJK, camelCase, diacritics), and pins that the surviving column still
+carries both granularities' reach. The per-document dictionary bound is
+unchanged too: 48+48 across two columns, 96 across one.
 
-Cost: `NearText.MAX_ELEMENTS` (48) currently applies per column, so the merged
-column must be capped at ~96 or a long field loses its tail — a recall change
-`SearchPrefixLadderIT` would catch. This is an indexing change requiring a
-re-feed (`reindexFullTextSearch` is exactly that re-feed).
+Nothing can tell the difference at query time either: the match set is the union
+either way, and both rank functions only ever tested `> 0`, so band membership is
+bit-identical. Neither field is read per hit by a summary, sort, grouping or
+rank expression, so there is no second path to check.
+
+**What it buys.** 3.78 GiB modelled (59.54 → 55.76): two document vectors
+outright (1.58 GiB, paid on every document in the corpus), plus the two
+granularities' overlap in the multivalue mapping, postings and enum store. That
+overlap is measured, not assumed — `NearMergeSizingTest` derives both columns
+through the real extraction path and counts elements:
+
+| corpus | pair elements | merged | saved |
+|---|---:|---:|---:|
+| weighted mix of real name shapes | 69 | 47 | **31.9%** |
+| …of which `parts == tokens` (the one-word profile name) | 16 | 8 | 50.0% |
+| …of which `parts != tokens` | 53 | 39 | 26.4% |
+| `NostrCorpus` kind-0 names (all one token) | 1766 | 883 | 50.0% |
+| `NostrCorpus` article titles (`search_primary`) | 4491 | 2578 | 42.6% |
+
+It also **halves the prefix and fuzzy clause count per query word** — four near
+clauses become two, and fuzzy is the most expensive matcher in the query. That
+is a search-latency win the model does not price.
+
+**Verified so far:** the full CI gate — `./gradlew build`, i.e. `spotlessCheck`
+plus every unit test in all three modules — is green, including the wire-shape
+pins in `EventYqlTest`, the schema/query-consistency guard in `VespaAppTest`,
+and the near-field compatibility demotion (`SchemaFallbacks`, `MockVespaEngine`).
+**Not yet verified:** the integration gate needs a live Vespa
+(`-Pintegration`) — `RankRegressionIT`, `SearchPrefixLadderIT` and
+`VespaParityIT` have to run before this ships, because only a real engine
+executes the schema and only it can prove the prefix ladder and the rank bands
+did not move.
+
+**Migration:** this is an attribute add + remove and a feed-side change, so an
+existing corpus needs a re-feed, not just a reindex —
+`NostrSemanticsStore.reindexFullTextSearch` is that re-feed and detects the
+drift automatically (the stored near arrays no longer equal a fresh derivation).
+A new client against an old serving schema degrades rather than fails:
+`SchemaFallbacks` catches the "field does not exist" 400 and reruns without near
+clauses.
 
 ### 4.2 Stop storing 64-hex `id` as a string attribute — ~9.7 GiB
 
@@ -252,7 +291,7 @@ value), which would need a separate small `d_tag` attribute.
 
 ### 4.6 Structural — the levers that actually change the slope
 
-- **Split the search columns into their own document type.** The six near-tier
+- **Split the search columns into their own document type.** The four near-tier
   arrays, ten BM25 index fields and six gram views exist for the minority of
   kinds that are searchable, and are paid for on every document. The benchmark
   README already names this ("a real option at scale, at the cost of dual
@@ -273,8 +312,9 @@ value), which would need a separate small `d_tag` attribute.
   per *hit* (summary fill, sort, match-phase, first-phase, grouping), which is
   precisely the access pattern Vespa documents as pathological, and between them
   the un-pageable half stays resident anyway.
-- **Do not page anything that is fuzzy-matched.** The fuzzy walk compares the
-  strings that paging moved to disk.
+- **Do not page anything that is fuzzy-matched** (`name_near`,
+  `search_primary_near`). The fuzzy walk compares the strings that paging moved
+  to disk.
 - **Do not drop `fast-search` from `id`, `pubkey`, `kind` or `tag_index`.** Each
   becomes a linear scan of 176.7M documents on the store's commonest query
   shapes.

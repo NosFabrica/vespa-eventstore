@@ -116,6 +116,85 @@ class NearTextTest {
         )
     }
 
+    // ------------------------------------------------------------------
+    // The parts+tokens column merge (2026-08-11, issue #69). Two attributes
+    // became one, and the whole case for that being free is: the merged column
+    // holds EXACTLY the union of what the two held, so no element — hence no
+    // prefix and no fuzzy reach — is lost. These pin it against the old
+    // contract, which is what `NearText.merge(parts…)` / `merge(tokens…)`
+    // spell out below: verbatim what the two columns used to be fed.
+    // ------------------------------------------------------------------
+
+    /** Every shape the derivation has a code path for, plus the ones that stress the caps. */
+    private val nearCorpus =
+        listOf(
+            "odell", // single token — parts == tokens, the maximal-overlap case
+            "Vitor Pamplona",
+            "VitorPamplona",
+            "Vitor-Pamplona",
+            "BitcoinMemeTreasury",
+            "HTTPServer",
+            "José⚡Silva",
+            "中村太郎",
+            "ＡＢＣ Corp",
+            "Ode Fan Club",
+            "amethyst@vitorpamplona.com",
+            "The Rise and Fall of the Lightning Network: a Long-Form Title With Many Words",
+            // over both caps: 120 distinct words, each also yielding variants
+            (1..120).joinToString(" ") { "word$it-x" },
+        )
+
+    @Test
+    fun `merging parts and tokens into one column loses no element`() {
+        for (source in nearCorpus) {
+            val parts = NearText.merge(NearText.parts(source))
+            val tokens = NearText.merge(NearText.tokens(source))
+            val merged = NearText.mergeNear(parts, tokens)
+            // The old pair's reach, exactly — nothing added, nothing dropped.
+            assertEquals((parts + tokens).distinct(), merged, source)
+            assertTrue(parts.all { it in merged }, "$source: lost a parts element")
+            assertTrue(tokens.all { it in merged }, "$source: lost a tokens element")
+            // The cap can never bite: two 48-capped lists cannot exceed 96.
+            assertTrue(merged.size <= NearText.MAX_MERGED_ELEMENTS, "$source: ${merged.size}")
+        }
+    }
+
+    @Test
+    fun `the merged column is bounded by what the two columns cost, and usually far under`() {
+        // The saving is the dedup: the per-document dictionary bound is
+        // unchanged (48+48 across two columns -> 96 across one), and the
+        // overlap between the granularities is pure profit on top of the two
+        // document vectors the merge drops outright (docs/attribute-memory.md).
+        for (source in nearCorpus) {
+            val parts = NearText.merge(NearText.parts(source))
+            val tokens = NearText.merge(NearText.tokens(source))
+            assertTrue(NearText.mergeNear(parts, tokens).size <= parts.size + tokens.size, source)
+        }
+        // A one-token name is the common profile shape AND the extreme of the
+        // overlap: both granularities derive the identical single element, so
+        // one column holds half of what the pair did.
+        val single = NearText.mergeNear(NearText.parts("odell"), NearText.tokens("odell"))
+        assertEquals(listOf("odell"), single)
+    }
+
+    @Test
+    fun `the near columns still carry both granularities after the merge`() {
+        // The recall properties the two columns existed for, now asserted on
+        // the one that replaced them: word starts inside a compound (parts)
+        // and the whole compound plus its joined variant (tokens).
+        val name = SearchFields(name = "BitcoinMemeTreasury", displayName = "Vitor Pamplona").nearFields().getValue("name_near")
+        assertTrue("meme" in name, "$name") // parts granularity
+        assertTrue("bitcoinmemetreasury" in name) // tokens granularity
+        assertTrue("vitorpamplona" in name) // tokens' whole-name concatenation
+        assertTrue("pamplona" in name) // parts of the display_name sibling
+
+        val primary = SearchFields(primary = "The Bitcoin Standard").nearFields().getValue("search_primary_near")
+        assertTrue("bitcoin" in primary, "$primary")
+        assertTrue("thebitcoinstandard" in primary)
+        // CJK suffix expansion rides the merged column too.
+        assertTrue("太郎" in SearchFields(name = "中村太郎").nearFields().getValue("name_near"))
+    }
+
     @Test
     fun `affil_tokens carries identity and affiliation segments, identity first`() {
         // The as-you-type continuity column (SearchFields.nearFields): the

@@ -239,7 +239,7 @@ class VespaAppTest {
         val guard = sd.substringAfter("function real_match() {").substringBefore("}")
         for (field in FuzzyWordGroup.SEARCH_FIELDS) {
             // Word-bounded: "name" must not be satisfied by "display_name",
-            // nor "search_primary" by "search_primary_parts".
+            // nor "search_primary" by "search_primary_near".
             assertTrue(
                 Regex("\\b${Regex.escape(field)}\\b").containsMatchIn(fieldset),
                 "`$field` is searched but missing from `fieldset default` — it can never be recalled: $fieldset",

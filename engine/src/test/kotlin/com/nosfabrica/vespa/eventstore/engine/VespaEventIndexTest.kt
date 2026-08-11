@@ -681,7 +681,7 @@ class VespaEventIndexTest {
         }
 
     /**
-     * A serving schema that predates the near attribute fields (name_parts/…)
+     * A serving schema that predates the near attribute fields (name_near/…)
      * answers 400 to ANY search query naming them — the client must demote to
      * exact + gram matching, serve the REQ, and remember, never fail the
      * caller. Recall through the mock is the in-memory reference's either way;
