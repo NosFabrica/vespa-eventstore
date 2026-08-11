@@ -134,6 +134,28 @@ steady state already at 94% of the limit. A cluster that OOM-kills at steady
 state will OOM *harder* during the restart that follows, which is the shape of
 "six kills in 28 hours".
 
+### How far the model can be trusted
+
+The §4.1 A/B put the model next to a real engine for the first time — same
+corpus, measured per-field bytes. What that comparison says:
+
+- **The ranking is right, which is what the model is for.** Measured at 186,867
+  documents, `id` is 25.4% of attribute memory and `tag_index` 24.1% — together
+  half of it, the same two fields on top, in the same order, for the same
+  reason. Every decision in this document rests on that ordering.
+- **The absolute per-field bytes run 1.1–2× the formulas at small scale.**
+  `allocated_bytes` includes dead and on-hold bytes and Vespa's buffer slack
+  beyond the 6/5 resize factor, and those fixed costs amortize as the corpus
+  grows — measured 478 B/doc of attributes at 187k documents against the 456
+  B/doc *total* #69 reports at 176.7M. So the formulas are a floor, and the
+  gap narrows with scale.
+- **Where the model was wrong it was optimistic by ~20%** (3.78 GiB predicted
+  vs 3.09 GiB measured for the merge). Treat every saving on this page as an
+  upper bound until it has been measured the same way.
+
+That is the standing method: model to rank the candidates, measure to size the
+one you picked.
+
 ## 3. Per-field verdicts
 
 What each field is touched by, in this store's code, and what paging or
@@ -184,11 +206,27 @@ either way, and both rank functions only ever tested `> 0`, so band membership i
 bit-identical. Neither field is read per hit by a summary, sort, grouping or
 rank expression, so there is no second path to check.
 
-**What it buys.** 3.78 GiB modelled (59.54 → 55.76): two document vectors
-outright (1.58 GiB, paid on every document in the corpus), plus the two
-granularities' overlap in the multivalue mapping, postings and enum store. That
-overlap is measured, not assumed — `NearMergeSizingTest` derives both columns
-through the real extraction path and counts elements:
+**What it buys — MEASURED on a real engine.** Two Vespa containers, the
+identical 200k-event `NostrCorpus` fed into each (186,867 live documents after
+supersession and deletion, both runs), per-field attribute memory read off the
+metrics API:
+
+| | before | after | saved |
+|---|---:|---:|---:|
+| `name_parts` + `name_tokens` | 18.4 B/doc | `name_near` 8.8 | |
+| `search_primary_parts` + `search_primary_tokens` | 19.4 B/doc | `search_primary_near` 10.3 | |
+| **the near columns** | **37.9 B/doc** | **19.1 B/doc** | **−49.6%** |
+| all attributes | 478.4 B/doc | 458.2 B/doc | −4.2% |
+
+**18.8 B/doc, which is 3.09 GiB at the issue's 176.7M documents.** The model
+said 3.78 GiB, so it runs ~20% optimistic here — its `v` assumption for the
+merged columns credited slightly more overlap than the real derivation delivers.
+Half the saving (9.6 B/doc) is the two document vectors, which is exact and
+scale-invariant; the rest is the granularities' overlap, and that part is
+corpus-shaped.
+
+That overlap is separately measured by `NearMergeSizingTest`, which derives both
+columns through the real extraction path and counts elements:
 
 | corpus | pair elements | merged | saved |
 |---|---:|---:|---:|
@@ -202,15 +240,19 @@ It also **halves the prefix and fuzzy clause count per query word** — four nea
 clauses become two, and fuzzy is the most expensive matcher in the query. That
 is a search-latency win the model does not price.
 
-**Verified so far:** the full CI gate — `./gradlew build`, i.e. `spotlessCheck`
-plus every unit test in all three modules — is green, including the wire-shape
-pins in `EventYqlTest`, the schema/query-consistency guard in `VespaAppTest`,
-and the near-field compatibility demotion (`SchemaFallbacks`, `MockVespaEngine`).
-**Not yet verified:** the integration gate needs a live Vespa
-(`-Pintegration`) — `RankRegressionIT`, `SearchPrefixLadderIT` and
-`VespaParityIT` have to run before this ships, because only a real engine
-executes the schema and only it can prove the prefix ladder and the rank bands
-did not move.
+**Verified.** Both gates are green against this change:
+
+- `./gradlew build` — `spotlessCheck` plus every unit test in all three
+  modules, including the wire-shape pins in `EventYqlTest`, the
+  schema/query-consistency guard in `VespaAppTest`, and the near-field
+  compatibility demotion (`SchemaFallbacks`, `MockVespaEngine`).
+- `./gradlew :benchmark:test -Pintegration` against real Vespa containers —
+  **8/8, no skips**: `VespaParityIT` (127/127 filter checks agree with SQLite),
+  `SearchPrefixLadderIT` (the as-you-type ladder, the property this merge could
+  most plausibly have broken), `RankRegressionIT` (the rank-band cases),
+  `SearchExactTextIT`, `ObserverGateIT`, `OrphanSweepIT`, `AccessLogIT`. Only a
+  real engine executes the schema, so this is also the proof that the merged
+  `.sd` deploys at all.
 
 **Migration:** this is an attribute add + remove and a feed-side change, so an
 existing corpus needs a re-feed, not just a reindex —
@@ -347,3 +389,11 @@ The `field` dimension is not in the default metrics consumer set — ask for
 the `removed` sub-database as well as `ready`: a large `removed` meta store is
 its own finding (lid-space bloat), not part of the steady state you are trying
 to shrink.
+
+One trap, found by running the tool against a live node rather than a saved
+sample: `/metrics/v2/values` publishes these gauges **only** as `.average` —
+there is no `.last` there at all, though `/state/v1/metrics` carries the whole
+set. A reader that knows only `.last` therefore finds nothing on the very
+endpoint #69 quotes, and reports it as "no per-field metrics" rather than as a
+parsing gap. `attribute_memory.py` now takes the best available aggregation per
+metric.

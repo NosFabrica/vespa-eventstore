@@ -176,7 +176,7 @@ SUFFIX = "attribute.memory_usage.allocated_bytes"
 def measured_fields(payload):
     """{(field, scope): bytes} from a /metrics/v2/values or /state/v1/metrics dump."""
     out = {}
-    for name, dims, value in _walk_metrics(payload):
+    for name, dims, value in _preferred(payload):
         if not name.endswith(SUFFIX):
             continue
         field = dims.get("field")
@@ -193,22 +193,47 @@ def measured_fields(payload):
 
 def totals(payload, wanted):
     out = {}
-    for name, _dims, value in _walk_metrics(payload):
+    for name, _dims, value in _preferred(payload):
         for w in wanted:
             if name.endswith(w):
                 out[w] = max(out.get(w, 0), value)
     return out
 
 
+# Aggregation suffixes Vespa appends per metric, best first. /metrics/v2/values
+# publishes these gauges as `.average` (there is no `.last` there at all), while
+# /state/v1/metrics carries the whole set — so a reader that only knows `.last`
+# silently finds nothing on the very endpoint the issue quotes. Measured, not
+# guessed: it is what a live 200k-document node actually served.
+AGGREGATIONS = (".last", ".average", ".max", ".min", ".sum")
+
+
+def _preferred(payload):
+    """(name, dims, value) with ONE aggregation chosen per (metric, dimensions)."""
+    best = {}
+    for name, dims, value in _walk_metrics(payload):
+        base, agg = name, ""
+        for suffix in AGGREGATIONS:
+            if name.endswith(suffix):
+                base, agg = name[: -len(suffix)], suffix
+                break
+        key = (base, tuple(sorted(dims.items())))
+        rank = AGGREGATIONS.index(agg) if agg in AGGREGATIONS else len(AGGREGATIONS)
+        if key not in best or rank < best[key][0]:
+            best[key] = (rank, dims, value)
+    for (base, _), (_, dims, value) in best.items():
+        yield base, dims, value
+
+
 def _walk_metrics(payload):
-    """Yield (name, dimensions, last-value) from either metrics format."""
+    """Yield (raw name, dimensions, value) from either metrics format."""
 
     def emit(container):
         for m in container.get("metrics", []) or []:
             dims = m.get("dimensions", {}) or {}
             for name, value in (m.get("values", {}) or {}).items():
                 if isinstance(value, (int, float)):
-                    yield name.removesuffix(".last"), dims, value
+                    yield name, dims, value
 
     for node in payload.get("nodes", []) or []:
         for svc in node.get("services", []) or []:
@@ -220,9 +245,9 @@ def _walk_metrics(payload):
         for m in values:
             dims = m.get("dimensions", {}) or {}
             vals = m.get("values", {}) or {}
-            last = vals.get("last", vals.get("average", vals.get("max")))
-            if isinstance(last, (int, float)):
-                yield m.get("name", ""), dims, last
+            for agg in ("last", "average", "max", "min", "sum"):
+                if isinstance(vals.get(agg), (int, float)):
+                    yield m.get("name", "") + "." + agg, dims, vals[agg]
 
 
 # ----------------------------------------------------------------- output ----
@@ -347,4 +372,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except BrokenPipeError:
+        # `… | head` closes the pipe mid-table; that is a normal way to read
+        # this and should not print a traceback.
+        sys.stderr.close()
