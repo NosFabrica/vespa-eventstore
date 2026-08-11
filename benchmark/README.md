@@ -942,6 +942,32 @@ this out:
   scale the blobs sit in page cache and summary fill is CPU-bound decompress +
   copy, so this is documented as the known trade, not changed.
 
+### Per-field attribute memory (`attribute_memory.py`)
+
+The read side above asks what a query touches; the other half of the schema
+question is what the schema *costs at rest*, which at scale is the binding
+constraint (issue #69: 75 GiB resident for 176.7M docs, ~456 B/doc, OOM kills).
+Vespa reports attribute memory per field, so the answer is measurable rather
+than arguable:
+
+```bash
+python3 benchmark/attribute_memory.py --metrics 'http://vespa:19092/metrics/v2/values?consumer=Vespa'
+python3 benchmark/attribute_memory.py --model --docs 176700000
+```
+
+`--metrics`/`--json` prints the measured per-field table (ranked, B/doc, share)
+from a live deployment. `--model` prints what measurement cannot: the component
+breakdown *inside* each attribute — document vector, multivalue mapping, enum
+store values, dictionary, posting lists — since which lever can move a byte
+depends on which of those five holds it. Field types are parsed out of
+`engine/app/schemas/event.sd`, so the tool cannot drift from the shipped schema;
+the per-field U/V/length are labelled corpus assumptions and are overridable
+(`--params`).
+
+The analysis built on it — where the bytes are, what `paged` can and cannot
+move (verified against Vespa's source), and the per-field verdict against this
+store's query shapes — is [docs/attribute-memory.md](../docs/attribute-memory.md).
+
 ## Concurrent throughput and GC (`BENCH_THROUGHPUT=1`)
 
 The latency suite issues one query at a time, so its throughput is capped by a
@@ -1221,6 +1247,11 @@ SQLite bug to report upstream, not something to "fix" by breaking this store.
    (see the ingest stage profile above): the feed-window knobs are exhausted;
    chunk ~1000 × 2 streams is this box's ceiling and the remaining levers are
    topology (docs/scaling.md).
+4. **At corpus scale the binding constraint stops being CPU and becomes
+   attribute MEMORY** — 456 B/doc resident, and two fields (`id`, `tag_index`)
+   are 58% of it. The levers, their measured-savings model and what each costs
+   the query paths are in [docs/attribute-memory.md](../docs/attribute-memory.md);
+   measure first with `attribute_memory.py`.
 
 ## BUG found while benchmarking — now fixed (correctness, real Vespa)
 
