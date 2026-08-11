@@ -5,48 +5,57 @@ app = "1.0.0"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"
 # Quartz from JitPack (amethyst @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
-# a5507f9a4d = amethyst PR #3889 (2026-08-09), 24 commits. Quartz's share is 12
+# c43339e92b = amethyst PR #3891 (2026-08-10), 30 commits. Quartz's share is 15
 # files in two areas, and this store imports from neither:
 #
-#   concord/ (cord04Roles, cord05Invites, cord06Rekey) — the fixes that fell out of
-#     auditing Concord's soft-ban and Control Plane surface: the banlist is now
-#     honoured against the Control Plane itself (a banned staffer could still sign
-#     control events), compaction carries the authority-gated head rather than the
-#     raw chain head, and EditionFold no longer lets a stray edition pin a Control
-#     entity's version forever. Plus a perf skip of AuthorityResolver's second pass
-#     when it cannot change the outcome. No new event kinds, no new files outside
-#     tests.
-#   nip01Core/relay/client/accessories/NostrClientFetchAllPagesExt — two
-#     termination guards for a paged walk, both found on a live relay: the `until`
-#     cursor floors at epoch 0 (stepping below an unsigned timestamp means DRAINED,
-#     and keeps a negative `until` — which relays handle five different ways — off
-#     the wire), and a page whose every event came back NEWER than the `until` it
-#     asked for means the relay is ignoring the cursor, so the walk ends UNPAGEABLE
-#     instead of spinning ~5.5 pages a second forever. Purely additive: no
-#     signature change and no new `PagedFetchResult.End` constant, so unlike the
-#     previous pin's fetchAllPages work this one is not source-breaking.
+#   concord/cord05Invites — the CORD-05 Invite List (kind 13303): the creator's
+#     NIP-44 self-encrypted record of every link they minted (token + link-signer
+#     secret), so a link can be re-signed at its addressable kind-33301 coordinate
+#     after a Rekey instead of being orphaned by it. Plus the revocation tombstone
+#     that retires a link (same `["d",""]` coordinate, empty content, `vsk=9`), and
+#     CommunityInvite becoming a `data class`. One new kind, registered in
+#     EventFactory — additive, and 13303 already fell in the replaceable range, so
+#     it was already stored as replaceable here before it had a type.
+#   nip01Core/relay/client/accessories — negentropy gains an optional
+#     `wantId: ((HexKey) -> Boolean)?` on negentropySync / negentropySyncOrFetch /
+#     negentropySyncFanOut, consulted per id BEFORE the download REQ, with a
+#     `skipped` count on the three result types. Default null keeps every existing
+#     call byte-identical.
 #
-# Both areas are Concord group crypto and relay-client paging, neither of which
-# this store is: grep finds no reference to fetchAllPages, PagedFetchResult,
-# INostrClient or Concord in any module here. Nothing under nip01Core/store,
-# nip50Search, nip01Core/relay/filters or nip85TrustedAssertions was touched at all;
-# IEventStore, SQLiteEventStore, IndexableFields, SearchFieldExtractor and
-# SearchQuery are byte-identical to the previous pin, and the SearchableEvent set is
-# the same 129 files. The store contract, filter semantics and the searchable-kind
-# table carry over unchanged, so the parity and rank gates are unaffected. No build
-# or dependency file moved in the range either — quartz/build.gradle.kts and the
-# root version catalog are untouched, so nothing transitive shifts under us. The
-# rest of the range is app-side (notification grouping/dismissal, NIP-5D napplet
-# host alignment, the Concord audit docs). We take it to stay on head, not for
-# anything it gives this store.
+# The negentropy gate is the one thing in this range worth knowing about even
+# though the store cannot use it: its motivating measurement is a downstream
+# mirror — a store that keeps only the newest version of a replaceable event, i.e.
+# exactly what `insertLocked` does when it answers "replaced:" — re-downloading
+# the older copies negentropy keeps re-offering, because they are genuinely absent
+# from the local id set (5/18/29 REPLACED rejections over three passes on kinds
+# 0/3/10002). A relay-side ingress feeding this store can now decline those ids
+# before the bodies cross the wire. That is ingress's call to make; nothing here
+# speaks the client protocol.
 #
-# Prev 875531afb0 (2026-08-09, PR #3881: CORD-02 §2's staff-held control_root write
-# gate plus a control-plane key split, SyncCoverage's `complete` moving per-kind
-# onto Span, and fetchAllPages returning a drained outcome instead of signalling by
-# callback; same relay-client and Concord plumbing, equally unused here).
-# This range touched no skill files, so the .claude/skills imported at 9231195890
-# are current for this pin.
-quartz = "a5507f9a4d"
+# Otherwise both areas are Concord group crypto and relay-client sync, neither of
+# which this store is: grep finds no reference to negentropy, INostrClient or
+# Concord in any module here. Nothing under nip01Core/store, nip50Search,
+# nip01Core/relay/filters or nip85TrustedAssertions was touched at all; IEventStore,
+# SQLiteEventStore, IndexableFields, SearchFieldExtractor and SearchQuery are
+# byte-identical to the previous pin, and the SearchableEvent set is the same 129
+# files (13303 is a BaseReplaceableEvent, not a SearchableEvent). The store
+# contract, filter semantics and the searchable-kind table carry over unchanged, so
+# the parity and rank gates are unaffected. The one build-file move is
+# quartz/build.gradle.kts teaching verifyKmpPurity to reject a bare `synchronized(`
+# call and not just the annotation — a lint rule for Quartz's own sources, no
+# dependency change; the root version catalog is untouched, so nothing transitive
+# shifts under us. The rest of the range is app-side (per-visible metadata/reaction
+# loading moved to commons over five phases, relay-flow seeding fixes, Crowdin
+# translations, an iOS/arm64 CI fix). We take it to stay on head, not for anything
+# it gives this store.
+#
+# Prev a5507f9a4d (2026-08-09, PR #3889: the Concord soft-ban / Control Plane audit
+# fixes plus two fetchAllPages termination guards; same relay-client and Concord
+# plumbing, equally unused here).
+# This range's only skill change is .claude/skills/relay-client, which is not one of
+# the five imported here, so the .claude/skills imported at 9231195890 are current
+# for this pin.
+quartz = "c43339e92b"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 sqlite = "2.7.0"
