@@ -206,6 +206,29 @@ either way, and both rank functions only ever tested `> 0`, so band membership i
 bit-identical. Neither field is read per hit by a summary, sort, grouping or
 rank expression, so there is no second path to check.
 
+**And that argument was checked against the engine rather than trusted.** Two
+Vespa containers, one serving the pre-merge schema and one the merged schema,
+the same crafted corpus fed to each (14 profile-name shapes — one-token,
+multi-word, camelCase, separator-joined, diacritics, CJK — plus 5 article
+titles), and the same 59-query battery run through the real store path against
+both: prefixes at every length from 1 to full, 1- and 2-edit typos, camelCase
+inner words, joined and separated variants, folded diacritics, CJK, and
+multi-word phrases. **Every query returned a byte-identical id set.** 54 of the
+59 return hits, so the comparison is not vacuous — the as-you-type ladder holds
+from the 3-character prefix floor up (`ode`→3, `odel`→3, `odell`→2;
+`vit`…`vitorpamplona`→14 throughout), typos recover (`odel1`, `odelll`,
+`vitorpamplna`, `pamplna`), camelCase inner words and their joined forms recall
+(`meme`, `treasury`, `memetreasury`), and each of `josé`, `中村`, `太郎`,
+`中村太郎`, `比特币` matched on both sides.
+
+The one thing this does NOT establish is within-band ORDER. `fieldMatch`'s
+`queryCompleteness` divides by the terms in the query tree, and the merge
+removed clauses from that tree, so `words_coverage()` can shift uniformly —
+which changes the "words" rule's weight relative to exactness and perfect-match
+INSIDE the top band, never band membership and never recall.
+`RankRegressionIT` is green, so no calibrated case moved; that is evidence, not
+a proof, and it is the honest limit of the claim.
+
 **What it buys — MEASURED on a real engine.** Two Vespa containers, the
 identical 200k-event `NostrCorpus` fed into each (186,867 live documents after
 supersession and deletion, both runs), per-field attribute memory read off the
