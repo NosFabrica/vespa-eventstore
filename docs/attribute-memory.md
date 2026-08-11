@@ -254,13 +254,36 @@ is a search-latency win the model does not price.
   real engine executes the schema, so this is also the proof that the merged
   `.sd` deploys at all.
 
-**Migration:** this is an attribute add + remove and a feed-side change, so an
-existing corpus needs a re-feed, not just a reindex —
-`NostrSemanticsStore.reindexFullTextSearch` is that re-feed and detects the
-drift automatically (the stored near arrays no longer equal a fresh derivation).
-A new client against an old serving schema degrades rather than fails:
-`SchemaFallbacks` catches the "field does not exist" 400 and reruns without near
-clauses.
+**Migration — what a running cluster actually does.** Walked on a live Vespa:
+old schema deployed, 20k events fed, then the new package deployed over it.
+
+1. **The deploy is accepted with nothing to acknowledge.** HTTP 200, no
+   `validation-overrides.xml` needed, and `configChangeActions` comes back
+   `{"restart": [], "refeed": [], "reindex": []}`. **Vespa will not warn you.**
+2. **The old attributes are deleted, immediately.** The four
+   `name_parts`/`name_tokens`/`search_primary_parts`/`search_primary_tokens`
+   directories under `.../0.ready/attribute/` are gone right after activation,
+   and the document API stops returning those fields. Their memory is freed
+   without a restart. (Whatever remains of the values inside the serialized
+   document blob is inert and is rewritten on the doc's next put.)
+3. **The new columns exist but are EMPTY for every existing document**, because
+   the near tier is FED, not derived by an indexing expression. Measured on the
+   migrated cluster: a `name_near` prefix query for an old profile returned
+   **0 hits**, while the same profile's exact `name` query still returned 1.
+   So the failure mode is not an outage — exact and gram recall are untouched —
+   it is the near tier going **silently dark**: no prefix, no fuzzy,
+   as-you-type recall collapses to the exact clause.
+4. **`reindexFullTextSearch()` restores it**, and is the only thing that does.
+   Run against the migrated cluster it re-put the drifted documents (it
+   compares stored near arrays against a fresh derivation, so it finds them
+   without being told); the same probe then read `name_near = [ranking893]`
+   and the prefix query returned **1**.
+
+So: deploy and re-feed are one operation, not two, and the ordinary Vespa
+reindex will not substitute — nothing in the deploy response says so. A new
+client against an OLD serving schema degrades rather than fails in the
+meantime: `SchemaFallbacks` catches the "field does not exist" 400 and reruns
+without near clauses.
 
 ### 4.2 Stop storing 64-hex `id` as a string attribute — ~9.7 GiB
 
