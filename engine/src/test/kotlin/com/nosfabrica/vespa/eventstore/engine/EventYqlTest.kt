@@ -301,10 +301,8 @@ class EventYqlTest {
     @Test
     fun `prefix is a direct term on the near fields, never a userInput annotation`() {
         val q = EventYql.build(EventQuery(search = "odell"))!!
-        assertTrue("(name_parts contains ({prefix:true}@fw0))" in q.yql, q.yql)
-        assertTrue("(name_tokens contains ({prefix:true}@fw0))" in q.yql)
-        assertTrue("(search_primary_parts contains ({prefix:true}@fw0))" in q.yql)
-        assertTrue("(search_primary_tokens contains ({prefix:true}@fw0))" in q.yql)
+        assertTrue("(name_near contains ({prefix:true}@fw0))" in q.yql, q.yql)
+        assertTrue("(search_primary_near contains ({prefix:true}@fw0))" in q.yql)
         // Hashtag/summary tokens get prefix reach too ("bitco" -> #bitcoin)…
         assertTrue("(search_secondary_tokens contains ({prefix:true}@fw0))" in q.yql)
         // …and so do the identity/affiliation segments ("vitorpamp" ->
@@ -319,8 +317,8 @@ class EventYqlTest {
     @Test
     fun `fuzzy is a direct term on the near fields, never a userInput annotation`() {
         val q = EventYql.build(EventQuery(search = "odelling"))!!
-        assertTrue("(name_parts contains ({maxEditDistance:1,prefixLength:2}fuzzy(@fw0)))" in q.yql, q.yql)
-        assertTrue("(name_tokens contains ({maxEditDistance:1,prefixLength:2}fuzzy(@fw0)))" in q.yql)
+        assertTrue("(name_near contains ({maxEditDistance:1,prefixLength:2}fuzzy(@fw0)))" in q.yql, q.yql)
+        assertTrue("(search_primary_near contains ({maxEditDistance:1,prefixLength:2}fuzzy(@fw0)))" in q.yql)
         assertFalse("fuzzy:{maxEditDistance" in q.yql)
         // …but never fuzzy: a typo'd hashtag or domain is not worth walking those dictionaries.
         assertFalse("search_secondary_tokens contains ({maxEditDistance" in q.yql)
@@ -409,19 +407,18 @@ class EventYqlTest {
             assertFalse("fuzzy($v)" in q.yql, v)
         }
         // One fuzzy clause per real word per near field, nothing more.
-        val fields = 4 // name_parts, name_tokens, search_primary_parts, search_primary_tokens
+        val fields = 2 // name_near, search_primary_near
         assertEquals(3 * fields, Regex("fuzzy\\(").findAll(q.yql).count())
     }
 
     @Test
     fun `nearMatching off drops every near clause — the pre-schema demotion`() {
-        // Against a serving schema that predates the *_parts/*_tokens fields,
+        // Against a serving schema that predates the near-tier fields,
         // any YQL naming them is HTTP 400 on every search. The demoted query
         // must carry no reference to them at all.
         val q = EventYql.build(EventQuery(search = "odell pamplona", nearMatching = false))!!
-        assertFalse("name_parts" in q.yql)
-        assertFalse("name_tokens" in q.yql)
-        assertFalse("search_primary_parts" in q.yql)
+        assertFalse("name_near" in q.yql)
+        assertFalse("search_primary_near" in q.yql)
         assertFalse("search_secondary_tokens" in q.yql)
         assertFalse("affil_tokens" in q.yql)
         assertFalse("prefix:true" in q.yql)

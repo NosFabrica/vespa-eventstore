@@ -22,7 +22,7 @@
   {
     "query": "vitorp",
     "expect": "",
-    "note": "compound prefix — must reach 'VitorPamplona', 'Vitor Pamplona' AND 'Vitor-Pamplona' via name_tokens' joined variants"
+    "note": "compound prefix — must reach 'VitorPamplona', 'Vitor Pamplona' AND 'Vitor-Pamplona' via name_near's joined-token variants"
   },
   {
     "query": "jose",

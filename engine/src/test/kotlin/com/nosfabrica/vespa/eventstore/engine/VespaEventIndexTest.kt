@@ -681,7 +681,7 @@ class VespaEventIndexTest {
         }
 
     /**
-     * A serving schema that predates the near attribute fields (name_parts/…)
+     * A serving schema that predates the near attribute fields (name_near/…)
      * answers 400 to ANY search query naming them — the client must demote to
      * exact + gram matching, serve the REQ, and remember, never fail the
      * caller. Recall through the mock is the in-memory reference's either way;
@@ -698,6 +698,46 @@ class VespaEventIndexTest {
                 assertEquals(expected, fresh.search(EventQuery(search = "odell")).map { it.id }, "first query (flips the flag)")
                 assertEquals(expected, fresh.search(EventQuery(search = "odell")).map { it.id }, "second query (already demoted)")
                 assertEquals(1, fresh.count(EventQuery(search = "odell")), "the grouping paths ride the same net")
+            } finally {
+                mock.rejectNearFields = false
+                fresh.close()
+            }
+        }
+
+    /**
+     * The WRITE half of the same net, and the one that actually stops a
+     * deployment: a schema predating the near columns refuses the whole
+     * DOCUMENT (`Field 'name_near' is not defined in document type 'event'`),
+     * so before this net existed, upgrading the library against an
+     * already-serving cluster made every insert of a searchable event throw —
+     * `deployIfAbsent` deliberately does not redeploy over a live application,
+     * so the jar and the schema part company and ingest stops dead.
+     * Reproduced against a real Vespa; this is the pin.
+     *
+     * The demoted document lands WITHOUT its prefix/fuzzy columns — fail open,
+     * exactly like the read side — which is the state reindexFullTextSearch
+     * already exists to repair.
+     */
+    @Test
+    fun `a schema without the near fields still accepts writes, minus those columns`() =
+        runBlocking {
+            mock.rejectNearFields = true
+            val fresh = VespaEventIndex(mock.url)
+            try {
+                val searchable = doc(kind = 0, search = SearchFields(name = "odell"))
+                fresh.put(searchable) // would throw before the write-side net
+                assertEquals(searchable.id, fresh.get(searchable.id)?.id, "the document landed")
+                // …and the batch path, which is what a mirror actually uses.
+                val batch = (1..3).map { doc(kind = 0, search = SearchFields(name = "pamplona$it")) }
+                fresh.putAll(batch)
+                assertEquals(batch.map { it.id }.toSet(), batch.mapNotNull { fresh.get(it.id)?.id }.toSet(), "the batch landed")
+                // That these landed AT ALL is the proof the retry dropped the
+                // columns: the mock refuses any document still carrying one.
+                // Not asserted from the read side — the mock rebuilds a
+                // summary by re-deriving indexFields() from the stored
+                // SearchFields, so it always reports the columns back whatever
+                // was fed. What is stored on a real engine is covered by the
+                // migration walk in docs/attribute-memory.md.
             } finally {
                 mock.rejectNearFields = false
                 fresh.close()

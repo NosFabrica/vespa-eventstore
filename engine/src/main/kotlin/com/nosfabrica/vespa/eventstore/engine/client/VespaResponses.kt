@@ -250,10 +250,8 @@ internal class VespaSummary(
     // `| summary` in the schema). Decoded solely to stamp
     // EventDoc.storedNearFields — the reindex's evidence of whether this doc
     // predates the near tier.
-    @SerialName("name_parts") val nameParts: List<String>? = null,
-    @SerialName("name_tokens") val nameTokens: List<String>? = null,
-    @SerialName("search_primary_parts") val primaryParts: List<String>? = null,
-    @SerialName("search_primary_tokens") val primaryTokens: List<String>? = null,
+    @SerialName("name_near") val nameNear: List<String>? = null,
+    @SerialName("search_primary_near") val primaryNear: List<String>? = null,
     @SerialName("search_secondary_tokens") val secondaryTokens: List<String>? = null,
     @SerialName("affil_tokens") val affilTokens: List<String>? = null,
     /** The rank profile's declared match-features, when the profile has any (see event.sd). */
@@ -299,10 +297,8 @@ internal class VespaSummary(
     /** The near arrays this summary carries, keyed as fed. Only meaningful on document-API reads (see [toDoc]). */
     fun nearArrays(): Map<String, List<String>> =
         buildMap {
-            nameParts?.let { put("name_parts", it) }
-            nameTokens?.let { put("name_tokens", it) }
-            primaryParts?.let { put("search_primary_parts", it) }
-            primaryTokens?.let { put("search_primary_tokens", it) }
+            nameNear?.let { put("name_near", it) }
+            primaryNear?.let { put("search_primary_near", it) }
             secondaryTokens?.let { put("search_secondary_tokens", it) }
             affilTokens?.let { put("affil_tokens", it) }
         }

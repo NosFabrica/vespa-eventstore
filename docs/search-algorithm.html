@@ -149,10 +149,10 @@
     <tr><td>"VitorP" → <b>VitorPamplona</b></td><td>compound prefix</td><td class="bad">✗ cutoff-dependent</td>
         <td>measured upstream: gram score ~49 vs cutoff 50 → dropped, while "VitorPa" (62) ranked #1 —
             adding a letter made results vanish, adding another brought them back</td>
-        <td class="ok">✓ via <code>name_tokens</code></td></tr>
+        <td class="ok">✓ via <code>name_near</code> (tokens granularity)</td></tr>
     <tr><td>"meme" → <b>BitcoinMemeTreasury</b></td><td>word-inside-compound</td><td class="bad">✗ usually missed</td>
         <td>no split of camelCase compounds exists; only trigram overlap can recall it, below the cutoff at 4 chars</td>
-        <td class="ok">✓ via <code>name_parts</code></td></tr>
+        <td class="ok">✓ via <code>name_near</code> (parts granularity)</td></tr>
     <tr><td>"dell" → <b>ODELL</b></td><td>infix</td><td class="meh">△ gram band</td>
         <td>trigram OR recalls it (as noise)</td>
         <td class="ok">✓ weak tier — an AND of every query trigram (a bounded near-substring test)
@@ -303,7 +303,7 @@ exact floor   w_name_tier + 100  = 130 100   &gt; 129 248 ✓   → w_name_tier 
         <code>name_parts</code> (split at every word start — camelCase + non-alphanumeric runs, Unicode-aware so
         Cyrillic/CJK/accents survive) and <code>name_tokens</code> (whole lowercased tokens — without it
         "vitorp" → "VitorPamplona" regresses, since parts splits it into [vitor, pamplona]).</li>
-    <li><b>Direct terms</b> — <code>name_parts contains ({prefix:true}@w)</code> /
+    <li><b>Direct terms</b> — <code>name_near contains ({prefix:true}@w)</code> /
         <code>({maxEditDistance:N,prefixLength:2}fuzzy(@w))</code> — never via <code>userInput()</code>;
         only the top edit distance emitted (it subsumes the smaller ones).</li>
     <li><b>Bounded matchers replace unbounded recall:</b> length-gated typo budget capped at 3 (≈22–25% of the word,
@@ -320,12 +320,18 @@ exact floor   w_name_tier + 100  = 130 100   &gt; 129 248 ✓   → w_name_tier 
 
   <h3>Port checklist for this library — beyond copy-paste</h3>
   <p><b>Status: items 1–5 are implemented in this branch</b> (and superseded in part by Round 2 below). The near
-     fields landed as <code>name_parts</code>/<code>name_tokens</code> (merged name + display_name),
-     <code>search_primary_parts</code>/<code>_tokens</code>, and <code>search_secondary_tokens</code> — all
+     fields landed as <code>name_near</code> (merged name + display_name),
+     <code>search_primary_near</code>, <code>search_secondary_tokens</code> and <code>affil_tokens</code> — all
      computed at FEED time by <code>NearText</code> (see Round 2), which also settled the recall contract: the
      substring reference stays a documented looser superset (NIP-50 was already excluded from strict parity).
-     The schema-version gate is <code>nearSafe</code> in <code>VespaEventIndex</code>: a 400 naming a near field
-     demotes the query to exact + gram matching and remembers, mirroring the <code>recency</code>-profile net.
+     <b>Both granularities still exist</b>; since 2026-08-11 they share ONE column per tier rather than a
+     <code>_parts</code>/<code>_tokens</code> pair, because nothing ever told the two apart — the query builder
+     emitted identical clauses against each and the schema only OR'd their matchCounts
+     (<a href="attribute-memory.md">attribute-memory.md</a>, issue #69). Names below this line are the
+     pre-merge ones, kept as the record of what was ported.
+     The schema-version gate is <code>SchemaFallbacks</code>: a 400 naming a near field
+     demotes the query to exact + gram matching and remembers, mirroring the <code>recency</code>-profile net —
+     and its write-side twin drops the columns from a rejected document rather than failing the insert.
      Item 6 — measuring the shipped weights against a real corpus and watching fuzzy latency — needs a deployed
      schema plus a re-feed first; the IT and rankAb harness below are the vehicles.</p>
   <div class="scroll"><table>

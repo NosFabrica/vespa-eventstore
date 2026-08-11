@@ -42,6 +42,17 @@ internal fun EventQuery.usesGatedProfile(): Boolean = ranking == EventYql.RANK_R
  * trust input degrades.
  */
 internal class SchemaFallbacks {
+    companion object {
+        /**
+         * What the document API answers when the schema lacks a fed field —
+         * verbatim from Vespa 29.3: `Field 'name_near' is not defined in
+         * document type 'event'`. The YQL parser's wording for the same
+         * schema gap is different (`does not exist`), which is why the read
+         * and write predicates cannot share one string.
+         */
+        const val NOT_IN_DOCUMENT_TYPE = "is not defined in document type"
+    }
+
     @Volatile var recencyProfileAvailable = true
         private set
 
@@ -57,6 +68,37 @@ internal class SchemaFallbacks {
     fun markDedupSummaryMissing() {
         dedupSummaryAvailable = false
     }
+
+    fun markNearFieldsMissing() {
+        nearFieldsAvailable = false
+    }
+
+    /**
+     * Whether this failure is a schema predating the near columns REFUSING A
+     * FEED. Deliberately not the same predicate as the read side's: the query
+     * path fails with `Field 'x' does not exist` out of the YQL parser, while
+     * the document API answers `Field 'x' is not defined in document type
+     * 'event'` — and unlike a query, which merely loses recall, a rejected
+     * document fails the whole insert.
+     *
+     * ONE flag for both directions, not two: it is the same schema, so
+     * whichever path discovers the columns are missing spares the other its own
+     * failed round trip.
+     *
+     * The phrase is matched EXACTLY, not just the field name, and that
+     * asymmetry with the read side is deliberate. A false positive here is
+     * worse than a failure: it would strip the near columns off every
+     * subsequent write for the life of the process, so a data-shaped 400 that
+     * merely mentions the field ("invalid value for field 'name_near'") would
+     * silently and permanently degrade search instead of surfacing. Failing
+     * loudly on an unrecognised 400 is diagnosable; quietly writing worse
+     * documents is not. Measured against Vespa 29.3.
+     */
+    fun isMissingNearField(message: String?): Boolean =
+        message != null &&
+            message.contains("400") &&
+            message.contains(NOT_IN_DOCUMENT_TYPE) &&
+            FuzzyWordGroup.ALL_NEAR_FIELDS.any { message.contains(it) }
 
     /** Whether this 400 names the missing `dedup` summary class — proof the attempt used it. */
     fun isMissingDedupSummary(e: IllegalArgumentException): Boolean = e.message?.contains("400") == true && e.message?.contains(EventYql.SUMMARY_DEDUP) == true

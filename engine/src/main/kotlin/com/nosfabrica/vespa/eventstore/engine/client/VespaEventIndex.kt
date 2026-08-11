@@ -46,6 +46,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import java.time.Duration
+import java.util.concurrent.CompletableFuture
 
 /**
  * The real [EventIndex]: Vespa over HTTP. Writes go through Vespa's official
@@ -167,19 +168,64 @@ class VespaEventIndex(
     private fun putOp(doc: EventDoc) =
         feed.client.put(
             DocumentId.of(EVENT_NAMESPACE, EVENT_DOCTYPE, docIdOf(doc)),
-            buildJsonObject { put("fields", doc.indexFields()) }.toString(),
+            buildJsonObject { put("fields", doc.indexFields(includeNear = fallbacks.nearFieldsAvailable)) }.toString(),
             feedParams(),
         )
+
+    /**
+     * The write-side twin of [SchemaFallbacks.withNearFallback]: await [ops],
+     * and if the engine refused a document for naming a near column it does not
+     * have, drop those columns and feed again.
+     *
+     * Why this exists at all: the read path has always demoted for a schema
+     * predating the near tier, but the write path had no such net — so
+     * upgrading the library against an already-serving cluster (where
+     * `deployIfAbsent` deliberately does NOT redeploy, since the operator owns
+     * services.xml) made EVERY insert of a searchable event throw
+     * `Field 'name_near' is not defined in document type 'event'`. Ingest
+     * stopped dead on a jar upgrade. Reproduced against a real Vespa before
+     * this net existed; pinned by VespaEventIndexTest.
+     *
+     * FAIL OPEN, like every other demotion here: a document lands without its
+     * prefix/fuzzy columns rather than not landing at all. That is the same end
+     * state a pre-near corpus is already in, and reindexFullTextSearch repairs
+     * it once the schema catches up.
+     *
+     * The retry re-feeds EVERY document, not just the refused ones: puts are
+     * idempotent overwrites, the flag is now flipped so the retry omits the
+     * columns, and it happens at most once per process — the bookkeeping to
+     * track which futures failed would cost more than the one duplicate pass.
+     */
+    private suspend fun awaitPuts(
+        docs: List<EventDoc>,
+        ops: List<CompletableFuture<Result>>,
+    ) {
+        var refused: Throwable? = null
+        for (op in ops) {
+            try {
+                op.await()
+            } catch (e: Throwable) {
+                // Await the rest before reacting: they are already in flight,
+                // and leaving futures unawaited would surface later as
+                // unhandled completions on an unrelated call.
+                if (!fallbacks.isMissingNearField(e.message)) throw e
+                refused = e
+            }
+        }
+        if (refused == null) return
+        fallbacks.markNearFieldsMissing()
+        docs.map { putOp(it) }.forEach { it.await() }
+    }
 
     private fun removeOp(id: String) = feed.client.remove(DocumentId.of(EVENT_NAMESPACE, EVENT_DOCTYPE, id), feedParams())
 
     override suspend fun put(doc: EventDoc) {
-        putOp(doc).await()
+        awaitPuts(listOf(doc), listOf(putOp(doc)))
     }
 
     /** All puts stay in flight together — the feed client multiplexes them over HTTP/2. */
     override suspend fun putAll(docs: List<EventDoc>) {
-        docs.map { putOp(it) }.forEach { it.await() }
+        awaitPuts(docs, docs.map { putOp(it) })
     }
 
     /**
@@ -201,13 +247,24 @@ class VespaEventIndex(
         val condition =
             "event.created_at < ${doc.createdAt} or " +
                 "(event.created_at == ${doc.createdAt} and event.id > \"${doc.id}\")"
-        val result =
+
+        // Same write-side near-column net as [awaitPuts]; this path builds its
+        // own operation (the test-and-set condition), so it carries its own.
+        suspend fun attempt(): Result =
             feed.client
                 .put(
                     DocumentId.of(EVENT_NAMESPACE, EVENT_DOCTYPE, address),
-                    buildJsonObject { put("fields", doc.indexFields()) }.toString(),
+                    buildJsonObject { put("fields", doc.indexFields(includeNear = fallbacks.nearFieldsAvailable)) }.toString(),
                     feedParams().createIfNonExistent(true).testAndSetCondition(condition),
                 ).await()
+        val result =
+            try {
+                attempt()
+            } catch (e: Throwable) {
+                if (!fallbacks.isMissingNearField(e.message)) throw e
+                fallbacks.markNearFieldsMissing()
+                attempt()
+            }
         // A transport/engine failure completes the future exceptionally (never
         // a Result here), so the else guards only a future enum addition.
         return when (result.type()) {

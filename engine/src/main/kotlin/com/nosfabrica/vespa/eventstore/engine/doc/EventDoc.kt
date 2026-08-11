@@ -117,8 +117,20 @@ data class EventDoc(
             else -> null
         }
 
-    /** The document's field map — one shape for both feeding and summary parsing ([fromSummary]). */
-    fun indexFields(): JsonObject =
+    /**
+     * The document's field map — one shape for both feeding and summary parsing
+     * ([fromSummary]).
+     *
+     * [includeNear] off omits the near-tier arrays, for feeding a schema that
+     * predates them: Vespa rejects the WHOLE document with a 400 naming the
+     * first unknown field, so one missing column would otherwise fail every
+     * insert of a searchable event (VespaEventIndex's write-side net, the twin
+     * of SchemaFallbacks' read-side demotion). Docs written that way are
+     * exactly what reindexFullTextSearch repairs — it compares
+     * [storedNearFields] against a fresh derivation, and an omitted column
+     * reads back as drift.
+     */
+    fun indexFields(includeNear: Boolean = true): JsonObject =
         buildJsonObject {
             put("id", id)
             put("pubkey", pubkey)
@@ -138,8 +150,10 @@ data class EventDoc(
             // normalization (see NearText). Existing corpora need a RE-FEED —
             // NostrSemanticsStore.reindexFullTextSearch compares
             // [storedNearFields] against this derivation.
-            for ((field, elements) in search.nearFieldsWritten()) {
-                put(field, JsonArray(elements.map(::JsonPrimitive)))
+            if (includeNear) {
+                for ((field, elements) in search.nearFieldsWritten()) {
+                    put(field, JsonArray(elements.map(::JsonPrimitive)))
+                }
             }
             // Always written. An absent numeric attribute reads as 0 in Vespa,
             // which would make "not yet expired" range queries impossible.

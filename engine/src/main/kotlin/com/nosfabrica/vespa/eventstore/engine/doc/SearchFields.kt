@@ -122,8 +122,8 @@ data class SearchFields(
     /**
      * The near-tier attribute arrays (event.sd prefix/fuzzy targets), derived
      * via [NearText] — folded, split, merged across fields nothing downstream
-     * tells apart. name+display_name share one pair; search_primary gets the
-     * generic-tier pair; search_secondary is TOKENS-only ("bitco" -> #bitcoin;
+     * tells apart. name+display_name share one column; search_primary gets the
+     * generic-tier one; search_secondary is TOKENS-only ("bitco" -> #bitcoin;
      * parts-splitting prose would flood the dictionary). affil_tokens (nip05,
      * lud16, website, about) is [NearText.parts]-split so email/URL SEGMENTS
      * become elements, matching what the exact clauses tokenize those fields
@@ -131,17 +131,26 @@ data class SearchFields(
      * (the 2026-08-02 as-you-type report; SearchPrefixLadderIT). Identity
      * fields come FIRST so [NearText.MAX_ELEMENTS] trims bio prose, never
      * identity segments.
+     *
+     * "Nothing downstream tells apart" is why each near tier is ONE column and
+     * not the parts+tokens PAIR it was until 2026-08-11: both granularities
+     * are still derived and still fed, [NearText.mergeNear] just stops giving
+     * them separate attributes. See its KDoc for why that is free.
      */
     fun nearFields(): Map<String, List<String>> =
         buildMap {
             val names = listOfNotNull(name, displayName)
             if (names.isNotEmpty()) {
-                put("name_parts", NearText.merge(*names.map(NearText::parts).toTypedArray()))
-                put("name_tokens", NearText.merge(*names.map(NearText::tokens).toTypedArray()))
+                put(
+                    "name_near",
+                    NearText.mergeNear(
+                        NearText.merge(*names.map(NearText::parts).toTypedArray()),
+                        NearText.merge(*names.map(NearText::tokens).toTypedArray()),
+                    ),
+                )
             }
             primary?.let {
-                put("search_primary_parts", NearText.parts(it))
-                put("search_primary_tokens", NearText.tokens(it))
+                put("search_primary_near", NearText.mergeNear(NearText.parts(it), NearText.tokens(it)))
             }
             secondary?.let { put("search_secondary_tokens", NearText.tokens(it)) }
             val affil = listOfNotNull(nip05, lud16, website, about)

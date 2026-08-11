@@ -51,11 +51,14 @@ import com.nosfabrica.vespa.eventstore.engine.NearText
 internal object FuzzyWordGroup {
     /**
      * The attribute fields prefix AND fuzzy terms match against (fed by
-     * NearText). Both granularities are load-bearing: *_parts splits at every
-     * word start ("meme" finds "BitcoinMemeTreasury"), *_tokens keeps whole
-     * tokens plus joined variants ("vitorp" prefixes "vitorpamplona").
+     * NearText). Both granularities are load-bearing and both are still fed —
+     * parts splits at every word start ("meme" finds "BitcoinMemeTreasury"),
+     * tokens keeps whole tokens plus joined variants ("vitorp" prefixes
+     * "vitorpamplona") — they simply share one column per tier now
+     * ([NearText.mergeNear]), because every clause below was emitted against
+     * both and the schema only ever OR'd their matchCounts.
      */
-    val NEAR_FIELDS = listOf("name_parts", "name_tokens", "search_primary_parts", "search_primary_tokens")
+    val NEAR_FIELDS = listOf("name_near", "search_primary_near")
 
     /**
      * Prefix-ONLY attribute fields: hashtag/summary tokens ("bitco" ->

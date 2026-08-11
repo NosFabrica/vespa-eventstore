@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore.engine
 
+import com.nosfabrica.vespa.eventstore.engine.doc.SearchFields
 import com.nosfabrica.vespa.eventstore.engine.query.FuzzyWordGroup
 import org.w3c.dom.Element
 import java.io.ByteArrayInputStream
@@ -239,7 +240,7 @@ class VespaAppTest {
         val guard = sd.substringAfter("function real_match() {").substringBefore("}")
         for (field in FuzzyWordGroup.SEARCH_FIELDS) {
             // Word-bounded: "name" must not be satisfied by "display_name",
-            // nor "search_primary" by "search_primary_parts".
+            // nor "search_primary" by "search_primary_near".
             assertTrue(
                 Regex("\\b${Regex.escape(field)}\\b").containsMatchIn(fieldset),
                 "`$field` is searched but missing from `fieldset default` — it can never be recalled: $fieldset",
@@ -248,6 +249,46 @@ class VespaAppTest {
                 "matchCount($field)" in guard,
                 "`$field` is searched but missing from real_match() — a match there is deleted by text_score_cutoff, not ranked: $guard",
             )
+        }
+    }
+
+    /**
+     * The near columns are named in THREE places — the schema, the query
+     * builder ([FuzzyWordGroup.ALL_NEAR_FIELDS]) and the feed side
+     * ([SearchFields.nearFields]) — and nothing but a real Vespa used to notice
+     * when they disagreed. That is a bad failure to leave to the integration
+     * gate: a query naming a column the schema lacks is a 400 the read-side
+     * fallback swallows PERMANENTLY (it demotes for the life of the client, so
+     * prefix and fuzzy recall just stop, silently), and a document naming one
+     * is a 400 that fails the insert outright.
+     *
+     * So: the two Kotlin sides must agree with each other, and both with the
+     * shipped schema. Renaming any one of the three now fails the build.
+     */
+    @Test
+    fun `the near columns agree across the schema, the query builder and the feed`() {
+        val sd = entry("schemas/event.sd")
+        val declared = Regex("""^\s*field\s+(\w+)\s+type""", RegexOption.MULTILINE).findAll(sd).map { it.groupValues[1] }.toSet()
+        // Every column the feed can write, from a SearchFields that fills all of them.
+        val written =
+            SearchFields(
+                name = "a",
+                displayName = "b",
+                about = "c",
+                nip05 = "d@e.f",
+                lud16 = "g@h.i",
+                website = "https://j.k",
+                primary = "l",
+                secondary = "m",
+            ).nearFields()
+                .keys
+        assertEquals(
+            FuzzyWordGroup.ALL_NEAR_FIELDS.toSet(),
+            written,
+            "the near columns the feed writes and the ones the query builder searches must be the same set",
+        )
+        for (field in written) {
+            assertTrue(field in declared, "`$field` is fed and searched but not declared in event.sd: $declared")
         }
     }
 }

@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventSelection
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
+import com.nosfabrica.vespa.eventstore.engine.query.FuzzyWordGroup
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -135,9 +136,9 @@ class MockVespaEngine {
     @Volatile var rejectGatedProfile: Boolean = false
 
     /**
-     * Refuse any YQL referencing the near attribute fields (name_parts/…) the
+     * Refuse any YQL referencing the near attribute fields (name_near/…) the
      * way a schema deployed before the prefix/fuzzy fix does — real Vespa is
-     * HTTP 400 `Could not create query from YQL: Field 'name_parts' does not
+     * HTTP 400 `Could not create query from YQL: Field 'name_near' does not
      * exist` on EVERY search query that names the field. The client must
      * demote to exact + gram matching and remember, not fail the REQ.
      */
@@ -273,6 +274,16 @@ class MockVespaEngine {
                         .jsonObject
                         .getValue("fields")
                         .jsonObject
+                // A schema predating the near columns refuses the whole
+                // DOCUMENT, not just a query — and with a different message
+                // than the YQL parser's (verified against real Vespa 29:
+                // `Field 'name_near' is not defined in document type 'event'`).
+                // Feeding one of these is how a library upgrade meets a cluster
+                // whose schema was not redeployed.
+                val nearField = fields.keys.firstOrNull { it in FuzzyWordGroup.ALL_NEAR_FIELDS }
+                if (rejectNearFields && nearField != null) {
+                    return Reply(400, """{"message":"Field '$nearField' is not defined in document type 'event'"}""")
+                }
                 runBlocking { inner.put(EventDoc.fromSummary(fields)) }
                 Reply(200, """{"id":"$path"}""")
             }
@@ -345,8 +356,8 @@ class MockVespaEngine {
         }
         // A schema predating the near attribute fields: real Vespa rejects the
         // whole query the moment the YQL names an unknown field.
-        if (rejectNearFields && "name_parts" in yql) {
-            return Reply(400, """{"message":"Could not create query from YQL: Field 'name_parts' does not exist."}""")
+        if (rejectNearFields && "name_near" in yql) {
+            return Reply(400, """{"message":"Could not create query from YQL: Field 'name_near' does not exist."}""")
         }
         val hits = params["hits"]?.toIntOrNull() ?: 10
         // The exact-count query (EventYql.buildCount): "… limit 0 | all(output(count()))".
