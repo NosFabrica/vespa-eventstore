@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventSelection
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
+import com.nosfabrica.vespa.eventstore.engine.query.FuzzyWordGroup
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -273,6 +274,16 @@ class MockVespaEngine {
                         .jsonObject
                         .getValue("fields")
                         .jsonObject
+                // A schema predating the near columns refuses the whole
+                // DOCUMENT, not just a query — and with a different message
+                // than the YQL parser's (verified against real Vespa 29:
+                // `Field 'name_near' is not defined in document type 'event'`).
+                // Feeding one of these is how a library upgrade meets a cluster
+                // whose schema was not redeployed.
+                val nearField = fields.keys.firstOrNull { it in FuzzyWordGroup.ALL_NEAR_FIELDS }
+                if (rejectNearFields && nearField != null) {
+                    return Reply(400, """{"message":"Field '$nearField' is not defined in document type 'event'"}""")
+                }
                 runBlocking { inner.put(EventDoc.fromSummary(fields)) }
                 Reply(200, """{"id":"$path"}""")
             }

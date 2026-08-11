@@ -280,10 +280,28 @@ old schema deployed, 20k events fed, then the new package deployed over it.
    and the prefix query returned **1**.
 
 So: deploy and re-feed are one operation, not two, and the ordinary Vespa
-reindex will not substitute — nothing in the deploy response says so. A new
-client against an OLD serving schema degrades rather than fails in the
-meantime: `SchemaFallbacks` catches the "field does not exist" 400 and reruns
-without near clauses.
+reindex will not substitute — nothing in the deploy response says so.
+
+**The reverse order — new jar, old schema — used to be worse, and is the case
+to know about.** `SchemaDeployer.deployIfAbsent` deliberately does *not*
+redeploy over a live application (the operator owns `services.xml`; auto-
+redeploying would replace a multi-node topology with the bundled single-node
+one), so upgrading the library alone leaves the old schema serving. Reads
+survived that — `SchemaFallbacks` catches the "field does not exist" 400 and
+reruns without near clauses — but writes did not: measured against a real
+Vespa, every insert of a searchable event died with
+
+```
+Status 400 … Field 'name_near' is not defined in document type 'event'
+```
+
+and took the whole batch with it, so **ingest stopped dead on a jar upgrade**.
+The write path now carries the same net as the read path
+(`VespaEventIndex.awaitPuts`): a refused document is re-fed without its near
+columns, fail-open, landing it in exactly the state
+`reindexFullTextSearch` already repairs. Re-verified on the same old-schema
+cluster: 2,000 events, 1,875 stored including 51 kind-0 profiles, where the
+run before the fix threw on the first profile.
 
 ### 4.2 Stop storing 64-hex `id` as a string attribute — ~9.7 GiB
 
