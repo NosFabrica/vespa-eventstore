@@ -435,10 +435,17 @@ class NostrSemanticsStore(
     ) = query<T>(filters).forEach(onEach)
 
     /**
-     * NIP-45 COUNT == the REQ's feed, EXACTLY: the same observer (ranking
-     * gates included), the same per-filter limits, the same cross-filter id
-     * dedup — the number a client could verify by running the REQ and counting
-     * what arrives. Anything else makes COUNT lie about the feed it summarizes.
+     * NIP-45 COUNT == the REQ's feed, EXACTLY: the same observer (ranking gates
+     * included), the same per-filter limits, the same cross-filter id dedup —
+     * the number a client could verify by running the REQ and counting what
+     * arrives. Anything else makes COUNT lie about the feed it summarizes.
+     *
+     * A GATED count is therefore a recall, not a grouping: the trust floor
+     * reads the observer's cell in the author's reputation tensor, which no YQL
+     * `count()` can express, so an observer's count costs a full ranked pass
+     * over the match set. Only the ungated shapes reach the cheap engine count
+     * below. Bounding that cost is the FILTER's job, as with every other query
+     * here — the store adds no cap of its own (see [VespaEventStore.open]).
      */
     override suspend fun count(filter: Filter): Int = count(listOf(filter))
 

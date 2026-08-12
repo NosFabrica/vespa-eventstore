@@ -130,6 +130,20 @@ class ObserverGateTest {
         assertNull(q.search)
     }
 
+    /**
+     * INCLUDING a lookup by id. Naming an event's id is not a reason to serve
+     * it: if its author is outside the observer's scored network, it is not a
+     * result for that observer's query. The gate costs these lookups the
+     * document-API fast path (VespaEventIndex.isPureIdLookup requires an
+     * unranked query), which is the accepted price.
+     */
+    @Test
+    fun `an ids-only REQ is gated like any other plain recall`() {
+        val q = captured(Filter(ids = listOf("d".repeat(64))), observer = hex)
+        assertEquals(EventYql.RANK_RECENCY_GATED, q.ranking)
+        assertEquals(DEFAULT_MIN_RANK, q.minRank)
+    }
+
     @Test
     fun `no observer resolved means no gate`() {
         val q = captured(Filter(kinds = listOf(1)))

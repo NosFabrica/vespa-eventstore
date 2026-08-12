@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore.ingest
 
+import com.nosfabrica.vespa.eventstore.BackgroundFailures
 import com.nosfabrica.vespa.eventstore.DEFAULT_GUARD_REFRESH_MILLIS
 import com.nosfabrica.vespa.eventstore.WriterTopology
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
@@ -251,12 +252,17 @@ internal class GuardOwners(
                 delay(refreshMillis)
                 try {
                     refresh()
+                    BackgroundFailures.succeeded(BackgroundFailures.GUARD_REFRESH)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (t: Throwable) {
                     // An engine hiccup leaves the previous sets in place — stale
                     // by another interval, never wrong in the forbidden
-                    // direction. The next tick tries again.
+                    // direction — and the next tick tries again. Counted so a
+                    // refresher that never succeeds is visible instead of
+                    // indistinguishable from a quiet one, since what it silently
+                    // costs is the staleness bound SHARED promises.
+                    BackgroundFailures.record(BackgroundFailures.GUARD_REFRESH, t)
                 }
             }
         }
