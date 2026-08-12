@@ -125,10 +125,8 @@ data class EventDoc(
      * predates them: Vespa rejects the WHOLE document with a 400 naming the
      * first unknown field, so one missing column would otherwise fail every
      * insert of a searchable event (VespaEventIndex's write-side net, the twin
-     * of SchemaFallbacks' read-side demotion). Docs written that way are
-     * exactly what reindexFullTextSearch repairs — it compares
-     * [storedNearFields] against a fresh derivation, and an omitted column
-     * reads back as drift.
+     * of SchemaFallbacks' read-side demotion). reindexFullTextSearch repairs
+     * docs written that way — an omitted column reads back as drift.
      */
     fun indexFields(includeNear: Boolean = true): JsonObject =
         buildJsonObject {

@@ -52,17 +52,14 @@ internal class VespaFeed(
     val client: FeedClient =
         FeedClientBuilder
             .create(urls.map { URI.create(it) })
-            // The throttle FLOOR (minInflight = 2 x connectionsPerEndpoint) is
-            // what pins our bursty batched ingest — the throttler never sustains
-            // its upward probe, so it idles there. At 8 connections that floor
-            // was ~16 in flight, ~1.2k docs/s with the engine ~5x idle; more
-            // connections raise the floor AND real HTTP/2 parallelism, and the
-            // throttler still adapts DOWN under pushback. Too many starve the
-            // client's own Jetty pool on small-core hosts — see
-            // [connectionsPerEndpoint]. Overridable for deployment tuning:
-            // VESPA_FEED_CONNECTIONS / VESPA_FEED_STREAMS /
-            // VESPA_FEED_INFLIGHT_FACTOR; defaults are the measured sweet spot
-            // for a small-core single-node host.
+            // Bursty batched ingest idles at the throttle FLOOR (minInflight =
+            // 2 x connectionsPerEndpoint) — the throttler never sustains its
+            // upward probe. At 8 connections that floor was ~16 in flight,
+            // ~1.2k docs/s with the engine ~5x idle; more connections raise the
+            // floor AND real HTTP/2 parallelism, and the throttler still adapts
+            // DOWN under pushback. Too many starve the client's own Jetty pool
+            // on small-core hosts (see [connectionsPerEndpoint]). The defaults
+            // are the measured sweet spot for a small-core single-node host.
             .setConnectionsPerEndpoint(connectionsPerEndpoint)
             .setMaxStreamPerConnection(System.getenv("VESPA_FEED_STREAMS")?.toIntOrNull() ?: 128)
             .apply { System.getenv("VESPA_FEED_INFLIGHT_FACTOR")?.toIntOrNull()?.let { setInitialInflightFactor(it) } }

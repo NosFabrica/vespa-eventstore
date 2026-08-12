@@ -30,7 +30,7 @@ data class EventQuery(
     /** 64-hex event ids. */
     val ids: List<String> = emptyList(),
     val kinds: List<Int> = emptyList(),
-    /** Kinds to EXCLUDE (`kind not in (…)`). No NIP-01 filter uses this; the CLI status metrics do, to count "content" as everything but the plumbing kinds. */
+    /** Kinds to EXCLUDE (`kind not in (…)`). No NIP-01 filter uses this; the CLI status metrics do. */
     val notKinds: List<Int> = emptyList(),
     /** 64-hex pubkeys. */
     val authors: List<String> = emptyList(),
@@ -53,33 +53,31 @@ data class EventQuery(
     /**
      * Quoted-phrase requirements — the engine half of the store's
      * `"exact words"` syntax. Each entry must appear as ADJACENT tokens, in
-     * order, matched exactly, with none of [search]'s prefix/fuzzy reach;
-     * quoting a single word opts out of fuzzy matching (but NOT the schema's
-     * stemming on prose fields). Phrases are positive search text, so a
-     * phrase-only query is a relevance-ordered search. A phrase no index can
-     * hold ("⚡") is unsatisfiable — provably no match, same rule as [search]
-     * words (and the opposite of [notSearch], where such a word is vacuous).
+     * order, matched exactly, with none of [search]'s prefix/fuzzy reach
+     * (though NOT of the schema's stemming on prose fields). Phrases are
+     * positive search text, so a phrase-only query is relevance-ordered. A
+     * phrase no index can hold ("⚡") is unsatisfiable — provably no match, same
+     * rule as [search] words, the opposite of [notSearch] (where it is vacuous).
      */
     val phrases: List<String> = emptyList(),
     /**
      * Words that must NOT match any search field — the engine half of the
-     * store's `-word` syntax (the store splits exclusions off [search]).
-     * Exclusion is deliberately EXACT: one negated tokenized term per word,
-     * none of the positive side's prefix/fuzzy/trigram reach — a loose
-     * matcher can only over-exclude, and a wrongly dropped hit is invisible
-     * in a way a wrongly kept one is not. One index-side looseness remains:
-     * the prose fields index STEMMED tokens, so "-runs" also drops "running"
-     * there (unavoidable from the query; the in-memory reference does not
-     * model it). Docs without search fields are never excluded.
+     * store's `-word` syntax. Exclusion is deliberately EXACT: one negated
+     * tokenized term per word, none of the positive side's prefix/fuzzy/trigram
+     * reach, because a loose matcher can only over-exclude and a wrongly dropped
+     * hit is invisible in a way a wrongly kept one is not. The prose fields
+     * index STEMMED tokens, so "-runs" also drops "running" there (unavoidable
+     * from the query; the in-memory reference does not model it). Docs without
+     * search fields are never excluded.
      */
     val notSearch: List<String> = emptyList(),
     /**
      * The ranking lens: the 64-hex pubkey whose web-of-trust weighs and gates
      * hits (NIP-42 auth, the NIP-50 `observer:` token, or the operator's
-     * default). Emitted as `user_q` on every trust-reading profile; never on
+     * default). Emitted as `user_q` on every trust-reading profile, never on
      * unranked/recency recall. When absent, a search falls back to pure text
-     * ([EventYql.RANK_TEXT]) and no trust gate is applied anywhere — trust
-     * features fail open, not closed.
+     * ([EventYql.RANK_TEXT]) and no trust gate applies — trust features fail
+     * open, not closed.
      */
     val observer: String? = null,
     /**
@@ -98,25 +96,24 @@ data class EventQuery(
     /**
      * The per-observer trust floor, emitted as query(min_rank). Every trust
      * profile gates on it; the default profile's wot_mult() zeroes anything
-     * below it. `include:spam` LOWERS it to 0 rather than removes it —
-     * min_rank also ANCHORS wot_mult()'s trust curve, so a trust-ranked query
-     * must always send some floor. Null = the schema's fail-open default
-     * (-1e9): gates no-op, but trust stops ordering the hits.
+     * below it. `include:spam` LOWERS it to 0 rather than removing it, because
+     * min_rank also ANCHORS wot_mult()'s trust curve — a trust-ranked query must
+     * always send some floor. Null = the schema's fail-open default (-1e9):
+     * gates no-op, but trust stops ordering the hits.
      */
     val minRank: Double? = null,
     /**
-     * Overrides a two-phase profile's rerank window (`ranking.rerankCount`,
-     * PER CONTENT NODE). Null = the profile's own setting; ignored on
-     * single-phase profiles. For the ranking A/B harness — production queries
-     * should trust the profile.
+     * Overrides a two-phase profile's rerank window (`ranking.rerankCount`, PER
+     * CONTENT NODE); ignored on single-phase profiles. For the ranking A/B
+     * harness — production queries should trust the profile.
      */
     val rerankCount: Int? = null,
     /**
      * Emit the direct prefix/fuzzy terms against the *_parts / *_tokens
-     * attribute fields (the near tier). On by default; the client flips it off
-     * ONLY as a compatibility demotion when the serving schema predates those
-     * fields (any reference is then HTTP 400 — see SchemaFallbacks.withNearFallback).
-     * Not a caller-facing knob.
+     * attribute fields (the near tier). Not a caller-facing knob: the client
+     * flips it off ONLY as a compatibility demotion when the serving schema
+     * predates those fields, where any reference is an HTTP 400 (see
+     * SchemaFallbacks.withNearFallback).
      */
     val nearMatching: Boolean = true,
 )

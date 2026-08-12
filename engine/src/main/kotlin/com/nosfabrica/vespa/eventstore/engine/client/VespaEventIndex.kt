@@ -177,24 +177,20 @@ class VespaEventIndex(
      * and if the engine refused a document for naming a near column it does not
      * have, drop those columns and feed again.
      *
-     * Why this exists at all: the read path has always demoted for a schema
-     * predating the near tier, but the write path had no such net — so
-     * upgrading the library against an already-serving cluster (where
-     * `deployIfAbsent` deliberately does NOT redeploy, since the operator owns
-     * services.xml) made EVERY insert of a searchable event throw
-     * `Field 'name_near' is not defined in document type 'event'`. Ingest
-     * stopped dead on a jar upgrade. Reproduced against a real Vespa before
-     * this net existed; pinned by VespaEventIndexTest.
+     * Without this net, upgrading the library against an already-serving cluster
+     * (where `deployIfAbsent` deliberately does NOT redeploy — the operator owns
+     * services.xml) made every insert of a searchable event throw `Field
+     * 'name_near' is not defined in document type 'event'`, stopping ingest dead
+     * on a jar upgrade. Pinned by VespaEventIndexTest.
      *
-     * FAIL OPEN, like every other demotion here: a document lands without its
-     * prefix/fuzzy columns rather than not landing at all. That is the same end
-     * state a pre-near corpus is already in, and reindexFullTextSearch repairs
-     * it once the schema catches up.
+     * FAIL OPEN, like every other demotion here: the document lands without its
+     * prefix/fuzzy columns — the state a pre-near corpus is already in, which
+     * reindexFullTextSearch repairs once the schema catches up.
      *
      * The retry re-feeds EVERY document, not just the refused ones: puts are
-     * idempotent overwrites, the flag is now flipped so the retry omits the
-     * columns, and it happens at most once per process — the bookkeeping to
-     * track which futures failed would cost more than the one duplicate pass.
+     * idempotent overwrites, the flag is now flipped, and this happens at most
+     * once per process — tracking which futures failed would cost more than the
+     * duplicate pass.
      */
     private suspend fun awaitPuts(
         docs: List<EventDoc>,
@@ -355,23 +351,21 @@ class VespaEventIndex(
     }
 
     /**
-     * Recency-ordered recall with the id tiebreak applied CLIENT-SIDE. The
-     * engine sorts by `created_at desc` alone — compound-sorting by the id
-     * string attribute paid UCA collation over the whole match set (0.22s ->
-     * 1.3s on a 2M-match scan) — and this restores the exact
-     * `created_at desc, id asc` contract:
+     * Recency-ordered recall with the id tiebreak applied CLIENT-SIDE, restoring
+     * the exact `created_at desc, id asc` contract. The engine sorts by
+     * `created_at desc` alone — compound-sorting by the id string attribute paid
+     * UCA collation over the whole match set (0.22s -> 1.3s on a 2M-match scan).
      *
      * With a single-key sort, every doc STRICTLY newer than the boundary
      * timestamp T (the limit-th hit's created_at) is guaranteed present; only
      * membership among the docs AT T is engine-arbitrary. So the query
-     * overfetches [TIE_SLACK] extra hits — if anything older than T arrived,
-     * or the engine ran out of matches, the whole T tie group is in hand and
-     * an in-memory sort resolves the boundary exactly. Only a tie group wider
-     * than the slack pays one extra `[T,T]` window query.
+     * overfetches [TIE_SLACK] extra hits — if anything older than T arrived, or
+     * the engine ran out of matches, the whole T tie group is in hand and an
+     * in-memory sort resolves the boundary. Only a wider tie group pays one
+     * extra `[T,T]` window query.
      *
-     * Ranked queries (search terms, trust sorts) keep the engine's score order
-     * untouched. The gated profiles are recency-ordered too (score IS
-     * created_at), so they take the same path.
+     * Ranked queries keep the engine's score order untouched. The gated profiles
+     * are recency-ordered too (score IS created_at), so they take this path.
      */
     private suspend fun recallSummaries(q: EventQuery): List<VespaSummary> {
         if (!q.isRecencyOrdered()) return rankedHits(q).mapNotNull { it.fields }
@@ -543,37 +537,27 @@ class VespaEventIndex(
 
             on("any_near_match") || on("near_name_match") -> "near"
 
-            // BEFORE weak, and that ordering is the whole point. identity_match
-            // means nip05/lud16 matched; weak_match is also 1 for such a doc
-            // (identity is one of the weak band's signals), so testing weak
-            // first would swallow the more specific route — which is exactly
-            // how this branch stayed unreachable from the day it was written:
-            // identity implied the old has_token_match, so "name" claimed it.
-            // The doc scores in the weak band either way; this only names the
-            // route that got it there.
+            // BEFORE weak: identity (nip05/lud16) is one of the weak band's own
+            // signals, so weak_match is 1 for these docs too and testing it
+            // first would swallow the more specific route. The doc scores in
+            // the weak band either way; this only names how it got there.
             on("identity_match") -> "identity"
 
             on("weak_match") -> "weak"
 
-            // One gate now: affiliation_match_text was the DEFAULT profile's
-            // fork of this, forced by has_token_match counting identity while
-            // that profile's band did not. Identity is a rung of its own, so
-            // the fork is gone and so is the feature name.
             on("affiliation_match") -> "affiliation"
 
             // Same RUNG as affiliation (event.sd max()es the two into one
-            // weight), a different route: the profile group's bio/website vs
-            // the generic group's body/location. Ordered after it so a doc
-            // that somehow fills both reports the profile-side label, as the
-            // tiers above already do.
+            // weight), a different route: the profile group's bio/website vs the
+            // generic group's body/location. Ordered after it so a doc filling
+            // both reports the profile-side label, as the tiers above do.
             on("tier_body_match") -> "body"
 
             // Matched a real column but NO rung claimed it — the floor band
-            // (event.sd floored_text_score). Checked last on purpose:
-            // real_match is 1 for every branch above too, so it only means
-            // "unclaimed" once they have all failed. A hit landing here is a
-            // ranking gap worth reporting, unlike "gram" — a doc no column
-            // matched at all.
+            // (event.sd floored_text_score). Last, because real_match is 1 for
+            // every branch above too, so it only means "unclaimed" once they
+            // have all failed. A hit landing here is a ranking gap worth
+            // reporting, unlike "gram" — a doc no column matched at all.
             on("real_match") -> "floor"
 
             else -> "gram"
@@ -641,24 +625,21 @@ class VespaEventIndex(
      * Every match's (id, created_at[, d tag]), paged on a created_at CURSOR
      * through the attribute index.
      *
-     * This used to be a document-API visit — a streaming scan that evaluates a
-     * selection per document, with no index behind it. That made cost grow as
-     * the filter got NARROWER, which is backwards: measured on a 42.5M-doc
-     * corpus, a one-author filter (0.35% of the corpus) took 11.5s to fill a
-     * 1000-doc page while an all-authors filter (47%) took 1.3s. The router's
-     * per-service snapshots are the narrow case, and there are hundreds of
-     * them per cycle. The same one-author set through the index: 9.1s for all
-     * 148,802 ids, against ~28 minutes for the scan.
+     * The alternative, a document-API scan ([visitIdsByScan]), evaluates a
+     * selection per document with no index behind it, so its cost grows as the
+     * filter gets NARROWER: on a 42.5M-doc corpus a one-author filter (0.35% of
+     * the corpus) took 11.5s to fill a 1000-doc page against 1.3s for an
+     * all-authors filter (47%). That whole one-author set costs 9.1s through the
+     * index, against ~28 minutes by scan.
      *
-     * TIES ARE THE WHOLE DIFFICULTY, and they are not rare — one second in
-     * that corpus holds 41,329 events by a single author. A cursor of
-     * `created_at <= T` re-reads the same page forever if a tie group is wider
-     * than the page, and a cursor of `< T` silently drops the rest of the
-     * group. Both were observed. So this borrows [recallSummaries]'s
-     * resolution: overfetch by [TIE_SLACK], and only when the boundary group
-     * might be cut short pay one exact `[T, T]` window query for it. The
-     * engine sorts on created_at alone — a compound id sort pays UCA collation
-     * over the whole match set (0.22s -> 1.3s on 2M matches).
+     * TIES ARE THE WHOLE DIFFICULTY, and they are not rare — one second in that
+     * corpus holds 41,329 events by a single author. A cursor of `created_at <=
+     * T` re-reads the same page forever when a tie group is wider than the page,
+     * and `< T` silently drops the rest of the group; both were observed. So
+     * this borrows [recallSummaries]'s resolution: overfetch by [TIE_SLACK], and
+     * pay one exact `[T, T]` window query only when the boundary group might be
+     * cut short. The engine sorts on created_at alone — a compound id sort pays
+     * UCA collation over the whole match set (0.22s -> 1.3s on 2M matches).
      */
     override suspend fun visitIds(
         query: EventQuery,
@@ -668,29 +649,15 @@ class VespaEventIndex(
         // A limit'd walk is the caller asking for a bounded page, not a full
         // snapshot: hand it straight through, no cursor.
         if (query.limit != null) return super.visitIds(query, withDTag, onPage)
-        // TIE DENSITY decides, and it is measured as the walk runs rather
-        // than guessed from the query's shape.
-        //
-        // The first rule here keyed on shape — cursor for keyed walks, scan
-        // for unkeyed — from these sustained rates on a 42.8M-doc corpus:
-        //
-        //   one author   scan    188  |  cursor 31,844   <- cursor, 169x
-        //   all 30382    scan  4,046  |  cursor    480   <- scan, 8.4x
-        //   all kind 1   scan  1,229  |  cursor  2,758   <- cursor, 2.2x
-        //
-        // But shape is a PROXY. What actually costs the cursor is a boundary
-        // group so wide it needs an unbounded [T,T] window query: unkeyed
-        // 30382 hits seconds holding tens of thousands of docs, because
-        // services bulk-publish scores on one timestamp, while unkeyed kind 1
-        // and kind 0/10002 spread over their seconds and pay nothing. Keying
-        // on shape therefore sent sparse unkeyed walks to the scan for no
-        // reason — measured on {kinds:[0,10002]}, 988 ids/s by cursor against
-        // 8 ids/s by scan while a disk-index fusion was running, a 123x loss
-        // that the shape rule could not see.
-        //
-        // So: start on the cursor, and fall back to the scan only once this
-        // walk has PROVEN itself tie-dense. A run of oversized boundary groups
-        // is the evidence; one wide second is not.
+        // TIE DENSITY decides, measured on this walk rather than guessed from
+        // the query's shape. What costs the cursor is a boundary group so wide
+        // it needs an unbounded [T,T] window query: unkeyed 30382 walks hit
+        // seconds holding tens of thousands of docs (services bulk-publish
+        // scores on one timestamp), while unkeyed kind 1 and kind 0/10002 spread
+        // over their seconds and pay nothing. The earlier shape rule (cursor for
+        // keyed walks, scan for unkeyed) therefore sent sparse unkeyed walks to
+        // the scan for no reason — on {kinds:[0,10002]}, 988 ids/s by cursor
+        // against 8 ids/s by scan during a disk-index fusion.
         // (`limit` is already known null — the bounded case returned above.)
         if (!cursorSuitsThisWalk(query, withDTag)) {
             return visitIdsByScan(query, withDTag, onPage)
@@ -763,13 +730,10 @@ class VespaEventIndex(
 
     /**
      * Whether the cursor is the cheaper walk for [query], decided from the
-     * corpus rather than the query's shape.
-     *
-     * Samples one page and, when its boundary second is tied, how wide that
-     * group actually is. A group past [TIE_DENSE_FACTOR] pages means every
-     * boundary on this walk risks an unbounded window query, which is where
-     * the scan wins; anything narrower and the cursor wins by a wide margin.
-     * One sample query is a negligible cost against a walk of millions.
+     * corpus rather than the query's shape: sample one page, and when its
+     * boundary second is tied, measure how wide that group is. A group past
+     * [TIE_DENSE_FACTOR] pages means every boundary on this walk risks an
+     * unbounded window query, which is where the scan wins.
      */
     private suspend fun cursorSuitsThisWalk(
         query: EventQuery,
@@ -931,10 +895,10 @@ class VespaEventIndex(
     }
 
     /**
-     * The two funnels every `/search/` response passes through — this one for
-     * the recall paths (streamed straight into DTOs) and [queryRoot] for the
-     * grouping/count paths (which need the tree) — both verify coverage, so no
-     * caller can accidentally accept a degraded answer.
+     * The recall paths' `/search/` funnel, streamed straight into DTOs.
+     * Together with [queryRoot] (the grouping/count paths, which need the tree)
+     * it is the only way a response reaches a caller, and both verify coverage —
+     * so nothing can accidentally accept a degraded answer.
      */
     private suspend fun searchRoot(
         vq: VespaQuery,

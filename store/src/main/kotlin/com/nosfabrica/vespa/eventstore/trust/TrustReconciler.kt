@@ -209,20 +209,16 @@ class TrustReconciler internal constructor(
      * dedup rejects an already-held event before the projection sees it, so a
      * card skipped because its service had no 10040 yet stays unprojected as
      * long as both events remain stored. Mirrors hit this as a matter of course
-     * (scores outnumber lists by ~4 orders of magnitude and arrive first),
-     * leaving a projection that is empty, correct-looking, and unable to repair
-     * itself.
+     * (scores outnumber lists by ~4 orders of magnitude and arrive first).
      *
      * Check: per mapped service, sample a few cards and ask, per observer PER
      * DIMENSION ([TrustProviders]), whether a sampled subject carries that
      * observer's cell in the tensor the mapping owns. Only cards that ASSERT a
-     * dimension can prove it unprojected (else a corpus that never carries the
-     * mapped tag would re-walk on every startup); checking observers rather
-     * than mere existence also catches a RE-MAPPED service. Sampling settles it
+     * dimension can prove it unprojected, else a corpus that never carries the
+     * mapped tag would re-walk on every startup; checking observers rather than
+     * mere existence also catches a RE-MAPPED service. Sampling settles it
      * because the never-triggered failure is all-or-nothing per (service,
-     * observer); PARTIAL drift is the dirty marker's job, repaired exactly by
-     * [DirtLedger.drain]. A sample landing on retracted subjects just costs one
-     * idempotent walk.
+     * observer) — PARTIAL drift is [DirtLedger.drain]'s job.
      *
      * [onProgress] reports before and after the fanned-out sampling; the serial
      * rebuild walks report `(total, total, rebuilt, derivedInService)` so a
@@ -296,16 +292,15 @@ class TrustReconciler internal constructor(
      * sweeps nothing and reports [OrphanSweep.refused].
      *
      * Safety: the candidate list is a snapshot, so membership is RE-CHECKED
-     * under [gate] before every page — a 10040 landing mid-sweep drops its
-     * service ([OrphanSweep.remapped]); deleting a mapped service's card is the
-     * one outcome this must never produce. Pages deleted before that 10040 need
-     * no repair: the list's arrival queues its service walk, which derives from
+     * under [gate] before every page — deleting a mapped service's card is the
+     * one outcome this must never produce, so a 10040 landing mid-sweep drops
+     * its service ([OrphanSweep.remapped]). Pages deleted before that 10040 need
+     * no repair: its arrival queues the service walk, which derives from
      * post-deletion state. The orphans themselves need no re-derivation
      * (unmapped signers contribute no cells), which is why this removes through
-     * the raw index, not the projection; stale cells from a formerly-mapped
-     * service are [verify]'s job. Expired 10040s attribute nothing, matching
-     * the projection. The re-check assumes ONE writer — this process's lock
-     * (docs/multi-node-consistency.md).
+     * the raw index rather than the projection; stale cells from a
+     * formerly-mapped service are [verify]'s job. The re-check assumes ONE
+     * writer — this process's lock (docs/multi-node-consistency.md).
      *
      * A deletion is not a tombstone: a by-kind mirror re-downloads what this
      * freed — a companion to narrowing that sync, not a substitute. [dryRun]
@@ -370,8 +365,8 @@ class TrustReconciler internal constructor(
                     }
                     val ids = docs.mapTo(HashSet()) { it.id }
                     // An acked remove is visible to search (EventIndex contract),
-                    // so an identical page means deletes are not landing. Fail
-                    // LOUD rather than report freed storage that is still stored.
+                    // so an identical page means deletes are not landing —
+                    // better than reporting freed storage that is still stored.
                     check(ids != lastPage) { "orphan sweep is not shrinking: ${ids.size} scores by $service survived their own removal" }
                     index.removeDocs(docs)
                     scores += docs.size

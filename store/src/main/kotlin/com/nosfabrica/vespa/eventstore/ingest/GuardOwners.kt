@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore.ingest
 
+import com.nosfabrica.vespa.eventstore.BackgroundFailures
 import com.nosfabrica.vespa.eventstore.DEFAULT_GUARD_REFRESH_MILLIS
 import com.nosfabrica.vespa.eventstore.WriterTopology
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
@@ -62,23 +63,18 @@ import java.util.concurrent.atomic.AtomicBoolean
  *    [EventIndex.scanAuthors], not [EventIndex.distinctAuthors] (one-response).
  *
  * WHAT THE NOTE HOOKS CANNOT SEE — and why the mode is an argument, not a
- * guess: they only see writes made THROUGH this store. A second process
- * feeding the same index (a sync router beside a serving relay; a mirror
- * pulling kinds 5/62 from upstream) stores tombstones this cache never hears
- * about, and the miss never heals — the load runs once, lazily. That is a
- * false negative of unbounded duration, and it needs no concurrency at all:
- * the two writes can be hours apart. [WriterTopology] is how the deployment
+ * guess: they only see writes made THROUGH this store. A second process feeding
+ * the same index stores tombstones this cache never hears about, and the miss
+ * never heals, since the load runs once. [WriterTopology] is how the deployment
  * says which case it is:
  *
  *  - [WriterTopology.SHARED_STRICT] (DEFAULT) — no cache at all; every insert
- *    probes. Skipping a probe is a pure read optimization and its only failure
- *    is admitting an erased event, so it is opted into, never assumed. Forced
- *    by `GUARD_OWNERS_DISABLE=1` regardless of the argument.
+ *    probes. Forced by `GUARD_OWNERS_DISABLE=1` regardless of the argument.
  *  - [WriterTopology.SINGLE_WRITER] — load once, never refresh (the note hooks
  *    are then complete by construction, so there is no window).
- *  - [WriterTopology.SHARED] — [refresh] rebuilds both sets from the corpus
- *    every [refreshMillis], so a foreign guard is honoured after at most one
- *    rebuild instead of never. A BOUNDED window, not no window.
+ *  - [WriterTopology.SHARED] — [refresh] rebuilds both sets every
+ *    [refreshMillis], so a foreign guard is honoured after at most one rebuild.
+ *    A BOUNDED window, not no window.
  */
 internal class GuardOwners(
     private val index: EventIndex,
@@ -256,12 +252,17 @@ internal class GuardOwners(
                 delay(refreshMillis)
                 try {
                     refresh()
+                    BackgroundFailures.succeeded(BackgroundFailures.GUARD_REFRESH)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (t: Throwable) {
                     // An engine hiccup leaves the previous sets in place — stale
                     // by another interval, never wrong in the forbidden
-                    // direction. The next tick tries again.
+                    // direction — and the next tick tries again. Counted so a
+                    // refresher that never succeeds is visible instead of
+                    // indistinguishable from a quiet one, since what it silently
+                    // costs is the staleness bound SHARED promises.
+                    BackgroundFailures.record(BackgroundFailures.GUARD_REFRESH, t)
                 }
             }
         }
@@ -299,12 +300,9 @@ internal class GuardOwners(
          * topology stands.
          *
          * An UNPARSEABLE value FAILS THE OPEN rather than reading as "cache on".
-         * This switch reaches deployments as a documented string, and it has
-         * already been silently inert once: the docs prescribed `=1` while the
-         * parse was `toBooleanStrictOrNull`, which returns null for "1", so
-         * every deployment that followed the instructions kept the cache. A
-         * correctness mechanism must not have a quiet failure mode — refusing
-         * `yes`/`TRUE` loudly is strictly better than ignoring them.
+         * The switch was silently inert once already — the docs prescribed `=1`
+         * while the parse was `toBooleanStrictOrNull`, which returns null for
+         * "1" — and a correctness mechanism must not have a quiet failure mode.
          */
         fun envOverride(): WriterTopology? = parseDisable(System.getenv(ENV_DISABLE))
 

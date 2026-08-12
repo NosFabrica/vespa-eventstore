@@ -280,12 +280,10 @@ internal class VespaVisits(
                         .get()
                         .build(),
                 )
-            // The guard aborts the blocking read when this coroutine is
-            // cancelled; after normal completion its cancel() is a no-op.
-            // UNCONFINED, not the surrounding IO dispatcher: the abort must not
-            // wait for an IO thread when every IO thread is parked in these
-            // blocking reads — unconfined runs the finally on the cancelling
-            // thread immediately.
+            // Aborts the blocking read when this coroutine is cancelled (a no-op
+            // after normal completion). UNCONFINED, not the surrounding IO
+            // dispatcher: the abort must not wait for an IO thread when every IO
+            // thread is parked in these blocking reads.
             val guard =
                 launch(Dispatchers.Unconfined, start = CoroutineStart.UNDISPATCHED) {
                     try {

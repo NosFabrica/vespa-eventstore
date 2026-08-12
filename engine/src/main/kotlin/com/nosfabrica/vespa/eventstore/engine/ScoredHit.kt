@@ -23,10 +23,10 @@ package com.nosfabrica.vespa.eventstore.engine
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 
 /**
- * One search hit with its ranking explanation ([VespaEventIndex.searchScored]):
- * the engine's relevance score and the match TIER it arrived through ("name",
- * "near", "weak", "identity", "affiliation", "body", "floor", "gram"), or null when the profile
- * served no match-features. The inspector/harness surface.
+ * One search hit with its ranking explanation ([VespaEventIndex.searchScored]) —
+ * the inspector/harness surface. [tier] is the match tier the hit arrived
+ * through ("name", "near", "weak", "identity", "affiliation", "body", "floor",
+ * "gram"), or null when the profile served no match-features.
  */
 data class ScoredHit(
     val doc: EventDoc,

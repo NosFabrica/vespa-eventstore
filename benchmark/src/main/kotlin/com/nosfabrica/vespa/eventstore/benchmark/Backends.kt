@@ -58,11 +58,9 @@ object Backends {
 
     /**
      * `BENCH_WRITERS` — the [WriterTopology] a live-Vespa bench opens with, so
-     * the guard-owner cache can be A/B'd without editing call sites. Unset =
-     * the product default (`SHARED_STRICT`, no cache, every insert probes);
-     * `SINGLE_WRITER` is the cached arm. This exists because the cache's cost
-     * is a claim about ingest speed, and a claim about speed should be
-     * reproducible by anyone with a Vespa and one env var.
+     * the guard-owner cache can be A/B'd without editing call sites. Unset = the
+     * product default (`SHARED_STRICT`, no cache, every insert probes);
+     * `SINGLE_WRITER` is the cached arm.
      */
     fun benchWriters(): WriterTopology =
         System.getenv("BENCH_WRITERS")?.trim()?.uppercase()?.let { name ->

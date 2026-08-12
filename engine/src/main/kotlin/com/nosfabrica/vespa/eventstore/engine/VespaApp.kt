@@ -56,14 +56,12 @@ object VespaApp {
      * Accepted values. Deliberately an OFF SWITCH rather than a passthrough of
      * every `<accesslog type=…>` Vespa has: configuring the log at all obliges
      * the package to restate `fileNamePattern` (Vespa fails the deploy without
-     * it), so anything other than "off" means owning defaults that are better
-     * inherited. A deployment that wants to shape the log should say so in
-     * services.xml, where the whole element is visible.
+     * it), so anything else means owning defaults better left inherited. A
+     * deployment that wants to shape the log should say so in services.xml.
      *
-     * "json" is NOT accepted even though it is what Vespa writes today. It
-     * would be a no-op that merely coincides with an upstream default, so the
-     * day that default moves the variable becomes a lie the operator cannot
-     * detect. The knob only claims what it actually enforces.
+     * "json" is NOT accepted even though it is what Vespa writes today: it would
+     * be a no-op coinciding with an upstream default, so the day that default
+     * moves the variable becomes a lie the operator cannot detect.
      */
     val ACCESS_LOG_VALUES = setOf("default", "disabled")
 
@@ -101,18 +99,15 @@ object VespaApp {
     /**
      * Return [servicesXml] with `<accesslog type="disabled" />` as the
      * container's first child (`<nodes>` stays last, as Vespa's examples have
-     * it). Parsed rather than string-spliced: services.xml DOCUMENTS this knob
+     * it). Parsed rather than string-spliced: services.xml documents this knob
      * in prose, so a textual search for the tag name reads its own comment and
-     * refuses a perfectly good package — which is exactly what happened. A
-     * parser cannot see prose, and it checks the structure that actually
-     * matters (this container has no accesslog CHILD) instead of the weaker
-     * "the string appears nowhere in the file".
+     * refuses a perfectly good package. The parser checks the structure that
+     * actually matters — this container has no accesslog CHILD.
      *
-     * The output is reformatted by the serializer — comments and existing
-     * indentation survive, but the XML declaration is rewritten and attribute
-     * quoting is normalized, so the deployed services.xml is not byte-equal to
-     * `engine/app/services.xml`. Only Vespa reads it; the unset path ships the
-     * package untouched, which is what keeps the ITs on the shipped bytes.
+     * The serializer reformats: comments and indentation survive, but the XML
+     * declaration is rewritten and attribute quoting normalized, so the deployed
+     * services.xml is not byte-equal to `engine/app/services.xml`. Only Vespa
+     * reads it, and the unset path ships the package untouched.
      */
     internal fun disableAccessLog(servicesXml: String): String {
         val doc =
@@ -155,8 +150,6 @@ object VespaApp {
         container.insertBefore(doc.createElement(ACCESSLOG).apply { setAttribute("type", "disabled") }, first)
 
         val out = ByteArrayOutputStream(servicesXml.length + 128)
-        // No OutputKeys.INDENT: the file is already indented and re-indenting
-        // would reflow every element, not just the injected one.
         TransformerFactory
             .newInstance()
             .apply { setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true) }

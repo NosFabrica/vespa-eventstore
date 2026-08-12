@@ -255,10 +255,7 @@ internal class VespaHttp {
         /** Brief 5xx retries per query (transient engine load-shedding, not correctness). */
         const val QUERY_RETRIES = 3
 
-        /**
-         * Visit read deadline ([visitHttp]): pages stream continuously, so this
-         * much silence means a wedged visitor session, not a busy engine.
-         */
+        /** Visit read deadline; see [visitHttp]. */
         const val VISIT_READ_TIMEOUT_SECONDS = 120L
 
         /**

@@ -65,6 +65,18 @@ class VespaEventStore internal constructor(
     fun feedStatus(): String = eventIndex.feedStatus()
 
     /**
+     * The background workers' failure line — EMPTY while they are healthy, so a
+     * status display can splice it in unconditionally.
+     *
+     * The trust drain and the guard refresh retry forever and keep their state
+     * safe when they fail, which makes a permanently broken one silent: ranking
+     * quietly stops tracking trust writes, or [WriterTopology.SHARED]'s
+     * staleness bound quietly stops holding. This is the only place that says so
+     * — see [BackgroundFailures].
+     */
+    fun backgroundStatus(): String = BackgroundFailures.statusLine()
+
+    /**
      * Repair the trust view: drain queued projection work a crashed process left
      * behind (see DirtLedger), then re-derive any service whose scores are not
      * projected under every observer naming it. Worth running at startup — dedup
@@ -161,18 +173,16 @@ class VespaEventStore internal constructor(
          * identical in both modes: the same crash-safe persisted marker is
          * drained here, at the next write, or by [reconcileTrust].
          *
-         * [writers] states whether ANY OTHER process feeds this same Vespa —
-         * a second store instance, a sync router beside a serving relay, a
-         * mirror. It cannot be detected from here, and the guard-owner cache
-         * it governs is a pure read optimization whose only failure is serving
-         * an event a tombstone covers, so it defaults to
-         * [WriterTopology.SHARED_STRICT]: no cache, every insert probes
-         * NIP-09/NIP-62, no window in which a deleted event can be admitted.
-         * A deployment that owns every write for its owners buys the read
-         * savings back — with no window either — by asserting
-         * [WriterTopology.SINGLE_WRITER]; [WriterTopology.SHARED] is the middle
-         * ground for a multi-writer deployment that accepts a bounded window,
-         * rebuilding the cache every [guardRefreshSeconds].
+         * [writers] states whether ANY OTHER process feeds this same Vespa — a
+         * second store instance, a sync router, a mirror. It cannot be detected
+         * from here, and the guard-owner cache it governs is a pure read
+         * optimization whose only failure is serving an event a tombstone
+         * covers, so it defaults to [WriterTopology.SHARED_STRICT]: no cache,
+         * every insert probes NIP-09/NIP-62. A deployment that owns every write
+         * for its owners buys the read savings back — with no window either — by
+         * asserting [WriterTopology.SINGLE_WRITER]; [WriterTopology.SHARED] is
+         * the middle ground, accepting a window bounded by
+         * [guardRefreshSeconds].
          *
          * The store imposes no result cap of its own: bounding a query's cost
          * belongs to whoever writes the filter.
@@ -225,10 +235,16 @@ class VespaEventStore internal constructor(
                 for (wake in signal) {
                     try {
                         trust.dirt.drain(gate)
+                        BackgroundFailures.succeeded(BackgroundFailures.TRUST_DRAIN)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (t: Throwable) {
-                        // Engine hiccup mid-drain: the marker still names the work.
+                        // Engine hiccup mid-drain: the marker still names the
+                        // work, so retrying loses nothing. Counted rather than
+                        // swallowed — a drain that never succeeds stops ranking
+                        // from tracking trust writes, and looks exactly like a
+                        // drain with nothing to do (see [BackgroundFailures]).
+                        BackgroundFailures.record(BackgroundFailures.TRUST_DRAIN, t)
                         delay(DRAIN_RETRY_MILLIS)
                         signal.trySend(Unit)
                     }

@@ -54,9 +54,8 @@ internal object FuzzyWordGroup {
      * NearText). Both granularities are load-bearing and both are still fed —
      * parts splits at every word start ("meme" finds "BitcoinMemeTreasury"),
      * tokens keeps whole tokens plus joined variants ("vitorp" prefixes
-     * "vitorpamplona") — they simply share one column per tier now
-     * ([NearText.mergeNear]), because every clause below was emitted against
-     * both and the schema only ever OR'd their matchCounts.
+     * "vitorpamplona") — they just share one column per tier
+     * ([NearText.mergeNear]).
      */
     val NEAR_FIELDS = listOf("name_near", "search_primary_near")
 
@@ -306,17 +305,16 @@ internal object FuzzyWordGroup {
      * Every column an exact clause searches — the recall surface. NOT private:
      * VespaAppTest reads it back against the shipped schema, so a column added
      * here without a `fieldset default` entry and a `real_match()` term fails
-     * the build. That check is the standing guard for the 2026-08-05 audit's
-     * finding — a searchable column with no rung is deleted by
+     * the build. A searchable column with no rung is DELETED by
      * text_score_cutoff, not merely ranked low.
      */
     val SEARCH_FIELDS =
         listOf("name", "display_name", "about", "nip05", "lud16", "website", "search_primary", "search_secondary", "search_text", "search_location")
 
     /**
-     * Name-side gram fields, matched ONLY by the tight AND net (the unbounded
-     * OR net recalled "model" for "ode" and is gone for good). matchCount
-     * feeds the weak tier via infix_gram_match().
+     * Name-side gram fields, matched ONLY by the tight AND net (the unbounded OR
+     * net recalled "model" for "ode"). matchCount feeds the weak tier via
+     * infix_gram_match().
      */
     private val INFIX_GRAM_FIELDS = listOf("name_gram", "display_name_gram", "search_primary_gram")
 

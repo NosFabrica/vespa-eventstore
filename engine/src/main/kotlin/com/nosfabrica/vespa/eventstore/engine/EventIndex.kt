@@ -78,37 +78,30 @@ interface EventIndex : AutoCloseable {
      * loses the engine-side summary-free path.
      */
     suspend fun existingIds(ids: List<String>): Set<String> {
-        // Guarded HERE: EventQuery treats an empty ids list as "no constraint",
-        // so riding search() would answer a membership question about NOTHING
-        // with EVERYTHING. The real client short-circuits identically.
+        // EventQuery treats an empty ids list as "no constraint", so riding
+        // search() would answer a membership question about NOTHING with
+        // EVERYTHING. The real client short-circuits identically.
         if (ids.isEmpty()) return emptySet()
         return search(EventQuery(ids = ids)).mapTo(HashSet()) { it.id }
     }
 
     /**
-     * [search] with each match projected to a Quartz [RawEvent] (`tags` kept
-     * as its canonical JSON string) — the read path a relay serves straight to
-     * a client. The default rides [search]; the real client builds each
-     * [RawEvent] from the decoded summary directly, so the tag string passes
-     * through verbatim with no [EventDoc] and no tag parse. Ordering matches
-     * [search].
+     * [search] with each match projected to a Quartz [RawEvent] (`tags` kept as
+     * its canonical JSON string) — the read path a relay serves straight to a
+     * client. The real client builds each [RawEvent] from the decoded summary,
+     * so the tag string passes through verbatim with no [EventDoc] and no tag
+     * parse. Ordering matches [search].
      */
     suspend fun rawSearch(query: EventQuery): List<RawEvent> = search(query).map { it.toRawEvent() }
 
     /**
-     * [search], each hit carrying the engine's relevance — the recall a caller
-     * asks for when it must MERGE the hits of several RANKED queries into one
-     * order. Within a single query the engine's order already is the answer;
-     * across two, there is nothing to merge on unless the number comes back
-     * with the hit.
+     * [search] with the engine's relevance per hit — for callers that must MERGE
+     * several RANKED queries into one order (see [Ranked]). The default answers
+     * with null scores, the honest answer for an engine that does not rank.
      *
-     * The default answers with null scores, which is the honest answer for an
-     * engine that does not rank (the in-memory reference sorts by recency) —
-     * see [Ranked] on why a fabricated constant would be worse than a null.
-     *
-     * It costs a wrapper per hit, so callers ask for it only where they will
-     * use it: the store stays on [search] for every single-query recall, which
-     * is every recall a relay serves that is not a multi-filter REQ.
+     * It costs a wrapper per hit, so the store stays on [search] for every
+     * single-query recall — everything a relay serves that is not a
+     * multi-filter REQ.
      */
     suspend fun searchRanked(query: EventQuery): List<Ranked<EventDoc>> = search(query).map { Ranked(it, null) }
 
@@ -133,13 +126,12 @@ interface EventIndex : AutoCloseable {
     }
 
     /**
-     * Stream every match's exact TAG ARRAY (distinct-tag-value discovery).
-     * Same walk contract as [visitIds]. Deliberately a projection of the
-     * stored `tags` field, NOT a grouping over the lossy `tag_index`
-     * (single-letter names, FIRST values only — see [EventDoc.tagIndex]),
-     * which would silently widen or miss the asked-for set. The default rides
-     * [search] as one page (the executable spec); a decorator MUST delegate to
-     * its inner index or it loses the streaming projection.
+     * Stream every match's exact TAG ARRAY (distinct-tag-value discovery), same
+     * walk contract as [visitIds]. Deliberately a projection of the stored
+     * `tags` field, NOT a grouping over the lossy `tag_index` (single-letter
+     * names, FIRST values only — see [EventDoc.tagIndex]), which would silently
+     * widen or miss the asked-for set. A decorator MUST delegate to its inner
+     * index or it loses the streaming projection.
      */
     suspend fun visitTags(
         query: EventQuery,
@@ -212,16 +204,17 @@ interface EventIndex : AutoCloseable {
     suspend fun scanAuthors(query: EventQuery): Set<String> = distinctAuthors(query)
 
     /**
-     * Store [doc] IFF it wins its NIP-01 address (highest `created_at`; ties to
+     * Store [doc] IFF it wins its NIP-01 address (highest `created_at`, ties to
      * the LOWEST id): true when stored (older versions removed), false when a
-     * same-or-newer version already holds the address; non-replaceable docs
-     * store unconditionally. The default searches-compares-supersedes; the real
-     * client OVERRIDES it with an address-keyed conditional put (engine-atomic,
-     * no read). A REACTING decorator (trust projection) must RIDE this default
-     * rather than forward to inner: the default supersedes through the
-     * decorator's own [put]/[remove], firing its reactions for old AND new
-     * versions — the engine's atomic put exposes neither (hence it also keeps
-     * [supersedesViaPut] false there).
+     * same-or-newer version already holds the address. Non-replaceable docs
+     * store unconditionally.
+     *
+     * The default searches-compares-supersedes; the real client OVERRIDES it
+     * with an address-keyed conditional put (engine-atomic, no read). A REACTING
+     * decorator (trust projection) must RIDE this default rather than forward to
+     * inner: it supersedes through the decorator's own [put]/[remove], firing
+     * reactions for old AND new versions, which the engine's atomic put exposes
+     * for neither (hence [supersedesViaPut] stays false there).
      */
     suspend fun putIfNewer(doc: EventDoc): Boolean {
         val address =
@@ -232,9 +225,9 @@ interface EventIndex : AutoCloseable {
         val dTag = doc.dTagOrEmpty()
         val q =
             // Narrow by non-empty d so a prolific author's other addresses of
-            // this kind don't push the target past the search page; otherwise
-            // stay broad by (kind, author) — the addressOrNull filter below is
-            // the exact match and normalizes missing == empty d.
+            // this kind don't push the target past the search page. The
+            // addressOrNull filter below is the exact match either way, and it
+            // normalizes missing == empty d.
             if (doc.kind.isAddressable() && dTag.isNotEmpty()) {
                 EventQuery(kinds = listOf(doc.kind), authors = listOf(doc.pubkey), tags = mapOf("d" to listOf(dTag)))
             } else {

@@ -86,13 +86,11 @@ data class SearchFields(
      * phrase-grammar term, both polarities: a REQUIRED quoted phrase
      * ([EventQuery.phrases]) matches iff true, a `-word` exclusion
      * ([EventQuery.notSearch]) drops the doc iff true. True when [phrase]'s
-     * folded tokens appear ADJACENTLY, in order, in some field. Unlike
-     * [matches] this mirrors ONLY the engine's exact side — whole tokens,
-     * folded like the index, no substring reach ("-ode" must NOT drop a doc
-     * containing "model"). Residual divergences (engine stemming cuts both
-     * polarities loose — see the EventQuery.notSearch KDoc — and CJK
-     * segmentation splits runs) are accepted, same reason NIP-50 recall is
-     * outside strict parity.
+     * folded tokens appear ADJACENTLY, in order, in some field. Unlike [matches]
+     * this mirrors ONLY the engine's exact side — whole tokens, folded like the
+     * index, no substring reach ("-ode" must NOT drop a doc containing "model").
+     * Engine stemming and CJK segmentation still diverge, accepted for the same
+     * reason NIP-50 recall is outside strict parity.
      */
     fun containsPhrase(phrase: String): Boolean {
         val wanted = tokensOf(NearText.fold(phrase))
@@ -128,14 +126,12 @@ data class SearchFields(
      * lud16, website, about) is [NearText.parts]-split so email/URL SEGMENTS
      * become elements, matching what the exact clauses tokenize those fields
      * into: any doc a finished word reaches must stay reachable mid-typing
-     * (the 2026-08-02 as-you-type report; SearchPrefixLadderIT). Identity
-     * fields come FIRST so [NearText.MAX_ELEMENTS] trims bio prose, never
-     * identity segments.
+     * (SearchPrefixLadderIT). Identity fields come FIRST so
+     * [NearText.MAX_ELEMENTS] trims bio prose, never identity segments.
      *
-     * "Nothing downstream tells apart" is why each near tier is ONE column and
-     * not the parts+tokens PAIR it was until 2026-08-11: both granularities
-     * are still derived and still fed, [NearText.mergeNear] just stops giving
-     * them separate attributes. See its KDoc for why that is free.
+     * Each near tier is ONE column rather than a parts+tokens pair: both
+     * granularities are still derived and fed, [NearText.mergeNear] just merges
+     * them into one attribute (see its KDoc for why that is free).
      */
     fun nearFields(): Map<String, List<String>> =
         buildMap {

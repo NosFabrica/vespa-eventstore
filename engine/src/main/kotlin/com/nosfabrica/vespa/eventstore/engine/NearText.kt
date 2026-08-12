@@ -92,10 +92,10 @@ object NearText {
                     alnumOnly(t)?.let { yield(it) }
                     yieldAll(withCjkSuffixes(t).drop(1))
                 }
-                // The whole-name concatenation trails the tokens, so on a long
-                // field [cap] has already filled up and this is never reached —
-                // which is the point of building it lazily: joining a
-                // thousand-word description to then discard it was pure waste.
+                // Trails the tokens, so on a long field [cap] has already filled
+                // up and this is never reached — the point of building it
+                // lazily rather than joining a thousand-word description to
+                // then discard it.
                 if (raw.size >= 2) {
                     raw
                         .joinToString("")
@@ -115,23 +115,20 @@ object NearText {
      * de-duplicated into ONE array.
      *
      * Nothing downstream ever told the two granularities apart — the query
-     * builder emits an identical prefix clause and an identical fuzzy clause
-     * against each ([FuzzyWordGroup.NEAR_FIELDS]) and the schema only ever asks
-     * `matchCount(parts) > 0 || matchCount(tokens) > 0` — so two columns held a
-     * union that was OR'd back together at both ends. One column matches the
-     * same documents, ranks them into the same tier, halves the prefix/fuzzy
-     * clause count per query word (fuzzy is the most expensive matcher in the
-     * query), and drops a whole document vector per merged pair — 4.8 B/doc
-     * each, paid on EVERY document whether or not the field is filled
-     * (docs/attribute-memory.md).
+     * builder emits identical prefix and fuzzy clauses against each
+     * ([FuzzyWordGroup.NEAR_FIELDS]) and the schema only asks `matchCount(parts)
+     * > 0 || matchCount(tokens) > 0` — so two columns held a union that was OR'd
+     * back together at both ends. One column matches the same documents into the
+     * same tier, halves the prefix/fuzzy clause count per query word (fuzzy is
+     * the query's most expensive matcher), and drops a whole document vector per
+     * merged pair — 4.8 B/doc each, paid on EVERY document whether or not the
+     * field is filled (docs/attribute-memory.md).
      *
-     * NO ELEMENT IS LOST, by construction rather than by measurement: each
-     * source list is capped at [MAX_ELEMENTS] before it gets here, so their
-     * union cannot exceed [MAX_MERGED_ELEMENTS] and the cap below never bites.
-     * The bound on what one document can put in the dictionary is unchanged
-     * too — it was 48+48 across two columns, it is 96 across one, and dedup
-     * usually leaves it far under (for a single-token name the two lists are
-     * identical, so the merged column is half the size of the pair).
+     * NO ELEMENT IS LOST, by construction: each source list is capped at
+     * [MAX_ELEMENTS] before it gets here, so their union cannot exceed
+     * [MAX_MERGED_ELEMENTS] and the cap below never bites. One document's
+     * dictionary bound is unchanged — 48+48 across two columns, 96 across one,
+     * and dedup usually leaves it far under.
      */
     fun mergeNear(
         parts: List<String>,
@@ -145,16 +142,11 @@ object NearText {
      * Fold, drop what no dictionary should hold, de-duplicate, and STOP at
      * [MAX_ELEMENTS] — the output is bounded, so the work is too.
      *
-     * Takes a Sequence, not a List, deliberately. These run on the feed path
-     * for every doc, and the sources are not short: `search_secondary` carries
-     * summaries, descriptions and rule text, and the expansions multiply it
-     * (a token yields its alnum variant, a CJK run yields up to
-     * [MAX_CJK_SUFFIX_RUN] suffixes). Materializing all of that to keep 48
-     * elements meant O(field) allocation — and in [tokens], concatenating the
-     * entire field — for a result that was decided by its first few dozen
-     * words. Laziness makes the cost O(MAX_ELEMENTS) instead, with byte-for-
-     * byte the same output: fold-then-filter-then-distinct in the same order,
-     * cut at the same point.
+     * A Sequence, not a List, deliberately: this runs on the feed path for every
+     * doc over sources that are not short (`search_secondary` carries summaries,
+     * descriptions and rule text, and the expansions multiply it), so
+     * materializing everything to keep 48 elements cost O(field) allocation for
+     * a result decided by the first few dozen words. Same output, byte for byte.
      *
      * [fold] is idempotent (NFKD of decomposed text is itself; lowercase
      * likewise), so [merge] re-folding already-folded inputs is a no-op.

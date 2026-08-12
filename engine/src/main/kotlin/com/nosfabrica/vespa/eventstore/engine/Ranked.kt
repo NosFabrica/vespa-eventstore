@@ -21,27 +21,20 @@
 package com.nosfabrica.vespa.eventstore.engine
 
 /**
- * One hit with the engine's own relevance beside it.
+ * One hit with the engine's own relevance beside it — what lets a caller MERGE
+ * the hits of two different queries into one order. Within a single query the
+ * engine's order already is the answer.
  *
- * The carrier for the one question a recall cannot answer after the fact: WHERE
- * a hit belongs relative to a hit from a DIFFERENT query. Within one query the
- * engine's order is the answer and the score is redundant; across two, the
- * order is two orders and there is nothing to merge on unless the number comes
- * back with the hit.
+ * `score` is null when the engine does not rank ([InMemoryEventIndex] sorts by
+ * recency): a fabricated constant would make a merge that reads as ranked and is
+ * arbitrary, so callers seeing a null merge some other way (the store falls back
+ * to recency, which those hits are already in).
  *
- * `score` is null when the engine does not rank — [InMemoryEventIndex] sorts by
- * recency and has no relevance to give, and saying so is the point: a fabricated
- * constant would make a merge that reads as ranked and is arbitrary. A caller
- * that sees a null merges some other way (the store falls back to recency,
- * which is the order those hits are already in).
+ * Scores compare only within ONE rank profile — two profiles are two scales, and
+ * the store checks that before merging (NostrSemanticsStore.recallOrdered).
  *
- * Scores compare only within ONE rank profile. Two queries scored by different
- * profiles produce two different scales, and the store checks that before it
- * merges — see NostrSemanticsStore.recallOrdered.
- *
- * Distinct from [ScoredHit], which is the inspector's surface: that one is
- * EventDoc-shaped and carries the match TIER for explaining a ranking to a
- * human. This is the recall path's, generic over what a projection returned.
+ * Distinct from [ScoredHit], the inspector's EventDoc-shaped surface that also
+ * carries the match tier.
  */
 data class Ranked<T>(
     val hit: T,

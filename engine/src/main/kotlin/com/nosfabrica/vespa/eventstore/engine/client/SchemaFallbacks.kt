@@ -75,24 +75,16 @@ internal class SchemaFallbacks {
 
     /**
      * Whether this failure is a schema predating the near columns REFUSING A
-     * FEED. Deliberately not the same predicate as the read side's: the query
-     * path fails with `Field 'x' does not exist` out of the YQL parser, while
-     * the document API answers `Field 'x' is not defined in document type
-     * 'event'` — and unlike a query, which merely loses recall, a rejected
-     * document fails the whole insert.
+     * FEED. Not the read side's predicate: the YQL parser says `Field 'x' does
+     * not exist` while the document API says `is not defined in document type`.
+     * One flag serves both directions — it is the same schema, so whichever path
+     * discovers the gap spares the other a failed round trip.
      *
-     * ONE flag for both directions, not two: it is the same schema, so
-     * whichever path discovers the columns are missing spares the other its own
-     * failed round trip.
-     *
-     * The phrase is matched EXACTLY, not just the field name, and that
-     * asymmetry with the read side is deliberate. A false positive here is
-     * worse than a failure: it would strip the near columns off every
-     * subsequent write for the life of the process, so a data-shaped 400 that
-     * merely mentions the field ("invalid value for field 'name_near'") would
-     * silently and permanently degrade search instead of surfacing. Failing
-     * loudly on an unrecognised 400 is diagnosable; quietly writing worse
-     * documents is not. Measured against Vespa 29.3.
+     * The phrase is matched EXACTLY, not just the field name, unlike the read
+     * side. A false positive here strips the near columns off every subsequent
+     * write for the life of the process, so a data-shaped 400 merely mentioning
+     * the field ("invalid value for field 'name_near'") would silently and
+     * permanently degrade search. Measured against Vespa 29.3.
      */
     fun isMissingNearField(message: String?): Boolean =
         message != null &&
@@ -134,13 +126,13 @@ internal class SchemaFallbacks {
             attempt(demoteRecency(demoteGated(q)))
         } catch (e: IllegalArgumentException) {
             // The search path's status guard is a require(), hence
-            // IllegalArgument. No flag re-read here: a demoted attempt was
-            // unranked and can never 400 naming the profile, so this match
-            // already proves the attempt used it — and re-reading the flag
-            // would race a concurrent query's flip into a spurious failure.
-            // The two nets can't cross-fire: a gated query never satisfies
-            // usesRecencyProfile, and a plain recency 400's message never
-            // contains "recency_gated".
+            // IllegalArgument. No flag re-read: a demoted attempt is unranked
+            // and can never 400 naming the profile, so the message alone proves
+            // the attempt used it, while re-reading the flag would race a
+            // concurrent query's flip into a spurious failure. The two nets
+            // can't cross-fire — a gated query never satisfies
+            // usesRecencyProfile, and a plain recency 400 never says
+            // "recency_gated".
             val is400 = e.message?.contains("400") == true
             when {
                 is400 && q.usesGatedProfile() && e.message?.contains(EventYql.RANK_RECENCY_GATED) == true -> {

@@ -76,11 +76,10 @@ class TrustProjection(
     // this decorator's search() and lose the raw passthrough (see EventIndex.rawSearch).
     override suspend fun rawSearch(query: EventQuery): List<RawEvent> = inner.rawSearch(query)
 
-    // Same rule, and this one is the PRODUCTION stack's only decorator: riding
-    // the default here would route through search()/rawSearch() above and hand
-    // the store null scores for every hit — so a multi-filter REQ would fall
-    // back to recency and the relevance merge would exist, pass its tests, and
-    // never once run against Vespa. Delegation is the whole feature.
+    // Same rule, and this is the production stack's only decorator: riding the
+    // default would route through search()/rawSearch() above and hand the store
+    // null scores for every hit, so a multi-filter REQ would silently fall back
+    // to recency and the relevance merge would never run against Vespa.
     override suspend fun searchRanked(query: EventQuery): List<Ranked<EventDoc>> = inner.searchRanked(query)
 
     override suspend fun rawSearchRanked(query: EventQuery): List<Ranked<RawEvent>> = inner.rawSearchRanked(query)
@@ -125,12 +124,11 @@ class TrustProjection(
         reputations.close()
     }
 
-    // NOTE — deliberately does NOT forward supersedesViaPut or override
-    // putIfNewer: the read-then-supersede default routes through this
-    // put()/remove(), recording dirt for BOTH old and new versions. The engine's
-    // atomic conditional put never exposes the removed old doc, so through this
-    // decorator supersession must stay read-based to keep the tensors consistent
-    // (the fast path engages only on an undecorated index).
+    // Deliberately does NOT forward supersedesViaPut or override putIfNewer: the
+    // read-then-supersede default routes through this put()/remove(), recording
+    // dirt for BOTH old and new versions, while the engine's atomic conditional
+    // put never exposes the removed old doc. The fast path engages only on an
+    // undecorated index.
     override suspend fun put(doc: EventDoc) {
         val work = opDirt(doc)
         dirt.guarded(work) {
@@ -152,13 +150,13 @@ class TrustProjection(
      *
      * Attribution is PER DIMENSION ([TrustProviders]): rank tags update
      * influence cells for `30382:rank` observers, followers tags the follower
-     * cells for `30382:followers` observers; a cell's null side leaves the other
-     * tensor untouched (that cell belongs to the other provider's cards). Cards
+     * cells for `30382:followers` observers, and a cell's null side leaves the
+     * other tensor untouched (it belongs to the other provider's cards). Cards
      * apply in the derive's fold order, so WITHIN a batch the two paths agree;
      * across batches the cell holds the last batch's winner — bounded
-     * arbitrariness, an order of magnitude cheaper than reading. A RETRACTION
-     * (a card missing a tag its signer is mapped for) can't apply blindly —
-     * another service's card may still back the cell — so those subjects become
+     * arbitrariness, an order of magnitude cheaper than reading. A RETRACTION (a
+     * card missing a tag its signer is mapped for) can't apply blindly, since
+     * another service's card may still back the cell, so those subjects become
      * re-derive work, as do the 10040s' service walks.
      */
     override suspend fun putAll(docs: List<EventDoc>) {
@@ -246,11 +244,10 @@ class TrustProjection(
     override suspend fun removeDocs(docs: List<EventDoc>) {
         val work = removeDirt(docs)
         dirt.guarded(work) {
-            // Timed for symmetry with putAll's `write`: this is the other half
-            // of a supersession — the sweep of the versions the winner
-            // replaced — and it runs on the same bulk path, inside the same
-            // writer lock. Without it the ingest breakdown showed the write
-            // and hid the delete, which reads as "the write is all there is".
+            // Timed for symmetry with putAll's `write`: this is a supersession's
+            // other half — the sweep of the versions the winner replaced — on
+            // the same bulk path inside the same writer lock, so leaving it
+            // untimed reads as "the write is all there is".
             IngestStats.timed("remove") { inner.removeDocs(docs) }
             if (docs.any { it.kind == TrustProviderListEvent.KIND }) recompute.invalidateProviders()
             Unit to work
