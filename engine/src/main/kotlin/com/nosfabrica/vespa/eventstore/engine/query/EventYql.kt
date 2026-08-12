@@ -44,19 +44,18 @@ object EventYql {
     /** Pure text relevance, no trust (`sort:text`). */
     const val RANK_TEXT = "text"
 
-    /** Text order with the trust floor applied. No longer selected by the store's filter mapping (the floor rides the query's own profile); kept for direct API use. */
+    /** Text order with the trust floor applied. The store's filter mapping no longer selects it (the floor rides the query's own profile); kept for direct API use. */
     const val RANK_FILTERED = "rank_filtered"
 
     /**
      * NIP-01 recency order with the trust floor: score IS created_at,
      * below-floor authors dropped — the always-on spam gate for feeds and the
-     * no-terms `filter:rank:` match-all. MATCH-PHASE variant: the engine keeps
-     * only the newest ~[MATCH_PHASE_MAX_HITS] candidates per node before
-     * gating. [build] demotes shapes the cut can't serve exactly to
-     * [RANK_RECENCY_GATED_EXACT]; a degraded-and-unproven page reruns on the
-     * exact profile (VespaEventIndex.recallRoot). The count-probe planner
-     * excludes both variants: its windows are proven against the UNGATED
-     * match set, which the gate breaks.
+     * no-terms `filter:rank:` match-all. MATCH-PHASE variant, keeping only the
+     * newest ~[MATCH_PHASE_MAX_HITS] candidates per node before gating; [build]
+     * demotes shapes the cut can't serve exactly to [RANK_RECENCY_GATED_EXACT],
+     * and a degraded-and-unproven page reruns exact (VespaEventIndex.recallRoot).
+     * The count-probe planner excludes both variants — its windows are proven
+     * against the UNGATED match set, which the gate breaks.
      */
     const val RANK_RECENCY_GATED = "recency_gated"
 
@@ -110,13 +109,12 @@ object EventYql {
      * The (id, created_at[, tag_index]) projection a snapshot walk pages on:
      * attributes only, newest first, always UNRANKED.
      *
-     * Unranked is load-bearing, not incidental. The recency profile's
-     * match-phase caps `totalCount` and can drop hits below its cut — see
-     * [buildCount] — which on a walk that must be COMPLETE would lose events
-     * silently. Unranked has no match phase, so `order by created_at desc`
-     * keeps full coverage on a large corpus (verified: a 6.0M-match filter
-     * over a 42.8M-doc corpus reported coverage full and a totalCount exactly
-     * equal to the grouping count).
+     * Unranked is load-bearing: the recency profile's match-phase caps
+     * `totalCount` and can drop hits below its cut (see [buildCount]), which on
+     * a walk that must be COMPLETE would lose events silently. Unranked has no
+     * match phase, so `order by created_at desc` keeps full coverage on a large
+     * corpus (verified on a 6.0M-match filter over 42.8M docs: coverage full,
+     * totalCount exactly the grouping count).
      */
     fun buildIdTime(
         q: EventQuery,
@@ -193,8 +191,6 @@ object EventYql {
         val observer = q.observer?.lowercase()?.takeIf(Hex::isHex64)
         val requested =
             q.ranking ?: when {
-                // Limit'd unranked recall rides the match-phase profile.
-                // (Keep in sync with [usesRecencyProfile].)
                 usesRecencyProfile(q) -> RANK_RECENCY
 
                 // Phrases are search text: a phrase-only query ranks like any
@@ -226,7 +222,6 @@ object EventYql {
         val order = if (ranking == RANK_UNRANKED || ranking == RANK_RECENCY) " order by created_at desc" else ""
         val limit = q.limit?.let { if (it <= 0) return null else " limit $it" } ?: ""
         return VespaQuery(
-            // Reconstruction fields only, not `*` — see [SUMMARY_FIELDS].
             yql = "select $SUMMARY_FIELDS from event where $where$order$limit",
             params = params,
             ranking = ranking,
@@ -345,8 +340,6 @@ object EventYql {
             clauses += FuzzyWordGroup.clause(matchable, params, nearFields = q.nearMatching)
             // Short queries lean harder on the trigram safety net.
             params["ranking.features.query(w_gram)"] = if (FuzzyWordGroup.leansOnGrams(matchable)) "8.0" else "2.0"
-            // (n_words rides below — it counts phrases too, so it cannot live
-            // inside this words-only branch.)
         }
 
         // Quoted phrases ([EventQuery.phrases]): one REQUIRED phrase-grammar
@@ -361,18 +354,13 @@ object EventYql {
         }
 
         // How many things the USER asked for — matchable words PLUS quoted
-        // phrases. The schema's perfect_match() rung needs this because it
-        // cannot count them itself:
-        //  - fieldMatch's own queryCompleteness divides by every term in the
-        //    tree, and [FuzzyWordGroup] adds SYNTHETIC ones (a joined variant
-        //    at 2+ words, adjacent-pair concatenations at 3+, each emitted
-        //    twice) that a normally-spelled doc can never match. A whole-field
-        //    match read 2/3 at two words and 1/4 at three.
-        //  - matchCount counts query ITEMS, and a quoted phrase is ONE item
-        //    however many words it spans, so phrases count 1 each here. Leaving
-        //    them out entirely (the first cut) left the feature unsent on a
-        //    phrase-only query, where the schema default of 1 happened to be
-        //    right for one phrase and wrong for two.
+        // phrases — for the schema's perfect_match() rung, which cannot count
+        // them itself. fieldMatch's queryCompleteness divides by every term in
+        // the tree, including the SYNTHETIC ones [FuzzyWordGroup] adds (a
+        // whole-field match read 2/3 at two words, 1/4 at three). A quoted
+        // phrase is ONE matchCount item however many words it spans, so phrases
+        // count 1 each; omitting them left the feature unsent on a phrase-only
+        // query, where the schema default of 1 is wrong for two phrases.
         // Both measured on a live Vespa, 2026-08-05.
         val queryItems = matchable.size + q.phrases.size
         if (queryItems > 0) params["ranking.features.query(n_words)"] = queryItems.toString()
@@ -440,17 +428,14 @@ object EventYql {
     /**
      * Whether [quote] can render [s] into a YQL literal at all.
      *
-     * Of the C0 block only tab, LF and CR have an escape below — and those are
-     * exactly the three the engine will STORE, so a tag value carrying any
-     * other C0 character can never sit in `tag_index`: the store refuses the
-     * whole event first (its `VespaText.firstIllegalField`, which mirrors
-     * Vespa's own text rules). Unmatchable either way, so it never has to
-     * reach the literal raw.
+     * Of the C0 block only tab, LF and CR have an escape in [quote] — and those
+     * are exactly the three the engine will STORE, so a tag value carrying any
+     * other C0 character can never sit in `tag_index` (`VespaText`
+     * .firstIllegalField refuses the whole event first). Unmatchable either way.
      *
      * DEL and the C1 block are deliberately NOT excluded: Vespa stores them
      * (mojibake'd Latin-1 lands there constantly), documents really do carry
-     * them, and dropping them here would silently stop those queries matching.
-     * They need no escape — they are not quote, backslash, or a line break.
+     * them, and they need no escape.
      */
     private fun isQuotable(s: String): Boolean = s.none { it < ' ' && it != '\t' && it != '\n' && it != '\r' }
 

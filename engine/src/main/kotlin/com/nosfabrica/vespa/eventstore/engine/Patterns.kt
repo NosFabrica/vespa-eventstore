@@ -20,5 +20,4 @@
  */
 package com.nosfabrica.vespa.eventstore.engine
 
-/** Splits on any run of whitespace. */
 internal val WHITESPACE = Regex("\\s+")

@@ -237,9 +237,6 @@ internal class BulkRecordInsert(
             }
             if (toPut.isNotEmpty()) index.putAll(toPut.values.map { it.toDoc() })
             alive().forEach { i -> outcome[i] = IEventStore.InsertOutcome.Accepted }
-            // A row this run never decided is the STORE's fault, not the event's:
-            // Failed tells the caller to re-offer it, where Rejected would say
-            // dropping it is safe.
             return outcome.map { it ?: IEventStore.InsertOutcome.Failed(Rejections.INSERT_FAILED) }
         }
 
@@ -290,11 +287,10 @@ internal class BulkRecordInsert(
         fun scheduleRemove(doc: EventDoc) {
             if (removeIds.add(doc.id)) removeFromStore += doc
         }
-        // The comparison itself, split out from the recall above: the query is
-        // timed as `versions`, but deciding the winner per address and listing
-        // what to sweep is plain CPU over the whole batch, and on a
-        // replaceable-heavy stream it runs inside the writer lock with every
-        // other worker queued behind it. Untimed, it was invisible.
+        // Timed apart from the `versions` recall above: deciding the winner per
+        // address is plain CPU over the whole batch, but on a replaceable-heavy
+        // stream it runs inside the writer lock with every other worker queued
+        // behind it.
         IngestStats.timed("supersede") {
             for ((key, idxs) in groups) {
                 val versions = existing[key].orEmpty()

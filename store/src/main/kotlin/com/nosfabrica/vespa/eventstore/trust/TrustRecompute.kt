@@ -96,10 +96,10 @@ internal class TrustRecompute(
     ): Map<String, ReputationDoc> {
         // Derived per CHUNK, not per batch: each chunk's query is complete, so
         // its docs are freed as soon as it lands. Holding a whole batch's recall
-        // meant ~1.5M docs live (hundreds of MB) on the ingest path; per chunk
-        // it is QUERY_FANOUT × FETCH_CHUNK × recall, independent of batch size.
-        // The derived docs DO accumulate deliberately — small (one cell per
-        // MAPPED observer), and one pipelined write per batch beats one per chunk.
+        // meant ~1.5M docs live (hundreds of MB) on the ingest path; per chunk it
+        // is QUERY_FANOUT × FETCH_CHUNK × recall, independent of batch size. The
+        // derived docs do accumulate — they are small, and one pipelined write
+        // per batch beats one per chunk.
         val derived = LinkedHashMap<String, ReputationDoc>(subjects.size * 2)
         val cutoff = nowSecs()
         IngestStats.timed("proj.fetch") {

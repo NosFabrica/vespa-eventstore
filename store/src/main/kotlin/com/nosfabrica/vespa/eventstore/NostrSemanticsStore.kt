@@ -98,13 +98,11 @@ class NostrSemanticsStore(
     override val relay: NormalizedRelayUrl? = null,
     private val nowSecs: () -> Long = { System.currentTimeMillis() / 1000 },
     /**
-     * Whether anything ELSE writes [index]. The guard-owner cache is only
-     * self-maintaining for a writer that sees all of its owners' guards, so
-     * this is an assertion the caller must make — the store cannot see a
-     * second feeder. See [WriterTopology]. The default,
-     * [WriterTopology.SHARED_STRICT], caches nothing and probes every insert:
-     * skipping a guard probe is a pure performance choice, and it is not one
-     * this store makes on a caller's behalf.
+     * Whether anything ELSE writes [index] — an assertion only the caller can
+     * make, since the store cannot see a second feeder. The guard-owner cache is
+     * self-maintaining only for a writer that sees all of its owners' guards, so
+     * the default [WriterTopology.SHARED_STRICT] caches nothing and probes every
+     * insert. See [WriterTopology].
      */
     writers: WriterTopology = WriterTopology.SHARED_STRICT,
     /** Guard-cache rebuild cadence under [WriterTopology.SHARED]; 0 disables the refresher. */
@@ -133,21 +131,16 @@ class NostrSemanticsStore(
     }
 
     /**
-     * Take [writes], booking the WAIT and the HOLD under separate
-     * [IngestStats] stages named for [stage].
+     * Take [writes], booking the WAIT and the HOLD under separate [IngestStats]
+     * stages named for [stage].
      *
-     * Split because the two answer different questions and only one of them
-     * was previously answerable. Every existing stage timer starts after the
-     * lock is already held, so a writer starved by another holder shows up as
-     * fast stages and a stalled pipeline — the status line says the ingest
-     * stages are cheap while ingest visibly is not, and nothing in it names
-     * the reason.
-     *
-     * That gap is not hypothetical: the deferred trust projection runs its
-     * re-derivation off the ingest path but INSIDE this lock (see
-     * DirtLedger.drain's gate), so `proj.fetch` and an ingest commit contend
-     * for one mutex while both look cheap individually. `lock.*.wait` is what
-     * makes that visible; `lock.*.hold` is what attributes it.
+     * Every other stage timer starts once the lock is already held, so a writer
+     * starved by another holder would otherwise show up as fast stages and a
+     * stalled pipeline with nothing naming the reason. The deferred trust
+     * projection makes that real: it re-derives off the ingest path but INSIDE
+     * this lock (DirtLedger.drain's gate), so `proj.fetch` and an ingest commit
+     * contend for one mutex while both look cheap individually. `lock.*.wait`
+     * makes that visible; `lock.*.hold` attributes it.
      */
     private suspend fun <T> locked(
         stage: LockStage,
@@ -161,14 +154,11 @@ class NostrSemanticsStore(
                 body()
             }
         } finally {
-            // Booked AFTER the lock is released, on purpose. Recording inside
-            // it would put two map lookups and two atomic adds in the critical
-            // section this exists to measure — instrumentation lengthening
-            // what it reports. It also lets `hold` run to the actual release
-            // rather than to just-before-recording.
-            //
-            // acquired == 0 means we never got the lock (cancelled while
-            // waiting): there is no wait to attribute and no hold to report.
+            // Booked AFTER release: recording inside would put two map lookups
+            // and two atomic adds in the critical section this exists to
+            // measure, and `hold` would stop short of the actual release.
+            // acquired == 0 means the lock was never taken (cancelled while
+            // waiting) — nothing to attribute.
             if (acquired != 0L) {
                 val released = System.nanoTime()
                 IngestStats.add(stage.wait, acquired - requested)
@@ -256,7 +246,7 @@ class NostrSemanticsStore(
         val probeDeleted = guards.mightBeDeleted(owner)
         val probeVanished = guards.mightHaveVanished(owner)
         if (!probeDeleted && !probeVanished) {
-            // The common-case insert reads just the dup get — skip the fan-out
+            // The common case reads just the dup get — skip the fan-out
             // machinery, which allocates per call.
             if (index.get(event.id) != null) throw RejectedException(Rejections.DUPLICATE)
         } else {
@@ -361,25 +351,18 @@ class NostrSemanticsStore(
      * NIP-50 asks for relevance order and NIP-01 for recency, and a REQ can
      * carry both kinds of filter at once, so there are three cases:
      *
-     *  - **No query ranked.** The union is merged and sorted `created_at desc,
-     *    id asc` — the NIP-01 order, applied across filters.
-     *  - **Every query ranked, by the SAME profile.** The union is merged on
-     *    the engine's relevance, ties broken by recency. This is what a reader
-     *    means by "the most trusted results for #nostr": the filters are four
+     *  - **No query ranked.** The union is sorted `created_at desc, id asc` —
+     *    the NIP-01 order, applied across filters.
+     *  - **Every query ranked, by the SAME profile.** The union is merged on the
+     *    engine's relevance, ties broken by recency: the filters are several
      *    ways of asking one question, and their answers belong in one order.
      *    It costs the scores, which is why [EventIndex.searchRanked] exists.
      *  - **Mixed, or ranked by different profiles.** Each query's hits keep
-     *    their own order and the runs are concatenated, as before. A relevance
-     *    score and a timestamp share no scale, and neither do two profiles'
-     *    scores — interleaving them would be inventing a comparison. This is
-     *    the honest floor, not a good answer; a client that wants one order
-     *    should ask one question.
-     *
-     * The multi-filter union used to take the last branch ALWAYS as soon as one
-     * filter was ranked: a search page asking `#t`, `#l` and two comment
-     * filters for the same topic got its most-trusted hits for the first
-     * filter, then started again from the top of the trust scale for the
-     * second. Every seam read as a ranking mistake.
+     *    their own order and the runs are concatenated. A relevance score and a
+     *    timestamp share no scale, and neither do two profiles' scores, so
+     *    interleaving them would be inventing a comparison. The honest floor,
+     *    not a good answer — a client that wants one order should ask one
+     *    question.
      *
      * Dedup is by id and keeps the BEST copy: sorting before [distinctBy] means
      * an event that answered two filters survives at its higher score.
@@ -408,10 +391,9 @@ class NostrSemanticsStore(
         }
         if (queries.all { it.keepsEngineOrder() } && queries.mapTo(HashSet()) { it.ranking }.size == 1) {
             val scored = queries.mapBounded(QUERY_FANOUT) { searchRankedOne(it) }.flatten()
-            // An engine that does not rank (the in-memory reference) says so
-            // with a null rather than a fabricated constant. Its hits are
-            // already newest-first, so recency is the merge that keeps them
-            // coherent — and the caller is told nothing that is not true.
+            // An engine that does not rank (the in-memory reference) reports a
+            // null rather than a fabricated constant; its hits are already
+            // newest-first, so recency is the merge that keeps them coherent.
             if (scored.any { it.score == null }) {
                 return scored.map { it.hit }.distinctBy(idOf).sortedWith(newestFirst)
             }
@@ -533,15 +515,12 @@ class NostrSemanticsStore(
      * (NIP-65's write marker, NIP-85's relay position).
      *
      * It rides the tags-only visit projection ([EventIndex.visitTags]), NOT a
-     * grouping over `tag_index`, deliberately: `tag_index` is a derived, lossy
-     * view (single-letter names, first values only), so a grouping never sees
-     * a multi-character name and cannot apply a positional condition — it
-     * would return a SUPERSET. Full tag fidelity round-trips only through the
-     * stored `tags` field, so this streams exactly that field and nothing else.
+     * grouping over `tag_index`: that field is a derived, lossy view
+     * (single-letter names, first values only), so a grouping never sees a
+     * multi-character name and cannot apply a positional condition — it would
+     * return a SUPERSET.
      *
-     * Empty values are skipped, and expiry is honored like [count]. Searching
-     * or limit-carrying filters fall back to the search path, keeping their
-     * semantics.
+     * Empty values are skipped, and expiry is honored like [count].
      */
     suspend fun distinctTagValues(
         filter: Filter,
@@ -574,19 +553,15 @@ class NostrSemanticsStore(
      * [maxEntries] returns at most `maxEntries + 1` — one over, so the caller
      * can tell "at budget" from "over budget" — and STOPS the walk there: a
      * caller sizing a sync window only needs to learn the set exceeds its
-     * budget, not scan a 10M corpus to prove it. It bounds EVERY snapshot,
-     * single- or multi-filter; an unbounded walk from a caller that asked for
-     * a bound is how a window-sizing probe turns into the allocation it was
-     * meant to prevent.
+     * budget, not scan a 10M corpus to prove it.
      *
      * That cap counts UNIQUE ids, which is why cross-filter dedup runs INLINE
-     * instead of over the collected list at the end. Capping RAW hits would
-     * stop the walk while the deduped union was still under budget, and the
-     * caller would get a partial set indistinguishable from a complete one —
-     * silently dropping everything the unwalked filters would have added.
+     * rather than over the collected list at the end. Capping RAW hits would
+     * stop the walk while the deduped union was still under budget, handing back
+     * a partial set indistinguishable from a complete one.
      *
-     * [onProgress] fires after every page: the walk is the longest silent
-     * phase a mirror has, and the page loop already knows the count.
+     * [onProgress] fires after every page — the walk is the longest silent phase
+     * a mirror has.
      */
     override suspend fun snapshotIdsForNegentropy(
         filters: List<Filter>,
@@ -682,11 +657,10 @@ class NostrSemanticsStore(
             for (doc in page.docs) {
                 val fields = SearchExtractors.extract(doc.toEvent())
                 // The near-tier arrays are FED data derived from the search
-                // columns at put time, so identical columns can hide a stale or
-                // MISSING near tier (a corpus fed before the near fields
-                // existed). storedNearFields is the visit's evidence of what
-                // the engine actually holds (null = no evidence); any drift
-                // forces the re-put that backfills them. Checked second: a
+                // columns at put time, so identical columns can still hide a
+                // stale or MISSING near tier (a corpus fed before those fields
+                // existed). storedNearFields is the visit's evidence of what the
+                // engine holds (null = no evidence). Checked second, since a
                 // changed column already forces the re-put.
                 val columnsChanged = fields != doc.search
                 val nearStale = !columnsChanged && doc.storedNearFields?.let { it != fields.nearFieldsWritten() } == true
@@ -707,31 +681,25 @@ class NostrSemanticsStore(
     suspend fun refreshGuardOwners() = guards.refresh()
 
     override fun close() {
-        // Stops the guard refresher's background walks before the index it
-        // reads through goes away.
+        // Before the index its background walks read through goes away.
         guards.close()
         index.close()
     }
 
     private companion object {
         /**
-         * Writer-lock stage labels. Named for the CALLER, not the operation:
-         * the question these exist to answer is which side of the contention
-         * a stall is on, and "ingest waited 40s while the gate held 40s" only
-         * reads that way if the two are separable.
-         *
-         * The two stage names are built ONCE per label rather than
-         * interpolated per acquisition — `insert()` takes this lock per event,
-         * and a String allocation on that path (originally inside the critical
-         * section, no less) is not what a measurement should cost.
+         * Writer-lock stage labels, named for the CALLER rather than the
+         * operation: these exist to say which side of the contention a stall is
+         * on ("ingest waited 40s while the gate held 40s"). Built once per
+         * label, since `insert()` takes this lock per event and a String
+         * allocation is not what a measurement should cost.
          */
         val LOCK_INGEST = LockStage("lock.ingest")
         val LOCK_GATE = LockStage("lock.gate")
         val LOCK_SWEEP = LockStage("lock.sweep")
         val LOCK_REINDEX = LockStage("lock.reindex")
 
-        // Runs at least this long take the bulk path; smaller ones aren't
-        // worth the setup and stay on the per-event path.
+        /** Batches this size or larger take the bulk path; smaller ones aren't worth its setup. */
         const val BULK_MIN = 16
 
         val NEWEST_FIRST = compareByDescending(EventDoc::createdAt).thenBy(EventDoc::id)

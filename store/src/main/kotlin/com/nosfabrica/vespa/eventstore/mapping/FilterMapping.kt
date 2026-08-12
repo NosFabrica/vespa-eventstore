@@ -73,14 +73,12 @@ import com.vitorpamplona.quartz.utils.Hex
 internal fun Filter.toEventQuery(): EventQuery? {
     if (ids?.isEmpty() == true || authors?.isEmpty() == true || kinds?.isEmpty() == true) return null
     if (tags?.values?.any { it.isEmpty() } == true || tagsAll?.values?.any { it.isEmpty() } == true) return null
-    // Two stages AROUND Quartz's extension pass: quotes first (order is
-    // load-bearing — see liftQuotedSpans), then extensions, then `-word`. At
-    // the EventQuery seam a search word is always a requirement, never syntax:
-    // the pure-negative case arrives with search=null and takes every
-    // plain-recall path instead of masquerading as a ranked search.
     // Quartz's SearchQuery parses the full grammar (quotes before extensions
-    // before minus — the order is load-bearing and documented there); this
-    // store only applies its own policies on the parsed result.
+    // before minus — the order is load-bearing and documented there); this store
+    // only applies its own policies to the result. At the EventQuery seam a
+    // search word is always a requirement, never syntax, so a pure-negative
+    // query arrives with search=null and takes the plain-recall paths instead of
+    // masquerading as a ranked search.
     val parsed = SearchQuery.parse(search)
     val terms = parsed.terms.ifEmpty { null }
     // Exclusions no index can hold ("-⚡") are vacuous either way — dropped.
@@ -124,12 +122,12 @@ internal fun Filter.toEventQuery(): EventQuery? {
 const val DEFAULT_MIN_RANK = 2.0
 
 /**
- * The floor a ranked `include:spam` query still SENDS: 0, so no hit is dropped
- * — but the feature must not be omitted. The default profile's wot_mult()
- * anchors its trust curve at query(min_rank), whose schema fail-open default is
- * -1e9: omit the floor and the clamp flattens the boost to the same constant
- * for EVERY author, so trust stops ordering the hits ("many Vitors above the
- * real one"). Anchored at 0, the curve keeps its full span; only the gate is off.
+ * The floor a ranked `include:spam` query still SENDS: 0, so no hit is dropped —
+ * but the feature must not be OMITTED. The default profile's wot_mult() anchors
+ * its trust curve at query(min_rank), whose schema fail-open default is -1e9, so
+ * omitting it flattens the boost to the same constant for every author and trust
+ * stops ordering the hits. Anchored at 0 the curve keeps its full span and only
+ * the gate is off.
  */
 const val INCLUDE_SPAM_MIN_RANK = 0.0
 

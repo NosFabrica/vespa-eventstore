@@ -74,14 +74,13 @@ internal class ProviderMap(
      * not keep attributing (its cells stand until the expiry sweep fires the
      * projection's react).
      *
-     * An EMPTY result is never cached — the whole point. A relay with no 10040s
-     * and one whose engine has not finished serving its corpus return the same
-     * empty list, and caching it makes the second permanent: [invalidate] fires
-     * only on a 10040 WRITE, and dedup drops an already-held 10040 before any
-     * write — empty rankings forever (observed: 271 queryable 10040s while ten
-     * minutes of reconcile retries read the same cached emptiness). Not caching
-     * costs one small query per pass on a genuinely providerless relay; caching
-     * costs a relay that can never rank until it restarts.
+     * An EMPTY result is never cached. A relay with no 10040s and one whose
+     * engine has not finished serving its corpus return the same empty list, and
+     * caching it makes the second permanent: [invalidate] fires only on a 10040
+     * WRITE, and dedup drops an already-held 10040 before any write (observed:
+     * 271 queryable 10040s while ten minutes of reconcile retries read the same
+     * cached emptiness). Not caching costs one small query per pass on a
+     * genuinely providerless relay.
      */
     suspend fun get(): TrustProviders {
         cached?.let { return it }

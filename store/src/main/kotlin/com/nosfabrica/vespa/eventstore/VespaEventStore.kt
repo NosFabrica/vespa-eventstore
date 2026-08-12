@@ -161,18 +161,16 @@ class VespaEventStore internal constructor(
          * identical in both modes: the same crash-safe persisted marker is
          * drained here, at the next write, or by [reconcileTrust].
          *
-         * [writers] states whether ANY OTHER process feeds this same Vespa —
-         * a second store instance, a sync router beside a serving relay, a
-         * mirror. It cannot be detected from here, and the guard-owner cache
-         * it governs is a pure read optimization whose only failure is serving
-         * an event a tombstone covers, so it defaults to
-         * [WriterTopology.SHARED_STRICT]: no cache, every insert probes
-         * NIP-09/NIP-62, no window in which a deleted event can be admitted.
-         * A deployment that owns every write for its owners buys the read
-         * savings back — with no window either — by asserting
-         * [WriterTopology.SINGLE_WRITER]; [WriterTopology.SHARED] is the middle
-         * ground for a multi-writer deployment that accepts a bounded window,
-         * rebuilding the cache every [guardRefreshSeconds].
+         * [writers] states whether ANY OTHER process feeds this same Vespa — a
+         * second store instance, a sync router, a mirror. It cannot be detected
+         * from here, and the guard-owner cache it governs is a pure read
+         * optimization whose only failure is serving an event a tombstone
+         * covers, so it defaults to [WriterTopology.SHARED_STRICT]: no cache,
+         * every insert probes NIP-09/NIP-62. A deployment that owns every write
+         * for its owners buys the read savings back — with no window either — by
+         * asserting [WriterTopology.SINGLE_WRITER]; [WriterTopology.SHARED] is
+         * the middle ground, accepting a window bounded by
+         * [guardRefreshSeconds].
          *
          * The store imposes no result cap of its own: bounding a query's cost
          * belongs to whoever writes the filter.

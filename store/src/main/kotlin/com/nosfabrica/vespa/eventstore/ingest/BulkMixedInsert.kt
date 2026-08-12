@@ -160,13 +160,12 @@ internal class BulkMixedInsert(
                     }
 
                 // Vanish sweep: the owner's history UP TO the vanish's own
-                // created_at. The replay's sweep filters by until anyway, so
-                // nothing newer was ever a candidate — and pulling it made this
-                // the one preload with no bound at all, materializing a
-                // prolific owner's ENTIRE history in the snapshot under the
-                // writer lock: exactly what Deletions' sweepPage exists to
-                // page. Several vanishes by one owner take the widest window,
-                // since each still replays against its own until.
+                // created_at. The replay's sweep filters by `until` anyway, so
+                // nothing newer was ever a candidate — and pulling it left this
+                // the one unbounded preload, materializing a prolific owner's
+                // ENTIRE history in the snapshot under the writer lock. Several
+                // vanishes by one owner take the widest window, since each still
+                // replays against its own until.
                 vanishes.groupBy { it.pubKey }.forEach { (owner, evs) ->
                     add(EventQuery(owners = listOf(owner), until = evs.maxOf { it.createdAt }))
                 }

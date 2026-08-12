@@ -98,10 +98,9 @@ internal class RecencyPlanner(
             // An existing `since` at least this tight makes the rung (and any
             // wider one) pointless — the query is already windowed.
             if (q.since != null && since <= q.since) return q
-            // A failed probe just means "don't window" — planning is an
-            // optimization; the real query still carries its own guarantees.
-            // Cancellation is NOT a failed probe: swallowing it would enqueue
-            // one more engine request on a job that is already dead.
+            // A failed probe just means "don't window": planning is an
+            // optimization. Cancellation is NOT a failed probe — swallowing it
+            // would enqueue one more engine request on a job already dead.
             val matches =
                 try {
                     exactCount(q.copy(since = since, limit = null))
@@ -117,10 +116,9 @@ internal class RecencyPlanner(
 
     private companion object {
         /**
-         * The probe ladder, in seconds before the query's anchor: an hour, a
-         * day, a month. Geometric so a live corpus exits on the first rung
-         * that fits its event rate, and a probe miss costs one more ~5ms
-         * count, not a rescan.
+         * Seconds before the query's anchor: an hour, a day, a month. Geometric
+         * so a live corpus exits on the first rung that fits its event rate, and
+         * a miss costs one more ~5ms count rather than a rescan.
          */
         val PROBE_WINDOWS = longArrayOf(3_600L, 86_400L, 2_592_000L)
     }

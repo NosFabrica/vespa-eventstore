@@ -83,37 +83,24 @@ internal class SearchCoverage(
 
     /**
      * The engine reports complete coverage and names no degradation — the whole
-     * question this guard asks, and deliberately not [full].
+     * question this guard asks, and deliberately NOT [full].
      *
-     * `full` and [coverage] are computed from DIFFERENT denominators, so they
-     * disagree at the boundary: `full` is `docs == active`, an exact equality,
-     * while the percentage rounds `docs / targetActive`. A node a hair short of
-     * its target — mid-redistribution, or still opening the last buckets after
-     * a restart — is `full: false` at 100%. And Vespa renders the `degraded`
-     * block only when its own `isDegraded()` holds, which at a rounded 100% and
-     * no flag set is false: the response arrives with no reason attached at all.
-     *
-     * Refusing that shape produced the self-contradicting "searched only 100% of
-     * the corpus (degraded: unspecified)" — and refused it on EVERY query while
-     * the node stayed a hair short, which on a relay is every feed and every
-     * empty search. There is nothing to act on there: no flag to carve out, and
-     * a rerun comes back the same. So the guard asks what Vespa asks — is this
-     * degraded.
-     *
-     * The same two denominators break the other way too, which is why `full` is
-     * not consulted at all. `docs == active` while both sit BELOW targetActive —
-     * the ideal state holds documents that are not active anywhere yet — is
-     * `full: true` at a percentage as low as it likes, with `non-ideal-state`
-     * named in the block. Keying on `full` served that silently at ANY coverage:
-     * the guard refused the harmless spelling of "this node is short" and waved
-     * through the harmful one. One question answers both spellings.
+     * `full` and [coverage] come from different denominators: `full` is the
+     * exact `docs == active`, the percentage rounds `docs / targetActive`. They
+     * disagree in both directions, and keying on `full` got both wrong. A node a
+     * hair short of its target (mid-redistribution, or still opening buckets
+     * after a restart) is `full: false` at a rounded 100% with no `degraded`
+     * block at all — refusing that failed EVERY query, with nothing to act on
+     * and a rerun that comes back the same. Conversely `docs == active` while
+     * both sit BELOW targetActive is `full: true` at any percentage, with
+     * `non-ideal-state` in the block — served silently. Asking Vespa's own
+     * question answers both spellings.
      *
      * The residual is bounded by the rounding: at 100% at most 0.5% of the
-     * target went unsearched, so a page may under-deliver and a NIP-45 count may
-     * read that much low without either being refused. That is the price, and it
-     * is paid by the write-path guards too, since dedup and the NIP-09/62 probes
-     * come through here. The alternative is not a stricter store, it is a store
-     * that answers nothing while a node finishes settling.
+     * target went unsearched, so a page may under-deliver and a NIP-45 count
+     * read that much low. The write-path guards pay it too, since dedup and the
+     * NIP-09/62 probes come through here. The alternative is a store that
+     * answers nothing while a node finishes settling.
      */
     val undegraded: Boolean
         get() = coverage >= 100 && degraded == null
@@ -124,11 +111,8 @@ internal class SearchCoverage(
      * and the dedup/NIP-09/62 guards decide by "did the query find it" — a
      * partial answer could resurrect a deleted event. So it fails loudly.
      * One exception: [allowMatchPhase], for the match-phase profiles that ASK
-     * for the cut and verify or rerun the page themselves.
-     *
-     * The question asked here is Vespa's own `isDegraded()`, not its `full`.
-     * The two are different questions, and this guard used to key on the wrong
-     * one in BOTH directions — see [undegraded].
+     * for the cut and verify or rerun the page themselves. The question asked is
+     * Vespa's own `isDegraded()`, not its `full` — see [undegraded].
      */
     fun requireComplete(allowMatchPhase: Boolean = false) {
         if (undegraded) return

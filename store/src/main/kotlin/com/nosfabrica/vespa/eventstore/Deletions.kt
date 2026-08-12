@@ -102,12 +102,12 @@ internal class Deletions(
             val byAuthor = EventQuery(kinds = listOf(address.kind), authors = listOf(address.pubKeyHex), until = ev.createdAt)
             // Narrow by non-empty d — the same pushdown EventIndex.putIfNewer
             // and both bulk preloads apply. Without it, deleting ONE address
-            // pulls back every OTHER address of that kind by the same author,
-            // as full docs, in one list, under the store's writer lock, to keep
-            // at most one: a trust service holds ~150k 30382s. Broad stays
-            // correct for the two cases a d-keyed query cannot serve —
-            // replaceable kinds have ONE address whatever the a-tag's d part,
-            // and an empty d carries no "d:" pair in tag_index to match on.
+            // pulls back every OTHER address of that kind by the same author as
+            // full docs, in one list, under the writer lock, to keep at most one
+            // (a trust service holds ~150k 30382s). Broad stays correct for the
+            // two cases a d-keyed query cannot serve: replaceable kinds have ONE
+            // address whatever the a-tag's d part, and an empty d carries no
+            // "d:" pair in tag_index to match on.
             val keyed = address.kind.isAddressable() && address.dTag.isNotEmpty()
             val victims =
                 index
@@ -135,11 +135,10 @@ internal class Deletions(
      * (Offset paging would be wrong — deleting under an offset skips rows.)
      */
     suspend fun sweep(q: EventQuery) {
-        // The read is paged; the caller's own limit, if any, still decides
-        // whether one page is the whole job, so read q.limit, not sweepPage.
-        // Plain sweeps stamp RANK_UNRANKED: a sweep wants ANY page, so the
-        // recency planner's count probes would answer a question it never
-        // asked — the explicit ranking opts out while compiling to identical YQL.
+        // The caller's own limit, if any, decides whether one page is the whole
+        // job, so page on q.limit rather than sweepPage. Plain sweeps stamp
+        // RANK_UNRANKED to opt out of the recency planner's count probes — a
+        // sweep wants ANY page — which compiles to identical YQL.
         val paged =
             if (q.search == null && q.ranking == null) {
                 q.copy(limit = q.limit ?: sweepPage, ranking = EventYql.RANK_UNRANKED)
@@ -152,10 +151,10 @@ internal class Deletions(
             val page = index.search(paged)
             if (page.isEmpty()) return
             val ids = page.mapTo(HashSet()) { it.id }
-            // An acked remove is visible to search (the EventIndex contract),
-            // so a page identical to the one just removed means the deletes are
-            // not landing. Fail NOW: silently returning would report a
-            // vanish/delete as enforced while the events are still served.
+            // An acked remove is visible to search (the EventIndex contract), so
+            // a page identical to the one just removed means the deletes are not
+            // landing. Returning silently would report a vanish/delete as
+            // enforced while the events are still served.
             check(ids != lastPage) { "sweep is not shrinking: ${ids.size} matches for $q survived their own removal" }
             // The docs are already in hand — removeDocs lets the trust
             // projection react without a get per id.
