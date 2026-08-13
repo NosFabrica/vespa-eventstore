@@ -5,57 +5,67 @@ app = "1.0.0"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"
 # Quartz from JitPack (amethyst @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
-# c43339e92b = amethyst PR #3891 (2026-08-10), 30 commits. Quartz's share is 15
-# files in two areas, and this store imports from neither:
+# 1ff1077d58 = amethyst PR #3905 (2026-08-12), 80 commits. Quartz's share is 32
+# files in three areas, and this store imports from none of them:
 #
-#   concord/cord05Invites — the CORD-05 Invite List (kind 13303): the creator's
-#     NIP-44 self-encrypted record of every link they minted (token + link-signer
-#     secret), so a link can be re-signed at its addressable kind-33301 coordinate
-#     after a Rekey instead of being orphaned by it. Plus the revocation tombstone
-#     that retires a link (same `["d",""]` coordinate, empty content, `vsk=9`), and
-#     CommunityInvite becoming a `data class`. One new kind, registered in
-#     EventFactory — additive, and 13303 already fell in the replaceable range, so
-#     it was already stored as replaceable here before it had a type.
-#   nip01Core/relay/client/accessories — negentropy gains an optional
-#     `wantId: ((HexKey) -> Boolean)?` on negentropySync / negentropySyncOrFetch /
-#     negentropySyncFanOut, consulted per id BEFORE the download REQ, with a
-#     `skipped` count on the three result types. Default null keeps every existing
-#     call byte-identical.
+#   nip01Core/relay/client{,/auth,/accessories} (19 files) — the read accessories
+#     learn NIP-42. A relay that gates reads answers the REQ with
+#     `CLOSED auth-required:` BEFORE it sends anything, and treating that as
+#     terminal returned "empty" while the client's own responder was still signing
+#     the challenge on the same socket (measured: fetchAll gave up in 18ms against
+#     a relay holding five matching events). Every read accessory now takes
+#     `pendingOnAuthRequired`, defaulting to `hasAuthResponder()`, and waits on the
+#     new `awaitAuthOutcome` — a short grace for a responder to pick the challenge
+#     up, then a settle wait bounded by the caller's own idle window, so an
+#     auth-gated relay costs at most what a silent one already cost. An unsatisfied
+#     wall becomes visible instead of indistinguishable from emptiness:
+#     `auth-refused:<msg>`, `PagedFetchResult.End.AUTH_REQUIRED`, and a second
+#     `DrainFailure` case, `AUTH_REQUIRED`, whose new `dropFromRouting` flag is
+#     false — a NIP-42 wall is a property of this connection's identity, not of the
+#     relay, so it must not be pruned the way a DEAD one is.
+#   nip45Count (2 files) — `mergeCountResults` moves into quartz beside the
+#     HyperLogLog code, and gains the mixed case: when any relay ships `hll`
+#     registers, relays that answered with a plain count are no longer dropped.
+#     Both are lower bounds on the union, so the answer is the larger of the two
+#     (summing is never an option — relays mirror each other).
+#   nip56Reports + three kinds (10 files) — ReportEvent gets a tag layout and,
+#     along with ChatMessageEvent (14), ChannelCreateEvent (40) and
+#     ClassifiedsEvent (30402), declares the `PubKey`/`Event`/`AddressHintProvider`
+#     interfaces so a graph walker can follow their pointers. Additive methods on
+#     existing types; the hint interfaces themselves are unchanged.
 #
-# The negentropy gate is the one thing in this range worth knowing about even
-# though the store cannot use it: its motivating measurement is a downstream
-# mirror — a store that keeps only the newest version of a replaceable event, i.e.
-# exactly what `insertLocked` does when it answers "replaced:" — re-downloading
-# the older copies negentropy keeps re-offering, because they are genuinely absent
-# from the local id set (5/18/29 REPLACED rejections over three passes on kinds
-# 0/3/10002). A relay-side ingress feeding this store can now decline those ids
-# before the bodies cross the wire. That is ingress's call to make; nothing here
-# speaks the client protocol.
+# The NIP-45 merge is the one thing in this range worth a second look from here,
+# since this store answers COUNT: it is the CLIENT half of the same protocol, and
+# it says what a fan-out does with what we return. We return an exact Int —
+# `count()` never marks a result approximate and never emits registers — so a relay
+# serving this store lands in the plain-count branch: a lower bound the merge takes
+# the max over, and, as of this change, one that survives a peer shipping HLL
+# instead of being discarded for a ~50 estimate. Nothing to do on our side; it is
+# the reason the exact count is worth keeping exact.
 #
-# Otherwise both areas are Concord group crypto and relay-client sync, neither of
-# which this store is: grep finds no reference to negentropy, INostrClient or
-# Concord in any module here. Nothing under nip01Core/store, nip50Search,
-# nip01Core/relay/filters or nip85TrustedAssertions was touched at all; IEventStore,
-# SQLiteEventStore, IndexableFields, SearchFieldExtractor and SearchQuery are
-# byte-identical to the previous pin, and the SearchableEvent set is the same 129
-# files (13303 is a BaseReplaceableEvent, not a SearchableEvent). The store
-# contract, filter semantics and the searchable-kind table carry over unchanged, so
-# the parity and rank gates are unaffected. The one build-file move is
-# quartz/build.gradle.kts teaching verifyKmpPurity to reject a bare `synchronized(`
-# call and not just the annotation — a lint rule for Quartz's own sources, no
-# dependency change; the root version catalog is untouched, so nothing transitive
-# shifts under us. The rest of the range is app-side (per-visible metadata/reaction
-# loading moved to commons over five phases, relay-flow seeding fixes, Crowdin
-# translations, an iOS/arm64 CI fix). We take it to stay on head, not for anything
-# it gives this store.
+# Otherwise all three areas are relay-client protocol and app-side event typing,
+# neither of which this store is: grep finds no reference to nip45, nip56,
+# HintProvider, INostrClient or RelayAuth in any module here. Nothing under
+# nip01Core/store, nip50Search, nip01Core/relay/filters or nip85TrustedAssertions
+# was touched at all; IEventStore, SQLiteEventStore, IndexableFields,
+# SearchFieldExtractor, SearchQuery and SearchableEvent are byte-identical to the
+# previous pin, and the SearchableEvent set is the same 129 files. Of those 129 the
+# three that changed only gained hint methods — no `indexableContent()` anywhere in
+# the module was touched — so the searchable-kind table and the extractor weights
+# carry over unchanged, as do the store contract and filter semantics; the parity
+# and rank gates are unaffected. No new kinds and no EventFactory change. The one
+# non-KMP file, OkHttpBitcoinExplorer, swaps `execute()` for `executeAsync()`, and
+# no build file under quartz/ moved: the root version catalog is untouched, so
+# nothing transitive shifts under us. The rest of the range is app-side (the relay
+# AUTH permission screens, the poll results page, the composer's audience flap,
+# embedded-WebView focus fixes, Crowdin translations). We take it to stay on head,
+# not for anything it gives this store.
 #
-# Prev a5507f9a4d (2026-08-09, PR #3889: the Concord soft-ban / Control Plane audit
-# fixes plus two fetchAllPages termination guards; same relay-client and Concord
-# plumbing, equally unused here).
-# This range's only skill change is .claude/skills/relay-client, which is not one of
-# the five imported here, so the .claude/skills imported at 9231195890 are current
-# for this pin.
-quartz = "c43339e92b"
+# Prev c43339e92b (2026-08-10, PR #3891: the CORD-05 Invite List (kind 13303) and
+# negentropy's optional per-id `wantId` gate; equally unused here).
+# This range touches no .claude/skills at all, so the five imported here are still
+# current for this pin.
+quartz = "1ff1077d58"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 sqlite = "2.7.0"
