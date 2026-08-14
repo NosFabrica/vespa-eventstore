@@ -168,7 +168,7 @@ class ObserverGateIT {
                         // has to skip half the candidates it scores.
                         val bench = (0 until BENCH_DOCS).map { n -> note(1_000 + n, pubkey = if (n % 2 == 0) TRUSTED else UNRANKED) }
                         index.putAll(bench)
-                        awaitCorpus(index, notes.size + bench.size)
+                        awaitCorpus(index, notes.size + searchable.size + bench.size)
 
                         val anonymous = EventQuery(kinds = listOf(1), limit = 50)
                         val anonMs = medianMs { index.search(anonymous) }

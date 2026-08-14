@@ -100,12 +100,29 @@ internal class SchemaFallbacks {
 
     /**
      * [q] rebuilt for a schema without the gated profiles — a no-op while they
-     * serve. Demotes to a RANKING-FREE query, NOT [EventYql.RANK_UNRANKED]:
-     * the fallback must regain the recency profile and the count-probe planner
-     * a plain query would have (both key on `ranking == null`), or every
-     * legacy-schema feed query would run as a bare unranked scan.
+     * serve. Both demotions drop the gate (fail open, the pre-gate behavior);
+     * they differ in what preserves the query's ORDER.
+     *
+     * TERMLESS recall demotes to a RANKING-FREE query, NOT
+     * [EventYql.RANK_UNRANKED]: the fallback must regain the recency profile
+     * and the count-probe planner a plain query would have (both key on
+     * `ranking == null`), or every legacy-schema feed query would run as a
+     * bare unranked scan.
+     *
+     * A `sort:recent` SEARCH cannot take that demotion: ranking-free WITH terms
+     * selects the relevance profiles, and the page would come back as the
+     * top-`limit` by relevance — re-sorted by date client-side, so it reads
+     * chronological while silently being the wrong `limit` events.
+     * [EventYql.RANK_UNRANKED] keeps the recall and the `order by created_at
+     * desc` the token asked for; the planner opt-out it implies costs nothing
+     * here, since a term-bearing query is not a bare recency scan either way.
      */
-    fun demoteGated(q: EventQuery): EventQuery = if (!gatedProfileAvailable && q.usesGatedProfile()) q.copy(ranking = null) else q
+    fun demoteGated(q: EventQuery): EventQuery =
+        when {
+            gatedProfileAvailable || !q.usesGatedProfile() -> q
+            q.search.isNullOrBlank() && q.phrases.isEmpty() -> q.copy(ranking = null)
+            else -> q.copy(ranking = EventYql.RANK_UNRANKED)
+        }
 
     /** [q] rebuilt for a schema without the near attribute fields — a no-op while they serve. */
     fun demoteNear(q: EventQuery): EventQuery = if (!nearFieldsAvailable && q.nearMatching) q.copy(nearMatching = false) else q
