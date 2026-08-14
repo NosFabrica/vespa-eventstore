@@ -526,6 +526,24 @@ class EventYqlTest {
         assertFalse("order by" in q.yql, "the profile's created_at score is the order")
     }
 
+    /**
+     * The store's `sort:recent`: the gated profile carrying SEARCH TERMS. The
+     * word clauses recall exactly as they would on a relevance profile — only
+     * the order changes — and the shape still rides the match-phase cut, whose
+     * created_at ordering is what the profile scores by anyway.
+     */
+    @Test
+    fun `the gate profile takes search terms — the sort recent shape`() {
+        val q = EventYql.build(EventQuery(kinds = listOf(1), limit = 50, search = "vitor", ranking = EventYql.RANK_RECENCY_GATED, minRank = 2.0, observer = hexA))!!
+        assertEquals(EventYql.RANK_RECENCY_GATED, q.ranking)
+        assertEquals("vitor", q.params["w0"], "the term recalls like any search")
+        assertEquals("{$hexA:1.0}", q.params["ranking.features.query(user_q)"])
+        assertEquals("2.0", q.params["ranking.features.query(min_rank)"])
+        assertFalse("order by" in q.yql, "the profile's created_at score is the order")
+        assertNull(q.params["ranking.features.query(w_gram)"], "a profile that reads no text signal is sent no text weights")
+        assertNull(q.params["ranking.features.query(n_words)"])
+    }
+
     @Test
     fun `gated recall demotes to the exact profile when the match-phase cut is unsound`() {
         fun gated(

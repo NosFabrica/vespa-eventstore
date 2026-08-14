@@ -1335,8 +1335,12 @@ schema event {
 
     # Observer-gated plain recall: NIP-01 recency order, low-trust dropped.
     # The store stamps recency_gated on every non-search query with a resolved
-    # observer (include:spam opts out) and on the no-terms filter:rank
-    # match-all. The score IS created_at, so relevance order = newest first;
+    # observer (include:spam opts out), on the no-terms filter:rank match-all,
+    # and on a `sort:recent` SEARCH — the one shape here that arrives with query
+    # terms, asking for the search's match set in chronological order (the text
+    # weights that normally ride beside those terms are dropped client-side,
+    # since nothing here would read them).
+    # The score IS created_at, so relevance order = newest first;
     # the sentinel / drop-limit pair removes below-floor authors engine-side.
     # Real timestamps (~1.7e9) sit far above the drop limit, so no live hit is
     # ever dropped by accident.

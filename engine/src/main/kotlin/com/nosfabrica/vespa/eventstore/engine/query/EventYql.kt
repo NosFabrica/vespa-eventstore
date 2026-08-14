@@ -49,8 +49,11 @@ object EventYql {
 
     /**
      * NIP-01 recency order with the trust floor: score IS created_at,
-     * below-floor authors dropped — the always-on spam gate for feeds and the
-     * no-terms `filter:rank:` match-all. MATCH-PHASE variant, keeping only the
+     * below-floor authors dropped — the always-on spam gate for feeds, the
+     * no-terms `filter:rank:` match-all, and the store's `sort:recent` search
+     * (a search's own match set, ordered chronologically).
+     *
+     * MATCH-PHASE variant, keeping only the
      * newest ~[MATCH_PHASE_MAX_HITS] candidates per node before gating; [build]
      * demotes shapes the cut can't serve exactly to [RANK_RECENCY_GATED_EXACT],
      * and a degraded-and-unproven page reruns exact (VespaEventIndex.recallRoot).
@@ -174,6 +177,12 @@ object EventYql {
      * when too few of the newest candidates are trusted — that case reruns
      * exact (VespaEventIndex.recallRoot), paid only on heavily-spammed corpora
      * or near-empty trust graphs.
+     *
+     * SEARCH TERMS are admitted here (unlike [usesRecencyProfile], where a term
+     * means a relevance profile owns the order): a `sort:recent` search ranks
+     * by created_at like any other gated query, so the cut keeps exactly the
+     * newest candidates it wants. In practice a term-bearing match set rarely
+     * reaches max-hits, so the phase never engages.
      */
     fun usesGatedMatchPhase(q: EventQuery): Boolean =
         q.ranking == RANK_RECENCY_GATED &&
@@ -208,6 +217,15 @@ object EventYql {
         if (ranking != RANK_UNRANKED && ranking != RANK_RECENCY && observer != null) {
             params["ranking.features.query(user_q)"] = "{$observer:1.0}"
             q.minRank?.let { params["ranking.features.query(min_rank)"] = it.toString() }
+        }
+        // The gated profiles are STANDALONE (see event.sd): they declare the two
+        // trust inputs, score by created_at, and read no text signal at all. The
+        // term-weighting features [filterClauses] emits alongside a search term
+        // therefore have nothing to weigh here — `sort:recent` is the one shape
+        // that brings terms to this profile — so they are dropped rather than
+        // shipped to a profile that never declares them.
+        if (ranking == RANK_RECENCY_GATED || ranking == RANK_RECENCY_GATED_EXACT) {
+            params.keys.removeAll(TEXT_RANK_FEATURES)
         }
         // Two-phase profiles only; the engine ignores it elsewhere.
         q.rerankCount?.let { params["ranking.rerankCount"] = it.toString() }
@@ -290,6 +308,15 @@ object EventYql {
         )
     }
 
+    /** The trigram-net weight for the query's words (text_relevance's `w_gram`). */
+    private const val F_W_GRAM = "ranking.features.query(w_gram)"
+
+    /** How many things the user asked for — words plus quoted phrases (text_relevance's `n_words`). */
+    private const val F_N_WORDS = "ranking.features.query(n_words)"
+
+    /** The text-weighting features a search term brings — meaningless on the recency profiles, which read no text signal. */
+    private val TEXT_RANK_FEATURES = setOf(F_W_GRAM, F_N_WORDS)
+
     /** Vespa's "disable this ceiling" sentinel for the `grouping.*Max*` settings. */
     const val UNLIMITED_GROUPS = "-1"
 
@@ -339,7 +366,7 @@ object EventYql {
         if (matchable.isNotEmpty()) {
             clauses += FuzzyWordGroup.clause(matchable, params, nearFields = q.nearMatching)
             // Short queries lean harder on the trigram safety net.
-            params["ranking.features.query(w_gram)"] = if (FuzzyWordGroup.leansOnGrams(matchable)) "8.0" else "2.0"
+            params[F_W_GRAM] = if (FuzzyWordGroup.leansOnGrams(matchable)) "8.0" else "2.0"
         }
 
         // Quoted phrases ([EventQuery.phrases]): one REQUIRED phrase-grammar
@@ -363,7 +390,7 @@ object EventYql {
         // query, where the schema default of 1 is wrong for two phrases.
         // Both measured on a live Vespa, 2026-08-05.
         val queryItems = matchable.size + q.phrases.size
-        if (queryItems > 0) params["ranking.features.query(n_words)"] = queryItems.toString()
+        if (queryItems > 0) params[F_N_WORDS] = queryItems.toString()
 
         // Exclusions ([EventQuery.notSearch]): one negated term per word,
         // out-of-band, deliberately NOT the fuzzy word group — exclusion must
