@@ -190,6 +190,58 @@ class ObserverGateTest {
     }
 
     /**
+     * `sort:recent` points the RECALL gate's own profile at a search: same
+     * lens, same floor, same NIP-01 order — the terms only narrow the match
+     * set.
+     */
+    @Test
+    fun `a sort recent search gates through the recall profile, terms and all`() {
+        val q = captured(Filter(kinds = listOf(1), search = "vitor sort:recent"), observer = hex)
+        assertEquals(EventYql.RANK_RECENCY_GATED, q.ranking)
+        assertEquals(DEFAULT_MIN_RANK, q.minRank)
+        assertEquals(hex, q.observer)
+        assertEquals("vitor", q.search, "the terms still recall — only the ORDER changed")
+    }
+
+    /**
+     * With no lens the gate is inert, so a TERMLESS `sort:recent` is exactly a
+     * plain filter and is handed back to the plain path — which keeps the
+     * recency profile and the count-probe planner (both key on a ranking-free
+     * query) instead of ranking every match to reach the same order.
+     */
+    @Test
+    fun `a termless sort recent without an observer falls back to plain recall`() {
+        val q = captured(Filter(kinds = listOf(1), search = "sort:recent"))
+        assertNull(q.ranking, "nothing to gate and nothing to search: a plain NIP-01 filter")
+        assertNull(q.minRank)
+    }
+
+    @Test
+    fun `a sort recent SEARCH without an observer keeps the profile — it is the only thing ordering it`() {
+        val q = captured(Filter(kinds = listOf(1), search = "vitor sort:recent"))
+        assertEquals(EventYql.RANK_RECENCY_GATED, q.ranking, "ranking-free would mean the relevance profiles")
+        assertNull(q.observer, "no lens: the profile orders, nothing gates")
+    }
+
+    /** The gate's order contract, on the search path: newest first, client-side. */
+    @Test
+    fun `a sort recent search is re-sorted newest-first client-side`() =
+        runBlocking {
+            fun doc(
+                id: String,
+                createdAt: Long,
+            ) = EventDoc(id = id, pubkey = "a".repeat(64), createdAt = createdAt, kind = 1, tags = emptyList(), content = "vitor", sig = "")
+            val older = doc("1".repeat(64), 100)
+            val newer = doc("2".repeat(64), 200)
+            val store = NostrSemanticsStore(CapturingIndex(hits = listOf(older, newer)))
+            val ids =
+                withContext(StoreQueryContext(setOf(hex))) {
+                    store.query<Event>(Filter(search = "vitor sort:recent")).map { it.id }
+                }
+            assertEquals(listOf(newer.id, older.id), ids, "a searching query, ordered like a feed")
+        }
+
+    /**
      * The gate's ORDER contract is NIP-01 recency, not engine score order: the
      * engine returns created_at via the rank score (ties arbitrary), and the
      * store re-sorts the page client-side like any plain query.

@@ -25,6 +25,7 @@ import com.nosfabrica.vespa.eventstore.engine.client.VespaEventIndex
 import com.nosfabrica.vespa.eventstore.engine.client.VespaReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
+import com.nosfabrica.vespa.eventstore.engine.doc.SearchFields
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import kotlinx.coroutines.delay
@@ -48,7 +49,9 @@ import kotlin.test.assertEquals
  *    included — and keeps newest-first order among the survivors, on the
  *    match-phase AND the full-scan variant;
  *  - an explicit floor moves the cut;
- *  - the same query without the lens still recalls everything.
+ *  - the same query without the lens still recalls everything;
+ *  - the store's `sort:recent` shape — the gated profile carrying SEARCH
+ *    terms — deploys, recalls, and orders by created_at rather than relevance.
  *
  * It also times the dominant relay shape — "kind 1, limit 50" — anonymous vs
  * gated over a [BENCH_DOCS]-note corpus and prints the medians. The timings
@@ -128,6 +131,38 @@ class ObserverGateIT {
                             "filter:rank floor: marginal(2) drops, trusted(50) stays",
                         )
 
+                        // ---- `sort:recent`: the same gate, pointed at a SEARCH ----
+                        //
+                        // The store maps `sort:recent` to this profile WITH
+                        // query terms — the one shape that reaches a gated
+                        // profile carrying text clauses and the text-ranking
+                        // query features EventYql emits beside them. Only a
+                        // real Vespa proves the deployed profile accepts that
+                        // (features it never declares ride along unused) and
+                        // that created_at, not relevance, orders the page.
+                        val searchable = (0 until 12).map { n -> note(100 + n, pubkey = authors[n % authors.size], text = "pizza") }
+                        index.putAll(searchable)
+                        awaitCorpus(index, notes.size + searchable.size)
+
+                        val chronological = searchable.sortedWith(compareByDescending<EventDoc> { it.createdAt }.thenBy { it.id })
+                        val trustedPizza = chronological.filter { it.pubkey == TRUSTED || it.pubkey == MARGINAL }
+
+                        assertEquals(
+                            trustedPizza.take(5).map { it.id },
+                            index.search(gated(limit = 5).copy(search = "pizza")).map { it.id },
+                            "sort:recent: the search's match set, gated and newest-first",
+                        )
+                        assertEquals(
+                            trustedPizza.map { it.id },
+                            index.search(gated(limit = null).copy(search = "pizza")).map { it.id },
+                            "the full-scan variant takes terms too",
+                        )
+                        assertEquals(
+                            chronological.map { it.id },
+                            index.search(EventQuery(kinds = listOf(1), search = "pizza", ranking = EventYql.RANK_RECENCY_GATED)).map { it.id },
+                            "no lens: nothing gates, and the profile is pure recency",
+                        )
+
                         // ---- timing: the dominant relay shape, anonymous vs gated ----
                         // The bench authors alternate trusted/spam so the gated page
                         // has to skip half the candidates it scores.
@@ -153,17 +188,20 @@ class ObserverGateIT {
         minRank: Double = 2.0,
     ) = EventQuery(kinds = listOf(1), limit = limit, ranking = EventYql.RANK_RECENCY_GATED, minRank = minRank, observer = OBSERVER)
 
+    /** A note; [text] (when given) also feeds the search index, making it recallable by term. */
     private fun note(
         n: Int,
         pubkey: String,
+        text: String? = null,
     ) = EventDoc(
         id = n.toString(16).padStart(64, '0'),
         pubkey = pubkey,
         createdAt = 1_700_000_000L + n,
         kind = 1,
         tags = emptyList(),
-        content = "note $n",
+        content = text ?: "note $n",
         sig = "e".repeat(128),
+        search = SearchFields(text = text),
     )
 
     /** Poll until the whole corpus (events fed so far) is searchable. */

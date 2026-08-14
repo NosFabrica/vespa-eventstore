@@ -67,7 +67,25 @@ class FilterMappingTest {
         assertEquals(EventYql.RANK_ASC, map("vitor sort:rank:asc").ranking)
         assertEquals(EventYql.RANK_FOLLOWERS, map("vitor sort:followers").ranking)
         assertEquals(EventYql.RANK_TEXT, map("vitor sort:text").ranking)
+        assertEquals(EventYql.RANK_RECENCY_GATED, map("vitor sort:recent").ranking)
         assertNull(map("vitor sort:bogus").ranking, "unknown sort values are ignored")
+    }
+
+    /**
+     * `sort:recent`: the search's match set in NIP-01 order, gated by the
+     * observer like a plain filter. The floor is the ordinary search floor —
+     * the token changes the ORDER, not who is allowed through it.
+     */
+    @Test
+    fun `sort recent picks the observer-gated recency profile with the usual floor`() {
+        val q = map("vitor sort:recent")
+        assertEquals("vitor", q.search, "the sort token never becomes a search word")
+        assertEquals(EventYql.RANK_RECENCY_GATED, q.ranking)
+        assertEquals(DEFAULT_MIN_RANK, q.minRank)
+
+        assertEquals(50.0, map("vitor sort:recent filter:rank:gte:50").minRank, "an explicit floor rides the recency order")
+        assertEquals(INCLUDE_SPAM_MIN_RANK, map("vitor sort:recent include:spam").minRank, "include:spam drops the floor to 0, order untouched")
+        assertEquals(EventYql.RANK_RECENCY_GATED, map("vitor sort:recent include:spam").ranking)
     }
 
     @Test

@@ -84,6 +84,19 @@ class SearchOrderTest {
         }
 
     /**
+     * `sort:recent` is the one searching query that does NOT keep the engine's
+     * order: its profile scores by created_at (ties arbitrary), and the store
+     * restores the exact `created_at desc, id asc` order the token asked for —
+     * the same order a plain NIP-01 filter gets.
+     */
+    @Test
+    fun `a sort recent search is re-sorted to NIP-01 recency`() =
+        runBlocking {
+            val ids = store().query<Event>(Filter(search = "hello sort:recent")).map { it.id }
+            assertEquals(listOf(newer.id, older.id), ids, "chronological, not relevance")
+        }
+
+    /**
      * A plain filter riding beside a searching one in the SAME REQ still gets
      * NIP-01 recency for ITS hits — the search's relevance order never leaks
      * onto the sibling's results.

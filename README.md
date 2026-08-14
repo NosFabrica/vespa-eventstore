@@ -66,6 +66,7 @@ tokens stay part of the search text:
 | `sort:rank` / `sort:rank:asc` | Trust-order within match tiers (descending / ascending). |
 | `sort:followers` | Verified-follower-count order within match tiers. |
 | `sort:text` | Force pure-text relevance, ignoring the observer. |
+| `sort:recent` | Chronological search: the same match set, ordered `created_at desc` like a plain NIP-01 filter, still gated by the observer's floor. Match quality is not consulted — a weak match from a minute ago sits above a perfect one from yesterday. |
 | `filter:rank:gte:N` / `filter:rank:gt:N` | Raise the trust floor from the default 2 to N (0–100 scale) — a pure filter, the ordering is untouched. |
 | `include:spam` | Turn off the default trust floor. An explicit `filter:rank:` floor always survives it. |
 | `-word` | Google-style exclusion: drop hits containing the word. Exact-match only — the typo/prefix tolerance the positive terms enjoy never widens an exclusion (though the prose fields stem, so `-runs` also drops `running` there) — and hyphenated exclusions (`-e-cash`) exclude the adjacent phrase. A query of *only* exclusions is plain newest-first recall minus the words (the observer gate still applies), and events search can't see (non-searchable kinds) are never excluded. |
@@ -109,6 +110,8 @@ context observer, so the token is the only source):
 | `"pizza" observer:<hex>` | Exactly the token `pizza` (typo/prefix matching off), ranked through the observer's web of trust like any search. |
 | `pizza -"pineapple ham"` | `pizza` hits, minus those containing the adjacent phrase `pineapple ham` — `pineapple` or `ham` alone is fine. |
 | `pizza sort:text` | Pure text relevance even when an observer resolved (token or connection) — the un-personalized view. |
+| `pizza observer:<hex> sort:recent` | Every `pizza` hit from an author trusted ≥ 2, newest first — search results ordered exactly like a feed. |
+| `pizza sort:recent` | No observer: the same chronological page, ungated. |
 | `sort:rank observer:<hex>` | No terms: the trust firehose — everything, ordered by author trust. |
 | `filter:rank:gte:50 observer:<hex>` | No terms: newest-first feed of authors the observer trusts at ≥ 50. |
 

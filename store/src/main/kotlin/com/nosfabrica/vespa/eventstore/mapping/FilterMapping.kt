@@ -43,6 +43,12 @@ import com.vitorpamplona.quartz.utils.Hex
  *
  *  - `sort:rank[:desc|:asc]` / `sort:followers` / `sort:text` pick the rank
  *    profile; with no terms this is a match-all in that order.
+ *  - `sort:recent` asks for NIP-01 order instead of relevance: the SAME loose
+ *    match set a search always recalls, ordered `created_at desc, id asc` and
+ *    gated by the observer's trust floor — the gated-recall profile
+ *    ([EventYql.RANK_RECENCY_GATED]) a plain filter uses, pointed at a search.
+ *    Match tiers are NOT consulted: a trigram-level match from a minute ago
+ *    outranks a perfect one from yesterday, which is what "chronological" means.
  *  - `filter:rank:gte:N` / `filter:rank:gt:N` raise the observer trust floor
  *    from [DEFAULT_MIN_RANK] to N without changing the order. The profile is
  *    NOT chosen here — plain shapes stay ranking-null so the store can pick
@@ -135,9 +141,20 @@ const val INCLUDE_SPAM_MIN_RANK = 0.0
 private fun rankReputationOf(value: String): String? =
     when (value) {
         "rank", "rank:desc" -> EventYql.RANK_DESC
+
         "rank:asc" -> EventYql.RANK_ASC
+
         "followers" -> EventYql.RANK_FOLLOWERS
+
         "text" -> EventYql.RANK_TEXT
+
+        // Chronological: the observer-gated recency profile, the very one plain
+        // recall rides. Its score IS created_at, so the store re-sorts the page
+        // client-side into the exact NIP-01 order (see NostrSemanticsStore's
+        // keepsEngineOrder). With no observer resolved nothing gates and the
+        // profile is pure recency — a search ordered like a feed.
+        "recent" -> EventYql.RANK_RECENCY_GATED
+
         else -> null
     }
 

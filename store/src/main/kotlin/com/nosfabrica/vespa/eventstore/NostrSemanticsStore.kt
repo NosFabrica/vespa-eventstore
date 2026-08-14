@@ -313,10 +313,27 @@ class NostrSemanticsStore(
             val floor = q.minRank ?: DEFAULT_MIN_RANK.takeUnless { q.includeSpam }
             // Phrases count as search text (they gate through the search
             // profiles); an exclusion-only (notSearch) query is plain recall.
-            if (q.observer != null && q.search == null && q.phrases.isEmpty() && q.ranking == null && floor != null) {
-                q.copy(ranking = EventYql.RANK_RECENCY_GATED, minRank = floor)
-            } else {
-                q
+            val termless = q.search == null && q.phrases.isEmpty()
+            when {
+                q.observer != null && termless && q.ranking == null && floor != null -> {
+                    q.copy(ranking = EventYql.RANK_RECENCY_GATED, minRank = floor)
+                }
+
+                // `sort:recent` with nothing to gate through AND nothing to
+                // search IS a plain NIP-01 filter — the gated profile would
+                // order it identically while forgoing the recency profile and
+                // the count-probe planner (both key on a ranking-free query),
+                // and would rank every match to say so. Handed back to the
+                // plain path. A `sort:recent` carrying TERMS keeps the profile:
+                // there, ranking-free means the RELEVANCE profiles, which is
+                // the order the caller just asked us not to use.
+                q.observer == null && termless && q.ranking == EventYql.RANK_RECENCY_GATED -> {
+                    q.copy(ranking = null, minRank = null)
+                }
+
+                else -> {
+                    q
+                }
             }
         }
 
@@ -327,7 +344,9 @@ class NostrSemanticsStore(
      * Whether the ENGINE's hit order is the serving order. Ranked queries keep
      * relevance order (NIP-50) — except the observer gate's profile, whose
      * order is defined as NIP-01 recency: the engine's created_at score order
-     * is re-sorted client-side (engine score ties are arbitrary).
+     * is re-sorted client-side (engine score ties are arbitrary). That covers
+     * `sort:recent` SEARCHES too — the point of the token is that its hits
+     * come back in the same `created_at desc, id asc` order a plain filter's do.
      */
     private fun EventQuery.keepsEngineOrder(): Boolean = isRanked() && ranking != EventYql.RANK_RECENCY_GATED && ranking != EventYql.RANK_RECENCY_GATED_EXACT
 
