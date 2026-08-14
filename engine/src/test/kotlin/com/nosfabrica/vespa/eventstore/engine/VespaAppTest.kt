@@ -118,7 +118,7 @@ class VespaAppTest {
         // limits would deploy a differently-behaving engine, silently.
         val shippedXml = parse(entry("services.xml"))
         val offXml = parse(entry("services.xml", VespaApp.zipBytes("disabled")))
-        for (tag in listOf("document", "config", "concurrency", "numthreadspersearch", "maxtlssize", "disk", "memory", "search", "document-api", "nodes")) {
+        for (tag in listOf("document", "config", "concurrency", "numthreadspersearch", "maxtlssize", "disk", "memory", "search", "document-api", "nodes", "jvm")) {
             assertEquals(
                 shippedXml.getElementsByTagName(tag).length,
                 offXml.getElementsByTagName(tag).length,
@@ -137,6 +137,46 @@ class VespaAppTest {
                 ?.child("concurrency")
                 ?.textContent,
             "feed concurrency is a measured value, not something a rewrite may touch",
+        )
+    }
+
+    /**
+     * The container's direct-buffer flags are load-bearing AVAILABILITY config,
+     * not tuning: without them Vespa's derived 208 MiB ceiling saturates under
+     * the store's own read-heavy write path and -XX:+ExitOnOutOfMemoryError
+     * takes :8080 down with it (issue #77 — 8 deaths in 18 minutes on staging).
+     *
+     * Two ways to lose them, both silent: dropping the element from
+     * services.xml, and the access-log rewrite failing to carry the attribute
+     * through the DOM round-trip. Neither shows up as a failed deploy — the
+     * package activates happily and the container just dies again under load,
+     * weeks later, in someone else's cluster. The shipped values themselves are
+     * argued in services.xml; asserted here is only that they are THERE and
+     * survive, and ContainerJvmIT is where they are proven to reach the JVM.
+     */
+    @Test
+    fun `the container declares its direct-memory flags and the rewrite carries them through`() {
+        fun jvmOptions(zip: ByteArray): String =
+            assertNotNull(
+                parse(entry("services.xml", zip)).child("container")?.child("jvm"),
+                "the container must declare <jvm> — without it Vespa's derived direct-buffer ceiling kills :8080 under load (#77)",
+            ).getAttribute("options")
+
+        val shippedOptions = jvmOptions(shipped)
+        // Bounding the per-thread cache is the half that fixes the mechanism;
+        // the ceiling alone would only move the wall.
+        assertTrue(
+            "-Djdk.nio.maxCachedBufferSize=" in shippedOptions,
+            "the retained-buffer cap is what stops direct memory saturating; without it the ceiling only delays #77: $shippedOptions",
+        )
+        assertTrue(
+            "-XX:MaxDirectMemorySize=" in shippedOptions,
+            "the derived 208 MiB ceiling is too small for this workload: $shippedOptions",
+        )
+        assertEquals(
+            shippedOptions,
+            jvmOptions(VespaApp.zipBytes("disabled")),
+            "disabling the access log must not cost the container its JVM options",
         )
     }
 

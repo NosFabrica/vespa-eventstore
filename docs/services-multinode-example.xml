@@ -7,6 +7,8 @@
      KEEP verbatim from the bundled package:
        * the GC selection on the event document (NIP-40 expiry, engine-side)
        * schemas/ and search/query-profiles/ (taken from the library jar)
+       * the container's <jvm options> (direct-buffer ceiling + cache cap —
+         without them the query container dies under load, see below)
      CHANGE for your deployment:
        * node lists (hostaliases come from your hosts.xml / infrastructure)
        * redundancy / searchable-copies
@@ -22,6 +24,18 @@
     <search />
     <document-api />
     <nodes>
+      <!-- KEEP: the direct-buffer settings are AVAILABILITY config, not tuning.
+           Vespa derives a ~208 MiB direct-memory ceiling and runs the container
+           with -XX:+ExitOnOutOfMemoryError; because jrt reads into heap buffers,
+           the JDK's per-thread cache of temporary DIRECT buffers retains them at
+           high-water size and saturates that ceiling under the store's own
+           read-heavy write path — one failed reservation then kills :8080 for
+           queries and feed alike. Dropping either flag brings that back; the
+           full argument is in the bundled services.xml. Raise the ceiling
+           further if your nodes are busier, and add allocated-memory below to
+           size the HEAP for your hardware (the bundled package leaves it at
+           Vespa's 1536m default, which is a laptop's number, not a cluster's). -->
+      <jvm options="-XX:MaxDirectMemorySize=512m -Djdk.nio.maxCachedBufferSize=262144" />
       <!-- Two+ stateless containers: pass ALL of them to
            VespaEventStore.open(endpoints = [...]) so the feed client spreads
            connections across them and reads round-robin. -->
