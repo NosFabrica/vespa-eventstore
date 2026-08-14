@@ -60,6 +60,11 @@ deployment, that invariant must survive:
     (`selection="event.expires_at > now()"` + `garbage-collection="true"`) —
     NIP-40 expiry is enforced by the engine; dropping it silently disables
     that.
+  - In `services.xml`: the container's **`<jvm options>`**
+    (`-XX:MaxDirectMemorySize` + `-Djdk.nio.maxCachedBufferSize`). These are
+    availability config, not tuning — see
+    [the query container's direct memory](#the-query-containers-direct-memory).
+    Raise them; do not drop them.
 - **Change freely**: node lists, redundancy, groups, resource limits,
   `numthreadspersearch` (1 = concurrent-serving throughput; raise it for a
   latency-critical few-big-queries deployment), flush tuning.
@@ -121,6 +126,54 @@ so lanes never need to coordinate. Full analysis:
 Note the trust projection (`VespaReputationIndex`) writes through the single
 `url` endpoint; reputation updates are low-volume, so this does not need the
 endpoint fan-out.
+
+## The query container's direct memory
+
+The stateless container is the process serving `:8080` — **every** query and
+**every** feed operation — and Vespa runs it with
+`-XX:+ExitOnOutOfMemoryError`. One thread failing to reserve an off-heap buffer
+therefore takes the whole endpoint down, and the config sentinel restarts it
+behind an exponential penalty (2 s → 126 s). The JVM exits 1, so an orchestrator
+sees a healthy pod the entire time; the only place it is visible is
+`vespa-log/config-sentinel` (`stopped/1 name="container" exitcode=1`) and, on the
+client, a burst of connection failures.
+
+Vespa derives that ceiling from the heap — **208 MiB with its default 1536m** —
+and this workload saturates it. Measured on a 211M-event staging cluster
+(2026-08-14): 8 deaths in 18 minutes, the pool at 93–98% full, seven of the eight
+failing on requests of only 8–16 MiB. Steady-state exhaustion, not one large
+allocation.
+
+The mechanism is **caching, not demand**. jrt reads into *heap* buffers, so every
+socket read borrows a temporary *direct* buffer from `sun.nio.ch.Util`, sized to
+the destination's remaining capacity. That cache is per thread, holds up to
+`IOV_MAX` (1024 on Linux) buffers, and with `jdk.nio.maxCachedBufferSize` unset
+retains each at its **high-water size for the life of the thread**. jrt shrinks
+its own heap buffer back to 64 KiB after every read; the direct buffer the JDK
+borrowed to fill it is never shrunk. One 64 MiB packet pins 64 MiB per thread
+that touched it, permanently — which is why the pool refills to ≥95% within
+seconds of every restart, and why raising the ceiling *alone* only moves the
+wall.
+
+So the bundled package ships both flags, and both are load-bearing:
+
+```xml
+<jvm options="-XX:MaxDirectMemorySize=512m -Djdk.nio.maxCachedBufferSize=262144" />
+```
+
+- `jdk.nio.maxCachedBufferSize` caps what may be **retained**; anything larger is
+  allocated and freed per read. 256 KiB is 4× jrt's own `maxInputBufferSize` and
+  16× its `READ_SIZE`, so the steady-state path still hits the cache.
+- `MaxDirectMemorySize` is headroom for the transient peak that remains. It is a
+  ceiling, not a reservation, so it costs an idle deployment nothing.
+
+Operating this: the direct-buffer pool is reported as `mem.direct.*` in
+`/state/v1/metrics`, and `<jvm options>` are appended after Vespa's derived
+flags, so anything you add there wins (that is how the fix works at all, and
+`ContainerJvmIT` asserts it against a real Vespa). The **heap** is untouched by
+the bundled package — 1536m is a laptop's number; size it for your hardware with
+`<jvm allocated-memory="N%" />`, which also raises the derived ceiling this
+override then replaces.
 
 ## Sizing intuition (from the benchmark corpus)
 
