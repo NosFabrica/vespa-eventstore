@@ -41,8 +41,8 @@ import com.vitorpamplona.quartz.utils.Hex
  * NIP-50 extensions are relay hints Quartz's parser splits off (keeping
  * `scheme://…` tokens as terms). Honored here:
  *
- *  - `sort:rank[:desc|:asc]` / `sort:followers` / `sort:text` pick the rank
- *    profile; with no terms this is a match-all in that order.
+ *  - `sort:rank[:desc|:asc]` / `sort:followers` / `sort:text` / `sort:recent`
+ *    pick the rank profile; with no terms this is a match-all in that order.
  *  - `filter:rank:gte:N` / `filter:rank:gt:N` raise the observer trust floor
  *    from [DEFAULT_MIN_RANK] to N without changing the order. The profile is
  *    NOT chosen here — plain shapes stay ranking-null so the store can pick
@@ -135,9 +135,18 @@ const val INCLUDE_SPAM_MIN_RANK = 0.0
 private fun rankReputationOf(value: String): String? =
     when (value) {
         "rank", "rank:desc" -> EventYql.RANK_DESC
+
         "rank:asc" -> EventYql.RANK_ASC
+
         "followers" -> EventYql.RANK_FOLLOWERS
+
         "text" -> EventYql.RANK_TEXT
+
+        // NIP-01 order for a SEARCH: newest matches first, spam floor kept.
+        // The profile already exists for feeds; EventYql.build demotes it to
+        // the exact variant for shapes the match-phase cut can't serve.
+        "recent" -> EventYql.RANK_RECENCY_GATED
+
         else -> null
     }
 

@@ -67,7 +67,16 @@ class FilterMappingTest {
         assertEquals(EventYql.RANK_ASC, map("vitor sort:rank:asc").ranking)
         assertEquals(EventYql.RANK_FOLLOWERS, map("vitor sort:followers").ranking)
         assertEquals(EventYql.RANK_TEXT, map("vitor sort:text").ranking)
+        assertEquals(EventYql.RANK_RECENCY_GATED, map("vitor sort:recent").ranking)
         assertNull(map("vitor sort:bogus").ranking, "unknown sort values are ignored")
+    }
+
+    @Test
+    fun `sort recent without terms is a newest-first match-all, still spam-filtered`() {
+        val q = map("sort:recent")
+        assertNull(q.search)
+        assertEquals(EventYql.RANK_RECENCY_GATED, q.ranking)
+        assertEquals(DEFAULT_MIN_RANK, q.minRank)
     }
 
     @Test
