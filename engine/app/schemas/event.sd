@@ -465,29 +465,47 @@ schema event {
     # largest text column in the schema is index size and write work bought for
     # a number nothing reads. Add it back the day a rank expression scores this
     # field, and not before.
+    # SPLIT INTO ONE ELEMENT PER WHITESPACE TOKEN, and this is a correctness
+    # requirement, not tidiness. Vespa generates trigrams WITHIN a token but
+    # numbers positions CONTINUOUSLY across them, so on a single string field a
+    # phrase can satisfy itself by straddling a space — MEASURED on Vespa 8
+    # (2026-08-15): `phrase("tes","est")` (the 4-character word "test") matched a
+    # body reading "dates estimated", taking `tes` from da-TES and `est` from
+    # EST-imated, and `phrase("bit","itc")` ("bitc") matched "orbit itchy" and
+    # NOTHING else. Those correspond to no substring of the text at all — the
+    # concatenation "datesestimated" does not contain "testi" — they are an
+    # artifact of continuous positions, and they land on the 550-point body rung
+    # like a real hit. A higher gram floor does NOT fix it (3-gram "testi"
+    # straddles the same boundary); an ARRAY does, because Vespa puts a position
+    # gap between elements. Verified after the split: "test" no longer matches
+    # "dates estimated", "bitc" matches nothing, while "testin", "estin", the CJK
+    # case and every genuine hit are unchanged.
+    #
     # `normalize` is LOAD-BEARING, and it is the one thing here that differs
     # from every other *_gram field. A gram field's trigrams are NOT accent-
-    # folded by Vespa the way a normal index field's tokens are — MEASURED on
-    # Vespa 8 (2026-08-15) with two documents differing only by an accent:
-    # `search_text contains "lazaro"` matched BOTH "Lazaro" and "Lázaro" (the
-    # index field folds), while the gram terms `laz` and `láz` matched one
-    # each. Without this, partial-word search is WORSE than whole-word search
-    # on accented text — "lazaro" finds "Lázaro Ramos" but "lazar" does not —
-    # which is backwards, and silently so, for the large Portuguese/Spanish
-    # share of a real Nostr corpus (5 176 of 26 000 sampled events carry
-    # diacritics).
+    # folded by Vespa the way a normal index field's tokens are — MEASURED with
+    # two documents differing only by an accent: `search_text contains "lazaro"`
+    # matched BOTH "Lazaro" and "Lázaro" (the index field folds), while the gram
+    # terms `laz` and `láz` matched one each. Without this, partial-word search
+    # is WORSE than whole-word search on accented text — "lazaro" finds "Lázaro
+    # Ramos" but "lazar" does not — which is backwards, and silently so, for the
+    # large Portuguese/Spanish share of a real Nostr corpus (5 176 of 26 000
+    # sampled events carry diacritics).
     #
     # It only works PAIRED with the query side: FuzzyWordGroup.phraseGramClause
-    # folds its trigrams through NearText.fold, the same discipline the near
-    # ATTRIBUTES already use. Normalize the document without folding the query
-    # and the accented spelling breaks instead ("Lázar" -> nothing); fold the
-    # query without normalizing the document and the ascii spelling breaks.
-    # Both together, both spellings reach both documents. The other *_gram
-    # fields still have the unfolded behaviour — they are AND-matched with
-    # unfolded trigrams, so they are at least self-consistent; fixing them
-    # moves calibrated RankRegressionIT cases and belongs in its own diff.
-    field search_text_gram type string {
-        indexing: input search_text | normalize | index
+    # folds its trigrams through NearText.foldAccents, which is NFD — the same
+    # ACCENT-ONLY transform `normalize` applies. Deliberately NOT NearText.fold,
+    # which is NFKD: compatibility decomposition expands full-width forms and
+    # ligatures that `normalize` leaves alone, so the query would fold "ｗｉｄｔｈ"
+    # to ascii while the document's grams stayed full-width and the two could
+    # never meet. Normalize the document without folding the query and the
+    # accented spelling breaks; fold the query with the WRONG normaliser and
+    # full-width text breaks. The other *_gram fields still have the unfolded
+    # behaviour — they are AND-matched with unfolded trigrams, so they are at
+    # least self-consistent; fixing them moves calibrated RankRegressionIT cases
+    # and belongs in its own diff.
+    field search_text_gram type array<string> {
+        indexing: input search_text | normalize | split "\\s+" | index
         match {
             gram
             gram-size: 3

@@ -140,13 +140,54 @@ class SearchBodyGramIT {
                             "a 4-character partial word must reach the body",
                         )
 
+                        // ---- the token boundary: why the column is an ARRAY ----
+                        //
+                        // Trigrams are generated within a token but positions run
+                        // continuously across them, so on a single string field a
+                        // phrase satisfies itself by straddling a space: "test"
+                        // (tes|est) matched "dates estimated" — `tes` from da-TES,
+                        // `est` from EST-imated — and "bitc" (bit|itc) matched
+                        // "orbit itchy" AND NOTHING ELSE. Neither corresponds to
+                        // any substring of the text; both took the body rung like
+                        // a real hit. Splitting the column into one element per
+                        // whitespace token puts a position gap between them.
+                        //
+                        // This is the shape a 4-character as-you-type query makes
+                        // most often — one split point is all a 2-gram phrase has —
+                        // so the floor that buys the keystroke also needs the array.
+                        val straddle = note(5, "dates estimated for the release")
+                        val straddle2 = note(6, "orbit itchy feeling")
+                        index.putAll(listOf(straddle, straddle2))
+                        awaitCorpus(index, 6)
+                        // (`longPost` really does contain "bitcoinmaximalism", so
+                        // it is a genuine hit and stays one — the assertion is
+                        // about the straddling document only.)
+                        val bitc = index.search(EventQuery(search = "bitc")).map { it.id }
+                        assertTrue(
+                            straddle2.id !in bitc,
+                            "a 2-gram phrase must NOT straddle a space: 'bitc' is not in 'orbit itchy'",
+                        )
+                        assertTrue(longPost.id in bitc, "…while the genuine within-token hit stays")
+                        assertTrue(
+                            straddle.id !in index.search(EventQuery(search = "test")).map { it.id },
+                            "'test' must not match 'dates estimated' by straddling the space",
+                        )
+                        assertTrue(
+                            straddle.id !in index.search(EventQuery(search = "testi")).map { it.id },
+                            "…nor at three trigrams, which a higher floor would not have fixed",
+                        )
+                        assertTrue(
+                            reported.id in index.search(EventQuery(search = "test")).map { it.id },
+                            "…while the genuine within-token hit is untouched",
+                        )
+
                         // ---- verified boundary property, pinned so it cannot drift ----
 
                         // Trigrams are generated WITHIN a token, so a phrase
                         // cannot bridge one: `edp`/`dph` are never indexed.
-                        val compound = note(5, "Never share your seed phrase with anyone")
+                        val compound = note(7, "Never share your seed phrase with anyone")
                         index.putAll(listOf(compound))
-                        awaitCorpus(index, 5)
+                        awaitCorpus(index, 7)
                         assertEquals(
                             emptyList(),
                             index.search(EventQuery(search = "seedphrase")).map { it.id },

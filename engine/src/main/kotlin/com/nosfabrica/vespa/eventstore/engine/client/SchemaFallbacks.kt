@@ -51,6 +51,15 @@ internal class SchemaFallbacks {
          * and write predicates cannot share one string.
          */
         const val NOT_IN_DOCUMENT_TYPE = "is not defined in document type"
+
+        /**
+         * The YQL parser's wording for a column the serving schema lacks —
+         * verbatim from Vespa 8: `Field 'name_near' does not exist.` The READ
+         * side's anchor, and deliberately not [NOT_IN_DOCUMENT_TYPE]: the
+         * document API and the query parser word the same gap differently, which
+         * is why the two directions cannot share one string.
+         */
+        fun missingFieldPhrase(field: String): String = "Field '$field' does not exist"
     }
 
     @Volatile var recencyProfileAvailable = true
@@ -218,6 +227,17 @@ internal class SchemaFallbacks {
      * attempt cannot 400 naming a field it never sent, while re-reading a flag
      * would race a concurrent query's flip into a spurious failure (the same
      * reasoning as withProfileFallback).
+     *
+     * ANCHORED on the parser's exact wording, not on the field name alone, and
+     * that anchor is load-bearing. Vespa ECHOES THE QUERY in some 400s —
+     * MEASURED on Vespa 8 (2026-08-15), a stray syntax error answers
+     * `no viable alternative at input '(name_near contains ({prefix:true}"x"))
+     * and'`, which contains both "400" and a near-field name while saying
+     * nothing about a missing column. On a bare `contains` check that flips
+     * [nearFieldsAvailable] for the LIFE OF THE CLIENT, so one malformed query
+     * would silently end prefix and typo recall until the process restarts. The
+     * write side's [isMissingNearField] has always required its own literal
+     * phrase for exactly this reason; this is the read side's equivalent.
      */
     private fun flipMissingColumn(
         q: EventQuery,
@@ -225,11 +245,13 @@ internal class SchemaFallbacks {
     ): Boolean {
         val message = e.message
         if (q.search.isNullOrBlank() || message?.contains("400") != true) return false
-        if (q.nearMatching && FuzzyWordGroup.ALL_NEAR_FIELDS.any { message.contains(it) }) {
+
+        fun names(unknown: List<String>) = unknown.any { message.contains(missingFieldPhrase(it)) }
+        if (q.nearMatching && names(FuzzyWordGroup.ALL_NEAR_FIELDS)) {
             nearFieldsAvailable = false
             return true
         }
-        if (q.bodyGramMatching && FuzzyWordGroup.PHRASE_GRAM_FIELDS.any { message.contains(it) }) {
+        if (q.bodyGramMatching && names(FuzzyWordGroup.PHRASE_GRAM_FIELDS)) {
             bodyGramAvailable = false
             return true
         }

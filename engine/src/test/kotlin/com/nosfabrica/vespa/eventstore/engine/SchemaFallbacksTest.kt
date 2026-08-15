@@ -152,4 +152,36 @@ class SchemaFallbacksTest {
         assertEquals(false, attempts.last().nearMatching)
         assertEquals(false, attempts.last().bodyGramMatching)
     }
+
+    /**
+     * A 400 that merely MENTIONS a near column must not demote — and Vespa
+     * produces exactly such messages, because some of its parse errors ECHO THE
+     * QUERY. Measured on Vespa 8 (2026-08-15), a stray syntax error answers
+     * `no viable alternative at input '(name_near contains ({prefix:true}"x"))
+     * and'`: it carries both "400" and a near-field name while saying nothing
+     * about a missing column.
+     *
+     * The demotion is PERMANENT for the life of the client, so treating that as
+     * evidence would end prefix and typo recall silently, from one malformed
+     * query, until the process restarts. The net must key on the parser's actual
+     * wording for a missing column instead.
+     */
+    @Test
+    fun `a 400 that merely echoes the query must not demote anything`() {
+        val echoed =
+            "vespa search 400: Could not create query from YQL: query:L1:70 no viable alternative " +
+                "at input '(name_near contains ({prefix:true}\"x\")) and (search_text_gram contains phrase(\"tes\"))'"
+        val fallbacks = SchemaFallbacks()
+        val thrown =
+            runCatching {
+                runBlocking {
+                    fallbacks.withNearFallback(EventQuery(search = "testin")) {
+                        throw IllegalArgumentException(echoed)
+                    }
+                }
+            }.exceptionOrNull()
+        assertTrue(thrown is IllegalArgumentException, "an unrelated 400 must propagate, not be swallowed as a demotion")
+        assertTrue(fallbacks.nearFieldsAvailable, "prefix/typo recall must survive a 400 that only echoes the query")
+        assertTrue(fallbacks.bodyGramAvailable, "body reach must survive it too")
+    }
 }

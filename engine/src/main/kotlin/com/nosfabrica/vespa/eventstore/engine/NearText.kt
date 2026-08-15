@@ -139,6 +139,31 @@ object NearText {
     fun foldWord(word: String): String = fold(word)
 
     /**
+     * ACCENT-ONLY fold — NFD, strip combining marks, lowercase — for the query
+     * side of `search_text_gram`, whose documents are folded by Vespa's
+     * `normalize` in the indexing expression.
+     *
+     * Separate from [fold] because the two normalisers must agree with what is
+     * on the OTHER end, and the other ends differ. The near ATTRIBUTES are fed
+     * by [fold] (NFKD) and queried by [foldWord] (NFKD): both sides ours, both
+     * compatibility-decomposed, self-consistent. The gram field's document side
+     * is Vespa's `normalize`, which removes accents and NOTHING else — it does
+     * not expand full-width forms or ligatures. Folding the query with NFKD
+     * there would turn "ｗｉｄｔｈ" into "width" while the document's grams stayed
+     * full-width, so the two could never meet; MEASURED on Vespa 8
+     * (2026-08-15), a full-width body was unreachable from either spelling
+     * until this split the two folds apart.
+     *
+     * Accent handling is identical between NFD and NFKD ("Lázaro" -> "lazaro"
+     * either way), which is the part that had to keep working.
+     */
+    fun foldAccents(word: String): String =
+        Normalizer
+            .normalize(word, Normalizer.Form.NFD)
+            .filterNot { Character.getType(it) == Character.NON_SPACING_MARK.toInt() }
+            .lowercase()
+
+    /**
      * Fold, drop what no dictionary should hold, de-duplicate, and STOP at
      * [MAX_ELEMENTS] — the output is bounded, so the work is too.
      *
