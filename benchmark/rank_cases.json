@@ -103,5 +103,15 @@
     "query": "de extraordinary",
     "expect": "",
     "note": "2026-08-05 audit, MEASURED and fixed. text_score_cutoff justifies itself with a gram-only ceiling of ~93 (gram_cap 80 + the about fallback), but only name_text() and tier_primary_text() capped their gram term — about_text() and secondary_text() did not, so the ceiling was asserted, not enforced. Measured on a live Vespa with docs whose search_secondary holds the query word ONLY as an infix inside a larger token (exact clause and *_tokens prefix both miss; real_match 0): bitcoin/w_gram 2.0 -> 18-20, bitcoin/8.0 -> 74-78, extraordinary/2.0 -> 37-43, extraordinary/8.0 -> 149-172 — the last CROSSING the cutoff and being returned as a hit. w_gram flips to 8.0 when the SHORTEST query word is <=3 chars and then applies to every word, so a two-word query like this one is the trigger: the long word supplies the trigram count, the short one the weight. Capping both terms puts the same rows at 32 (= w_secondary 0.4 x gram_cap 80) and the hit is dropped. about never crossed on its own (w_about 0.1 damps a measured about_text of 282 to 28) but was capped too, so the cutoff's arithmetic is true again. Rank-profile-only change: deploys with no validation override and no reindex. RankRegressionIT green with it."
+  },
+  {
+    "query": "group:rspuyeetackckp92 testin",
+    "expect": "7796c3f49d89b508",
+    "note": "2026-08-14 report: this event ('Testing post to #vegans group!', kind 1, content-only — no subject tag, no hashtags) was found by 'testing' and NOT by 'testin'. Body text was exact-token-only: prefix/fuzzy target the *_near ATTRIBUTES, which the body has none of, and the AND-gram nets target about/secondary. Fixed by search_text_gram, a gram-3 index field matched as a trigram PHRASE. Pinned engine-side by SearchBodyGramIT; kept here so a rankAb run scores it against live data."
+  },
+  {
+    "query": "vitor",
+    "expect": "",
+    "note": "The precision half of the same change, parked for a live run: a body reading 'Take a vitamin and open the editor' must NOT rank — it holds vit/ito/tor as scattered trigrams and the word nowhere. The AND-of-trigrams net matched it (measured up to 4.0% false positives on 2000-word bodies); the phrase form measures 0.0%. Fill `expect` with a real 'vitor' body hit from the corpus."
   }
 ]

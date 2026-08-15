@@ -65,7 +65,19 @@ data class SearchFields(
      * may land in different fields; ranking decides what floats). Per word,
      * substring is a deliberately LOOSER superset of the engine's matchers
      * (whole tokens, prefixes, typo budget, trigram nets — but not arbitrary
-     * infix) — the reason NIP-50 search is excluded from strict parity. One
+     * infix) — the reason NIP-50 search is excluded from strict parity.
+     *
+     * ONE ENGINE MATCH ESCAPES THE SUPERSET, so "looser" is a near-truth rather
+     * than an invariant. `search_text_gram` is trigram-indexed WITHIN each token
+     * but positioned continuously across them, so a trigram phrase can span a
+     * word boundary when the query's grams partition exactly there: Vespa
+     * matches "estin" against "test sting" (est | sti,tin), which is not a
+     * substring of it and which this method answers false for. Verified on
+     * Vespa 8 (2026-08-15). It stays a documented divergence rather than
+     * something modelled here — reproducing it would mean reproducing gram
+     * positions, and NIP-50 recall is already outside strict parity for the
+     * same class of reason. SearchBodyGramIT is where the engine's real
+     * behaviour is pinned. One
      * place looseness must NOT apply: a word with no letter/digit ("⚡") is
      * erased by engine tokenization and EventYql drops it too — requiring it
      * here would split reference and engine on whole-query recall.

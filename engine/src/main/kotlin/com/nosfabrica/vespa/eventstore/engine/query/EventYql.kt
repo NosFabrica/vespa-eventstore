@@ -364,7 +364,7 @@ object EventYql {
         val matchable = words.filter { w -> w.any(Char::isLetterOrDigit) }
         if (words.isNotEmpty() && matchable.isEmpty()) return null
         if (matchable.isNotEmpty()) {
-            clauses += FuzzyWordGroup.clause(matchable, params, nearFields = q.nearMatching)
+            clauses += FuzzyWordGroup.clause(matchable, params, nearFields = q.nearMatching, bodyGram = q.bodyGramMatching)
             // Short queries lean harder on the trigram safety net.
             params[F_W_GRAM] = if (FuzzyWordGroup.leansOnGrams(matchable)) "8.0" else "2.0"
         }

@@ -657,6 +657,28 @@ class NostrSemanticsStore(
      * BEFORE running this — a serving schema that predates the near fields
      * rejects the backfill puts outright, failing loudly instead of
      * backfilling nothing.
+     *
+     * THIS DOES NOT BACKFILL `search_text_gram`, and the symmetry with the near
+     * tier is exactly inverted. That column is DERIVED BY VESPA
+     * (`indexing: input search_text | index`), not fed, so nothing this method
+     * compares can see it missing: `columnsChanged` reads the search columns,
+     * which are identical, and `nearStale` reads the near arrays, which are
+     * identical too — so no document is re-put and the walk reports success
+     * having repaired nothing. The corpus keeps working, minus body
+     * partial-word reach, with no error anywhere. VERIFIED on Vespa 8
+     * (2026-08-15): deploying the column onto a populated cluster leaves it
+     * empty for every existing document while `search_text` keeps serving.
+     *
+     * Two things do repair it, and an operator must pick one:
+     *   - Vespa REINDEXING, which the deploy response asks for by name
+     *     ("Non-document field 'search_text_gram' added; this may be populated
+     *     by reindexing"). Triggered on the config server at
+     *     `POST …/reindex?clusterId=content&documentType=event`. It is
+     *     asynchronous — it goes `pending` and is dispatched by a maintenance
+     *     job, not on the call — so do not treat the 200 as completion.
+     *   - A full RE-FEED. A plain put re-derives the column at index time, even
+     *     with byte-identical content (verified). This method cannot be that
+     *     re-feed, by the drift check above.
      */
     override suspend fun reindexFullTextSearch() {
         var cursor: String? = null

@@ -43,6 +43,42 @@ measures what the emitted query actually does:
   ./gradlew :benchmark:rankAb --args="--vespa http://localhost:8080"
   ./gradlew :benchmark:rankAb --args="--configs baseline,near_off --profile text"
   ```
+
+### `search_text_gram` — what the body's partial-word reach costs (2026-08-15)
+
+Measured on **26 000 real events pulled from `search-staging.brainstorm.world`**
+— 6 000 kind 30023 long-form articles (12.1 MB of body text, median 1 178 chars,
+p90 5 368, max 99 191) plus 20 000 kind 1 notes — fed to a single-node Vespa 8
+running the shipped `event.sd`. Mean ms/query over a 10-query mix (single-word,
+as-you-type partials, and 2–4 word queries), 30 interleaved sweeps per variant,
+warm. Interleaving matters: an A-then-B run on this box produced a *negative*
+delta on one query, which is drift, not a result.
+
+| variant | median ms/query | p90 | vs today |
+|---|---:|---:|---:|
+| body net OFF (behaviour before this column) | 11.53 | 12.41 | — |
+| **body net ON, trigram phrase (shipped)** | **13.65** | 14.61 | **+18.3 %** |
+| body net ON, AND-of-trigrams | 13.88 | 14.61 | +20.3 % |
+
+Two things this settles:
+
+- **The body net costs +18.3 % (+2.11 ms/query).** That is the price of the
+  whole feature, and it is the same order as the existing gram nets — stripping
+  *every* gram clause was measured at ~19–20 % of multi-word latency at 45k
+  docs, and this adds one net over the single largest text column. Recall rises
+  with it (`testin` 82 → 126 hits, `bitco` 161 → 320), so part of the cost is
+  work that is now finding results it previously missed.
+- **The phrase matcher is FREE — 1.7 % faster than the AND net** over an
+  identical recall surface. Positional postings are larger, but the candidate
+  set is far smaller, and on real data the second effect wins. So the 0.0 %
+  false-positive rate (vs up to 4.0 % for the AND net on long bodies) costs
+  nothing in latency. There is no precision/latency trade to weigh here; the
+  only trade is whether to have a body net at all.
+
+Corpus scale caveat: 26k documents, where fixed per-query overhead still
+dominates, so read the **absolute** +2.11 ms rather than the percentage. Re-run
+at 45k+ before treating the percentage as a planning number.
+
 ## Targeted benches (gradle tasks against a live Vespa)
 
 Beyond the head-to-head suite (`:benchmark:run`), these tasks each own one

@@ -91,4 +91,97 @@ class SchemaFallbacksTest {
         assertEquals(EventYql.RANK_UNRANKED, q.ranking)
         assertTrue("order by created_at desc" in EventYql.build(q)!!.yql)
     }
+
+    /**
+     * Drive [SchemaFallbacks.withNearFallback] against a schema missing
+     * [missing] columns; return every query the net attempted.
+     *
+     * The engine answers the YQL parser's wording for a schema gap, and only
+     * for a column the attempt actually carried — a demoted attempt that no
+     * longer references the field must not keep 400ing, or the net would spin.
+     */
+    private fun columnAttempts(
+        q: EventQuery,
+        vararg missing: String,
+    ): List<EventQuery> =
+        runBlocking {
+            val attempts = mutableListOf<EventQuery>()
+            SchemaFallbacks().withNearFallback(q) { attempt ->
+                attempts += attempt
+                val sent = EventYql.build(attempt)!!.yql
+                missing.firstOrNull { it in sent }?.let {
+                    throw IllegalArgumentException("400 Bad Request: Field '$it' does not exist.")
+                }
+            }
+            attempts
+        }
+
+    /**
+     * `search_text_gram` shipped after the near columns, so a schema can carry
+     * the near columns and lack this one. Demoting it must leave them alone —
+     * stripping name/title prefix reach from a schema that has it would be a
+     * silent recall outage in the opposite direction.
+     */
+    @Test
+    fun `a schema missing only the body gram column keeps its near columns`() {
+        val attempts = columnAttempts(EventQuery(search = "testin"), "search_text_gram")
+        assertEquals(2, attempts.size, "one demotion, one rerun")
+        assertTrue(attempts.last().nearMatching, "the near columns are a different schema generation")
+        assertEquals(false, attempts.last().bodyGramMatching)
+        assertEquals("testin", attempts.last().search, "the demotion touches the reach, never the recall")
+    }
+
+    /** The older gap still demotes on its own, with the body column untouched. */
+    @Test
+    fun `a schema missing only the near columns keeps the body gram column`() {
+        val attempts = columnAttempts(EventQuery(search = "testin"), "name_near")
+        assertEquals(2, attempts.size)
+        assertEquals(false, attempts.last().nearMatching)
+        assertTrue(attempts.last().bodyGramMatching)
+    }
+
+    /**
+     * A schema old enough lacks BOTH, which needs two demotions — the single
+     * retry the net had before this column existed would have thrown on the
+     * second gap.
+     */
+    @Test
+    fun `a schema missing both columns demotes twice rather than failing`() {
+        val attempts = columnAttempts(EventQuery(search = "testin"), "name_near", "search_text_gram")
+        assertEquals(3, attempts.size, "two gaps, two demotions")
+        assertEquals(false, attempts.last().nearMatching)
+        assertEquals(false, attempts.last().bodyGramMatching)
+    }
+
+    /**
+     * A 400 that merely MENTIONS a near column must not demote — and Vespa
+     * produces exactly such messages, because some of its parse errors ECHO THE
+     * QUERY. Measured on Vespa 8 (2026-08-15), a stray syntax error answers
+     * `no viable alternative at input '(name_near contains ({prefix:true}"x"))
+     * and'`: it carries both "400" and a near-field name while saying nothing
+     * about a missing column.
+     *
+     * The demotion is PERMANENT for the life of the client, so treating that as
+     * evidence would end prefix and typo recall silently, from one malformed
+     * query, until the process restarts. The net must key on the parser's actual
+     * wording for a missing column instead.
+     */
+    @Test
+    fun `a 400 that merely echoes the query must not demote anything`() {
+        val echoed =
+            "vespa search 400: Could not create query from YQL: query:L1:70 no viable alternative " +
+                "at input '(name_near contains ({prefix:true}\"x\")) and (search_text_gram contains phrase(\"tes\"))'"
+        val fallbacks = SchemaFallbacks()
+        val thrown =
+            runCatching {
+                runBlocking {
+                    fallbacks.withNearFallback(EventQuery(search = "testin")) {
+                        throw IllegalArgumentException(echoed)
+                    }
+                }
+            }.exceptionOrNull()
+        assertTrue(thrown is IllegalArgumentException, "an unrelated 400 must propagate, not be swallowed as a demotion")
+        assertTrue(fallbacks.nearFieldsAvailable, "prefix/typo recall must survive a 400 that only echoes the query")
+        assertTrue(fallbacks.bodyGramAvailable, "body reach must survive it too")
+    }
 }

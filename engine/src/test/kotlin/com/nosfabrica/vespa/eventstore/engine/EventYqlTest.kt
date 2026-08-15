@@ -348,6 +348,60 @@ class EventYqlTest {
         }
     }
 
+    // ------------------------------------------------------------------
+    // The body's partial-word reach (search_text_gram). The body is the only
+    // indexed column of most conversational kinds and has no near attribute —
+    // an attribute there would be filled by every document and models at more
+    // than this schema's entire attribute budget (docs/attribute-memory.md).
+    // It is a gram field matched by PHRASE, and the phrase is the whole point:
+    // VERIFIED on Vespa 8 (2026-08-15) the AND form of "vitor" matched a
+    // document reading "Take a vitamin and open the editor", the phrase form
+    // did not. A test that only checked "does a gram clause exist" would pass
+    // with the false positives intact.
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `the body gram net is a PHRASE, never an AND of independent trigrams`() {
+        val q = EventYql.build(EventQuery(search = "testin"))!!
+        assertTrue("(search_text_gram contains phrase(\"tes\", \"est\", \"sti\", \"tin\"))" in q.yql, q.yql)
+        // The AND shape the other gram fields use would readmit the false positives.
+        assertFalse("search_text_gram contains \"tes\" and" in q.yql, q.yql)
+    }
+
+    @Test
+    fun `the body phrase floor is two trigrams, so a four-character word reaches it`() {
+        // Precision no longer needs the AND net's 5-character floor: a phrase is
+        // an exact-substring test at any length, so only selectivity remains.
+        val four = EventYql.build(EventQuery(search = "bitc"))!!
+        assertTrue("(search_text_gram contains phrase(\"bit\", \"itc\"))" in four.yql, four.yql)
+        // …but one trigram is a scan, not a query.
+        assertFalse("search_text_gram contains phrase" in EventYql.build(EventQuery(search = "bit"))!!.yql)
+        // The AND nets keep their own, higher floor — unchanged by this.
+        assertFalse("about_gram contains" in four.yql, "MIN_AND_GRAMS_TEXT still needs 3 trigrams")
+    }
+
+    @Test
+    fun `a word with inner punctuation gets no body phrase, because a dropped gram breaks adjacency`() {
+        // Trigrams straddling the punctuation are not alphanumeric and are
+        // filtered; keeping the survivors as a phrase would demand an adjacency
+        // no document can satisfy, so the clause is omitted entirely and the
+        // word rides its exact clause instead.
+        val q = EventYql.build(EventQuery(search = "seed-phrase"))!!
+        assertFalse("search_text_gram contains phrase" in q.yql, q.yql)
+        assertTrue("({defaultIndex:\"search_text\"}userInput(@w0))" in q.yql)
+    }
+
+    @Test
+    fun `bodyGramMatching off drops the body phrase and nothing else`() {
+        // The compatibility demotion for a schema predating search_text_gram.
+        // It must NOT take the near columns with it: those shipped earlier, so a
+        // schema can carry them while lacking this one.
+        val q = EventYql.build(EventQuery(search = "testin", bodyGramMatching = false))!!
+        assertFalse("search_text_gram" in q.yql, q.yql)
+        assertTrue("(name_near contains ({prefix:true}@fw0))" in q.yql)
+        assertTrue("({defaultIndex:\"search_text\"}userInput(@w0))" in q.yql)
+    }
+
     @Test
     fun `typo budget is length-gated and capped, and only the top distance is emitted`() {
         // <4: no fuzzy at all.

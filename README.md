@@ -170,9 +170,28 @@ Matching is **language-neutral**: text is folded and tokenized but never stemmed
 so a note is findable by its own words whatever language it is written in. (The
 engine stems a document by the language it *detects* while queries carry none, so
 stemming would silently make every non-English note unreachable — see the
-`stemming: none` note in `schemas/event.sd`.) One gap remains: scripts the engine
-does not segment, CJK above all, are not reachable inside a body — a CJK *name*
-still is.
+`stemming: none` note in `schemas/event.sd`.) Scripts the engine does not
+segment, CJK above all, used to be unreachable inside a body entirely. They are
+now reachable **from four characters up**, through the body's trigram index —
+trigrams need no word segmentation, so they route around the gap rather than
+closing it (the exact path still cannot reach inside an unsegmented run). Read
+that as half a fix, not a fix: four characters is two trigrams, the minimum a
+trigram phrase can be, and a great deal of ordinary Chinese and Japanese
+vocabulary is *two* characters — 東京, 会社 — which yields no trigrams at all and
+stays unreachable in a body. CJK *names* are unaffected and always worked, since
+they ride the prefix attributes rather than the tokenizer.
+
+**Partial words** reach every field, but by two different routes. Names, titles,
+subjects, hashtags and identity handles carry prefix and typo matching (`vitorp`
+finds *Vitor Pamplona*, one typo is forgiven), served by attribute columns. A
+**body** — a note's content, an article's prose — is reached by substring instead
+(`testin` finds *Testing*), served by a trigram index and matched as a phrase, so
+it covers the whole post at any length with no cap on how deep the word sits. The
+trade is that a body match is a substring rather than an anchored prefix, so
+`testin` also finds *Protesting*, and typos in a body are not forgiven. A body is
+deliberately given no attribute column: it is filled on nearly every document, so
+one would cost more RAM than the entire rest of the schema and would still only
+reach a post's first few dozen words — see `docs/attribute-memory.md`.
 
 The kinds it indexes and the fields it reads from each (highest weight first).
 Kinds with no title to split out are indexed by their full `content`; on every

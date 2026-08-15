@@ -849,34 +849,46 @@ class RankRegressionIT {
                         "every searchable column must be reachable under the observer lens, through its own tier",
                     )
 
-                    // --- KNOWN LIMITATION, PINNED AS A BUG: CJK body text is
-                    // still unsearchable. This block asserts what the engine
-                    // DOES, not what it should do. Fix the cause and it fails —
-                    // that is the point, and its message says to delete it.
+                    // --- CJK body text: HALF FIXED (2026-08-15), and the halves
+                    // are pinned separately because the boundary between them is
+                    // the whole story.
                     //
-                    // The Portuguese half of this problem is fixed (the rows in
-                    // the ladder above): the text fields now carry
-                    // `stemming: none`, so a document's DETECTED language can no
-                    // longer stem its index terms away from an English-stemmed
-                    // query. Tokenization is a different layer and still
-                    // language-driven, and the default linguistics does not
-                    // SEGMENT CJK at all — a Japanese sentence is one token, so
-                    // no query reaches inside it.
+                    // This used to assert all three MISSING. Vespa's default
+                    // linguistics does not SEGMENT CJK — a Japanese sentence is
+                    // one token — so no exact query could reach inside one, and
+                    // the comment here said fixing it needed a CJK-capable
+                    // linguistics component. It did not: `search_text_gram`
+                    // matches trigrams, and trigrams need no segmentation. The
+                    // exact path is still blind (verified separately: an exact
+                    // query for a phrase verbatim in a CJK body returns nothing),
+                    // so the segmentation gap is real — the gram net simply
+                    // routes around it.
                     //
-                    // Measured on a live Vespa, before and after the stemming
-                    // change, identical both times: 中村太郎 0, 東京 0, 会社 0.
-                    // Fixing it needs a CJK-capable linguistics component
-                    // (Vespa's OpenNLP bundle or similar), which is a
-                    // deployment/dependency decision, not a schema one.
+                    // WHERE THE BOUNDARY FALLS, and why this is half a fix:
+                    // FuzzyWordGroup.MIN_PHRASE_GRAMS is 2 trigrams, which is 4
+                    // characters. 中村太郎 (4) now reaches the body. 東京 and 会社
+                    // are 2 characters — ZERO trigrams — so no clause is emitted
+                    // at all and they stay unreachable. That is not an edge case:
+                    // a large share of ordinary Chinese and Japanese vocabulary is
+                    // two characters (東京 = Tokyo, 会社 = company), so most real
+                    // CJK queries still cannot reach a body. Closing THAT needs
+                    // gram-size 2 for CJK (a second gram column, or doubling this
+                    // one's index) or the segmentation component after all —
+                    // still a deployment decision, now a smaller one.
                     //
-                    // Profile NAMES in CJK are unaffected and keep working —
+                    // Profile NAMES in CJK were never affected and keep working —
                     // "中村" -> "中村太郎" passes above — because they ride
                     // NearText's raw-byte attributes, not Vespa's tokenizer.
-                    val cjk = listOf("中村太郎", "東京", "会社")
                     assertEquals(
-                        cjk.associateWith { "MISSING" },
-                        cjk.associate { it to tierOfHit(it, id(46)) },
-                        "CJK body recall is BROKEN and pinned here; if this fails, someone fixed it — delete this block",
+                        "body",
+                        tierOfHit("中村太郎", id(46)),
+                        "4 CJK characters = 2 trigrams = the floor; the gram net must reach the body",
+                    )
+                    val shortCjk = listOf("東京", "会社")
+                    assertEquals(
+                        shortCjk.associateWith { "MISSING" },
+                        shortCjk.associate { it to tierOfHit(it, id(46)) },
+                        "2 CJK characters yield no trigrams, so no clause is emitted — pinned as the REMAINING gap",
                     )
 
                     // --- typo bound: over-budget hits never match ---

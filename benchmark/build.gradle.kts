@@ -30,6 +30,19 @@ dependencies {
 }
 
 tasks.test {
+    // Pin the Docker Remote API version docker-java negotiates.
+    //
+    // testcontainers 1.20.4 (and 1.21.3) ship a docker-java that offers API
+    // 1.32, and Docker Engine 29 REFUSES it: "client version 1.32 is too old.
+    // Minimum supported API version is 1.40". Every strategy then fails, and
+    // because these tests gate on `assumeTrue(dockerAvailable())` the whole
+    // integration suite SKIPS — green CI that ran nothing, which is the one
+    // failure mode this suite must not have.
+    //
+    // 1.41 is the version that satisfies both ends: at or above Engine 29's
+    // 1.40 floor, and supported by every engine back to 20.10 (2020).
+    systemProperty("api.version", "1.41")
+
     useJUnitPlatform {
         // The Vespa integration test (VespaParityIT) stands up a container and is
         // slow, so the default build stays unit-only. Run it with -Pintegration
