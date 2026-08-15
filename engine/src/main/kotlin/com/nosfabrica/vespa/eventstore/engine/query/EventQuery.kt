@@ -116,6 +116,16 @@ data class EventQuery(
      * SchemaFallbacks.withNearFallback).
      */
     val nearMatching: Boolean = true,
+    /**
+     * Emit the trigram-PHRASE terms against [FuzzyWordGroup.PHRASE_GRAM_FIELDS]
+     * (the body's partial-word reach). Not a caller-facing knob either: the
+     * client flips it off ONLY as a compatibility demotion when the serving
+     * schema predates `search_text_gram`, where any reference is an HTTP 400.
+     * Separate from [nearMatching] because the two shipped at different times —
+     * every schema carrying the near columns predates this one, so demoting them
+     * together would strip name/title prefix reach from a schema that has it.
+     */
+    val bodyGramMatching: Boolean = true,
 )
 
 /** A ready-to-send Vespa query: the YQL, its query parameters, and the rank profile. */

@@ -397,6 +397,53 @@ schema event {
         }
     }
 
+    # The BODY's trigram net — the only partial-word reach a note's content or
+    # an article's prose has, and the reason it is an INDEX field and not a
+    # `_near` attribute sibling like the name/title tiers have.
+    #
+    # WHY NOT AN ATTRIBUTE (the `search_text_near` that is deliberately absent):
+    # prefix/fuzzy in Vespa require an attribute, and an attribute's multivalue
+    # mapping and posting lists both scale as docs x elements-per-doc. Names and
+    # titles are short and often absent (`name_near` v~0.07, `search_primary_near`
+    # v~1.08, ~4 GiB each at 176.7M docs), but a BODY column is filled on nearly
+    # every document with ~30 elements — modelled at ~74 GiB, MORE than this
+    # schema's entire attribute budget, 47 GiB of it unpageable posting lists
+    # (docs/attribute-memory.md). It would also be CAPPED at NearText.MAX_ELEMENTS,
+    # so a blog post would be reachable only by its first ~48 tokens. A gram field
+    # is the inverted-index answer other engines use for exactly this: it costs
+    # dictionary + postings in the disk index, scales with VOCABULARY rather than
+    # corpus x length, and covers the whole post at any length.
+    #
+    # MATCHED BY PHRASE, not by the AND-of-trigrams the other three nets use
+    # (FuzzyWordGroup.phraseGramClause). Vespa's gram tokenizer emits trigrams at
+    # CONSECUTIVE positions, so requiring them consecutively is an exact-substring
+    # test, while ANDing them independently throws that position information away
+    # and asks only whether each appears somewhere in the field. On a long body
+    # that degenerates: VERIFIED on Vespa 8 (2026-08-15), the query "vitor"
+    # AND-matched a doc reading "Take a vitamin and open the editor" — `vit` from
+    # vitamin, `ito`/`tor` from editor, no "vitor" anywhere — while the phrase form
+    # matched only the doc that really contains it. Measured false-positive rate on
+    # bodies whose text does NOT contain the query word: AND 0.5% -> 4.0% as the
+    # body grows 100 -> 2000 words (5-char words; 0.1% -> 2.2% at 6), phrase 0.0%
+    # at every length. That is structural, not tuning: a phrase either is a
+    # substring or it is not.
+    #
+    # Two verified boundary properties, both narrow:
+    #   - trigrams are generated WITHIN a token but positions run continuously, so
+    #     a phrase spans a word boundary only when the query's trigrams partition
+    #     EXACTLY there ("estin" does match "test sting": est | sti,tin). Rare
+    #     enough to measure as 0.0% above.
+    #   - it does NOT join compounds: "seedphrase" does not match "seed phrase",
+    #     because `edp`/`dph` straddle the boundary and are never indexed.
+    field search_text_gram type string {
+        indexing: input search_text | index
+        index: enable-bm25
+        match {
+            gram
+            gram-size: 3
+        }
+    }
+
     # Existence-only summary for the bulk-dedup preload: `id` alone. Every
     # field here is an ATTRIBUTE, so Vespa serves this class straight from
     # memory (the docsum "attribute combiner") — the disk summary store is
@@ -805,8 +852,30 @@ schema event {
         # two groups are disjoint per kind (the argument any_token_match()
         # already rests on), and where a kind does fill both, one rung is what
         # the ladder means.
+        # search_text_gram joins the rung (2026-08-15). It is the ONE gram field
+        # that does, and the exception is earned by its matcher, not by its tier:
+        # every other *_gram is AND-matched, so a hit means "these trigrams appear
+        # somewhere", which is the gram-only NOISE real_match() and the cutoff
+        # exist to delete. search_text_gram is PHRASE-matched, so a hit means the
+        # query word occurs in the body as a literal substring — measured 0.0%
+        # false positives at every body length (see the field's comment). That is
+        # a genuine body match, and a genuine body match that scores below
+        # text_score_cutoff is DELETED, which is the same hole search_text and
+        # search_location fell into until 2026-08-05. Without this term the whole
+        # field would be a no-op on the default observer-lensed profile: it would
+        # recall documents that then score w_content x bm25(search_text) = 0
+        # (bm25 is on the INDEX field, which a substring-only hit never touches)
+        # and get dropped by rank-score-drop-limit.
+        #
+        # EXACT still outranks SUBSTRING inside the band, with no second rung and
+        # no new weight: an exact whole-token hit sets matchCount(search_text) AND
+        # earns query(w_content) * bm25(search_text) on top, while a substring-only
+        # hit lands on the bare rung. That ordering is the answer to "score the
+        # hits that start a word higher" — anchoring itself (word-start above
+        # mid-word) has no cheap signal here and is deliberately NOT modelled:
+        # `Protesting` surfacing for "testin" is loose, not wrong.
         function tier_body_match() {
-            expression: if(any_token_match() > 0 || any_near_match() > 0 || weak_match() > 0, 0, if(matchCount(search_text) > 0 || matchCount(search_location) > 0, 1, 0))
+            expression: if(any_token_match() > 0 || any_near_match() > 0 || weak_match() > 0, 0, if(matchCount(search_text) > 0 || matchCount(search_location) > 0 || matchCount(search_text_gram) > 0, 1, 0))
         }
 
         # A bio/website affiliation match WITHOUT any name-field token match.

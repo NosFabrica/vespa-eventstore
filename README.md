@@ -174,6 +174,18 @@ stemming would silently make every non-English note unreachable — see the
 does not segment, CJK above all, are not reachable inside a body — a CJK *name*
 still is.
 
+**Partial words** reach every field, but by two different routes. Names, titles,
+subjects, hashtags and identity handles carry prefix and typo matching (`vitorp`
+finds *Vitor Pamplona*, one typo is forgiven), served by attribute columns. A
+**body** — a note's content, an article's prose — is reached by substring instead
+(`testin` finds *Testing*), served by a trigram index and matched as a phrase, so
+it covers the whole post at any length with no cap on how deep the word sits. The
+trade is that a body match is a substring rather than an anchored prefix, so
+`testin` also finds *Protesting*, and typos in a body are not forgiven. A body is
+deliberately given no attribute column: it is filled on nearly every document, so
+one would cost more RAM than the entire rest of the schema and would still only
+reach a post's first few dozen words — see `docs/attribute-memory.md`.
+
 The kinds it indexes and the fields it reads from each (highest weight first).
 Kinds with no title to split out are indexed by their full `content`; on every
 kind, hashtags also fold into the secondary tier and `location` tags into the

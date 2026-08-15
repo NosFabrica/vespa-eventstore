@@ -110,6 +110,24 @@ internal object FuzzyWordGroup {
     const val MIN_AND_GRAMS_TEXT = 3
 
     /**
+     * Minimum trigrams for a PHRASE gram clause ([PHRASE_GRAM_FIELDS]) — two, so
+     * a 4-character word qualifies.
+     *
+     * Lower than [MIN_AND_GRAMS_TEXT] because the two floors guard different
+     * things. ANDing few trigrams degenerates into a bare substring test, so its
+     * floor buys PRECISION. A phrase is an exact-substring test at any length —
+     * two trigrams as a phrase is still "these six characters, in this order" —
+     * so nothing degenerates and the only remaining concern is SELECTIVITY. Two
+     * is where the posting-list walk stays worth it; a single trigram matches so
+     * much of a body corpus that it is not a query, it is a scan.
+     *
+     * VERIFIED on Vespa 8 (2026-08-15): `phrase("bit","itc")` — the 4-character
+     * word "bitc" — matches a document reading "Bitcoin fixes this". That is the
+     * as-you-type keystroke the AND-net's 5-character floor could never serve.
+     */
+    const val MIN_PHRASE_GRAMS = 2
+
+    /**
      * The per-word groups AND'd into one parenthesized clause, filling
      * [params] with the out-of-band words.
      *
@@ -125,11 +143,12 @@ internal object FuzzyWordGroup {
         words: List<String>,
         params: MutableMap<String, String>,
         nearFields: Boolean = true,
+        bodyGram: Boolean = true,
     ): String {
         val own =
             words.mapIndexed { i, word ->
                 params["w$i"] = word
-                wordGroup("w$i", word, params, synthetic = false, nearFields = nearFields)
+                wordGroup("w$i", word, params, synthetic = false, nearFields = nearFields, bodyGram = bodyGram)
             }
         if (words.size == 1) return "(${own[0]})"
         val coverers = List(words.size) { ArrayList<String>() }
@@ -137,7 +156,7 @@ internal object FuzzyWordGroup {
             for (i in 0 until words.size - 1) {
                 val pair = words[i] + words[i + 1]
                 params["wp$i"] = pair
-                val group = wordGroup("wp$i", pair, params, synthetic = true, nearFields = nearFields)
+                val group = wordGroup("wp$i", pair, params, synthetic = true, nearFields = nearFields, bodyGram = bodyGram)
                 coverers[i] += group
                 coverers[i + 1] += group
             }
@@ -148,7 +167,7 @@ internal object FuzzyWordGroup {
             }
         val joined = words.joinToString("")
         params["wj"] = joined
-        val joinedGroup = wordGroup("wj", joined, params, synthetic = true, nearFields = nearFields)
+        val joinedGroup = wordGroup("wj", joined, params, synthetic = true, nearFields = nearFields, bodyGram = bodyGram)
         return "(($required) or $joinedGroup)"
     }
 
@@ -167,8 +186,10 @@ internal object FuzzyWordGroup {
      *
      * [nearFields] off drops every clause referencing the near/weak attribute
      * fields — the compatibility demotion for a schema that predates them,
-     * where any reference is HTTP 400 (see SchemaFallbacks.withNearFallback). The
-     * gram nets are NOT gated: *_gram fields exist on every deployed schema.
+     * where any reference is HTTP 400 (see SchemaFallbacks.withNearFallback).
+     * [bodyGram] off is the same demotion for [PHRASE_GRAM_FIELDS], which
+     * shipped later still. The AND gram nets are NOT gated: those *_gram fields
+     * exist on every deployed schema.
      */
     private fun wordGroup(
         name: String,
@@ -176,6 +197,7 @@ internal object FuzzyWordGroup {
         params: MutableMap<String, String>,
         synthetic: Boolean,
         nearFields: Boolean,
+        bodyGram: Boolean,
     ): String {
         val clauses = ArrayList<String>()
         for (field in SEARCH_FIELDS) clauses += exactClause(field, "@$name", roleOf(field))
@@ -192,6 +214,11 @@ internal object FuzzyWordGroup {
             }
             for (gramField in TEXT_GRAM_FIELDS) {
                 andGramClause(literal, gramField, MIN_AND_GRAMS_TEXT)?.let { clauses += it }
+            }
+            if (bodyGram) {
+                for (gramField in PHRASE_GRAM_FIELDS) {
+                    phraseGramClause(literal, gramField)?.let { clauses += it }
+                }
             }
         }
         return "(${clauses.joinToString(" or ")})"
@@ -262,6 +289,40 @@ internal object FuzzyWordGroup {
         return grams.joinToString(" and ", prefix = "(", postfix = ")") { "$gramField contains \"$it\"" }
     }
 
+    /**
+     * A word's trigrams as a PHRASE against a gram field — an exact-substring
+     * test, because Vespa's gram tokenizer emits trigrams at CONSECUTIVE
+     * positions and a phrase requires them consecutively.
+     *
+     * This is the whole difference between this net and [andGramClause], and it
+     * is a correctness difference, not a tuning one. ANDing the trigrams
+     * independently discards position and asks only whether each appears
+     * somewhere in the field, which on a long body degenerates: VERIFIED on
+     * Vespa 8 (2026-08-15), the AND form of "vitor" matched a document reading
+     * "Take a vitamin and open the editor" (`vit` from vitamin, `ito`/`tor` from
+     * editor) while the phrase form matched only the document that contains the
+     * word. Measured on bodies not containing the query word, the AND net's
+     * false-positive rate climbs 0.5% -> 4.0% as the body grows 100 -> 2000
+     * words (5-character words); the phrase form measures 0.0% at every length.
+     *
+     * BAILS OUT rather than dropping a trigram. [trigrams] filters non-alnum
+     * grams, which is harmless for an AND (fewer conjuncts, looser) but wrong
+     * for a phrase: dropping a middle gram makes the survivors non-adjacent, so
+     * the clause demands an adjacency the document cannot have and silently
+     * matches nothing. A word with punctuation inside it therefore gets no
+     * phrase clause at all and rides its exact clause, which is what tokenized
+     * the document that way in the first place.
+     */
+    private fun phraseGramClause(
+        word: String,
+        gramField: String,
+    ): String? {
+        val lower = word.lowercase()
+        val all = (0..lower.length - 3).map { lower.substring(it, it + 3) }
+        if (all.size < MIN_PHRASE_GRAMS || all.any { gram -> !gram.all(Char::isLetterOrDigit) }) return null
+        return all.joinToString(", ", prefix = "($gramField contains phrase(", postfix = "))") { "\"$it\"" }
+    }
+
     /** Alphanumeric-only trigrams — safe to embed in YQL without escaping. */
     private fun trigrams(word: String): List<String> =
         (0..word.length - 3)
@@ -319,4 +380,18 @@ internal object FuzzyWordGroup {
     private val INFIX_GRAM_FIELDS = listOf("name_gram", "display_name_gram", "search_primary_gram")
 
     private val TEXT_GRAM_FIELDS = listOf("about_gram", "search_secondary_gram")
+
+    /**
+     * Gram fields matched by PHRASE rather than by the AND net — the body's
+     * partial-word reach, and the only reach it has (there is no
+     * `search_text_near`; see the field's comment in event.sd for why an
+     * attribute is unaffordable on a column filled by every document).
+     *
+     * NOT private: [SchemaFallbacks] matches 400s against these names, the same
+     * way it does for [ALL_NEAR_FIELDS]. Unlike the other gram fields, this one
+     * does NOT exist on every deployed schema — it shipped 2026-08-15 — so a
+     * reference to it is an HTTP 400 against an older serving schema and needs
+     * the same compatibility demotion the near columns get.
+     */
+    val PHRASE_GRAM_FIELDS = listOf("search_text_gram")
 }

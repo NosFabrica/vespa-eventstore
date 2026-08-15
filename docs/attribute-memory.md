@@ -430,6 +430,33 @@ value), which would need a separate small `d_tag` attribute.
   more dangerous than the change.
 - **Do not trust memory metrics after enabling `paged`.** They report attribute
   content size, not residency; the node will read as ~100% utilized by design.
+- **Do not add a `search_text_near` attribute** to give the BODY prefix/fuzzy
+  reach the way `name_near` and `search_primary_near` do for names and titles.
+  This was proposed 2026-08-15 to fix a real recall bug (a kind 1 reading
+  "Testing post to #vegans group!" was found by "testing" and not by "testin")
+  and rejected on this model. Every other near column is cheap because it is
+  short and often empty — `name_near` sits at `v ≈ 0.07` elements/doc,
+  `search_primary_near` at `v ≈ 1.08`, ~4 GiB each. A body column is filled on
+  nearly every document at `v ≈ 30`, and both the multivalue mapping and the
+  posting lists scale as `D · v`:
+
+  | cap | modelled total | of which unpageable |
+  |---|---:|---:|
+  | `NearText.MAX_ELEMENTS` (48/96) | **73.8 GiB** | 48.1 GiB |
+  | tightened to ~16 | 30.2 GiB | 19.3 GiB |
+  | tightened to ~8 | 20.5 GiB | 12.9 GiB |
+
+  The cheapest version still adds more than a third of the current 55.8 GiB
+  attribute total to a cluster already OOM-killing, and *every* version is
+  capped — so a blog post would be reachable only by its first few dozen tokens,
+  which is the failure the bug report was about. The answer is
+  `search_text_gram`: a gram-3 **index** field, matched as a trigram phrase. An
+  inverted index scales with vocabulary rather than corpus × length, costs
+  nothing in the attribute budget, has no per-document cap, and — verified on
+  Vespa 8 — matches exactly the documents that contain the substring, where the
+  AND-of-trigrams net the other gram fields use invents hits at up to 4.0% on
+  long bodies. It buys substring reach instead of anchored-prefix reach and no
+  typo forgiveness in bodies; that is the trade, and it is the right one.
 
 ## 6. Getting the measurements
 

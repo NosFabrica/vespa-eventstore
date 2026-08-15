@@ -62,6 +62,9 @@ internal class SchemaFallbacks {
     @Volatile var nearFieldsAvailable = true
         private set
 
+    @Volatile var bodyGramAvailable = true
+        private set
+
     @Volatile var dedupSummaryAvailable = true
         private set
 
@@ -127,6 +130,17 @@ internal class SchemaFallbacks {
     /** [q] rebuilt for a schema without the near attribute fields — a no-op while they serve. */
     fun demoteNear(q: EventQuery): EventQuery = if (!nearFieldsAvailable && q.nearMatching) q.copy(nearMatching = false) else q
 
+    /** [q] rebuilt for a schema without `search_text_gram` — a no-op while it serves. */
+    fun demoteBodyGram(q: EventQuery): EventQuery = if (!bodyGramAvailable && q.bodyGramMatching) q.copy(bodyGramMatching = false) else q
+
+    /**
+     * Both column demotions. They are SEPARATE schema generations — every schema
+     * carrying the near columns predates `search_text_gram` — so a schema can
+     * lack either, or both, and demoting them together would strip name/title
+     * prefix reach from a schema that still has it.
+     */
+    private fun demoteSchema(q: EventQuery): EventQuery = demoteBodyGram(demoteNear(q))
+
     /**
      * Run [attempt] with the rank-profile nets: a 400 naming the `recency` or
      * `recency_gated*` profile flips the matching flag and reruns the demoted
@@ -177,16 +191,48 @@ internal class SchemaFallbacks {
     suspend fun <T> withNearFallback(
         q: EventQuery,
         attempt: suspend (EventQuery) -> T,
-    ): T =
-        try {
-            attempt(demoteNear(q))
-        } catch (e: IllegalArgumentException) {
-            // The message check proves the attempt ran WITH the near clauses (a
-            // demoted attempt cannot 400 naming a field it never sent), so no
-            // flag re-read — same reasoning as withProfileFallback.
-            val missingField = e.message?.contains("400") == true && FuzzyWordGroup.ALL_NEAR_FIELDS.any { e.message?.contains(it) == true }
-            if (q.search.isNullOrBlank() || !q.nearMatching || !missingField) throw e
-            nearFieldsAvailable = false
-            attempt(demoteNear(q))
+    ): T {
+        // TWO demotions are reachable, so the net retries twice: the near
+        // columns and `search_text_gram` are independent schema generations and
+        // a schema old enough lacks both. Each pass can only ever flip a flag
+        // that was still set, and flipping one strips its clauses from the next
+        // attempt, so the loop cannot spin — a given column can be named at most
+        // once.
+        repeat(2) {
+            try {
+                return attempt(demoteSchema(q))
+            } catch (e: IllegalArgumentException) {
+                if (!flipMissingColumn(q, e)) throw e
+            }
         }
+        return attempt(demoteSchema(q))
+    }
+
+    /**
+     * Flip the availability flag for whichever compatibility column a 400 names,
+     * answering whether this net should retry.
+     *
+     * Keyed on the QUERY's intent ([EventQuery.nearMatching] /
+     * [EventQuery.bodyGramMatching]) and the message, never on the flags: the
+     * message already proves the attempt ran WITH those clauses, since a demoted
+     * attempt cannot 400 naming a field it never sent, while re-reading a flag
+     * would race a concurrent query's flip into a spurious failure (the same
+     * reasoning as withProfileFallback).
+     */
+    private fun flipMissingColumn(
+        q: EventQuery,
+        e: IllegalArgumentException,
+    ): Boolean {
+        val message = e.message
+        if (q.search.isNullOrBlank() || message?.contains("400") != true) return false
+        if (q.nearMatching && FuzzyWordGroup.ALL_NEAR_FIELDS.any { message.contains(it) }) {
+            nearFieldsAvailable = false
+            return true
+        }
+        if (q.bodyGramMatching && FuzzyWordGroup.PHRASE_GRAM_FIELDS.any { message.contains(it) }) {
+            bodyGramAvailable = false
+            return true
+        }
+        return false
+    }
 }
