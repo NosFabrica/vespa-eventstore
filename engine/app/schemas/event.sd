@@ -436,6 +436,19 @@ schema event {
     #   - it does NOT join compounds: "seedphrase" does not match "seed phrase",
     #     because `edp`/`dph` straddle the boundary and are never indexed.
     #
+    # UPGRADING A POPULATED CLUSTER NEEDS A REINDEX, and it is not optional:
+    # this is derived by Vespa at INDEX time, so adding it leaves every existing
+    # document with an empty column while `search_text` keeps serving — no
+    # error, no 400, just no body reach for the whole back catalogue. Vespa says
+    # so itself in the deploy response ("Non-document field 'search_text_gram'
+    # added; this may be populated by reindexing"). Note the DIRECTION is
+    # opposite to the near tier: those are FED, so a Vespa reindex cannot
+    # populate them and NostrSemanticsStore.reindexFullTextSearch (a re-feed)
+    # must; this one is DERIVED, so the re-feed's drift check sees nothing
+    # changed and skips every document, and the Vespa reindex is what repairs
+    # it. A full re-feed also works — a plain put re-derives the column even
+    # with byte-identical content. All three behaviours verified on Vespa 8.
+    #
     # COST, measured on 26k REAL events from search-staging (6k long-form 30023 +
     # 20k kind 1), interleaved A/B, warm — benchmark/README.md has the table:
     # this net costs +18.3% (+2.11 ms/query), the same order as the gram nets
@@ -444,9 +457,16 @@ schema event {
     # surface — positional postings are bigger, but the candidate set is far
     # smaller and that wins on real data. So the precision is free; the only
     # thing being paid for is having a body net at all.
+    # NO `index: enable-bm25`, unlike every other *_gram field here. The others
+    # are SCORED — name_gram/about_gram/search_secondary_gram all appear as
+    # bm25(...) terms inside their tier's text function — while this one is only
+    # ever asked matchCount() > 0 by tier_body_match(). bm25 makes Vespa build
+    # and store the interleaved term features its scoring needs, which on the
+    # largest text column in the schema is index size and write work bought for
+    # a number nothing reads. Add it back the day a rank expression scores this
+    # field, and not before.
     field search_text_gram type string {
         indexing: input search_text | index
-        index: enable-bm25
         match {
             gram
             gram-size: 3

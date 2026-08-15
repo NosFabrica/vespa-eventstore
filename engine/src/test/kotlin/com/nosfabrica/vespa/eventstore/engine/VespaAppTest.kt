@@ -291,4 +291,36 @@ class VespaAppTest {
             assertTrue(field in declared, "`$field` is fed and searched but not declared in event.sd: $declared")
         }
     }
+
+    /**
+     * [FuzzyWordGroup.PHRASE_GRAM_FIELDS] needs the same build-time guard as the
+     * near columns above, and for the same reason: it is the body's ONLY
+     * partial-word reach, it is named independently in the schema and the query
+     * builder, and a disagreement fails SILENTLY AND PERMANENTLY. A query naming
+     * a column the schema lacks is a 400, and [SchemaFallbacks] — which exists
+     * precisely so an older serving schema degrades instead of erroring — would
+     * read that 400 as "this deployment predates the column", demote for the life
+     * of the client, and never try again. A typo'd rename would therefore look
+     * exactly like a successful compatibility demotion.
+     *
+     * Also pins the RUNG. A gram hit sets no matchCount on a real column, so
+     * `real_match()` answers 0 and `floored_text_score()` takes its else branch:
+     * without `matchCount(search_text_gram)` in tier_body_match(), a body-only
+     * hit scores below text_score_cutoff and is DELETED rather than ranked —
+     * recall would silently revert to exact-token-only with the column still
+     * present, indexed, and paid for.
+     */
+    @Test
+    fun `the body gram column agrees with the schema and keeps its rung`() {
+        val sd = entry("schemas/event.sd")
+        val declared = Regex("""^\s*field\s+(\w+)\s+type""", RegexOption.MULTILINE).findAll(sd).map { it.groupValues[1] }.toSet()
+        val rung = sd.substringAfter("function tier_body_match()").substringBefore("}")
+        for (field in FuzzyWordGroup.PHRASE_GRAM_FIELDS) {
+            assertTrue(field in declared, "`$field` is phrase-searched but not declared in event.sd: $declared")
+            assertTrue(
+                "matchCount($field)" in rung,
+                "`$field` is searched but missing from tier_body_match() — a body-only hit is deleted by text_score_cutoff, not ranked: $rung",
+            )
+        }
+    }
 }

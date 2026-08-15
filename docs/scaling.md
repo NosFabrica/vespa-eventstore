@@ -104,6 +104,40 @@ corpus can need an extra step, which the deploy response spells out as
   re-feed is required: attribute values were always stored as fed; the
   restart rebuilds the dictionaries and switches matching to cased. Until
   the restart, tag matching stays case-insensitive (the pre-fix behavior).
+- **`search_text_gram`** (the body's partial-word reach, 2026-08-15): a
+  **reindex-class** change, and the one migration on this list that fails
+  *silently* if you skip it. The column is derived by Vespa from `search_text`
+  at index time, so a populated cluster keeps serving normally after the
+  deploy — with the column empty for every existing document, no error and no
+  400 anywhere. The whole back catalogue simply stays exact-token-only, which
+  is the bug the column was added to fix. Verified on Vespa 8.
+
+  The deploy response names it:
+
+  ```
+  "reindex": [{ "messages": ["Document type 'event': Non-document field
+                'search_text_gram' added; this may be populated by reindexing"] }]
+  ```
+
+  Repair it either way:
+
+  ```bash
+  # (a) Vespa reindexing, on the CONFIG SERVER. Asynchronous — this returns
+  #     immediately and the job goes `pending` until a maintainer dispatches
+  #     it, so poll rather than treating the 200 as done.
+  BASE=http://cfg:19071/application/v2/tenant/default/application/default/environment/prod/region/default/instance/default
+  curl -X POST "$BASE/reindex?clusterId=content&documentType=event"
+  curl "$BASE/reindexing"      # state: pending -> running -> successful
+
+  # (b) A full re-feed. A plain put re-derives the column even with
+  #     byte-identical content.
+  ```
+
+  **`reindexFullTextSearch()` does NOT repair this** — note the direction is
+  the opposite of the near-tier columns. Those are *fed*, so only a re-feed
+  can populate them; this one is *derived*, so the re-feed's drift check finds
+  the search columns and near arrays unchanged, re-puts nothing, and reports
+  success having done nothing.
 - If a deploy is refused with a validation error naming an override id, add
   a scoped `validation-overrides.xml` to the package rather than forcing —
   and read what it protects first.
