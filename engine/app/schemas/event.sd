@@ -435,6 +435,15 @@ schema event {
     #     enough to measure as 0.0% above.
     #   - it does NOT join compounds: "seedphrase" does not match "seed phrase",
     #     because `edp`/`dph` straddle the boundary and are never indexed.
+    #
+    # COST, measured on 26k REAL events from search-staging (6k long-form 30023 +
+    # 20k kind 1), interleaved A/B, warm — benchmark/README.md has the table:
+    # this net costs +18.3% (+2.11 ms/query), the same order as the gram nets
+    # already here (~19-20% of multi-word latency for ALL of them at 45k docs).
+    # The PHRASE form is 1.7% FASTER than the AND form over an identical recall
+    # surface — positional postings are bigger, but the candidate set is far
+    # smaller and that wins on real data. So the precision is free; the only
+    # thing being paid for is having a body net at all.
     field search_text_gram type string {
         indexing: input search_text | index
         index: enable-bm25
