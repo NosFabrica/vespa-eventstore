@@ -224,8 +224,16 @@ class ContainerJvmIT {
         /** `container state=RUNNING mode=AUTO pid=455 exitstatus=0 id="default/container.0"` */
         val SENTINEL_PID = Regex("""^$SERVICE state=\S+\s+mode=\S+\s+pid=(\d+)""", RegexOption.MULTILINE)
 
-        val MAX_DIRECT = Regex("""-XX:MaxDirectMemorySize=(\S+)""")
-        val CACHE_CAP = Regex("""-Djdk\.nio\.maxCachedBufferSize=(\S+)""")
+        /**
+         * Read against BOTH a process command line (flags separated by spaces)
+         * and the `options="…"` attribute in services.xml — so the value ends at
+         * whitespace OR at the attribute's closing quote. `\S+` would swallow
+         * that quote and silently mis-read whichever flag the attribute happens
+         * to list LAST, turning a position in an XML attribute into the thing
+         * that decides whether the assertion below compares like with like.
+         */
+        val MAX_DIRECT = Regex("""-XX:MaxDirectMemorySize=([^\s"']+)""")
+        val CACHE_CAP = Regex("""-Djdk\.nio\.maxCachedBufferSize=([^\s"']+)""")
 
         /** A command line belonging to a JVM rather than to the shell wrapper that starts one. */
         val JAVA = Regex("""(^|/)java\s""")
