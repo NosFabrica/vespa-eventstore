@@ -465,8 +465,29 @@ schema event {
     # largest text column in the schema is index size and write work bought for
     # a number nothing reads. Add it back the day a rank expression scores this
     # field, and not before.
+    # `normalize` is LOAD-BEARING, and it is the one thing here that differs
+    # from every other *_gram field. A gram field's trigrams are NOT accent-
+    # folded by Vespa the way a normal index field's tokens are — MEASURED on
+    # Vespa 8 (2026-08-15) with two documents differing only by an accent:
+    # `search_text contains "lazaro"` matched BOTH "Lazaro" and "Lázaro" (the
+    # index field folds), while the gram terms `laz` and `láz` matched one
+    # each. Without this, partial-word search is WORSE than whole-word search
+    # on accented text — "lazaro" finds "Lázaro Ramos" but "lazar" does not —
+    # which is backwards, and silently so, for the large Portuguese/Spanish
+    # share of a real Nostr corpus (5 176 of 26 000 sampled events carry
+    # diacritics).
+    #
+    # It only works PAIRED with the query side: FuzzyWordGroup.phraseGramClause
+    # folds its trigrams through NearText.fold, the same discipline the near
+    # ATTRIBUTES already use. Normalize the document without folding the query
+    # and the accented spelling breaks instead ("Lázar" -> nothing); fold the
+    # query without normalizing the document and the ascii spelling breaks.
+    # Both together, both spellings reach both documents. The other *_gram
+    # fields still have the unfolded behaviour — they are AND-matched with
+    # unfolded trigrams, so they are at least self-consistent; fixing them
+    # moves calibrated RankRegressionIT cases and belongs in its own diff.
     field search_text_gram type string {
-        indexing: input search_text | index
+        indexing: input search_text | normalize | index
         match {
             gram
             gram-size: 3

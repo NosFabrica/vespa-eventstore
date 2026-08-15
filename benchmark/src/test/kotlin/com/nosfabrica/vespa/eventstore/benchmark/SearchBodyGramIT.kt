@@ -180,7 +180,10 @@ class SearchBodyGramIT {
                     runBlocking {
                         val cjk = note(11, "数据来源: 阻止用户与其他服务器的互动，相关内容见下方链接。")
                         val diacritic = note(12, "Lázaro Ramos compareceu ao Festival de Cinema de Gramado para a estreia do filme Antártida.")
-                        val url = note(13, "Veja https://gq.globo.com/estilo/noticia/2026/08/lazaro-ramos-no-festival-de-gramado.ghtml")
+                        // Deliberately shares no word with `diacritic`: an early
+                        // draft reused the same article's slug and the diacritic
+                        // assertion failed on a doc that legitimately matched.
+                        val url = note(13, "Veja https://gq.globo.com/estilo/noticia/2026/08/festival-de-cinema-premiacao.ghtml")
                         val emoji = note(14, "😂🤙")
                         index.putAll(listOf(cjk, diacritic, url, emoji))
                         awaitCorpus(index, 4)
@@ -218,13 +221,16 @@ class SearchBodyGramIT {
 
                         // ---- diacritics: folded by Vespa, NOT by the query builder ----
 
-                        // The near ATTRIBUTES match raw bytes, so FuzzyWordGroup
-                        // hand-folds their terms (NearText.foldWord). A gram field
-                        // is an INDEX field, where Vespa normalizes both sides, so
-                        // the phrase clause ships the word lowercased and NOT
-                        // folded — and both spellings still reach the document.
-                        // Pinned because "helpfully" folding here would be a
-                        // plausible refactor, and it would break the as-typed case.
+                        // A gram field does NOT accent-fold the way a normal index
+                        // field does — MEASURED: the gram terms `laz` and `láz`
+                        // matched one document each, while the exact column
+                        // matched both. Left alone, partial-word search would be
+                        // WORSE than whole-word search on accented text ("lazaro"
+                        // finds "Lázaro", "lazar" does not), which is backwards.
+                        // Fixed by a PAIR — `normalize` in the field's indexing
+                        // expression and NearText.fold on the phrase trigrams —
+                        // and this asserts the pair, because either half alone
+                        // breaks the other spelling.
                         for (typed in listOf("Lázar", "lazar")) {
                             assertEquals(
                                 listOf(diacritic.id),
@@ -245,7 +251,7 @@ class SearchBodyGramIT {
                         // and it loses nothing: Vespa split the URL on the same
                         // punctuation, so the exact clause already covers it.
                         assertTrue(
-                            url.id in index.search(EventQuery(search = "lazaro-ramos")).map { it.id },
+                            url.id in index.search(EventQuery(search = "cinema-premiacao")).map { it.id },
                             "the exact clause must cover what the phrase clause declines",
                         )
 

@@ -172,10 +172,14 @@ engine stems a document by the language it *detects* while queries carry none, s
 stemming would silently make every non-English note unreachable — see the
 `stemming: none` note in `schemas/event.sd`.) Scripts the engine does not
 segment, CJK above all, used to be unreachable inside a body entirely. They are
-now reachable from **four characters up**, through the body's trigram index —
-trigrams need no word segmentation. The exact path still cannot reach inside an
-unsegmented run, so a one- to three-character CJK query finds a *name* but not a
-body.
+now reachable **from four characters up**, through the body's trigram index —
+trigrams need no word segmentation, so they route around the gap rather than
+closing it (the exact path still cannot reach inside an unsegmented run). Read
+that as half a fix, not a fix: four characters is two trigrams, the minimum a
+trigram phrase can be, and a great deal of ordinary Chinese and Japanese
+vocabulary is *two* characters — 東京, 会社 — which yields no trigrams at all and
+stays unreachable in a body. CJK *names* are unaffected and always worked, since
+they ride the prefix attributes rather than the tokenizer.
 
 **Partial words** reach every field, but by two different routes. Names, titles,
 subjects, hashtags and identity handles carry prefix and typo matching (`vitorp`

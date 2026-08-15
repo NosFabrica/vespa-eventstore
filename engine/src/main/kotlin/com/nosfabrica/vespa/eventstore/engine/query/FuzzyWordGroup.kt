@@ -314,6 +314,19 @@ internal object FuzzyWordGroup {
      * false-positive rate climbs 0.5% -> 4.0% as the body grows 100 -> 2000
      * words (5-character words); the phrase form measures 0.0% at every length.
      *
+     * FOLDED through [NearText.fold], not merely lowercased, and that is paired
+     * with `normalize` in the field's indexing expression — see the field in
+     * event.sd for the measurement. A gram field does NOT accent-fold the way a
+     * normal index field does, so without the pair "lazar" cannot reach a body
+     * reading "Lázaro" even though the whole word "lazaro" can, which makes
+     * partial-word search worse than whole-word search on accented text. The
+     * two sides must move together: normalize without folding breaks the
+     * accented spelling, folding without normalize breaks the ascii one.
+     *
+     * NOT shared with [andGramClause], deliberately: the other gram fields are
+     * matched with unfolded trigrams against an unfolded index, which is at
+     * least self-consistent, and folding only one end of those would break them.
+     *
      * BAILS OUT rather than dropping a trigram. [trigrams] filters non-alnum
      * grams, which is harmless for an AND (fewer conjuncts, looser) but wrong
      * for a phrase: dropping a middle gram makes the survivors non-adjacent, so
@@ -326,7 +339,7 @@ internal object FuzzyWordGroup {
         word: String,
         gramField: String,
     ): String? {
-        val lower = word.lowercase()
+        val lower = NearText.fold(word)
         val all = (0..lower.length - 3).map { lower.substring(it, it + 3) }
         if (all.size < MIN_PHRASE_GRAMS || all.any { gram -> !gram.all(Char::isLetterOrDigit) }) return null
         return all.joinToString(", ", prefix = "($gramField contains phrase(", postfix = "))") { "\"$it\"" }
