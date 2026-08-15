@@ -269,12 +269,81 @@ class SearchBodyGramIT {
                             index.search(EventQuery(search = "😂🤙")).map { it.id },
                             "an all-emoji term is proved unmatchable, never sent",
                         )
+
+                        // ---- columns the body net does NOT cover ----
+                        //
+                        // Surveyed by running SearchExtractors over 6 000 real
+                        // events across 20 searchable kinds: `search_location` is
+                        // filled on 291/300 classifieds and 299/300 calendar
+                        // events, so it is a live column, not a corner.
+                        val calendar =
+                            doc(
+                                15,
+                                kind = 31923,
+                                SearchFields(
+                                    primary = "Lieblingsvorlesung, großes Risiko?",
+                                    text = "Eine beliebte Vorlesung wird zum Gastvortrag umgebaut.",
+                                    location = "Baden-Württemberg, Germany",
+                                ),
+                            )
+                        // A non-profile kind filling a PROFILE role column — the
+                        // deliberate overlap event.sd's header calls out. 204/300
+                        // real git repositories fill `website`.
+                        val repo = doc(16, kind = 30617, SearchFields(primary = "gamestr", website = "http://localhost:5444/forge/11c481"))
+                        index.putAll(listOf(calendar, repo))
+                        awaitCorpus(index, 6)
+
+                        // Place names ARE reachable, exactly and diacritic-folded,
+                        // because search_location is an ordinary index field.
+                        for (typed in listOf("Germany", "Baden", "Württemberg", "Wurttemberg")) {
+                            assertTrue(
+                                calendar.id in index.search(EventQuery(search = typed)).map { it.id },
+                                "a place name must be reachable, folded and case-insensitively: $typed",
+                            )
+                        }
+                        // …but a PARTIAL place name reaches nothing. search_location
+                        // has no gram and no near sibling, so it is exact-token-only
+                        // — there is no type-ahead for a city. Pinned as the
+                        // asymmetry it is: the very same document answers a partial
+                        // word in its BODY, one column over.
+                        assertEquals(
+                            emptyList(),
+                            index.search(EventQuery(search = "german")).map { it.id },
+                            "no partial-word reach on a place name — search_location has no gram column",
+                        )
+                        assertTrue(
+                            calendar.id in index.search(EventQuery(search = "vorlesun")).map { it.id },
+                            "…while the body of the SAME document does answer a partial word",
+                        )
+
+                        // The cross-group overlap resolves: a git repo's website is
+                        // searchable through the profile column it borrows.
+                        assertTrue(
+                            repo.id in index.search(EventQuery(search = "localhost")).map { it.id },
+                            "a non-profile kind filling `website` must still be reachable through it",
+                        )
                     }
                 }
             }
     }
 
     // ------------------------------------------------------------------
+
+    /** An event of any kind with the search columns given — for the non-body columns. */
+    private fun doc(
+        n: Int,
+        kind: Int,
+        search: SearchFields,
+    ) = EventDoc(
+        id = n.toString(16).padStart(64, '0'),
+        pubkey = "a".repeat(64),
+        createdAt = 1_700_000_000L + n,
+        kind = kind,
+        tags = emptyList(),
+        content = search.text ?: "",
+        sig = "e".repeat(128),
+        search = search,
+    )
 
     /** A kind 1 whose ONLY indexed column is its content — the reported shape. */
     private fun note(
