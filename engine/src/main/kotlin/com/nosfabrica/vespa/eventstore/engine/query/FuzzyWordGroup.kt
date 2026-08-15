@@ -124,6 +124,15 @@ internal object FuzzyWordGroup {
      * VERIFIED on Vespa 8 (2026-08-15): `phrase("bit","itc")` — the 4-character
      * word "bitc" — matches a document reading "Bitcoin fixes this". That is the
      * as-you-type keystroke the AND-net's 5-character floor could never serve.
+     *
+     * It is also where CJK BODY reach begins, which is new. Vespa does not
+     * segment an unbroken CJK run, so the exact column can never reach a word
+     * inside one (verified: an exact query for a 5-character Chinese phrase
+     * present in a body returns nothing) — the gap README called permanent.
+     * Trigrams need no segmentation, so this net reaches it, and for CJK four
+     * characters is a real word rather than a fragment. No special case exists
+     * or is needed: the same two-trigram floor serves both scripts, it just
+     * means "4 characters" in one and "a whole word" in the other.
      */
     const val MIN_PHRASE_GRAMS = 2
 

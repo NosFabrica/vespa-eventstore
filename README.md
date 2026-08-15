@@ -170,9 +170,12 @@ Matching is **language-neutral**: text is folded and tokenized but never stemmed
 so a note is findable by its own words whatever language it is written in. (The
 engine stems a document by the language it *detects* while queries carry none, so
 stemming would silently make every non-English note unreachable — see the
-`stemming: none` note in `schemas/event.sd`.) One gap remains: scripts the engine
-does not segment, CJK above all, are not reachable inside a body — a CJK *name*
-still is.
+`stemming: none` note in `schemas/event.sd`.) Scripts the engine does not
+segment, CJK above all, used to be unreachable inside a body entirely. They are
+now reachable from **four characters up**, through the body's trigram index —
+trigrams need no word segmentation. The exact path still cannot reach inside an
+unsegmented run, so a one- to three-character CJK query finds a *name* but not a
+body.
 
 **Partial words** reach every field, but by two different routes. Names, titles,
 subjects, hashtags and identity handles carry prefix and typo matching (`vitorp`

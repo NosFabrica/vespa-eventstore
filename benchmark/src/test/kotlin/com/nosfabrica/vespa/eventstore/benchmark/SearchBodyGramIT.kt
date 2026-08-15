@@ -157,6 +157,117 @@ class SearchBodyGramIT {
             }
     }
 
+    /**
+     * Shapes taken from 26 000 REAL events pulled off search-staging, not
+     * invented: 87% of that corpus has a token longer than 64 characters
+     * (mostly URLs), 5 176 events carry diacritics, and ~2 700 carry CJK,
+     * Cyrillic, Arabic, Thai, Hangul, Hebrew or Devanagari. The bodies below
+     * are trimmed excerpts of actual events.
+     */
+    @Test
+    fun `the shapes a real corpus is full of - CJK, diacritics, long URLs, emoji`() {
+        assumeTrue(dockerAvailable(), "Docker not available — skipping the corpus-shapes IT")
+
+        GenericContainer("vespaengine/vespa:latest")
+            .withExposedPorts(QUERY_PORT, CONFIG_PORT)
+            .waitingFor(Wait.forHttp("/state/v1/health").forPort(CONFIG_PORT).forStatusCode(200))
+            .withStartupTimeout(Duration.ofMinutes(5))
+            .use { vespa ->
+                vespa.start()
+                val queryUrl = "http://${vespa.host}:${vespa.getMappedPort(QUERY_PORT)}"
+                SchemaDeployer("http://${vespa.host}:${vespa.getMappedPort(CONFIG_PORT)}").deployIfAbsent(queryUrl)
+                VespaEventIndex(queryUrl).use { index ->
+                    runBlocking {
+                        val cjk = note(11, "数据来源: 阻止用户与其他服务器的互动，相关内容见下方链接。")
+                        val diacritic = note(12, "Lázaro Ramos compareceu ao Festival de Cinema de Gramado para a estreia do filme Antártida.")
+                        val url = note(13, "Veja https://gq.globo.com/estilo/noticia/2026/08/lazaro-ramos-no-festival-de-gramado.ghtml")
+                        val emoji = note(14, "😂🤙")
+                        index.putAll(listOf(cjk, diacritic, url, emoji))
+                        awaitCorpus(index, 4)
+
+                        // ---- CJK: a gap the README documented as permanent ----
+
+                        // Vespa does not SEGMENT an unbroken CJK run, so the exact
+                        // column cannot reach a word inside one — this is the gap,
+                        // and it is still real.
+                        assertEquals(
+                            emptyList(),
+                            index.search(EventQuery(phrases = listOf("阻止用户与"))).map { it.id },
+                            "the exact path still cannot reach inside an unsegmented CJK run",
+                        )
+                        // The gram net can: trigrams need no segmentation. This is
+                        // the first time a CJK body is reachable at all.
+                        assertEquals(
+                            listOf(cjk.id),
+                            index.search(EventQuery(search = "阻止用户与")).map { it.id },
+                            "a CJK body word must be reachable through the gram net",
+                        )
+                        // The floor is MIN_PHRASE_GRAMS = 2 trigrams = FOUR
+                        // characters, and for CJK that is a real word, not a
+                        // fragment — so it is where CJK body reach begins.
+                        assertEquals(
+                            listOf(cjk.id),
+                            index.search(EventQuery(search = "阻止用户")).map { it.id },
+                            "4 CJK characters = 2 trigrams = the floor",
+                        )
+                        assertEquals(
+                            emptyList(),
+                            index.search(EventQuery(search = "阻止用")).map { it.id },
+                            "3 characters is 1 trigram — below the floor, no clause at all",
+                        )
+
+                        // ---- diacritics: folded by Vespa, NOT by the query builder ----
+
+                        // The near ATTRIBUTES match raw bytes, so FuzzyWordGroup
+                        // hand-folds their terms (NearText.foldWord). A gram field
+                        // is an INDEX field, where Vespa normalizes both sides, so
+                        // the phrase clause ships the word lowercased and NOT
+                        // folded — and both spellings still reach the document.
+                        // Pinned because "helpfully" folding here would be a
+                        // plausible refactor, and it would break the as-typed case.
+                        for (typed in listOf("Lázar", "lazar")) {
+                            assertEquals(
+                                listOf(diacritic.id),
+                                index.search(EventQuery(search = typed)).map { it.id },
+                                "diacritic body reach must work as-typed and ascii-folded: $typed",
+                            )
+                        }
+
+                        // ---- long tokens: 87% of the real corpus has one ----
+
+                        assertEquals(
+                            listOf(url.id),
+                            index.search(EventQuery(search = "globo")).map { it.id },
+                            "a substring of a long URL token must be reachable",
+                        )
+                        // A punctuated query word gets NO phrase clause (dropping a
+                        // straddling trigram would demand impossible adjacency),
+                        // and it loses nothing: Vespa split the URL on the same
+                        // punctuation, so the exact clause already covers it.
+                        assertTrue(
+                            url.id in index.search(EventQuery(search = "lazaro-ramos")).map { it.id },
+                            "the exact clause must cover what the phrase clause declines",
+                        )
+
+                        // ---- emoji-only bodies: 15 in the real corpus ----
+
+                        // No letter or digit survives tokenization, so the word is
+                        // not requirable at all: EventYql.build answers null
+                        // ("provably no match") and search() short-circuits to
+                        // empty WITHOUT a round trip. The assertion is that this
+                        // stays a proof rather than becoming a 400 — a body net
+                        // that tried to emit trigrams for an emoji would send
+                        // non-alphanumeric grams straight into the YQL.
+                        assertEquals(
+                            emptyList(),
+                            index.search(EventQuery(search = "😂🤙")).map { it.id },
+                            "an all-emoji term is proved unmatchable, never sent",
+                        )
+                    }
+                }
+            }
+    }
+
     // ------------------------------------------------------------------
 
     /** A kind 1 whose ONLY indexed column is its content — the reported shape. */
