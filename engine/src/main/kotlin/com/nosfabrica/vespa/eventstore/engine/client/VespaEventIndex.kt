@@ -312,7 +312,10 @@ class VespaEventIndex(
         val vq = EventYql.buildExistence(ids) ?: return emptySet()
         val root =
             try {
-                searchRoot(vq, hits = Int.MAX_VALUE)
+                // The answer cannot exceed the ids asked about, so ask for
+                // exactly that many — a bounded `hits` also keeps this hot
+                // path legal under an operator-capped maxHits (see hitsFor).
+                searchRoot(vq, hits = ids.size)
             } catch (e: IllegalArgumentException) {
                 if (!fallbacks.isMissingDedupSummary(e)) throw e
                 fallbacks.markDedupSummaryMissing()
@@ -565,12 +568,28 @@ class VespaEventIndex(
     }
 
     /**
-     * The `hits` to ask Vespa for: the query's own limit, else everything.
-     * Int.MAX_VALUE is how "no limit" is spelled — Vespa's `hits` defaults to
+     * The `hits` to ask Vespa for: the query's own limit, else "everything".
+     *
+     * "Everything" is Int.MAX_VALUE by default — Vespa's `hits` defaults to
      * TEN when omitted, and the bundled query profile raises `maxHits` to let
-     * the big value through.
+     * the big value through. That is safe on ONE content node because the hit
+     * collector sizes from what MATCHES, not from what was asked (measured —
+     * see the bundled query profile's comment). Multi-node dispatch does NOT
+     * have that property: its merge path allocates by the REQUESTED hits, so
+     * Int.MAX_VALUE kills the jdisc container outright with "Requested array
+     * size exceeds VM limit" (observed 2026-08-17, 2-node content cluster —
+     * a crash loop re-triggered on every recovery by whichever fetch-all
+     * caller retried first).
+     *
+     * Operators who cap `maxHits` in their deployed query profile (the
+     * multi-node survival move) must set VESPA_UNBOUNDED_HITS to the same
+     * value: no-limit queries then stay inside the engine's ceiling, and a
+     * caller's explicit limit above it still fails loudly at the engine —
+     * that rejection is the operator's cap working, not a bug here.
      */
-    private fun hitsFor(query: EventQuery): Int = query.limit ?: Int.MAX_VALUE
+    private val unboundedHits: Int = System.getenv("VESPA_UNBOUNDED_HITS")?.toIntOrNull() ?: Int.MAX_VALUE
+
+    private fun hitsFor(query: EventQuery): Int = query.limit ?: unboundedHits
 
     // ---- pure-id fast path --------------------------------------------------
 
@@ -762,7 +781,7 @@ class VespaEventIndex(
         withDTag: Boolean,
     ): List<DocRef> {
         val vq = EventYql.buildIdTime(q, withDTag) ?: return emptyList()
-        return searchRoot(vq, hits = q.limit ?: Int.MAX_VALUE)
+        return searchRoot(vq, hits = q.limit ?: unboundedHits)
             .children
             .mapNotNull { hit ->
                 val f = hit.fields ?: return@mapNotNull null
