@@ -214,15 +214,21 @@ object EventYql {
             (q.limit ?: 0) in 1..MATCH_PHASE_BAND &&
             (q.until == null || q.until >= System.currentTimeMillis() / 1000 - RECENT_UNTIL_HORIZON)
 
-    fun build(q: EventQuery): VespaQuery? {
-        val params = LinkedHashMap<String, String>()
-        val clauses = filterClauses(q, params) ?: return null
-
+    /**
+     * The rank profile [build] will run [q] on. Stated separately because
+     * `EventQuery.ranking` is NOT that answer: it is null for every ordinary
+     * search, and the profile is then chosen from the query's SHAPE — above all
+     * from whether an observer resolved, which picks [RANK_SEARCH] over
+     * [RANK_TEXT]. A caller comparing the field instead of this reads two
+     * different profiles as one, and the only thing that turns on that question
+     * is whether two queries' scores share a scale
+     * (NostrSemanticsStore.recallOrdered) — where being wrong interleaves them.
+     */
+    fun profileOf(q: EventQuery): String {
         // Trust ranking needs an observer: without one, an unguarded min_rank
         // would gate every hit against a zero score and return nothing — so a
         // search with no observer defaults to pure text and emits neither
         // feature. An explicit sort:/filter: keeps its profile but loses trust.
-        val observer = q.observer?.lowercase()?.takeIf(Hex::isHex64)
         val requested =
             q.ranking ?: when {
                 usesRecencyProfile(q) -> RANK_RECENCY
@@ -231,14 +237,22 @@ object EventYql {
                 // search. Only notSearch-free-and-text-free recall is plain.
                 q.search.isNullOrBlank() && q.phrases.isEmpty() -> RANK_UNRANKED
 
-                observer != null -> RANK_SEARCH
+                q.observer?.lowercase()?.takeIf(Hex::isHex64) != null -> RANK_SEARCH
 
                 else -> RANK_TEXT
             }
         // The match-phase cut is only sound for shapes [usesGatedMatchPhase]
         // admits — others would silently lose every hit older than the newest
         // ~max-hits candidates, so they demote to the full-scan variant.
-        val ranking = if (requested == RANK_RECENCY_GATED && !usesGatedMatchPhase(q)) RANK_RECENCY_GATED_EXACT else requested
+        return if (requested == RANK_RECENCY_GATED && !usesGatedMatchPhase(q)) RANK_RECENCY_GATED_EXACT else requested
+    }
+
+    fun build(q: EventQuery): VespaQuery? {
+        val params = LinkedHashMap<String, String>()
+        val clauses = filterClauses(q, params) ?: return null
+
+        val observer = q.observer?.lowercase()?.takeIf(Hex::isHex64)
+        val ranking = profileOf(q)
         if (ranking != RANK_UNRANKED && ranking != RANK_RECENCY && observer != null) {
             params["ranking.features.query(user_q)"] = "{$observer:1.0}"
             q.minRank?.let { params["ranking.features.query(min_rank)"] = it.toString() }
