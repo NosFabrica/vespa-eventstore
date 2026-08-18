@@ -44,9 +44,6 @@ object EventYql {
     /** Pure text relevance, no trust (`sort:text`). */
     const val RANK_TEXT = "text"
 
-    /** Text order with the trust floor applied. The store's filter mapping no longer selects it (the floor rides the query's own profile); kept for direct API use. */
-    const val RANK_FILTERED = "rank_filtered"
-
     /**
      * NIP-01 recency order with the trust floor: score IS created_at,
      * below-floor authors dropped — the always-on spam gate for feeds, the
@@ -254,26 +251,13 @@ object EventYql {
     fun buildCount(q: EventQuery): VespaQuery? = grouping(q, "all(output(count()))")
 
     /**
-     * A DISTINCT-value count over [field] (an attribute): `count()` on the
-     * group LIST — distinct values, not docs. Used by status/metrics callers.
-     * Null when the filter provably matches nothing.
-     */
-    fun buildDistinctCount(
-        q: EventQuery,
-        field: String,
-    ): VespaQuery? = grouping(q, "all(group($field) output(count()))")
-
-    /**
-     * DISTINCT authors of the match set, aggregated server-side — unlike
-     * [buildDistinctCount] this returns the author VALUES. No `max()`: EVERY
-     * distinct author comes back; [grouping] and the bundled query profile
-     * disable the engine's group ceilings, since a truncated author set would
-     * make the orphan-score sweep silently under-delete.
+     * DISTINCT authors of the match set, aggregated server-side, each leaf group
+     * carrying its doc count. No `max()`: EVERY distinct author comes back;
+     * [grouping] and the bundled query profile disable the engine's group
+     * ceilings, since a truncated author set would make the orphan-score sweep
+     * silently under-delete.
      */
     fun buildDistinctAuthors(q: EventQuery): VespaQuery? = grouping(q, "all(group(pubkey) each(output(count())))")
-
-    /** Per-KIND histogram: grouped by kind, a `count()` per group. Used by status/metrics callers. Null when the filter provably matches nothing. */
-    fun buildKindHistogram(q: EventQuery): VespaQuery? = grouping(q, "all(group(kind) each(output(count())))")
 
     /**
      * The shared shape of every aggregation query: the filter WHERE clause,
@@ -335,7 +319,6 @@ object EventYql {
 
         if (q.ids.isNotEmpty()) clauses += hexIn("id", q.ids) ?: return null
         if (q.kinds.isNotEmpty()) clauses += "kind in (${q.kinds.joinToString(", ")})"
-        if (q.notKinds.isNotEmpty()) clauses += "!(kind in (${q.notKinds.joinToString(", ")}))" // Vespa negates with !(...), not `not in`
         if (q.authors.isNotEmpty()) clauses += hexIn("pubkey", q.authors) ?: return null
         if (q.owners.isNotEmpty()) clauses += hexIn("owner", q.owners) ?: return null
         for ((name, values) in q.tags) {

@@ -40,7 +40,7 @@ import kotlin.test.assertTrue
  * THE ORPHAN-SCORE SWEEP against a REAL Vespa. The sweep deletes, so the two
  * engine-side facts it rests on cannot be left to the in-memory reference:
  *
- *  - `distinctAuthors` is a server-side GROUPING, and its completeness decides
+ *  - `countByAuthor` is a server-side GROUPING, and its completeness decides
  *    the candidate list. The in-memory index answers it by scanning a map; only
  *    a real Vespa can show the grouping returning every signer over a match set
  *    of thousands (a truncated group list would silently leave orphans behind —

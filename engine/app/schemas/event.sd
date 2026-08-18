@@ -1446,17 +1446,6 @@ schema event {
     # (-1e6) drop it; real scores stay far above the sentinel.
     # -----------------------------------------------------------------------
 
-    # Text order with the trust floor applied. The store's filter mapping no
-    # longer selects this (with terms the floor rides the query's own profile;
-    # without terms recall is served chronologically by recency_gated below) —
-    # kept for direct EventQuery API users.
-    rank-profile rank_filtered inherits text_relevance {
-        first-phase {
-            expression: if(user_score() >= query(min_rank), relevance(), -1000000000.0)
-            rank-score-drop-limit: -1000000.0
-        }
-    }
-
     # Observer-gated plain recall: NIP-01 recency order, low-trust dropped.
     # The store stamps recency_gated on every non-search query with a resolved
     # observer (include:spam opts out), on the no-terms filter:rank match-all,

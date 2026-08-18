@@ -194,8 +194,6 @@ class EventYqlTest {
         assertEquals("spam", q.params["n0"])
         assertEquals(EventYql.RANK_UNRANKED, q.ranking)
         assertTrue("order by created_at desc" in q.yql)
-        // The same guard covers the other negation-only shape (notKinds).
-        assertTrue(EventYql.build(EventQuery(notKinds = listOf(5)))!!.yql.contains("where true and !(kind in (5))"))
     }
 
     @Test
@@ -511,9 +509,7 @@ class EventYqlTest {
     private fun groupingQueries() =
         listOf(
             EventYql.buildDistinctAuthors(EventQuery())!!,
-            EventYql.buildKindHistogram(EventQuery())!!,
             EventYql.buildCount(EventQuery())!!,
-            EventYql.buildDistinctCount(EventQuery(), "pubkey")!!,
         )
 
     /** Aggregations must answer over the whole match set: Vespa defaults to TEN groups without these. */
@@ -524,7 +520,6 @@ class EventYqlTest {
             assertEquals(EventYql.UNLIMITED_GROUPS, q.params["grouping.defaultMaxHits"])
         }
         assertFalse("max(" in EventYql.buildDistinctAuthors(EventQuery())!!.yql, "no group cap in the pipeline")
-        assertFalse("max(" in EventYql.buildKindHistogram(EventQuery())!!.yql, "no group cap in the pipeline")
     }
 
     /**

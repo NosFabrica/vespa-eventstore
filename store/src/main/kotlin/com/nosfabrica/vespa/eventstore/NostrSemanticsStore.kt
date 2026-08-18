@@ -38,7 +38,6 @@ import com.nosfabrica.vespa.eventstore.mapping.toDoc
 import com.nosfabrica.vespa.eventstore.mapping.toEvent
 import com.nosfabrica.vespa.eventstore.mapping.toEventQuery
 import com.vitorpamplona.quartz.nip01Core.core.Event
-import com.vitorpamplona.quartz.nip01Core.core.HexKey
 import com.vitorpamplona.quartz.nip01Core.core.isAddressable
 import com.vitorpamplona.quartz.nip01Core.core.isEphemeral
 import com.vitorpamplona.quartz.nip01Core.core.isReplaceable
@@ -509,29 +508,6 @@ class NostrSemanticsStore(
             }
         }
         return ids.size
-    }
-
-    /**
-     * The distinct authors (pubkeys) matching [filter], via a server-side
-     * grouping — for callers that need the author set out of a huge match set
-     * without reconstructing every event. Honors expiry like [count].
-     */
-    suspend fun distinctAuthors(filter: Filter): Set<HexKey> = filter.toExpiryQuery(nowSecs())?.let { index.distinctAuthors(it) } ?: emptySet()
-
-    /**
-     * Every distinct `d` tag (addressable subject) across [filter]'s matches,
-     * via a document visit — the STREAMING walk, for a set too big to want in
-     * one response (e.g. the hundreds of thousands of subjects one WoT
-     * provider scores).
-     */
-    suspend fun distinctDTags(filter: Filter): Set<String> {
-        val q = filter.toExpiryQuery(nowSecs()) ?: return emptySet()
-        val out = HashSet<String>()
-        index.visitIds(q, withDTag = true) { page ->
-            page.forEach { it.dTag?.takeIf(String::isNotEmpty)?.let(out::add) }
-            true
-        }
-        return out
     }
 
     /**

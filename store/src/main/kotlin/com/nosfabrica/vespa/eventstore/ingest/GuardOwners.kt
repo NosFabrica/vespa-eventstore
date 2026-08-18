@@ -60,7 +60,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  *  - [GuardBloom]s scale to millions of deleters in a few MB; the Bloom's
  *    no-false-negative property is exactly the under-flag prohibition. The
  *    load must be EXHAUSTIVE, so it uses the continuation-paged
- *    [EventIndex.scanAuthors], not [EventIndex.distinctAuthors] (one-response).
+ *    [EventIndex.scanAuthors], not [EventIndex.countByAuthor] (one-response).
  *
  * WHAT THE NOTE HOOKS CANNOT SEE — and why the mode is an argument, not a
  * guess: they only see writes made THROUGH this store. A second process feeding

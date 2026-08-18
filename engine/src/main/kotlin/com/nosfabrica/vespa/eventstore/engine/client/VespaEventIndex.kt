@@ -605,7 +605,7 @@ class VespaEventIndex(
             // search path implements it, so it must not take this shortcut.
             (limit == null || limit > 0) &&
             ids.isNotEmpty() && ids.size <= ID_GET_FANOUT &&
-            kinds.isEmpty() && notKinds.isEmpty() && authors.isEmpty() && owners.isEmpty() &&
+            kinds.isEmpty() && authors.isEmpty() && owners.isEmpty() &&
             tags.isEmpty() && tagsAll.isEmpty() &&
             since == null && until == null && expiresBefore == null &&
             // Text constraints of EVERY polarity: a doc-API get never sees the
@@ -829,7 +829,7 @@ class VespaEventIndex(
 
     /**
      * Complete author scan via the visit, projecting only `pubkey`.
-     * [distinctAuthors]'s grouping is complete too, but it materializes every
+     * [countByAuthor]'s grouping is complete too, but it materializes every
      * group in one response; this streams, which is what the corpus-wide
      * guard-owner Bloom preload needs — a missed author would be a false
      * negative.
@@ -852,34 +852,10 @@ class VespaEventIndex(
             root?.let { GroupingResults.firstCount(it) } ?: 0
         }
 
-    override suspend fun countDistinctAuthors(query: EventQuery): Int =
-        fallbacks.withNearFallback(query) { q ->
-            // `all(group(pubkey) output(count()))` counts the GROUPS — the
-            // distinct pubkeys — not the docs.
-            val root = EventYql.buildDistinctCount(q, "pubkey")?.let { queryRoot(it, hits = 0) }
-            root?.let { GroupingResults.firstCount(it) } ?: 0
-        }
-
-    override suspend fun countByKind(query: EventQuery): Map<Int, Int> =
-        fallbacks.withNearFallback(query) { q ->
-            // `all(group(kind) each(output(count())))` yields one leaf group
-            // per kind, each carrying its `value` and a `count()`.
-            val root = EventYql.buildKindHistogram(q)?.let { queryRoot(it, hits = 0) }
-            val out = LinkedHashMap<Int, Int>()
-            root?.let { GroupingResults.intCountsInto(it, out) }
-            out
-        }
-
-    override suspend fun distinctAuthors(query: EventQuery): Set<String> =
-        fallbacks.withNearFallback(query) { q ->
-            val root = EventYql.buildDistinctAuthors(q)?.let { queryRoot(it, hits = 0) } ?: return@withNearFallback emptySet()
-            GroupingResults.groupValues(root)
-        }
-
     /**
-     * The same grouping as [distinctAuthors], keeping each group's `count()` —
-     * which the YQL already asks for and [distinctAuthors] drops. So the
-     * author set WITH per-author doc counts costs exactly one query, the same one.
+     * `all(group(pubkey) each(output(count())))` — one leaf group per distinct
+     * author, each carrying its doc count. So the author set AND the per-author
+     * counts cost exactly one query.
      */
     override suspend fun countByAuthor(query: EventQuery): Map<String, Int> =
         fallbacks.withNearFallback(query) { q ->

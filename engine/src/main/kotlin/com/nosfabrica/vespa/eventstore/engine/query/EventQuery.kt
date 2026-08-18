@@ -30,8 +30,6 @@ data class EventQuery(
     /** 64-hex event ids. */
     val ids: List<String> = emptyList(),
     val kinds: List<Int> = emptyList(),
-    /** Kinds to EXCLUDE (`kind not in (…)`). No NIP-01 filter uses this; the CLI status metrics do. */
-    val notKinds: List<Int> = emptyList(),
     /** 64-hex pubkeys. */
     val authors: List<String> = emptyList(),
     /** 64-hex owner pubkeys (the semantic owner: gift-wrap recipient or author). */

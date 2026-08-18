@@ -58,8 +58,6 @@ class SearchOrderTest {
 
         override suspend fun count(query: EventQuery): Int = hits.size
 
-        override suspend fun distinctAuthors(query: EventQuery): Set<String> = hits.mapTo(HashSet()) { it.pubkey }
-
         override suspend fun put(doc: EventDoc) {}
 
         override suspend fun remove(id: String) {}
@@ -153,8 +151,6 @@ class SearchOrderTest {
         override suspend fun searchRanked(query: EventQuery): List<Ranked<EventDoc>> = perQuery(query)
 
         override suspend fun count(query: EventQuery): Int = 0
-
-        override suspend fun distinctAuthors(query: EventQuery): Set<String> = emptySet()
 
         override suspend fun put(doc: EventDoc) {}
 

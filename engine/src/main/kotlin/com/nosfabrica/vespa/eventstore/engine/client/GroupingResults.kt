@@ -34,7 +34,7 @@ import kotlinx.serialization.json.jsonPrimitive
  * at varying depths, so each reader walks the tree rather than assuming a shape.
  */
 internal object GroupingResults {
-    /** The first `count()` grouping output anywhere under [node] — flat for a plain count, nested under the group list for a distinct count. */
+    /** The first `count()` grouping output anywhere under [node] — flat for a plain `all(output(count()))`. */
     fun firstCount(node: JsonElement): Int? =
         when (node) {
             is JsonObject -> {
@@ -55,45 +55,7 @@ internal object GroupingResults {
             }
         }
 
-    /** Every leaf group's (int value -> count()) pair anywhere under [node] — the kind histogram. */
-    fun intCountsInto(
-        node: JsonElement,
-        out: MutableMap<Int, Int>,
-    ) {
-        when (node) {
-            is JsonObject -> {
-                val value = node["value"]?.jsonPrimitive?.intOrNull
-                val count =
-                    node["fields"]
-                        ?.jsonObject
-                        ?.get("count()")
-                        ?.jsonPrimitive
-                        ?.intOrNull
-                if (value != null && count != null) out[value] = count
-                node["children"]?.let { intCountsInto(it, out) }
-            }
-
-            is JsonArray -> {
-                node.forEach { intCountsInto(it, out) }
-            }
-
-            else -> {}
-        }
-    }
-
-    /** Every leaf `group:` node's string value under [root] — e.g. the distinct pubkeys of a `group(pubkey)`. */
-    fun groupValues(root: JsonObject): LinkedHashSet<String> {
-        val values = LinkedHashSet<String>()
-
-        fun collect(node: JsonObject) {
-            (node["value"] as? JsonPrimitive)?.let { if (node["id"]?.jsonPrimitive?.content?.startsWith("group:") == true) values += it.content }
-            node["children"]?.jsonArray?.forEach { collect(it.jsonObject) }
-        }
-        collect(root)
-        return values
-    }
-
-    /** [groupValues] keeping each group's `count()` — the same tree, value -> doc count. */
+    /** Every leaf `group:` node's string value under [root], with its `count()` — the distinct pubkeys of a `group(pubkey)` and their doc counts. */
     fun groupCounts(root: JsonObject): LinkedHashMap<String, Int> {
         val out = LinkedHashMap<String, Int>()
 

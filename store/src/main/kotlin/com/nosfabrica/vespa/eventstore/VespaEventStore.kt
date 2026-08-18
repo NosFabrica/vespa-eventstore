@@ -46,7 +46,7 @@ import java.net.URI
 class VespaEventStore internal constructor(
     /**
      * The concrete store, exposed for Vespa-specific capabilities beyond the
-     * Quartz interface (e.g. `distinctDTags`).
+     * Quartz interface (e.g. `distinctTagValues`).
      */
     val store: NostrSemanticsStore,
     /**
