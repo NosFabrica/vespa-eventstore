@@ -357,7 +357,7 @@ class NostrSemanticsStore(
         val observer = coroutineContext[StoreQueryContext]?.observer
         val cutoff = nowSecs()
         val queries = filters.mapNotNull { it.toExpiryQuery(cutoff, observer) }
-        val ordered = recallOrdered(queries, NEWEST_FIRST, EventDoc::id, { index.search(it) }, { index.searchRanked(it) })
+        val ordered = recallOrdered(queries, EventDoc.NEWEST_FIRST, EventDoc::id, { index.search(it) }, { index.searchRanked(it) })
         // Reconstruct via Quartz's by-kind factory straight from the stored
         // fields, skipping the serialize+parse round trip; see [toEvent].
         return ordered.map { it.toEvent() } as List<T>
@@ -750,9 +750,7 @@ class NostrSemanticsStore(
         /** Batches this size or larger take the bulk path; smaller ones aren't worth its setup. */
         const val BULK_MIN = 16
 
-        val NEWEST_FIRST = compareByDescending(EventDoc::createdAt).thenBy(EventDoc::id)
-
-        /** [NEWEST_FIRST] for the raw read path — the same order over [RawEvent]s. */
+        /** [EventDoc.NEWEST_FIRST] for the raw read path — the same order over [RawEvent]s. */
         val RAW_NEWEST_FIRST = compareByDescending(RawEvent::createdAt).thenBy(RawEvent::id)
     }
 }

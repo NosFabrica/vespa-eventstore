@@ -19,7 +19,6 @@
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 package com.nosfabrica.vespa.eventstore.engine
-import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
@@ -61,7 +60,7 @@ class InMemoryEventIndex(
         // EventYql.build (which returns null for it, never a negative take).
         if ((query.limit ?: 1) <= 0) return emptyList()
         val c = Compiled(query)
-        val hits = synchronized(docs) { docs.values.filter { c.matches(it) } }.sortedWith(NEWEST_FIRST)
+        val hits = synchronized(docs) { docs.values.filter { c.matches(it) } }.sortedWith(EventDoc.NEWEST_FIRST)
         return query.limit?.let(hits::take) ?: hits
     }
 
@@ -134,9 +133,5 @@ class InMemoryEventIndex(
                 q.phrases.all { d.search.containsPhrase(it) } &&
                 q.notSearch.none { d.search.containsPhrase(it) }
         }
-    }
-
-    private companion object {
-        val NEWEST_FIRST = compareByDescending(EventDoc::createdAt).thenBy(EventDoc::id)
     }
 }

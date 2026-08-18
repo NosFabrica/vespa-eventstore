@@ -206,8 +206,12 @@ internal class TrustRecompute(
         // Subjects per recompute round in a full walk (memory-bounded batches).
         const val RECOMPUTE_BATCH = 20_000
 
-        /** Oldest first, ties iterated highest-id first — so the last (winning) write per cell is (newest, lowest id). */
-        val DERIVE_ORDER: Comparator<EventDoc> = compareBy<EventDoc> { it.createdAt }.thenByDescending { it.id }
+        /**
+         * The serving order REVERSED — oldest first, ties iterated highest-id
+         * first — so the last (winning) write per cell is exactly
+         * [EventDoc.NEWEST_FIRST]'s first element: (newest, lowest id).
+         */
+        val DERIVE_ORDER: Comparator<EventDoc> = EventDoc.NEWEST_FIRST.reversed()
     }
 }
 
@@ -217,11 +221,7 @@ internal class TrustRecompute(
  * and admitting arbitrary strings would let a crafted card collide with the
  * projection's bookkeeping ids ([DirtLedger]).
  */
-internal fun subjectOf(doc: EventDoc): String? =
-    doc.tags
-        .firstOrNull { it.size >= 2 && it[0] == "d" }
-        ?.get(1)
-        ?.takeIf { Hex.isHex64(it) }
+internal fun subjectOf(doc: EventDoc): String? = doc.dTagOrEmpty().takeIf(Hex::isHex64)
 
 /**
  * The card's rank tag clamped to the served 0..100 scale — providers are not

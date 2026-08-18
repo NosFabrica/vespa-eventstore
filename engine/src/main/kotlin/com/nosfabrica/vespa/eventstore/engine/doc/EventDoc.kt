@@ -175,6 +175,18 @@ data class EventDoc(
         /** The `expires_at` value for an event with no NIP-40 expiration: far enough out to outlive every range check. */
         const val NO_EXPIRATION = Long.MAX_VALUE
 
+        /**
+         * `created_at desc, id asc` — the ONE order this store defines over
+         * events, and deliberately a single comparator because its two uses are
+         * the same rule read from opposite ends: it is the NIP-01 SERVING order
+         * (newest first, ties by lowest id) and, taking the minimum instead of
+         * iterating, the NIP-01 replaceable WINNER (highest created_at, ties to
+         * the lowest id). Every recall path — the reference index, the Vespa
+         * client's client-side tiebreak, the store's cross-filter merge — sorts
+         * with this, so a change here moves all of them together.
+         */
+        val NEWEST_FIRST: Comparator<EventDoc> = compareByDescending<EventDoc> { it.createdAt }.thenBy { it.id }
+
         /** Parse a raw NIP-01 event JSON into a doc (Quartz's parser). Throws on a malformed event. */
         fun fromEventJson(raw: String): EventDoc =
             Event.fromJson(raw).let { e ->

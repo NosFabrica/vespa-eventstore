@@ -361,15 +361,6 @@ schema event {
         }
     }
 
-    field pubkey_gram type string {
-        indexing: input pubkey | index
-        index: enable-bm25
-        match {
-            gram
-            gram-size: 3
-        }
-    }
-
     field search_primary_gram type string {
         indexing: input search_primary | index
         index: enable-bm25
@@ -543,10 +534,6 @@ schema event {
 
     fieldset default {
         fields: name, display_name, about, nip05, lud16, website, search_primary, search_secondary, search_text, search_location
-    }
-
-    fieldset grams {
-        fields: name_gram, display_name_gram, pubkey_gram
     }
 
     # -----------------------------------------------------------------------

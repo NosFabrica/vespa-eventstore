@@ -234,18 +234,16 @@ interface EventIndex : AutoCloseable {
                 EventQuery(kinds = listOf(doc.kind), authors = listOf(doc.pubkey))
             }
         val existing = search(q).filter { it.addressOrNull() == address }
-        val incumbent = existing.minWithOrNull(REPLACEABLE_WINNER)
+        // The NIP-01 winner is the MINIMUM of the serving order (newest first,
+        // ties to the lowest id) — see [EventDoc.NEWEST_FIRST].
+        val incumbent = existing.minWithOrNull(EventDoc.NEWEST_FIRST)
         // Incumbent wins or is identical -> reject the incoming (stale) version.
-        if (incumbent != null && REPLACEABLE_WINNER.compare(doc, incumbent) >= 0) return false
+        if (incumbent != null && EventDoc.NEWEST_FIRST.compare(doc, incumbent) >= 0) return false
         existing.forEach { remove(it.id) }
         put(doc)
         return true
     }
 }
-
-/** NIP-01 replaceable winner order: newest `created_at` first, ties to the LOWEST id. */
-internal val REPLACEABLE_WINNER: Comparator<EventDoc> =
-    compareByDescending<EventDoc> { it.createdAt }.thenBy { it.id }
 
 /** One page of [EventIndex.visitDocsPage]: the docs plus the continuation for the next call (null = the walk is complete). */
 data class DocsPage(

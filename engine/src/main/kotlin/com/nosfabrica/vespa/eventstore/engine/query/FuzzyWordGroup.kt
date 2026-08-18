@@ -37,7 +37,7 @@ import com.nosfabrica.vespa.eventstore.engine.NearText
  *
  * Injection safety: words go out-of-band as query parameters, never inlined —
  * @w0..@wN AS TYPED (exact clauses; index fields fold linguistically) and
- * @f0..@fN [NearText.foldWord]-folded (near clauses; ATTRIBUTE fields match
+ * @f0..@fN [NearText.fold]-folded (near clauses; ATTRIBUTE fields match
  * raw bytes, so the fold must match the feed's or "jose" never reaches
  * "josé"). Trigram literals are filtered to alphanumerics — safe to embed.
  *
@@ -213,7 +213,7 @@ internal object FuzzyWordGroup {
         if (nearFields) {
             // The folded twin rides out-of-band too. Floors and budgets use
             // the FOLDED form — the string the attribute dictionaries hold.
-            val folded = NearText.foldWord(literal)
+            val folded = NearText.fold(literal)
             params["f$name"] = folded
             clauses += nearClauses("@f$name", folded, allowFuzzy = !synthetic)
         }
@@ -267,9 +267,10 @@ internal object FuzzyWordGroup {
         allowFuzzy: Boolean,
     ): List<String> {
         val clauses = ArrayList<String>()
+        // Prefix goes to every near/weak attribute alike; only fuzzy is
+        // restricted to [NEAR_FIELDS] (hence [PREFIX_ONLY_FIELDS]' name).
         if (folded.length >= minPrefixLen(folded)) {
-            for (field in NEAR_FIELDS) clauses += "($field contains ({prefix:true}$param))"
-            for (field in PREFIX_ONLY_FIELDS) clauses += "($field contains ({prefix:true}$param))"
+            for (field in ALL_NEAR_FIELDS) clauses += "($field contains ({prefix:true}$param))"
         }
         val edits = if (allowFuzzy) wordMaxEdits(folded) else 0
         if (edits > 0) {

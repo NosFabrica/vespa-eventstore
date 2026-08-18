@@ -634,7 +634,7 @@ class VespaEventIndex(
         // NIP-40: never serve an event already expired at the query's cutoff —
         // the same guard EventYql emits as `expires_at > notExpiredAt`.
         val live = query.notExpiredAt?.let { cut -> docs.filter { (it.expiresAt() ?: EventDoc.NO_EXPIRATION) > cut } } ?: docs
-        val ordered = live.sortedWith(NEWEST_FIRST)
+        val ordered = live.sortedWith(EventDoc.NEWEST_FIRST)
         return query.limit?.let(ordered::take) ?: ordered
     }
 
@@ -948,9 +948,6 @@ class VespaEventIndex(
     private companion object {
         /** Concurrent document-API gets for a pure-id lookup. Gets are light (no summary stage to overrun), so this floats above QUERY_FANOUT. */
         const val ID_GET_FANOUT = 32
-
-        /** Newest first (created_at desc, id asc tiebreak) — the same order the search path and the store apply. */
-        val NEWEST_FIRST = compareByDescending(EventDoc::createdAt).thenBy(EventDoc::id)
 
         /**
          * Extra hits a limit'd recency recall asks for beyond its limit, so
