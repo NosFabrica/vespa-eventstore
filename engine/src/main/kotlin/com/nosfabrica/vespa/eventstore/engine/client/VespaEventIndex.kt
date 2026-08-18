@@ -380,7 +380,12 @@ class VespaEventIndex(
         // A non-positive limit matches nothing (EventYql.build's contract) —
         // the overfetch must not resurrect it into a real query.
         if (limit <= 0) return emptyList()
-        val fetch = q.copy(limit = limit + TIE_SLACK)
+        // Past the match-phase band one query is the wrong shape: the profiles
+        // that tolerate a cut cannot serve it, and the unranked alternative is a
+        // profile whose degradation this client refuses. Page the band instead —
+        // the caller's limit is honoured either way, which is the contract.
+        if (limit > EventYql.MATCH_PHASE_BAND && q.ranking == null) return pagedRecency(q, limit)
+        val fetch = q.copy(limit = limit + TIE_SLACK).keepingProfileOf(q)
         var hits =
             recallRoot(fetch)?.children?.mapNotNull { it.fields }?.filter { it.id.isNotEmpty() }
                 ?: return emptyList()
@@ -405,6 +410,84 @@ class VespaEventIndex(
             }
         }
         return hits.sortedWith(SUMMARY_NEWEST_FIRST).take(limit)
+    }
+
+    /**
+     * The overfetch must not change WHICH PROFILE serves the query. [TIE_SLACK]
+     * is this client's own tie-resolution detail; letting it push a query over
+     * [EventYql.MATCH_PHASE_BAND] silently moved the real ceiling to
+     * `band - TIE_SLACK` and — far worse — moved the query onto a profile whose
+     * match-phase degradation this client REFUSES rather than reconciles, so one
+     * extra unit of `limit` turned a served page into an outright error.
+     * MEASURED against a production cluster (2026-08-18): limit 1936 served,
+     * limit 1937 refused.
+     *
+     * Only ever stamps the profile [EventYql.build] would have chosen for the
+     * CALLER's limit, so the band still means what it says; the slack rides
+     * above it on the engine's own headroom, which is an order of magnitude.
+     */
+    private fun EventQuery.keepingProfileOf(caller: EventQuery): EventQuery =
+        if (ranking == null && EventYql.usesRecencyProfile(caller) && !EventYql.usesRecencyProfile(this)) {
+            copy(ranking = EventYql.RANK_RECENCY)
+        } else {
+            this
+        }
+
+    /**
+     * Serve a limit past [EventYql.MATCH_PHASE_BAND] by PAGING the band on a
+     * `created_at` cursor, rather than asking the engine for one oversized page
+     * it may answer partially.
+     *
+     * The contract is "a query with a limit gets exactly that", and one query
+     * cannot keep it here: inside the band the match-phase profile serves the
+     * page and its cut is reconciled ([recallRoot]); outside it the only
+     * remaining shape is unranked, where any degradation is refused. Paging
+     * keeps every page inside the band, so every page is one the engine and this
+     * client already agree how to serve.
+     *
+     * TIES are why each round pays a second query. A page boundary can land
+     * mid-second, and the corpora that reach these limits are exactly the ones
+     * that bulk-publish on ONE timestamp (a real 30382 provider puts 242k cards
+     * at a single `created_at`), so the boundary group is taken WHOLE through an
+     * unbounded `[T, T]` window — the same resolution [visitIds] and
+     * [recallSummaries] already use, and the reason a single-timestamp corpus
+     * pages correctly instead of looping. That window is skipped whenever the
+     * strictly-newer docs already fill the limit; the residual cost — a page
+     * that lands INSIDE a group far wider than the limit reads the whole group —
+     * is inherited from [recallSummaries] and is the price of never truncating
+     * a tie silently.
+     */
+    private suspend fun pagedRecency(
+        q: EventQuery,
+        limit: Int,
+    ): List<VespaSummary> {
+        val page = EventYql.MATCH_PHASE_BAND
+        // Keyed by id: the boundary window re-reads docs the page already
+        // carried, and a caller's limit counts DISTINCT events.
+        val out = LinkedHashMap<String, VespaSummary>()
+        var until = q.until
+        while (out.size < limit) {
+            val hits = recallSummaries(q.copy(until = until, limit = page))
+            if (hits.isEmpty()) break
+            // Short of a page: the engine ran out, so this is the whole tail.
+            if (hits.size < page) {
+                hits.forEach { out[it.id] = it }
+                break
+            }
+            val boundary = hits.last().createdAt
+            hits.forEach { if (it.createdAt > boundary) out[it.id] = it }
+            // Everything in the boundary second is OLDER than every doc already
+            // held, so once the strictly-newer docs alone fill the limit the
+            // group cannot contain a hit and is not worth reading — which is
+            // what keeps the unbounded window below off the common path.
+            if (out.size >= limit) break
+            recallSummaries(q.copy(since = boundary, until = boundary, limit = null)).forEach { out[it.id] = it }
+            // Strictly past the group just taken in full — `boundary - 1` is what
+            // makes the cursor terminate on a corpus that shares one timestamp.
+            if (boundary <= (q.since ?: Long.MIN_VALUE)) break
+            until = boundary - 1
+        }
+        return out.values.sortedWith(SUMMARY_NEWEST_FIRST).take(limit)
     }
 
     /**

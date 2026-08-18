@@ -152,6 +152,14 @@ class MockVespaEngine {
     @Volatile var visitRequests: Int = 0
 
     /**
+     * Every `/search/` request's rank profile, in order — what lets a test see
+     * WHICH profile served a shape and how many round trips it took, neither of
+     * which is visible in the returned documents (the paged recall above the
+     * match-phase band is otherwise indistinguishable from one big query).
+     */
+    val searchRankings: MutableList<String> = java.util.Collections.synchronizedList(mutableListOf())
+
+    /**
      * Refuse queries carrying `presentation.summary=dedup` the way a schema
      * deployed before the attribute-only existence summary does — real Vespa
      * is HTTP 400 with `Summary 'dedup' does not exist` in the error body.
@@ -347,6 +355,7 @@ class MockVespaEngine {
             return Reply(400, """{"message":"Requested rank profile '${params["ranking"]}' is undefined for document type 'event'"}""")
         }
         val yql = params["yql"] ?: return Reply(400, """{"message":"missing yql"}""")
+        params["ranking"]?.let { searchRankings += it }
         // The existence check rides a dedicated attribute-only summary class; a
         // schema deployed before it 400s naming the class (verified against
         // real Vespa: `Summary 'dedup' does not exist`).

@@ -161,6 +161,31 @@ Note the trust projection (`VespaReputationIndex`) writes through the single
 `url` endpoint; reputation updates are low-volume, so this does not need the
 endpoint fan-out.
 
+## The match-phase depth is per content node
+
+`event.sd`'s `recency` / `recency_gated` profiles carry `match-phase { attribute:
+created_at, max-hits: 20000 }`. **That depth is per CONTENT NODE, not per
+cluster** — the one schema number whose meaning changes as you add nodes.
+
+The client mirrors it as `EventYql.MATCH_PHASE_MAX_HITS` and derives from it the
+largest `limit` those profiles may serve (`MATCH_PHASE_BAND` = max-hits with a
+10x safety factor, because Vespa treats max-hits as a target rather than a
+guarantee). A REQ past the band is not capped — it is served by paging the band
+(`VespaEventIndex.pagedRecency`), which costs a round trip per page and keeps
+every page on a profile whose cut the client knows how to reconcile.
+
+If you change `max-hits` in a deployed schema, set `VESPA_MATCH_PHASE_MAX_HITS`
+to the same value. They are mirrors, not independent knobs: a client value ABOVE
+the schema's claims a candidate depth the engine does not have, which is the one
+direction that can silently drop the newest events a limit'd REQ asked for.
+
+Why it matters in production and not on a laptop: a single-node container with a
+few hundred thousand documents never triggers the cut at all (measured — 60k
+documents, `coverage: 100%`, no `degraded` block, on both profiles), so this
+whole path is invisible until the corpus is large enough for the engine to
+start limiting. On a 211M-document staging cluster the same query shape came
+back `match-phase: true` at ~60% coverage.
+
 ## The query container's direct memory
 
 The stateless container is the process serving `:8080` — **every** query and

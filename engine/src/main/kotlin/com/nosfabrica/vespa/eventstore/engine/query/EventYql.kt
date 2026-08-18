@@ -80,11 +80,39 @@ object EventYql {
      */
     const val RANK_RECENCY = "recency"
 
-    /** `max-hits` in event.sd's `recency` match-phase — keep in sync with the schema. */
-    const val MATCH_PHASE_MAX_HITS = 20_000
+    /**
+     * `max-hits` in event.sd's `recency` / `recency_gated` match-phase — the
+     * per-CONTENT-NODE candidate depth, and the one number here an operator may
+     * need to move: it is what decides [MATCH_PHASE_BAND], and a deployment
+     * whose engine cuts harder than this build assumes can raise both.
+     *
+     * `VESPA_MATCH_PHASE_MAX_HITS` overrides it, and MUST be set to whatever the
+     * SERVING schema says — the two are mirrors, not independent knobs, and a
+     * value above the schema's would claim a depth the engine does not have.
+     */
+    val MATCH_PHASE_MAX_HITS: Int = System.getenv("VESPA_MATCH_PHASE_MAX_HITS")?.toIntOrNull()?.coerceAtLeast(1) ?: 20_000
 
-    /** A limit may use [RANK_RECENCY] only with this safety factor under [MATCH_PHASE_MAX_HITS]. */
+    /**
+     * A limit may use [RANK_RECENCY] only with this safety factor under
+     * [MATCH_PHASE_MAX_HITS]. Vespa treats max-hits as a TARGET, not a
+     * guarantee — a node may cut somewhat short of it — so the band leaves an
+     * order of magnitude rather than riding the nominal depth.
+     */
     const val MATCH_PHASE_HEADROOM = 10
+
+    /**
+     * The largest `limit` the match-phase profiles may serve. Past it a recall
+     * is PAGED at this width (VespaEventIndex.pagedRecency) rather than asked
+     * for in one oversized query — the caller's limit is never capped by it.
+     *
+     * It is stated once, here, because it is the number the client's overfetch
+     * must respect: letting [VespaEventIndex]'s TIE_SLACK push a query over the
+     * band silently moved the real ceiling to `band - TIE_SLACK` AND moved the
+     * query onto a profile whose degradation the client refuses instead of
+     * reconciling. MEASURED against a production cluster (2026-08-18): limit
+     * 1936 served, limit 1937 refused outright.
+     */
+    val MATCH_PHASE_BAND: Int get() = MATCH_PHASE_MAX_HITS / MATCH_PHASE_HEADROOM
 
     /**
      * The summary fields needed to reconstruct an event
@@ -160,7 +188,7 @@ object EventYql {
         q.ranking == null &&
             q.search.isNullOrBlank() &&
             q.phrases.isEmpty() &&
-            (q.limit ?: 0) in 1..(MATCH_PHASE_MAX_HITS / MATCH_PHASE_HEADROOM) &&
+            (q.limit ?: 0) in 1..MATCH_PHASE_BAND &&
             (q.until == null || q.until >= System.currentTimeMillis() / 1000 - RECENT_UNTIL_HORIZON)
 
     /** How far back an `until` may sit and still ride [RANK_RECENCY] — beyond it, pagination anchors take the planner path. */
@@ -183,7 +211,7 @@ object EventYql {
      */
     fun usesGatedMatchPhase(q: EventQuery): Boolean =
         q.ranking == RANK_RECENCY_GATED &&
-            (q.limit ?: 0) in 1..(MATCH_PHASE_MAX_HITS / MATCH_PHASE_HEADROOM) &&
+            (q.limit ?: 0) in 1..MATCH_PHASE_BAND &&
             (q.until == null || q.until >= System.currentTimeMillis() / 1000 - RECENT_UNTIL_HORIZON)
 
     fun build(q: EventQuery): VespaQuery? {

@@ -112,6 +112,13 @@ class VespaEventIndexTest {
             }
         }
 
+    /** [seed] for the thousands-of-docs shapes: one pipelined feed instead of a put per doc. */
+    private fun seedBulk(docs: List<EventDoc>) =
+        runBlocking {
+            index.putAll(docs)
+            docs.forEach { reference.put(it) }
+        }
+
     /** The wire answer must equal the in-memory spec's answer, in order. */
     private fun check(query: EventQuery) =
         runBlocking {
@@ -324,6 +331,74 @@ class VespaEventIndexTest {
             val cards = EventQuery(kinds = listOf(30382))
             assertEquals(mapOf(alice to 3, bob to 1, carol to 1), index.countByAuthor(cards))
             assertEquals(reference.countByAuthor(cards), index.countByAuthor(cards))
+        }
+
+    /**
+     * A LIMIT IS A PROMISE: "a query with a limit gets exactly that". Two shapes
+     * used to break it, and both are pinned here over the wire.
+     *
+     * 1. The tie-resolution overfetch ([TIE_SLACK]) was added BEFORE the rank
+     *    profile was chosen, so a limit within EventYql's match-phase band came
+     *    out the other side on the unranked profile — where the client refuses a
+     *    match-phase-degraded page instead of reconciling it. The real ceiling
+     *    was `band - TIE_SLACK`, and crossing it turned a served page into an
+     *    error. Measured against production: 1936 served, 1937 refused.
+     * 2. Past the band there was no shape left that could serve the limit at
+     *    all; it is paged now, and the caller still gets exactly what it asked.
+     */
+    @Test
+    fun `a limit is served whole, on the profile its own size selects`() =
+        runBlocking {
+            val band = EventYql.MATCH_PHASE_BAND
+            seedBulk(List(band + 40) { doc(kind = 1, at = 5_000L + it) })
+
+            // At the very top of the band the overfetch must not demote it.
+            mock.searchRankings.clear()
+            assertEquals(band, index.search(EventQuery(kinds = listOf(1), limit = band)).size, "the band's own limit is served whole")
+            assertEquals(
+                listOf(EventYql.RANK_RECENCY),
+                mock.searchRankings.distinct(),
+                "a limit inside the band rides the match-phase profile, overfetch and all",
+            )
+
+            // One past the band: paged, still exact, still newest-first.
+            mock.searchRankings.clear()
+            val over = index.search(EventQuery(kinds = listOf(1), limit = band + 20))
+            assertEquals(band + 20, over.size, "a limit past the band is paged, never truncated")
+            assertEquals(over.map { it.id }, over.sortedWith(EventDoc.NEWEST_FIRST).map { it.id }, "still created_at desc, id asc")
+            assertEquals(over.map { it.id }.distinct().size, over.size, "paging must not repeat a document")
+            assertTrue(mock.searchRankings.size > 1, "it took more than one round trip: ${mock.searchRankings}")
+            assertTrue(
+                mock.searchRankings.none { it == EventYql.RANK_TEXT || it == EventYql.RANK_SEARCH },
+                "plain recall never lands on a relevance profile: ${mock.searchRankings.distinct()}",
+            )
+
+            // A caller's "everything, but bounded" spelling. The overfetch used
+            // to make `limit + TIE_SLACK` OVERFLOW to a negative, which
+            // EventYql.build reads as its matches-nothing sentinel — so the
+            // largest limit expressible returned NOTHING. Paging never overfetches
+            // past the band, so the sentinel is unreachable from a positive limit.
+            assertEquals(
+                band + 40,
+                index.search(EventQuery(kinds = listOf(1), limit = Int.MAX_VALUE)).size,
+                "an enormous limit returns the corpus, not an empty page",
+            )
+        }
+
+    /**
+     * The corpus shape that makes paging hard, and the one that reaches these
+     * limits in practice: a trust provider bulk-publishes its whole score set on
+     * ONE `created_at`. A cursor that stepped to `boundary` rather than taking
+     * the tie group whole would re-read the same page forever.
+     */
+    @Test
+    fun `paging survives a corpus that shares a single timestamp`() =
+        runBlocking {
+            val band = EventYql.MATCH_PHASE_BAND
+            seedBulk(List(band + 30) { doc(kind = 1, at = 9_000L) })
+            val hits = index.search(EventQuery(kinds = listOf(1), limit = band + 25))
+            assertEquals(band + 25, hits.size, "one timestamp still pages to the asked-for count")
+            assertEquals(hits.map { it.id }.distinct().size, hits.size, "and never repeats a document")
         }
 
     /**
