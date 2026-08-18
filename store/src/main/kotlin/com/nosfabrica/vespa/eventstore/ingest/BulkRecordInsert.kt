@@ -79,9 +79,6 @@ internal class BulkRecordInsert(
         val outcome: Array<IEventStore.InsertOutcome?>,
     )
 
-    /** Plan then commit in one call, for callers that already hold the writer lock across both. */
-    suspend fun run(events: List<Event>): List<IEventStore.InsertOutcome> = commit(plan(events))
-
     /**
      * The LOCK-FREE half: stages A–B, reads whose staleness is harmless (see
      * [Plan]), so parallel relays' batches overlap them.

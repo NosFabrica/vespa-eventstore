@@ -31,9 +31,9 @@ import kotlin.system.measureNanoTime
  * `created_at = BASE + seq` (strictly unique, linear), `pubkey = seq % 512`,
  * kind 1. So a `[since, until]` window must return exactly `until - since + 1`
  * docs, newest-first ordering is checkable against the sequence itself,
- * count() must equal the window width, countDistinctAuthors must be exactly
- * 512, and countByKind must be {1: N}. A wrong size or order FAILS the run —
- * this is a correctness gate that happens to be timed.
+ * count() must equal the window width, and countByAuthor must hold exactly 512
+ * authors summing to N. A wrong size or order FAILS the run — this is a
+ * correctness gate that happens to be timed.
  *
  * Env: VESPA_URL (default http://localhost:8080), BENCH_QUERY_REPS (default 20).
  */
@@ -159,23 +159,11 @@ object QueryBench {
                         expect(it == expectedDistinct) { "scanAuthors=$it distinct, expected $expectedDistinct" }
                     }
                 }
-                timed("countDistinctAuthors", reps) {
-                    // Vespa's grouping count() over the group LIST is an
-                    // ESTIMATE (sketch-based); measure and report its drift
-                    // from the exact answer instead of failing on it.
-                    index.countDistinctAuthors(EventQuery(kinds = listOf(1)))
-                }
-                val estimated = index.countDistinctAuthors(EventQuery(kinds = listOf(1)))
-                if (estimated != expectedDistinct) {
-                    println(
-                        "  NOTE: countDistinctAuthors=$estimated vs $expectedDistinct exact " +
-                            "(${"%.1f".format(100.0 * (estimated - expectedDistinct) / expectedDistinct)}% drift — Vespa's group count is an estimate)",
-                    )
-                }
-                timed("countByKind", reps) {
-                    val byKind = index.countByKind(EventQuery())
-                    expect(byKind == mapOf(1 to n)) { "countByKind=$byKind, expected {1: $n}" }
-                    byKind.values.sum()
+                timed("countByAuthor", reps) {
+                    val byAuthor = index.countByAuthor(EventQuery(kinds = listOf(1)))
+                    expect(byAuthor.size == expectedDistinct) { "countByAuthor=${byAuthor.size} authors, expected $expectedDistinct" }
+                    expect(byAuthor.values.sum() == n) { "countByAuthor sums to ${byAuthor.values.sum()}, expected $n" }
+                    byAuthor.size
                 }
 
                 // --- recency-planner A/B: same shapes, planner on vs off, ---

@@ -361,15 +361,6 @@ schema event {
         }
     }
 
-    field pubkey_gram type string {
-        indexing: input pubkey | index
-        index: enable-bm25
-        match {
-            gram
-            gram-size: 3
-        }
-    }
-
     field search_primary_gram type string {
         indexing: input search_primary | index
         index: enable-bm25
@@ -543,10 +534,6 @@ schema event {
 
     fieldset default {
         fields: name, display_name, about, nip05, lud16, website, search_primary, search_secondary, search_text, search_location
-    }
-
-    fieldset grams {
-        fields: name_gram, display_name_gram, pubkey_gram
     }
 
     # -----------------------------------------------------------------------
@@ -1458,17 +1445,6 @@ schema event {
     # failing hit to the SENTINEL (-1e9) and letting rank-score-drop-limit
     # (-1e6) drop it; real scores stay far above the sentinel.
     # -----------------------------------------------------------------------
-
-    # Text order with the trust floor applied. The store's filter mapping no
-    # longer selects this (with terms the floor rides the query's own profile;
-    # without terms recall is served chronologically by recency_gated below) —
-    # kept for direct EventQuery API users.
-    rank-profile rank_filtered inherits text_relevance {
-        first-phase {
-            expression: if(user_score() >= query(min_rank), relevance(), -1000000000.0)
-            rank-score-drop-limit: -1000000.0
-        }
-    }
 
     # Observer-gated plain recall: NIP-01 recency order, low-trust dropped.
     # The store stamps recency_gated on every non-search query with a resolved

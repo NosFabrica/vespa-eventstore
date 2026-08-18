@@ -44,9 +44,6 @@ object EventYql {
     /** Pure text relevance, no trust (`sort:text`). */
     const val RANK_TEXT = "text"
 
-    /** Text order with the trust floor applied. The store's filter mapping no longer selects it (the floor rides the query's own profile); kept for direct API use. */
-    const val RANK_FILTERED = "rank_filtered"
-
     /**
      * NIP-01 recency order with the trust floor: score IS created_at,
      * below-floor authors dropped — the always-on spam gate for feeds, the
@@ -83,11 +80,39 @@ object EventYql {
      */
     const val RANK_RECENCY = "recency"
 
-    /** `max-hits` in event.sd's `recency` match-phase — keep in sync with the schema. */
-    const val MATCH_PHASE_MAX_HITS = 20_000
+    /**
+     * `max-hits` in event.sd's `recency` / `recency_gated` match-phase — the
+     * per-CONTENT-NODE candidate depth, and the one number here an operator may
+     * need to move: it is what decides [MATCH_PHASE_BAND], and a deployment
+     * whose engine cuts harder than this build assumes can raise both.
+     *
+     * `VESPA_MATCH_PHASE_MAX_HITS` overrides it, and MUST be set to whatever the
+     * SERVING schema says — the two are mirrors, not independent knobs, and a
+     * value above the schema's would claim a depth the engine does not have.
+     */
+    val MATCH_PHASE_MAX_HITS: Int = System.getenv("VESPA_MATCH_PHASE_MAX_HITS")?.toIntOrNull()?.coerceAtLeast(1) ?: 20_000
 
-    /** A limit may use [RANK_RECENCY] only with this safety factor under [MATCH_PHASE_MAX_HITS]. */
+    /**
+     * A limit may use [RANK_RECENCY] only with this safety factor under
+     * [MATCH_PHASE_MAX_HITS]. Vespa treats max-hits as a TARGET, not a
+     * guarantee — a node may cut somewhat short of it — so the band leaves an
+     * order of magnitude rather than riding the nominal depth.
+     */
     const val MATCH_PHASE_HEADROOM = 10
+
+    /**
+     * The largest `limit` the match-phase profiles may serve. Past it a recall
+     * is PAGED at this width (VespaEventIndex.pagedRecency) rather than asked
+     * for in one oversized query — the caller's limit is never capped by it.
+     *
+     * It is stated once, here, because it is the number the client's overfetch
+     * must respect: letting [VespaEventIndex]'s TIE_SLACK push a query over the
+     * band silently moved the real ceiling to `band - TIE_SLACK` AND moved the
+     * query onto a profile whose degradation the client refuses instead of
+     * reconciling. MEASURED against a production cluster (2026-08-18): limit
+     * 1936 served, limit 1937 refused outright.
+     */
+    val MATCH_PHASE_BAND: Int get() = MATCH_PHASE_MAX_HITS / MATCH_PHASE_HEADROOM
 
     /**
      * The summary fields needed to reconstruct an event
@@ -163,7 +188,7 @@ object EventYql {
         q.ranking == null &&
             q.search.isNullOrBlank() &&
             q.phrases.isEmpty() &&
-            (q.limit ?: 0) in 1..(MATCH_PHASE_MAX_HITS / MATCH_PHASE_HEADROOM) &&
+            (q.limit ?: 0) in 1..MATCH_PHASE_BAND &&
             (q.until == null || q.until >= System.currentTimeMillis() / 1000 - RECENT_UNTIL_HORIZON)
 
     /** How far back an `until` may sit and still ride [RANK_RECENCY] — beyond it, pagination anchors take the planner path. */
@@ -186,18 +211,24 @@ object EventYql {
      */
     fun usesGatedMatchPhase(q: EventQuery): Boolean =
         q.ranking == RANK_RECENCY_GATED &&
-            (q.limit ?: 0) in 1..(MATCH_PHASE_MAX_HITS / MATCH_PHASE_HEADROOM) &&
+            (q.limit ?: 0) in 1..MATCH_PHASE_BAND &&
             (q.until == null || q.until >= System.currentTimeMillis() / 1000 - RECENT_UNTIL_HORIZON)
 
-    fun build(q: EventQuery): VespaQuery? {
-        val params = LinkedHashMap<String, String>()
-        val clauses = filterClauses(q, params) ?: return null
-
+    /**
+     * The rank profile [build] will run [q] on. Stated separately because
+     * `EventQuery.ranking` is NOT that answer: it is null for every ordinary
+     * search, and the profile is then chosen from the query's SHAPE — above all
+     * from whether an observer resolved, which picks [RANK_SEARCH] over
+     * [RANK_TEXT]. A caller comparing the field instead of this reads two
+     * different profiles as one, and the only thing that turns on that question
+     * is whether two queries' scores share a scale
+     * (NostrSemanticsStore.recallOrdered) — where being wrong interleaves them.
+     */
+    fun profileOf(q: EventQuery): String {
         // Trust ranking needs an observer: without one, an unguarded min_rank
         // would gate every hit against a zero score and return nothing — so a
         // search with no observer defaults to pure text and emits neither
         // feature. An explicit sort:/filter: keeps its profile but loses trust.
-        val observer = q.observer?.lowercase()?.takeIf(Hex::isHex64)
         val requested =
             q.ranking ?: when {
                 usesRecencyProfile(q) -> RANK_RECENCY
@@ -206,14 +237,22 @@ object EventYql {
                 // search. Only notSearch-free-and-text-free recall is plain.
                 q.search.isNullOrBlank() && q.phrases.isEmpty() -> RANK_UNRANKED
 
-                observer != null -> RANK_SEARCH
+                q.observer?.lowercase()?.takeIf(Hex::isHex64) != null -> RANK_SEARCH
 
                 else -> RANK_TEXT
             }
         // The match-phase cut is only sound for shapes [usesGatedMatchPhase]
         // admits — others would silently lose every hit older than the newest
         // ~max-hits candidates, so they demote to the full-scan variant.
-        val ranking = if (requested == RANK_RECENCY_GATED && !usesGatedMatchPhase(q)) RANK_RECENCY_GATED_EXACT else requested
+        return if (requested == RANK_RECENCY_GATED && !usesGatedMatchPhase(q)) RANK_RECENCY_GATED_EXACT else requested
+    }
+
+    fun build(q: EventQuery): VespaQuery? {
+        val params = LinkedHashMap<String, String>()
+        val clauses = filterClauses(q, params) ?: return null
+
+        val observer = q.observer?.lowercase()?.takeIf(Hex::isHex64)
+        val ranking = profileOf(q)
         if (ranking != RANK_UNRANKED && ranking != RANK_RECENCY && observer != null) {
             params["ranking.features.query(user_q)"] = "{$observer:1.0}"
             q.minRank?.let { params["ranking.features.query(min_rank)"] = it.toString() }
@@ -254,26 +293,13 @@ object EventYql {
     fun buildCount(q: EventQuery): VespaQuery? = grouping(q, "all(output(count()))")
 
     /**
-     * A DISTINCT-value count over [field] (an attribute): `count()` on the
-     * group LIST — distinct values, not docs. Used by status/metrics callers.
-     * Null when the filter provably matches nothing.
-     */
-    fun buildDistinctCount(
-        q: EventQuery,
-        field: String,
-    ): VespaQuery? = grouping(q, "all(group($field) output(count()))")
-
-    /**
-     * DISTINCT authors of the match set, aggregated server-side — unlike
-     * [buildDistinctCount] this returns the author VALUES. No `max()`: EVERY
-     * distinct author comes back; [grouping] and the bundled query profile
-     * disable the engine's group ceilings, since a truncated author set would
-     * make the orphan-score sweep silently under-delete.
+     * DISTINCT authors of the match set, aggregated server-side, each leaf group
+     * carrying its doc count. No `max()`: EVERY distinct author comes back;
+     * [grouping] and the bundled query profile disable the engine's group
+     * ceilings, since a truncated author set would make the orphan-score sweep
+     * silently under-delete.
      */
     fun buildDistinctAuthors(q: EventQuery): VespaQuery? = grouping(q, "all(group(pubkey) each(output(count())))")
-
-    /** Per-KIND histogram: grouped by kind, a `count()` per group. Used by status/metrics callers. Null when the filter provably matches nothing. */
-    fun buildKindHistogram(q: EventQuery): VespaQuery? = grouping(q, "all(group(kind) each(output(count())))")
 
     /**
      * The shared shape of every aggregation query: the filter WHERE clause,
@@ -335,7 +361,6 @@ object EventYql {
 
         if (q.ids.isNotEmpty()) clauses += hexIn("id", q.ids) ?: return null
         if (q.kinds.isNotEmpty()) clauses += "kind in (${q.kinds.joinToString(", ")})"
-        if (q.notKinds.isNotEmpty()) clauses += "!(kind in (${q.notKinds.joinToString(", ")}))" // Vespa negates with !(...), not `not in`
         if (q.authors.isNotEmpty()) clauses += hexIn("pubkey", q.authors) ?: return null
         if (q.owners.isNotEmpty()) clauses += hexIn("owner", q.owners) ?: return null
         for ((name, values) in q.tags) {

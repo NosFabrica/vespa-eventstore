@@ -25,6 +25,7 @@ import com.nosfabrica.vespa.eventstore.engine.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.QUERY_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
+import com.nosfabrica.vespa.eventstore.engine.forEachBounded
 import com.nosfabrica.vespa.eventstore.engine.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
@@ -38,7 +39,6 @@ import com.nosfabrica.vespa.eventstore.mapping.toDoc
 import com.nosfabrica.vespa.eventstore.mapping.toEvent
 import com.nosfabrica.vespa.eventstore.mapping.toEventQuery
 import com.vitorpamplona.quartz.nip01Core.core.Event
-import com.vitorpamplona.quartz.nip01Core.core.HexKey
 import com.vitorpamplona.quartz.nip01Core.core.isAddressable
 import com.vitorpamplona.quartz.nip01Core.core.isEphemeral
 import com.vitorpamplona.quartz.nip01Core.core.isReplaceable
@@ -357,7 +357,7 @@ class NostrSemanticsStore(
         val observer = coroutineContext[StoreQueryContext]?.observer
         val cutoff = nowSecs()
         val queries = filters.mapNotNull { it.toExpiryQuery(cutoff, observer) }
-        val ordered = recallOrdered(queries, NEWEST_FIRST, EventDoc::id, { index.search(it) }, { index.searchRanked(it) })
+        val ordered = recallOrdered(queries, EventDoc.NEWEST_FIRST, EventDoc::id, { index.search(it) }, { index.searchRanked(it) })
         // Reconstruct via Quartz's by-kind factory straight from the stored
         // fields, skipping the serialize+parse round trip; see [toEvent].
         return ordered.map { it.toEvent() } as List<T>
@@ -408,7 +408,12 @@ class NostrSemanticsStore(
                 .distinctBy(idOf)
                 .sortedWith(newestFirst)
         }
-        if (queries.all { it.keepsEngineOrder() } && queries.mapTo(HashSet()) { it.ranking }.size == 1) {
+        // [EventYql.profileOf], not `ranking`: the field is null for every
+        // ordinary search and the profile is picked from the query's shape, so
+        // two filters where only one carries `observer:` read as "same profile"
+        // by the field while running on `search` and `text` — two scales,
+        // interleaved.
+        if (queries.all { it.keepsEngineOrder() } && queries.mapTo(HashSet()) { EventYql.profileOf(it) }.size == 1) {
             val scored = queries.mapBounded(QUERY_FANOUT) { searchRankedOne(it) }.flatten()
             // An engine that does not rank (the in-memory reference) reports a
             // null rather than a fabricated constant; its hits are already
@@ -497,41 +502,30 @@ class NostrSemanticsStore(
         // Multi-filter: the feed dedups across filters, so collect each
         // filter's SERVED ids and count the union. Plain unbounded filters
         // stream ids through the visit (no doc materialization).
+        //
+        // Fanned out at [QUERY_FANOUT], like the recall path: a COUNT summarizes
+        // the same feed a REQ serves and a relay allows as many filters here as
+        // there (20), so running them one after another made COUNT several times
+        // slower than the REQ it describes, for identical work. [forEachBounded]
+        // serializes the fold, which is what lets the id set stay a plain
+        // HashSet while the queries overlap.
         val ids = HashSet<String>()
-        for (q in queries) {
-            if (!q.isRanked() && q.limit == null) {
-                index.visitIds(q) { page ->
-                    page.forEach { ids += it.id }
-                    true
+        queries.forEachBounded(
+            QUERY_FANOUT,
+            produce = { q ->
+                if (!q.isRanked() && q.limit == null) {
+                    val seen = ArrayList<String>()
+                    index.visitIds(q) { page ->
+                        page.forEach { seen += it.id }
+                        true
+                    }
+                    seen
+                } else {
+                    index.rawSearch(q).map { it.id }
                 }
-            } else {
-                index.rawSearch(q).forEach { ids += it.id }
-            }
-        }
+            },
+        ) { found -> ids += found }
         return ids.size
-    }
-
-    /**
-     * The distinct authors (pubkeys) matching [filter], via a server-side
-     * grouping — for callers that need the author set out of a huge match set
-     * without reconstructing every event. Honors expiry like [count].
-     */
-    suspend fun distinctAuthors(filter: Filter): Set<HexKey> = filter.toExpiryQuery(nowSecs())?.let { index.distinctAuthors(it) } ?: emptySet()
-
-    /**
-     * Every distinct `d` tag (addressable subject) across [filter]'s matches,
-     * via a document visit — the STREAMING walk, for a set too big to want in
-     * one response (e.g. the hundreds of thousands of subjects one WoT
-     * provider scores).
-     */
-    suspend fun distinctDTags(filter: Filter): Set<String> {
-        val q = filter.toExpiryQuery(nowSecs()) ?: return emptySet()
-        val out = HashSet<String>()
-        index.visitIds(q, withDTag = true) { page ->
-            page.forEach { it.dTag?.takeIf(String::isNotEmpty)?.let(out::add) }
-            true
-        }
-        return out
     }
 
     /**
@@ -750,9 +744,7 @@ class NostrSemanticsStore(
         /** Batches this size or larger take the bulk path; smaller ones aren't worth its setup. */
         const val BULK_MIN = 16
 
-        val NEWEST_FIRST = compareByDescending(EventDoc::createdAt).thenBy(EventDoc::id)
-
-        /** [NEWEST_FIRST] for the raw read path — the same order over [RawEvent]s. */
+        /** [EventDoc.NEWEST_FIRST] for the raw read path — the same order over [RawEvent]s. */
         val RAW_NEWEST_FIRST = compareByDescending(RawEvent::createdAt).thenBy(RawEvent::id)
     }
 }

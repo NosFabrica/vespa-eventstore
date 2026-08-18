@@ -165,43 +165,23 @@ interface EventIndex : AutoCloseable {
     suspend fun count(query: EventQuery): Int
 
     /**
-     * The number of DISTINCT authors among the matches (metrics). The default
-     * rides [search] (exact); the real client's server-side grouping count is
-     * an ESTIMATE — Vespa's sketch-based `count()`, measured ~3% high (510 for
-     * 496 true). Fine for metrics; exact callers should size [scanAuthors]'s
-     * set instead (seconds-to-minutes where this is milliseconds).
-     */
-    suspend fun countDistinctAuthors(query: EventQuery): Int = search(query).map { it.pubkey }.distinct().size
-
-    /** Matches per kind (kind -> count), for status/metrics. Default rides [search]; the real client groups server-side. */
-    suspend fun countByKind(query: EventQuery): Map<Int, Int> = search(query).groupingBy { it.kind }.eachCount()
-
-    /**
-     * The DISTINCT author set across [query]'s matches. The real client uses a
-     * server-side grouping so the orphan-score sweep gets distinct 30382
-     * authors out of millions of docs without reconstructing them (which times
-     * search out). A decorator MUST delegate to its inner index, not this
-     * default, or it loses that server-side aggregation.
-     */
-    suspend fun distinctAuthors(query: EventQuery): Set<String> = search(query).mapTo(HashSet()) { it.pubkey }
-
-    /**
-     * [distinctAuthors] with each author's DOC COUNT — the same grouping's
-     * per-group `count()`. The orphan-score sweep reads both from one query
-     * (its dry run would otherwise need a count query per candidate service).
-     * Keys are exactly [distinctAuthors]' set, same completeness argument.
-     * A decorator MUST delegate to its inner index.
+     * The DISTINCT authors of [query]'s matches, each with its DOC COUNT. The
+     * real client answers it with ONE server-side grouping, so the orphan-score
+     * sweep gets distinct 30382 authors — and the per-service card counts its
+     * dry run reports — out of millions of docs without reconstructing them
+     * (which times search out). A decorator MUST delegate to its inner index,
+     * not this default, or it loses that server-side aggregation.
      */
     suspend fun countByAuthor(query: EventQuery): Map<String, Int> = search(query).groupingBy { it.pubkey }.eachCount()
 
     /**
-     * Every distinct author, STREAMED: complete like [distinctAuthors], but
-     * paged through visit continuations instead of one engine response. The
+     * Every distinct author, STREAMED: complete like [countByAuthor]'s key set,
+     * but paged through visit continuations instead of one engine response. The
      * guard-owner preload needs full-corpus completeness without that
      * single-response peak — a missed author is a false negative in the guard
      * filter. A decorator MUST delegate to its inner index.
      */
-    suspend fun scanAuthors(query: EventQuery): Set<String> = distinctAuthors(query)
+    suspend fun scanAuthors(query: EventQuery): Set<String> = countByAuthor(query).keys
 
     /**
      * Store [doc] IFF it wins its NIP-01 address (highest `created_at`, ties to
@@ -234,18 +214,16 @@ interface EventIndex : AutoCloseable {
                 EventQuery(kinds = listOf(doc.kind), authors = listOf(doc.pubkey))
             }
         val existing = search(q).filter { it.addressOrNull() == address }
-        val incumbent = existing.minWithOrNull(REPLACEABLE_WINNER)
+        // The NIP-01 winner is the MINIMUM of the serving order (newest first,
+        // ties to the lowest id) — see [EventDoc.NEWEST_FIRST].
+        val incumbent = existing.minWithOrNull(EventDoc.NEWEST_FIRST)
         // Incumbent wins or is identical -> reject the incoming (stale) version.
-        if (incumbent != null && REPLACEABLE_WINNER.compare(doc, incumbent) >= 0) return false
+        if (incumbent != null && EventDoc.NEWEST_FIRST.compare(doc, incumbent) >= 0) return false
         existing.forEach { remove(it.id) }
         put(doc)
         return true
     }
 }
-
-/** NIP-01 replaceable winner order: newest `created_at` first, ties to the LOWEST id. */
-internal val REPLACEABLE_WINNER: Comparator<EventDoc> =
-    compareByDescending<EventDoc> { it.createdAt }.thenBy { it.id }
 
 /** One page of [EventIndex.visitDocsPage]: the docs plus the continuation for the next call (null = the walk is complete). */
 data class DocsPage(

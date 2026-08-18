@@ -26,7 +26,8 @@ import java.util.concurrent.atomic.AtomicLong
 /**
  * Process-wide wall-time accounting for the ingest pipeline's named stages —
  * answers "the writer is busy 100%, but WHERE?". Stages self-register on first
- * use; [gauge] renders per-stage seconds since its last call. Global on
+ * use; [statusLine] renders per-stage seconds since its last call, [dump] the
+ * cumulative split. Global on
  * purpose: store and projection are separate modules composed per process, and
  * threading a stats object through both APIs would couple them for what is
  * strictly observability.

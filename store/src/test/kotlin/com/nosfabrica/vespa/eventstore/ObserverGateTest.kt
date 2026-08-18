@@ -60,8 +60,6 @@ class ObserverGateTest {
 
         override suspend fun count(query: EventQuery): Int = 0
 
-        override suspend fun distinctAuthors(query: EventQuery): Set<String> = emptySet()
-
         override suspend fun put(doc: EventDoc) {}
 
         override suspend fun remove(id: String) {}

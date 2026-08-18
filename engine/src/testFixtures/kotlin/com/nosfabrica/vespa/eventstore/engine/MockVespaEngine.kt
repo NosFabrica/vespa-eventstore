@@ -152,6 +152,14 @@ class MockVespaEngine {
     @Volatile var visitRequests: Int = 0
 
     /**
+     * Every `/search/` request's rank profile, in order — what lets a test see
+     * WHICH profile served a shape and how many round trips it took, neither of
+     * which is visible in the returned documents (the paged recall above the
+     * match-phase band is otherwise indistinguishable from one big query).
+     */
+    val searchRankings: MutableList<String> = java.util.Collections.synchronizedList(mutableListOf())
+
+    /**
      * Refuse queries carrying `presentation.summary=dedup` the way a schema
      * deployed before the attribute-only existence summary does — real Vespa
      * is HTTP 400 with `Summary 'dedup' does not exist` in the error body.
@@ -347,6 +355,7 @@ class MockVespaEngine {
             return Reply(400, """{"message":"Requested rank profile '${params["ranking"]}' is undefined for document type 'event'"}""")
         }
         val yql = params["yql"] ?: return Reply(400, """{"message":"missing yql"}""")
+        params["ranking"]?.let { searchRankings += it }
         // The existence check rides a dedicated attribute-only summary class; a
         // schema deployed before it 400s naming the class (verified against
         // real Vespa: `Summary 'dedup' does not exist`).
@@ -361,20 +370,15 @@ class MockVespaEngine {
         }
         val hits = params["hits"]?.toIntOrNull() ?: 10
         // The exact-count query (EventYql.buildCount): "… limit 0 | all(output(count()))".
-        // The distinct-author query (EventYql.buildDistinctCount): "… | all(group(pubkey) output(count()))".
-        // Both grouping counts scan the FULL match set, so ignore the hit-limiting `limit 0`.
-        // The kind histogram (EventYql.buildKindHistogram): "… | all(group(kind) max(N) each(output(count())))".
         // The author list/histogram (EventYql.buildDistinctAuthors): "… |
-        // all(group(pubkey) each(output(count())))" — the SAME field as the
-        // distinct count, told apart by the `each(...)` that asks for one leaf
-        // group per author. Emitting the count shape for it would hand the
-        // client a grouplist with no group values, i.e. "no authors", for a
-        // query whose whole point is the values.
+        // all(group(pubkey) each(output(count())))" — the `each(...)` is what
+        // asks for one leaf group per author, and the group VALUES are the
+        // whole point: a shape that emitted only a bare count would hand the
+        // client a grouplist with no values, i.e. "no authors".
+        // Both scan the FULL match set, so ignore the hit-limiting `limit 0`.
         val isCount = yql.contains("all(output(count()))")
         val isAuthorHistogram = yql.contains("group(pubkey)") && yql.contains("each(output(count()))")
-        val isDistinct = yql.contains("group(pubkey)") && !isAuthorHistogram
-        val isKindHistogram = yql.contains("group(kind)")
-        val grouped = isCount || isDistinct || isAuthorHistogram || isKindHistogram
+        val grouped = isCount || isAuthorHistogram
         val query = MockYql.parse(yql.substringBefore("|").trim(), params).let { if (grouped) it.copy(limit = null) else it }
         // The limit cut must be applied AFTER any tie scrambling: real Vespa's
         // single-key sort picks boundary-tie MEMBERSHIP arbitrarily, and a cut
@@ -397,13 +401,7 @@ class MockVespaEngine {
         val served = if (underdeliver) minOf(matchPhaseUnderdeliver, hits) else hits
         val children =
             when {
-                // Nest count() under the group list, exactly where real Vespa's
-                // grouping puts it — the client's recursive scan must find it there.
-                isDistinct -> groupCountChildren(matches.map { it.pubkey }.distinct().size)
-
                 isAuthorHistogram -> histogramChildren("pubkey", matches.groupingBy { it.pubkey }.eachCount().map { (k, v) -> JsonPrimitive(k) to v })
-
-                isKindHistogram -> histogramChildren("kind", matches.groupingBy { it.kind }.eachCount().map { (k, v) -> JsonPrimitive(k) to v })
 
                 isCount -> countChildren(matches.size)
 
@@ -493,33 +491,10 @@ class MockVespaEngine {
             ),
         )
 
-    /** `all(group(pubkey) output(count()))`: the group:root wraps a grouplist whose count() is the number of distinct groups. */
-    private fun groupCountChildren(distinct: Int): JsonArray =
-        JsonArray(
-            listOf(
-                buildJsonObject {
-                    put("id", JsonPrimitive("group:root:0"))
-                    put(
-                        "children",
-                        JsonArray(
-                            listOf(
-                                buildJsonObject {
-                                    put("id", JsonPrimitive("grouplist:pubkey"))
-                                    put("label", JsonPrimitive("pubkey"))
-                                    put("fields", buildJsonObject { put("count()", JsonPrimitive(distinct)) })
-                                },
-                            ),
-                        ),
-                    )
-                },
-            ),
-        )
-
     /**
      * `all(group([field]) each(output(count())))`: the group:root wraps a
      * grouplist of one leaf group per value, each carrying its `value` and
-     * `count()` — the shape both the kind histogram and the author list come
-     * back in, differing only in the grouped field and its value type.
+     * `count()` — the shape the author list comes back in.
      */
     private fun histogramChildren(
         field: String,
@@ -735,10 +710,6 @@ object MockSelection {
                     q = q.copy(kinds = orGroup(clause, "event.kind==").map { it.toInt() })
                 }
 
-                clause.startsWith("(event.kind!=") -> {
-                    q = q.copy(notKinds = clause.removeSurrounding("(", ")").split(" and ").map { it.removePrefix("event.kind!=").toInt() })
-                }
-
                 clause.startsWith("(event.pubkey==") -> {
                     q = q.copy(authors = orGroup(clause, "event.pubkey==").map(::unquote))
                 }
@@ -863,10 +834,6 @@ object MockYql {
 
                     clause.startsWith("kind in (") -> {
                         q.copy(kinds = ints(clause))
-                    }
-
-                    clause.startsWith("!(kind in (") -> {
-                        q.copy(notKinds = ints(clause.removePrefix("!(").removeSuffix(")")))
                     }
 
                     clause.startsWith("created_at >= ") -> {

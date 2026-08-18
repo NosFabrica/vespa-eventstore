@@ -58,8 +58,6 @@ class SearchOrderTest {
 
         override suspend fun count(query: EventQuery): Int = hits.size
 
-        override suspend fun distinctAuthors(query: EventQuery): Set<String> = hits.mapTo(HashSet()) { it.pubkey }
-
         override suspend fun put(doc: EventDoc) {}
 
         override suspend fun remove(id: String) {}
@@ -154,8 +152,6 @@ class SearchOrderTest {
 
         override suspend fun count(query: EventQuery): Int = 0
 
-        override suspend fun distinctAuthors(query: EventQuery): Set<String> = emptySet()
-
         override suspend fun put(doc: EventDoc) {}
 
         override suspend fun remove(id: String) {}
@@ -182,6 +178,37 @@ class SearchOrderTest {
                 )
             val ids = store.query<Event>(twoTopicFilters()).map { it.id }
             assertEquals(listOf(mid.id, older.id, newer.id), ids, "one order over the union, by score")
+        }
+
+    /**
+     * The merge is only legal when every query ran on ONE rank profile — two
+     * profiles are two scales. `ranking` is null on both of these, so a check
+     * that reads the FIELD says "same profile"; the profile is actually chosen
+     * at build time from whether an observer resolved, so one filter carrying
+     * `observer:` and one not run on `search` and `text` respectively.
+     */
+    @Test
+    fun `filters that resolve different profiles are never score-merged`() =
+        runBlocking {
+            val observer = "b".repeat(64)
+            val store =
+                NostrSemanticsStore(
+                    ScoringIndex { q ->
+                        // The lensed filter scores small, the unlensed one large:
+                        // interleaving the two scales puts the unlensed hit first,
+                        // concatenating keeps each filter's own run.
+                        if (q.observer != null) listOf(Ranked(older, 0.5)) else listOf(Ranked(newer, 9.0))
+                    },
+                )
+            val ids =
+                store
+                    .query<Event>(
+                        listOf(
+                            Filter(search = "hello observer:$observer", tags = mapOf("t" to listOf("nostr"))),
+                            Filter(search = "hello", tags = mapOf("l" to listOf("nostr"))),
+                        ),
+                    ).map { it.id }
+            assertEquals(listOf(older.id, newer.id), ids, "each profile keeps its own run; the scales are not comparable")
         }
 
     @Test

@@ -41,9 +41,6 @@ object EventSelection {
         if (!q.search.isNullOrBlank() || q.phrases.isNotEmpty() || q.notSearch.isNotEmpty() || q.limit != null || q.expiresBefore != null) return null
         val clauses = ArrayList<String>()
         if (q.kinds.isNotEmpty()) clauses += q.kinds.joinToString(" or ", "(", ")") { "event.kind==$it" }
-        // Translated, never dropped: a silently missing exclusion would stream
-        // the excluded kinds into whatever walk asked to skip them.
-        if (q.notKinds.isNotEmpty()) clauses += q.notKinds.joinToString(" and ", "(", ")") { "event.kind!=$it" }
         if (q.authors.isNotEmpty()) clauses += keyGroup("pubkey", q.authors) ?: return null
         if (q.owners.isNotEmpty()) clauses += keyGroup("owner", q.owners) ?: return null
         q.since?.let { clauses += "event.created_at>=$it" }

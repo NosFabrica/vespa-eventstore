@@ -224,10 +224,7 @@ class TrustReconciler internal constructor(
      * rebuild walks report `(total, total, rebuilt, derivedInService)` so a
      * caller can show a real fraction through exactly the slow part.
      */
-    suspend fun reconcile(
-        samplesPerService: Int = DEFAULT_RECONCILE_SAMPLES,
-        onProgress: ((inspected: Int, total: Int, rebuilt: Int, derivedInService: Int) -> Unit)? = null,
-    ): Reconciliation {
+    suspend fun reconcile(onProgress: ((inspected: Int, total: Int, rebuilt: Int, derivedInService: Int) -> Unit)? = null): Reconciliation {
         dirt.drain(gate)
         val providers = recompute.providerMap()
         if (providers.isEmpty()) return Reconciliation(0, emptyList())
@@ -242,7 +239,7 @@ class TrustReconciler internal constructor(
             providers.services.toList().mapBounded(QUERY_FANOUT) { service ->
                 val sample =
                     index.search(
-                        EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service), limit = samplesPerService, notExpiredAt = cutoff),
+                        EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service), limit = RECONCILE_SAMPLES, notExpiredAt = cutoff),
                     )
                 if (sample.isEmpty()) return@mapBounded null
                 // Only sampled cards that CARRY a tag can prove that dimension
@@ -413,7 +410,7 @@ class TrustReconciler internal constructor(
     private companion object {
         // Cards sampled per service by [reconcile]: the never-triggered failure
         // is all-or-nothing per (service, observer), so a handful settles it.
-        const val DEFAULT_RECONCILE_SAMPLES = 3
+        const val RECONCILE_SAMPLES = 3
 
         // Subjects per orphan-sweep re-derive round (memory-bounded, like
         // TrustRecompute's walk batches).

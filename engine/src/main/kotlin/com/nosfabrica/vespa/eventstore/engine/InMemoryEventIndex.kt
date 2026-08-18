@@ -19,7 +19,6 @@
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 package com.nosfabrica.vespa.eventstore.engine
-import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
@@ -61,7 +60,7 @@ class InMemoryEventIndex(
         // EventYql.build (which returns null for it, never a negative take).
         if ((query.limit ?: 1) <= 0) return emptyList()
         val c = Compiled(query)
-        val hits = synchronized(docs) { docs.values.filter { c.matches(it) } }.sortedWith(NEWEST_FIRST)
+        val hits = synchronized(docs) { docs.values.filter { c.matches(it) } }.sortedWith(EventDoc.NEWEST_FIRST)
         return query.limit?.let(hits::take) ?: hits
     }
 
@@ -73,10 +72,11 @@ class InMemoryEventIndex(
         return synchronized(docs) { docs.values.count { c.matches(it) } }
     }
 
-    override suspend fun distinctAuthors(query: EventQuery): Set<String> {
-        if ((query.limit ?: 1) <= 0) return emptySet()
+    /** Same sentinel rule as [count]: a positive limit bounds HITS, never a grouping. */
+    override suspend fun countByAuthor(query: EventQuery): Map<String, Int> {
+        if ((query.limit ?: 1) <= 0) return emptyMap()
         val c = Compiled(query)
-        return synchronized(docs) { docs.values.filter { c.matches(it) } }.mapTo(HashSet()) { it.pubkey }
+        return synchronized(docs) { docs.values.filter { c.matches(it) } }.groupingBy { it.pubkey }.eachCount()
     }
 
     override fun close() {}
@@ -97,7 +97,6 @@ class InMemoryEventIndex(
         // unsatisfiable (hexIn returns null), not unconstrained.
         private val ids = q.ids.normHex()
         private val kinds = q.kinds.toHashSet()
-        private val notKinds = q.notKinds.toHashSet()
         private val authors = q.authors.normHex()
         private val owners = q.owners.normHex()
         private val unsatisfiable =
@@ -118,7 +117,6 @@ class InMemoryEventIndex(
             val pairs = if (tagAny.isEmpty() && tagAll.isEmpty()) emptyList() else d.tagIndex()
             return (ids.isEmpty() || d.id in ids) &&
                 (kinds.isEmpty() || d.kind in kinds) &&
-                (notKinds.isEmpty() || d.kind !in notKinds) &&
                 (authors.isEmpty() || d.pubkey in authors) &&
                 (owners.isEmpty() || d.owner in owners) &&
                 tagAny.all { set -> pairs.any { it in set } } &&
@@ -134,9 +132,5 @@ class InMemoryEventIndex(
                 q.phrases.all { d.search.containsPhrase(it) } &&
                 q.notSearch.none { d.search.containsPhrase(it) }
         }
-    }
-
-    private companion object {
-        val NEWEST_FIRST = compareByDescending(EventDoc::createdAt).thenBy(EventDoc::id)
     }
 }

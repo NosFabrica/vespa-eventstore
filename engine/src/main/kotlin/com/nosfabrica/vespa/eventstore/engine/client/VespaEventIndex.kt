@@ -380,7 +380,12 @@ class VespaEventIndex(
         // A non-positive limit matches nothing (EventYql.build's contract) —
         // the overfetch must not resurrect it into a real query.
         if (limit <= 0) return emptyList()
-        val fetch = q.copy(limit = limit + TIE_SLACK)
+        // Past the match-phase band one query is the wrong shape: the profiles
+        // that tolerate a cut cannot serve it, and the unranked alternative is a
+        // profile whose degradation this client refuses. Page the band instead —
+        // the caller's limit is honoured either way, which is the contract.
+        if (limit > EventYql.MATCH_PHASE_BAND && q.ranking == null) return pagedRecency(q, limit)
+        val fetch = q.copy(limit = limit + TIE_SLACK).keepingProfileOf(q)
         var hits =
             recallRoot(fetch)?.children?.mapNotNull { it.fields }?.filter { it.id.isNotEmpty() }
                 ?: return emptyList()
@@ -405,6 +410,84 @@ class VespaEventIndex(
             }
         }
         return hits.sortedWith(SUMMARY_NEWEST_FIRST).take(limit)
+    }
+
+    /**
+     * The overfetch must not change WHICH PROFILE serves the query. [TIE_SLACK]
+     * is this client's own tie-resolution detail; letting it push a query over
+     * [EventYql.MATCH_PHASE_BAND] silently moved the real ceiling to
+     * `band - TIE_SLACK` and — far worse — moved the query onto a profile whose
+     * match-phase degradation this client REFUSES rather than reconciles, so one
+     * extra unit of `limit` turned a served page into an outright error.
+     * MEASURED against a production cluster (2026-08-18): limit 1936 served,
+     * limit 1937 refused.
+     *
+     * Only ever stamps the profile [EventYql.build] would have chosen for the
+     * CALLER's limit, so the band still means what it says; the slack rides
+     * above it on the engine's own headroom, which is an order of magnitude.
+     */
+    private fun EventQuery.keepingProfileOf(caller: EventQuery): EventQuery =
+        if (ranking == null && EventYql.usesRecencyProfile(caller) && !EventYql.usesRecencyProfile(this)) {
+            copy(ranking = EventYql.RANK_RECENCY)
+        } else {
+            this
+        }
+
+    /**
+     * Serve a limit past [EventYql.MATCH_PHASE_BAND] by PAGING the band on a
+     * `created_at` cursor, rather than asking the engine for one oversized page
+     * it may answer partially.
+     *
+     * The contract is "a query with a limit gets exactly that", and one query
+     * cannot keep it here: inside the band the match-phase profile serves the
+     * page and its cut is reconciled ([recallRoot]); outside it the only
+     * remaining shape is unranked, where any degradation is refused. Paging
+     * keeps every page inside the band, so every page is one the engine and this
+     * client already agree how to serve.
+     *
+     * TIES are why each round pays a second query. A page boundary can land
+     * mid-second, and the corpora that reach these limits are exactly the ones
+     * that bulk-publish on ONE timestamp (a real 30382 provider puts 242k cards
+     * at a single `created_at`), so the boundary group is taken WHOLE through an
+     * unbounded `[T, T]` window — the same resolution [visitIds] and
+     * [recallSummaries] already use, and the reason a single-timestamp corpus
+     * pages correctly instead of looping. That window is skipped whenever the
+     * strictly-newer docs already fill the limit; the residual cost — a page
+     * that lands INSIDE a group far wider than the limit reads the whole group —
+     * is inherited from [recallSummaries] and is the price of never truncating
+     * a tie silently.
+     */
+    private suspend fun pagedRecency(
+        q: EventQuery,
+        limit: Int,
+    ): List<VespaSummary> {
+        val page = EventYql.MATCH_PHASE_BAND
+        // Keyed by id: the boundary window re-reads docs the page already
+        // carried, and a caller's limit counts DISTINCT events.
+        val out = LinkedHashMap<String, VespaSummary>()
+        var until = q.until
+        while (out.size < limit) {
+            val hits = recallSummaries(q.copy(until = until, limit = page))
+            if (hits.isEmpty()) break
+            // Short of a page: the engine ran out, so this is the whole tail.
+            if (hits.size < page) {
+                hits.forEach { out[it.id] = it }
+                break
+            }
+            val boundary = hits.last().createdAt
+            hits.forEach { if (it.createdAt > boundary) out[it.id] = it }
+            // Everything in the boundary second is OLDER than every doc already
+            // held, so once the strictly-newer docs alone fill the limit the
+            // group cannot contain a hit and is not worth reading — which is
+            // what keeps the unbounded window below off the common path.
+            if (out.size >= limit) break
+            recallSummaries(q.copy(since = boundary, until = boundary, limit = null)).forEach { out[it.id] = it }
+            // Strictly past the group just taken in full — `boundary - 1` is what
+            // makes the cursor terminate on a corpus that shares one timestamp.
+            if (boundary <= (q.since ?: Long.MIN_VALUE)) break
+            until = boundary - 1
+        }
+        return out.values.sortedWith(SUMMARY_NEWEST_FIRST).take(limit)
     }
 
     /**
@@ -605,7 +688,7 @@ class VespaEventIndex(
             // search path implements it, so it must not take this shortcut.
             (limit == null || limit > 0) &&
             ids.isNotEmpty() && ids.size <= ID_GET_FANOUT &&
-            kinds.isEmpty() && notKinds.isEmpty() && authors.isEmpty() && owners.isEmpty() &&
+            kinds.isEmpty() && authors.isEmpty() && owners.isEmpty() &&
             tags.isEmpty() && tagsAll.isEmpty() &&
             since == null && until == null && expiresBefore == null &&
             // Text constraints of EVERY polarity: a doc-API get never sees the
@@ -634,7 +717,7 @@ class VespaEventIndex(
         // NIP-40: never serve an event already expired at the query's cutoff —
         // the same guard EventYql emits as `expires_at > notExpiredAt`.
         val live = query.notExpiredAt?.let { cut -> docs.filter { (it.expiresAt() ?: EventDoc.NO_EXPIRATION) > cut } } ?: docs
-        val ordered = live.sortedWith(NEWEST_FIRST)
+        val ordered = live.sortedWith(EventDoc.NEWEST_FIRST)
         return query.limit?.let(ordered::take) ?: ordered
     }
 
@@ -829,7 +912,7 @@ class VespaEventIndex(
 
     /**
      * Complete author scan via the visit, projecting only `pubkey`.
-     * [distinctAuthors]'s grouping is complete too, but it materializes every
+     * [countByAuthor]'s grouping is complete too, but it materializes every
      * group in one response; this streams, which is what the corpus-wide
      * guard-owner Bloom preload needs — a missed author would be a false
      * negative.
@@ -852,34 +935,10 @@ class VespaEventIndex(
             root?.let { GroupingResults.firstCount(it) } ?: 0
         }
 
-    override suspend fun countDistinctAuthors(query: EventQuery): Int =
-        fallbacks.withNearFallback(query) { q ->
-            // `all(group(pubkey) output(count()))` counts the GROUPS — the
-            // distinct pubkeys — not the docs.
-            val root = EventYql.buildDistinctCount(q, "pubkey")?.let { queryRoot(it, hits = 0) }
-            root?.let { GroupingResults.firstCount(it) } ?: 0
-        }
-
-    override suspend fun countByKind(query: EventQuery): Map<Int, Int> =
-        fallbacks.withNearFallback(query) { q ->
-            // `all(group(kind) each(output(count())))` yields one leaf group
-            // per kind, each carrying its `value` and a `count()`.
-            val root = EventYql.buildKindHistogram(q)?.let { queryRoot(it, hits = 0) }
-            val out = LinkedHashMap<Int, Int>()
-            root?.let { GroupingResults.intCountsInto(it, out) }
-            out
-        }
-
-    override suspend fun distinctAuthors(query: EventQuery): Set<String> =
-        fallbacks.withNearFallback(query) { q ->
-            val root = EventYql.buildDistinctAuthors(q)?.let { queryRoot(it, hits = 0) } ?: return@withNearFallback emptySet()
-            GroupingResults.groupValues(root)
-        }
-
     /**
-     * The same grouping as [distinctAuthors], keeping each group's `count()` —
-     * which the YQL already asks for and [distinctAuthors] drops. So the
-     * author set WITH per-author doc counts costs exactly one query, the same one.
+     * `all(group(pubkey) each(output(count())))` — one leaf group per distinct
+     * author, each carrying its doc count. So the author set AND the per-author
+     * counts cost exactly one query.
      */
     override suspend fun countByAuthor(query: EventQuery): Map<String, Int> =
         fallbacks.withNearFallback(query) { q ->
@@ -948,9 +1007,6 @@ class VespaEventIndex(
     private companion object {
         /** Concurrent document-API gets for a pure-id lookup. Gets are light (no summary stage to overrun), so this floats above QUERY_FANOUT. */
         const val ID_GET_FANOUT = 32
-
-        /** Newest first (created_at desc, id asc tiebreak) — the same order the search path and the store apply. */
-        val NEWEST_FIRST = compareByDescending(EventDoc::createdAt).thenBy(EventDoc::id)
 
         /**
          * Extra hits a limit'd recency recall asks for beyond its limit, so

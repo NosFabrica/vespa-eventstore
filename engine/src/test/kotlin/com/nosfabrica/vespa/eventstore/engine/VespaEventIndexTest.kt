@@ -19,7 +19,6 @@
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 package com.nosfabrica.vespa.eventstore.engine
-import com.nosfabrica.vespa.eventstore.engine.DocRef
 import com.nosfabrica.vespa.eventstore.engine.client.VespaEventIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.SearchFields
@@ -113,6 +112,13 @@ class VespaEventIndexTest {
             }
         }
 
+    /** [seed] for the thousands-of-docs shapes: one pipelined feed instead of a put per doc. */
+    private fun seedBulk(docs: List<EventDoc>) =
+        runBlocking {
+            index.putAll(docs)
+            docs.forEach { reference.put(it) }
+        }
+
     /** The wire answer must equal the in-memory spec's answer, in order. */
     private fun check(query: EventQuery) =
         runBlocking {
@@ -162,8 +168,6 @@ class VespaEventIndexTest {
         check(EventQuery(expiresBefore = 3000))
         check(EventQuery(search = "vitor"))
         check(EventQuery(kinds = listOf(0, 1), tags = mapOf("p" to listOf(bob)), until = 9000))
-        check(EventQuery(notKinds = listOf(0, 30382)))
-        check(EventQuery(notKinds = listOf(0, 30382), authors = listOf(bob)))
         check(EventQuery(search = "vitor", notSearch = listOf("pamplona")))
         check(EventQuery(notSearch = listOf("vitor")))
         check(EventQuery(phrases = listOf("pamplona dev")))
@@ -304,54 +308,20 @@ class VespaEventIndexTest {
             }
         }
 
-    /** `notKinds` excludes the plumbing kinds; the count is the full content match set. */
-    @Test
-    fun `count honors notKinds exclusion`() =
-        runBlocking {
-            seed(
-                doc(kind = 0),
-                doc(kind = 30382),
-                doc(kind = 1),
-                doc(kind = 1),
-                doc(kind = 30023),
-            )
-            assertEquals(3, index.count(EventQuery(notKinds = listOf(0, 30382))))
-        }
-
-    /** Distinct-author grouping: the number of unique pubkeys among the matches, over the wire, agreeing with the spec. */
-    @Test
-    fun `countDistinctAuthors counts unique pubkeys`() =
-        runBlocking {
-            val alice = "a1".repeat(32)
-            val bob = "b2".repeat(32)
-            val carol = "c3".repeat(32)
-            seed(
-                doc(kind = 1, pubkey = alice),
-                doc(kind = 1, pubkey = alice),
-                doc(kind = 1, pubkey = bob),
-                doc(kind = 30023, pubkey = carol),
-                doc(kind = 0, pubkey = carol), // plumbing: excluded, so carol only counts via her 30023
-                doc(kind = 30382, pubkey = "d4".repeat(32)), // plumbing-only author: excluded
-            )
-            val content = EventQuery(notKinds = listOf(0, 30382))
-            assertEquals(3, index.countDistinctAuthors(content))
-            assertEquals(reference.countDistinctAuthors(content), index.countDistinctAuthors(content))
-        }
-
     /**
-     * The author VALUES, not their number — the grouping the orphan-score sweep
-     * builds its candidate list from. A truncated or value-less answer here
-     * would leave orphans behind, so this pins the leaf `group:pubkey:…` parse
-     * over the wire (its YQL shares `group(pubkey)` with the distinct COUNT,
-     * which returns no values at all).
+     * The author VALUES AND their doc counts from ONE grouping — what the
+     * orphan-score sweep builds its candidate list and its dry-run report from.
+     * A truncated or value-less answer would leave orphans behind, so this pins
+     * the leaf `group:pubkey:…` parse over the wire.
      */
     @Test
-    fun `distinctAuthors returns every author value`() =
+    fun `countByAuthor returns every author with its doc count`() =
         runBlocking {
             val alice = "a1".repeat(32)
             val bob = "b2".repeat(32)
             val carol = "c3".repeat(32)
             seed(
+                doc(kind = 30382, pubkey = alice),
                 doc(kind = 30382, pubkey = alice),
                 doc(kind = 30382, pubkey = alice),
                 doc(kind = 30382, pubkey = bob),
@@ -359,46 +329,76 @@ class VespaEventIndexTest {
                 doc(kind = 1, pubkey = "d4".repeat(32)), // another kind: not an author of these
             )
             val cards = EventQuery(kinds = listOf(30382))
-            assertEquals(setOf(alice, bob, carol), index.distinctAuthors(cards))
-            assertEquals(reference.distinctAuthors(cards), index.distinctAuthors(cards))
-        }
-
-    /** The same grouping keeping each group's count() — one query for both halves of what the sweep needs. */
-    @Test
-    fun `countByAuthor returns each author's doc count`() =
-        runBlocking {
-            val alice = "a1".repeat(32)
-            val bob = "b2".repeat(32)
-            seed(
-                doc(kind = 30382, pubkey = alice),
-                doc(kind = 30382, pubkey = alice),
-                doc(kind = 30382, pubkey = alice),
-                doc(kind = 30382, pubkey = bob),
-                doc(kind = 1, pubkey = bob), // filtered out by the kind, so bob counts once
-            )
-            val cards = EventQuery(kinds = listOf(30382))
-            assertEquals(mapOf(alice to 3, bob to 1), index.countByAuthor(cards))
+            assertEquals(mapOf(alice to 3, bob to 1, carol to 1), index.countByAuthor(cards))
             assertEquals(reference.countByAuthor(cards), index.countByAuthor(cards))
-            assertEquals(index.distinctAuthors(cards), index.countByAuthor(cards).keys, "same set as the values-only form")
         }
 
-    /** The per-kind histogram: one entry per kind with its doc count, over the wire, agreeing with the spec. */
+    /**
+     * A LIMIT IS A PROMISE: "a query with a limit gets exactly that". Two shapes
+     * used to break it, and both are pinned here over the wire.
+     *
+     * 1. The tie-resolution overfetch ([TIE_SLACK]) was added BEFORE the rank
+     *    profile was chosen, so a limit within EventYql's match-phase band came
+     *    out the other side on the unranked profile — where the client refuses a
+     *    match-phase-degraded page instead of reconciling it. The real ceiling
+     *    was `band - TIE_SLACK`, and crossing it turned a served page into an
+     *    error. Measured against production: 1936 served, 1937 refused.
+     * 2. Past the band there was no shape left that could serve the limit at
+     *    all; it is paged now, and the caller still gets exactly what it asked.
+     */
     @Test
-    fun `countByKind histograms the corpus by kind`() =
+    fun `a limit is served whole, on the profile its own size selects`() =
         runBlocking {
-            seed(
-                doc(kind = 1),
-                doc(kind = 1),
-                doc(kind = 1),
-                doc(kind = 0),
-                doc(kind = 30023),
-                doc(kind = 30023),
+            val band = EventYql.MATCH_PHASE_BAND
+            seedBulk(List(band + 40) { doc(kind = 1, at = 5_000L + it) })
+
+            // At the very top of the band the overfetch must not demote it.
+            mock.searchRankings.clear()
+            assertEquals(band, index.search(EventQuery(kinds = listOf(1), limit = band)).size, "the band's own limit is served whole")
+            assertEquals(
+                listOf(EventYql.RANK_RECENCY),
+                mock.searchRankings.distinct(),
+                "a limit inside the band rides the match-phase profile, overfetch and all",
             )
-            val all = EventQuery()
-            assertEquals(mapOf(1 to 3, 0 to 1, 30023 to 2), index.countByKind(all))
-            assertEquals(reference.countByKind(all), index.countByKind(all))
-            // Honors the same filters as the other queries.
-            assertEquals(mapOf(1 to 3, 30023 to 2), index.countByKind(EventQuery(notKinds = listOf(0))))
+
+            // One past the band: paged, still exact, still newest-first.
+            mock.searchRankings.clear()
+            val over = index.search(EventQuery(kinds = listOf(1), limit = band + 20))
+            assertEquals(band + 20, over.size, "a limit past the band is paged, never truncated")
+            assertEquals(over.map { it.id }, over.sortedWith(EventDoc.NEWEST_FIRST).map { it.id }, "still created_at desc, id asc")
+            assertEquals(over.map { it.id }.distinct().size, over.size, "paging must not repeat a document")
+            assertTrue(mock.searchRankings.size > 1, "it took more than one round trip: ${mock.searchRankings}")
+            assertTrue(
+                mock.searchRankings.none { it == EventYql.RANK_TEXT || it == EventYql.RANK_SEARCH },
+                "plain recall never lands on a relevance profile: ${mock.searchRankings.distinct()}",
+            )
+
+            // A caller's "everything, but bounded" spelling. The overfetch used
+            // to make `limit + TIE_SLACK` OVERFLOW to a negative, which
+            // EventYql.build reads as its matches-nothing sentinel — so the
+            // largest limit expressible returned NOTHING. Paging never overfetches
+            // past the band, so the sentinel is unreachable from a positive limit.
+            assertEquals(
+                band + 40,
+                index.search(EventQuery(kinds = listOf(1), limit = Int.MAX_VALUE)).size,
+                "an enormous limit returns the corpus, not an empty page",
+            )
+        }
+
+    /**
+     * The corpus shape that makes paging hard, and the one that reaches these
+     * limits in practice: a trust provider bulk-publishes its whole score set on
+     * ONE `created_at`. A cursor that stepped to `boundary` rather than taking
+     * the tie group whole would re-read the same page forever.
+     */
+    @Test
+    fun `paging survives a corpus that shares a single timestamp`() =
+        runBlocking {
+            val band = EventYql.MATCH_PHASE_BAND
+            seedBulk(List(band + 30) { doc(kind = 1, at = 9_000L) })
+            val hits = index.search(EventQuery(kinds = listOf(1), limit = band + 25))
+            assertEquals(band + 25, hits.size, "one timestamp still pages to the asked-for count")
+            assertEquals(hits.map { it.id }.distinct().size, hits.size, "and never repeats a document")
         }
 
     /**

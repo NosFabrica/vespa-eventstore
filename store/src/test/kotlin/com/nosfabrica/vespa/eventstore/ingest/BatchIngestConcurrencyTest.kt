@@ -98,9 +98,9 @@ class BatchIngestConcurrencyTest {
             return inner.count(query)
         }
 
-        override suspend fun distinctAuthors(query: EventQuery): Set<String> {
+        override suspend fun countByAuthor(query: EventQuery): Map<String, Int> {
             delay(latMs)
-            return inner.distinctAuthors(query)
+            return inner.countByAuthor(query)
         }
 
         override fun close() = inner.close()

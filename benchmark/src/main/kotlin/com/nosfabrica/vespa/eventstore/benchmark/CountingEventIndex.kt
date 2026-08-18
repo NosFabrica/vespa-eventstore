@@ -133,9 +133,9 @@ class CountingEventIndex(
     }
 
     // Delegate (not ride the default) so the decorator matches the interface contract.
-    override suspend fun distinctAuthors(query: EventQuery): Set<String> {
+    override suspend fun countByAuthor(query: EventQuery): Map<String, Int> {
         searches.incrementAndGet()
-        return inner.distinctAuthors(query)
+        return inner.countByAuthor(query)
     }
 
     override fun close() = inner.close()
