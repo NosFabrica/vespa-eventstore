@@ -46,10 +46,10 @@ measures what the emitted query actually does:
 
 ### Recency in text ranking — the baseline the sweep has to beat (2026-08-22)
 
-`event.sd` ships `w_recency`/`w_recency_profile`/`w_recency_text` at **0.0**,
-so the mechanism is inert until a sweep says otherwise
-(`docs/recency-ranking.md` is the design). This is the *before* measurement it
-gets swept against — **read-only, against the live staging relay**
+`event.sd` ships **`w_recency` 0.1** with a 30-day half-life on the trust
+profiles (`w_recency_text`, the pure-text knob, stays 0.0);
+`docs/recency-ranking.md` is the design. This is the *before* measurement the
+weight was chosen against — **read-only, against the live staging relay**
 (`wss://search-staging.brainstorm.world/`, observer `460c25…065c`, `kind 1`,
 `limit 50`), ages in days at the time of the run:
 
@@ -83,9 +83,9 @@ not pay with:
 `--now` pins the instant recency is measured against (it becomes
 `query(now_secs)`), so a sweep is reproducible across days and a reported
 ranking can be replayed at the moment it was reported. `--kinds 1` is not
-optional for a recency sweep: on a mixed query the page is kind-0 profiles,
-which ride the separate `w_recency_profile`, and the note-side weight reads as
-inert when it is merely outranked.
+optional for a recency sweep: a mixed page is profiles and titled notes whose
+ages barely differ, so the weight reads as inert when the sweep is merely
+measuring the wrong page (the band effect below).
 
 #### The sweep, on a real staging slice (2026-08-22)
 
@@ -132,6 +132,16 @@ the first tiebreak ever offered it. Ordinary mixed queries at w = 0.1:
 `zap` 1120 d → 525 d, `podcast` 979 d → 628 d, `privacy` 915 d → 746 d, with
 **zero** position deltas across every pinned rank case at 0.05 / 0.1 / 0.25.
 
+**The ladder check at the shipped weight** (re-run after the per-kind split was
+dropped, so kind 0 now takes the boost too — the case the time-flat IT corpus
+cannot see). Same slice, `recency_off` vs the schema's own defaults vs 0.25:
+**every pinned position identical** (odell #5, Primal #1, MRR 0.171, found 2/7
+on all three), while the pages that have fresh candidates move — "Odel"
+−165 d, "primal.net" −195 d at 0.1, and "bitcoin" −396 d by 0.25. That is the
+shape a recency weight is supposed to have: it reorders where age is the only
+thing left to order by, and it is invisible where the ladder has already
+decided.
+
 **The half it does not fix, measured in the same run.** On those four terms the
 HEAD of the mixed page does not move at any legal weight, and should not: the
 top-10 all score `text_score ≈ 130 100` (the token band — kind-1 notes with the
@@ -144,6 +154,41 @@ ranking decision. See `docs/recency-ranking.md` §4.3.
 Paper calibration had put the candidate at `w = 1.0`. The run says that is 10×
 too much — the same lesson `w_perfect_pop` learned the expensive way: trust the
 run, not the arithmetic.
+
+#### What the recency term costs (2026-08-22)
+
+The first phase now reads `attribute(created_at)` for **every match**, so the
+cost had to be measured, not argued. A/B on one box: `searchBench`'s 200 000-note
+self-fed corpus, single-node Vespa in Docker, `BENCH_SEARCH_REPS` 40–60, p50 per
+run, **three runs per variant, alternating deploys** — the variant is a
+rank-profile-only change, so the corpus is fed once and never re-fed. "Without"
+strips `* recency_mult()` / `* recency_mult_text()` from both phases of `search`
+and from the text profiles, and drops the two new match-features.
+
+| shape | with recency (p50, 3 runs) | without (3 runs) | Δ |
+| --- | --- | --- | --- |
+| **common term** (~50 k matches) | 338.7 / 344.4 / 336.2 ms | 335.4 / 328.6 / 324.4 ms | **+3.2 %** (≈ +10 ms) |
+| common term, limit 1000 | 399.2 / 392.9 / 403.6 ms | 387.7 / 394.3 / 375.2 ms | +3.3 % |
+| two words (~1 k matches) | 51.7 / 47.0 / 47.0 ms | 46.6 / 49.7 / 49.2 ms | — |
+| text profile, single-phase | 47.9 / 48.3 / 43.3 ms | 43.9 / 46.6 / 45.5 ms | — |
+| rare term / short word / misspelled | 5–23 ms | 5–20 ms | — |
+
+Only the match-heavy shape separates: every "with" run sits above every
+"without" run on `common term`, which is what a per-match cost looks like. On
+everything lighter the difference is 1–4 ms and inside run-to-run variance —
+the honest reading is "≲ 3 % where it scales with the match set, unresolvable
+elsewhere".
+
+**Rejected micro-optimization**, measured the same way: folding
+`fabs(...)/86400 / max(1, H)` into a single divide by `max(86400, 86400·H)`
+(337.98 / 342.23 ms against 336.25 / 338.65 / 344.44 for the shipped two-divide
+form) buys **nothing**. The cost is not the arithmetic, so the readable form —
+where `event_age_days()` names its own unit — stays.
+
+**Setup note:** `searchBench` talks to `VespaEventIndex` directly and does NOT
+auto-deploy. Point it at a cluster that already has the app (`VespaEventStore.open`,
+`exportLoad`, or a `prepareandactivate` POST); against a config server with no
+application it retries the first document read and looks hung.
 
 ### `search_text_gram` — what the body's partial-word reach costs (2026-08-15)
 

@@ -1,11 +1,9 @@
 # Recency in text ranking — a proposal
 
-**Status: IMPLEMENTED AND INERT.** The mechanism is in the tree
-(`engine/app/schemas/event.sd`, `EventQuery`/`EventYql`, `RankAb`,
-`RankRegressionIT`) with every weight shipped at **0.0**, so it changes no
-score, no position and no match set until a sweep moves one. What remains is
-the tuning, and the tuning is a `query()` input — no redeploy. §6 says exactly
-what has and has not been measured.
+**Status: SHIPPED at `w_recency = 0.1`, half-life 30 d** (2026-08-22), from
+the run in §4.2. The trust profiles are live; the pure-text profiles keep their
+own weight at 0.0. Turning it off, or to any other value, is a query feature —
+no redeploy. §6 says exactly what is measured and what is not.
 
 ## 1. The gap
 
@@ -53,10 +51,12 @@ They are the reason this is a page of design and not a one-line `+ attribute(cre
    convex (`1 + w_wot · delta^2.7`) specifically so that trust crosses a text
    tier only on an overwhelming advantage (~7.6× delta for the bio→name gap),
    pinned from both sides by the 2026-08-02 "odell" case. The equal-trust rung
-   floors are ~680 / 4 000 / 23 000 / 130 100 — each rung ~×5.65–5.88 the one
-   below. **Any recency factor bounded under 5.65 provably cannot cross a
-   rung**, whatever the corpus. That bound is the safety argument, and it only
-   exists for a *multiplicative* term.
+   floors are 100 (the `text_score_cutoff` floor band) / 550 / 4 000 / 23 000
+   / 130 100 — each rung ×5.5 to ×7.3 the one below, the **×5.5** from the
+   floor band to the bio/body rung being the binding one. **Any recency factor
+   bounded under 5.5 provably cannot cross a rung**, whatever the corpus. That
+   bound is the safety argument, and it only exists for a *multiplicative*
+   term.
 2. **`search` deletes hits by score.** `rank-score-drop-limit: 0.5`, and
    `floored_text_score()` maps gram-only noise to `0.0` for the limit to
    delete. A recency term that can *lower* a score changes the **match set**,
@@ -76,7 +76,9 @@ They are the reason this is a page of design and not a one-line `+ attribute(cre
 5. **`created_at` is not "creation" for replaceable kinds.** Kind 0/3/10002 and
    the addressable kinds carry the timestamp of the **last edit**. Freshness on
    kind 0 rewards profile churn — and every calibrated case in
-   `benchmark/rank_cases.json` is a kind-0 profile search.
+   `benchmark/rank_cases.json` is a kind-0 profile search. (This constraint
+   argued for exempting kind 0. §3.4 is why that cure was worse, and what
+   bounds the churn instead.)
 6. **Ranking has to stay reproducible.** `RankRegressionIT` pins positions;
    `:benchmark:rankAb` compares configs across runs; multi-node clusters must
    score a document identically on every content node. Vespa's `now` rank
@@ -89,12 +91,12 @@ They are the reason this is a page of design and not a one-line `+ attribute(cre
 
 ## 3. The proposal
 
-### 3.1 Two functions in `text_relevance`
+### 3.1 The shape
 
 ```
 event_age_days() = |clock − attribute(created_at)| / 86400
 freshness()      = 1 / (1 + event_age_days() / query(recency_halflife))
-recency_mult()   = 1 + w · freshness()          // w per kind, see §3.4
+recency_mult()   = 1 + query(w_recency) · freshness()   // one weight, every kind — §3.4
 clock            = query(now_secs), falling back to Vespa's `now`
 ```
 
@@ -149,7 +151,7 @@ boost-to-band ratio invariant, which is what "reorders within a band" means.
   `VespaParityIT`'s 127 checks and `ObserverGateIT`'s gate assertions cannot
   move. Only order does.
 - **Text tiers hold** (constraint 1). Crossing the smallest rung ratio needs
-  `1 + w > 5.65`, i.e. **`w > 4.65`**. That is the hard ceiling; the practical
+  `1 + w > 5.5`, i.e. **`w > 4.5`**. That is the hard ceiling; the practical
   one is lower, because rungs have tails (a bio-band doc carrying the term in
   body and hashtags reaches ~900 against the weak floor of 4 000 — 4.4×).
   **Recommended ceiling `w ≤ 2.0` (3×)**, which keeps ≥1.5× of margin to the
@@ -159,24 +161,34 @@ Note what this deliberately gives up: recency can **never** float a body
 mention above a real name match, no matter how fresh. That is not a limitation
 to fix later — it is the same rule that keeps trust honest.
 
-### 3.4 One weight per kind class
+### 3.4 One weight for every kind — the split was tried and rejected
 
-```
-w = if (attribute(kind) == 0, query(w_recency_profile), query(w_recency))
-```
+The first cut had a second weight, `w_recency_profile`, exempting kind 0 on
+constraint 5's argument: a replaceable event's `created_at` is its last edit,
+so freshness there rewards profile churn, and kind 0 is where the calibrated
+ladder lives.
 
-Constraint 5. A profile's `created_at` is its last edit; a freshness bonus
-there is a bonus for editing your profile, which is free and which spam
-accounts do. It is also the only place where the calibrated `rank_cases.json`
-ladder lives. So kind 0 gets its own weight, defaulted to **0.0** — profile
-search behaves exactly as it does today — and notes/articles/handlers get the
-signal the request was actually about.
+That argument is true and it was the wrong lever. Exempting one kind makes the
+multiplier **discontinuous across kinds**: every non-profile document gains up
+to `(1 + w)` on every profile *regardless of age* — a standing thumb on the
+scale, not a tiebreak. `RankRegressionIT` caught it within an hour of shipping
+`w = 0.1`: the **"primal"** case (the profile named *primal* against the same
+author's follow set titled *Primal*, separated by an identity credit worth well
+under 1 %) flipped on the 0.25 % that a 1157-day-old corpus gets at `w = 0.1`.
+The pinned cases most exposed to it are exactly the profile-versus-note ones —
+Avi Burra, Jon Gordon, primal, amethyst — decided by margins of 2.9–5.7 %.
 
-(The `RankRegressionIT` corpus is time-flat — every doc is `1_700_000_000 + n`,
-seconds apart — so `freshness()` varies by <1e-7 across it and today's cases
-stay green even with both weights on. The kind split is not there to keep the IT
-green; it is there because the *live* kind-0 ladder is calibrated and the IT
-would not notice if we broke it.)
+One weight for every kind keeps the factor continuous: same age, same
+multiplier, whatever the kinds. A cross-kind comparison is then perturbed only
+by the age difference that is really there, and on a time-flat corpus the whole
+change is a global constant — provably no-op, which is what makes the existing
+ladder cases safe by construction rather than by luck.
+
+The churn worry survives, bounded. At `w = 0.1` an edit buys at most 10 %,
+worth `1.1^(1/2.7) = 3.6 %` of trust delta; the tightest calibrated crossing
+(odell, bounded from both sides at 8.6 vs 7.6 — ~13 % of margin) is three times
+out of reach. At `w = 0.25` the same number is 8.6 % and the margin starts to
+matter, which is an independent reason the shipped weight is 0.1.
 
 ### 3.5 The clock comes from the query
 
@@ -251,7 +263,10 @@ about 0.25, where the page goes same-day and the median trust starts slipping.
 
 On ordinary mixed queries, at **w = 0.1 / H = 30 d**: `zap` 1120 d → 525 d,
 `podcast` 979 d → 628 d, `privacy` 915 d → 746 d, and every pinned rank case
-unmoved (`rankAb`, four candidate weights, zero position deltas).
+unmoved (`rankAb`, four candidate weights, zero position deltas). Re-run after
+the per-kind split was dropped — so profiles take the boost too — the pinned
+positions are still identical at 0.1 and at 0.25 (odell #5, Primal #1, MRR
+0.171), while "Odel" drops 165 days and "primal.net" 195.
 
 **Recommended starting point: `w_recency = 0.1`, `recency_halflife = 30 d`** —
 still to be confirmed against the full corpus (this slice is deliberately
@@ -293,7 +308,7 @@ the deploy is a no-op until a sweep moves one.
 
 ### 5.1 `engine/app/schemas/event.sd` — `text_relevance` inputs
 
-Four new inputs, all shipped at their inert values:
+Three new inputs (`w_recency` ships at 0.1; the other two are inert):
 
 ```
 # ---- RECENCY (docs/recency-ranking.md) ----
@@ -315,29 +330,80 @@ query(recency_halflife) double: 30.0
 # Strength of the multiplicative freshness boost on the DEFAULT
 # profile: recency_mult() in [1, 1 + w_recency].
 #
-# 0.0 = OFF. Shipped off deliberately: the mechanism deploys inert
-# (every score, position and match set identical to before), then
-# the weight is swept LIVE with :benchmark:rankAb — it is a
-# query() input, so tuning it needs no redeploy — and only then
-# does a measured default land here, with the run that chose it.
+# SHIPPED 0.1, from the run recorded below (2026-08-22). 0.0 turns
+# recency off entirely without a redeploy — it is a query() input,
+# so an operator who disagrees sends their own value per request.
 #
-# HARD CEILING 4.65. Above it 1 + w exceeds the smallest rung
-# ratio of the §12 ladder (x5.65, see query(w_name_tier)) and
-# recency starts CROSSING text tiers — a fresh bio mention over a
-# real name match, which is exactly the ordering wot_mult() is
-# calibrated to allow only on overwhelming trust. Recommended
-# <= 2.0: rungs have TAILS (a bio-band doc carrying the term in
-# body and hashtags reaches ~900 against the weak floor of 4000,
-# i.e. x4.4), so the paper ceiling is not the safe one.
-query(w_recency) double: 0.0
-# Same, for KIND 0 — deliberately a separate weight, defaulted off
-# even once w_recency ships. A replaceable event's created_at is
-# its LAST EDIT, not its creation, so freshness on a profile
-# rewards editing your profile, which is free and which spam
-# accounts do. Kind 0 is also where the whole calibrated ladder
-# lives (every case in benchmark/rank_cases.json is a profile
-# search), so it moves last and on its own evidence.
-query(w_recency_profile) double: 0.0
+# HARD CEILING 4.5. Above it 1 + w exceeds the smallest rung ratio
+# in the ladder and recency starts CROSSING text tiers — the
+# ordering wot_mult() is calibrated to allow only on overwhelming
+# trust. The ratios, floor upward: floor band 100
+# (text_score_cutoff, the net under a real match) -> bio/body 550
+# is x5.5 and is the BINDING one; then 4000/550 = x7.3,
+# 23000/4000 = x5.75, 130100/23000 = x5.65. An earlier version of
+# this comment read the smallest as x5.65 by forgetting the floor
+# band, and put the ceiling 3% too high.
+#
+# RankRegressionIT does not pin the ceiling itself — it pins the
+# x7.3 weak-over-body pair from both sides (no crossing at 3x,
+# crossing at 21x), which proves the bound is a fact about the
+# WEIGHT rather than about a fixture that could never cross.
+#
+# The USEFUL range is nowhere near the ceiling. MEASURED
+# 2026-08-22 against a 4 596-event staging slice fed into a local
+# Vespa with its real 30382 trust cards (benchmark/README.md):
+# inside one match band the trust curve SATURATES — a page of
+# trust-100 authors scores within 0.001% of itself — so a 1% tilt
+# already re-sorts the page. Median age of the top 10 body-band
+# hits, at half-life 30d:
+#     w      bitcoin  nostr  lightning  coffee   median trust
+#     0.0      993d   1066d     1018d    973d       100
+#     0.05      32d      0d       34d    106d       100
+#     0.1        7d      0d       24d      2d      98-100
+#     0.25       0d      0d        2d      1d       96-99
+# On ordinary mixed-band queries the same w=0.1 takes "zap" from
+# 1120d to 525d and "podcast" from 979d to 628d, with every pinned
+# rank case unmoved. Above ~0.25 the page is same-day and the
+# median author trust starts slipping — that is the trade this
+# weight buys, and 0.05..0.25 is the band to sweep on real staging.
+# A paper estimate put the candidate at 1.0; the run says that is
+# 10x too much. Trust the run.
+#
+# 0.1 is the point where the pages move and nothing else does:
+# median trust holds at 98-100, every pinned rank case is
+# position-identical (rankAb at 0.05/0.1/0.25: zero deltas), and
+# the integration suite is green. RE-MEASURE (do not re-derive)
+# against the full corpus after any change to w_wot_pow, the tier
+# weights, or the corpus's age distribution: this weight is
+# calibrated against a SATURATED trust curve, and anything that
+# unsaturates it changes what 0.1 buys.
+query(w_recency) double: 0.1
+# NO PER-KIND SPLIT — tried, measured, REJECTED (2026-08-22).
+# This shipped for one run as a second weight (w_recency_profile,
+# 0.0) that exempted kind 0, on the argument that a replaceable
+# event's created_at is its LAST EDIT and freshness there rewards
+# profile churn. True, and irrelevant next to what the split
+# actually does: exempting one kind makes the multiplier
+# DISCONTINUOUS across kinds, so every non-profile document gains
+# up to (1 + w) against every profile REGARDLESS OF AGE — a
+# systematic thumb on the scale, not a tiebreak. RankRegressionIT
+# caught it immediately: the "primal" case (the profile named
+# primal vs the same author's follow set TITLED Primal, decided by
+# an identity credit worth well under 1%) flipped on the 0.25% a
+# 1157-day-old corpus gets at w=0.1.
+#
+# One weight for every kind keeps the factor CONTINUOUS: two
+# documents of the same age get the same multiplier whatever their
+# kinds, so a cross-kind comparison is perturbed only by the age
+# difference that is actually there — and on a time-flat corpus
+# the whole change is a global constant, i.e. provably no-op.
+#
+# The profile-churn worry survives, bounded: at w=0.1 an edit buys
+# at most 10%, worth 1.1^(1/2.7) = 3.6% of trust delta. The
+# tightest calibrated crossing (the odell case) has ~13% of margin
+# in that currency, so recency cannot reach it. RE-DERIVE THAT
+# BOUND before raising w: at 0.25 the same number is 8.6%, and the
+# margin starts to matter.
 # Same, for the PURE-TEXT profiles (`text`/`text2`). Kept apart
 # from w_recency because relevance() is ADDITIVE: its rungs are
 # 1100/700/620/550 — ratios of 1.13..1.57 — and its uncapped
@@ -348,7 +414,7 @@ query(w_recency_profile) double: 0.0
 query(w_recency_text) double: 0.0
 ```
 
-### 5.2 `event.sd` — four functions in `text_relevance`
+### 5.2 `event.sd` — five functions in `text_relevance`
 
 Verbatim from the tree:
 
@@ -359,17 +425,22 @@ Verbatim from the tree:
 #
 # The symmetry is load-bearing, not tidiness. The live corpus really
 # does hold notes stamped in the year 2100 (they already top an
-# unranked feed), and `now - created_at` clamped at zero — the shape
-# of Vespa's own age()/freshness() features — hands exactly those
-# documents the MAXIMUM freshness. Read as a distance, a note dated
-# 2100 is as stale as one from 1952, which is the honest reading of
-# "this clock is wrong", while a client a few minutes ahead of us is
-# still fresh.
+# unranked feed), and `now - created_at` — the shape of Vespa's own
+# age()/freshness() features, whose formula clamps only from BELOW —
+# gives those documents a NEGATIVE age and a freshness above 1, i.e.
+# an unbounded win. Read as a distance, a note dated 2100 is as stale
+# as one from 1952, which is the honest reading of "this clock is
+# wrong", while a client a few minutes ahead of us is still fresh.
 #
-# (max() rather than fabs()/abs() only to stay inside the scalar
-# function set every Vespa version agrees on.)
+# The clock, resolved ONCE: functions are inlined textually, so a
+# `max(a-b, b-a)` spelling of the same distance expands this `if` four
+# times per matched document. fabs() spells it once.
+function query_now() {
+    expression: if(query(now_secs) > 0, query(now_secs), now)
+}
+
 function event_age_days() {
-    expression: max(if(query(now_secs) > 0, query(now_secs), now) - attribute(created_at), attribute(created_at) - if(query(now_secs) > 0, query(now_secs), now)) / 86400.0
+    expression: fabs(query_now() - attribute(created_at)) / 86400.0
 }
 
 # 1 at zero age, 0.5 at the half-life, asymptotically 0 and never
@@ -381,7 +452,18 @@ function freshness() {
     expression: 1.0 / (1.0 + event_age_days() / max(1.0, query(recency_halflife)))
 }
 
-# >= 1, ALWAYS — and that is the whole recall-safety argument. The
+# >= 1, ALWAYS — CLAMPED, not merely arranged. The invariant is what
+# lets this ride the first phase at all, and until the clamp it rested
+# on nobody ever sending a negative weight: w_recency = -1 through the
+# query features EventQuery.rankFeatures exposes would have deleted
+# every FRESH hit from the match set (and from a gated count), which is
+# the failure this whole function is written to make impossible. One
+# max() per matched document is the right price for that. A negative
+# weight is therefore a no-op, not a demotion: recency BOOSTS, and
+# demoting by age is a different feature with a different safety
+# argument.
+#
+# The rest of the argument, unchanged: the
 # default profile DELETES hits by score (rank-score-drop-limit 0.5,
 # and floored_text_score() maps gram-only noise to 0.0 for the limit
 # to take), so a factor that can dip below 1 changes the MATCH SET,
@@ -392,14 +474,14 @@ function freshness() {
 # Bounded by 1 + w, which is what keeps the boost under the ladder's
 # x5.65 rung ratio; see query(w_recency).
 function recency_mult() {
-    expression: 1.0 + if(attribute(kind) == 0, query(w_recency_profile), query(w_recency)) * freshness()
+    expression: max(1.0, 1.0 + query(w_recency) * freshness())
 }
 
 # The pure-text profiles' own multiplier — same shape, own weight, and
 # no kind split (relevance() has no trust multiply for a profile boost
 # to distort). See query(w_recency_text).
 function recency_mult_text() {
-    expression: 1.0 + query(w_recency_text) * freshness()
+    expression: max(1.0, 1.0 + query(w_recency_text) * freshness())
 }
 ```
 
@@ -523,7 +605,8 @@ one-author, time-spread fixture pinning five claims:
 
 1. **inert at zero** — ids *and scores* bit-identical to not sending the
    feature at all;
-2. **recall unchanged** at `w = 4.65`, on the fixture and on the calibrated
+2. **recall unchanged** at `w = 4.65` — deliberately past the ×5.5 ceiling,
+   since recall must hold at ANY weight — on the fixture and on the calibrated
    ladder queries (`odell`, `jack`) — the `≥ 1` argument, executed;
 3. **the decay curve**, newest-first across 1 d / 1 y / 5 y, with the
    year-2100 note sorting **last** (where a `max(0, now − t)` age would have
@@ -532,8 +615,9 @@ one-author, time-spread fixture pinning five claims:
    five-year-old weak-tier hit at the recommended ceiling, *and* does cross at
    21×, so the bound is a fact about the weight and not about a fixture that
    could never cross;
-5. **the kind split** — `w_recency` leaves a kind-0 doc's score untouched to
-   the bit, `w_recency_profile` moves it.
+5. **continuity across kinds** — a one-day-old note and a one-day-old profile
+   scale by the same factor to within 1e-6 (the invariant that replaced the
+   kind split, §3.4).
 
 **Not measured yet, and needed before the weight leaves 0.0:**
 
@@ -542,13 +626,12 @@ one-author, time-spread fixture pinning five claims:
    candidates than a real page does; it can prove the mechanism and locate the
    useful range, and it cannot tell you what a page of 211 M events looks like
    at `w = 0.1`. bm25's IDF and the trust distribution both change at scale.
-2. `./gradlew :benchmark:searchBench` A/B, `w_recency` 0 vs 0.1, same cluster.
-   Per matched document the first phase now costs one `attribute(created_at)`
-   read (already resident, already `fast-search`, already marked never-page in
-   `docs/attribute-memory.md`), one subtract, one max, two divides, one
-   multiply-add and an `if` on `attribute(kind)`. That is an argument, not a
-   number. If it comes back badly, the fallback is second-phase-only recency
-   with a raised `rerank-count`, accepting §3.2's blind spot in exchange.
+2. Nothing else — the cost question is answered. `searchBench`, 200 k notes,
+   three runs per variant with alternating deploys: **+3.2 % (≈ +10 ms) on the
+   ~50 k-match "common term" shape**, every "with" run above every "without"
+   run, and *nothing resolvable* on any lighter shape. Folding the two divides
+   into one recovers none of it, so the cost is not the arithmetic and the
+   readable form stays. Full table in `benchmark/README.md`.
 
 ## 7. Rollout
 
@@ -559,12 +642,12 @@ one-author, time-spread fixture pinning five claims:
 2. **A/B live.** The weights are `query()` inputs — `rankAb` sweeps `w`,
    `recency_halflife` and the kind split against real staging data with no
    redeploy, per the harness's whole reason for existing.
-3. **Ship a default** by moving `query(w_recency)` in `event.sd`, with the
-   winning numbers and the report they came from written into the comment
-   beside it, and the new cases pinned in `RankRegressionIT`.
-4. **Kind 0 last, separately.** Only after the note-side default has been live
-   long enough to have its own bug reports, and only with the `rank_cases.json`
-   ladder re-run — that is the calibrated surface.
+3. **Ship a default.** ✅ Done — `query(w_recency) double: 0.1`, with the run
+   that chose it in the comment beside it and the value mirrored in
+   `RankRegressionIT` so it cannot move without a new run.
+4. **Watch the calibrated surface.** The kind-0 ladder is not exempt any more
+   (§3.4), so a `rank_cases.json` re-run against real staging is what the next
+   round of reports gets read against.
 5. **Optional, phase 3:** a caller-facing control. The store already owns the
    NIP-50 extension grammar, so `recency:<days>` / `recency:off` mapping to
    `recency_halflife` / `w_recency` is a small `FilterMapping` change. Not in
@@ -618,9 +701,13 @@ one-author, time-spread fixture pinning five claims:
    in `event.sd` — or a query-feature override on staging first, no deploy.
    Do you want it swept against the full corpus before it ships, or shipped at
    0.1 and watched?
-2. **Kind granularity.** Proposal splits kind 0 from everything else. Long-form
-   (30023) plausibly wants a much longer half-life than kind 1, which would mean
-   a third class rather than one more weight. Worth it in v1, or after the data?
+2. **Kind granularity.** One weight for all kinds now, after the split's
+   failure (§3.4). Long-form (30023) plausibly wants a longer half-life than
+   kind 1 — but note what §3.4 says about per-kind terms: anything that varies
+   the factor BY KIND rather than by age reintroduces a standing cross-kind
+   bias. A per-kind half-life is milder than a per-kind weight (both ends still
+   reach 1 + w at age 0) but it is the same shape of idea and needs the same
+   scrutiny.
 3. **Should `sort:rank` / `sort:followers` inherit recency as their last
    within-tier tiebreak?** They are explicit sorts, so my answer is no, but they
    are also the tokens people reach for when relevance disappoints them. §4.2

@@ -89,6 +89,8 @@ object RankAb {
                     "w_perfect_pop" to 80000.0,
                     "w_order_floor" to 0.5,
                     "w_wot_pow" to 2.7,
+                    "w_recency" to 0.1,
+                    "recency_halflife" to 30.0,
                 ),
             // Individual levers, to attribute any movement.
             "near_off" to mapOf("w_near_tier" to 0.0, "w_near_tier_text" to 0.0, "w_pop_near_tier" to 0.0),
@@ -113,9 +115,9 @@ object RankAb {
             // feel, for attributing a movement to the curve exponent.
             "trust_linear" to mapOf("w_wot_pow" to 1.0),
             // ---- RECENCY (docs/recency-ranking.md) ----
-            // The shipped default is OFF, so `recency_off` and `baseline` are
-            // the same run: keep it anyway, as the explicit control when a
-            // cluster is already serving a non-zero weight.
+            // event.sd ships w_recency 0.1, so `recency_off` is a real
+            // control now: it is what the ranking looked like before recency
+            // existed, and the row every candidate is read against.
             //
             // READ THE AGE COLUMN, not just MRR. These configs are supposed to
             // move the median age of the top hits and NOT move the calibrated
@@ -123,7 +125,7 @@ object RankAb {
             // ladder) are exactly the ones that must hold still. A config that
             // buys age by losing a pinned position is a losing config, however
             // fresh the results look.
-            "recency_off" to mapOf("w_recency" to 0.0, "w_recency_profile" to 0.0),
+            "recency_off" to mapOf("w_recency" to 0.0),
             // The MEASURED band (2026-08-22, 4.6k-event staging slice, see
             // benchmark/README.md): within a match band the trust curve
             // SATURATES — a page of trust-100 authors scores within 0.001% of
@@ -142,14 +144,11 @@ object RankAb {
             "recency_h30_w2" to mapOf("w_recency" to 2.0, "recency_halflife" to 30.0),
             "recency_h7_w1" to mapOf("w_recency" to 1.0, "recency_halflife" to 7.0),
             "recency_h365_w1" to mapOf("w_recency" to 1.0, "recency_halflife" to 365.0),
-            // Kind 0 too — the profile ladder. Run this one ALONE and against
-            // the ladder cases; it is the calibrated surface (see event.sd).
-            "recency_h30_w1_profiles" to mapOf("w_recency" to 1.0, "w_recency_profile" to 1.0, "recency_halflife" to 30.0),
             // The paper ceiling, to SEE the failure the ceiling describes:
             // 1 + w = 5.65 is the ladder's smallest rung ratio, so this is
             // where a fresh bio mention starts overtaking a real name match.
             // Never a candidate — a demonstration.
-            "recency_ceiling" to mapOf("w_recency" to 4.65, "w_recency_profile" to 4.65, "recency_halflife" to 30.0),
+            "recency_ceiling" to mapOf("w_recency" to 4.65, "recency_halflife" to 30.0),
         )
 
     @JvmStatic
@@ -169,12 +168,21 @@ object RankAb {
         // reproducible across days (and lets one be replayed at the moment a
         // bad ranking was reported); omitted, EventYql stamps the wall clock.
         val nowSecs = opts["--now"]?.toLong()
-        // Restrict recall to these kinds. The default (none) is what the ladder
-        // cases want — a profile search reaches kind 0 above everything. A
-        // RECENCY sweep wants `--kinds 1`: on a mixed query the page is
-        // profiles, which ride the separate w_recency_profile, so the note-side
-        // weight would read as inert when it is merely outranked.
-        val kinds = opts["--kinds"]?.split(",")?.mapNotNull(String::toIntOrNull).orEmpty()
+        // Restrict recall to these kinds. The default (none) is what the
+        // ladder cases want — a profile search reaches kind 0 above
+        // everything. A RECENCY sweep wants `--kinds 1`: a mixed page is
+        // profiles and titled notes, whose ages barely differ, so the weight
+        // reads as inert when it is merely measuring the wrong page (see
+        // docs/recency-ranking.md §4.3).
+        val kinds =
+            opts["--kinds"]
+                ?.split(",")
+                ?.map {
+                    it.trim().toIntOrNull() ?: run {
+                        System.err.println("--kinds takes a comma-separated list of integers; got '$it'")
+                        return
+                    }
+                }.orEmpty()
         val names = opts["--configs"]?.split(",") ?: CONFIGS.keys.toList()
         names.firstOrNull { it !in CONFIGS }?.let {
             System.err.println("unknown config '$it'; known: ${CONFIGS.keys}")
@@ -186,7 +194,11 @@ object RankAb {
                 .parseToJsonElement(Files.readString(Path.of(casesPath)))
                 .jsonArray
                 .map { it.jsonObject }
-                .filter { (it["query"]?.jsonPrimitive?.content).orEmpty().isNotBlank() }
+                // `skip` opts a row out of BOTH columns — the file's TEMPLATE
+                // row is documentation, and once empty-`expect` rows started
+                // being measured for age it was being queried live and folded
+                // into the headline median.
+                .filter { (it["query"]?.jsonPrimitive?.content).orEmpty().isNotBlank() && it["skip"]?.jsonPrimitive?.content != "true" }
         // A case with an empty `expect` names no winning document, so it scores
         // no position — but it still has a PAGE, and the age of that page is a
         // measurement. Those rows ride along age-only (they were skipped
@@ -260,13 +272,20 @@ object RankAb {
         val createdAt: Long,
     )
 
-    /** Median age in days of [hits] at [clock]; null when nothing came back. */
+    /**
+     * Median age in days of [hits] at [clock]; null when nothing came back.
+     *
+     * DISTANCE, like the ranker's own event_age_days(): the corpus holds notes
+     * stamped in the year 2100 — the exact dirty data this column exists to
+     * watch — and a signed age reports them at MINUS 27 000 days, which drags
+     * a median toward "fresh" precisely when a config has gone wrong.
+     */
     private fun medianAgeDays(
         hits: List<Hit>,
         clock: Long,
     ): Double? =
         hits
-            .map { (clock - it.createdAt) / 86400.0 }
+            .map { Math.abs(clock - it.createdAt) / 86400.0 }
             .sorted()
             .let { if (it.isEmpty()) null else it[it.size / 2] }
 

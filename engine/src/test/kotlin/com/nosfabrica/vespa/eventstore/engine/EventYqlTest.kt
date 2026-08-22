@@ -292,6 +292,22 @@ class EventYqlTest {
     }
 
     @Test
+    fun `profile selection reads the request clock, not the machine's`() {
+        // The match-phase recency profile is only sound when the wanted window
+        // is near the newest end of the corpus, so a deep-past `until` falls to
+        // the planner path. Which `until` counts as deep-past is a question
+        // about NOW — and now is the request's, not the machine's, so a pinned
+        // clock decides it. Same rule the recency RANKING follows; a query
+        // whose plan and score disagreed about the date would be neither.
+        val deepPast = 1_600_000_000L
+        val wall = EventQuery(kinds = listOf(1), limit = 50, until = deepPast)
+        assertEquals(EventYql.RANK_UNRANKED, EventYql.build(wall)!!.ranking, "years-old anchor: not the match-phase profile")
+
+        val pinned = wall.copy(nowSecs = deepPast + 60)
+        assertEquals(EventYql.RANK_RECENCY, EventYql.build(pinned)!!.ranking, "asked AT that instant, the same anchor is current")
+    }
+
+    @Test
     fun `rank feature overrides land on the request, and their names are validated`() {
         val swept =
             EventYql.build(

@@ -2,7 +2,8 @@
   {
     "query": "example",
     "expect": "",
-    "note": "TEMPLATE — `expect` is a doc-id prefix (the event id of the profile that should rank). An EMPTY expect no longer skips the case: it rides along as an AGE-ONLY row (no position, no MRR contribution), because a page's median age is a measurement even when no single document is the right answer — that is how the recency configs are read. ADD A CASE EVERY TIME SOMEONE REPORTS A BAD SEARCH; capture a baseline in the same run as any candidate (positions depend on live data)."
+    "skip": "true",
+    "note": "TEMPLATE — `expect` is a doc-id prefix (the event id of the profile that should rank). An EMPTY expect no longer skips the case: it rides along as an AGE-ONLY row (no position, no MRR contribution), because a page's median age is a measurement even when no single document is the right answer — that is how the recency configs are read. ADD A CASE EVERY TIME SOMEONE REPORTS A BAD SEARCH; capture a baseline in the same run as any candidate (positions depend on live data). This row itself carries `skip: true` — it is documentation, not a case, and must stay out of both the position table and the age column."
   },
   {
     "query": "Ode",
@@ -132,6 +133,6 @@
   {
     "query": "coffee",
     "expect": "",
-    "note": "RECENCY baseline, same run: trust lens median 1098d, 49/50 over a year, newest 208d. Kept beside the profile case 'coffee' above on purpose — the same word ranks a kind-0 ladder AND a kind-1 page, so a config that moves this row while moving the profile case has crossed the kind split (w_recency vs w_recency_profile) and is wrong."
+    "note": "RECENCY baseline, same run: trust lens median 1098d, 49/50 over a year, newest 208d. Kept beside the profile case 'coffee' above on purpose — the same word ranks a kind-0 ladder AND a kind-1 page, so the two rows read together say whether a config moved the pages or moved the ladder."
   }
 ]

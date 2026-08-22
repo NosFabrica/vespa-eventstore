@@ -92,7 +92,9 @@ internal class RecencyPlanner(
      * writer lock, so no probe can be atomic with its query.
      */
     suspend fun window(q: EventQuery): EventQuery {
-        val anchor = q.until ?: (System.currentTimeMillis() / 1000)
+        // The request's clock when it carries one (EventYql.nowOf's rule): a
+        // plan and the ranking it feeds must not disagree about "now".
+        val anchor = q.until ?: q.nowSecs ?: (System.currentTimeMillis() / 1000)
         for (window in PROBE_WINDOWS) {
             val since = anchor - window
             // An existing `since` at least this tight makes the rung (and any

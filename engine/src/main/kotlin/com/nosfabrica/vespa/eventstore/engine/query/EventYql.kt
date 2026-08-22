@@ -189,7 +189,20 @@ object EventYql {
             q.search.isNullOrBlank() &&
             q.phrases.isEmpty() &&
             (q.limit ?: 0) in 1..MATCH_PHASE_BAND &&
-            (q.until == null || q.until >= System.currentTimeMillis() / 1000 - RECENT_UNTIL_HORIZON)
+            (q.until == null || q.until >= nowOf(q) - RECENT_UNTIL_HORIZON)
+
+    /**
+     * The request's clock: [EventQuery.nowSecs] when the caller stamped one
+     * (the store stamps one per REQ), else the wall clock.
+     *
+     * One clock per query, for the same reason the store stamps one per
+     * request: profile SELECTION here and the recency RANKING in the schema
+     * both ask "how old is this", and a query whose two answers disagree is a
+     * query whose plan does not match its score. It also makes selection a
+     * function of the request, so a test can pin a deep-past `until` without
+     * pinning the machine's clock.
+     */
+    private fun nowOf(q: EventQuery): Long = q.nowSecs ?: (System.currentTimeMillis() / 1000)
 
     /** How far back an `until` may sit and still ride [RANK_RECENCY] — beyond it, pagination anchors take the planner path. */
     const val RECENT_UNTIL_HORIZON = 2_592_000L
@@ -212,7 +225,7 @@ object EventYql {
     fun usesGatedMatchPhase(q: EventQuery): Boolean =
         q.ranking == RANK_RECENCY_GATED &&
             (q.limit ?: 0) in 1..MATCH_PHASE_BAND &&
-            (q.until == null || q.until >= System.currentTimeMillis() / 1000 - RECENT_UNTIL_HORIZON)
+            (q.until == null || q.until >= nowOf(q) - RECENT_UNTIL_HORIZON)
 
     /**
      * The rank profile [build] will run [q] on. Stated separately because
@@ -266,7 +279,7 @@ object EventYql {
         // excluded here rank by created_at ALONE, where an instant means
         // nothing (and the gated pair strips it below with the text features).
         if (ranking != RANK_UNRANKED && ranking != RANK_RECENCY) {
-            params[F_NOW_SECS] = (q.nowSecs ?: (System.currentTimeMillis() / 1000)).toString()
+            params[F_NOW_SECS] = nowOf(q).toString()
         }
         // The gated profiles are STANDALONE (see event.sd): they declare the two
         // trust inputs, score by created_at, and read no text signal at all. The

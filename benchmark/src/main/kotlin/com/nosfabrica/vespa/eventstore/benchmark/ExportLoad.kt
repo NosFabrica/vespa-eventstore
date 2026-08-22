@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.eventstore.benchmark
 
 import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.vitorpamplona.quartz.nip01Core.core.Event
+import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
@@ -48,8 +49,17 @@ import java.nio.file.Path
  * relay); nothing here talks to a relay, and no test may point at one. See
  * benchmark/README.md.
  *
+ * Each file is parsed whole (a capture is a JSON array, so there is no
+ * streaming entry point) — BENCH_HEAP raises the JVM's ceiling for a big one.
+ * REJECTIONS ARE COUNTED AND PRINTED, not swallowed: a capture that lands
+ * half-rejected (duplicates, supersessions, an expired NIP-40 window) would
+ * otherwise leave a sweep measuring a corpus nobody meant to build.
+ *
  *     VESPA_URL=http://localhost:8080 ./gradlew :benchmark:exportLoad \
  *       --args="/path/staging_events.json /path/staging_trust.json"
+ *
+ * VESPA_CONFIG_URL overrides the derived config endpoint (host:19071) when the
+ * cluster's ports are mapped somewhere else.
  */
 object ExportLoad {
     @JvmStatic
@@ -58,7 +68,12 @@ object ExportLoad {
             require(args.isNotEmpty()) { "usage: exportLoad <events.json> [more.json ...]" }
             val url = System.getenv("VESPA_URL") ?: "http://localhost:8080"
             val batch = System.getenv("BENCH_BATCH")?.toIntOrNull() ?: 500
-            val store = VespaEventStore.open(url)
+            // VespaEventStore derives the config URL as host:19071, so a second
+            // container mapped to another port needs to be told: without this,
+            // open() deploys to whatever is on 19071 and then waits two minutes
+            // for THIS url to start serving an application it never got.
+            val configUrl = System.getenv("VESPA_CONFIG_URL")
+            val store = if (configUrl != null) VespaEventStore.open(url = url, configUrl = configUrl) else VespaEventStore.open(url)
             store.use {
                 for (path in args) {
                     val events =
@@ -66,14 +81,34 @@ object ExportLoad {
                             .parseToJsonElement(Files.readString(Path.of(path)))
                             .jsonArray
                             .map { Event.fromJson(it.toString()) }
-                    var fed = 0
+                    val rejected = HashMap<String, Int>()
+                    var accepted = 0
                     events.chunked(batch).forEach { chunk ->
                         // batchInsert, never a loop over insert(): the per-event
                         // path pays admission probes the batch path amortizes.
-                        store.batchInsert(chunk)
-                        fed += chunk.size
+                        store.batchInsert(chunk).forEach { outcome ->
+                            when (outcome) {
+                                is IEventStore.InsertOutcome.Accepted -> {
+                                    accepted++
+                                }
+
+                                // The reason's PREFIX is the vocabulary
+                                // (duplicate:/replaced:/blocked:, Rejections.kt);
+                                // the tail names the individual event.
+                                is IEventStore.InsertOutcome.Rejected -> {
+                                    rejected.merge(outcome.reason.substringBefore(':'), 1, Int::plus)
+                                }
+
+                                // A write that threw, not a rule that refused —
+                                // the one outcome a loader must not shrug at.
+                                is IEventStore.InsertOutcome.Failed -> {
+                                    rejected.merge("FAILED", 1, Int::plus)
+                                }
+                            }
+                        }
                     }
-                    println("fed $fed events from $path")
+                    val why = rejected.entries.sortedByDescending { it.value }.joinToString { "${it.key} ${it.value}" }
+                    println("${path.substringAfterLast('/')}: ${events.size} read, $accepted accepted${if (why.isEmpty()) "" else ", rejected: $why"}")
                 }
                 // Trust is settled by a background worker; a sweep that queries
                 // before it drains ranks against half a web of trust.

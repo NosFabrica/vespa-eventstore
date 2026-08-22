@@ -379,8 +379,11 @@ class RankRegressionIT {
             doc(56, kind = 1, pubkey = pk(50), createdAt = IT_NOW - 1825 * DAY, search = SearchFields(secondary = "recencyrung")),
             doc(57, kind = 1, pubkey = pk(50), createdAt = IT_NOW, search = SearchFields(text = "a body that mentions recencyrung once")),
             // A kind-0 doc on the same author and the same probe word: the
-            // control for the SEPARATE profile weight (w_recency vs
-            // w_recency_profile).
+            // CONTINUITY control. A per-kind weight was tried and rejected
+            // (event.sd) because exempting kind 0 gives every other kind a
+            // standing advantage over every profile; this doc pins that two
+            // documents of the same age now scale identically whatever their
+            // kinds.
             doc(58, kind = 0, pubkey = pk(50), createdAt = IT_NOW - 1 * DAY, search = SearchFields(name = "recencyprobe")),
         ) + FLOOR_CASES.map { doc(it.n, kind = it.kind, pubkey = pk(60), search = it.search) }
 
@@ -933,14 +936,15 @@ class RankRegressionIT {
                     // second deploy — the same property that lets RankAb sweep
                     // a live cluster.
 
-                    // 1. INERT AT ZERO. The shipped default changes nothing:
-                    // same ids, same scores, to the bit.
-                    val zeroOff = indexRef.searchScored(EventQuery(search = "recencyprobe", observer = OBSERVER, minRank = DEFAULT_IT_MIN_RANK))
-                    val zeroOn = searchRecency("recencyprobe", 0.0)
+                    // 1. WHAT THE SCHEMA SHIPS. Sending nothing must equal
+                    // sending the shipped weights, to the bit — so this fails
+                    // the moment event.sd's default moves without the run
+                    // (benchmark/README.md) that justifies the new number.
+                    val shipped = searchDefaults("recencyprobe")
                     assertEquals(
-                        zeroOff.map { it.doc.id to it.relevance },
-                        zeroOn.map { it.doc.id to it.relevance },
-                        "w_recency 0 must be bit-identical to not sending the feature at all",
+                        searchRecency("recencyprobe", SHIPPED_W_RECENCY).map { it.doc.id to it.relevance },
+                        shipped.map { it.doc.id to it.relevance },
+                        "the schema's shipped w_recency must be $SHIPPED_W_RECENCY — re-measure before changing it",
                     )
 
                     // 2. RECALL IS UNCHANGED. recency_mult() is >= 1, so it
@@ -951,8 +955,8 @@ class RankRegressionIT {
                     // anything shippable.
                     for (query in listOf("recencyprobe", "recencyrung", "odell", "jack")) {
                         assertEquals(
-                            indexRef.searchScored(EventQuery(search = query, observer = OBSERVER, minRank = DEFAULT_IT_MIN_RANK)).map { it.doc.id }.toSet(),
-                            searchRecency(query, 4.65, profileWeight = 4.65).map { it.doc.id }.toSet(),
+                            searchRecency(query, 0.0).map { it.doc.id }.toSet(),
+                            searchRecency(query, 4.65).map { it.doc.id }.toSet(),
                             "\"$query\": a >= 1 multiplier may reorder the match set, never change it",
                         )
                     }
@@ -984,20 +988,25 @@ class RankRegressionIT {
                         "at 21x it DOES cross — so claim 4 is a bound on w_recency, not an artifact of the fixture",
                     )
 
-                    // 5. KIND 0 IS ON ITS OWN WEIGHT. Doc 58 is a day-old
-                    // profile; w_recency must leave it exactly where it was,
-                    // because a replaceable event's created_at is its last
-                    // edit and the calibrated ladder lives on kind 0.
-                    assertEquals(
-                        zeroOff.first { it.doc.id == id(58) }.relevance,
-                        searchRecency("recencyprobe", 2.0).first { it.doc.id == id(58) }.relevance,
-                        "w_recency must not touch a kind-0 doc — that is what w_recency_profile is for",
-                    )
-                    assertTrue(
-                        searchRecency("recencyprobe", 2.0, profileWeight = 2.0).first { it.doc.id == id(58) }.relevance >
-                            zeroOff.first { it.doc.id == id(58) }.relevance,
-                        "w_recency_profile must reach kind 0 — the split is two weights, not a disabled feature",
-                    )
+                    // 5. THE FACTOR IS CONTINUOUS ACROSS KINDS. Docs 50 and
+                    // 58 are one day old, one author, one word — a kind-1 note
+                    // and a kind-0 profile — so they must scale by the SAME
+                    // factor. A kind-exempting weight (tried, rejected — see
+                    // event.sd) instead handed every non-profile kind a
+                    // standing advantage over every profile whatever its age,
+                    // and flipped the "primal" case above by 0.25% within an
+                    // hour of shipping.
+                    for (w in listOf(0.5, 2.0)) {
+                        val on = searchRecency("recencyprobe", w).associate { it.doc.id to it.relevance }
+                        val off = searchRecency("recencyprobe", 0.0).associate { it.doc.id to it.relevance }
+                        val note = on.getValue(id(50)) / off.getValue(id(50))
+                        val profile = on.getValue(id(58)) / off.getValue(id(58))
+                        assertTrue(
+                            Math.abs(note - profile) < 1e-6,
+                            "same age, same factor, whatever the kind (w=$w): note x$note vs profile x$profile",
+                        )
+                        assertTrue(note > 1.0, "and the factor must actually be doing something (w=$w): x$note")
+                    }
 
                     // --- typo bound: over-budget hits never match ---
                     absent("odelll", "Odessa")
@@ -1036,16 +1045,18 @@ class RankRegressionIT {
             .firstOrNull { it.doc.id == docId }
             ?.tier ?: "MISSING"
 
+    /** The default profile at [IT_NOW] with NO rank-feature overrides: whatever event.sd ships. */
+    private suspend fun searchDefaults(text: String) = indexRef.searchScored(EventQuery(search = text, observer = OBSERVER, minRank = DEFAULT_IT_MIN_RANK, nowSecs = IT_NOW))
+
     /**
-     * The DEFAULT profile with the recency weights forced on, measured against
-     * the fixed [IT_NOW]. Overrides travel as rank features on the request, so
-     * the schema keeps shipping its 0.0 defaults and no case here needs a
-     * second deploy — exactly how RankAb sweeps a live cluster.
+     * The DEFAULT profile with the recency weight forced to [weight], measured
+     * against the fixed [IT_NOW]. Overrides travel as rank features on the
+     * request, so the schema keeps serving what it ships and no case here needs
+     * a second deploy — exactly how RankAb sweeps a live cluster.
      */
     private suspend fun searchRecency(
         text: String,
         weight: Double,
-        profileWeight: Double = 0.0,
         halflife: Double = 30.0,
     ) = indexRef.searchScored(
         EventQuery(
@@ -1053,7 +1064,7 @@ class RankRegressionIT {
             observer = OBSERVER,
             minRank = DEFAULT_IT_MIN_RANK,
             nowSecs = IT_NOW,
-            rankFeatures = mapOf("w_recency" to weight, "w_recency_profile" to profileWeight, "recency_halflife" to halflife),
+            rankFeatures = mapOf("w_recency" to weight, "recency_halflife" to halflife),
         ),
     )
 
@@ -1147,6 +1158,13 @@ class RankRegressionIT {
 
         /** Seconds in a day — the recency fixture's unit. */
         const val DAY = 86_400L
+
+        /**
+         * The w_recency event.sd ships — mirrored here so a change to it has to
+         * come with a change here, and therefore with the run that justifies
+         * it (benchmark/README.md). NOT a tuning knob in this file.
+         */
+        const val SHIPPED_W_RECENCY = 0.1
 
         /**
          * The instant every recency assertion is measured against, stamped as
