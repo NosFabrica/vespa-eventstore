@@ -351,6 +351,37 @@ class RankRegressionIT {
                         text = "Dr. Jack Kruse on why artificial light is the problem and sunlight is the fix.",
                     ),
             ),
+            // --- RECENCY (docs/recency-ranking.md). Six docs, ONE author, so
+            // trust is a constant and age is the only variable left.
+            //
+            // 50..53 are the same word in the same column at four ages: the
+            // decay curve, and the year-2100 note the live corpus really does
+            // hold. 56/57 are the LADDER control — a five-year-old weak-tier
+            // hit against a same-day body hit, adjacent rungs of the §12
+            // ladder (4000 vs 550, x7.3 at equal trust) — which is where the
+            // claim "recency reorders inside a band and never across one"
+            // either holds or does not.
+            //
+            // Ages are relative to IT_NOW, and every recency assertion stamps
+            // the same instant as query(now_secs), so these positions do not
+            // rot as the file ages. The rest of the corpus is time-FLAT
+            // (1_700_000_000 + n), which is why every calibrated case above
+            // is untouched by a recency weight: freshness() varies by <1e-7
+            // across it. That makes those cases silent about recency, not
+            // proof it is safe — hence 56/57.
+            doc(50, kind = 1, pubkey = pk(50), createdAt = IT_NOW - 1 * DAY, search = SearchFields(primary = "recencyprobe")),
+            doc(51, kind = 1, pubkey = pk(50), createdAt = IT_NOW - 365 * DAY, search = SearchFields(primary = "recencyprobe")),
+            doc(52, kind = 1, pubkey = pk(50), createdAt = IT_NOW - 1825 * DAY, search = SearchFields(primary = "recencyprobe")),
+            // The dirty-data case: stamped in the year 2100. A max(0, now - t)
+            // age — the shape of Vespa's own age()/freshness() — would give
+            // this doc the MAXIMUM boost and put it first.
+            doc(53, kind = 1, pubkey = pk(50), createdAt = IT_NOW + 27_010 * DAY, search = SearchFields(primary = "recencyprobe")),
+            doc(56, kind = 1, pubkey = pk(50), createdAt = IT_NOW - 1825 * DAY, search = SearchFields(secondary = "recencyrung")),
+            doc(57, kind = 1, pubkey = pk(50), createdAt = IT_NOW, search = SearchFields(text = "a body that mentions recencyrung once")),
+            // A kind-0 doc on the same author and the same probe word: the
+            // control for the SEPARATE profile weight (w_recency vs
+            // w_recency_profile).
+            doc(58, kind = 0, pubkey = pk(50), createdAt = IT_NOW - 1 * DAY, search = SearchFields(name = "recencyprobe")),
         ) + FLOOR_CASES.map { doc(it.n, kind = it.kind, pubkey = pk(60), search = it.search) }
 
     @Test
@@ -542,6 +573,10 @@ class RankRegressionIT {
                                 // The recall-floor matrix: ONE author for all ten rows, so
                                 // the matrix measures the ladder and never trust.
                                 ReputationDoc(pk(60), influenceScores = mapOf(OBSERVER to 50)),
+                                // The recency fixture: ONE author for all of it,
+                                // mid-scale, so age is the only variable and the
+                                // hits still clear the store's min_rank (2).
+                                ReputationDoc(pk(50), influenceScores = mapOf(OBSERVER to 50)),
                             ),
                         )
                     }
@@ -891,6 +926,79 @@ class RankRegressionIT {
                         "2 CJK characters yield no trigrams, so no clause is emitted — pinned as the REMAINING gap",
                     )
 
+                    // --- RECENCY: the four claims (docs/recency-ranking.md) ---
+                    // Every query here stamps IT_NOW and forces the weights
+                    // through EventQuery.rankFeatures, so this runs against
+                    // the SHIPPED schema defaults (both weights 0.0) without a
+                    // second deploy — the same property that lets RankAb sweep
+                    // a live cluster.
+
+                    // 1. INERT AT ZERO. The shipped default changes nothing:
+                    // same ids, same scores, to the bit.
+                    val zeroOff = indexRef.searchScored(EventQuery(search = "recencyprobe", observer = OBSERVER, minRank = DEFAULT_IT_MIN_RANK))
+                    val zeroOn = searchRecency("recencyprobe", 0.0)
+                    assertEquals(
+                        zeroOff.map { it.doc.id to it.relevance },
+                        zeroOn.map { it.doc.id to it.relevance },
+                        "w_recency 0 must be bit-identical to not sending the feature at all",
+                    )
+
+                    // 2. RECALL IS UNCHANGED. recency_mult() is >= 1, so it
+                    // cannot push a survivor under rank-score-drop-limit nor
+                    // lift a hit the cutoff zeroed — the property that makes
+                    // this change safe to ship dark. Asserted on the fixture
+                    // AND on a calibrated ladder query, at a weight far past
+                    // anything shippable.
+                    for (query in listOf("recencyprobe", "recencyrung", "odell", "jack")) {
+                        assertEquals(
+                            indexRef.searchScored(EventQuery(search = query, observer = OBSERVER, minRank = DEFAULT_IT_MIN_RANK)).map { it.doc.id }.toSet(),
+                            searchRecency(query, 4.65, profileWeight = 4.65).map { it.doc.id }.toSet(),
+                            "\"$query\": a >= 1 multiplier may reorder the match set, never change it",
+                        )
+                    }
+
+                    // 3. THE DECAY CURVE, and the year-2100 note. Four docs,
+                    // one author, one word, four ages: at w=1 the mults are
+                    // 1.968 / 1.076 / 1.016 / 1.001, so the order is strict —
+                    // and the future-stamped note sorts LAST, where a
+                    // max(0, now - t) age would have put it first.
+                    assertEquals(
+                        listOf(id(50), id(51), id(52), id(53)),
+                        searchRecency("recencyprobe", 1.0).map { it.doc.id }.filter { it != id(58) },
+                        "newest first, and a note stamped 2100 is as stale as one from 1952",
+                    )
+
+                    // 4. THE LADDER IS NOT FOR SALE. 56 (weak rung, 4000) is
+                    // five years old; 57 (body rung, 550) is same-day. The gap
+                    // is x7.3, so a 3x boost cannot close it — and the second
+                    // half proves that is a fact about the WEIGHT, not about a
+                    // query that could never cross: at 21x it does close.
+                    assertEquals(
+                        id(56),
+                        searchRecency("recencyrung", 2.0).map { it.doc.id }.firstOrNull(),
+                        "at the recommended ceiling (3x) a same-day body hit must not cross a five-year-old weak-tier hit",
+                    )
+                    assertEquals(
+                        id(57),
+                        searchRecency("recencyrung", 20.0).map { it.doc.id }.firstOrNull(),
+                        "at 21x it DOES cross — so claim 4 is a bound on w_recency, not an artifact of the fixture",
+                    )
+
+                    // 5. KIND 0 IS ON ITS OWN WEIGHT. Doc 58 is a day-old
+                    // profile; w_recency must leave it exactly where it was,
+                    // because a replaceable event's created_at is its last
+                    // edit and the calibrated ladder lives on kind 0.
+                    assertEquals(
+                        zeroOff.first { it.doc.id == id(58) }.relevance,
+                        searchRecency("recencyprobe", 2.0).first { it.doc.id == id(58) }.relevance,
+                        "w_recency must not touch a kind-0 doc — that is what w_recency_profile is for",
+                    )
+                    assertTrue(
+                        searchRecency("recencyprobe", 2.0, profileWeight = 2.0).first { it.doc.id == id(58) }.relevance >
+                            zeroOff.first { it.doc.id == id(58) }.relevance,
+                        "w_recency_profile must reach kind 0 — the split is two weights, not a disabled feature",
+                    )
+
                     // --- typo bound: over-budget hits never match ---
                     absent("odelll", "Odessa")
                 }
@@ -927,6 +1035,27 @@ class RankRegressionIT {
             .searchScored(EventQuery(search = query, observer = OBSERVER, minRank = DEFAULT_IT_MIN_RANK))
             .firstOrNull { it.doc.id == docId }
             ?.tier ?: "MISSING"
+
+    /**
+     * The DEFAULT profile with the recency weights forced on, measured against
+     * the fixed [IT_NOW]. Overrides travel as rank features on the request, so
+     * the schema keeps shipping its 0.0 defaults and no case here needs a
+     * second deploy — exactly how RankAb sweeps a live cluster.
+     */
+    private suspend fun searchRecency(
+        text: String,
+        weight: Double,
+        profileWeight: Double = 0.0,
+        halflife: Double = 30.0,
+    ) = indexRef.searchScored(
+        EventQuery(
+            search = text,
+            observer = OBSERVER,
+            minRank = DEFAULT_IT_MIN_RANK,
+            nowSecs = IT_NOW,
+            rankFeatures = mapOf("w_recency" to weight, "w_recency_profile" to profileWeight, "recency_halflife" to halflife),
+        ),
+    )
 
     private suspend fun search(text: String) = searchWith(text, EventYql.RANK_TEXT)
 
@@ -985,10 +1114,14 @@ class RankRegressionIT {
         kind: Int,
         search: SearchFields,
         pubkey: String = "a1".repeat(32),
+        // Time-FLAT by default (seconds apart), which is what lets every
+        // ranking case above measure text and trust with age held still. Only
+        // the recency fixture overrides it.
+        createdAt: Long = 1_700_000_000L + n,
     ) = EventDoc(
         id = id(n),
         pubkey = pubkey,
-        createdAt = 1_700_000_000L + n,
+        createdAt = createdAt,
         kind = kind,
         tags = emptyList(),
         content = "",
@@ -1011,6 +1144,18 @@ class RankRegressionIT {
 
         /** The store's own floor (FilterMapping.DEFAULT_MIN_RANK), so these queries are shaped like the reported ones. */
         const val DEFAULT_IT_MIN_RANK = 2.0
+
+        /** Seconds in a day — the recency fixture's unit. */
+        const val DAY = 86_400L
+
+        /**
+         * The instant every recency assertion is measured against, stamped as
+         * query(now_secs). A FIXED number, not the wall clock: that is the
+         * whole reason the clock travels on the query (see EventQuery.nowSecs),
+         * and it means these positions are as reproducible in five years as
+         * they are today.
+         */
+        const val IT_NOW = 1_800_000_000L
 
         /**
          * THE RECALL-FLOOR MATRIX: one doc per searchable column, each

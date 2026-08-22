@@ -257,6 +257,17 @@ object EventYql {
             params["ranking.features.query(user_q)"] = "{$observer:1.0}"
             q.minRank?.let { params["ranking.features.query(min_rank)"] = it.toString() }
         }
+        // The query instant for recency ranking (docs/recency-ranking.md).
+        // Stamped by the CLIENT rather than read from Vespa's own `now` so a
+        // score is a function of the request and not of the second it arrived
+        // in: positions stay pinnable as the corpus ages, every content node
+        // scores one query against one instant, and a reported ranking can be
+        // replayed later. Sent on everything that ranks text; the two profiles
+        // excluded here rank by created_at ALONE, where an instant means
+        // nothing (and the gated pair strips it below with the text features).
+        if (ranking != RANK_UNRANKED && ranking != RANK_RECENCY) {
+            params[F_NOW_SECS] = (q.nowSecs ?: (System.currentTimeMillis() / 1000)).toString()
+        }
         // The gated profiles are STANDALONE (see event.sd): they declare the two
         // trust inputs, score by created_at, and read no text signal at all. The
         // term-weighting features [filterClauses] emits alongside a search term
@@ -268,6 +279,15 @@ object EventYql {
         }
         // Two-phase profiles only; the engine ignores it elsewhere.
         q.rerankCount?.let { params["ranking.rerankCount"] = it.toString() }
+        // Harness overrides last, so a sweep can also move a feature the
+        // builder just set (min_rank, now_secs) — that is what a sweep is for.
+        // The NAME is validated here, not trusted: every other caller-supplied
+        // string in this builder is escaped or travels out-of-band, and a
+        // parameter name must not be the one hole in that.
+        q.rankFeatures.forEach { (name, value) ->
+            require(RANK_FEATURE_NAME.matches(name)) { "illegal rank feature name: $name" }
+            params["ranking.features.query($name)"] = value.toString()
+        }
 
         val where = whereOf(clauses)
         // Plain recall orders newest first; anything ranked keeps Vespa's
@@ -340,8 +360,14 @@ object EventYql {
     /** How many things the user asked for — words plus quoted phrases (text_relevance's `n_words`). */
     private const val F_N_WORDS = "ranking.features.query(n_words)"
 
+    /** The query instant recency ranking reads (text_relevance's `now_secs`). */
+    private const val F_NOW_SECS = "ranking.features.query(now_secs)"
+
     /** The text-weighting features a search term brings — meaningless on the recency profiles, which read no text signal. */
-    private val TEXT_RANK_FEATURES = setOf(F_W_GRAM, F_N_WORDS)
+    private val TEXT_RANK_FEATURES = setOf(F_W_GRAM, F_N_WORDS, F_NOW_SECS)
+
+    /** What [EventQuery.rankFeatures] may name: the shape every `query()` input in event.sd has. */
+    private val RANK_FEATURE_NAME = Regex("[a-z][a-z0-9_]*")
 
     /** Vespa's "disable this ceiling" sentinel for the `grouping.*Max*` settings. */
     const val UNLIMITED_GROUPS = "-1"

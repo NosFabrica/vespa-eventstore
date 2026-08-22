@@ -1,9 +1,11 @@
 # Recency in text ranking — a proposal
 
-**Status: proposal. Nothing here is implemented.** Written 2026-08-22 against
-`engine/app/schemas/event.sd` at `fb0eaa1`. It ends with the exact diffs, a
-calibration derivation, and the measurement that has to pass before any of it
-is turned on.
+**Status: IMPLEMENTED AND INERT.** The mechanism is in the tree
+(`engine/app/schemas/event.sd`, `EventQuery`/`EventYql`, `RankAb`,
+`RankRegressionIT`) with every weight shipped at **0.0**, so it changes no
+score, no position and no match set until a sweep moves one. What remains is
+the tuning, and the tuning is a `query()` input — no redeploy. §6 says exactly
+what has and has not been measured.
 
 ## 1. The gap
 
@@ -24,6 +26,23 @@ one from the same author. The only way a caller gets recency today is
 even drops the text weights client-side for that shape (`EventYql.build`,
 `TEXT_RANK_FEATURES`). Users asking for "newer posts first" are not asking for
 that trade; they want the same ranking, tilted.
+
+**Measured, 2026-08-22**, read-only against the live staging relay (observer
+`460c25…065c`, `kind 1`, `limit 50`; full table in `benchmark/README.md`):
+
+| query | lens | median age of the top 50 | older than 1y | newest hit on the page |
+| --- | --- | --- | --- | --- |
+| bitcoin | trust (`search`) | **1057 d** | 49/50 | 144 d |
+| bitcoin | `sort:recent` | **0 d** | 0/50 | 0.0 d |
+| lightning | trust | 955 d | **50/50** | 574 d |
+| nostr | trust | 1106 d | 49/50 | 337 d |
+| coffee | trust | 1098 d | 49/50 | 208 d |
+
+The `sort:recent` row is the whole argument. Same filter, same trust lens, 50
+same-day hits: fresh, trusted, matching content exists in quantity, and the
+default ranking shows none of it. A page of "lightning" contains nothing from
+the last eighteen months. This is not a corpus problem to fix upstream — it is
+a ranking function with no time term in it.
 
 ## 2. What the shape of the change is constrained by
 
@@ -76,9 +95,11 @@ They are the reason this is a page of design and not a one-line `+ attribute(cre
 event_age_days() = |clock − attribute(created_at)| / 86400
 freshness()      = 1 / (1 + event_age_days() / query(recency_halflife))
 recency_mult()   = 1 + w · freshness()          // w per kind, see §3.4
+clock            = query(now_secs), falling back to Vespa's `now`
 ```
 
-**Symmetric age** (`abs`, not `max(0, …)`) is constraint 4: a note dated 2100 is
+**Symmetric age** — `max(now − t, t − now)`, i.e. |now − created_at|, rather
+than `max(0, now − t)` — is constraint 4: a note dated 2100 is
 as stale as one from 1952, which is the honest reading of "this clock is
 wrong", while a client a few minutes ahead still counts as fresh. It is also
 why the built-in `freshness(created_at)` is not used — that, and its shape:
@@ -159,12 +180,14 @@ would not notice if we broke it.)
 
 ### 3.5 The clock comes from the query
 
-`query(now)`, stamped by `EventYql` from the client's clock, with
-`if(query(now) > 0, query(now), now)` as the schema-side fallback. Constraint 6:
+`query(now_secs)`, stamped by `EventYql` from the client's clock, with
+`if(query(now_secs) > 0, query(now_secs), now)` as the schema-side fallback.
+Constraint 6:
 
-- **Deterministic tests.** `RankRegressionIT` and `RankAb` pin `now` to a fixed
-  instant (the corpus's max `created_at`), so a recency case asserts a position
-  that does not rot as the corpus ages.
+- **Deterministic tests.** `RankRegressionIT` pins `IT_NOW = 1_800_000_000` and
+  dates its recency fixture relative to it, so those positions are as
+  reproducible in five years as today; `RankAb --now <epoch>` does the same for
+  a sweep.
 - **Identical on every node.** All content nodes score one query against one
   instant.
 - **Replayable.** "Why did this rank on Tuesday" is answerable by stamping
@@ -200,64 +223,121 @@ corpus: H = 7d for a conversation-shaped index, H = 30d for a general note
 index (recommended starting point), H = 365d for long-form, where "recent"
 means this year.
 
-## 5. The diffs
+## 5. What landed
+
+The snippets below are the shipped code, not a sketch: every weight is 0.0, so
+the deploy is a no-op until a sweep moves one.
 
 ### 5.1 `engine/app/schemas/event.sd` — `text_relevance` inputs
 
-```
-+           # ---- recency (docs/recency-ranking.md) ----
-+           # The query instant, epoch seconds, stamped by EventYql. Vespa's
-+           # own `now` is per-node and per-second, so a profile reading it is
-+           # not a function of the request: tests could not pin a position,
-+           # two content nodes could disagree about one query, and a report
-+           # could not be replayed. Fallback below keeps an older client sane.
-+           query(now) double: 0.0
-+           # Age at which freshness() halves, in DAYS. Per corpus: ~7 for a
-+           # conversation index, 30 for general notes, 365 for long-form.
-+           query(recency_halflife) double: 30.0
-+           # Strength of the multiplicative freshness boost: mult in [1, 1+w].
-+           # 0.0 = OFF, the shipped default until the A/B says otherwise.
-+           # HARD CEILING 4.65: above it the boost exceeds the smallest rung
-+           # ratio of the §12 ladder (x5.65) and recency starts CROSSING text
-+           # tiers. Recommended <= 2.0; rungs have tails (§3.3).
-+           query(w_recency) double: 0.0
-+           # Same, for kind 0. A replaceable event's created_at is its LAST
-+           # EDIT, so freshness there rewards profile churn — and the whole
-+           # calibrated rank_cases.json ladder is kind-0 search. Own weight,
-+           # defaulted OFF; do not merge the two.
-+           query(w_recency_profile) double: 0.0
-```
-
-### 5.2 `event.sd` — three functions in `text_relevance`
+Four new inputs, all shipped at their inert values:
 
 ```
-+       # Seconds between the event and the query instant, SYMMETRIC: a
-+       # timestamp in the future is as stale as one equally far in the past.
-+       # The live corpus really does hold notes dated 2100; max(0, now - t) —
-+       # the shape of Vespa's own age()/freshness() — would hand exactly those
-+       # the maximum boost, while abs() gives them a 74-year-old note's boost.
-+       # A client a few minutes ahead of us still reads as fresh.
-+       function event_age_days() {
-+           expression: abs(if(query(now) > 0, query(now), now) - attribute(created_at)) / 86400.0
-+       }
-+
-+       # 1 at zero age, 0.5 at the half-life, never 0. Hyperbolic, not
-+       # exponential: a three-year-old exact match is still the best answer to
-+       # a rare query, and exp() decay has deleted it by then. One divide, no
-+       # exp/log — this runs over EVERY match, not a rerank window.
-+       function freshness() {
-+           expression: 1.0 / (1.0 + event_age_days() / max(1.0, query(recency_halflife)))
-+       }
-+
-+       # >= 1, ALWAYS. That is what makes this recall-safe: `search` deletes on
-+       # rank-score-drop-limit and floored_text_score() maps gram-only noise to
-+       # 0.0 for it to delete, so a factor >= 1 can neither push a survivor
-+       # under the limit nor lift a zeroed hit over it — the match set is
-+       # bit-identical, only the ORDER moves. Bounded by 1+w, which is what
-+       # keeps recency under the x5.65 rung ratio of the tier ladder.
-+       function recency_mult() {
-+           expression: 1.0 + if(attribute(kind) == 0, query(w_recency_profile), query(w_recency)) * freshness()
-+       }
+# ---- RECENCY (docs/recency-ranking.md) ----
+# The query instant, epoch SECONDS, stamped by EventYql on every
+# ranked text query. Vespa's own `now` is evaluated per content
+# node and moves every second, so a profile reading it is not a
+# function of the request: RankRegressionIT could not pin a
+# position, two nodes could disagree about one query, and a bad
+# ranking could not be replayed at the instant it was reported.
+# 0.0 (the fail-safe default) falls back to `now`, so a sender
+# that omits it degrades to wall-clock, never to 1970.
+# Named now_secs, not now, to keep the query feature textually
+# distinct from the built-in feature it shadows.
+query(now_secs) double: 0.0
+# Age at which freshness() halves, in DAYS. Corpus-shaped: ~7 for
+# a conversation index, 30 for general notes, 365 for long-form.
+# Clamped to >= 1 in freshness() so a zero can never divide.
+query(recency_halflife) double: 30.0
+# Strength of the multiplicative freshness boost on the DEFAULT
+# profile: recency_mult() in [1, 1 + w_recency].
+#
+# 0.0 = OFF. Shipped off deliberately: the mechanism deploys inert
+# (every score, position and match set identical to before), then
+# the weight is swept LIVE with :benchmark:rankAb — it is a
+# query() input, so tuning it needs no redeploy — and only then
+# does a measured default land here, with the run that chose it.
+#
+# HARD CEILING 4.65. Above it 1 + w exceeds the smallest rung
+# ratio of the §12 ladder (x5.65, see query(w_name_tier)) and
+# recency starts CROSSING text tiers — a fresh bio mention over a
+# real name match, which is exactly the ordering wot_mult() is
+# calibrated to allow only on overwhelming trust. Recommended
+# <= 2.0: rungs have TAILS (a bio-band doc carrying the term in
+# body and hashtags reaches ~900 against the weak floor of 4000,
+# i.e. x4.4), so the paper ceiling is not the safe one.
+query(w_recency) double: 0.0
+# Same, for KIND 0 — deliberately a separate weight, defaulted off
+# even once w_recency ships. A replaceable event's created_at is
+# its LAST EDIT, not its creation, so freshness on a profile
+# rewards editing your profile, which is free and which spam
+# accounts do. Kind 0 is also where the whole calibrated ladder
+# lives (every case in benchmark/rank_cases.json is a profile
+# search), so it moves last and on its own evidence.
+query(w_recency_profile) double: 0.0
+# Same, for the PURE-TEXT profiles (`text`/`text2`). Kept apart
+# from w_recency because relevance() is ADDITIVE: its rungs are
+# 1100/700/620/550 — ratios of 1.13..1.57 — and its uncapped
+# bm25/secondary tail already overlaps them, so there is no
+# "cannot cross a rung" bound to inherit here at any useful
+# strength. Observer-less search is the fallback path; tune this
+# only if someone runs it in anger.
+query(w_recency_text) double: 0.0
+```
+
+### 5.2 `event.sd` — four functions in `text_relevance`
+
+Verbatim from the tree:
+
+```
+# ---- RECENCY (docs/recency-ranking.md) ------------------------
+# Distance in DAYS between the event and the query instant, and it is
+# a distance, not a difference: max(a-b, b-a) is |now - created_at|.
+#
+# The symmetry is load-bearing, not tidiness. The live corpus really
+# does hold notes stamped in the year 2100 (they already top an
+# unranked feed), and `now - created_at` clamped at zero — the shape
+# of Vespa's own age()/freshness() features — hands exactly those
+# documents the MAXIMUM freshness. Read as a distance, a note dated
+# 2100 is as stale as one from 1952, which is the honest reading of
+# "this clock is wrong", while a client a few minutes ahead of us is
+# still fresh.
+#
+# (max() rather than fabs()/abs() only to stay inside the scalar
+# function set every Vespa version agrees on.)
+function event_age_days() {
+    expression: max(if(query(now_secs) > 0, query(now_secs), now) - attribute(created_at), attribute(created_at) - if(query(now_secs) > 0, query(now_secs), now)) / 86400.0
+}
+
+# 1 at zero age, 0.5 at the half-life, asymptotically 0 and never
+# actually 0. HYPERBOLIC, not exponential: a three-year-old exact
+# match is still the best answer to a rare query, and an exp() decay
+# has effectively deleted it by then. It is also one divide with no
+# exp/log — this runs over EVERY match, not a rerank window.
+function freshness() {
+    expression: 1.0 / (1.0 + event_age_days() / max(1.0, query(recency_halflife)))
+}
+
+# >= 1, ALWAYS — and that is the whole recall-safety argument. The
+# default profile DELETES hits by score (rank-score-drop-limit 0.5,
+# and floored_text_score() maps gram-only noise to 0.0 for the limit
+# to take), so a factor that can dip below 1 changes the MATCH SET,
+# not just the order — a recall regression invisible to anyone reading
+# the first page. With x >= 1: a survivor stays a survivor (s*x >= s)
+# and a zero stays a zero (0*x = 0). Bit-identical recall, order only.
+#
+# Bounded by 1 + w, which is what keeps the boost under the ladder's
+# x5.65 rung ratio; see query(w_recency).
+function recency_mult() {
+    expression: 1.0 + if(attribute(kind) == 0, query(w_recency_profile), query(w_recency)) * freshness()
+}
+
+# The pure-text profiles' own multiplier — same shape, own weight, and
+# no kind split (relevance() has no trust multiply for a profile boost
+# to distort). See query(w_recency_text).
+function recency_mult_text() {
+    expression: 1.0 + query(w_recency_text) * freshness()
+}
 ```
 
 ### 5.3 `event.sd` — the `search` profile
@@ -288,11 +368,11 @@ means this year.
 "why is this above that" is the inspector's feature dump, and a ranking input
 nobody can see is a ranking input nobody can debug.
 
-### 5.4 `event.sd` — the text profiles (phase 2, weight 0 until asked for)
+### 5.4 `event.sd` — the text profiles (weight 0 until asked for)
 
-`text`/`text2` get `* (1.0 + query(w_recency_text) * freshness())` on
-`relevance()`, with `query(w_recency_text) double: 0.0`. Kept separate and
-kept off in phase 1 on purpose: those bands are additive, 1.13–1.57 apart, and
+`text`/`text2` multiply by `recency_mult_text()` — `1 + query(w_recency_text) *
+freshness()` — with `query(w_recency_text) double: 0.0`. Kept separate and
+expected to stay off longer: those bands are additive, 1.13–1.57 apart, and
 already overlapped by their own uncapped `bm25` tail (constraint 3), so there
 is no band-safety proof to inherit — and `text` is only the observer-less
 fallback. Tune it if and when someone runs observer-less search in anger.
@@ -321,15 +401,21 @@ val rankFeatures: Map<String, Double> = emptyMap(),
 ranking at all), and not `rank_*`/`sort_followers` (explicit sorts, §9.3):
 
 ```kotlin
-params["ranking.features.query(now)"] = (q.nowSecs ?: System.currentTimeMillis() / 1000).toString()
+params[F_NOW_SECS] = (q.nowSecs ?: (System.currentTimeMillis() / 1000)).toString()
 q.rankFeatures.forEach { (k, v) -> params["ranking.features.query($k)"] = v.toString() }
 ```
 
-and `query(now)` joins `TEXT_RANK_FEATURES` so the gated profiles keep sending
-nothing they do not declare. No `SchemaFallbacks` demotion is needed — a scalar
-query feature a serving profile does not declare is ignored, not a 400 — but
-**verify that against staging** before relying on it; it is the kind of claim
-this repo has been burned by.
+plus a `require()` on the feature name (`[a-z][a-z0-9_]*`) — everything else
+this builder puts on the wire is escaped or out-of-band, and a caller-shaped
+parameter *name* must not be the hole in that. `query(now_secs)` joins
+`TEXT_RANK_FEATURES`, so the gated profiles keep sending nothing they do not
+read. No `SchemaFallbacks` demotion is needed — a scalar query feature a
+serving profile does not declare is ignored, not a 400 — but **verify that
+against staging** before relying on it; it is the kind of claim this repo has
+been burned by.
+
+The feature is named `now_secs`, not `now`, to keep it textually distinct from
+the built-in `now` rank feature it falls back to.
 
 ### 5.6 Harness
 
@@ -349,33 +435,58 @@ this repo has been burned by.
   (d) a fresh bio mention still loses to an old exact name match — the tier
   ladder is not for sale.
 
-## 6. Cost, and what has to be measured
+## 6. What is measured, and what is not
 
-Per matched document, first phase: one `attribute(created_at)` read (already
-resident, already `fast-search`, already marked never-page in
-`docs/attribute-memory.md`), one subtract, one `abs`, two divides, one
-multiply-add, one `if` on `attribute(kind)`. No new field, no reindex, no
-re-feed, no RAM. The change is a schema deploy plus the query-side stamp.
+**Measured.**
 
-That is an argument, not a measurement. Before the weight leaves 0:
+- *The problem*, in numbers: §1's table, read-only off the live staging relay.
+  Median top-50 age 1057 d under the default profile for `bitcoin`; 0 d for the
+  same filter under `sort:recent`.
+- *The mechanism, hermetically*: `./gradlew build` — the query side stamps
+  `query(now_secs)` on the profiles that read it, withholds it from the ones
+  that rank by `created_at` alone, honours an explicit instant, and rejects a
+  malformed rank-feature name (`EventYqlTest`).
 
-1. `./gradlew :benchmark:searchBench` A/B, `w_recency = 0` vs `1`, on the same
-   cluster — the first phase now touches an attribute for every match, and the
-   50 000-match common term is where that shows up if anywhere.
-2. `./gradlew :benchmark:rankAb --configs recency_off,recency_h30_w1,recency_h30_w2`
-   over the extended case file, on a staging port-forward.
-3. `./gradlew :benchmark:test -Pintegration` green, including the new cases.
+**Runs in CI, on a real Vespa** (`:benchmark:test -Pintegration` — the
+`integration` job; no Docker daemon in the authoring sandbox, so these are
+written and compiled here and executed there). `RankRegressionIT` gains a
+six-document, one-author, time-spread fixture and pins five claims:
 
-If (1) comes back badly — it should not, but `attribute(created_at)` is read
-twice per hit on the recency path today and that path is the one that measures
-~100 ms per million postings — the fallback is second-phase-only recency with a
-raised `rerank-count`, accepting §3.2's blind spot in exchange.
+1. **inert at zero** — ids *and scores* bit-identical to not sending the
+   feature at all;
+2. **recall unchanged** at `w = 4.65`, on the fixture and on the calibrated
+   ladder queries (`odell`, `jack`) — the `≥ 1` argument, executed;
+3. **the decay curve**, newest-first across 1 d / 1 y / 5 y, with the
+   year-2100 note sorting **last** (where a `max(0, now − t)` age would have
+   put it first);
+4. **the ladder is not for sale** — a same-day body hit does not cross a
+   five-year-old weak-tier hit at the recommended ceiling, *and* does cross at
+   21×, so the bound is a fact about the weight and not about a fixture that
+   could never cross;
+5. **the kind split** — `w_recency` leaves a kind-0 doc's score untouched to
+   the bit, `w_recency_profile` moves it.
+
+**Not measured yet, and needed before any weight leaves 0.0:**
+
+1. `./gradlew :benchmark:rankAb --configs recency_off,recency_h30_w05,recency_h30_w1,recency_h30_w2,recency_h7_w1,recency_h365_w1`
+   against a live cluster — the age column against the §1 baseline, the pinned
+   positions against themselves. This is the run that picks the default, and it
+   needs a Vespa endpoint (a staging port-forward), which the CI container is
+   not.
+2. `./gradlew :benchmark:searchBench` A/B, `w_recency` 0 vs 1, same cluster.
+   Per matched document the first phase now costs one `attribute(created_at)`
+   read (already resident, already `fast-search`, already marked never-page in
+   `docs/attribute-memory.md`), one subtract, one max, two divides, one
+   multiply-add and an `if` on `attribute(kind)`. That is an argument, not a
+   number. If it comes back badly, the fallback is second-phase-only recency
+   with a raised `rerank-count`, accepting §3.2's blind spot in exchange.
 
 ## 7. Rollout
 
-1. **Deploy inert.** §5.1–5.5 with both weights at `0.0`. Every score, every
-   position, every match set identical to today, verified by the existing ITs.
-   The schema and the Kotlin land together, as they must.
+1. **Deploy inert.** ✅ Done — §5 is in the tree with every weight at `0.0`.
+   Every score, every position, every match set identical to today, verified by
+   the existing ITs plus claim 1 above. The schema and the Kotlin land
+   together, as they must.
 2. **A/B live.** The weights are `query()` inputs — `rankAb` sweeps `w`,
    `recency_halflife` and the kind split against real staging data with no
    redeploy, per the harness's whole reason for existing.
@@ -396,10 +507,19 @@ raised `rerank-count`, accepting §3.2's blind spot in exchange.
 - **`sort:recent` as the default.** Exists, and is the thing users are working
   around: it discards relevance entirely (the store strips the text weights for
   that shape). "Tilted", not "replaced", is the request.
-- **Vespa's `freshness(created_at)` / `age(created_at)`.** Linear, hard-zeros
-  past `maxAge` (no tail for rare queries), and built on `now − t` semantics
-  that reward the 2100-dated notes (constraint 4). One divide of our own buys
-  the shape we want and the future-timestamp defence.
+- **Vespa's `freshness(created_at)` / `age(created_at)`.** Checked against the
+  reference (2026-08-22), not assumed: `age(name)` is "the document age in
+  seconds relative to the unit time value stored in the attribute", and
+  `freshness(name)` is `max(1 − age/maxAge, 0)` — **linear**, hard-zero past
+  `maxAge`, so no tail for a rare query, and its `maxAge` is a rank property
+  rather than an input we already sweep. `freshness(name).logscale` restores a
+  tail but is built on the same `age()`. And that is the disqualifying part:
+  the formula is clamped at zero from *below* only, so a document dated in the
+  future has a negative age and a freshness **above 1** — the year-2100 notes
+  would not merely rank first, they would outscore everything by an unbounded
+  margin. One divide of our own buys the shape we want and the
+  future-timestamp defence with it. (Vespa's `now` feature is real and is what
+  we fall back to when a client omits the stamp — same reference.)
 - **Reading Vespa's `now` directly in the profile.** Cheaper to write, and it
   makes ranking a function of wall-clock: unpinnable tests, per-node
   disagreement, unreplayable reports (constraint 6).

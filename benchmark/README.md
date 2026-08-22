@@ -44,6 +44,46 @@ measures what the emitted query actually does:
   ./gradlew :benchmark:rankAb --args="--configs baseline,near_off --profile text"
   ```
 
+### Recency in text ranking — the baseline the sweep has to beat (2026-08-22)
+
+`event.sd` ships `w_recency`/`w_recency_profile`/`w_recency_text` at **0.0**,
+so the mechanism is inert until a sweep says otherwise
+(`docs/recency-ranking.md` is the design). This is the *before* measurement it
+gets swept against — **read-only, against the live staging relay**
+(`wss://search-staging.brainstorm.world/`, observer `460c25…065c`, `kind 1`,
+`limit 50`), ages in days at the time of the run:
+
+| query | lens | p25 | median | p75 | older than 1y | newest hit on the page |
+| --- | --- | --- | --- | --- | --- | --- |
+| bitcoin | trust (`search`) | 919 | **1057** | 1138 | 49/50 | 144d |
+| bitcoin | text (`text`) | 437 | 507 | 758 | 41/50 | 49d |
+| bitcoin | `sort:recent` | 0 | **0** | 0 | 0/50 | 0.0d |
+| nostr | trust | 948 | 1106 | 1164 | 49/50 | 337d |
+| nostr | text | 574 | 851 | 1024 | 43/50 | 101d |
+| lightning | trust | 888 | 955 | 1099 | **50/50** | 574d |
+| lightning | text | 333 | 360 | 499 | 22/50 | 128d |
+| coffee | trust | 789 | 1098 | 1155 | 49/50 | 208d |
+| coffee | text | 374 | 442 | 501 | 38/50 | 118d |
+
+The `sort:recent` row is the point: the same filter, the same trust lens, 50
+same-day hits. Fresh, trusted, matching content exists in quantity — relevance
+ranking simply never shows any of it, and a user who wants some has to give up
+relevance entirely to get it. Under the default profile a whole page of
+"lightning" is older than eighteen months.
+
+`rankAb` now prints a **median top-10 age column** beside the positions, and
+runs cases with an empty `expect` as age-only rows, so a recency config is
+read on both axes at once — the age it buys and the pinned positions it must
+not pay with:
+
+```bash
+./gradlew :benchmark:rankAb --args="--configs recency_off,recency_h30_w1,recency_h30_w2 --observer <hex> --now 1787408253"
+```
+
+`--now` pins the instant recency is measured against (it becomes
+`query(now_secs)`), so a sweep is reproducible across days and a reported
+ranking can be replayed at the moment it was reported.
+
 ### `search_text_gram` — what the body's partial-word reach costs (2026-08-15)
 
 Measured on **26 000 real events pulled from `search-staging.brainstorm.world`**
