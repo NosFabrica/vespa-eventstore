@@ -82,7 +82,68 @@ not pay with:
 
 `--now` pins the instant recency is measured against (it becomes
 `query(now_secs)`), so a sweep is reproducible across days and a reported
-ranking can be replayed at the moment it was reported.
+ranking can be replayed at the moment it was reported. `--kinds 1` is not
+optional for a recency sweep: on a mixed query the page is kind-0 profiles,
+which ride the separate `w_recency_profile`, and the note-side weight reads as
+inert when it is merely outranked.
+
+#### The sweep, on a real staging slice (2026-08-22)
+
+Reproduce it in three steps. The capture is READ-ONLY and out of band — no
+test may point at a relay:
+
+1. **Capture** (a plain NIP-01 REQ against the public relay, any client): the
+   top-500 relevance page *and* the top-500 `sort:recent` page for each term,
+   under `observer:460c25…065c`, plus the kind-0 hits for the ladder queries —
+   4 596 events from 1 722 authors. Then the lens itself: the observer's kind
+   10040, and the provider's kind 30382 cards for exactly those authors
+   (`{"kinds":[30382],"authors":["7d7ffd…9377"],"#d":[…]}`), 1 722 of them.
+   Two JSON arrays, which is all a capture needs to be.
+2. **Feed** — the store's real write path, so `TrustProjection` rebuilds the
+   same reputation tensors from those 10040/30382 events and the local cluster
+   ranks the way the source cluster does:
+
+   ```bash
+   docker run -d --name vespa -p 8080:8080 -p 19071:19071 vespaengine/vespa
+   VESPA_URL=http://localhost:8080 ./gradlew :benchmark:exportLoad \
+     --args="/tmp/staging_events.json /tmp/staging_trust.json"
+   ```
+
+3. **Sweep** — `rankAb` as above.
+
+**Result.** Median age of the top-10, half-life 30 d, body-band recall (one
+match band, so recency is the only thing that *can* move it). Match counts
+identical on every row — the `>= 1` multiplier cannot change recall, confirmed
+on real data at every weight:
+
+| `w_recency` | bitcoin | nostr | lightning | coffee | median page trust |
+| --- | --- | --- | --- | --- | --- |
+| **0.0** | 993 d | 1066 d | 1018 d | 973 d | 100 |
+| 0.01 | 43 d | 4 d | 34 d | 106 d | 100 |
+| 0.05 | 32 d | 0 d | 34 d | 106 d | 100 |
+| **0.1** | 7 d | 0 d | 24 d | 2 d | 98–100 |
+| 0.25 | 0 d | 0 d | 2 d | 1 d | 96–99 |
+| 1.0 | 0 d | 0 d | 1 d | 1 d | 96–98 |
+
+A **1 %** tilt moves a page from ~1000 days to ~40, because within a band the
+trust curve saturates: the top-10 of a `bitcoin` page is all trust-98..100
+authors whose scores span **0.0014 %**. The order was a near-tie; recency is
+the first tiebreak ever offered it. Ordinary mixed queries at w = 0.1:
+`zap` 1120 d → 525 d, `podcast` 979 d → 628 d, `privacy` 915 d → 746 d, with
+**zero** position deltas across every pinned rank case at 0.05 / 0.1 / 0.25.
+
+**The half it does not fix, measured in the same run.** On those four terms the
+HEAD of the mixed page does not move at any legal weight, and should not: the
+top-10 all score `text_score ≈ 130 100` (the token band — kind-1 notes with the
+word in their NIP-14 `subject`: "Bitcoin reserve", "Bitcoin phase"), while the
+400 freshest matches top out at `4 001` (the weak band). A 236× gap; the
+ladder ceiling is 5.65×. Page-one staleness on a common term is therefore two
+problems, and this is the one that was a ranking accident rather than a
+ranking decision. See `docs/recency-ranking.md` §4.3.
+
+Paper calibration had put the candidate at `w = 1.0`. The run says that is 10×
+too much — the same lesson `w_perfect_pop` learned the expensive way: trust the
+run, not the arithmetic.
 
 ### `search_text_gram` — what the body's partial-word reach costs (2026-08-15)
 

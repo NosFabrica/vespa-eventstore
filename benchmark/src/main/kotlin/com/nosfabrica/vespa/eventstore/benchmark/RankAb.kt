@@ -124,6 +124,19 @@ object RankAb {
             // buys age by losing a pinned position is a losing config, however
             // fresh the results look.
             "recency_off" to mapOf("w_recency" to 0.0, "w_recency_profile" to 0.0),
+            // The MEASURED band (2026-08-22, 4.6k-event staging slice, see
+            // benchmark/README.md): within a match band the trust curve
+            // SATURATES — a page of trust-100 authors scores within 0.001% of
+            // itself — so a 1% tilt already re-sorts it. w 0.05..0.1 takes the
+            // median top-10 body-band age from ~1000d to 0..30d while the
+            // median trust stays 98..100; from 0.25 up the page is same-day
+            // and trust starts slipping. The candidates to sweep on real
+            // staging are therefore these three, NOT the 0.5..2 the paper
+            // calibration suggested.
+            "recency_h30_w005" to mapOf("w_recency" to 0.05, "recency_halflife" to 30.0),
+            "recency_h30_w01" to mapOf("w_recency" to 0.1, "recency_halflife" to 30.0),
+            "recency_h30_w025" to mapOf("w_recency" to 0.25, "recency_halflife" to 30.0),
+            "recency_h90_w01" to mapOf("w_recency" to 0.1, "recency_halflife" to 90.0),
             "recency_h30_w05" to mapOf("w_recency" to 0.5, "recency_halflife" to 30.0),
             "recency_h30_w1" to mapOf("w_recency" to 1.0, "recency_halflife" to 30.0),
             "recency_h30_w2" to mapOf("w_recency" to 2.0, "recency_halflife" to 30.0),
@@ -156,6 +169,12 @@ object RankAb {
         // reproducible across days (and lets one be replayed at the moment a
         // bad ranking was reported); omitted, EventYql stamps the wall clock.
         val nowSecs = opts["--now"]?.toLong()
+        // Restrict recall to these kinds. The default (none) is what the ladder
+        // cases want — a profile search reaches kind 0 above everything. A
+        // RECENCY sweep wants `--kinds 1`: on a mixed query the page is
+        // profiles, which ride the separate w_recency_profile, so the note-side
+        // weight would read as inert when it is merely outranked.
+        val kinds = opts["--kinds"]?.split(",")?.mapNotNull(String::toIntOrNull).orEmpty()
         val names = opts["--configs"]?.split(",") ?: CONFIGS.keys.toList()
         names.firstOrNull { it !in CONFIGS }?.let {
             System.err.println("unknown config '$it'; known: ${CONFIGS.keys}")
@@ -181,7 +200,7 @@ object RankAb {
 
         println(
             "target=$vespa profile=$profile observer=${observer ?: "none (pure text)"} depth=$hits cases=${cases.size} " +
-                "now=${nowSecs?.toString() ?: "wall clock"}",
+                "kinds=${kinds.takeIf { it.isNotEmpty() }?.joinToString(",") ?: "all"} now=${nowSecs?.toString() ?: "wall clock"}",
         )
         val clock = nowSecs ?: (System.currentTimeMillis() / 1000)
         val results = LinkedHashMap<String, List<Int?>>()
@@ -189,7 +208,7 @@ object RankAb {
         // a recency config is actually FOR, and invisible in a position table.
         val ages = LinkedHashMap<String, List<Double?>>()
         for (config in names) {
-            val ranked = cases.map { search(vespa, it, profile, observer, hits, CONFIGS.getValue(config), nowSecs) }
+            val ranked = cases.map { search(vespa, it, profile, observer, hits, CONFIGS.getValue(config), nowSecs, kinds) }
             results[config] =
                 ranked.mapIndexed { i, hitsOf ->
                     expects[i]?.let { want -> hitsOf.indexOfFirst { it.id.startsWith(want) }.takeIf { it >= 0 }?.plus(1) }
@@ -260,6 +279,7 @@ object RankAb {
         hits: Int,
         overrides: Map<String, Double>,
         nowSecs: Long?,
+        kinds: List<Int>,
     ): List<Hit> {
         val text = case.getValue("query").jsonPrimitive.content
         // Case text feeds EventQuery.search RAW — below the store's syntax
@@ -269,7 +289,14 @@ object RankAb {
         // adopt the term syntax.
         val vq =
             EventYql.build(
-                EventQuery(search = text, observer = observer, ranking = profile, minRank = observer?.let { 2.0 }, nowSecs = nowSecs),
+                EventQuery(
+                    search = text,
+                    kinds = kinds,
+                    observer = observer,
+                    ranking = profile,
+                    minRank = observer?.let { 2.0 },
+                    nowSecs = nowSecs,
+                ),
             ) ?: return emptyList()
         val body =
             buildJsonObject {

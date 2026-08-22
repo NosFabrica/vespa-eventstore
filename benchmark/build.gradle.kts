@@ -121,6 +121,18 @@ tasks.register<JavaExec>("searchBench") {
     maxHeapSize = System.getenv("BENCH_HEAP") ?: "3g"
 }
 
+// Feed a captured corpus (a JSON array of events, trust events included) into a
+// live store — the setup step rankAb needs when the question is about real
+// timestamps or a real web of trust. See ExportLoad.kt.
+tasks.register<JavaExec>("exportLoad") {
+    group = "verification"
+    description = "Feed a captured JSON event export (plus its NIP-85 trust events) into a live store"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.ExportLoad")
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "2g"
+    workingDir = rootDir
+}
+
 tasks.register<JavaExec>("corpusLoad") {
     group = "verification"
     description = "Load the deterministic NostrCorpus into a live store (setup for the workload benches)"

@@ -832,10 +832,28 @@ schema event {
             # ratio of the §12 ladder (x5.65, see query(w_name_tier)) and
             # recency starts CROSSING text tiers — a fresh bio mention over a
             # real name match, which is exactly the ordering wot_mult() is
-            # calibrated to allow only on overwhelming trust. Recommended
-            # <= 2.0: rungs have TAILS (a bio-band doc carrying the term in
-            # body and hashtags reaches ~900 against the weak floor of 4000,
-            # i.e. x4.4), so the paper ceiling is not the safe one.
+            # calibrated to allow only on overwhelming trust. RankRegressionIT
+            # pins both sides of that bound.
+            #
+            # The USEFUL range is nowhere near the ceiling. MEASURED
+            # 2026-08-22 against a 4 596-event staging slice fed into a local
+            # Vespa with its real 30382 trust cards (benchmark/README.md):
+            # inside one match band the trust curve SATURATES — a page of
+            # trust-100 authors scores within 0.001% of itself — so a 1% tilt
+            # already re-sorts the page. Median age of the top 10 body-band
+            # hits, at half-life 30d:
+            #     w      bitcoin  nostr  lightning  coffee   median trust
+            #     0.0      993d   1066d     1018d    973d       100
+            #     0.05      32d      0d       34d    106d       100
+            #     0.1        7d      0d       24d      2d      98-100
+            #     0.25       0d      0d        2d      1d       96-99
+            # On ordinary mixed-band queries the same w=0.1 takes "zap" from
+            # 1120d to 525d and "podcast" from 979d to 628d, with every pinned
+            # rank case unmoved. Above ~0.25 the page is same-day and the
+            # median author trust starts slipping — that is the trade this
+            # weight buys, and 0.05..0.25 is the band to sweep on real staging.
+            # A paper estimate put the candidate at 1.0; the run says that is
+            # 10x too much. Trust the run.
             query(w_recency) double: 0.0
             # Same, for KIND 0 — deliberately a separate weight, defaulted off
             # even once w_recency ships. A replaceable event's created_at is

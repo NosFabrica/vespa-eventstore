@@ -196,7 +196,9 @@ Constraint 6:
 The store already stamps a clock into every query (`notExpiredAt`), so this is
 the established shape, not a new dependency.
 
-## 4. Calibration — what a freshness bonus is worth in trust
+## 4. Calibration — the paper answer, and what the corpus actually did
+
+### 4.1 On paper
 
 The only currency in `search` is the trust multiplier, so state the boost in
 its units. With `wot_mult ≈ delta^2.7`, a multiplicative advantage `R` is worth
@@ -212,16 +214,77 @@ advantage an *older* document needs to beat a *brand-new* one of equal text:
 | 1 year | +26 % |
 | ever older | +29 % (asymptote, `2^(1/2.7)`) |
 
-Concretely, on the served 0–100 provider scale with `min_rank = 2`: today's
-note from an author at trust 62 outranks last year's note from an author at
-trust 77, and loses to one at 80. At **w = 2** the asymptote moves to +49 %
-(trust 62 today beats trust 91 a year ago) — visibly a "news" ranking. At
-**w = 0.5** it is +13 %, a tiebreak. Those three are the A/B ladder.
+That arithmetic is right and its conclusion — "w = 1 is a sensible starting
+candidate" — was wrong by an order of magnitude, because it assumes documents
+whose trust deltas differ. Measured, they mostly do not.
 
-Half-life sets *where* the curve does its work, and should be chosen per
-corpus: H = 7d for a conversation-shaped index, H = 30d for a general note
-index (recommended starting point), H = 365d for long-form, where "recent"
-means this year.
+### 4.2 What the run said
+
+**4 596 real events** captured read-only from staging (the top-500 relevance
+page *and* the top-500 `sort:recent` page for four terms, plus the kind-0
+ladder hits), fed into a local Vespa **with their real NIP-85 trust** (the
+observer's kind 10040 and the provider's 1 722 kind-30382 cards, so
+`TrustProjection` rebuilds the same tensors), then swept. Median age of the
+top-10, half-life 30 d, body-band recall — one match band, so recency is the
+only thing that *can* move it:
+
+| w_recency | bitcoin | nostr | lightning | coffee | median trust of the page |
+| --- | --- | --- | --- | --- | --- |
+| **0.0** | 993 d | 1066 d | 1018 d | 973 d | 100 |
+| 0.01 | 43 d | 4 d | 34 d | 106 d | 100 |
+| 0.05 | 32 d | 0 d | 34 d | 106 d | 100 |
+| **0.1** | 7 d | 0 d | 24 d | 2 d | 98–100 |
+| 0.25 | 0 d | 0 d | 2 d | 1 d | 96–99 |
+| 1.0 | 0 d | 0 d | 1 d | 1 d | 96–98 |
+
+Match counts are **identical on every row** — the `≥ 1` argument, confirmed on
+real data at every weight.
+
+A **one percent** tilt moves a page from ~1000 days to ~40. The reason is
+saturation: within one band the top of the page is all trust-98..100 authors
+whose `wot_mult` are equal to four decimal places (measured spread across a
+top-10: **0.0014 %**), so the ordering is a near-tie that any consistent
+tiebreak decides. Recency is simply the first tiebreak that has ever been
+offered. That is also why the trust column barely moves: what changes is
+*which* of the well-trusted matches you see, not how trusted they are — until
+about 0.25, where the page goes same-day and the median trust starts slipping.
+
+On ordinary mixed queries, at **w = 0.1 / H = 30 d**: `zap` 1120 d → 525 d,
+`podcast` 979 d → 628 d, `privacy` 915 d → 746 d, and every pinned rank case
+unmoved (`rankAb`, four candidate weights, zero position deltas).
+
+**Recommended starting point: `w_recency = 0.1`, `recency_halflife = 30 d`** —
+still to be confirmed against the full corpus (this slice is deliberately
+half-fresh, so it overstates how much fresh material a real page has to choose
+from). `w` and `H` trade off directly (only `w · freshness` matters), so sweep
+one at a time.
+
+### 4.3 The half the recency term does NOT fix
+
+Also measured, and the more important finding for anyone reading the staging
+baseline in §1: **on those four queries the head of the page does not move at
+any legal weight**, and that is correct behavior.
+
+The top-10 for `bitcoin` under the default profile are all `text_score ≈
+130 100` — the *token band*: kind-1 notes carrying the word in their NIP-14
+`subject` ("Bitcoin reserve", "Bitcoin phase", "bitcoin roller coaster").
+The 400 freshest matches top out at `text_score = 4 001` — the weak band. That
+is a **236× gap**, and no weight under the ladder ceiling can cross it.
+
+So page-one staleness on a common term has two causes, and this change
+addresses one of them:
+
+1. *within a band*, near-ties frozen in an arbitrary order — **fixed**, and
+   cheaply (w = 0.05–0.1);
+2. *across bands*, titled notes outranking fresh mentions — **untouched by
+   design**, because that is the tier ladder doing exactly what the odell and
+   amethyst cases pin it to do.
+
+Whether a same-day mention should ever cross a rung above a three-year-old
+titled note is a policy question this proposal deliberately does not answer:
+it would mean putting recency *inside* the ladder rather than under it, and
+every calibrated case would have to be re-derived. Worth its own round, with
+its own reports.
 
 ## 5. What landed
 
@@ -447,10 +510,16 @@ the built-in `now` rank feature it falls back to.
   that rank by `created_at` alone, honours an explicit instant, and rejects a
   malformed rank-feature name (`EventYqlTest`).
 
-**Runs in CI, on a real Vespa** (`:benchmark:test -Pintegration` — the
-`integration` job; no Docker daemon in the authoring sandbox, so these are
-written and compiled here and executed there). `RankRegressionIT` gains a
-six-document, one-author, time-spread fixture and pins five claims:
+- *The whole stack, on a real Vespa*: `:benchmark:test -Pintegration` green,
+  including `VespaParityIT`'s 127 parity checks and the new fixture below —
+  which also proves the schema, four new inputs and four new functions
+  included, **deploys**.
+- *The tuning*, §4.2: a real staging slice with its real web of trust, fed
+  into a local Vespa (`:benchmark:exportLoad`) and swept
+  (`:benchmark:rankAb --kinds 1`).
+
+**The real-Vespa fixture.** `RankRegressionIT` gains a six-document,
+one-author, time-spread fixture pinning five claims:
 
 1. **inert at zero** — ids *and scores* bit-identical to not sending the
    feature at all;
@@ -466,14 +535,14 @@ six-document, one-author, time-spread fixture and pins five claims:
 5. **the kind split** — `w_recency` leaves a kind-0 doc's score untouched to
    the bit, `w_recency_profile` moves it.
 
-**Not measured yet, and needed before any weight leaves 0.0:**
+**Not measured yet, and needed before the weight leaves 0.0:**
 
-1. `./gradlew :benchmark:rankAb --configs recency_off,recency_h30_w05,recency_h30_w1,recency_h30_w2,recency_h7_w1,recency_h365_w1`
-   against a live cluster — the age column against the §1 baseline, the pinned
-   positions against themselves. This is the run that picks the default, and it
-   needs a Vespa endpoint (a staging port-forward), which the CI container is
-   not.
-2. `./gradlew :benchmark:searchBench` A/B, `w_recency` 0 vs 1, same cluster.
+1. The same sweep **against the full corpus**, not a 4 596-event slice. The
+   slice was built half from `sort:recent`, so it holds far more fresh
+   candidates than a real page does; it can prove the mechanism and locate the
+   useful range, and it cannot tell you what a page of 211 M events looks like
+   at `w = 0.1`. bm25's IDF and the trust distribution both change at scale.
+2. `./gradlew :benchmark:searchBench` A/B, `w_recency` 0 vs 0.1, same cluster.
    Per matched document the first phase now costs one `attribute(created_at)`
    read (already resident, already `fast-search`, already marked never-page in
    `docs/attribute-memory.md`), one subtract, one max, two divides, one
@@ -543,15 +612,24 @@ six-document, one-author, time-spread fixture and pins five claims:
 
 ## 9. Open questions for review
 
-1. **Default strength.** The A/B ladder is w ∈ {0.5, 1, 2}; my prior is
-   **w = 1, H = 30d** for kind 1 — a fresh note beats one a year older unless
-   that author is ~26 % more trusted. Is "news-shaped" (w = 2) closer to what
-   the relay wants?
+1. **Default strength.** The run puts the useful band at **w = 0.05–0.25**
+   (§4.2), an order of magnitude under the paper prior, and my recommendation
+   is `w_recency = 0.1, recency_halflife = 30 d`. Turning it on is one number
+   in `event.sd` — or a query-feature override on staging first, no deploy.
+   Do you want it swept against the full corpus before it ships, or shipped at
+   0.1 and watched?
 2. **Kind granularity.** Proposal splits kind 0 from everything else. Long-form
    (30023) plausibly wants a much longer half-life than kind 1, which would mean
    a third class rather than one more weight. Worth it in v1, or after the data?
 3. **Should `sort:rank` / `sort:followers` inherit recency as their last
    within-tier tiebreak?** They are explicit sorts, so my answer is no, but they
-   are also the tokens people reach for when relevance disappoints them.
+   are also the tokens people reach for when relevance disappoints them. §4.2
+   says they would benefit from the same tiebreak for the same reason: their
+   within-tier key saturates too.
+
+5. **The band half (§4.3).** Page one of a common term stays old because
+   titled notes outrank fresh mentions by 236×. Leaving that alone is the
+   conservative call and it is what shipped. If the reports keep coming, the
+   next round is about the ladder, not about recency.
 4. **`recency:` extension token in v1** (§7.5) — the store owns the grammar and
    `search-staging` is the only consumer that would send it.
