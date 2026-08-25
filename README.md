@@ -279,6 +279,7 @@ place column:
 | **30002 / 39092 / 39701** | relay set / media starter pack / web bookmark | title, description |
 | **31890** | feed definition | title |
 | **30382** | contact card / relationship | content |
+| **30392 / 30393 / 30394 / 30395** | trusted list of pubkeys / events / addressables / external ids | title (body tier — Quartz gives the family no title branch) |
 | **30296 / 30297** | interactive story prologue / scene | title, summary, content |
 | **1301 / 33401** | workout record / exercise template | title, content |
 | **5050 / 5100 / 5250** | NIP-90 DVM job requests (text / image / speech generation) | content |

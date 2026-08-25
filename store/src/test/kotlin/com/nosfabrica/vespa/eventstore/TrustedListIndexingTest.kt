@@ -311,49 +311,86 @@ class TrustedListIndexingTest {
             assertEquals(1, recall(UserTrustedListEvent.KIND, "d", "devs").size)
         }
 
-    // ---- what a Trusted List must NOT do -----------------------------------
+    // ---- search -----------------------------------------------------------
 
     /**
-     * Trusted Lists are not `SearchableEvent` upstream, so [SearchExtractors] —
-     * which mirrors Quartz's searchable set rather than deciding it — indexes
-     * nothing for them. This pins the store's side of that mirror, NOT that the
-     * set is right.
+     * The title, and nothing but the title. `TrustedListEvent` implements
+     * `SearchableEvent` as `title() ?: ""`, and [SearchExtractors] mirrors that
+     * set rather than deciding it, so the four kinds became searchable on the
+     * pin bump alone — no store code.
      *
-     * It probably is not. The family carries a human-meaningful `title`
-     * ("Podcaster" in its own reference example, distinct from the machine
-     * `metric` label beside it), and every comparable curated list in Quartz is
-     * searchable on exactly that: `PeopleListEvent` and `FollowListEvent` index
-     * `title() + description()`, as does the 30382 card these lists are the bulk
-     * form of (petname + summary + topics). A big membership is no argument
-     * against it either — `indexableContent()` never sees the member tags, and
-     * those list kinds carry the same wide `p` arrays. Upstream simply never
-     * addressed searchability for the family: `SearchableEvent` appears nowhere
-     * in the package and the commit that added it does not mention search.
-     *
-     * So treat this as a gap to re-check at the next pin bump, not a decision to
-     * preserve. The fix belongs upstream (one interface + `indexableContent()`);
-     * the day it lands, this test flips and 30392-30395 join the README's
-     * searchable table as ordinary rows.
+     * The negatives are the interesting half, and they are upstream's own:
+     * `metric` names a computation, `d` identifies the list, the member tags are
+     * hex ids and `content` is a JSON echo of the same membership. None of it is
+     * prose, and a `#p`/`#e`/`#a`/`#i` filter reaches the membership far better
+     * than a full-text index could — so a search for a common word must not
+     * return every list that ran the same job.
      */
     @Test
-    fun `trusted lists are invisible to NIP-50 search`() =
+    fun `a trusted list is searchable by its title and by nothing else`() =
         runBlocking {
-            val event = userList(members = listOf(key("a1")), title = "Trusted Nostr Developers")
+            val member = key("a1")
+            val event = userList(listId = "tl-pin-podcaster", members = listOf(member), title = "Podcaster")
             store.insert(event)
 
-            assertEquals(SearchFields.NONE, SearchExtractors.extract(event))
-            assertNull(assertNotNull(index.get(event.id)).search.primary)
-            assertTrue(store.query<Event>(Filter(search = "developers")).isEmpty())
-            // …while plain NIP-01 recall still serves it.
-            assertEquals(1, store.query<Event>(Filter(kinds = listOf(UserTrustedListEvent.KIND))).size)
-
-            // Positive control: the same word in a kind the extractor DOES carry
-            // is found, so the emptiness above is the list being unindexed and
-            // not the query failing to match anything at all.
-            val note = EventFactory.create<Event>(id(), publisher, next(), 1, emptyArray(), "trusted nostr developers", "")
-            store.insert(note)
-            assertEquals(listOf(note.id), store.query<Event>(Filter(search = "developers")).map { it.id })
+            assertEquals(listOf(event.id), store.query<Event>(Filter(search = "podcaster")).map { it.id })
+            // Everything else the list carries stays out of the index.
+            assertTrue(store.query<Event>(Filter(search = "pinned-tag-membership")).isEmpty(), "metric")
+            assertTrue(store.query<Event>(Filter(search = "tl-pin-podcaster")).isEmpty(), "list id")
+            assertTrue(store.query<Event>(Filter(search = member)).isEmpty(), "membership")
         }
+
+    /**
+     * WHICH tier the title lands in is not ours to choose — [SearchExtractors]
+     * applies this schema's weights to the decomposition Quartz hands it, and
+     * upstream gave the family no explicit `SearchFieldExtractor` branch. So it
+     * takes the generic `is SearchableEvent ->` fallback, which puts the whole
+     * `indexableContent()` in the TERTIARY tier: the body column, not
+     * `search_primary`.
+     *
+     * Pinned as observed, not endorsed. A body in this schema is reached by
+     * trigram substring rather than the prefix/typo attributes every other
+     * titled kind gets, and it carries the body's lower weight — so a list title
+     * ranks like note content and forgives no typos. The fix, if wanted, is one
+     * branch upstream (`is TrustedListEvent -> tiers(event, event.title(), null,
+     * null)`), never a local divergence: which accessor lands in which tier is
+     * Quartz's call, and diverging would break the set-diffing this store does at
+     * every pin bump.
+     */
+    @Test
+    fun `the title lands in the body tier, not the title tier`() =
+        runBlocking {
+            val titled = userList(members = listOf(key("a1")), title = "Podcaster")
+            store.insert(titled)
+
+            val fields = SearchExtractors.extract(titled)
+            assertEquals("Podcaster", fields.text)
+            assertNull(fields.primary)
+            assertNull(fields.secondary)
+            assertEquals(fields, assertNotNull(index.get(titled.id)).search)
+
+            // Substring reaches it (the body route); an anchored-prefix column would not be consulted.
+            assertEquals(listOf(titled.id), store.query<Event>(Filter(search = "podcast")).map { it.id })
+        }
+
+    /**
+     * `title() ?: ""` never throws — it runs inside the store's insert
+     * transaction — and an all-empty extraction collapses to
+     * [IndexableFields.None], so a titleless list is stored and recallable while
+     * carrying no search text at all. Most machine-published lists have no title.
+     */
+    @Test
+    fun `a titleless list is stored with no search text`() =
+        runBlocking {
+            val untitled = userList(members = listOf(key("a1")))
+            store.insert(untitled)
+
+            assertEquals(SearchFields.NONE, SearchExtractors.extract(untitled))
+            assertNull(assertNotNull(index.get(untitled.id)).search.text)
+            assertEquals(1, recall(UserTrustedListEvent.KIND, "p", key("a1")).size)
+        }
+
+    // ---- what a Trusted List must NOT do -----------------------------------
 
     /**
      * A 30392 is NOT a 30382. The names and the `+10` kinds invite the mistake,

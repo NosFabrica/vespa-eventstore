@@ -5,61 +5,55 @@ app = "1.0.0"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"
 # Quartz from JitPack (amethyst @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
-# 509075abde = amethyst main @ 2026-08-20, 41 commits since the last pin. We take it
-# for ONE thing: the Tapestry Trusted List family, kinds 30392-30395
-# (`experimental/trustedLists/`, new in c0f812e46 + its follow-up 509075abde).
+# 98f09f29c0 = amethyst main @ 2026-08-25 (PR #3983). ONE quartz commit since the
+# last pin, f5f8f605e, and it closes the gap the previous bump's test flagged:
+# the Trusted List family (30392-30395) shipped with a `title` tag and no
+# `SearchableEvent`, so a list published as "Podcaster" could only be reached by
+# already knowing its address. `TrustedListEvent` now implements the interface on
+# the base class — all four kinds inherit it — with
 #
-# A Trusted List is the bulk form of a NIP-85 Trusted Assertion. Where a 30382
-# card states a computed result about ONE subject, a list enumerates MANY members
-# of one type, and the family binds to NIP-85's subject-type convention by a `+10`
-# rule — a list kind is its assertion kind plus ten, so the last digit denotes the
-# member type on both sides:
+#     override fun indexableContent() = title() ?: ""
 #
-#   30392 = 30382 + 10 -> pubkey members, in `p` tags
-#   30393 = 30383 + 10 -> event members, in `e` tags
-#   30394 = 30384 + 10 -> addressable members, in `a` tags
-#   30395 = 30385 + 10 -> external-id members (NIP-73), in `i` tags
+# The title alone. `metric` names a computation and `d` identifies the list, so
+# both stay out (a search for a common word must not return every list that ran
+# the same job); the member tags are hex ids and `content` is a JSON echo of the
+# same membership, which `#p`/`#e`/`#a`/`#i` recall already serves far better than
+# a full-text index would. A titleless list indexes "" rather than throwing —
+# `indexableContent()` runs inside the store's insert transaction.
 #
-# All four are addressable (the `d` tag names the LIST, not a subject, so a list
-# replaces in place as it is recomputed) and all four are designed around
-# relay-side `#p`/`#e`/`#a`/`#i` recall of the membership — which is exactly what
-# this store's `tag_index` serves. `TrustedListIndexingTest` pins that.
+# What that means HERE. `SearchExtractors` mirrors the searchable set rather than
+# deciding it, so this bump alone makes the four kinds searchable — no store code
+# changes, and `TrustedListIndexingTest` flips from pinning the absence to pinning
+# the title. Two consequences worth knowing:
 #
-# What the range does to this store: nothing but the four kinds. Nothing under
-# nip01Core/store, nip50Search, nip01Core/relay/filters or nip85TrustedAssertions
-# was touched at all; IEventStore, SQLiteEventStore, IndexableFields,
-# SearchFieldExtractor, SearchQuery and SearchableEvent are byte-identical to the
-# previous pin, the SearchableEvent set is the same 129 files, and no
-# `indexableContent()` anywhere in the module changed — so the searchable-kind
-# table, the extractor weights, the store contract and the filter semantics all
-# carry over unchanged, and the parity and rank gates are unaffected. EventFactory
-# is the one file we consume that moved, and it is PURELY ADDITIVE: four `KIND ->`
-# branches and their imports, no existing branch reordered or removed.
+#   TIER. Upstream gave the family no explicit `SearchFieldExtractor` branch, so it
+#     takes the generic `is SearchableEvent ->` fallback: `tiers(event, null, null,
+#     indexableContent())` — the whole string in the TERTIARY tier. In this
+#     schema that is `search_text`, the BODY column, not `search_primary`. So a
+#     list title is weighted like note content and reached by trigram substring
+#     rather than the prefix/typo attributes every other titled kind enjoys
+#     ("podcast" finds "Podcaster", a typo does not). Correct as a mirror, and the
+#     test pins it as observed; the fix, if wanted, is one branch upstream
+#     (`is TrustedListEvent -> tiers(event, event.title(), null, null)`), never a
+#     local divergence — which tier an accessor lands in is Quartz's call.
+#   REINDEX. Derived data: 30392-30395 already stored carry no search text until
+#     `reindexFullTextSearch()` runs. New writes are indexed immediately.
 #
-# Trusted Lists are deliberately NOT `SearchableEvent` upstream, so they stay
-# invisible to NIP-50 here too — `SearchExtractors` mirrors that set and must keep
-# mirroring it. Before the bump they were already stored correctly (every write
-# rule this store applies to them keys off the kind RANGE, never off a Quartz
-# class), so the bump buys typed reconstruction on the read path — `toEvent()` now
-# hands callers a `UserTrustedListEvent` instead of a base `Event` — and the typed
-# builders the new tests are written against. It changes nothing on the wire.
+# Nothing else moved. The range's only other files are app/desktop/CLI work no
+# module here imports; under quartz/ exactly two main files changed, both in
+# `experimental/trustedLists/` (the base class above and the package README), so
+# IEventStore, SQLiteEventStore, IndexableFields, SearchFieldExtractor,
+# SearchQuery, SearchableEvent, EventFactory and the filter semantics are
+# byte-identical to the previous pin. The searchable set grows by exactly these
+# four kinds: 126 classes / 129 kind values -> 130 / 133.
 #
-# The other 39 commits are app-side and relay-CLIENT work in packages no module
-# here imports (relay/client + its pool, nip19Bech32 and nip10Notes content
-# scanners, nip13Pow miner, buzz invites, nip22/nip57/nip72/nip94 accessories).
-# We ARE the store a relay reads from, not a client reading relays: grep still
-# finds no `INostrClient`, `fetchAll` or `relay.client` reference in any module
-# here. No build file under quartz/ moved and the root version catalog is
-# untouched, so nothing transitive shifts under us.
-#
-# Prev 1866007e99 (2026-08-12, PR #3908: the `FetchAllResult` collapse of the
-# NIP-42-aware read accessories' out-parameters — also client-side, also inert
-# here). Of the five .claude/skills imported from upstream, this range touches
-# none (only find-missing-translations moved, which we do not carry), so all five
-# are still current for this pin. Note that upstream's own nip85-trusted-assertions
-# skill does not yet cover 30392-30395 — its 10040/30382 model is unchanged and
-# still accurate, the list family simply sits beside it.
-quartz = "509075abde"
+# Prev 509075abde (2026-08-20: the family itself — see PR #84 for the indexing
+# audit that found this gap). Of the five .claude/skills imported from upstream,
+# this range touches two, and both are refreshed in the same commit as this bump:
+# searchable-events' `references/searchable-kinds.md` gains the four rows (the
+# table external search engines mirror), and quartz-integration's published-artifact
+# version moves 1.13.1 -> 1.14.0 (irrelevant here — we pin by commit).
+quartz = "98f09f29c0"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 sqlite = "2.7.0"
