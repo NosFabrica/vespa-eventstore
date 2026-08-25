@@ -803,6 +803,107 @@ schema event {
             query(w_secondary) double: 0.4
             query(w_content) double: 0.15
             query(w_location) double: 0.3
+            # ---- RECENCY (docs/recency-ranking.md) ----
+            # The query instant, epoch SECONDS, stamped by EventYql on every
+            # ranked text query. Vespa's own `now` is evaluated per content
+            # node and moves every second, so a profile reading it is not a
+            # function of the request: RankRegressionIT could not pin a
+            # position, two nodes could disagree about one query, and a bad
+            # ranking could not be replayed at the instant it was reported.
+            # 0.0 (the fail-safe default) falls back to `now`, so a sender
+            # that omits it degrades to wall-clock, never to 1970.
+            # Named now_secs, not now, to keep the query feature textually
+            # distinct from the built-in feature it shadows.
+            query(now_secs) double: 0.0
+            # Age at which freshness() halves, in DAYS. Corpus-shaped: ~7 for
+            # a conversation index, 30 for general notes, 365 for long-form.
+            # Clamped to >= 1 in freshness() so a zero can never divide.
+            query(recency_halflife) double: 30.0
+            # Strength of the multiplicative freshness boost on the DEFAULT
+            # profile: recency_mult() in [1, 1 + w_recency].
+            #
+            # SHIPPED 0.1, from the run recorded below (2026-08-22). 0.0 turns
+            # recency off entirely without a redeploy — it is a query() input,
+            # so an operator who disagrees sends their own value per request.
+            #
+            # HARD CEILING 4.5. Above it 1 + w exceeds the smallest rung ratio
+            # in the ladder and recency starts CROSSING text tiers — the
+            # ordering wot_mult() is calibrated to allow only on overwhelming
+            # trust. The ratios, floor upward: floor band 100
+            # (text_score_cutoff, the net under a real match) -> bio/body 550
+            # is x5.5 and is the BINDING one; then 4000/550 = x7.3,
+            # 23000/4000 = x5.75, 130100/23000 = x5.65. An earlier version of
+            # this comment read the smallest as x5.65 by forgetting the floor
+            # band, and put the ceiling 3% too high.
+            #
+            # RankRegressionIT does not pin the ceiling itself — it pins the
+            # x7.3 weak-over-body pair from both sides (no crossing at 3x,
+            # crossing at 21x), which proves the bound is a fact about the
+            # WEIGHT rather than about a fixture that could never cross.
+            #
+            # The USEFUL range is nowhere near the ceiling. MEASURED
+            # 2026-08-22 against a 4 596-event staging slice fed into a local
+            # Vespa with its real 30382 trust cards (benchmark/README.md):
+            # inside one match band the trust curve SATURATES — a page of
+            # trust-100 authors scores within 0.001% of itself — so a 1% tilt
+            # already re-sorts the page. Median age of the top 10 body-band
+            # hits, at half-life 30d:
+            #     w      bitcoin  nostr  lightning  coffee   median trust
+            #     0.0      993d   1066d     1018d    973d       100
+            #     0.05      32d      0d       34d    106d       100
+            #     0.1        7d      0d       24d      2d      98-100
+            #     0.25       0d      0d        2d      1d       96-99
+            # On ordinary mixed-band queries the same w=0.1 takes "zap" from
+            # 1120d to 525d and "podcast" from 979d to 628d, with every pinned
+            # rank case unmoved. Above ~0.25 the page is same-day and the
+            # median author trust starts slipping — that is the trade this
+            # weight buys, and 0.05..0.25 is the band to sweep on real staging.
+            # A paper estimate put the candidate at 1.0; the run says that is
+            # 10x too much. Trust the run.
+            #
+            # 0.1 is the point where the pages move and nothing else does:
+            # median trust holds at 98-100, every pinned rank case is
+            # position-identical (rankAb at 0.05/0.1/0.25: zero deltas), and
+            # the integration suite is green. RE-MEASURE (do not re-derive)
+            # against the full corpus after any change to w_wot_pow, the tier
+            # weights, or the corpus's age distribution: this weight is
+            # calibrated against a SATURATED trust curve, and anything that
+            # unsaturates it changes what 0.1 buys.
+            query(w_recency) double: 0.1
+            # NO PER-KIND SPLIT — tried, measured, REJECTED (2026-08-22).
+            # This shipped for one run as a second weight (w_recency_profile,
+            # 0.0) that exempted kind 0, on the argument that a replaceable
+            # event's created_at is its LAST EDIT and freshness there rewards
+            # profile churn. True, and irrelevant next to what the split
+            # actually does: exempting one kind makes the multiplier
+            # DISCONTINUOUS across kinds, so every non-profile document gains
+            # up to (1 + w) against every profile REGARDLESS OF AGE — a
+            # systematic thumb on the scale, not a tiebreak. RankRegressionIT
+            # caught it immediately: the "primal" case (the profile named
+            # primal vs the same author's follow set TITLED Primal, decided by
+            # an identity credit worth well under 1%) flipped on the 0.25% a
+            # 1157-day-old corpus gets at w=0.1.
+            #
+            # One weight for every kind keeps the factor CONTINUOUS: two
+            # documents of the same age get the same multiplier whatever their
+            # kinds, so a cross-kind comparison is perturbed only by the age
+            # difference that is actually there — and on a time-flat corpus
+            # the whole change is a global constant, i.e. provably no-op.
+            #
+            # The profile-churn worry survives, bounded: at w=0.1 an edit buys
+            # at most 10%, worth 1.1^(1/2.7) = 3.6% of trust delta. The
+            # tightest calibrated crossing (the odell case) has ~13% of margin
+            # in that currency, so recency cannot reach it. RE-DERIVE THAT
+            # BOUND before raising w: at 0.25 the same number is 8.6%, and the
+            # margin starts to matter.
+            # Same, for the PURE-TEXT profiles (`text`/`text2`). Kept apart
+            # from w_recency because relevance() is ADDITIVE: its rungs are
+            # 1100/700/620/550 — ratios of 1.13..1.57 — and its uncapped
+            # bm25/secondary tail already overlaps them, so there is no
+            # "cannot cross a rung" bound to inherit here at any useful
+            # strength. Observer-less search is the fallback path; tune this
+            # only if someone runs it in anger.
+            query(w_recency_text) double: 0.0
         }
 
         # The observer's trust in this doc's AUTHOR, via the reputation parent.
@@ -1394,6 +1495,71 @@ schema event {
             expression: if(user_score() < query(min_rank), 0.0, 1.0 + query(w_wot) * pow(min(max(0.0, user_score() - query(min_rank)), 100.0), query(w_wot_pow)))
         }
 
+        # ---- RECENCY (docs/recency-ranking.md) ------------------------
+        # Distance in DAYS between the event and the query instant, and it is
+        # a distance, not a difference: max(a-b, b-a) is |now - created_at|.
+        #
+        # The symmetry is load-bearing, not tidiness. The live corpus really
+        # does hold notes stamped in the year 2100 (they already top an
+        # unranked feed), and `now - created_at` — the shape of Vespa's own
+        # age()/freshness() features, whose formula clamps only from BELOW —
+        # gives those documents a NEGATIVE age and a freshness above 1, i.e.
+        # an unbounded win. Read as a distance, a note dated 2100 is as stale
+        # as one from 1952, which is the honest reading of "this clock is
+        # wrong", while a client a few minutes ahead of us is still fresh.
+        #
+        # The clock, resolved ONCE: functions are inlined textually, so a
+        # `max(a-b, b-a)` spelling of the same distance expands this `if` four
+        # times per matched document. fabs() spells it once.
+        function query_now() {
+            expression: if(query(now_secs) > 0, query(now_secs), now)
+        }
+
+        function event_age_days() {
+            expression: fabs(query_now() - attribute(created_at)) / 86400.0
+        }
+
+        # 1 at zero age, 0.5 at the half-life, asymptotically 0 and never
+        # actually 0. HYPERBOLIC, not exponential: a three-year-old exact
+        # match is still the best answer to a rare query, and an exp() decay
+        # has effectively deleted it by then. It is also one divide with no
+        # exp/log — this runs over EVERY match, not a rerank window.
+        function freshness() {
+            expression: 1.0 / (1.0 + event_age_days() / max(1.0, query(recency_halflife)))
+        }
+
+        # >= 1, ALWAYS — CLAMPED, not merely arranged. The invariant is what
+        # lets this ride the first phase at all, and until the clamp it rested
+        # on nobody ever sending a negative weight: w_recency = -1 through the
+        # query features EventQuery.rankFeatures exposes would have deleted
+        # every FRESH hit from the match set (and from a gated count), which is
+        # the failure this whole function is written to make impossible. One
+        # max() per matched document is the right price for that. A negative
+        # weight is therefore a no-op, not a demotion: recency BOOSTS, and
+        # demoting by age is a different feature with a different safety
+        # argument.
+        #
+        # The rest of the argument, unchanged: the
+        # default profile DELETES hits by score (rank-score-drop-limit 0.5,
+        # and floored_text_score() maps gram-only noise to 0.0 for the limit
+        # to take), so a factor that can dip below 1 changes the MATCH SET,
+        # not just the order — a recall regression invisible to anyone reading
+        # the first page. With x >= 1: a survivor stays a survivor (s*x >= s)
+        # and a zero stays a zero (0*x = 0). Bit-identical recall, order only.
+        #
+        # Bounded by 1 + w, which is what keeps the boost under the ladder's
+        # x5.65 rung ratio; see query(w_recency).
+        function recency_mult() {
+            expression: max(1.0, 1.0 + query(w_recency) * freshness())
+        }
+
+        # The pure-text profiles' own multiplier — same shape, own weight, and
+        # no kind split (relevance() has no trust multiply for a profile boost
+        # to distort). See query(w_recency_text).
+        function recency_mult_text() {
+            expression: max(1.0, 1.0 + query(w_recency_text) * freshness())
+        }
+
         # PURE-TEXT relevance (Brainstorm relevance() + the tier group):
         # token-match band on top, match-quality ladder + proximity within,
         # affiliation above gram noise, bm25 ordering inside each band.
@@ -1415,11 +1581,14 @@ schema event {
         }
 
         first-phase {
-            expression: relevance()
+            # x recency_mult_text(), which is exactly 1.0 until someone sets
+            # query(w_recency_text) — `text` inherits this phase unchanged.
+            expression: relevance() * recency_mult_text()
         }
 
         match-features {
             user_score
+            freshness
             name_text
             display_name_text
             about_text
@@ -1570,7 +1739,19 @@ schema event {
     # behavior is unchanged.)
     rank-profile search inherits text_relevance {
         first-phase {
-            expression: floored_text_score() * wot_mult()
+            # x recency_mult(): FIRST phase, not second, and the reason is the
+            # rerank window. A common term matches ~50 000 docs and the second
+            # phase only ever sees rerank-count of them, chosen by the first —
+            # so recency confined to phase 2 can only reshuffle a window that
+            # recency had no say in selecting, and the fresh note that lost the
+            # phase-1 cut is still gone. The cost is one attribute(created_at)
+            # read per match, on an attribute that is already resident,
+            # already fast-search and already marked never-page
+            # (docs/attribute-memory.md), plus ~6 flops.
+            #
+            # The factor is >= 1, so the drop-limit below still deletes
+            # EXACTLY what it deleted before — see recency_mult().
+            expression: floored_text_score() * wot_mult() * recency_mult()
             rank-score-drop-limit: 0.5
         }
 
@@ -1590,7 +1771,13 @@ schema event {
         # a tensor dot plus a pow over ≤ rerank-count hits, against the
         # fieldMatch analysis this phase already pays for.
         second-phase {
-            expression: firstPhase + precision_boost_pop() * wot_mult()
+            # x recency_mult() for the same reason it is x wot_mult(): the
+            # phase-1 bands now carry BOTH multipliers, so a boost added raw
+            # would be worth w/(wot_mult x recency_mult) band-points and the
+            # precision rules would mean something measurably different for a
+            # fresh document than for an old one. Scaling by the same factor
+            # the bands carry is what keeps "reorders within a band" true.
+            expression: firstPhase + precision_boost_pop() * wot_mult() * recency_mult()
             rerank-count: 1000
         }
 
@@ -1603,6 +1790,13 @@ schema event {
         match-features {
             user_score
             verified_followers
+            # Surfaced for the same reason every other decisive signal is: a
+            # ranking input nobody can see is a ranking input nobody can
+            # debug, and "why is this above that" is now partly an age
+            # question. freshness() is the raw signal, recency_mult() what the
+            # score actually carried.
+            freshness
+            recency_mult
             perfect_match
             name_match
             identity_match
@@ -1656,14 +1850,16 @@ schema event {
         }
 
         first-phase {
-            expression: relevance_cheap()
+            expression: relevance_cheap() * recency_mult_text()
         }
 
         second-phase {
             # relevance() restores the full tuned order; the scaled precision
             # boost (the text ladder's gaps are only ~70-80 wide) adds the
             # words/exactness/near-quality rules on top. In-band only.
-            expression: relevance() + query(w_precision_scale_text) * precision_boost()
+            # x recency_mult_text() on the WHOLE sum, so both phases rank on
+            # one scale (phase 1 above carries the same factor).
+            expression: (relevance() + query(w_precision_scale_text) * precision_boost()) * recency_mult_text()
             rerank-count: 1000
         }
     }

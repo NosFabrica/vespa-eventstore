@@ -288,9 +288,11 @@ class NostrSemanticsStore(
     // ---- queries ------------------------------------------------------------
 
     /**
-     * Map a filter to an [EventQuery] stamped with the request's expiry cutoff
-     * (one [cutoffSecs] per request, so sibling filters can't disagree about
-     * an event expiring on the boundary) and the ranking observer. An explicit
+     * Map a filter to an [EventQuery] stamped with the request's clock (one
+     * [cutoffSecs] per request, so sibling filters can't disagree about an
+     * event expiring on the boundary — nor, since it is also the RECENCY
+     * ranking instant, about how old the same document is) and the ranking
+     * observer. An explicit
      * `observer:` search token wins over the connection [observer] — scores
      * are public, so a client may rank through any lens.
      *
@@ -309,7 +311,13 @@ class NostrSemanticsStore(
         observer: String? = null,
     ): EventQuery? =
         toEventQuery()?.let {
-            val q = it.copy(notExpiredAt = cutoffSecs, observer = it.observer ?: observer)
+            // nowSecs: the same instant the expiry cutoff uses. recallOrdered
+            // MERGES sibling filters' hits by engine score, and with recency in
+            // the profile a score is a function of the instant it was asked at
+            // — so letting each filter stamp its own clock would put one merge
+            // on two scales, which is the exact thing cutoffSecs exists to stop.
+            // It also puts the store's injectable clock in charge of ranking.
+            val q = it.copy(notExpiredAt = cutoffSecs, nowSecs = it.nowSecs ?: cutoffSecs, observer = it.observer ?: observer)
             val floor = q.minRank ?: DEFAULT_MIN_RANK.takeUnless { q.includeSpam }
             // Phrases count as search text (they gate through the search
             // profiles); an exclusion-only (notSearch) query is plain recall.

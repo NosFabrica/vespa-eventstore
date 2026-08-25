@@ -25,6 +25,7 @@ import java.io.ByteArrayInputStream
 import java.util.zip.ZipInputStream
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -267,6 +268,59 @@ class EventYqlTest {
 
         val withObserver = EventYql.build(EventQuery(search = "vitor", observer = hexA, minRank = 2.0))!!
         assertEquals("2.0", withObserver.params["ranking.features.query(min_rank)"])
+    }
+
+    @Test
+    fun `the query instant rides along wherever text is ranked, and nowhere else`() {
+        // Recency ranking reads query(now_secs) rather than Vespa's own `now`
+        // so a score is a function of the REQUEST: pinnable in a test,
+        // identical across content nodes, replayable after a report.
+        val text = EventYql.build(EventQuery(search = "vitor"))!!
+        assertNotNull(text.params["ranking.features.query(now_secs)"], "a ranked text query carries the instant it was asked at")
+
+        val pinned = EventYql.build(EventQuery(search = "vitor", nowSecs = 1_800_000_000L))!!
+        assertEquals("1800000000", pinned.params["ranking.features.query(now_secs)"], "an explicit instant wins over the wall clock")
+
+        // The profiles that rank BY created_at read no text signal at all, so
+        // an instant would be a feature they never declare.
+        val recency = EventYql.build(EventQuery(kinds = listOf(1), limit = 50))!!
+        assertEquals(EventYql.RANK_RECENCY, recency.ranking)
+        assertNull(recency.params["ranking.features.query(now_secs)"])
+
+        val gated = EventYql.build(EventQuery(search = "vitor", ranking = EventYql.RANK_RECENCY_GATED, observer = hexA, limit = 50))!!
+        assertNull(gated.params["ranking.features.query(now_secs)"], "sort:recent strips the text features, the instant among them")
+    }
+
+    @Test
+    fun `profile selection reads the request clock, not the machine's`() {
+        // The match-phase recency profile is only sound when the wanted window
+        // is near the newest end of the corpus, so a deep-past `until` falls to
+        // the planner path. Which `until` counts as deep-past is a question
+        // about NOW — and now is the request's, not the machine's, so a pinned
+        // clock decides it. Same rule the recency RANKING follows; a query
+        // whose plan and score disagreed about the date would be neither.
+        val deepPast = 1_600_000_000L
+        val wall = EventQuery(kinds = listOf(1), limit = 50, until = deepPast)
+        assertEquals(EventYql.RANK_UNRANKED, EventYql.build(wall)!!.ranking, "years-old anchor: not the match-phase profile")
+
+        val pinned = wall.copy(nowSecs = deepPast + 60)
+        assertEquals(EventYql.RANK_RECENCY, EventYql.build(pinned)!!.ranking, "asked AT that instant, the same anchor is current")
+    }
+
+    @Test
+    fun `rank feature overrides land on the request, and their names are validated`() {
+        val swept =
+            EventYql.build(
+                EventQuery(search = "vitor", observer = hexA, minRank = 2.0, rankFeatures = mapOf("w_recency" to 1.0, "min_rank" to 0.0)),
+            )!!
+        assertEquals("1.0", swept.params["ranking.features.query(w_recency)"])
+        assertEquals("0.0", swept.params["ranking.features.query(min_rank)"], "a sweep may also move a feature the builder just set")
+
+        // A caller-shaped parameter NAME must not be the one thing this
+        // builder passes through unescaped.
+        assertFailsWith<IllegalArgumentException> {
+            EventYql.build(EventQuery(search = "vitor", rankFeatures = mapOf("w_recency) or true or query(x" to 1.0)))
+        }
     }
 
     @Test

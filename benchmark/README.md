@@ -44,6 +44,152 @@ measures what the emitted query actually does:
   ./gradlew :benchmark:rankAb --args="--configs baseline,near_off --profile text"
   ```
 
+### Recency in text ranking — the baseline the sweep has to beat (2026-08-22)
+
+`event.sd` ships **`w_recency` 0.1** with a 30-day half-life on the trust
+profiles (`w_recency_text`, the pure-text knob, stays 0.0);
+`docs/recency-ranking.md` is the design. This is the *before* measurement the
+weight was chosen against — **read-only, against the live staging relay**
+(`wss://search-staging.brainstorm.world/`, observer `460c25…065c`, `kind 1`,
+`limit 50`), ages in days at the time of the run:
+
+| query | lens | p25 | median | p75 | older than 1y | newest hit on the page |
+| --- | --- | --- | --- | --- | --- | --- |
+| bitcoin | trust (`search`) | 919 | **1057** | 1138 | 49/50 | 144d |
+| bitcoin | text (`text`) | 437 | 507 | 758 | 41/50 | 49d |
+| bitcoin | `sort:recent` | 0 | **0** | 0 | 0/50 | 0.0d |
+| nostr | trust | 948 | 1106 | 1164 | 49/50 | 337d |
+| nostr | text | 574 | 851 | 1024 | 43/50 | 101d |
+| lightning | trust | 888 | 955 | 1099 | **50/50** | 574d |
+| lightning | text | 333 | 360 | 499 | 22/50 | 128d |
+| coffee | trust | 789 | 1098 | 1155 | 49/50 | 208d |
+| coffee | text | 374 | 442 | 501 | 38/50 | 118d |
+
+The `sort:recent` row is the point: the same filter, the same trust lens, 50
+same-day hits. Fresh, trusted, matching content exists in quantity — relevance
+ranking simply never shows any of it, and a user who wants some has to give up
+relevance entirely to get it. Under the default profile a whole page of
+"lightning" is older than eighteen months.
+
+`rankAb` now prints a **median top-10 age column** beside the positions, and
+runs cases with an empty `expect` as age-only rows, so a recency config is
+read on both axes at once — the age it buys and the pinned positions it must
+not pay with:
+
+```bash
+./gradlew :benchmark:rankAb --args="--configs recency_off,recency_h30_w1,recency_h30_w2 --observer <hex> --now 1787408253"
+```
+
+`--now` pins the instant recency is measured against (it becomes
+`query(now_secs)`), so a sweep is reproducible across days and a reported
+ranking can be replayed at the moment it was reported. `--kinds 1` is not
+optional for a recency sweep: a mixed page is profiles and titled notes whose
+ages barely differ, so the weight reads as inert when the sweep is merely
+measuring the wrong page (the band effect below).
+
+#### The sweep, on a real staging slice (2026-08-22)
+
+Reproduce it in three steps. The capture is READ-ONLY and out of band — no
+test may point at a relay:
+
+1. **Capture** (a plain NIP-01 REQ against the public relay, any client): the
+   top-500 relevance page *and* the top-500 `sort:recent` page for each term,
+   under `observer:460c25…065c`, plus the kind-0 hits for the ladder queries —
+   4 596 events from 1 722 authors. Then the lens itself: the observer's kind
+   10040, and the provider's kind 30382 cards for exactly those authors
+   (`{"kinds":[30382],"authors":["7d7ffd…9377"],"#d":[…]}`), 1 722 of them.
+   Two JSON arrays, which is all a capture needs to be.
+2. **Feed** — the store's real write path, so `TrustProjection` rebuilds the
+   same reputation tensors from those 10040/30382 events and the local cluster
+   ranks the way the source cluster does:
+
+   ```bash
+   docker run -d --name vespa -p 8080:8080 -p 19071:19071 vespaengine/vespa
+   VESPA_URL=http://localhost:8080 ./gradlew :benchmark:exportLoad \
+     --args="/tmp/staging_events.json /tmp/staging_trust.json"
+   ```
+
+3. **Sweep** — `rankAb` as above.
+
+**Result.** Median age of the top-10, half-life 30 d, body-band recall (one
+match band, so recency is the only thing that *can* move it). Match counts
+identical on every row — the `>= 1` multiplier cannot change recall, confirmed
+on real data at every weight:
+
+| `w_recency` | bitcoin | nostr | lightning | coffee | median page trust |
+| --- | --- | --- | --- | --- | --- |
+| **0.0** | 993 d | 1066 d | 1018 d | 973 d | 100 |
+| 0.01 | 43 d | 4 d | 34 d | 106 d | 100 |
+| 0.05 | 32 d | 0 d | 34 d | 106 d | 100 |
+| **0.1** | 7 d | 0 d | 24 d | 2 d | 98–100 |
+| 0.25 | 0 d | 0 d | 2 d | 1 d | 96–99 |
+| 1.0 | 0 d | 0 d | 1 d | 1 d | 96–98 |
+
+A **1 %** tilt moves a page from ~1000 days to ~40, because within a band the
+trust curve saturates: the top-10 of a `bitcoin` page is all trust-98..100
+authors whose scores span **0.0014 %**. The order was a near-tie; recency is
+the first tiebreak ever offered it. Ordinary mixed queries at w = 0.1:
+`zap` 1120 d → 525 d, `podcast` 979 d → 628 d, `privacy` 915 d → 746 d, with
+**zero** position deltas across every pinned rank case at 0.05 / 0.1 / 0.25.
+
+**The ladder check at the shipped weight** (re-run after the per-kind split was
+dropped, so kind 0 now takes the boost too — the case the time-flat IT corpus
+cannot see). Same slice, `recency_off` vs the schema's own defaults vs 0.25:
+**every pinned position identical** (odell #5, Primal #1, MRR 0.171, found 2/7
+on all three), while the pages that have fresh candidates move — "Odel"
+−165 d, "primal.net" −195 d at 0.1, and "bitcoin" −396 d by 0.25. That is the
+shape a recency weight is supposed to have: it reorders where age is the only
+thing left to order by, and it is invisible where the ladder has already
+decided.
+
+**The half it does not fix, measured in the same run.** On those four terms the
+HEAD of the mixed page does not move at any legal weight, and should not: the
+top-10 all score `text_score ≈ 130 100` (the token band — kind-1 notes with the
+word in their NIP-14 `subject`: "Bitcoin reserve", "Bitcoin phase"), while the
+400 freshest matches top out at `4 001` (the weak band). A 236× gap; the
+ladder ceiling is 5.65×. Page-one staleness on a common term is therefore two
+problems, and this is the one that was a ranking accident rather than a
+ranking decision. See `docs/recency-ranking.md` §4.3.
+
+Paper calibration had put the candidate at `w = 1.0`. The run says that is 10×
+too much — the same lesson `w_perfect_pop` learned the expensive way: trust the
+run, not the arithmetic.
+
+#### What the recency term costs (2026-08-22)
+
+The first phase now reads `attribute(created_at)` for **every match**, so the
+cost had to be measured, not argued. A/B on one box: `searchBench`'s 200 000-note
+self-fed corpus, single-node Vespa in Docker, `BENCH_SEARCH_REPS` 40–60, p50 per
+run, **three runs per variant, alternating deploys** — the variant is a
+rank-profile-only change, so the corpus is fed once and never re-fed. "Without"
+strips `* recency_mult()` / `* recency_mult_text()` from both phases of `search`
+and from the text profiles, and drops the two new match-features.
+
+| shape | with recency (p50, 3 runs) | without (3 runs) | Δ |
+| --- | --- | --- | --- |
+| **common term** (~50 k matches) | 338.7 / 344.4 / 336.2 ms | 335.4 / 328.6 / 324.4 ms | **+3.2 %** (≈ +10 ms) |
+| common term, limit 1000 | 399.2 / 392.9 / 403.6 ms | 387.7 / 394.3 / 375.2 ms | +3.3 % |
+| two words (~1 k matches) | 51.7 / 47.0 / 47.0 ms | 46.6 / 49.7 / 49.2 ms | — |
+| text profile, single-phase | 47.9 / 48.3 / 43.3 ms | 43.9 / 46.6 / 45.5 ms | — |
+| rare term / short word / misspelled | 5–23 ms | 5–20 ms | — |
+
+Only the match-heavy shape separates: every "with" run sits above every
+"without" run on `common term`, which is what a per-match cost looks like. On
+everything lighter the difference is 1–4 ms and inside run-to-run variance —
+the honest reading is "≲ 3 % where it scales with the match set, unresolvable
+elsewhere".
+
+**Rejected micro-optimization**, measured the same way: folding
+`fabs(...)/86400 / max(1, H)` into a single divide by `max(86400, 86400·H)`
+(337.98 / 342.23 ms against 336.25 / 338.65 / 344.44 for the shipped two-divide
+form) buys **nothing**. The cost is not the arithmetic, so the readable form —
+where `event_age_days()` names its own unit — stays.
+
+**Setup note:** `searchBench` talks to `VespaEventIndex` directly and does NOT
+auto-deploy. Point it at a cluster that already has the app (`VespaEventStore.open`,
+`exportLoad`, or a `prepareandactivate` POST); against a config server with no
+application it retries the first document read and looks hung.
+
 ### `search_text_gram` — what the body's partial-word reach costs (2026-08-15)
 
 Measured on **26 000 real events pulled from `search-staging.brainstorm.world`**

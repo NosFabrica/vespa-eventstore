@@ -2,7 +2,8 @@
   {
     "query": "example",
     "expect": "",
-    "note": "TEMPLATE — `expect` is a doc-id prefix (the event id of the profile that should rank). Empty expect = skipped, so shapes can be parked here. ADD A CASE EVERY TIME SOMEONE REPORTS A BAD SEARCH; capture a baseline in the same run as any candidate (positions depend on live data)."
+    "skip": "true",
+    "note": "TEMPLATE — `expect` is a doc-id prefix (the event id of the profile that should rank). An EMPTY expect no longer skips the case: it rides along as an AGE-ONLY row (no position, no MRR contribution), because a page's median age is a measurement even when no single document is the right answer — that is how the recency configs are read. ADD A CASE EVERY TIME SOMEONE REPORTS A BAD SEARCH; capture a baseline in the same run as any candidate (positions depend on live data). This row itself carries `skip: true` — it is documentation, not a case, and must stay out of both the position table and the age column."
   },
   {
     "query": "Ode",
@@ -113,5 +114,25 @@
     "query": "vitor",
     "expect": "",
     "note": "The precision half of the same change, parked for a live run: a body reading 'Take a vitamin and open the editor' must NOT rank — it holds vit/ito/tor as scattered trigrams and the word nowhere. The AND-of-trigrams net matched it (measured up to 4.0% false positives on 2000-word bodies); the phrase form measures 0.0%. Fill `expect` with a real 'vitor' body hit from the corpus."
+  },
+  {
+    "query": "bitcoin",
+    "expect": "",
+    "note": "RECENCY baseline, MEASURED 2026-08-22 against search-staging (read-only, observer 460c25…065c, kind 1, limit 50): under the trust lens the top-50 page has median age 1057 days (p25 919, p75 1138), 49/50 older than a year, and the NEWEST hit on the page is 144 days old. Pure text is younger but still stale: median 507d, 41/50 over a year. The same filter with sort:recent returns 50 same-day hits — so fresh, trusted, matching content exists in quantity and relevance ranking simply never shows any of it. This is the row the recency_* configs have to move: watch the age column, and watch that the ladder cases below do NOT move."
+  },
+  {
+    "query": "nostr",
+    "expect": "",
+    "note": "RECENCY baseline, same run: trust lens median 1106d (p25 948, p75 1164), 49/50 over a year, newest hit 337d. Pure text median 851d. The highest-volume term in the corpus — the shape where the freshest matches are most numerous and least visible."
+  },
+  {
+    "query": "lightning",
+    "expect": "",
+    "note": "RECENCY baseline, same run: trust lens median 955d, 50/50 over a year, newest hit 574d — the worst page measured, a whole page with nothing from the last eighteen months. Pure text median 360d, its youngest page, which is why both lenses belong in the sweep: w_recency only rides on the `search` profile, and w_recency_text is the separate (still-off) knob for the other one."
+  },
+  {
+    "query": "coffee",
+    "expect": "",
+    "note": "RECENCY baseline, same run: trust lens median 1098d, 49/50 over a year, newest 208d. Kept beside the profile case 'coffee' above on purpose — the same word ranks a kind-0 ladder AND a kind-1 page, so the two rows read together say whether a config moved the pages or moved the ladder."
   }
 ]

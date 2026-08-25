@@ -82,6 +82,32 @@ class ObserverGateTest {
             index.queries.single()
         }
 
+    /**
+     * One request, one instant. [NostrSemanticsStore] merges sibling filters'
+     * hits by ENGINE SCORE, and a score now depends on when it was asked
+     * (recency ranking reads query(now_secs) — docs/recency-ranking.md), so a
+     * per-filter clock would put one merge on two scales. Same argument, and
+     * the same number, as the expiry cutoff this has always stamped.
+     *
+     * The clock here ticks a whole day per call, so a second read of it could
+     * not hide inside a rounding error.
+     */
+    @Test
+    fun `every filter in one request is ranked and expired against the same instant`() {
+        runBlocking {
+            var tick = 0L
+            val index = CapturingIndex()
+            val store = NostrSemanticsStore(index, nowSecs = { 1_700_000_000L + 86_400L * tick++ })
+            store.query<Event>(listOf(Filter(kinds = listOf(1), search = "vitor"), Filter(kinds = listOf(0), search = "vitor")))
+            assertEquals(2, index.queries.size)
+            assertEquals(
+                listOf(1_700_000_000L to 1_700_000_000L, 1_700_000_000L to 1_700_000_000L),
+                index.queries.map { it.nowSecs to it.notExpiredAt },
+                "sibling filters must share one clock: ${index.queries.map { it.nowSecs }}",
+            )
+        }
+    }
+
     @Test
     fun `a context observer gates plain recall at the default floor, in recency order`() {
         val q = captured(Filter(kinds = listOf(1)), observer = hex)

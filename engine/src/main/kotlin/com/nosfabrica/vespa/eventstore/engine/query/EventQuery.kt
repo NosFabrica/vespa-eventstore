@@ -107,6 +107,33 @@ data class EventQuery(
      */
     val rerankCount: Int? = null,
     /**
+     * The query instant for RECENCY ranking, epoch seconds — emitted as
+     * query(now_secs) on every profile that reads it. Null = the wall clock,
+     * which is what production sends.
+     *
+     * It travels on the query rather than being read from Vespa's own `now`
+     * so that a score is a pure function of the REQUEST: a rank assertion can
+     * pin a position that would otherwise rot as the corpus ages, every
+     * content node scores one query against one instant, and a bad ranking can
+     * be replayed at the moment it was reported. Same reason the store already
+     * stamps [notExpiredAt] instead of letting the engine decide "now".
+     */
+    val nowSecs: Long? = null,
+    /**
+     * Extra rank features layered onto the request
+     * (`ranking.features.query(<name>)`), overriding the profile's own
+     * defaults. HARNESS KNOB, like [rerankCount]: RankAb sweeps w_recency /
+     * recency_halflife across a live cluster with no redeploy, and the rank
+     * ITs pin both sides of a calibration without one either. Production
+     * queries should trust the profile.
+     *
+     * Names are validated (`[a-z][a-z0-9_]*`) before they reach the request:
+     * everything else this builder puts on the wire is escaped or
+     * out-of-band, and a caller-shaped parameter NAME must not be the hole in
+     * that.
+     */
+    val rankFeatures: Map<String, Double> = emptyMap(),
+    /**
      * Emit the direct prefix/fuzzy terms against the *_parts / *_tokens
      * attribute fields (the near tier). Not a caller-facing knob: the client
      * flips it off ONLY as a compatibility demotion when the serving schema
