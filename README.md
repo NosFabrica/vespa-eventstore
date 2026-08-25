@@ -157,49 +157,6 @@ Three consequences worth knowing:
   indistinguishable from a corpus mirrored before its provider lists, where
   sweeping would delete every score you hold.
 
-### Trusted Lists (kinds 30392–30395)
-
-Beside the per-subject 30382 card, Quartz publishes the **Tapestry Trusted List**
-family: one addressable event carrying the whole curated membership computed
-under a point of view. It binds to NIP-85's subject types by a `+10` rule, so the
-kind's last digit names the tag its members ride in:
-
-| Kind | = assertion + 10 | Members | Member tag |
-| --- | --- | --- | --- |
-| **30392** | 30382 | pubkeys | `p` |
-| **30393** | 30383 | events | `e` |
-| **30394** | 30384 | addressable events | `a` |
-| **30395** | 30385 | external identifiers (NIP-73) | `i` |
-
-The store treats them as what they are — ordinary addressable events — and that
-is all they need:
-
-- **Every member is recallable.** The membership lands in the same `tag_index`
-  every `#p`/`#e`/`#a`/`#i` filter reads, entry for entry, however long the list
-  runs. `#<letter>` is how a reader asks "which lists is this member in?", which
-  is the family's whole point. The metadata beside it (`observer`, `metric`,
-  `min-rank`, `source-tag`, `status`, `truncated`) is multi-letter, so — per
-  NIP-01 — it is stored losslessly but is not filterable.
-- **The `d` tag names the list, not a subject**, so a recompute replaces the
-  previous revision in place under plain addressable supersession, and members
-  the recompute dropped stop being recalled with it. A retraction (an
-  empty-membership replacement tagged `["status", "retracted"]`) is just the
-  newest revision.
-- **They do not feed the trust projection.** Only 30382 cards signed by a
-  service some stored 10040 names become reputation cells; a 10040 entry cannot
-  name a list kind at all. A list's own per-member scores rank nothing here —
-  otherwise any publisher could score anyone for every observer that trusts it
-  for `30382:rank`.
-- **They are not searchable**, matching Quartz: they are machine output, and a
-  membership of thousands of hex keys is not text a full-text index should carry.
-
-`TrustedListIndexingTest` pins all four points.
-
-**Operator note.** A wide list is wide in `tag_index` — a 50k-member 30392 is 50k
-entries in the corpus's largest attribute, the same cost as 50k single-`p` notes
-(`docs/attribute-memory.md`). Mirroring a Tapestry publisher's full list corpus is
-a real memory decision, not a rounding error.
-
 ## What's searchable
 
 A search matches on the content and some tags of each event, and different fields
