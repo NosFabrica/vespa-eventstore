@@ -5,48 +5,61 @@ app = "1.0.0"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"
 # Quartz from JitPack (amethyst @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
-# 1866007e99 = amethyst PR #3908 (2026-08-12), 6 commits — the narrowest range we
-# have taken. Nine quartz files, all of them the relay READ accessories the previous
-# pin taught NIP-42, plus one KDoc paragraph in relay/client/auth. It finishes that
-# work by taking three things away and handing one back:
+# 509075abde = amethyst main @ 2026-08-20, 41 commits since the last pin. We take it
+# for ONE thing: the Tapestry Trusted List family, kinds 30392-30395
+# (`experimental/trustedLists/`, new in c0f812e46 + its follow-up 509075abde).
 #
-#   `maxTotalMs` is gone from `fetchAll`/`fetchAllWithHooks`. The wall-clock ceiling
-#     could not tell a relay legitimately streaming a large backlog from one that
-#     will never finish, so it cut both; a hard deadline now composes at the call
-#     site (`withTimeoutOrNull(ms) { fetchAll(…) }`), which is where every other
-#     accessory already put it — `fetchAllPages` never had one.
-#   Cancellation is therefore the only wall-clock bound, so the drain loop learns to
-#     observe it. Nothing on its fast path suspends — `tryReceive` doesn't, and a
-#     suspend hook that completes without suspending performs no cancellation check
-#     — so a relay feeding faster than the loop drained would have spun forever,
-#     deaf to an enclosing `withTimeout`. One `ensureActive()` per iteration fixes
-#     it, the same role `fetchAllPages` gives its per-page check.
-#   The `deadOut`/`doneOut`/`onTimeout` out-parameters collapse into a returned
-#     `FetchAllResult` (events + `doneReasons` + `stalled`, with `dead`,
-#     `anyRelayServed` and `authRefused` derived from them). The same facts, no
-#     longer smuggled back through the argument list where a caller could allocate
-#     one half and read the other stale. The unused `diagnoseSlow` flag went too.
+# A Trusted List is the bulk form of a NIP-85 Trusted Assertion. Where a 30382
+# card states a computed result about ONE subject, a list enumerates MANY members
+# of one type, and the family binds to NIP-85's subject-type convention by a `+10`
+# rule — a list kind is its assertion kind plus ten, so the last digit denotes the
+# member type on both sides:
 #
-# None of it reaches this store, and not by luck: we ARE the store a relay reads
-# from, not a client reading relays. grep finds no `fetchAll`, `INostrClient`,
-# `DrainFailure` or `relay.client` reference in any module here. Nothing under
+#   30392 = 30382 + 10 -> pubkey members, in `p` tags
+#   30393 = 30383 + 10 -> event members, in `e` tags
+#   30394 = 30384 + 10 -> addressable members, in `a` tags
+#   30395 = 30385 + 10 -> external-id members (NIP-73), in `i` tags
+#
+# All four are addressable (the `d` tag names the LIST, not a subject, so a list
+# replaces in place as it is recomputed) and all four are designed around
+# relay-side `#p`/`#e`/`#a`/`#i` recall of the membership — which is exactly what
+# this store's `tag_index` serves. `TrustedListIndexingTest` pins that.
+#
+# What the range does to this store: nothing but the four kinds. Nothing under
 # nip01Core/store, nip50Search, nip01Core/relay/filters or nip85TrustedAssertions
 # was touched at all; IEventStore, SQLiteEventStore, IndexableFields,
-# SearchFieldExtractor, SearchQuery, SearchableEvent and EventFactory are
-# byte-identical to the previous pin; the SearchableEvent set is the same 129 files
-# and no `indexableContent()` anywhere in the module changed. So the searchable-kind
+# SearchFieldExtractor, SearchQuery and SearchableEvent are byte-identical to the
+# previous pin, the SearchableEvent set is the same 129 files, and no
+# `indexableContent()` anywhere in the module changed — so the searchable-kind
 # table, the extractor weights, the store contract and the filter semantics all
-# carry over unchanged, and the parity and rank gates are unaffected. No build file
-# under quartz/ moved and the root version catalog is untouched, so nothing
-# transitive shifts under us. The three non-quartz files (the app's Concord actions,
-# two cli files) are call sites adapting to the new signature. We take it to stay on
-# head, not for anything it gives this store.
+# carry over unchanged, and the parity and rank gates are unaffected. EventFactory
+# is the one file we consume that moved, and it is PURELY ADDITIVE: four `KIND ->`
+# branches and their imports, no existing branch reordered or removed.
 #
-# Prev 1ff1077d58 (2026-08-12, PR #3905: the NIP-42-aware read accessories and the
-# NIP-45 `mergeCountResults` mixed-HLL case; this range is its immediate follow-up).
-# This range touches no .claude/skills at all, so the five imported here are still
-# current for this pin.
-quartz = "1866007e99"
+# Trusted Lists are deliberately NOT `SearchableEvent` upstream, so they stay
+# invisible to NIP-50 here too — `SearchExtractors` mirrors that set and must keep
+# mirroring it. Before the bump they were already stored correctly (every write
+# rule this store applies to them keys off the kind RANGE, never off a Quartz
+# class), so the bump buys typed reconstruction on the read path — `toEvent()` now
+# hands callers a `UserTrustedListEvent` instead of a base `Event` — and the typed
+# builders the new tests are written against. It changes nothing on the wire.
+#
+# The other 39 commits are app-side and relay-CLIENT work in packages no module
+# here imports (relay/client + its pool, nip19Bech32 and nip10Notes content
+# scanners, nip13Pow miner, buzz invites, nip22/nip57/nip72/nip94 accessories).
+# We ARE the store a relay reads from, not a client reading relays: grep still
+# finds no `INostrClient`, `fetchAll` or `relay.client` reference in any module
+# here. No build file under quartz/ moved and the root version catalog is
+# untouched, so nothing transitive shifts under us.
+#
+# Prev 1866007e99 (2026-08-12, PR #3908: the `FetchAllResult` collapse of the
+# NIP-42-aware read accessories' out-parameters — also client-side, also inert
+# here). Of the five .claude/skills imported from upstream, this range touches
+# none (only find-missing-translations moved, which we do not carry), so all five
+# are still current for this pin. Note that upstream's own nip85-trusted-assertions
+# skill does not yet cover 30392-30395 — its 10040/30382 model is unchanged and
+# still accurate, the list family simply sits beside it.
+quartz = "509075abde"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 sqlite = "2.7.0"
