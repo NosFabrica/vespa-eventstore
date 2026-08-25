@@ -314,10 +314,26 @@ class TrustedListIndexingTest {
     // ---- what a Trusted List must NOT do -----------------------------------
 
     /**
-     * Trusted Lists are deliberately not `SearchableEvent` upstream — they are
-     * machine output, and a membership of thousands of hex keys is exactly the
-     * kind of text a full-text index should never carry. [SearchExtractors]
-     * mirrors Quartz's searchable set, so the title stays out too.
+     * Trusted Lists are not `SearchableEvent` upstream, so [SearchExtractors] —
+     * which mirrors Quartz's searchable set rather than deciding it — indexes
+     * nothing for them. This pins the store's side of that mirror, NOT that the
+     * set is right.
+     *
+     * It probably is not. The family carries a human-meaningful `title`
+     * ("Podcaster" in its own reference example, distinct from the machine
+     * `metric` label beside it), and every comparable curated list in Quartz is
+     * searchable on exactly that: `PeopleListEvent` and `FollowListEvent` index
+     * `title() + description()`, as does the 30382 card these lists are the bulk
+     * form of (petname + summary + topics). A big membership is no argument
+     * against it either — `indexableContent()` never sees the member tags, and
+     * those list kinds carry the same wide `p` arrays. Upstream simply never
+     * addressed searchability for the family: `SearchableEvent` appears nowhere
+     * in the package and the commit that added it does not mention search.
+     *
+     * So treat this as a gap to re-check at the next pin bump, not a decision to
+     * preserve. The fix belongs upstream (one interface + `indexableContent()`);
+     * the day it lands, this test flips and 30392-30395 join the README's
+     * searchable table as ordinary rows.
      */
     @Test
     fun `trusted lists are invisible to NIP-50 search`() =
