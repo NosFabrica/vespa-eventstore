@@ -8,7 +8,7 @@
 ## Current version
 
 ```
-com.vitorpamplona.quartz:quartz:1.13.1
+com.vitorpamplona.quartz:quartz:1.14.0
 ```
 
 Check latest: https://central.sonatype.com/artifact/com.vitorpamplona.quartz/quartz
@@ -21,7 +21,7 @@ Check latest: https://central.sonatype.com/artifact/com.vitorpamplona.quartz/qua
 
 ```toml
 [versions]
-quartz = "1.13.1"
+quartz = "1.14.0"
 
 [libraries]
 quartz = { module = "com.vitorpamplona.quartz:quartz", version.ref = "quartz" }
@@ -60,7 +60,7 @@ kotlin {
 ```kotlin
 // build.gradle.kts (app module)
 dependencies {
-    implementation("com.vitorpamplona.quartz:quartz:1.13.1")
+    implementation("com.vitorpamplona.quartz:quartz:1.14.0")
 }
 ```
 
@@ -75,7 +75,7 @@ plugins {
 }
 
 dependencies {
-    implementation("com.vitorpamplona.quartz:quartz:1.13.1")
+    implementation("com.vitorpamplona.quartz:quartz:1.14.0")
     // JNA needed for libsodium (NIP-44) on JVM
     implementation("net.java.dev.jna:jna:5.18.1")
 }

@@ -14,7 +14,7 @@ description: The NIP-50 indexing surface of Quartz — the `SearchableEvent` int
 > describes — we parse with `SearchQuery.parse`-compatible semantics; keep it that way.
 
 > Skill imported from `vitorpamplona/amethyst` `.claude/skills/searchable-events`
-> at commit `9231195890` (the Quartz pin). Refresh this copy at every pin bump.
+> at commit `98f09f29c0` (the Quartz pin). Refresh this copy at every pin bump.
 
 ## The contract
 
