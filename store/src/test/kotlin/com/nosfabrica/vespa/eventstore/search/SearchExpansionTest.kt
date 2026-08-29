@@ -405,7 +405,7 @@ class SearchExpansionTest {
                 NostrSemanticsStore(
                     TrustProjection(ranking, InMemoryReputationIndex()),
                     relay = relayUrl,
-                    searchExpansion = SearchExpansionLimits(placement = SplicePlacement.Weighted(gamma = 1.0)),
+                    searchExpansion = SearchExpansionLimits(),
                 )
             val sure = key("e5")
             val doubted = key("f6")
@@ -450,7 +450,7 @@ class SearchExpansionTest {
                 NostrSemanticsStore(
                     TrustProjection(ranking, InMemoryReputationIndex()),
                     relay = relayUrl,
-                    searchExpansion = SearchExpansionLimits(placement = SplicePlacement.Weighted()),
+                    searchExpansion = SearchExpansionLimits(),
                 )
             weighted.insert(note)
             val label = event(1985, arrayOf(arrayOf("L", "#health"), arrayOf("l", "medical", "#health"), arrayOf("e", note.id)))
@@ -461,17 +461,13 @@ class SearchExpansionTest {
         }
 
     @Test
-    fun `a page the engine did not score is placed anchored`() =
+    fun `a page the engine did not score keeps the pointer's own order`() =
         runBlocking {
-            // The in-memory reference reports null scores. Weighted has nothing
-            // to discount, and a fabricated constant would be worse than the
-            // anchored order it replaced — so it degrades rather than inventing.
-            val unranked =
-                NostrSemanticsStore(
-                    TrustProjection(index, InMemoryReputationIndex()),
-                    relay = relayUrl,
-                    searchExpansion = SearchExpansionLimits(placement = SplicePlacement.Weighted()),
-                )
+            // The in-memory reference reports null scores, so there is nothing
+            // to discount. A fabricated constant would be worse than the
+            // pointer's own order, so the placement degrades rather than
+            // inventing — which is also what a recency-ordered read gets.
+            val unranked = NostrSemanticsStore(TrustProjection(index, InMemoryReputationIndex()), relay = relayUrl)
             store.insert(profile)
             store.insert(treasureMap(arrayOf("30392", curator, "wss://lists.example")))
             val list = userList("Podcaster Trust List")
@@ -482,11 +478,11 @@ class SearchExpansionTest {
 
     @Test
     fun `gamma above one punishes doubt harder`() {
-        val soft = SplicePlacement.Weighted(gamma = 0.5)
-        val hard = SplicePlacement.Weighted(gamma = 2.0)
+        val soft = SearchExpansionLimits(confidenceGamma = 0.5)
+        val hard = SearchExpansionLimits(confidenceGamma = 2.0)
         // The same pointer, the same 25% confidence, three different verdicts.
         assertEquals(50.0, soft.scoreFor(100.0, 0.25))
-        assertEquals(25.0, SplicePlacement.Weighted(1.0).scoreFor(100.0, 0.25))
+        assertEquals(25.0, SearchExpansionLimits().scoreFor(100.0, 0.25))
         assertEquals(6.25, hard.scoreFor(100.0, 0.25))
         // Absent confidence is full confidence, at every gamma.
         assertEquals(100.0, hard.scoreFor(100.0, null))

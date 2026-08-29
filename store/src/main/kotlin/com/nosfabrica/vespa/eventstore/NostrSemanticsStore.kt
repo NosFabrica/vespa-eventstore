@@ -41,7 +41,6 @@ import com.nosfabrica.vespa.eventstore.mapping.toEventQuery
 import com.nosfabrica.vespa.eventstore.search.SearchExpansionLimits
 import com.nosfabrica.vespa.eventstore.search.SearchReferenceExpansion
 import com.nosfabrica.vespa.eventstore.search.SearchReferences
-import com.nosfabrica.vespa.eventstore.search.SplicePlacement
 import com.nosfabrica.vespa.eventstore.search.SubjectKeys
 import com.nosfabrica.vespa.eventstore.trust.Delegations
 import com.nosfabrica.vespa.eventstore.trust.TrustProjection
@@ -399,7 +398,7 @@ class NostrSemanticsStore(
         val observer = coroutineContext[StoreQueryContext]?.observer
         val cutoff = nowSecs()
         val queries = filters.mapNotNull { it.toExpiryQuery(cutoff, observer) }
-        val ordered = recallOrdered(queries, EventDoc.NEWEST_FIRST, EventDoc::id, { index.search(it) }, { index.searchRanked(it) }, searchExpansion.needsScores)
+        val ordered = recallOrdered(queries, EventDoc.NEWEST_FIRST, EventDoc::id, { index.search(it) }, { index.searchRanked(it) }, searchExpansion.enabled)
         val page = spliced(queries, ordered, DOC_KEYS, { if (it.kind in SearchReferences.KINDS) it.toEvent() else null }, { index.search(it) })
         // Reconstruct via Quartz's by-kind factory straight from the stored
         // fields, skipping the serialize+parse round trip; see [toEvent].
@@ -436,10 +435,16 @@ class NostrSemanticsStore(
         searchOne: suspend (EventQuery) -> List<R>,
         searchRankedOne: suspend (EventQuery) -> List<Ranked<R>>,
         /**
-         * Whether the CALLER needs the per-hit relevance kept. Only weighted
-         * splice placement does, and only on a read that already ranks — so the
-         * single-query fast path below stays score-free for every ordinary REQ,
-         * which is the hottest read a relay serves.
+         * Whether the CALLER needs the per-hit relevance kept — the splice does,
+         * to place a subject by the confidence its pointer expressed.
+         *
+         * IT COSTS NOTHING ON A RANKED QUERY, which is the only kind it applies
+         * to: `recallSummaries` already goes through `rankedHits` there, one
+         * `recallRoot` call, and the ranked path differs only in keeping the
+         * `relevance` Vespa already returned. What the single-query fast path
+         * avoids is wrapping every hit of an ORDINARY REQ — and an ordinary REQ
+         * is recency-ordered, so `keepsEngineOrder()` sends it down the
+         * score-free branch regardless of this flag.
          */
         wantScores: Boolean = false,
     ): List<Ranked<R>> {
@@ -525,19 +530,19 @@ class NostrSemanticsStore(
         val expansion = SearchReferenceExpansion(searching, delegations().of(observers), searchExpansion)
         val expanded = expansion.expand(rows, keys, pointerOf, recall)
 
-        // ANCHORED first, always — it is the order the pointers themselves
-        // define, and the weighted pass below is a stable re-sort of it. Built
-        // this way so a tie between a subject and its own pointer resolves the
-        // only way it can read: the reason above the result.
+        // THE POINTER'S OWN ORDER FIRST, always — the weighted pass below is a
+        // stable re-sort of it, so a tie between a subject and its own pointer
+        // resolves the only way it can read: the reason above the result. It is
+        // also the answer whenever there are no scores to sort by.
         val placed = ArrayList<Placed<R>>(rows.size)
         rows.forEachIndexed { i, row ->
             if (expanded.fresh[i]) placed.add(Placed(row.hit, row.score))
             expanded.subjects[i].forEachIndexed { j, subject -> placed.add(Placed(subject, expanded.scores[i][j])) }
         }
-        if (searchExpansion.placement !is SplicePlacement.Weighted) return placed.map { it.row }
         // A page the engine did not score cannot be weighted, and a fabricated
         // constant would be worse than the anchored order it replaced — the
-        // in-memory reference reports null for exactly this reason.
+        // in-memory reference reports null for exactly this reason, and a
+        // recency-ordered read has no relevance to give.
         if (placed.any { it.score == null }) return placed.map { it.row }
         return placed.sortedByDescending { it.score }.map { it.row }
     }
@@ -562,7 +567,7 @@ class NostrSemanticsStore(
         val observer = coroutineContext[StoreQueryContext]?.observer
         val cutoff = nowSecs()
         val queries = filters.mapNotNull { it.toExpiryQuery(cutoff, observer) }
-        val ordered = recallOrdered(queries, RAW_NEWEST_FIRST, RawEvent::id, { index.rawSearch(it) }, { index.rawSearchRanked(it) }, searchExpansion.needsScores)
+        val ordered = recallOrdered(queries, RAW_NEWEST_FIRST, RawEvent::id, { index.rawSearch(it) }, { index.rawSearchRanked(it) }, searchExpansion.enabled)
         spliced(queries, ordered, RAW_KEYS, { if (it.kind in SearchReferences.KINDS) it.toEvent() else null }, { index.rawSearch(it) }).forEach(onEach)
     }
 

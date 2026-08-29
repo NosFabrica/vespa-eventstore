@@ -116,12 +116,18 @@ behind the pointer that named it: NIP-32 labels (1985), NIP-85 assertions
 - **Admission is the engine's job**: the subject lookup is the finding query
   with its terms stripped and the subject keys intersected in, so the index
   applies the same predicate it applied to the hits. No second matcher.
-- **Placement** is `SplicePlacement.Anchored` by default — a subject sits where
-  its pointer sits. `Weighted(gamma)` discounts a subject's inherited relevance
-  by the 0..100 confidence its Trusted List expressed, and needs `Ranked` scores,
-  which is why `recallOrdered` keeps them when (and only when) it is on.
-  Measured on staging, 131 of 180 real member scores are exactly 50 — the
-  default says the data is not ready, not that the scheme is wrong.
+- **Placement is weighted, always.** A subject inherits its pointer's relevance
+  discounted by the 0..100 confidence the Trusted List expressed about that
+  member (`confidenceGamma`, 1.0 = linear), and sorts into the page on the
+  result — so a member the publisher doubts falls past the organic hits it used
+  to sit above. It needs the per-hit relevance, which is why `recallOrdered`
+  keeps the `Ranked` it already computes. **That costs nothing**: on a ranked
+  query `recallSummaries` goes through `rankedHits` anyway, one `recallRoot`
+  call, and the ranked path differs only in keeping the `relevance` Vespa
+  already returned. An unscored reference is FULL confidence (a label and an
+  assertion express none), and a page with no scores at all — the in-memory
+  reference, a recency-ordered read — keeps the pointer's own order rather than
+  inventing a constant.
 - Caps (`SearchExpansionLimits`) arrive through `open()`: a deployment's budget
   is the operator's call, applying it is the store's.
 
