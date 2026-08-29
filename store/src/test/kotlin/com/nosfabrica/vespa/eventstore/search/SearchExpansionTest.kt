@@ -345,6 +345,126 @@ class SearchExpansionTest {
             assertEquals(listOf(pair.id, profile.id), out, "the list, then the FIRST member it names")
         }
 
+    // ------------------------------------------------------------------
+    // Weighted placement — the score decides where, not just whether
+    // ------------------------------------------------------------------
+
+    /**
+     * An index that ranks, which the in-memory reference deliberately does not:
+     * it reports a null rather than a fabricated constant, and weighted
+     * placement has nothing to discount without a real one.
+     *
+     * Scores descend with recall order, which is what a relevance-ordered engine
+     * hands back — so the anchored page and the weighted page start identical
+     * and any difference between them is the weighting.
+     */
+    private class RankingIndex(
+        private val inner: InMemoryEventIndex,
+    ) : com.nosfabrica.vespa.eventstore.engine.EventIndex by inner {
+        override suspend fun searchRanked(query: com.nosfabrica.vespa.eventstore.engine.query.EventQuery) =
+            inner.search(query).mapIndexed { i, doc ->
+                com.nosfabrica.vespa.eventstore.engine
+                    .Ranked(doc, 100.0 - i)
+            }
+    }
+
+    @Test
+    fun `a doubted member sinks below a confident one, and below the hits between them`() =
+        runBlocking {
+            val ranking = RankingIndex(InMemoryEventIndex())
+            val weighted =
+                NostrSemanticsStore(
+                    TrustProjection(ranking, InMemoryReputationIndex()),
+                    relay = relayUrl,
+                    searchExpansion = SearchExpansionLimits(placement = SplicePlacement.Weighted(gamma = 1.0)),
+                )
+            val sure = key("e5")
+            val doubted = key("f6")
+            weighted.insert(event(0, emptyArray(), """{"name":"Sure"}""", author = sure))
+            weighted.insert(event(0, emptyArray(), """{"name":"Doubted"}""", author = doubted))
+            weighted.insert(treasureMap(arrayOf("30392", curator, "wss://lists.example")))
+            // Two OTHER hits the search finds on its own, which the doubted
+            // member has to fall past for the weighting to have done anything.
+            val filler = (1..2).map { event(1, emptyArray(), "podcaster note $it", author = stranger) }
+            filler.forEach { weighted.insert(it) }
+            val list =
+                event(
+                    30392,
+                    arrayOf(
+                        arrayOf("d", "roster"),
+                        arrayOf("title", "Podcaster Trust List"),
+                        arrayOf("p", sure, "", "100"),
+                        arrayOf("p", doubted, "", "10"),
+                    ),
+                )
+            weighted.insert(list)
+
+            val out = weighted.query<Event>(listOf(search("podcaster", listOf(0, 1, 30392)))).map { it.id }
+            val sureId = weighted.query<Event>(listOf(Filter(kinds = listOf(0), authors = listOf(sure)))).single().id
+            val doubtedId = weighted.query<Event>(listOf(Filter(kinds = listOf(0), authors = listOf(doubted)))).single().id
+
+            assertTrue(out.indexOf(sureId) < out.indexOf(doubtedId), "confidence orders the two members: $out")
+            assertTrue(out.indexOf(list.id) < out.indexOf(sureId), "a subject never passes its own pointer: $out")
+            // The whole point: the doubted member is no longer glued behind its
+            // list — organic hits the search found itself now sit above it.
+            assertTrue(out.indexOf(doubtedId) > out.indexOf(sureId) + 1, "the doubted member fell past a hit: $out")
+        }
+
+    @Test
+    fun `an unscored reference is full confidence, not doubt`() =
+        runBlocking {
+            // A label expresses no confidence — NIP-32 has no such field — and a
+            // pointer that says nothing must not be read as unsure. Its subject
+            // stays where the anchored placement would have put it.
+            val ranking = RankingIndex(InMemoryEventIndex())
+            val weighted =
+                NostrSemanticsStore(
+                    TrustProjection(ranking, InMemoryReputationIndex()),
+                    relay = relayUrl,
+                    searchExpansion = SearchExpansionLimits(placement = SplicePlacement.Weighted()),
+                )
+            weighted.insert(note)
+            val label = event(1985, arrayOf(arrayOf("L", "#health"), arrayOf("l", "medical", "#health"), arrayOf("e", note.id)))
+            weighted.insert(label)
+
+            val out = weighted.query<Event>(listOf(search("medical", listOf(1, 1985), observer = null))).map { it.id }
+            assertEquals(listOf(label.id, note.id), out, "an unscored pointer places its subject exactly as Anchored would")
+        }
+
+    @Test
+    fun `a page the engine did not score is placed anchored`() =
+        runBlocking {
+            // The in-memory reference reports null scores. Weighted has nothing
+            // to discount, and a fabricated constant would be worse than the
+            // anchored order it replaced — so it degrades rather than inventing.
+            val unranked =
+                NostrSemanticsStore(
+                    TrustProjection(index, InMemoryReputationIndex()),
+                    relay = relayUrl,
+                    searchExpansion = SearchExpansionLimits(placement = SplicePlacement.Weighted()),
+                )
+            store.insert(profile)
+            store.insert(treasureMap(arrayOf("30392", curator, "wss://lists.example")))
+            val list = userList("Podcaster Trust List")
+            store.insert(list)
+
+            assertEquals(listOf(list.id, profile.id), unranked.query<Event>(listOf(search("podcaster", listOf(0, 30392)))).map { it.id })
+        }
+
+    @Test
+    fun `gamma above one punishes doubt harder`() {
+        val soft = SplicePlacement.Weighted(gamma = 0.5)
+        val hard = SplicePlacement.Weighted(gamma = 2.0)
+        // The same pointer, the same 25% confidence, three different verdicts.
+        assertEquals(50.0, soft.scoreFor(100.0, 0.25))
+        assertEquals(25.0, SplicePlacement.Weighted(1.0).scoreFor(100.0, 0.25))
+        assertEquals(6.25, hard.scoreFor(100.0, 0.25))
+        // Absent confidence is full confidence, at every gamma.
+        assertEquals(100.0, hard.scoreFor(100.0, null))
+        // Nothing to discount is nothing to place by.
+        assertEquals(null, hard.scoreFor(null, 0.25))
+    }
+
     @Test
     fun `the expansion can be switched off outright`() =
         runBlocking {

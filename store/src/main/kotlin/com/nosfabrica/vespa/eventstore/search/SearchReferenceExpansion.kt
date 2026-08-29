@@ -20,10 +20,76 @@
  */
 package com.nosfabrica.vespa.eventstore.search
 
+import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.trust.Enrolment
 import com.vitorpamplona.quartz.nip01Core.core.Address
 import com.vitorpamplona.quartz.nip01Core.core.Event
+
+/**
+ * WHERE A SPLICED SUBJECT GOES.
+ *
+ * [Anchored] is the original reading and the default: a subject sits where its
+ * pointer sits, immediately behind it, in the order the pointer named it. It
+ * needs no relevance number and claims no equivalence — the reason is the
+ * position.
+ *
+ * [Weighted] is the one that uses what the publisher said. A Trusted List
+ * member carries a 0..100 confidence that the list's NAME applies to it, so a
+ * subject inherits its pointer's relevance DISCOUNTED by that confidence and
+ * sorts into the page on the result: a member the publisher is sure about
+ * competes near its list, one it doubts sinks to where its evidence puts it.
+ *
+ * ## Why the default is Anchored, and should stay there for now
+ *
+ * Measured on the staging relay: 131 of 180 Trusted List member scores are
+ * exactly 50, and 92 of the flagship list's 98 members are. Whatever computes
+ * them is emitting a default for almost everyone, so [Weighted] would sort 94%
+ * of that list into one bucket — real machinery expressing no signal, and a
+ * visible reshuffle of the feed to express it. The scheme is here so it is
+ * ready when a publisher starts computing properly; switching it on before then
+ * trades a working page for a worse one.
+ *
+ * ## What it needs, and what it does without
+ *
+ * [Weighted] needs the POINTER's relevance, which only exists on a ranked read
+ * whose engine reports scores. An engine that does not rank (the in-memory
+ * reference) reports null rather than a fabricated constant, and a pointer with
+ * no score cannot discount anything — so that pointer's subjects fall back to
+ * [Anchored]. The degradation is per pointer, not per page.
+ */
+sealed interface SplicePlacement {
+    /** A subject sits where its pointer sits. */
+    data object Anchored : SplicePlacement
+
+    /**
+     * `subject = pointer × confidence^gamma`, with an unscored reference
+     * treated as full confidence — a label and an assertion express none, and
+     * absent must not read as "unsure".
+     *
+     * [gamma] shapes how hard doubt bites: 1.0 is linear, above 1 punishes a
+     * low score harder, below 1 softens it. It is a feel dial and there is no
+     * corpus to tune it against yet, which is the other half of why the default
+     * is [Anchored].
+     */
+    data class Weighted(
+        val gamma: Double = 1.0,
+    ) : SplicePlacement {
+        init {
+            require(gamma > 0.0) { "gamma must be positive: $gamma" }
+        }
+
+        /** The pointer's relevance, discounted — or null when there is nothing to discount. */
+        fun scoreFor(
+            pointer: Double?,
+            confidence: Double?,
+        ): Double? {
+            if (pointer == null) return null
+            val c = confidence ?: return pointer
+            return pointer * Math.pow(c.coerceIn(0.0, 1.0), gamma)
+        }
+    }
+}
 
 /**
  * How much of a subscription's feed the expansion may be, and how much index
@@ -59,7 +125,12 @@ data class SearchExpansionLimits(
     val maxPerEvent: Int = 100,
     /** Subjects one read may bring, across every pointer on it. */
     val maxPerRequest: Int = 1_000,
+    /** Where a subject lands relative to the hits — see [SplicePlacement]. */
+    val placement: SplicePlacement = SplicePlacement.Anchored,
 ) {
+    /** Whether this read needs the engine's per-hit relevance to place anything. */
+    val needsScores: Boolean get() = enabled && placement is SplicePlacement.Weighted
+
     companion object {
         val Default = SearchExpansionLimits()
 
@@ -161,6 +232,14 @@ internal class SearchReferenceExpansion(
         val fresh: BooleanArray,
         /** Index-aligned with the input: what each row nominates, in the order it named them. */
         val subjects: List<List<R>>,
+        /**
+         * Index-aligned with [subjects]: the relevance each subject inherits
+         * from its pointer, discounted by the confidence the pointer expressed.
+         *
+         * Null under [SplicePlacement.Anchored], which needs no number, and null
+         * per subject where the pointer carried no engine score to discount.
+         */
+        val scores: List<List<Double?>>,
     )
 
     /**
@@ -174,20 +253,20 @@ internal class SearchReferenceExpansion(
      * would pay 450 parses for rows it had already decided to take nothing from.
      */
     suspend fun <R> expand(
-        rows: List<R>,
+        rows: List<Ranked<R>>,
         keys: SubjectKeys<R>,
         pointerOf: (R) -> Event?,
         recall: suspend (EventQuery) -> List<R>,
     ): Expanded<R> {
-        val fresh = BooleanArray(rows.size) { i -> sent.add(keys.idOf(rows[i])) }
-        val nothing = Expanded(fresh, rows.map { emptyList<R>() })
+        val fresh = BooleanArray(rows.size) { i -> sent.add(keys.idOf(rows[i].hit)) }
+        val nothing = Expanded(fresh, rows.map { emptyList<R>() }, rows.map { emptyList<Double?>() })
         if (!limits.enabled || budget <= 0 || lenses.isEmpty()) return nothing
 
         var any = false
         val planned = ArrayList<References>(rows.size)
         val lensOfRow = IntArray(rows.size) { NO_LENS }
         for ((i, row) in rows.withIndex()) {
-            val pointer = if (budget > 0) pointerOf(row)?.takeIf { it.kind in SearchReferences.KINDS } else null
+            val pointer = if (budget > 0) pointerOf(row.hit)?.takeIf { it.kind in SearchReferences.KINDS } else null
             // WHICH QUERY FOUND IT, and so which lens its subjects are read
             // through. A read ORs its queries and answers with one union, so a
             // row cannot say which query fetched it — but it can say which would
@@ -214,8 +293,22 @@ internal class SearchReferenceExpansion(
         if (!any) return nothing
 
         val found = lookUp(planned, lensOfRow, keys, recall)
-        return Expanded(fresh, planned.mapIndexed { i, refs -> admit(refs, found[lensOfRow[i]], keys) })
+        val admitted = ArrayList<List<R>>(rows.size)
+        val scores = ArrayList<List<Double?>>(rows.size)
+        planned.forEachIndexed { i, refs ->
+            val taken = admit(refs, found[lensOfRow[i]], keys)
+            admitted.add(taken.map { it.subject })
+            val weighted = limits.placement as? SplicePlacement.Weighted
+            scores.add(if (weighted == null) taken.map { null } else taken.map { weighted.scoreFor(rows[i].score, refs.weightOf(it.namedBy)) })
+        }
+        return Expanded(fresh, admitted, scores)
     }
+
+    /** One admitted subject, and the reference key the pointer named it by — which is where its confidence is filed. */
+    private class Taken<R>(
+        val subject: R,
+        val namedBy: String,
+    )
 
     /**
      * What this row may bring, under both caps, in the order it named them.
@@ -321,12 +414,12 @@ internal class SearchReferenceExpansion(
         refs: References,
         found: Found<R>?,
         keys: SubjectKeys<R>,
-    ): List<R> {
+    ): List<Taken<R>> {
         if (refs.isEmpty() || found == null) return emptyList()
-        val out = ArrayList<R>(refs.size)
-        refs.eventIds.forEach { key -> found.byId[key]?.let { if (sent.add(keys.idOf(it))) out.add(it) } }
-        refs.pubKeys.forEach { key -> found.byKey[key]?.let { if (sent.add(keys.idOf(it))) out.add(it) } }
-        refs.addresses.forEach { key -> found.byAddress[key]?.let { if (sent.add(keys.idOf(it))) out.add(it) } }
+        val out = ArrayList<Taken<R>>(refs.size)
+        refs.eventIds.forEach { key -> found.byId[key]?.let { if (sent.add(keys.idOf(it))) out.add(Taken(it, key)) } }
+        refs.pubKeys.forEach { key -> found.byKey[key]?.let { if (sent.add(keys.idOf(it))) out.add(Taken(it, key)) } }
+        refs.addresses.forEach { key -> found.byAddress[key]?.let { if (sent.add(keys.idOf(it))) out.add(Taken(it, key)) } }
         return out
     }
 

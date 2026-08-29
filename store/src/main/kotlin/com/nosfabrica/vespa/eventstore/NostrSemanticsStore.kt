@@ -41,6 +41,7 @@ import com.nosfabrica.vespa.eventstore.mapping.toEventQuery
 import com.nosfabrica.vespa.eventstore.search.SearchExpansionLimits
 import com.nosfabrica.vespa.eventstore.search.SearchReferenceExpansion
 import com.nosfabrica.vespa.eventstore.search.SearchReferences
+import com.nosfabrica.vespa.eventstore.search.SplicePlacement
 import com.nosfabrica.vespa.eventstore.search.SubjectKeys
 import com.nosfabrica.vespa.eventstore.trust.Delegations
 import com.nosfabrica.vespa.eventstore.trust.TrustProjection
@@ -398,7 +399,7 @@ class NostrSemanticsStore(
         val observer = coroutineContext[StoreQueryContext]?.observer
         val cutoff = nowSecs()
         val queries = filters.mapNotNull { it.toExpiryQuery(cutoff, observer) }
-        val ordered = recallOrdered(queries, EventDoc.NEWEST_FIRST, EventDoc::id, { index.search(it) }, { index.searchRanked(it) })
+        val ordered = recallOrdered(queries, EventDoc.NEWEST_FIRST, EventDoc::id, { index.search(it) }, { index.searchRanked(it) }, searchExpansion.needsScores)
         val page = spliced(queries, ordered, DOC_KEYS, { if (it.kind in SearchReferences.KINDS) it.toEvent() else null }, { index.search(it) })
         // Reconstruct via Quartz's by-kind factory straight from the stored
         // fields, skipping the serialize+parse round trip; see [toEvent].
@@ -434,14 +435,22 @@ class NostrSemanticsStore(
         idOf: (R) -> String,
         searchOne: suspend (EventQuery) -> List<R>,
         searchRankedOne: suspend (EventQuery) -> List<Ranked<R>>,
-    ): List<R> {
+        /**
+         * Whether the CALLER needs the per-hit relevance kept. Only weighted
+         * splice placement does, and only on a read that already ranks — so the
+         * single-query fast path below stays score-free for every ordinary REQ,
+         * which is the hottest read a relay serves.
+         */
+        wantScores: Boolean = false,
+    ): List<Ranked<R>> {
         if (queries.isEmpty()) return emptyList()
         // One filter is the ordinary REQ and never needs a score: its engine
         // order IS the answer, and asking for scores would wrap every hit on
         // the hottest read a relay serves.
         if (queries.size == 1) {
+            if (wantScores && queries[0].keepsEngineOrder()) return searchRankedOne(queries[0])
             val hits = searchOne(queries[0])
-            return if (queries[0].keepsEngineOrder()) hits else hits.sortedWith(newestFirst)
+            return (if (queries[0].keepsEngineOrder()) hits else hits.sortedWith(newestFirst)).map { Ranked(it, null) }
         }
         if (queries.none { it.keepsEngineOrder() }) {
             return queries
@@ -449,6 +458,7 @@ class NostrSemanticsStore(
                 .flatten()
                 .distinctBy(idOf)
                 .sortedWith(newestFirst)
+                .map { Ranked(it, null) }
         }
         // [EventYql.profileOf], not `ranking`: the field is null for every
         // ordinary search and the profile is picked from the query's shape, so
@@ -461,16 +471,21 @@ class NostrSemanticsStore(
             // null rather than a fabricated constant; its hits are already
             // newest-first, so recency is the merge that keeps them coherent.
             if (scored.any { it.score == null }) {
-                return scored.map { it.hit }.distinctBy(idOf).sortedWith(newestFirst)
+                return scored
+                    .map { it.hit }
+                    .distinctBy(idOf)
+                    .sortedWith(newestFirst)
+                    .map { Ranked(it, null) }
             }
             return scored
                 .sortedWith(compareByDescending<Ranked<R>> { it.score }.thenBy(newestFirst) { it.hit })
-                .map { it.hit }
-                .distinctBy(idOf)
+                .distinctBy { idOf(it.hit) }
         }
         val results = queries.mapBounded(QUERY_FANOUT) { searchOne(it) }
         val ordered = queries.zip(results).flatMap { (q, hits) -> if (q.keepsEngineOrder()) hits else hits.sortedWith(newestFirst) }
-        return ordered.distinctBy(idOf)
+        // Two scales already, which is why these runs are concatenated rather
+        // than merged — so there is no coherent score to carry out of here.
+        return ordered.distinctBy(idOf).map { Ranked(it, null) }
     }
 
     /**
@@ -489,32 +504,49 @@ class NostrSemanticsStore(
      */
     private suspend fun <R> spliced(
         queries: List<EventQuery>,
-        rows: List<R>,
+        rows: List<Ranked<R>>,
         keys: SubjectKeys<R>,
         pointerOf: (R) -> Event?,
         recall: suspend (EventQuery) -> List<R>,
     ): List<R> {
-        if (!searchExpansion.enabled || rows.isEmpty()) return rows
+        val hits = rows.map { it.hit }
+        if (!searchExpansion.enabled || rows.isEmpty()) return hits
         // Terms, not "carries a search field": every anonymous read on a
         // lens-requiring relay stamps `include:spam`, and a mirror's paging
         // carries it too. Gating on the field would put all of that traffic
         // behind an expansion none of it asked for.
         val searching = queries.filter { it.search != null || it.phrases.isNotEmpty() }
-        if (searching.isEmpty()) return rows
+        if (searching.isEmpty()) return hits
         // A read that can serve no pointer kind can splice nothing, and asking
         // the gate would cost a provider-list read to prove it.
-        if (searching.none { q -> q.kinds.isEmpty() || q.kinds.any { it in SearchReferences.KINDS } }) return rows
+        if (searching.none { q -> q.kinds.isEmpty() || q.kinds.any { it in SearchReferences.KINDS } }) return hits
 
         val observers = searching.mapNotNullTo(HashSet()) { it.observer }
         val expansion = SearchReferenceExpansion(searching, delegations().of(observers), searchExpansion)
         val expanded = expansion.expand(rows, keys, pointerOf, recall)
-        val out = ArrayList<R>(rows.size)
+
+        // ANCHORED first, always — it is the order the pointers themselves
+        // define, and the weighted pass below is a stable re-sort of it. Built
+        // this way so a tie between a subject and its own pointer resolves the
+        // only way it can read: the reason above the result.
+        val placed = ArrayList<Placed<R>>(rows.size)
         rows.forEachIndexed { i, row ->
-            if (expanded.fresh[i]) out.add(row)
-            out.addAll(expanded.subjects[i])
+            if (expanded.fresh[i]) placed.add(Placed(row.hit, row.score))
+            expanded.subjects[i].forEachIndexed { j, subject -> placed.add(Placed(subject, expanded.scores[i][j])) }
         }
-        return out
+        if (searchExpansion.placement !is SplicePlacement.Weighted) return placed.map { it.row }
+        // A page the engine did not score cannot be weighted, and a fabricated
+        // constant would be worse than the anchored order it replaced — the
+        // in-memory reference reports null for exactly this reason.
+        if (placed.any { it.score == null }) return placed.map { it.row }
+        return placed.sortedByDescending { it.score }.map { it.row }
     }
+
+    /** A row and the relevance it is placed by — its own for a hit, its pointer's discounted for a subject. */
+    private class Placed<R>(
+        val row: R,
+        val score: Double?,
+    )
 
     /**
      * Raw read path: recall matches as Quartz [RawEvent]s, skipping the
@@ -530,7 +562,7 @@ class NostrSemanticsStore(
         val observer = coroutineContext[StoreQueryContext]?.observer
         val cutoff = nowSecs()
         val queries = filters.mapNotNull { it.toExpiryQuery(cutoff, observer) }
-        val ordered = recallOrdered(queries, RAW_NEWEST_FIRST, RawEvent::id, { index.rawSearch(it) }, { index.rawSearchRanked(it) })
+        val ordered = recallOrdered(queries, RAW_NEWEST_FIRST, RawEvent::id, { index.rawSearch(it) }, { index.rawSearchRanked(it) }, searchExpansion.needsScores)
         spliced(queries, ordered, RAW_KEYS, { if (it.kind in SearchReferences.KINDS) it.toEvent() else null }, { index.rawSearch(it) }).forEach(onEach)
     }
 

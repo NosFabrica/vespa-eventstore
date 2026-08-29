@@ -155,15 +155,28 @@ internal object SearchReferences {
             }
 
             UserTrustedListEvent.KIND -> {
-                References(pubKeys = event.tags.mapNotNull(PubKeyMemberTag::parseKey))
+                References(
+                    pubKeys = event.tags.mapNotNull(PubKeyMemberTag::parseKey),
+                    confidence = event.tags.memberScores(PubKeyMemberTag.TAG_NAME, PubKeyMemberTag::parseKey),
+                )
             }
 
             EventTrustedListEvent.KIND -> {
-                References(eventIds = event.tags.mapNotNull(EventMemberTag::parseId))
+                References(
+                    eventIds = event.tags.mapNotNull(EventMemberTag::parseId),
+                    confidence = event.tags.memberScores(EventMemberTag.TAG_NAME, EventMemberTag::parseId),
+                )
             }
 
             AddressableTrustedListEvent.KIND -> {
-                References(addresses = event.tags.mapNotNull { canonical(AddressMemberTag.parseAddressId(it)) })
+                References(
+                    addresses = event.tags.mapNotNull { canonical(AddressMemberTag.parseAddressId(it)) },
+                    // Keyed by the CANONICAL coordinate, since that is what the
+                    // lookup files a found subject under — a member written as
+                    // `naddr1…` or with an upper-case key would otherwise carry
+                    // a score nothing could look up.
+                    confidence = event.tags.memberScores(AddressMemberTag.TAG_NAME) { canonical(AddressMemberTag.parseAddressId(it)) },
+                )
             }
 
             else -> {
@@ -208,12 +221,47 @@ internal class References(
     val eventIds: List<HexKey> = emptyList(),
     val pubKeys: List<HexKey> = emptyList(),
     val addresses: List<String> = emptyList(),
+    /**
+     * HOW SURE THE POINTER IS, per reference, on quartz's 0..100 scale — empty
+     * for every pointer that expresses no confidence at all.
+     *
+     * Only Trusted List membership carries one. A NIP-32 label has no
+     * confidence field in the NIP, and a NIP-85 assertion's `d` IS its subject,
+     * so neither claim is probabilistic: an absent entry means "as sure as the
+     * pointer itself", not "unsure". Placement reads it that way.
+     *
+     * Out of 0..100 reads back as ABSENT rather than clamped, which is quartz's
+     * own rule for the same tag: a publisher counting on another scale is
+     * unscored, and pinning a 950 to 100 would rank that member above every
+     * honestly-scored peer.
+     */
+    val confidence: Map<String, Int> = emptyMap(),
 ) {
     val size: Int get() = eventIds.size + pubKeys.size + addresses.size
 
     fun isEmpty() = size == 0
 
+    /** [confidence] for [key] as a 0..1 weight, or null where the pointer said nothing. */
+    fun weightOf(key: String): Double? = confidence[key]?.let { it / 100.0 }
+
     companion object {
         val NONE = References()
     }
 }
+
+/** The 0..100 percentage at index 3 of a member tag, or null where the scale cannot express it. */
+private fun scoreOf(tag: Array<String>): Int? = tag.getOrNull(3)?.toIntOrNull()?.takeIf { it in 0..100 }
+
+/** `value -> score` for every member tag of [name] that carries a readable one. */
+internal fun TagArray.memberScores(
+    name: String,
+    valueOf: (Array<String>) -> String?,
+): Map<String, Int> =
+    buildMap {
+        this@memberScores.forEach { tag ->
+            if (tag.size > 1 && tag[0] == name) {
+                val value = valueOf(tag) ?: return@forEach
+                scoreOf(tag)?.let { put(value, it) }
+            }
+        }
+    }
