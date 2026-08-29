@@ -19,10 +19,14 @@
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 package com.nosfabrica.vespa.eventstore.engine
+
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import java.util.concurrent.ConcurrentHashMap
 
-/** The in-memory reference [ReputationIndex] — what projection tests assert against. *
+/**
+ * The in-memory reference [ReputationIndex] — what projection tests assert
+ * against.
+ *
  * IN MAIN, NOT testFixtures, for the same reason [InMemoryEventIndex] is: a
  * CONSUMER needs it. The trust-projected stack — `NostrSemanticsStore` over
  * `TrustProjection` — is the only shape where the search expansion's gate can

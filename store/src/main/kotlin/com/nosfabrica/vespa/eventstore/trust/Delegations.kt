@@ -72,8 +72,6 @@ internal data class Delegations(
     /** observer -> (delegated kind -> the signers named for it). */
     private val byObserver: Map<String, Map<Int, Set<String>>>,
 ) {
-    fun isEmpty() = byObserver.isEmpty()
-
     /**
      * What [observers] have asked for: themselves, plus each kind's delegated
      * signers. An empty [observers] admits nothing, which is the anonymous read

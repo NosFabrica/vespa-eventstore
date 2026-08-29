@@ -326,11 +326,7 @@ internal class SearchReferenceExpansion(
         val byId: Map<String, R>,
         val byKey: Map<String, R>,
         val byAddress: Map<String, R>,
-    ) {
-        companion object {
-            fun <R> empty() = Found<R>(emptyMap(), emptyMap(), emptyMap())
-        }
-    }
+    )
 
     /**
      * The subjects, looked up ONCE PER LENS and never across one.
