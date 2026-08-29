@@ -92,6 +92,39 @@ The per-event `insert()` path pays admission-probe round trips; `batchInsert()` 
 
 `engine/app/` (`schemas/event.sd`, `schemas/reputation.sd`, `services.xml`) is the single source of truth; the build zips it into the `:engine` jar as `vespa-app.zip` and `open(autoDeploy = true)` deploys it to a fresh Vespa. Schema and query builder can therefore never drift — **a schema change and the Kotlin that depends on it must land together**, and needs the integration tests since only a real Vespa executes the schema.
 
+### Search expansion (`store/search/`)
+
+A NIP-50 search matches a LABEL's value or a Trusted List's TITLE, not the
+record those are about — so a reader searching "podcaster" gets the list and
+none of the people on it. `SearchReferenceExpansion` splices the record in
+behind the pointer that named it: NIP-32 labels (1985), NIP-85 assertions
+(30382-30385) and Tapestry Trusted Lists (30392-30395).
+
+- **Only a read carrying TERMS**, which is what makes it safe to run
+  unconditionally. `include:spam` alone is not a term, and neither is
+  `observer:` — so a mirror's paging, a NIP-77 catch-up and this store's own
+  provider-list read are untouched. There is no flag on the read to say so.
+- **`SearchReferences` dispatches on the KIND, never `is UserTrustedListEvent`**:
+  a consumer may force its own Quartz over ours, and a pin without those kinds
+  hands back a base `Event` whose `is` checks all go false — silently.
+- **The gate.** A declaration only unpacks for a reader whose own kind-10040
+  named its signer FOR THAT KIND (`trust/Delegations`, derived in `ProviderMap`'s
+  cached pass, so a 10040 write invalidates it with no code of its own). Both
+  delegation shapes count: NIP-85's `<kind>:<metric>` and the Tapestry ADR's
+  generic bare `<kind>`, which NIP-85's parser refuses. Labels are ungated by
+  design. A store built without `TrustProjection` admits no declaration at all.
+- **Admission is the engine's job**: the subject lookup is the finding query
+  with its terms stripped and the subject keys intersected in, so the index
+  applies the same predicate it applied to the hits. No second matcher.
+- **Placement** is `SplicePlacement.Anchored` by default — a subject sits where
+  its pointer sits. `Weighted(gamma)` discounts a subject's inherited relevance
+  by the 0..100 confidence its Trusted List expressed, and needs `Ranked` scores,
+  which is why `recallOrdered` keeps them when (and only when) it is on.
+  Measured on staging, 131 of 180 real member scores are exactly 50 — the
+  default says the data is not ready, not that the scheme is wrong.
+- Caps (`SearchExpansionLimits`) arrive through `open()`: a deployment's budget
+  is the operator's call, applying it is the store's.
+
 ### Search
 
 Only kinds Quartz parses as `SearchableEvent` are searchable. The per-kind decomposition lives UPSTREAM in Quartz (`SearchFieldExtractor`/`IndexableFields`, beside the kinds themselves); `mapping/SearchExtractors` is this store's thin wrapper applying Vespa sanitization and the join/weighting policy (the kind table is in README). Search-string extensions (`observer:`, `sort:rank`, `filter:rank:gte:N`, `include:spam`, and the `-word` / `"exact phrase"` term syntax) are interpreted by the store; ranking profiles live in `event.sd`. When changing ranking: cases live in `benchmark/rank_cases.json` (add one for every reported bad search), A/B with `./gradlew :benchmark:rankAb` against a live Vespa (no redeploy needed), and `RankRegressionIT` must stay green.
