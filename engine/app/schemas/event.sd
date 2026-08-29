@@ -1875,6 +1875,29 @@ schema event {
             query(w_member_tier) double: 550.0
             # 3450, so full confidence reaches 4000 and the weak rung
             # (w_weak_tier) stays out of reach.
+            #
+            # WIDENING THIS WAS TRIED AND REJECTED. At 22 400 (ceiling 22 950,
+            # just under the near rung) a member at full confidence outranked
+            # EVERY organic hit on a weak-match page — measured on the Tapestry
+            # corpus, "below 0 of 30" for `human` and "below 0 of 10" for
+            # `health` at every confidence from 0.5 to 1.0. Somebody who matched
+            # nothing sitting above everybody who did is worse than a band that
+            # says little, so the narrow rung stands.
+            #
+            # What the narrow rung buys is safety, not expressiveness: on the
+            # same corpus every confidence from 0.10 to 1.00 places a member in
+            # the SAME position relative to the page, because the band spans
+            # x7.3 while a page spans x367 and the whole band fits between two
+            # adjacent hits. Confidence still orders members among THEMSELVES,
+            # which is what the pointer's own order used to do and does no worse.
+            #
+            # Making confidence positionally strong is unresolved, and it is not
+            # a span question: on this ladder wot_mult() (1..251 000) dominates
+            # the rung, so it is the TRUST half that decides where a member
+            # lands. Settling it needs a corpus where trust actually varies —
+            # the two we have score almost nobody — and the honest answer until
+            # then is to place members safely rather than to tune a constant
+            # against data that cannot show the difference.
             query(w_member_span) double: 3450.0
             query(w_member_gamma) double: 1.0
         }
