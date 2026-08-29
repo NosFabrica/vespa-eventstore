@@ -283,6 +283,50 @@ class TrustProjectionTest {
         }
     }
 
+    @Test
+    fun `a Trusted List delegation in a provider list attributes nothing`() {
+        // A Treasure Map is an open tag set, and Tapestry's Trusted Lists hang
+        // their own `3039x` delegations off the same kind-10040 with the same
+        // two-segment shape a NIP-85 entry has. Nothing here may read one as a
+        // trust service: a list publisher is not a rank or follower provider,
+        // and crediting its key would rank every subject it names under an
+        // observer who never delegated a score to it.
+        //
+        // Quartz bounds this upstream as of 029c40ebb4 — `ServiceProviderTag`
+        // now refuses a kind outside 30382..30385 — but the guarantee this
+        // store owes is the outcome, not the layer that produces it: before
+        // that bound the entry parsed and was dropped by ProviderMap's `when`
+        // over ProviderTypes instead. Pinned here so a change on either side
+        // has to keep it true.
+        runBlocking {
+            val listPublisher = "7c".repeat(32)
+            val withTrustedListEntry =
+                TrustProviderListEvent(
+                    id(),
+                    observer,
+                    next(),
+                    arrayOf(
+                        arrayOf("30382:rank", service, "wss://scores.example.com/"),
+                        arrayOf("30382:followers", service, "wss://scores.example.com/"),
+                        // The generic bare-kind form: all of this publisher's kind-30392 lists.
+                        arrayOf("30392", listPublisher, "wss://lists.example.com/"),
+                        // And the reserved named form, `3039x:<name>`.
+                        arrayOf("30392:podcasters", listPublisher, "wss://lists.example.com/"),
+                    ),
+                    "",
+                    "",
+                )
+            store.insert(withTrustedListEntry)
+            store.insert(card())
+            // A card the LIST publisher signed: it is not a delegated service,
+            // so its scores must reach no tensor at all.
+            store.insert(card(signer = listPublisher, rank = 99, followers = 999))
+
+            assertEquals(mapOf(observer to 87), reputations.get(subject)?.influenceScores)
+            assertEquals(mapOf(observer to 120.0), reputations.get(subject)?.followerCounts)
+        }
+    }
+
     /**
      * The BULK path: one store batch of scores builds every subject's parent
      * doc. The observer maps the service for RANK only, so the rank-only cards
