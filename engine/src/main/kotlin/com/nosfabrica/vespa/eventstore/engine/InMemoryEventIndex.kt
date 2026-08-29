@@ -70,15 +70,13 @@ class InMemoryEventIndex(
      * same confidences. The constants are the schema's own defaults.
      */
     private fun memberScoreOf(query: EventQuery): Double? {
-        val text = query.ranking == EventYql.RANK_SPLICED_MEMBER_TEXT
-        if (!text && query.ranking != EventYql.RANK_SPLICED_MEMBER) return null
+        if (query.ranking != EventYql.RANK_SPLICED_MEMBER) return null
         val conf = query.rankFeatures[EventYql.F_MEMBER_CONF] ?: 1.0
         val gamma = query.rankFeatures["w_member_gamma"] ?: 1.0
-        val tier = if (text) MEMBER_TIER_TEXT else MEMBER_TIER
-        val span = if (text) MEMBER_SPAN_TEXT else MEMBER_SPAN
+
         // No reputation here, so wot_mult() is 1.0 — which is also what the
         // trust-multiplied profile computes for an unlensed read.
-        return tier + span * Math.pow(conf.coerceIn(0.0, 1.0), gamma)
+        return MEMBER_TIER + MEMBER_SPAN * Math.pow(conf.coerceIn(0.0, 1.0), gamma)
     }
 
     override suspend fun searchRanked(query: EventQuery): List<Ranked<EventDoc>> {
@@ -172,8 +170,6 @@ class InMemoryEventIndex(
 
     private companion object {
         /** `event.sd` §13 defaults, mirrored so this reference orders as Vespa would. */
-        const val MEMBER_TIER_TEXT = 550.0
-        const val MEMBER_SPAN_TEXT = 60.0
         const val MEMBER_TIER = 550.0
         const val MEMBER_SPAN = 3450.0
     }

@@ -412,7 +412,18 @@ class SearchExpansionTest {
                     // the member band (550..4 000) so a test can show a member
                     // interleaving with organic results; on the real engine that
                     // is an ordinary bio-strength match.
-                    val band = if (doc.content.contains("weak")) 1000.0 else 130_000.0
+                    val band =
+                        when {
+                            // Inside the member band (550..4 000).
+                            doc.content.contains("weak") -> 1000.0
+
+                            // ABOVE the member band, below the name rung — where
+                            // a subject that kept its pointer's score outranks it
+                            // and one placed on the rung does not.
+                            doc.content.contains("mid") -> 20_000.0
+
+                            else -> 130_000.0
+                        }
                     com.nosfabrica.vespa.eventstore.engine
                         .Ranked(doc, band - i * 0.01)
                 }
@@ -652,6 +663,36 @@ class SearchExpansionTest {
             val out = page(narrowed)
             assertTrue(wanted.id in out, "the member whose d the read asked for: $out")
             assertTrue(other.id !in out, "the member whose d the read excluded: $out")
+        }
+
+    @Test
+    fun `an unscored pointer keeps its subject, the rung is only for a scored member`() =
+        runBlocking {
+            // A NIP-32 label expresses no confidence, so there is no doubt for a
+            // rung to express and its subject stays where it always sat: its
+            // pointer's own score, directly behind it. Putting a label's subject
+            // on the member rung would move it to a fixed place in the page
+            // regardless of how well the label itself matched — on a real page
+            // that meant a label scoring 1306 handing its note a 610.
+            //
+            // This is also the only splice an observerless read performs at all:
+            // a Trusted List is a DECLARATION and unpacks only for a reader who
+            // delegated its signer, so `Enrolment.NONE` admits none of them.
+            val ranking = RankingIndex(InMemoryEventIndex())
+            val weighted = NostrSemanticsStore(TrustProjection(ranking, InMemoryReputationIndex()), relay = relayUrl)
+            weighted.insert(note)
+            val label = event(1985, arrayOf(arrayOf("L", "#topic"), arrayOf("l", "medical", "#topic"), arrayOf("e", note.id)))
+            weighted.insert(label)
+            val mid = event(1, emptyArray(), "medical, mid match", author = stranger)
+            weighted.insert(mid)
+
+            // WITH an observer, so the read ranks on the ladder that HAS a
+            // member rung — the only place this distinction is observable. A
+            // label is ungated, so it expands here too; what must not happen is
+            // its subject being scored as if it were a list member.
+            val out = weighted.query<Event>(listOf(search("medical", listOf(1, 1985)))).map { it.id }
+            assertEquals(listOf(label.id, note.id), out.take(2), "the label, then its note, above the mid-band hit: $out")
+            assertTrue(out.indexOf(mid.id) > out.indexOf(note.id), "a rung-placed subject would have fallen below it: $out")
         }
 
     @Test

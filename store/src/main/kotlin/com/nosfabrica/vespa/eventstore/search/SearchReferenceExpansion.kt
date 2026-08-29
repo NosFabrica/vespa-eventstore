@@ -381,7 +381,7 @@ internal class SearchReferenceExpansion(
             // few, and a member's placement inside a rung does not need finer
             // resolution than a twentieth of it.
             for ((bucket, refs) in bucketed(planned, lensOfRow, lens)) {
-                val conf = under.withMember(profile, bucket, limits.confidenceGamma)
+                val conf = if (bucket == null) under else under.withMember(profile, bucket, limits.confidenceGamma)
                 for (chunk in refs.ids.chunked(LOOKUP_CHUNK)) {
                     if (spent++ >= MAX_LOOKUPS) break
                     conf.narrowIds(chunk)?.let { q -> recall(q).forEach { byId.putIfAbsent(keys.idOf(it.hit), it) } }
@@ -426,24 +426,33 @@ internal class SearchReferenceExpansion(
         planned: List<References>,
         lensOfRow: IntArray,
         lens: Int,
-    ): List<Pair<Double, Shapes>> {
-        val out = HashMap<Double, Shapes>()
+    ): List<Pair<Double?, Shapes>> {
+        val out = HashMap<Double?, Shapes>()
         planned.forEachIndexed { i, refs ->
             if (lensOfRow[i] != lens) return@forEachIndexed
             refs.eventIds.forEach { out.getOrPut(bucketOf(refs.weightOf(it))) { Shapes() }.ids.add(it) }
             refs.pubKeys.forEach { out.getOrPut(bucketOf(refs.weightOf(it))) { Shapes() }.pubKeys.add(it) }
             refs.addresses.forEach { out.getOrPut(bucketOf(refs.weightOf(it))) { Shapes() }.addresses.add(it) }
         }
-        return out.entries.sortedByDescending { it.key }.map { it.key to it.value }
+        // Unscored first (null), then descending confidence: an unscored
+        // reference is not a doubted one, it is a claim with no confidence
+        // attached, and it must not lose a member to a scored duplicate below.
+        return out.entries.sortedWith(compareBy(nullsFirst()) { it.key }).map { it.key to it.value }
     }
 
     /**
-     * A 0..1 weight quantized to [BUCKETS] steps, or 1.0 where the pointer
-     * expressed none — an unscored reference is FULL confidence, not doubt: a
-     * NIP-32 label has no confidence field in the NIP and a NIP-85 assertion's
-     * `d` IS its subject, so neither claim is probabilistic.
+     * A 0..1 weight quantized to [BUCKETS] steps, or NULL where the pointer
+     * expressed no confidence at all.
+     *
+     * Null is not zero and not one: it means the member rung does not apply.
+     * A NIP-32 label has no confidence field in the NIP and a NIP-85
+     * assertion's `d` IS its subject, so neither claim is probabilistic —
+     * there is no doubt for a rung to express, and those subjects keep the
+     * placement they have always had, their POINTER's own score, which puts
+     * them directly behind it. Only a Trusted List member is scored, and only
+     * a scored member goes on a rung.
      */
-    private fun bucketOf(weight: Double?): Double = weight?.let { Math.round(it * BUCKETS) / BUCKETS.toDouble() } ?: 1.0
+    private fun bucketOf(weight: Double?): Double? = weight?.let { Math.round(it * BUCKETS) / BUCKETS.toDouble() }
 
     /**
      * This row's planned subjects, as far as the index actually holds them,

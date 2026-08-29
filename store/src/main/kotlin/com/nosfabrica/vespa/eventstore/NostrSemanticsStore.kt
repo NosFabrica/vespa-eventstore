@@ -571,16 +571,33 @@ class NostrSemanticsStore(
         hits.forEachIndexed { i, hit ->
             val pointer = page.scores?.get(i)
             if (expanded.fresh[i]) placed.add(Placed(hit, pointer))
-            // A CEILING, NOT A DERIVATION. The member rung decides where a
-            // subject lands among the HITS; this only forbids it from passing
-            // the hit that named it — a reason cannot rank below the thing it
-            // explains, and the UI's pill row is written around that reading.
-            // It binds rarely: it takes a pointer that matched no better than
-            // the affiliation rung itself, which is a list found by a bio-strength
-            // match, and there the member ties and stable order keeps it behind.
             expanded.subjects[i].forEachIndexed { j, subject ->
                 val own = expanded.scores[i][j]
-                placed.add(Placed(subject, if (own != null && pointer != null) minOf(own, pointer) else own))
+                placed.add(
+                    Placed(
+                        subject,
+                        when {
+                            // NO RUNG, SO NO MOVE. A reference that expressed no
+                            // confidence — a NIP-32 label, a NIP-85 assertion —
+                            // was never fetched under the member profile, so it
+                            // takes its POINTER's score and a stable sort puts it
+                            // directly behind it. That is the placement those two
+                            // families have always had, and it is right: neither
+                            // claim is probabilistic, so there is no doubt for a
+                            // rung to express.
+                            own == null -> pointer
+
+                            // A CEILING, NOT A DERIVATION. The rung decides where
+                            // a scored member lands among the HITS; this only
+                            // forbids it passing the hit that named it — a reason
+                            // cannot rank below the thing it explains, and the
+                            // UI's pill row is written around that reading.
+                            pointer != null -> minOf(own, pointer)
+
+                            else -> null
+                        },
+                    ),
+                )
             }
         }
         // ONE SCALE, THE ENGINE'S. Hits carry the relevance their rank profile

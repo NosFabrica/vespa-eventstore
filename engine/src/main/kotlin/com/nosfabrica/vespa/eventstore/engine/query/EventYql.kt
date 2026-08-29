@@ -45,18 +45,19 @@ object EventYql {
     const val RANK_TEXT = "text"
 
     /**
-     * WHERE A SPLICED MEMBER IS SCORED — the two profiles that place a Trusted
+     * WHERE A SPLICED MEMBER IS SCORED — the profile that places a Trusted
      * List's member on the affiliation rung rather than deriving its score from
      * the list's.
      *
-     * Paired with [RANK_TEXT] and [RANK_SEARCH] because those two rank on
-     * different ladders — `text` on relevance() alone, `search` on
-     * text_score() x wot_mult() — and a synthesized score is only comparable to
-     * the page it joins if it was made on the same one. [memberProfileOf] picks
-     * between them off the finding query, by the same rule [profileOf] uses.
+     * ONE profile, for [RANK_SEARCH] only, and the reason is the trust gate
+     * rather than the ranking: a Trusted List and a NIP-85 assertion unpack
+     * only for a reader whose own kind-10040 named their signer, so a read with
+     * no `observer:` expands no declaration at all — and an `observer:` is
+     * exactly what sends a query to [RANK_SEARCH]. A scored member therefore
+     * cannot reach the [RANK_TEXT] ladder. The only thing an observerless read
+     * expands is a NIP-32 label, which is ungated and carries no confidence, so
+     * its subject wants no rung: it keeps its pointer's own score.
      */
-    const val RANK_SPLICED_MEMBER_TEXT = "spliced_member_text"
-
     const val RANK_SPLICED_MEMBER = "spliced_member"
 
     /** The rank feature carrying a member's 0..1 confidence to those profiles. */
@@ -70,12 +71,7 @@ object EventYql {
      * those pages have no relevance to be comparable WITH, and the splice falls
      * back to the pointer's own order.
      */
-    fun memberProfileOf(q: EventQuery): String? =
-        when (profileOf(q)) {
-            RANK_SEARCH -> RANK_SPLICED_MEMBER
-            RANK_TEXT -> RANK_SPLICED_MEMBER_TEXT
-            else -> null
-        }
+    fun memberProfileOf(q: EventQuery): String? = if (profileOf(q) == RANK_SEARCH) RANK_SPLICED_MEMBER else null
 
     /**
      * NIP-01 recency order with the trust floor: score IS created_at,

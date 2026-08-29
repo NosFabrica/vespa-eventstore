@@ -43,6 +43,14 @@ tasks.test {
     // 1.40 floor, and supported by every engine back to 20.10 (2020).
     systemProperty("api.version", "1.41")
 
+    // -D passthrough for the ad-hoc measurement ITs (a corpus on disk, a live
+    // Vespa, an observer to lens through). Gradle does NOT forward the daemon's
+    // system properties to the test JVM, so a test reading them sees null and
+    // self-skips — which looks exactly like a passing run.
+    listOf("itVespa", "itCorpus", "itObserver").forEach { name ->
+        System.getProperty(name)?.let { systemProperty(name, it) }
+    }
+
     useJUnitPlatform {
         // The Vespa integration test (VespaParityIT) stands up a container and is
         // slow, so the default build stays unit-only. Run it with -Pintegration

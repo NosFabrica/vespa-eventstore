@@ -1864,25 +1864,7 @@ schema event {
     # Each span is sized to stay strictly INSIDE its rung: a member at full
     # confidence must never reach the weak rung above it, because a list saying
     # "I am sure about this person" is still not the person matching the term.
-    rank-profile spliced_member_text inherits text_relevance {
-        inputs {
-            # The member's confidence as a 0..1 weight, or 1.0 for a reference
-            # that expresses none (a NIP-32 label, a NIP-85 assertion) — absent
-            # is FULL confidence, not doubt.
-            query(member_conf) double: 1.0
-            # The affiliation rung of relevance(), shared with w_affil_tier_text.
-            query(w_member_tier_text) double: 550.0
-            # 60, so full confidence reaches 610 and the weak rung at
-            # w_weak_tier_text (620) stays out of reach.
-            query(w_member_span_text) double: 60.0
-            query(w_member_gamma) double: 1.0
-        }
-        first-phase {
-            expression: query(w_member_tier_text) + query(w_member_span_text) * pow(query(member_conf), query(w_member_gamma))
-        }
-    }
-
-    # The same rung on the trust-multiplied ladder. x wot_mult() and NOT
+    # The rung, on the trust-multiplied ladder. x wot_mult() and NOT
     # x recency_mult(): a member is fetched as a kind 0, whose created_at is
     # when that person last edited their profile, which is not freshness of
     # anything the search asked about.
