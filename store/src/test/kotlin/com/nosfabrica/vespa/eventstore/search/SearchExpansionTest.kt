@@ -345,6 +345,35 @@ class SearchExpansionTest {
             assertEquals(listOf(pair.id, profile.id), out, "the list, then the FIRST member it names")
         }
 
+    @Test
+    fun `a row the index hands back twice still goes out once`() =
+        runBlocking {
+            // The store's own recall dedups by id, so nothing else here would
+            // notice if this guard went. But the expansion is the thing ADDING
+            // events to a page, and a page it builds must be free of duplicates
+            // because of what IT does rather than because of what the index
+            // below it happens to promise. This is that contract, stated
+            // against an index that breaks the promise.
+            //
+            // It used to live in vespa-relay, against a doubling IEventStore
+            // wrapped around this one. There is no wrapper left to put there,
+            // which is why the contract came with the code it constrains.
+            val doubling =
+                object : com.nosfabrica.vespa.eventstore.engine.EventIndex by index {
+                    override suspend fun search(query: com.nosfabrica.vespa.eventstore.engine.query.EventQuery) = index.search(query).flatMap { listOf(it, it) }
+                }
+            val doubled = NostrSemanticsStore(TrustProjection(doubling, InMemoryReputationIndex()), relay = relayUrl)
+
+            store.insert(profile)
+            store.insert(treasureMap(arrayOf("30392", curator, "wss://lists.example")))
+            val list = userList("Podcaster Trust List")
+            store.insert(list)
+
+            val out = doubled.query<Event>(listOf(search("podcaster", listOf(0, 30392)))).map { it.id }
+            assertEquals(out.distinct(), out, "a doubled row must not double on the way out: $out")
+            assertTrue(list.id in out && profile.id in out, "and the page is still served whole: $out")
+        }
+
     // ------------------------------------------------------------------
     // Weighted placement — the score decides where, not just whether
     // ------------------------------------------------------------------
