@@ -38,6 +38,13 @@ import com.nosfabrica.vespa.eventstore.mapping.VespaText
 import com.nosfabrica.vespa.eventstore.mapping.toDoc
 import com.nosfabrica.vespa.eventstore.mapping.toEvent
 import com.nosfabrica.vespa.eventstore.mapping.toEventQuery
+import com.nosfabrica.vespa.eventstore.search.SearchExpansionLimits
+import com.nosfabrica.vespa.eventstore.search.SearchReferenceExpansion
+import com.nosfabrica.vespa.eventstore.search.SearchReferences
+import com.nosfabrica.vespa.eventstore.search.SubjectKeys
+import com.nosfabrica.vespa.eventstore.trust.Delegations
+import com.nosfabrica.vespa.eventstore.trust.Enrolment
+import com.nosfabrica.vespa.eventstore.trust.TrustProjection
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.core.isAddressable
 import com.vitorpamplona.quartz.nip01Core.core.isEphemeral
@@ -50,6 +57,7 @@ import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import com.vitorpamplona.quartz.nip01Core.store.StoreQueryContext
 import com.vitorpamplona.quartz.nip01Core.store.owner
+import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
 import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
 import com.vitorpamplona.quartz.nip40Expiration.isExpired
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
@@ -109,6 +117,15 @@ class NostrSemanticsStore(
     guardRefreshMillis: Long = DEFAULT_GUARD_REFRESH_MILLIS,
     /** Events removed per sweep round (see [Deletions]). Internal — a test seam, like [nowSecs]. */
     internal val sweepPage: Int = 10_000,
+    /**
+     * How much of a searching read's answer may be events it POINTS AT rather
+     * than events it matched — see [SearchReferenceExpansion]. Always applied,
+     * because it only ever engages on a read carrying TERMS: a plain NIP-01
+     * recall, a mirror's paging, a NIP-77 catch-up and this store's own
+     * provider-list read all carry none, and are left exactly as they were.
+     * [SearchExpansionLimits.Off] turns it off outright.
+     */
+    private val searchExpansion: SearchExpansionLimits = SearchExpansionLimits.Default,
 ) : IEventStore {
     private val writes = Mutex()
 
@@ -117,6 +134,23 @@ class NostrSemanticsStore(
     private val guards = GuardOwners(index, writers, guardRefreshMillis)
 
     private val deletions = Deletions(index, relay, sweepPage)
+
+    /**
+     * WHO THIS READER ASKED TO COMPUTE WHAT — the gate the search expansion
+     * checks before unpacking a Trusted List or a NIP-85 assertion.
+     *
+     * Read off [TrustProjection] rather than derived here, and the type check is
+     * the honest statement of the dependency: the projection is the decorator
+     * every write already passes through, so its [ProviderMap] is invalidated by
+     * every 10040 put and remove with no write-path code of its own. A second
+     * cache in this class would need its own hook on four separate write entry
+     * points and would still be a second answer to one question.
+     *
+     * A store assembled WITHOUT the projection — a bare index in a test — has no
+     * Map to read and so admits no declaration. Labels are unaffected: NIP-32 is
+     * ungated by design, and this gate never applied to them.
+     */
+    private suspend fun delegations(): Delegations = (index as? TrustProjection)?.recompute?.delegations() ?: Delegations.NONE
 
     private val bulkRecords = BulkRecordInsert(index, relay, guards)
 
@@ -365,10 +399,11 @@ class NostrSemanticsStore(
         val observer = coroutineContext[StoreQueryContext]?.observer
         val cutoff = nowSecs()
         val queries = filters.mapNotNull { it.toExpiryQuery(cutoff, observer) }
-        val ordered = recallOrdered(queries, EventDoc.NEWEST_FIRST, EventDoc::id, { index.search(it) }, { index.searchRanked(it) })
+        val recalled = recallOrdered(queries, EventDoc.NEWEST_FIRST, EventDoc::id, { index.search(it) }, { index.searchRanked(it) }, searchExpansion.enabled)
+        val page = spliced(queries, recalled, DOC_KEYS, { if (it.kind in SearchReferences.KINDS) it.toEvent() else null }, { index.search(it) })
         // Reconstruct via Quartz's by-kind factory straight from the stored
         // fields, skipping the serialize+parse round trip; see [toEvent].
-        return ordered.map { it.toEvent() } as List<T>
+        return page.map { it.toEvent() } as List<T>
     }
 
     /**
@@ -400,21 +435,38 @@ class NostrSemanticsStore(
         idOf: (R) -> String,
         searchOne: suspend (EventQuery) -> List<R>,
         searchRankedOne: suspend (EventQuery) -> List<Ranked<R>>,
-    ): List<R> {
-        if (queries.isEmpty()) return emptyList()
+        /**
+         * Whether the CALLER needs the per-hit relevance kept — the splice does,
+         * to place a subject by the confidence its pointer expressed.
+         *
+         * IT COSTS NOTHING ON A RANKED QUERY, which is the only kind it applies
+         * to: `recallSummaries` already goes through `rankedHits` there, one
+         * `recallRoot` call, and the ranked path differs only in keeping the
+         * `relevance` Vespa already returned. What the single-query fast path
+         * avoids is wrapping every hit of an ORDINARY REQ — and an ordinary REQ
+         * is recency-ordered, so `keepsEngineOrder()` sends it down the
+         * score-free branch regardless of this flag.
+         */
+        wantScores: Boolean = false,
+    ): Page<R> {
+        if (queries.isEmpty()) return Page(emptyList(), null)
         // One filter is the ordinary REQ and never needs a score: its engine
         // order IS the answer, and asking for scores would wrap every hit on
         // the hottest read a relay serves.
         if (queries.size == 1) {
+            if (wantScores && queries[0].keepsEngineOrder()) return Page.of(searchRankedOne(queries[0]))
             val hits = searchOne(queries[0])
-            return if (queries[0].keepsEngineOrder()) hits else hits.sortedWith(newestFirst)
+            return Page(if (queries[0].keepsEngineOrder()) hits else hits.sortedWith(newestFirst), null)
         }
         if (queries.none { it.keepsEngineOrder() }) {
-            return queries
-                .mapBounded(QUERY_FANOUT) { searchOne(it) }
-                .flatten()
-                .distinctBy(idOf)
-                .sortedWith(newestFirst)
+            return Page(
+                queries
+                    .mapBounded(QUERY_FANOUT) { searchOne(it) }
+                    .flatten()
+                    .distinctBy(idOf)
+                    .sortedWith(newestFirst),
+                null,
+            )
         }
         // [EventYql.profileOf], not `ranking`: the field is null for every
         // ordinary search and the profile is picked from the query's shape, so
@@ -427,17 +479,134 @@ class NostrSemanticsStore(
             // null rather than a fabricated constant; its hits are already
             // newest-first, so recency is the merge that keeps them coherent.
             if (scored.any { it.score == null }) {
-                return scored.map { it.hit }.distinctBy(idOf).sortedWith(newestFirst)
+                return Page(
+                    scored
+                        .map { it.hit }
+                        .distinctBy(idOf)
+                        .sortedWith(newestFirst),
+                    null,
+                )
             }
-            return scored
-                .sortedWith(compareByDescending<Ranked<R>> { it.score }.thenBy(newestFirst) { it.hit })
-                .map { it.hit }
-                .distinctBy(idOf)
+            return Page.of(
+                scored
+                    .sortedWith(compareByDescending<Ranked<R>> { it.score }.thenBy(newestFirst) { it.hit })
+                    .distinctBy { idOf(it.hit) },
+            )
         }
         val results = queries.mapBounded(QUERY_FANOUT) { searchOne(it) }
         val ordered = queries.zip(results).flatMap { (q, hits) -> if (q.keepsEngineOrder()) hits else hits.sortedWith(newestFirst) }
-        return ordered.distinctBy(idOf)
+        // Two scales already, which is why these runs are concatenated rather
+        // than merged — so there is no coherent score to carry out of here.
+        return Page(ordered.distinctBy(idOf), null)
     }
+
+    /**
+     * ONE ORDERED PAGE, AND THE RELEVANCE BEHIND IT — [scores] index-aligned
+     * with [hits], or NULL for the pages that have none: a recency-ordered
+     * recall, two ranking profiles concatenated, an engine that does not rank.
+     *
+     * A nullable parallel list rather than a `List<Ranked<R>>` because the
+     * unscored page is the hot one. A plain NIP-01 recall, a mirror's paging and
+     * a NIP-77 catch-up all land here, and wrapping every hit of those in a
+     * score-carrying object — then unwrapping it again in [spliced] — would be
+     * two copies of the page and an allocation per event to carry a null.
+     */
+    private class Page<R>(
+        val hits: List<R>,
+        val scores: List<Double?>?,
+    ) {
+        companion object {
+            fun <R> of(ranked: List<Ranked<R>>) = Page(ranked.map { it.hit }, ranked.map { it.score })
+        }
+    }
+
+    /**
+     * THE ORDERED PAGE, PLUS WHAT IT POINTS AT — a label's subject behind the
+     * label, a Trusted List's members behind the list.
+     *
+     * Runs after [recallOrdered] rather than inside it, but over the [Page] it
+     * produced rather than over a bare list: a subject is placed by its
+     * pointer's own relevance discounted by the confidence the pointer
+     * expressed about it, so the placement needs both the finished order AND the
+     * scores that produced it. Splicing inside the recall would have to answer
+     * that question once per ordering case; here it is answered once.
+     *
+     * Returns the page's hits UNTOUCHED — the same list, not a copy — whenever
+     * no query carries terms, which is every plain recall this store serves.
+     */
+    private suspend fun <R> spliced(
+        queries: List<EventQuery>,
+        page: Page<R>,
+        keys: SubjectKeys<R>,
+        pointerOf: (R) -> Event?,
+        recall: suspend (EventQuery) -> List<R>,
+    ): List<R> {
+        val hits = page.hits
+        if (!searchExpansion.enabled || hits.isEmpty()) return hits
+        // Terms, not "carries a search field": every anonymous read on a
+        // lens-requiring relay stamps `include:spam`, and a mirror's paging
+        // carries it too. Gating on the field would put all of that traffic
+        // behind an expansion none of it asked for.
+        val searching = queries.filter { it.search != null || it.phrases.isNotEmpty() }
+        if (searching.isEmpty()) return hits
+        // A read that can serve no pointer kind can splice nothing, and asking
+        // the gate would cost a provider-list read to prove it.
+        if (searching.none { q -> q.kinds.isEmpty() || q.kinds.any { it in SearchReferences.KINDS } }) return hits
+
+        // An ANONYMOUS read can unpack no declaration at all, and asking the
+        // gate to say so would cost a provider-list query on a relay that holds
+        // no Treasure Maps — where the answer is never cached, by design. Labels
+        // are ungated, so the expansion still runs; it just runs with nothing
+        // enrolled.
+        val observers = searching.mapNotNullTo(HashSet()) { it.observer }
+        val enrolment = if (observers.isEmpty()) Enrolment.NONE else delegations().of(observers)
+        val expansion = SearchReferenceExpansion(searching, enrolment, searchExpansion)
+        // THE ENGINE'S SCALE MAY BE NEGATIVE, and a discount must never be a
+        // promotion: `rank_asc` subtracts the author's trust from the match
+        // tiers, so an ordinary hit can score below zero — and multiplying -8.0
+        // by a member's 10% confidence yields -0.8, which sorts that doubted
+        // member ABOVE the list that doubted it and above every confident peer.
+        // Shifting the page onto a non-negative scale first is monotone, so it
+        // reorders no hit, and it is a no-op on every profile whose scores are
+        // already non-negative.
+        val relevance = page.scores?.takeIf { s -> s.all { it != null } }?.shiftedToNonNegative()
+        val expanded = expansion.expand(hits, relevance, keys, pointerOf, recall)
+
+        // THE POINTER'S OWN ORDER FIRST, always — the weighted pass below is a
+        // stable re-sort of it, so a tie between a subject and its own pointer
+        // resolves the only way it can read: the reason above the result. It is
+        // also the answer whenever there are no scores to sort by.
+        val placed = ArrayList<Placed<R>>(hits.size)
+        hits.forEachIndexed { i, hit ->
+            if (expanded.fresh[i]) placed.add(Placed(hit, relevance?.get(i)))
+            expanded.subjects[i].forEachIndexed { j, subject -> placed.add(Placed(subject, expanded.scores[i][j])) }
+        }
+        // A page the engine did not score cannot be weighted, and a fabricated
+        // constant would be worse than the anchored order it replaced — the
+        // in-memory reference reports null for exactly this reason, and a
+        // recency-ordered read has no relevance to give.
+        if (relevance == null || placed.any { it.score == null }) return placed.map { it.row }
+        return placed.sortedByDescending { it.score }.map { it.row }
+    }
+
+    /**
+     * The same scores with the page's own floor moved to zero when it sits
+     * below it — the identity, and the same list, whenever nothing is negative.
+     *
+     * A uniform shift is order-preserving, so this changes no hit's position;
+     * what it changes is what a MULTIPLICATIVE discount means on a scale that
+     * runs through zero. See the caller for the failure it prevents.
+     */
+    private fun List<Double?>.shiftedToNonNegative(): List<Double> {
+        val floor = minOf(0.0, minOf { it!! })
+        return if (floor == 0.0) map { it!! } else map { it!! - floor }
+    }
+
+    /** A row and the relevance it is placed by — its own for a hit, its pointer's discounted for a subject. */
+    private class Placed<R>(
+        val row: R,
+        val score: Double?,
+    )
 
     /**
      * Raw read path: recall matches as Quartz [RawEvent]s, skipping the
@@ -453,7 +622,8 @@ class NostrSemanticsStore(
         val observer = coroutineContext[StoreQueryContext]?.observer
         val cutoff = nowSecs()
         val queries = filters.mapNotNull { it.toExpiryQuery(cutoff, observer) }
-        recallOrdered(queries, RAW_NEWEST_FIRST, RawEvent::id, { index.rawSearch(it) }, { index.rawSearchRanked(it) }).forEach(onEach)
+        val ordered = recallOrdered(queries, RAW_NEWEST_FIRST, RawEvent::id, { index.rawSearch(it) }, { index.rawSearchRanked(it) }, searchExpansion.enabled)
+        spliced(queries, ordered, RAW_KEYS, { if (it.kind in SearchReferences.KINDS) it.toEvent() else null }, { index.rawSearch(it) }).forEach(onEach)
     }
 
     override suspend fun <T : Event> query(
@@ -754,5 +924,29 @@ class NostrSemanticsStore(
 
         /** [EventDoc.NEWEST_FIRST] for the raw read path — the same order over [RawEvent]s. */
         val RAW_NEWEST_FIRST = compareByDescending(RawEvent::createdAt).thenBy(RawEvent::id)
+
+        /** NIP-01's parameterized-replaceable range — the kinds an `a` tag can name. */
+        private val ADDRESSABLE = 30_000..39_999
+
+        /** How the expansion reads a subject out of a document. */
+        private val DOC_KEYS =
+            SubjectKeys<EventDoc>(
+                idOf = { it.id },
+                authorOf = { it.pubkey },
+                addressOf = { if (it.kind in ADDRESSABLE) "${it.kind}:${it.pubkey}:${it.dTagOrEmpty()}" else null },
+            )
+
+        /**
+         * The same, off a raw row. The address costs a tag parse, so it is paid
+         * only for the addressable kinds — the raw path exists to skip exactly
+         * that parse on the hits, and a spliced addressable is a rounding error
+         * beside them.
+         */
+        private val RAW_KEYS =
+            SubjectKeys<RawEvent>(
+                idOf = { it.id },
+                authorOf = { it.pubKey },
+                addressOf = { raw -> if (raw.kind in ADDRESSABLE) raw.toEvent<Event>().let { "${it.kind}:${it.pubKey}:${it.tags.dTag()}" } else null },
+            )
     }
 }

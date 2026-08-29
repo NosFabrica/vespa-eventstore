@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.eventstore
 
 import com.nosfabrica.vespa.eventstore.engine.client.VespaEventIndex
 import com.nosfabrica.vespa.eventstore.engine.client.VespaReputationIndex
+import com.nosfabrica.vespa.eventstore.search.SearchExpansionLimits
 import com.nosfabrica.vespa.eventstore.trust.TrustProjection
 import com.nosfabrica.vespa.eventstore.trust.TrustReconciler
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
@@ -196,6 +197,15 @@ class VespaEventStore internal constructor(
             deferTrustProjection: Boolean = true,
             writers: WriterTopology = WriterTopology.SHARED_STRICT,
             guardRefreshSeconds: Long = DEFAULT_GUARD_REFRESH_MILLIS / 1000,
+            /**
+             * How much of a searching read's answer may be events it POINTS AT
+             * — a label's subject, a Trusted List's members. The caps and the
+             * placement are the OPERATOR's call, so they arrive here rather than
+             * being decided in the store; what the store owns is applying them.
+             * Only ever engages on a read carrying terms, so a mirror's paging
+             * and a NIP-77 catch-up are untouched whatever this says.
+             */
+            searchExpansion: SearchExpansionLimits = SearchExpansionLimits.Default,
         ): VespaEventStore {
             if (autoDeploy) SchemaDeployer(configUrl).deployIfAbsent(url)
             val eventIndex = VespaEventIndex(url, endpoints = endpoints)
@@ -207,6 +217,7 @@ class VespaEventStore internal constructor(
                     relay = relay,
                     writers = writers,
                     guardRefreshMillis = guardRefreshSeconds * 1000,
+                    searchExpansion = searchExpansion,
                 )
             // The reconciler's and drainer's mutating batches take the store's
             // writer lock (the gate): repairs must not race live inserts'

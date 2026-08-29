@@ -66,7 +66,20 @@ internal class ProviderMap(
     private val inner: EventIndex,
     private val nowSecs: () -> Long,
 ) {
-    @Volatile private var cached: TrustProviders? = null
+    /**
+     * Both projections of one pass. The write side wants service -> observers
+     * per tensor; the READ side wants observer -> signers per kind, to gate
+     * which declarations a search may unpack ([Delegations]). Same query, same
+     * parse, same invalidation — deriving them separately would be a second
+     * place the signer/observer link is resolved, and the two would drift the
+     * first time a Map shape changed.
+     */
+    private class Pass(
+        val trust: TrustProviders,
+        val delegations: Delegations,
+    )
+
+    @Volatile private var cached: Pass? = null
 
     /**
      * The maps, rebuilt once per pass. Already-expired 10040s (NIP-40) are
@@ -82,10 +95,30 @@ internal class ProviderMap(
      * cached emptiness). Not caching costs one small query per pass on a
      * genuinely providerless relay.
      */
-    suspend fun get(): TrustProviders {
+    suspend fun get(): TrustProviders = pass().trust
+
+    /**
+     * The read-time gate, off the same pass. See [Delegations] for what a Map
+     * entry's kind means and why a named `3039x:<name>` entry is not admitted.
+     */
+    suspend fun delegations(): Delegations = pass().delegations
+
+    private suspend fun pass(): Pass {
         cached?.let { return it }
-        val fresh = providersOf(inner.search(EventQuery(kinds = listOf(TrustProviderListEvent.KIND), notExpiredAt = nowSecs())))
-        if (!fresh.isEmpty()) cached = fresh
+        val docs = inner.search(EventQuery(kinds = listOf(TrustProviderListEvent.KIND), notExpiredAt = nowSecs()))
+        // ONE parse for both projections. Each doc costs a tags parse and an
+        // `EventFactory` dispatch, and this rebuilds on every 10040 write, so
+        // handing each side the documents to decode itself would double the
+        // cost of the pass the KDoc above promises is shared.
+        val maps = docs.mapNotNull { it.toEvent() as? TrustProviderListEvent }
+        val fresh = Pass(providersIn(maps), Delegations.delegationsOf(maps))
+        // Emptiness is judged on the DOCUMENTS, not on either projection: the
+        // ambiguity this rule records is "no 10040s" versus "the engine has not
+        // finished serving them", and only the query's own answer distinguishes
+        // those. Judging it on the trust half instead would also refuse to cache
+        // a relay whose Maps carry nothing but bare-kind Trusted List entries —
+        // a real shape, and one with no rank or followers provider in it.
+        if (docs.isNotEmpty()) cached = fresh
         return fresh
     }
 
@@ -96,11 +129,13 @@ internal class ProviderMap(
 
     companion object {
         /** Both dimensions' `service key -> observers` maps from [listDocs]' typed entries. */
-        fun providersOf(listDocs: List<EventDoc>): TrustProviders {
+        fun providersOf(listDocs: List<EventDoc>): TrustProviders = providersIn(listDocs.mapNotNull { it.toEvent() as? TrustProviderListEvent })
+
+        /** The same, off Maps already decoded — see [pass] for why that matters. */
+        fun providersIn(maps: List<TrustProviderListEvent>): TrustProviders {
             val rank = LinkedHashMap<String, MutableSet<String>>()
             val followers = LinkedHashMap<String, MutableSet<String>>()
-            listDocs
-                .mapNotNull { it.toEvent() as? TrustProviderListEvent }
+            maps
                 .forEach { list ->
                     list.serviceProviders().forEach { entry ->
                         when (entry.service) {
