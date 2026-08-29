@@ -62,6 +62,12 @@ internal class TrustRecompute(
     suspend fun providerMap(): TrustProviders = providers.get()
 
     /**
+     * The read-time gate off the same cached pass — who a reader has asked to
+     * compute what. See [Delegations]; the write side's projection is above.
+     */
+    suspend fun delegations(): Delegations = providers.delegations()
+
+    /**
      * Drop the cached attribution map after ANY 10040 write or removal — the
      * write paths do it inline (even with the walk deferred); [DirtLedger.drain]
      * repeats it for dirt inherited from a crashed process that may have died first.

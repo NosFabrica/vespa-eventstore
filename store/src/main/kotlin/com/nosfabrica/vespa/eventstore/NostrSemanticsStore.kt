@@ -38,6 +38,12 @@ import com.nosfabrica.vespa.eventstore.mapping.VespaText
 import com.nosfabrica.vespa.eventstore.mapping.toDoc
 import com.nosfabrica.vespa.eventstore.mapping.toEvent
 import com.nosfabrica.vespa.eventstore.mapping.toEventQuery
+import com.nosfabrica.vespa.eventstore.search.SearchExpansionLimits
+import com.nosfabrica.vespa.eventstore.search.SearchReferenceExpansion
+import com.nosfabrica.vespa.eventstore.search.SearchReferences
+import com.nosfabrica.vespa.eventstore.search.SubjectKeys
+import com.nosfabrica.vespa.eventstore.trust.Delegations
+import com.nosfabrica.vespa.eventstore.trust.TrustProjection
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.core.isAddressable
 import com.vitorpamplona.quartz.nip01Core.core.isEphemeral
@@ -50,6 +56,7 @@ import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import com.vitorpamplona.quartz.nip01Core.store.StoreQueryContext
 import com.vitorpamplona.quartz.nip01Core.store.owner
+import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
 import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
 import com.vitorpamplona.quartz.nip40Expiration.isExpired
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
@@ -109,6 +116,15 @@ class NostrSemanticsStore(
     guardRefreshMillis: Long = DEFAULT_GUARD_REFRESH_MILLIS,
     /** Events removed per sweep round (see [Deletions]). Internal — a test seam, like [nowSecs]. */
     internal val sweepPage: Int = 10_000,
+    /**
+     * How much of a searching read's answer may be events it POINTS AT rather
+     * than events it matched — see [SearchReferenceExpansion]. Always applied,
+     * because it only ever engages on a read carrying TERMS: a plain NIP-01
+     * recall, a mirror's paging, a NIP-77 catch-up and this store's own
+     * provider-list read all carry none, and are left exactly as they were.
+     * [SearchExpansionLimits.Off] turns it off outright.
+     */
+    private val searchExpansion: SearchExpansionLimits = SearchExpansionLimits.Default,
 ) : IEventStore {
     private val writes = Mutex()
 
@@ -117,6 +133,23 @@ class NostrSemanticsStore(
     private val guards = GuardOwners(index, writers, guardRefreshMillis)
 
     private val deletions = Deletions(index, relay, sweepPage)
+
+    /**
+     * WHO THIS READER ASKED TO COMPUTE WHAT — the gate the search expansion
+     * checks before unpacking a Trusted List or a NIP-85 assertion.
+     *
+     * Read off [TrustProjection] rather than derived here, and the type check is
+     * the honest statement of the dependency: the projection is the decorator
+     * every write already passes through, so its [ProviderMap] is invalidated by
+     * every 10040 put and remove with no write-path code of its own. A second
+     * cache in this class would need its own hook on four separate write entry
+     * points and would still be a second answer to one question.
+     *
+     * A store assembled WITHOUT the projection — a bare index in a test — has no
+     * Map to read and so admits no declaration. Labels are unaffected: NIP-32 is
+     * ungated by design, and this gate never applied to them.
+     */
+    private suspend fun delegations(): Delegations = (index as? TrustProjection)?.recompute?.delegations() ?: Delegations.NONE
 
     private val bulkRecords = BulkRecordInsert(index, relay, guards)
 
@@ -366,9 +399,10 @@ class NostrSemanticsStore(
         val cutoff = nowSecs()
         val queries = filters.mapNotNull { it.toExpiryQuery(cutoff, observer) }
         val ordered = recallOrdered(queries, EventDoc.NEWEST_FIRST, EventDoc::id, { index.search(it) }, { index.searchRanked(it) })
+        val page = spliced(queries, ordered, DOC_KEYS, { if (it.kind in SearchReferences.KINDS) it.toEvent() else null }, { index.search(it) })
         // Reconstruct via Quartz's by-kind factory straight from the stored
         // fields, skipping the serialize+parse round trip; see [toEvent].
-        return ordered.map { it.toEvent() } as List<T>
+        return page.map { it.toEvent() } as List<T>
     }
 
     /**
@@ -440,6 +474,49 @@ class NostrSemanticsStore(
     }
 
     /**
+     * THE ORDERED PAGE, PLUS WHAT IT POINTS AT — a label's subject behind the
+     * label, a Trusted List's members behind the list.
+     *
+     * Runs after [recallOrdered] rather than inside it: the placement is "a
+     * subject sits where its pointer sits", so it needs the finished order and
+     * nothing about the scores that produced it. The seam is deliberate — a
+     * placement that weights a subject by the confidence its pointer expressed
+     * needs those scores, and that version belongs one layer in, where
+     * [Ranked] still exists.
+     *
+     * Returns [rows] untouched whenever no query carries terms, which is every
+     * plain recall this store serves.
+     */
+    private suspend fun <R> spliced(
+        queries: List<EventQuery>,
+        rows: List<R>,
+        keys: SubjectKeys<R>,
+        pointerOf: (R) -> Event?,
+        recall: suspend (EventQuery) -> List<R>,
+    ): List<R> {
+        if (!searchExpansion.enabled || rows.isEmpty()) return rows
+        // Terms, not "carries a search field": every anonymous read on a
+        // lens-requiring relay stamps `include:spam`, and a mirror's paging
+        // carries it too. Gating on the field would put all of that traffic
+        // behind an expansion none of it asked for.
+        val searching = queries.filter { it.search != null || it.phrases.isNotEmpty() }
+        if (searching.isEmpty()) return rows
+        // A read that can serve no pointer kind can splice nothing, and asking
+        // the gate would cost a provider-list read to prove it.
+        if (searching.none { q -> q.kinds.isEmpty() || q.kinds.any { it in SearchReferences.KINDS } }) return rows
+
+        val observers = searching.mapNotNullTo(HashSet()) { it.observer }
+        val expansion = SearchReferenceExpansion(searching, delegations().of(observers), searchExpansion)
+        val expanded = expansion.expand(rows, keys, pointerOf, recall)
+        val out = ArrayList<R>(rows.size)
+        rows.forEachIndexed { i, row ->
+            if (expanded.fresh[i]) out.add(row)
+            out.addAll(expanded.subjects[i])
+        }
+        return out
+    }
+
+    /**
      * Raw read path: recall matches as Quartz [RawEvent]s, skipping the
      * per-hit tag parse and the Event object model — a relay serving REQs
      * straight to the wire re-serializes each event anyway (see
@@ -453,7 +530,8 @@ class NostrSemanticsStore(
         val observer = coroutineContext[StoreQueryContext]?.observer
         val cutoff = nowSecs()
         val queries = filters.mapNotNull { it.toExpiryQuery(cutoff, observer) }
-        recallOrdered(queries, RAW_NEWEST_FIRST, RawEvent::id, { index.rawSearch(it) }, { index.rawSearchRanked(it) }).forEach(onEach)
+        val ordered = recallOrdered(queries, RAW_NEWEST_FIRST, RawEvent::id, { index.rawSearch(it) }, { index.rawSearchRanked(it) })
+        spliced(queries, ordered, RAW_KEYS, { if (it.kind in SearchReferences.KINDS) it.toEvent() else null }, { index.rawSearch(it) }).forEach(onEach)
     }
 
     override suspend fun <T : Event> query(
@@ -754,5 +832,29 @@ class NostrSemanticsStore(
 
         /** [EventDoc.NEWEST_FIRST] for the raw read path — the same order over [RawEvent]s. */
         val RAW_NEWEST_FIRST = compareByDescending(RawEvent::createdAt).thenBy(RawEvent::id)
+
+        /** NIP-01's parameterized-replaceable range — the kinds an `a` tag can name. */
+        private val ADDRESSABLE = 30_000..39_999
+
+        /** How the expansion reads a subject out of a document. */
+        private val DOC_KEYS =
+            SubjectKeys<EventDoc>(
+                idOf = { it.id },
+                authorOf = { it.pubkey },
+                addressOf = { if (it.kind in ADDRESSABLE) "${it.kind}:${it.pubkey}:${it.dTagOrEmpty()}" else null },
+            )
+
+        /**
+         * The same, off a raw row. The address costs a tag parse, so it is paid
+         * only for the addressable kinds — the raw path exists to skip exactly
+         * that parse on the hits, and a spliced addressable is a rounding error
+         * beside them.
+         */
+        private val RAW_KEYS =
+            SubjectKeys<RawEvent>(
+                idOf = { it.id },
+                authorOf = { it.pubKey },
+                addressOf = { raw -> if (raw.kind in ADDRESSABLE) raw.toEvent<Event>().let { "${it.kind}:${it.pubKey}:${it.tags.dTag()}" } else null },
+            )
     }
 }
