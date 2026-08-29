@@ -5,55 +5,48 @@ app = "1.0.0"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"
 # Quartz from JitPack (amethyst @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
-# 98f09f29c0 = amethyst main @ 2026-08-25 (PR #3983). ONE quartz commit since the
-# last pin, f5f8f605e, and it closes the gap the previous bump's test flagged:
-# the Trusted List family (30392-30395) shipped with a `title` tag and no
-# `SearchableEvent`, so a list published as "Podcaster" could only be reached by
-# already knowing its address. `TrustedListEvent` now implements the interface on
-# the base class — all four kinds inherit it — with
+# 029c40ebb4 = amethyst main @ 2026-08-28 (PR #4006). A no-op bump for this store's
+# behavior: IEventStore, SQLiteEventStore, Filter, EventFactory, IndexableFields,
+# SearchFieldExtractor, SearchableEvent and SearchQuery are byte-identical to the
+# previous pin, so filter semantics are unchanged, the searchable set stays at 126
+# classes / 129 kind values plus the four Trusted List kinds (130 / 133), and
+# nothing needs reindexing.
 #
-#     override fun indexableContent() = title() ?: ""
+# The range touches 27 Kotlin files under quartz/src/commonMain. Three sit on
+# surfaces this module calls, and all three land where we already were:
 #
-# The title alone. `metric` names a computation and `d` identifies the list, so
-# both stay out (a search for a common word must not return every list that ran
-# the same job); the member tags are hex ids and `content` is a JSON echo of the
-# same membership, which `#p`/`#e`/`#a`/`#i` recall already serves far better than
-# a full-text index would. A titleless list indexes "" rather than throwing —
-# `indexableContent()` runs inside the store's insert transaction.
+#   ServiceProviderTag (nip85TrustedAssertions) now BOUNDS what a 10040 entry may
+#     delegate to NIP-85's own kinds: `parse` returns null — and the constructor
+#     throws — for a `<kind>:<metric>` entry outside 30382..30385. A Treasure Map is
+#     an open tag set, and Tapestry's Trusted Lists hang `3039x:<name>` entries off
+#     the same event; unbounded, those parsed as NIP-85 providers and were handed to
+#     code looking for a rank service. `ProviderMap` is unmoved either way: it reads
+#     `serviceProviders()` and then matches only `ProviderTypes.rank` /
+#     `followerCount`, both 30382, so a `3039x` entry was already dropped by that
+#     `when` and is now dropped one step earlier. We never construct the tag, so the
+#     new `require` cannot fire here.
+#   MemberTagFields.score (experimental/trustedLists) is now a 0..100 percentage:
+#     out-of-range reads back as null rather than clamped (a 950 read as 100 would
+#     rank that member above every honestly-scored peer), and the builders clamp on
+#     write. We index a Trusted List's `title()` and nothing else — member scores
+#     never reach a document — so no stored or ranked value moves.
+#   TrustedListEvent.memberValues() and the three `linked*()` accessors swapped
+#     `mapNotNull` for the new `TagArray.fastMapNotNullDense` (destination presized
+#     for scans where most tags match — a 5k-member list stops paying ~20 array
+#     copies). Same results; our extraction path calls none of them.
 #
-# What that means HERE. `SearchExtractors` mirrors the searchable set rather than
-# deciding it, so this bump alone makes the four kinds searchable — no store code
-# changes, and `TrustedListIndexingTest` flips from pinning the absence to pinning
-# the title. Two consequences worth knowing:
+# New upstream and unused here: `experimental/trustedLists/treasureMap`, which parses
+# the `["30392", <pubkey>, <relay>]` bare-kind entry the NIP-85 parser above now
+# refuses (one entry delegates every list of that kind, so the Map stays fixed-size);
+# a `DeletionIndex.hasBeenDeleted(Address, pubKey)` overload for addressables whose
+# event is not loaded; and BUD-11 base64url Blossom auth tokens. The rest of the
+# range is app / CLI / desktop / translations / logging hygiene and nip47 NWC — no
+# module here imports any of it.
 #
-#   TIER. Upstream gave the family no explicit `SearchFieldExtractor` branch, so it
-#     takes the generic `is SearchableEvent ->` fallback: `tiers(event, null, null,
-#     indexableContent())` — the whole string in the TERTIARY tier. In this
-#     schema that is `search_text`, the BODY column, not `search_primary`. So a
-#     list title is weighted like note content and reached by trigram substring
-#     rather than the prefix/typo attributes every other titled kind enjoys
-#     ("podcast" finds "Podcaster", a typo does not). Correct as a mirror, and the
-#     test pins it as observed; the fix, if wanted, is one branch upstream
-#     (`is TrustedListEvent -> tiers(event, event.title(), null, null)`), never a
-#     local divergence — which tier an accessor lands in is Quartz's call.
-#   REINDEX. Derived data: 30392-30395 already stored carry no search text until
-#     `reindexFullTextSearch()` runs. New writes are indexed immediately.
-#
-# Nothing else moved. The range's only other files are app/desktop/CLI work no
-# module here imports; under quartz/ exactly two main files changed, both in
-# `experimental/trustedLists/` (the base class above and the package README), so
-# IEventStore, SQLiteEventStore, IndexableFields, SearchFieldExtractor,
-# SearchQuery, SearchableEvent, EventFactory and the filter semantics are
-# byte-identical to the previous pin. The searchable set grows by exactly these
-# four kinds: 126 classes / 129 kind values -> 130 / 133.
-#
-# Prev 509075abde (2026-08-20: the family itself — see PR #84 for the indexing
-# audit that found this gap). Of the five .claude/skills imported from upstream,
-# this range touches two, and both are refreshed in the same commit as this bump:
-# searchable-events' `references/searchable-kinds.md` gains the four rows (the
-# table external search engines mirror), and quartz-integration's published-artifact
-# version moves 1.13.1 -> 1.14.0 (irrelevant here — we pin by commit).
-quartz = "98f09f29c0"
+# Prev 98f09f29c0 (2026-08-25: Trusted List titles became searchable — see PR #84).
+# Of the five .claude/skills imported from upstream, this range touches none: its
+# only skill edit is find-non-lambda-logs, which we do not carry.
+quartz = "029c40ebb4"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 sqlite = "2.7.0"
