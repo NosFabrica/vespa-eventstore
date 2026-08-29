@@ -390,10 +390,32 @@ class SearchExpansionTest {
     private class RankingIndex(
         private val inner: InMemoryEventIndex,
     ) : com.nosfabrica.vespa.eventstore.engine.EventIndex by inner {
+        // HITS ON THE TOKEN RUNG, members on the affiliation rung — the two
+        // scales `event.sd` actually produces, not the flat 100..0 this used to
+        // report. A linear ladder is the one shape where the OLD placement
+        // (pointer relevance x confidence) looked correct, which is exactly why
+        // it hid the bug: on the real banded scale a discounted member leaves
+        // its band entirely.
+        //
+        // A member query is delegated, because InMemoryEventIndex implements
+        // the member rungs itself and this class must not be a second answer to
+        // where a member sits.
         override suspend fun searchRanked(query: com.nosfabrica.vespa.eventstore.engine.query.EventQuery) =
-            inner.search(query).mapIndexed { i, doc ->
-                com.nosfabrica.vespa.eventstore.engine
-                    .Ranked(doc, 100.0 - i)
+            if (query.ranking != null) {
+                inner.searchRanked(query)
+            } else {
+                inner.search(query).mapIndexed { i, doc ->
+                    // THE `search` LADDER, because every query in this file
+                    // carries `observer:` and so ranks on it: rungs 550
+                    // (affiliation) / 4 000 (weak) / 23 000 (near) / 130 000
+                    // (name). A hit whose content says "weak" is scored INSIDE
+                    // the member band (550..4 000) so a test can show a member
+                    // interleaving with organic results; on the real engine that
+                    // is an ordinary bio-strength match.
+                    val band = if (doc.content.contains("weak")) 1000.0 else 130_000.0
+                    com.nosfabrica.vespa.eventstore.engine
+                        .Ranked(doc, band - i * 0.01)
+                }
             }
     }
 
@@ -414,8 +436,10 @@ class SearchExpansionTest {
             weighted.insert(treasureMap(arrayOf("30392", curator, "wss://lists.example")))
             // Two OTHER hits the search finds on its own, which the doubted
             // member has to fall past for the weighting to have done anything.
-            val filler = (1..2).map { event(1, emptyArray(), "podcaster note $it", author = stranger) }
-            filler.forEach { weighted.insert(it) }
+            // An organic hit INSIDE the member band, which is what a member has
+            // to be able to fall past for the placement to mean anything.
+            val weak = event(1, emptyArray(), "podcaster note, weak match", author = stranger)
+            weighted.insert(weak)
             val list =
                 event(
                     30392,
@@ -434,9 +458,12 @@ class SearchExpansionTest {
 
             assertTrue(out.indexOf(sureId) < out.indexOf(doubtedId), "confidence orders the two members: $out")
             assertTrue(out.indexOf(list.id) < out.indexOf(sureId), "a subject never passes its own pointer: $out")
-            // The whole point: the doubted member is no longer glued behind its
-            // list — organic hits the search found itself now sit above it.
-            assertTrue(out.indexOf(doubtedId) > out.indexOf(sureId) + 1, "the doubted member fell past a hit: $out")
+            // THE WHOLE POINT: the members are no longer glued behind their
+            // list. They sit on the affiliation rung, and the organic hit that
+            // scored inside that rung lands BETWEEN them — above the member its
+            // publisher doubts, below the one it is sure of.
+            assertTrue(out.indexOf(weak.id) > out.indexOf(sureId), "a full-confidence member outranks a bio-strength hit: $out")
+            assertTrue(out.indexOf(weak.id) < out.indexOf(doubtedId), "and a doubted one falls below it: $out")
         }
 
     @Test
@@ -549,9 +576,14 @@ class SearchExpansionTest {
 
             assertTrue(cards.getValue(past).id !in out, "the third member is past the cap and was never looked up: $out")
             assertTrue(out.indexOf(cards.getValue(sure).id) < out.indexOf(cards.getValue(doubted).id), "confidence survives the truncation: $out")
+            // The fillers are token-band hits, so BOTH survivors sit below
+            // them: a member rides the affiliation rung whatever its list
+            // scored, and a note that actually contains the word outranks a
+            // person somebody put on a list. What truncation must not lose is
+            // the ORDER between the two it kept, which is the assertion above.
             assertTrue(
-                out.indexOf(cards.getValue(doubted).id) > out.indexOf(cards.getValue(sure).id) + 1,
-                "the doubted survivor still falls past a hit: $out",
+                filler.all { out.indexOf(it.id) < out.indexOf(cards.getValue(sure).id) },
+                "a token match outranks a member of a list: $out",
             )
         }
 
@@ -622,55 +654,23 @@ class SearchExpansionTest {
             assertTrue(other.id !in out, "the member whose d the read excluded: $out")
         }
 
-    /** The same, on a scale that runs BELOW zero — what `sort:rank:asc` produces. */
-    private class NegativeRankingIndex(
-        private val inner: InMemoryEventIndex,
-    ) : com.nosfabrica.vespa.eventstore.engine.EventIndex by inner {
-        override suspend fun searchRanked(query: com.nosfabrica.vespa.eventstore.engine.query.EventQuery) =
-            inner.search(query).mapIndexed { i, doc ->
-                com.nosfabrica.vespa.eventstore.engine
-                    .Ranked(doc, -10.0 - i)
-            }
-    }
-
     @Test
-    fun `a discount is never a promotion on a scale that runs below zero`() =
+    fun `a ladder the member rungs do not cover degrades to the pointer's order`() =
         runBlocking {
-            // `rank_asc` subtracts the author's trust from the match tiers, so
-            // an ordinary hit can score below zero. Multiplying a negative by a
-            // member's 10% confidence moves it a long way UP, which would put
-            // the most doubted member of a list at the top of the page.
-            val ranking = NegativeRankingIndex(InMemoryEventIndex())
-            val weighted =
-                NostrSemanticsStore(
-                    TrustProjection(ranking, InMemoryReputationIndex()),
-                    relay = relayUrl,
-                    searchExpansion = SearchExpansionLimits(),
-                )
-            val sure = key("e5")
-            val doubted = key("f6")
-            weighted.insert(event(0, emptyArray(), """{"name":"Sure"}""", author = sure))
-            weighted.insert(event(0, emptyArray(), """{"name":"Doubted"}""", author = doubted))
-            weighted.insert(treasureMap(arrayOf("30392", curator, "wss://lists.example")))
-            val filler = (1..2).map { event(1, emptyArray(), "podcaster note $it", author = stranger) }
-            filler.forEach { weighted.insert(it) }
-            val list =
-                event(
-                    30392,
-                    arrayOf(
-                        arrayOf("d", "roster"),
-                        arrayOf("title", "Podcaster Trust List"),
-                        arrayOf("p", sure, "", "100"),
-                        arrayOf("p", doubted, "", "10"),
-                    ),
-                )
-            weighted.insert(list)
+            // `sort:rank:asc` and its siblings rank on a THIRD ladder, one whose
+            // scores can run below zero (it subtracts the author's trust from
+            // the match tiers). There is no member rung defined on it, so
+            // `memberProfileOf` returns null, every member comes back unscored,
+            // and the page keeps the pointer's own order rather than mixing two
+            // scales. That degradation is the contract — an invented placement
+            // on an uncovered ladder is how the previous design put the most
+            // doubted member of a list at the top of the page.
+            store.insert(profile)
+            store.insert(treasureMap(arrayOf("30392", curator, "wss://lists.example")))
+            val list = userList("Podcaster Trust List")
+            store.insert(list)
 
-            val out = weighted.query<Event>(listOf(search("podcaster", listOf(0, 1, 30392)))).map { it.id }
-            val cards = weighted.query<Event>(listOf(Filter(kinds = listOf(0)))).associateBy { it.pubKey }
-
-            assertEquals(list.id, out.first(), "the page's own order is untouched by the shift: $out")
-            assertTrue(out.indexOf(cards.getValue(sure).id) < out.indexOf(cards.getValue(doubted).id), "confidence still orders the two: $out")
-            assertTrue(out.indexOf(cards.getValue(doubted).id) > out.indexOf(cards.getValue(sure).id) + 1, "the doubted member still sinks: $out")
+            val sorted = Filter(kinds = listOf(0, 30392), search = "podcaster include:spam observer:$reader sort:rank:asc")
+            assertEquals(listOf(list.id, profile.id), page(sorted), "the list, then its member, in the order the list named them")
         }
 }

@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.eventstore.engine
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
+import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import com.vitorpamplona.quartz.utils.Hex
 
 /**
@@ -53,6 +54,41 @@ class InMemoryEventIndex(
 
     override suspend fun remove(id: String) {
         synchronized(docs) { docs.remove(id) }
+    }
+
+    /**
+     * THE MEMBER RUNGS, REPRODUCED — the one rank profile this reference does
+     * implement, because it is the one whose arithmetic is the contract rather
+     * than the engine's judgement.
+     *
+     * Everything else here reports a null score on purpose: a fabricated
+     * relevance would let a test pass against a ranking this index cannot
+     * actually perform. But `spliced_member` is not a judgement about text, it
+     * is a placement rule stated in `event.sd` §13 — a rung plus a confidence
+     * span — so a reference implementation can hold it exactly, and a consumer
+     * assembling this index gets the same order it would get from Vespa for the
+     * same confidences. The constants are the schema's own defaults.
+     */
+    private fun memberScoreOf(query: EventQuery): Double? {
+        val text = query.ranking == EventYql.RANK_SPLICED_MEMBER_TEXT
+        if (!text && query.ranking != EventYql.RANK_SPLICED_MEMBER) return null
+        val conf = query.rankFeatures[EventYql.F_MEMBER_CONF] ?: 1.0
+        val gamma = query.rankFeatures["w_member_gamma"] ?: 1.0
+        val tier = if (text) MEMBER_TIER_TEXT else MEMBER_TIER
+        val span = if (text) MEMBER_SPAN_TEXT else MEMBER_SPAN
+        // No reputation here, so wot_mult() is 1.0 — which is also what the
+        // trust-multiplied profile computes for an unlensed read.
+        return tier + span * Math.pow(conf.coerceIn(0.0, 1.0), gamma)
+    }
+
+    override suspend fun searchRanked(query: EventQuery): List<Ranked<EventDoc>> {
+        val member = memberScoreOf(query)
+        return search(query).map { Ranked(it, member) }
+    }
+
+    override suspend fun rawSearchRanked(query: EventQuery): List<Ranked<RawEvent>> {
+        val member = memberScoreOf(query)
+        return rawSearch(query).map { Ranked(it, member) }
     }
 
     override suspend fun search(query: EventQuery): List<EventDoc> {
@@ -132,5 +168,13 @@ class InMemoryEventIndex(
                 q.phrases.all { d.search.containsPhrase(it) } &&
                 q.notSearch.none { d.search.containsPhrase(it) }
         }
+    }
+
+    private companion object {
+        /** `event.sd` §13 defaults, mirrored so this reference orders as Vespa would. */
+        const val MEMBER_TIER_TEXT = 550.0
+        const val MEMBER_SPAN_TEXT = 60.0
+        const val MEMBER_TIER = 550.0
+        const val MEMBER_SPAN = 3450.0
     }
 }

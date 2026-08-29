@@ -45,6 +45,39 @@ object EventYql {
     const val RANK_TEXT = "text"
 
     /**
+     * WHERE A SPLICED MEMBER IS SCORED — the two profiles that place a Trusted
+     * List's member on the affiliation rung rather than deriving its score from
+     * the list's.
+     *
+     * Paired with [RANK_TEXT] and [RANK_SEARCH] because those two rank on
+     * different ladders — `text` on relevance() alone, `search` on
+     * text_score() x wot_mult() — and a synthesized score is only comparable to
+     * the page it joins if it was made on the same one. [memberProfileOf] picks
+     * between them off the finding query, by the same rule [profileOf] uses.
+     */
+    const val RANK_SPLICED_MEMBER_TEXT = "spliced_member_text"
+
+    const val RANK_SPLICED_MEMBER = "spliced_member"
+
+    /** The rank feature carrying a member's 0..1 confidence to those profiles. */
+    const val F_MEMBER_CONF = "member_conf"
+
+    /**
+     * The member profile matching what [q] itself ranked on — trust-multiplied
+     * when the finding query carried a usable observer, plain text otherwise.
+     *
+     * Null when [q] ranks on neither ladder (a recency read, a plain recall):
+     * those pages have no relevance to be comparable WITH, and the splice falls
+     * back to the pointer's own order.
+     */
+    fun memberProfileOf(q: EventQuery): String? =
+        when (profileOf(q)) {
+            RANK_SEARCH -> RANK_SPLICED_MEMBER
+            RANK_TEXT -> RANK_SPLICED_MEMBER_TEXT
+            else -> null
+        }
+
+    /**
      * NIP-01 recency order with the trust floor: score IS created_at,
      * below-floor authors dropped — the always-on spam gate for feeds, the
      * no-terms `filter:rank:` match-all, and the store's `sort:recent` search
@@ -269,6 +302,16 @@ object EventYql {
         if (ranking != RANK_UNRANKED && ranking != RANK_RECENCY && observer != null) {
             params["ranking.features.query(user_q)"] = "{$observer:1.0}"
             q.minRank?.let { params["ranking.features.query(min_rank)"] = it.toString() }
+        }
+        // A MEMBER PROFILE WITHOUT AN OBSERVER WOULD SATURATE, not degrade.
+        // wot_mult() reads `min_rank`, which defaults to -1e9 so the gate in
+        // the rank_* profiles is a no-op; with no user_q the member's
+        // user_score() is 0, and `0 - (-1e9)` clamps to 100 — the TOP of the
+        // trust curve, for every member equally. Pinning the floor to 0 makes
+        // an unlensed member score its rung times 1.0, which is what "no trust
+        // signal" should mean.
+        if (ranking == RANK_SPLICED_MEMBER && observer == null) {
+            params["ranking.features.query(min_rank)"] = "0.0"
         }
         // The query instant for recency ranking (docs/recency-ranking.md).
         // Stamped by the CLIENT rather than read from Vespa's own `now` so a

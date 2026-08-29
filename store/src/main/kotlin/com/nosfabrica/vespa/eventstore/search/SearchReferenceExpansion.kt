@@ -20,7 +20,9 @@
  */
 package com.nosfabrica.vespa.eventstore.search
 
+import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
+import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.nosfabrica.vespa.eventstore.trust.Enrolment
 import com.vitorpamplona.quartz.nip01Core.core.Address
 import com.vitorpamplona.quartz.nip01Core.core.Event
@@ -180,6 +182,20 @@ internal class SearchReferenceExpansion(
      */
     private val lenses: List<EventQuery> = searching.map { it.forLookup() }.distinct()
 
+    /**
+     * The member rank profile per lens, resolved from the query that FOUND the
+     * pointer rather than from the stripped lookup.
+     *
+     * It has to be: [forLookup] removes the terms, and `profileOf` reads the
+     * terms to decide which ladder a query ranks on — a stripped query looks
+     * like a plain recall and resolves to `unranked`, which would leave every
+     * member unscored and silently restore the pointer's own order. The ladder
+     * belongs to the search that produced the page, not to the keyed read that
+     * fetches its subjects.
+     */
+    private val memberProfiles: List<String?> =
+        lenses.map { lookup -> searching.firstOrNull { it.forLookup() == lookup }?.let(EventYql::memberProfileOf) }
+
     /** What one read may still spend, across every pointer on it. */
     private var budget = limits.maxPerRequest
 
@@ -216,8 +232,8 @@ internal class SearchReferenceExpansion(
 
     /**
      * One pass over [hits], reading each pointer's references and looking up
-     * what they name. [relevance] is index-aligned with them, or null on a page
-     * the engine did not score.
+     * what they name — each lookup scored by the engine on the rung its
+     * finding query ranks on, so what comes back needs no arithmetic here.
      *
      * The pass stops materializing the moment the request budget is spent:
      * reading a row's pointers costs a tags parse and an `EventFactory`
@@ -227,10 +243,9 @@ internal class SearchReferenceExpansion(
      */
     suspend fun <R> expand(
         hits: List<R>,
-        relevance: List<Double?>?,
         keys: SubjectKeys<R>,
         pointerOf: (R) -> Event?,
-        recall: suspend (EventQuery) -> List<R>,
+        recall: suspend (EventQuery) -> List<Ranked<R>>,
     ): Expanded<R> {
         val fresh = BooleanArray(hits.size) { i -> sent.add(keys.idOf(hits[i])) }
 
@@ -276,15 +291,20 @@ internal class SearchReferenceExpansion(
         planned.forEachIndexed { i, refs ->
             val taken = admit(refs, found[lensOfRow[i]], keys)
             admitted.add(taken.map { it.subject })
-            scores.add(taken.map { limits.scoreFor(relevance?.get(i), refs.weightOf(it.namedBy)) })
+            // THE ENGINE'S NUMBER, NOT ONE COMPUTED HERE. A member was fetched
+            // under a rank profile that scores it on the affiliation rung of
+            // whichever ladder the finding query used, so what comes back is
+            // already comparable to the hits. Deriving it from the pointer's
+            // relevance is the thing that broke: see event.sd §13.
+            scores.add(taken.map { it.score })
         }
         return Expanded(fresh, admitted, scores)
     }
 
-    /** One admitted subject, and the reference key the pointer named it by — which is where its confidence is filed. */
+    /** One admitted subject and the relevance the engine gave it under the member profile. */
     private class Taken<R>(
         val subject: R,
-        val namedBy: String,
+        val score: Double?,
     )
 
     /**
@@ -323,9 +343,9 @@ internal class SearchReferenceExpansion(
 
     /** The subjects one lens holds, keyed the three ways a pointer names one. */
     private class Found<R>(
-        val byId: Map<String, R>,
-        val byKey: Map<String, R>,
-        val byAddress: Map<String, R>,
+        val byId: Map<String, Ranked<R>>,
+        val byKey: Map<String, Ranked<R>>,
+        val byAddress: Map<String, Ranked<R>>,
     )
 
     /**
@@ -341,45 +361,89 @@ internal class SearchReferenceExpansion(
         planned: List<References>,
         lensOfRow: IntArray,
         keys: SubjectKeys<R>,
-        recall: suspend (EventQuery) -> List<R>,
+        recall: suspend (EventQuery) -> List<Ranked<R>>,
     ): Map<Int, Found<R>> {
         val out = HashMap<Int, Found<R>>()
         for (lens in lensOfRow.toSortedSet().filter { it != NO_LENS }) {
-            val ids = LinkedHashSet<String>()
-            val pubKeys = LinkedHashSet<String>()
-            val addresses = LinkedHashSet<String>()
-            planned.forEachIndexed { i, refs ->
-                if (lensOfRow[i] != lens) return@forEachIndexed
-                ids += refs.eventIds
-                pubKeys += refs.pubKeys
-                addresses += refs.addresses
-            }
             val under = lenses[lens]
-            val byId = HashMap<String, R>()
-            val byKey = HashMap<String, R>()
-            val byAddress = HashMap<String, R>()
+            // The member profile of THIS lens's ladder — see [memberProfiles].
+            val profile = memberProfiles[lens]
+            val byId = HashMap<String, Ranked<R>>()
+            val byKey = HashMap<String, Ranked<R>>()
+            val byAddress = HashMap<String, Ranked<R>>()
 
-            for (chunk in ids.chunked(LOOKUP_CHUNK)) {
-                if (spent++ >= MAX_LOOKUPS) break
-                under.narrowIds(chunk)?.let { q -> recall(q).forEach { byId[keys.idOf(it)] = it } }
-            }
-            for (chunk in pubKeys.chunked(LOOKUP_CHUNK)) {
-                if (spent++ >= MAX_LOOKUPS) break
-                under.narrowProfiles(chunk)?.let { q -> recall(q).forEach { byKey[keys.authorOf(it)] = it } }
-            }
-            // An addressable subject is a (kind, author, d) triple and the index
-            // has no compound key for it, so one query per (kind, author) —
-            // grouped, so a list of one publisher's articles costs one lookup.
-            for ((owner, addrs) in addresses.mapNotNull { Address.parse(it) }.groupBy { it.kind to it.pubKeyHex }) {
-                if (spent++ >= MAX_LOOKUPS) break
-                under.narrowAddresses(owner.first, owner.second, addrs.map { it.dTag })?.let { q ->
-                    recall(q).forEach { r -> keys.addressOf(r)?.let { byAddress[it] = r } }
+            // ONE LOOKUP PER CONFIDENCE BUCKET, because confidence is a
+            // property of the (list, member) PAIR and a rank feature is a
+            // property of the QUERY. Quantizing to [BUCKETS] steps is what
+            // makes that affordable: a publisher scores a whole roster the same
+            // way far more often than not (131 of 180 members on the staging
+            // relay are exactly 50), so the distinct buckets on a real page are
+            // few, and a member's placement inside a rung does not need finer
+            // resolution than a twentieth of it.
+            for ((bucket, refs) in bucketed(planned, lensOfRow, lens)) {
+                val conf = under.withMember(profile, bucket, limits.confidenceGamma)
+                for (chunk in refs.ids.chunked(LOOKUP_CHUNK)) {
+                    if (spent++ >= MAX_LOOKUPS) break
+                    conf.narrowIds(chunk)?.let { q -> recall(q).forEach { byId.putIfAbsent(keys.idOf(it.hit), it) } }
+                }
+                for (chunk in refs.pubKeys.chunked(LOOKUP_CHUNK)) {
+                    if (spent++ >= MAX_LOOKUPS) break
+                    conf.narrowProfiles(chunk)?.let { q -> recall(q).forEach { byKey.putIfAbsent(keys.authorOf(it.hit), it) } }
+                }
+                // An addressable subject is a (kind, author, d) triple and the
+                // index has no compound key for it, so one query per (kind,
+                // author) — grouped, so a list of one publisher's articles
+                // costs one lookup.
+                for ((owner, addrs) in refs.addresses.mapNotNull { Address.parse(it) }.groupBy { it.kind to it.pubKeyHex }) {
+                    if (spent++ >= MAX_LOOKUPS) break
+                    conf.narrowAddresses(owner.first, owner.second, addrs.map { it.dTag })?.let { q ->
+                        recall(q).forEach { r -> keys.addressOf(r.hit)?.let { byAddress.putIfAbsent(it, r) } }
+                    }
                 }
             }
             out[lens] = Found(byId, byKey, byAddress)
         }
         return out
     }
+
+    /** One bucket's worth of references, keyed the three ways a pointer names a record. */
+    private class Shapes(
+        val ids: LinkedHashSet<String> = LinkedHashSet(),
+        val pubKeys: LinkedHashSet<String> = LinkedHashSet(),
+        val addresses: LinkedHashSet<String> = LinkedHashSet(),
+    )
+
+    /**
+     * This lens's references, grouped by quantized confidence.
+     *
+     * Ordered HIGHEST FIRST so that a member two lists disagree about is looked
+     * up under the higher one — `putIfAbsent` above then keeps that first
+     * answer. The generous reading is the right one for a disagreement between
+     * two publishers the reader delegated: they both vouched, and the reader
+     * asked for both.
+     */
+    private fun bucketed(
+        planned: List<References>,
+        lensOfRow: IntArray,
+        lens: Int,
+    ): List<Pair<Double, Shapes>> {
+        val out = HashMap<Double, Shapes>()
+        planned.forEachIndexed { i, refs ->
+            if (lensOfRow[i] != lens) return@forEachIndexed
+            refs.eventIds.forEach { out.getOrPut(bucketOf(refs.weightOf(it))) { Shapes() }.ids.add(it) }
+            refs.pubKeys.forEach { out.getOrPut(bucketOf(refs.weightOf(it))) { Shapes() }.pubKeys.add(it) }
+            refs.addresses.forEach { out.getOrPut(bucketOf(refs.weightOf(it))) { Shapes() }.addresses.add(it) }
+        }
+        return out.entries.sortedByDescending { it.key }.map { it.key to it.value }
+    }
+
+    /**
+     * A 0..1 weight quantized to [BUCKETS] steps, or 1.0 where the pointer
+     * expressed none — an unscored reference is FULL confidence, not doubt: a
+     * NIP-32 label has no confidence field in the NIP and a NIP-85 assertion's
+     * `d` IS its subject, so neither claim is probabilistic.
+     */
+    private fun bucketOf(weight: Double?): Double = weight?.let { Math.round(it * BUCKETS) / BUCKETS.toDouble() } ?: 1.0
 
     /**
      * This row's planned subjects, as far as the index actually holds them,
@@ -393,9 +457,13 @@ internal class SearchReferenceExpansion(
     ): List<Taken<R>> {
         if (refs.isEmpty() || found == null) return emptyList()
         val out = ArrayList<Taken<R>>(refs.size)
-        refs.eventIds.forEach { key -> found.byId[key]?.let { if (sent.add(keys.idOf(it))) out.add(Taken(it, key)) } }
-        refs.pubKeys.forEach { key -> found.byKey[key]?.let { if (sent.add(keys.idOf(it))) out.add(Taken(it, key)) } }
-        refs.addresses.forEach { key -> found.byAddress[key]?.let { if (sent.add(keys.idOf(it))) out.add(Taken(it, key)) } }
+
+        fun take(r: Ranked<R>) {
+            if (sent.add(keys.idOf(r.hit))) out.add(Taken(r.hit, r.score))
+        }
+        refs.eventIds.forEach { key -> found.byId[key]?.let(::take) }
+        refs.pubKeys.forEach { key -> found.byKey[key]?.let(::take) }
+        refs.addresses.forEach { key -> found.byAddress[key]?.let(::take) }
         return out
     }
 
@@ -408,6 +476,9 @@ internal class SearchReferenceExpansion(
 
         /** Round trips one read's expansion may cost, whatever its page holds. */
         const val MAX_LOOKUPS = 64
+
+        /** Confidence steps one page may distinguish — see [bucketed] for why coarse is enough. */
+        const val BUCKETS = 20
     }
 }
 
@@ -460,6 +531,29 @@ private fun EventQuery.admitsKind(kind: Int): Boolean = kinds.isEmpty() || kind 
  * and the expansion's own caps already bound the subjects.
  */
 private fun EventQuery.forLookup(): EventQuery = copy(search = null, phrases = emptyList(), notSearch = emptyList(), ranking = null, limit = null)
+
+/**
+ * The same lookup, asked to SCORE what it finds as a member of a list this
+ * confident.
+ *
+ * [profile] null means the finding query ranks on no ladder — a recency read, a
+ * plain recall — so there is nothing for a synthesized score to be comparable
+ * with and the lookup stays unranked. The splice then falls back to the
+ * pointer's own order, which is the same degradation an unscored page gets.
+ */
+private fun EventQuery.withMember(
+    profile: String?,
+    confidence: Double,
+    gamma: Double,
+): EventQuery =
+    if (profile == null) {
+        this
+    } else {
+        copy(
+            ranking = profile,
+            rankFeatures = rankFeatures + mapOf(EventYql.F_MEMBER_CONF to confidence, "w_member_gamma" to gamma),
+        )
+    }
 
 /** The same lookup, narrowed to these ids — null when the read cannot serve them anyway. */
 private fun EventQuery.narrowIds(chunk: List<String>): EventQuery? {
