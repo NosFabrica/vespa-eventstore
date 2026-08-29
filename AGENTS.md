@@ -121,13 +121,17 @@ behind the pointer that named it: NIP-32 labels (1985), NIP-85 assertions
   member (`confidenceGamma`, 1.0 = linear), and sorts into the page on the
   result — so a member the publisher doubts falls past the organic hits it used
   to sit above. It needs the per-hit relevance, which is why `recallOrdered`
-  keeps the `Ranked` it already computes. **That costs nothing**: on a ranked
-  query `recallSummaries` goes through `rankedHits` anyway, one `recallRoot`
-  call, and the ranked path differs only in keeping the `relevance` Vespa
-  already returned. An unscored reference is FULL confidence (a label and an
-  assertion express none), and a page with no scores at all — the in-memory
+  returns a `Page` (hits plus a NULLABLE parallel score list — the unscored page
+  is the hot one, and wrapping every hit of a plain recall to carry a null was
+  two copies and an allocation per event). **The scores cost nothing**: on a
+  ranked query `recallSummaries` goes through `rankedHits` anyway, one
+  `recallRoot` call, and the ranked path differs only in keeping the `relevance`
+  Vespa already returned. An unscored reference is FULL confidence (a label and
+  an assertion express none), and a page with no scores at all — the in-memory
   reference, a recency-ordered read — keeps the pointer's own order rather than
-  inventing a constant.
+  inventing a constant. The page is shifted onto a NON-NEGATIVE scale before
+  weighting: `rank_asc` subtracts trust from the match tiers, and on a negative
+  score a multiplicative discount is a promotion.
 - Caps (`SearchExpansionLimits`) arrive through `open()`: a deployment's budget
   is the operator's call, applying it is the store's.
 

@@ -506,4 +506,171 @@ class SearchExpansionTest {
 
             assertEquals(listOf(list.id), off.query<Event>(listOf(search("podcaster", listOf(0, 30392)))).map { it.id })
         }
+
+    @Test
+    fun `truncation keeps the confidence the survivors were scored with`() =
+        runBlocking {
+            // The cap and the weighting are independent: a list longer than
+            // [SearchExpansionLimits.maxPerEvent] still places the members it
+            // DID bring by what the publisher said about them. A 2,000-member
+            // list is the motivating case for both, so the one that truncates
+            // is exactly the one that must not lose its scores.
+            val ranking = RankingIndex(InMemoryEventIndex())
+            val weighted =
+                NostrSemanticsStore(
+                    TrustProjection(ranking, InMemoryReputationIndex()),
+                    relay = relayUrl,
+                    searchExpansion = SearchExpansionLimits(maxPerEvent = 2),
+                )
+            val sure = key("e5")
+            val doubted = key("f6")
+            val past = key("07")
+            weighted.insert(event(0, emptyArray(), """{"name":"Sure"}""", author = sure))
+            weighted.insert(event(0, emptyArray(), """{"name":"Doubted"}""", author = doubted))
+            weighted.insert(event(0, emptyArray(), """{"name":"Past the cap"}""", author = past))
+            weighted.insert(treasureMap(arrayOf("30392", curator, "wss://lists.example")))
+            val filler = (1..2).map { event(1, emptyArray(), "podcaster note $it", author = stranger) }
+            filler.forEach { weighted.insert(it) }
+            val list =
+                event(
+                    30392,
+                    arrayOf(
+                        arrayOf("d", "roster"),
+                        arrayOf("title", "Podcaster Trust List"),
+                        arrayOf("p", sure, "", "100"),
+                        arrayOf("p", doubted, "", "10"),
+                        arrayOf("p", past, "", "100"),
+                    ),
+                )
+            weighted.insert(list)
+
+            val out = weighted.query<Event>(listOf(search("podcaster", listOf(0, 1, 30392)))).map { it.id }
+            val cards = weighted.query<Event>(listOf(Filter(kinds = listOf(0)))).associateBy { it.pubKey }
+
+            assertTrue(cards.getValue(past).id !in out, "the third member is past the cap and was never looked up: $out")
+            assertTrue(out.indexOf(cards.getValue(sure).id) < out.indexOf(cards.getValue(doubted).id), "confidence survives the truncation: $out")
+            assertTrue(
+                out.indexOf(cards.getValue(doubted).id) > out.indexOf(cards.getValue(sure).id) + 1,
+                "the doubted survivor still falls past a hit: $out",
+            )
+        }
+
+    @Test
+    fun `two filters of one read each expand their own kinds`() =
+        runBlocking {
+            // Same observer, same waiver — so the two filters share a LENS and
+            // differ only in what they ask for. Reading the second one's
+            // pointers through the first one's kinds would leave one of the two
+            // families unexpanded, which is the whole read half-answered.
+            store.insert(note)
+            store.insert(profile)
+            store.insert(treasureMap(arrayOf("30392", curator, "wss://lists.example")))
+            val label = event(1985, arrayOf(arrayOf("L", "#topic"), arrayOf("l", "podcaster", "#topic"), arrayOf("e", note.id)))
+            store.insert(label)
+            val list = userList("Podcaster Trust List")
+            store.insert(list)
+
+            val out = page(search("podcaster", listOf(1, 1985)), search("podcaster", listOf(0, 30392)))
+            assertTrue(note.id in out, "the label's subject: $out")
+            assertTrue(profile.id in out, "the list's member: $out")
+        }
+
+    @Test
+    fun `a read that named ids serves no subject outside them`() =
+        runBlocking {
+            // "Admission is the engine's own job" only holds if the lookup keeps
+            // every constraint the finding query carried. `ids` is the one a
+            // keyed lookup is most tempted to clear, and clearing it hands back
+            // a profile the read explicitly excluded.
+            store.insert(profile)
+            store.insert(treasureMap(arrayOf("30392", curator, "wss://lists.example")))
+            val list = userList("Podcaster Trust List")
+            store.insert(list)
+
+            val onlyTheList = Filter(ids = listOf(list.id), search = "podcaster include:spam observer:$reader")
+            assertEquals(listOf(list.id), page(onlyTheList), "the member is not one of the ids the read asked for")
+        }
+
+    @Test
+    fun `a read that named a d tag serves no coordinate outside it`() =
+        runBlocking {
+            // Same rule for an addressable subject, where the lookup has to ADD
+            // a `#d` of its own: `tags` is a map, so writing it rather than
+            // intersecting it would drop the read's own `#d` and serve the
+            // article it had excluded.
+            val article = { d: String, title: String -> event(30023, arrayOf(arrayOf("d", d), arrayOf("title", title)), author = subject) }
+            val wanted = article("kept", "Kept Article")
+            val other = article("other", "Other Article")
+            store.insert(wanted)
+            store.insert(other)
+            store.insert(treasureMap(arrayOf("30394", curator, "wss://lists.example")))
+            val list =
+                event(
+                    30394,
+                    arrayOf(
+                        arrayOf("d", "roster"),
+                        arrayOf("title", "Podcaster Trust List"),
+                        arrayOf("a", "30023:$subject:kept", "", "90"),
+                        arrayOf("a", "30023:$subject:other", "", "90"),
+                    ),
+                )
+            store.insert(list)
+
+            val narrowed = Filter(kinds = listOf(30023, 30394), tags = mapOf("d" to listOf("kept", "roster")), search = "podcaster include:spam observer:$reader")
+            val out = page(narrowed)
+            assertTrue(wanted.id in out, "the member whose d the read asked for: $out")
+            assertTrue(other.id !in out, "the member whose d the read excluded: $out")
+        }
+
+    /** The same, on a scale that runs BELOW zero — what `sort:rank:asc` produces. */
+    private class NegativeRankingIndex(
+        private val inner: InMemoryEventIndex,
+    ) : com.nosfabrica.vespa.eventstore.engine.EventIndex by inner {
+        override suspend fun searchRanked(query: com.nosfabrica.vespa.eventstore.engine.query.EventQuery) =
+            inner.search(query).mapIndexed { i, doc ->
+                com.nosfabrica.vespa.eventstore.engine
+                    .Ranked(doc, -10.0 - i)
+            }
+    }
+
+    @Test
+    fun `a discount is never a promotion on a scale that runs below zero`() =
+        runBlocking {
+            // `rank_asc` subtracts the author's trust from the match tiers, so
+            // an ordinary hit can score below zero. Multiplying a negative by a
+            // member's 10% confidence moves it a long way UP, which would put
+            // the most doubted member of a list at the top of the page.
+            val ranking = NegativeRankingIndex(InMemoryEventIndex())
+            val weighted =
+                NostrSemanticsStore(
+                    TrustProjection(ranking, InMemoryReputationIndex()),
+                    relay = relayUrl,
+                    searchExpansion = SearchExpansionLimits(),
+                )
+            val sure = key("e5")
+            val doubted = key("f6")
+            weighted.insert(event(0, emptyArray(), """{"name":"Sure"}""", author = sure))
+            weighted.insert(event(0, emptyArray(), """{"name":"Doubted"}""", author = doubted))
+            weighted.insert(treasureMap(arrayOf("30392", curator, "wss://lists.example")))
+            val filler = (1..2).map { event(1, emptyArray(), "podcaster note $it", author = stranger) }
+            filler.forEach { weighted.insert(it) }
+            val list =
+                event(
+                    30392,
+                    arrayOf(
+                        arrayOf("d", "roster"),
+                        arrayOf("title", "Podcaster Trust List"),
+                        arrayOf("p", sure, "", "100"),
+                        arrayOf("p", doubted, "", "10"),
+                    ),
+                )
+            weighted.insert(list)
+
+            val out = weighted.query<Event>(listOf(search("podcaster", listOf(0, 1, 30392)))).map { it.id }
+            val cards = weighted.query<Event>(listOf(Filter(kinds = listOf(0)))).associateBy { it.pubKey }
+
+            assertEquals(list.id, out.first(), "the page's own order is untouched by the shift: $out")
+            assertTrue(out.indexOf(cards.getValue(sure).id) < out.indexOf(cards.getValue(doubted).id), "confidence still orders the two: $out")
+            assertTrue(out.indexOf(cards.getValue(doubted).id) > out.indexOf(cards.getValue(sure).id) + 1, "the doubted member still sinks: $out")
+        }
 }

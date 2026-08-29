@@ -43,6 +43,7 @@ import com.nosfabrica.vespa.eventstore.search.SearchReferenceExpansion
 import com.nosfabrica.vespa.eventstore.search.SearchReferences
 import com.nosfabrica.vespa.eventstore.search.SubjectKeys
 import com.nosfabrica.vespa.eventstore.trust.Delegations
+import com.nosfabrica.vespa.eventstore.trust.Enrolment
 import com.nosfabrica.vespa.eventstore.trust.TrustProjection
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.core.isAddressable
@@ -398,8 +399,8 @@ class NostrSemanticsStore(
         val observer = coroutineContext[StoreQueryContext]?.observer
         val cutoff = nowSecs()
         val queries = filters.mapNotNull { it.toExpiryQuery(cutoff, observer) }
-        val ordered = recallOrdered(queries, EventDoc.NEWEST_FIRST, EventDoc::id, { index.search(it) }, { index.searchRanked(it) }, searchExpansion.enabled)
-        val page = spliced(queries, ordered, DOC_KEYS, { if (it.kind in SearchReferences.KINDS) it.toEvent() else null }, { index.search(it) })
+        val recalled = recallOrdered(queries, EventDoc.NEWEST_FIRST, EventDoc::id, { index.search(it) }, { index.searchRanked(it) }, searchExpansion.enabled)
+        val page = spliced(queries, recalled, DOC_KEYS, { if (it.kind in SearchReferences.KINDS) it.toEvent() else null }, { index.search(it) })
         // Reconstruct via Quartz's by-kind factory straight from the stored
         // fields, skipping the serialize+parse round trip; see [toEvent].
         return page.map { it.toEvent() } as List<T>
@@ -447,23 +448,25 @@ class NostrSemanticsStore(
          * score-free branch regardless of this flag.
          */
         wantScores: Boolean = false,
-    ): List<Ranked<R>> {
-        if (queries.isEmpty()) return emptyList()
+    ): Page<R> {
+        if (queries.isEmpty()) return Page(emptyList(), null)
         // One filter is the ordinary REQ and never needs a score: its engine
         // order IS the answer, and asking for scores would wrap every hit on
         // the hottest read a relay serves.
         if (queries.size == 1) {
-            if (wantScores && queries[0].keepsEngineOrder()) return searchRankedOne(queries[0])
+            if (wantScores && queries[0].keepsEngineOrder()) return Page.of(searchRankedOne(queries[0]))
             val hits = searchOne(queries[0])
-            return (if (queries[0].keepsEngineOrder()) hits else hits.sortedWith(newestFirst)).map { Ranked(it, null) }
+            return Page(if (queries[0].keepsEngineOrder()) hits else hits.sortedWith(newestFirst), null)
         }
         if (queries.none { it.keepsEngineOrder() }) {
-            return queries
-                .mapBounded(QUERY_FANOUT) { searchOne(it) }
-                .flatten()
-                .distinctBy(idOf)
-                .sortedWith(newestFirst)
-                .map { Ranked(it, null) }
+            return Page(
+                queries
+                    .mapBounded(QUERY_FANOUT) { searchOne(it) }
+                    .flatten()
+                    .distinctBy(idOf)
+                    .sortedWith(newestFirst),
+                null,
+            )
         }
         // [EventYql.profileOf], not `ranking`: the field is null for every
         // ordinary search and the profile is picked from the query's shape, so
@@ -476,46 +479,70 @@ class NostrSemanticsStore(
             // null rather than a fabricated constant; its hits are already
             // newest-first, so recency is the merge that keeps them coherent.
             if (scored.any { it.score == null }) {
-                return scored
-                    .map { it.hit }
-                    .distinctBy(idOf)
-                    .sortedWith(newestFirst)
-                    .map { Ranked(it, null) }
+                return Page(
+                    scored
+                        .map { it.hit }
+                        .distinctBy(idOf)
+                        .sortedWith(newestFirst),
+                    null,
+                )
             }
-            return scored
-                .sortedWith(compareByDescending<Ranked<R>> { it.score }.thenBy(newestFirst) { it.hit })
-                .distinctBy { idOf(it.hit) }
+            return Page.of(
+                scored
+                    .sortedWith(compareByDescending<Ranked<R>> { it.score }.thenBy(newestFirst) { it.hit })
+                    .distinctBy { idOf(it.hit) },
+            )
         }
         val results = queries.mapBounded(QUERY_FANOUT) { searchOne(it) }
         val ordered = queries.zip(results).flatMap { (q, hits) -> if (q.keepsEngineOrder()) hits else hits.sortedWith(newestFirst) }
         // Two scales already, which is why these runs are concatenated rather
         // than merged — so there is no coherent score to carry out of here.
-        return ordered.distinctBy(idOf).map { Ranked(it, null) }
+        return Page(ordered.distinctBy(idOf), null)
+    }
+
+    /**
+     * ONE ORDERED PAGE, AND THE RELEVANCE BEHIND IT — [scores] index-aligned
+     * with [hits], or NULL for the pages that have none: a recency-ordered
+     * recall, two ranking profiles concatenated, an engine that does not rank.
+     *
+     * A nullable parallel list rather than a `List<Ranked<R>>` because the
+     * unscored page is the hot one. A plain NIP-01 recall, a mirror's paging and
+     * a NIP-77 catch-up all land here, and wrapping every hit of those in a
+     * score-carrying object — then unwrapping it again in [spliced] — would be
+     * two copies of the page and an allocation per event to carry a null.
+     */
+    private class Page<R>(
+        val hits: List<R>,
+        val scores: List<Double?>?,
+    ) {
+        companion object {
+            fun <R> of(ranked: List<Ranked<R>>) = Page(ranked.map { it.hit }, ranked.map { it.score })
+        }
     }
 
     /**
      * THE ORDERED PAGE, PLUS WHAT IT POINTS AT — a label's subject behind the
      * label, a Trusted List's members behind the list.
      *
-     * Runs after [recallOrdered] rather than inside it: the placement is "a
-     * subject sits where its pointer sits", so it needs the finished order and
-     * nothing about the scores that produced it. The seam is deliberate — a
-     * placement that weights a subject by the confidence its pointer expressed
-     * needs those scores, and that version belongs one layer in, where
-     * [Ranked] still exists.
+     * Runs after [recallOrdered] rather than inside it, but over the [Page] it
+     * produced rather than over a bare list: a subject is placed by its
+     * pointer's own relevance discounted by the confidence the pointer
+     * expressed about it, so the placement needs both the finished order AND the
+     * scores that produced it. Splicing inside the recall would have to answer
+     * that question once per ordering case; here it is answered once.
      *
-     * Returns [rows] untouched whenever no query carries terms, which is every
-     * plain recall this store serves.
+     * Returns the page's hits UNTOUCHED — the same list, not a copy — whenever
+     * no query carries terms, which is every plain recall this store serves.
      */
     private suspend fun <R> spliced(
         queries: List<EventQuery>,
-        rows: List<Ranked<R>>,
+        page: Page<R>,
         keys: SubjectKeys<R>,
         pointerOf: (R) -> Event?,
         recall: suspend (EventQuery) -> List<R>,
     ): List<R> {
-        val hits = rows.map { it.hit }
-        if (!searchExpansion.enabled || rows.isEmpty()) return hits
+        val hits = page.hits
+        if (!searchExpansion.enabled || hits.isEmpty()) return hits
         // Terms, not "carries a search field": every anonymous read on a
         // lens-requiring relay stamps `include:spam`, and a mirror's paging
         // carries it too. Gating on the field would put all of that traffic
@@ -526,25 +553,53 @@ class NostrSemanticsStore(
         // the gate would cost a provider-list read to prove it.
         if (searching.none { q -> q.kinds.isEmpty() || q.kinds.any { it in SearchReferences.KINDS } }) return hits
 
+        // An ANONYMOUS read can unpack no declaration at all, and asking the
+        // gate to say so would cost a provider-list query on a relay that holds
+        // no Treasure Maps — where the answer is never cached, by design. Labels
+        // are ungated, so the expansion still runs; it just runs with nothing
+        // enrolled.
         val observers = searching.mapNotNullTo(HashSet()) { it.observer }
-        val expansion = SearchReferenceExpansion(searching, delegations().of(observers), searchExpansion)
-        val expanded = expansion.expand(rows, keys, pointerOf, recall)
+        val enrolment = if (observers.isEmpty()) Enrolment.NONE else delegations().of(observers)
+        val expansion = SearchReferenceExpansion(searching, enrolment, searchExpansion)
+        // THE ENGINE'S SCALE MAY BE NEGATIVE, and a discount must never be a
+        // promotion: `rank_asc` subtracts the author's trust from the match
+        // tiers, so an ordinary hit can score below zero — and multiplying -8.0
+        // by a member's 10% confidence yields -0.8, which sorts that doubted
+        // member ABOVE the list that doubted it and above every confident peer.
+        // Shifting the page onto a non-negative scale first is monotone, so it
+        // reorders no hit, and it is a no-op on every profile whose scores are
+        // already non-negative.
+        val relevance = page.scores?.takeIf { s -> s.all { it != null } }?.shiftedToNonNegative()
+        val expanded = expansion.expand(hits, relevance, keys, pointerOf, recall)
 
         // THE POINTER'S OWN ORDER FIRST, always — the weighted pass below is a
         // stable re-sort of it, so a tie between a subject and its own pointer
         // resolves the only way it can read: the reason above the result. It is
         // also the answer whenever there are no scores to sort by.
-        val placed = ArrayList<Placed<R>>(rows.size)
-        rows.forEachIndexed { i, row ->
-            if (expanded.fresh[i]) placed.add(Placed(row.hit, row.score))
+        val placed = ArrayList<Placed<R>>(hits.size)
+        hits.forEachIndexed { i, hit ->
+            if (expanded.fresh[i]) placed.add(Placed(hit, relevance?.get(i)))
             expanded.subjects[i].forEachIndexed { j, subject -> placed.add(Placed(subject, expanded.scores[i][j])) }
         }
         // A page the engine did not score cannot be weighted, and a fabricated
         // constant would be worse than the anchored order it replaced — the
         // in-memory reference reports null for exactly this reason, and a
         // recency-ordered read has no relevance to give.
-        if (placed.any { it.score == null }) return placed.map { it.row }
+        if (relevance == null || placed.any { it.score == null }) return placed.map { it.row }
         return placed.sortedByDescending { it.score }.map { it.row }
+    }
+
+    /**
+     * The same scores with the page's own floor moved to zero when it sits
+     * below it — the identity, and the same list, whenever nothing is negative.
+     *
+     * A uniform shift is order-preserving, so this changes no hit's position;
+     * what it changes is what a MULTIPLICATIVE discount means on a scale that
+     * runs through zero. See the caller for the failure it prevents.
+     */
+    private fun List<Double?>.shiftedToNonNegative(): List<Double> {
+        val floor = minOf(0.0, minOf { it!! })
+        return if (floor == 0.0) map { it!! } else map { it!! - floor }
     }
 
     /** A row and the relevance it is placed by — its own for a hit, its pointer's discounted for a subject. */

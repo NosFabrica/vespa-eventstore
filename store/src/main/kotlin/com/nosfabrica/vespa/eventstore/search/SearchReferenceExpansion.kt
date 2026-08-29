@@ -20,7 +20,6 @@
  */
 package com.nosfabrica.vespa.eventstore.search
 
-import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.trust.Enrolment
 import com.vitorpamplona.quartz.nip01Core.core.Address
@@ -163,28 +162,33 @@ internal class SearchReferenceExpansion(
     private val limits: SearchExpansionLimits,
 ) {
     /**
-     * The lens a subject lookup runs under: everything about a query that
-     * decides WHICH CORPUS it sees, and nothing about what it was looking for.
+     * THE DISTINCT LENSES OF THIS READ: each searching query with its TERMS
+     * STRIPPED, deduplicated. A lens is both halves of what a lookup needs —
+     * which corpus is visible (observer, floor, spam waiver, expiry) AND what
+     * the query would admit (kinds, authors, ids, tags, time window).
      *
      * Grouped so a page of fifty pointers found by one query costs one lookup,
-     * not fifty. The terms are deliberately absent — they are what the subject
-     * provably does NOT contain, which is the whole reason it needs fetching.
+     * not fifty; two filters that differ only in their words are one lens, which
+     * is the common REQ. Two that differ in KINDS are not, and collapsing them
+     * would be a bug rather than a saving: the survivor's kinds would decide
+     * both which pointers get attributed and which subjects get admitted, so a
+     * REQ asking for labels in one filter and Trusted Lists in another would
+     * expand whichever came first and silently half-answer the other.
+     *
+     * The terms are what the subject provably does NOT contain, which is the
+     * whole reason it needs fetching — see [forLookup] for what else goes.
      */
-    private data class Lens(
-        val observer: String?,
-        val includeSpam: Boolean,
-        val minRank: Double?,
-        val notExpiredAt: Long?,
-        val nowSecs: Long?,
-    )
-
-    private fun lensOf(q: EventQuery) = Lens(q.observer, q.includeSpam, q.minRank, q.notExpiredAt, q.nowSecs)
-
-    /** The distinct lenses of this read, and one representative query per lens for admission. */
-    private val lenses: List<EventQuery> = searching.distinctBy(::lensOf)
+    private val lenses: List<EventQuery> = searching.map { it.forLookup() }.distinct()
 
     /** What one read may still spend, across every pointer on it. */
     private var budget = limits.maxPerRequest
+
+    /**
+     * Round trips already spent, across every lens. A per-lens counter would
+     * make the cap "64 times however many filters the REQ carried", which is
+     * not a bound on anything a client cannot choose.
+     */
+    private var spent = 0
 
     /**
      * Every id this expansion has already served, so a subject that is also a
@@ -196,9 +200,9 @@ internal class SearchReferenceExpansion(
 
     /** The rows to serve, and what each one brings with it. */
     class Expanded<R>(
-        /** Index-aligned with the input: false for a row this read already served. */
+        /** Index-aligned with the input: false for a hit this read already served. */
         val fresh: BooleanArray,
-        /** Index-aligned with the input: what each row nominates, in the order it named them. */
+        /** Index-aligned with the input: what each hit nominates, in the order it named them. */
         val subjects: List<List<R>>,
         /**
          * Index-aligned with [subjects]: the relevance each subject inherits
@@ -211,8 +215,9 @@ internal class SearchReferenceExpansion(
     )
 
     /**
-     * One pass over [rows], reading each pointer's references and looking up
-     * what they name.
+     * One pass over [hits], reading each pointer's references and looking up
+     * what they name. [relevance] is index-aligned with them, or null on a page
+     * the engine did not score.
      *
      * The pass stops materializing the moment the request budget is spent:
      * reading a row's pointers costs a tags parse and an `EventFactory`
@@ -221,20 +226,25 @@ internal class SearchReferenceExpansion(
      * would pay 450 parses for rows it had already decided to take nothing from.
      */
     suspend fun <R> expand(
-        rows: List<Ranked<R>>,
+        hits: List<R>,
+        relevance: List<Double?>?,
         keys: SubjectKeys<R>,
         pointerOf: (R) -> Event?,
         recall: suspend (EventQuery) -> List<R>,
     ): Expanded<R> {
-        val fresh = BooleanArray(rows.size) { i -> sent.add(keys.idOf(rows[i].hit)) }
-        val nothing = Expanded(fresh, rows.map { emptyList<R>() }, rows.map { emptyList<Double?>() })
-        if (!limits.enabled || budget <= 0 || lenses.isEmpty()) return nothing
+        val fresh = BooleanArray(hits.size) { i -> sent.add(keys.idOf(hits[i])) }
+
+        // Built only when it is actually returned: it is two lists the size of
+        // the page, and the ordinary outcome of a searching read is that the
+        // expansion has something to add.
+        fun nothing() = Expanded(fresh, hits.map { emptyList<R>() }, hits.map { emptyList<Double?>() })
+        if (!limits.enabled || budget <= 0 || lenses.isEmpty()) return nothing()
 
         var any = false
-        val planned = ArrayList<References>(rows.size)
-        val lensOfRow = IntArray(rows.size) { NO_LENS }
-        for ((i, row) in rows.withIndex()) {
-            val pointer = if (budget > 0) pointerOf(row.hit)?.takeIf { it.kind in SearchReferences.KINDS } else null
+        val planned = ArrayList<References>(hits.size)
+        val lensOfRow = IntArray(hits.size) { NO_LENS }
+        for ((i, hit) in hits.withIndex()) {
+            val pointer = if (budget > 0) pointerOf(hit)?.takeIf { it.kind in SearchReferences.KINDS } else null
             // WHICH QUERY FOUND IT, and so which lens its subjects are read
             // through. A read ORs its queries and answers with one union, so a
             // row cannot say which query fetched it — but it can say which would
@@ -258,15 +268,15 @@ internal class SearchReferenceExpansion(
             }
             planned.add(refs)
         }
-        if (!any) return nothing
+        if (!any) return nothing()
 
         val found = lookUp(planned, lensOfRow, keys, recall)
-        val admitted = ArrayList<List<R>>(rows.size)
-        val scores = ArrayList<List<Double?>>(rows.size)
+        val admitted = ArrayList<List<R>>(hits.size)
+        val scores = ArrayList<List<Double?>>(hits.size)
         planned.forEachIndexed { i, refs ->
             val taken = admit(refs, found[lensOfRow[i]], keys)
             admitted.add(taken.map { it.subject })
-            scores.add(taken.map { limits.scoreFor(rows[i].score, refs.weightOf(it.namedBy)) })
+            scores.add(taken.map { limits.scoreFor(relevance?.get(i), refs.weightOf(it.namedBy)) })
         }
         return Expanded(fresh, admitted, scores)
     }
@@ -291,7 +301,7 @@ internal class SearchReferenceExpansion(
         raw: References,
         under: EventQuery,
     ): References {
-        val refs = if (under.admitsKind(PROFILE_KIND) || raw.pubKeys.isEmpty()) raw else References(raw.eventIds, emptyList(), raw.addresses)
+        val refs = if (under.admitsKind(PROFILE_KIND) || raw.pubKeys.isEmpty()) raw else raw.withoutPubKeys()
         val room = minOf(limits.maxPerEvent, budget)
         if (room <= 0 || refs.isEmpty()) return References.NONE
         if (refs.size <= room) {
@@ -304,7 +314,11 @@ internal class SearchReferenceExpansion(
         val ids = refs.eventIds.take(room)
         val pubKeys = refs.pubKeys.take(room - ids.size)
         budget -= room
-        return References(ids, pubKeys, refs.addresses.take(room - ids.size - pubKeys.size))
+        // CONFIDENCE RIDES ALONG UNTRIMMED. It is a lookup keyed by reference,
+        // so the entries for members that did not survive cost a map and are
+        // never read — while dropping it would silently unweight the one case
+        // the cap exists for, a list long enough to truncate.
+        return References(ids, pubKeys, refs.addresses.take(room - ids.size - pubKeys.size), refs.confidence)
     }
 
     /** The subjects one lens holds, keyed the three ways a pointer names one. */
@@ -344,8 +358,7 @@ internal class SearchReferenceExpansion(
                 pubKeys += refs.pubKeys
                 addresses += refs.addresses
             }
-            val under = lenses[lens].forLookup()
-            var spent = 0
+            val under = lenses[lens]
             val byId = HashMap<String, R>()
             val byKey = HashMap<String, R>()
             val byAddress = HashMap<String, R>()
@@ -430,7 +443,13 @@ private fun EventQuery.accepts(event: Event): Boolean =
         (authors.isEmpty() || event.pubKey in authors) &&
         (since == null || event.createdAt >= since!!) &&
         (until == null || event.createdAt <= until!!) &&
-        tags.all { (name, values) -> event.tags.any { it.size > 1 && it[0] == name && it[1] in values } }
+        tags.all { (name, values) -> values.any { event.has(name, it) } } &&
+        tagsAll.all { (name, values) -> values.all { event.has(name, it) } }
+
+private fun Event.has(
+    name: String,
+    value: String,
+): Boolean = tags.any { it.size > 1 && it[0] == name && it[1] == value }
 
 /** Whether a read asking for these kinds could serve one of [kind]. */
 private fun EventQuery.admitsKind(kind: Int): Boolean = kinds.isEmpty() || kind in kinds
@@ -456,7 +475,11 @@ private fun EventQuery.narrowIds(chunk: List<String>): EventQuery? {
 private fun EventQuery.narrowProfiles(chunk: List<String>): EventQuery? {
     if (!admitsKind(0)) return null
     val wanted = if (authors.isEmpty()) chunk else chunk.filter { it in authors }
-    return if (wanted.isEmpty()) null else copy(kinds = listOf(0), authors = wanted, ids = emptyList())
+    // `ids` survives rather than being cleared: a read that named specific ids
+    // may only serve those, and the engine ANDs the two constraints. Clearing
+    // it would let a keyed read hand back a profile it never asked for, which
+    // is the one thing "admission is the engine's own job" promises it cannot.
+    return if (wanted.isEmpty()) null else copy(kinds = listOf(0), authors = wanted)
 }
 
 /** Narrowed to one owner's events of one kind — the coarsest key an addressable has. */
@@ -467,8 +490,13 @@ private fun EventQuery.narrowAddresses(
 ): EventQuery? {
     if (!admitsKind(kind)) return null
     if (authors.isNotEmpty() && pubkey !in authors) return null
+    // A `d` the read ALREADY constrained is intersected, never replaced: `tags`
+    // is a map, so `+` would drop the caller's own `#d` and serve coordinates it
+    // had excluded. Same reason `ids` survives in [narrowProfiles].
+    val wanted = tags["d"]?.let { asked -> dTags.filter { it in asked } } ?: dTags
+    if (wanted.isEmpty()) return null
     // `d` is a tag the index answers on, so the filter goes to the engine rather
     // than being applied to the answer — a publisher with 10,000 articles must
     // not be read whole to find the three a list named.
-    return copy(kinds = listOf(kind), authors = listOf(pubkey), ids = emptyList(), tags = tags + ("d" to dTags))
+    return copy(kinds = listOf(kind), authors = listOf(pubkey), tags = tags + ("d" to wanted))
 }

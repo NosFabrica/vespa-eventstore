@@ -20,8 +20,6 @@
  */
 package com.nosfabrica.vespa.eventstore.trust
 
-import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
-import com.nosfabrica.vespa.eventstore.mapping.toEvent
 import com.vitorpamplona.quartz.experimental.trustedLists.treasureMap.TrustedListProviderTag
 import com.vitorpamplona.quartz.experimental.trustedLists.treasureMap.trustedListProvider
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
@@ -105,10 +103,9 @@ internal data class Delegations(
          * would be a second place the signer→observer link is resolved, which
          * is the duplication this file exists to avoid.
          */
-        fun delegationsOf(listDocs: List<EventDoc>): Delegations {
+        fun delegationsOf(maps: List<TrustProviderListEvent>): Delegations {
             val out = LinkedHashMap<String, MutableMap<Int, MutableSet<String>>>()
-            listDocs
-                .mapNotNull { it.toEvent() as? TrustProviderListEvent }
+            maps
                 .forEach { map ->
                     val mine = out.getOrPut(map.pubKey) { LinkedHashMap() }
                     // The kind an entry names IS the delegation, in both shapes:

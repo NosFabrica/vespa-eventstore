@@ -244,6 +244,14 @@ internal class References(
     /** [confidence] for [key] as a 0..1 weight, or null where the pointer said nothing. */
     fun weightOf(key: String): Double? = confidence[key]?.let { it / 100.0 }
 
+    /**
+     * The same references with the PUBKEY shape shed — what a read admitting no
+     * kind 0 can do with a list of people. [confidence] is kept whole: it is
+     * keyed by reference, so the shed entries are simply never looked up, and
+     * rebuilding it would cost a filter to save nothing.
+     */
+    fun withoutPubKeys(): References = References(eventIds, emptyList(), addresses, confidence)
+
     companion object {
         val NONE = References()
     }
