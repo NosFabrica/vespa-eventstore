@@ -400,7 +400,7 @@ class NostrSemanticsStore(
         val cutoff = nowSecs()
         val queries = filters.mapNotNull { it.toExpiryQuery(cutoff, observer) }
         val recalled = recallOrdered(queries, EventDoc.NEWEST_FIRST, EventDoc::id, { index.search(it) }, { index.searchRanked(it) }, searchExpansion.enabled)
-        val page = spliced(queries, recalled, DOC_KEYS, { if (it.kind in SearchReferences.KINDS) it.toEvent() else null }, { index.search(it) })
+        val page = spliced(queries, recalled, DOC_KEYS, { if (it.kind in SearchReferences.KINDS) it.toEvent() else null }, { index.searchRanked(it) })
         // Reconstruct via Quartz's by-kind factory straight from the stored
         // fields, skipping the serialize+parse round trip; see [toEvent].
         return page.map { it.toEvent() } as List<T>
@@ -539,7 +539,7 @@ class NostrSemanticsStore(
         page: Page<R>,
         keys: SubjectKeys<R>,
         pointerOf: (R) -> Event?,
-        recall: suspend (EventQuery) -> List<R>,
+        recall: suspend (EventQuery) -> List<Ranked<R>>,
     ): List<R> {
         val hits = page.hits
         if (!searchExpansion.enabled || hits.isEmpty()) return hits
@@ -561,48 +561,61 @@ class NostrSemanticsStore(
         val observers = searching.mapNotNullTo(HashSet()) { it.observer }
         val enrolment = if (observers.isEmpty()) Enrolment.NONE else delegations().of(observers)
         val expansion = SearchReferenceExpansion(searching, enrolment, searchExpansion)
-        // THE ENGINE'S SCALE MAY BE NEGATIVE, and a discount must never be a
-        // promotion: `rank_asc` subtracts the author's trust from the match
-        // tiers, so an ordinary hit can score below zero — and multiplying -8.0
-        // by a member's 10% confidence yields -0.8, which sorts that doubted
-        // member ABOVE the list that doubted it and above every confident peer.
-        // Shifting the page onto a non-negative scale first is monotone, so it
-        // reorders no hit, and it is a no-op on every profile whose scores are
-        // already non-negative.
-        val relevance = page.scores?.takeIf { s -> s.all { it != null } }?.shiftedToNonNegative()
-        val expanded = expansion.expand(hits, relevance, keys, pointerOf, recall)
+        val expanded = expansion.expand(hits, keys, pointerOf, recall)
 
-        // THE POINTER'S OWN ORDER FIRST, always — the weighted pass below is a
-        // stable re-sort of it, so a tie between a subject and its own pointer
-        // resolves the only way it can read: the reason above the result. It is
-        // also the answer whenever there are no scores to sort by.
+        // THE POINTER'S OWN ORDER FIRST, always — the sort below is a stable
+        // re-sort of it, so a tie between a subject and its own pointer resolves
+        // the only way it can read: the reason above the result. It is also the
+        // answer whenever there are no scores to sort by.
         val placed = ArrayList<Placed<R>>(hits.size)
         hits.forEachIndexed { i, hit ->
-            if (expanded.fresh[i]) placed.add(Placed(hit, relevance?.get(i)))
-            expanded.subjects[i].forEachIndexed { j, subject -> placed.add(Placed(subject, expanded.scores[i][j])) }
+            val pointer = page.scores?.get(i)
+            if (expanded.fresh[i]) placed.add(Placed(hit, pointer))
+            expanded.subjects[i].forEachIndexed { j, subject ->
+                val own = expanded.scores[i][j]
+                placed.add(
+                    Placed(
+                        subject,
+                        when {
+                            // NO RUNG, SO NO MOVE. A reference that expressed no
+                            // confidence — a NIP-32 label, a NIP-85 assertion —
+                            // was never fetched under the member profile, so it
+                            // takes its POINTER's score and a stable sort puts it
+                            // directly behind it. That is the placement those two
+                            // families have always had, and it is right: neither
+                            // claim is probabilistic, so there is no doubt for a
+                            // rung to express.
+                            own == null -> pointer
+
+                            // A CEILING, NOT A DERIVATION. The rung decides where
+                            // a scored member lands among the HITS; this only
+                            // forbids it passing the hit that named it — a reason
+                            // cannot rank below the thing it explains, and the
+                            // UI's pill row is written around that reading.
+                            pointer != null -> minOf(own, pointer)
+
+                            else -> null
+                        },
+                    ),
+                )
+            }
         }
-        // A page the engine did not score cannot be weighted, and a fabricated
-        // constant would be worse than the anchored order it replaced — the
-        // in-memory reference reports null for exactly this reason, and a
-        // recency-ordered read has no relevance to give.
-        if (relevance == null || placed.any { it.score == null }) return placed.map { it.row }
+        // ONE SCALE, THE ENGINE'S. Hits carry the relevance their rank profile
+        // gave them; members carry the relevance a MEMBER profile gave them on
+        // the same ladder (event.sd §13), so the two sort together without this
+        // class doing arithmetic on either. Nothing to normalize, nothing to
+        // shift: a number computed here could only ever be a guess about a
+        // scale the engine owns, and the guess is what broke.
+        //
+        // A page missing any score cannot be sorted at all — the in-memory
+        // reference reports null rather than fabricating a constant, and a
+        // recency-ordered read has no relevance to give — so it keeps the
+        // pointer's own order.
+        if (placed.any { it.score == null }) return placed.map { it.row }
         return placed.sortedByDescending { it.score }.map { it.row }
     }
 
-    /**
-     * The same scores with the page's own floor moved to zero when it sits
-     * below it — the identity, and the same list, whenever nothing is negative.
-     *
-     * A uniform shift is order-preserving, so this changes no hit's position;
-     * what it changes is what a MULTIPLICATIVE discount means on a scale that
-     * runs through zero. See the caller for the failure it prevents.
-     */
-    private fun List<Double?>.shiftedToNonNegative(): List<Double> {
-        val floor = minOf(0.0, minOf { it!! })
-        return if (floor == 0.0) map { it!! } else map { it!! - floor }
-    }
-
-    /** A row and the relevance it is placed by — its own for a hit, its pointer's discounted for a subject. */
+    /** A row and the relevance the ENGINE placed it by — its rank profile's for a hit, the member profile's for a subject. */
     private class Placed<R>(
         val row: R,
         val score: Double?,
@@ -623,7 +636,7 @@ class NostrSemanticsStore(
         val cutoff = nowSecs()
         val queries = filters.mapNotNull { it.toExpiryQuery(cutoff, observer) }
         val ordered = recallOrdered(queries, RAW_NEWEST_FIRST, RawEvent::id, { index.rawSearch(it) }, { index.rawSearchRanked(it) }, searchExpansion.enabled)
-        spliced(queries, ordered, RAW_KEYS, { if (it.kind in SearchReferences.KINDS) it.toEvent() else null }, { index.rawSearch(it) }).forEach(onEach)
+        spliced(queries, ordered, RAW_KEYS, { if (it.kind in SearchReferences.KINDS) it.toEvent() else null }, { index.rawSearchRanked(it) }).forEach(onEach)
     }
 
     override suspend fun <T : Event> query(

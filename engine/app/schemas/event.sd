@@ -1823,6 +1823,89 @@ schema event {
     rank-profile text inherits text_relevance {
     }
 
+    # ---- §13 the spliced-member rungs -------------------------------------
+    #
+    # WHERE A TRUSTED LIST'S MEMBER SITS when the search matched the LIST and
+    # not the member. The member's own text matched nothing — the lookup that
+    # fetches it carries no terms at all — so every text feature above is zero
+    # for it, and a score has to be synthesized. These two profiles are that
+    # synthesis, and they live HERE rather than in the client for one reason:
+    # a score is only comparable to the page it joins if it is produced by the
+    # same expression, at the same point in the pipeline, on the same side of
+    # wot_mult().
+    #
+    # The client used to multiply the LIST's final relevance by the member's
+    # 0..100 confidence. That is wrong twice over, and both were measured:
+    #
+    #  - the rungs above are BANDS, not magnitudes. Multiplying a banded score
+    #    does not move a member proportionally, it ejects it from its band into
+    #    the empty gap below. On the Tapestry corpus a member at 87% confidence
+    #    of a list scoring 620 landed at 539 — below all 30 hits on the page —
+    #    while 95%, 87% and 75% of a list scoring 1306 all landed in the SAME
+    #    position, the discount having dropped them into one gap.
+    #  - relevance() is a narrow range far from zero (the whole `human` page
+    #    spanned 550..620), so any multiplicative discount is large against the
+    #    page's real dynamic range and small against its absolute values.
+    #
+    # So a member is placed ON a rung instead, the one that already means
+    # "indirect evidence about this person": the affiliation/identity band a
+    # bio mention or a nip05/lud16 hit lands in. "This person is on a list
+    # called X" is exactly that strength of claim — weaker than being NAMED X,
+    # stronger than nothing. Confidence then orders members WITHIN the rung,
+    # which is the job user_score() and identity_text() already do there.
+    #
+    # TWO PROFILES because there are two ladders: `text` scores relevance()
+    # alone (rungs 550/620/700/1100), `search` scores text_score() x wot_mult()
+    # (rungs 550/4000/23000/130000, times 1..251000). A member has to be
+    # synthesized on whichever one its finding query used, which is why
+    # EventYql picks between them the same way profileOf picks between `text`
+    # and `search`.
+    #
+    # Each span is sized to stay strictly INSIDE its rung: a member at full
+    # confidence must never reach the weak rung above it, because a list saying
+    # "I am sure about this person" is still not the person matching the term.
+    # The rung, on the trust-multiplied ladder. x wot_mult() and NOT
+    # x recency_mult(): a member is fetched as a kind 0, whose created_at is
+    # when that person last edited their profile, which is not freshness of
+    # anything the search asked about.
+    rank-profile spliced_member inherits text_relevance {
+        inputs {
+            query(member_conf) double: 1.0
+            # The affiliation rung of text_score(), shared with w_affil_tier_text.
+            query(w_member_tier) double: 550.0
+            # 3450, so full confidence reaches 4000 and the weak rung
+            # (w_weak_tier) stays out of reach.
+            #
+            # WIDENING THIS WAS TRIED AND REJECTED. At 22 400 (ceiling 22 950,
+            # just under the near rung) a member at full confidence outranked
+            # EVERY organic hit on a weak-match page — measured on the Tapestry
+            # corpus, "below 0 of 30" for `human` and "below 0 of 10" for
+            # `health` at every confidence from 0.5 to 1.0. Somebody who matched
+            # nothing sitting above everybody who did is worse than a band that
+            # says little, so the narrow rung stands.
+            #
+            # What the narrow rung buys is safety, not expressiveness: on the
+            # same corpus every confidence from 0.10 to 1.00 places a member in
+            # the SAME position relative to the page, because the band spans
+            # x7.3 while a page spans x367 and the whole band fits between two
+            # adjacent hits. Confidence still orders members among THEMSELVES,
+            # which is what the pointer's own order used to do and does no worse.
+            #
+            # Making confidence positionally strong is unresolved, and it is not
+            # a span question: on this ladder wot_mult() (1..251 000) dominates
+            # the rung, so it is the TRUST half that decides where a member
+            # lands. Settling it needs a corpus where trust actually varies —
+            # the two we have score almost nobody — and the honest answer until
+            # then is to place members safely rather than to tune a constant
+            # against data that cannot show the difference.
+            query(w_member_span) double: 3450.0
+            query(w_member_gamma) double: 1.0
+        }
+        first-phase {
+            expression: (query(w_member_tier) + query(w_member_span) * pow(query(member_conf), query(w_member_gamma))) * wot_mult()
+        }
+    }
+
     # TWO-PHASE variant of `text` (A/B under measurement; see
     # docs/two-phase-ranking.html). Phase 1 scores every match with
     # relevance() MINUS its two expensive within-band tie-breakers —
