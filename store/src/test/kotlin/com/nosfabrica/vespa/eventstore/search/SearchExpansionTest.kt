@@ -515,18 +515,68 @@ class SearchExpansionTest {
         }
 
     @Test
-    fun `gamma above one punishes doubt harder`() {
-        val soft = SearchExpansionLimits(confidenceGamma = 0.5)
-        val hard = SearchExpansionLimits(confidenceGamma = 2.0)
-        // The same pointer, the same 25% confidence, three different verdicts.
-        assertEquals(50.0, soft.scoreFor(100.0, 0.25))
-        assertEquals(25.0, SearchExpansionLimits().scoreFor(100.0, 0.25))
-        assertEquals(6.25, hard.scoreFor(100.0, 0.25))
-        // Absent confidence is full confidence, at every gamma.
-        assertEquals(100.0, hard.scoreFor(100.0, null))
-        // Nothing to discount is nothing to place by.
-        assertEquals(null, hard.scoreFor(null, 0.25))
-    }
+    fun `gamma reaches the engine, where the rung applies it`() =
+        runBlocking {
+            // The exponent used to be applied here, to the pointer's relevance.
+            // It is a rank feature now — the store's only remaining part in it
+            // is handing it to the member profile — so what this pins is that it
+            // still ARRIVES, and that a harsher gamma sinks a doubted member
+            // further. The curve itself is `event.sd` §13's to own.
+            val ranking = RankingIndex(InMemoryEventIndex())
+            val hard =
+                NostrSemanticsStore(
+                    TrustProjection(ranking, InMemoryReputationIndex()),
+                    relay = relayUrl,
+                    searchExpansion = SearchExpansionLimits(confidenceGamma = 4.0),
+                )
+            val doubted = key("f6")
+            hard.insert(event(0, emptyArray(), """{"name":"Doubted"}""", author = doubted))
+            hard.insert(treasureMap(arrayOf("30392", curator, "wss://lists.example")))
+            // Scored inside the member band, between where c=0.5 lands at
+            // gamma 1.0 (2275) and where it lands at gamma 4.0 (766).
+            val weak = event(1, emptyArray(), "podcaster note, weak match", author = stranger)
+            hard.insert(weak)
+            val list =
+                event(
+                    30392,
+                    arrayOf(arrayOf("d", "roster"), arrayOf("title", "Podcaster Trust List"), arrayOf("p", doubted, "", "50")),
+                )
+            hard.insert(list)
+
+            val out = hard.query<Event>(listOf(search("podcaster", listOf(0, 1, 30392)))).map { it.id }
+            val card = hard.query<Event>(listOf(Filter(kinds = listOf(0), authors = listOf(doubted)))).single().id
+            assertTrue(out.indexOf(card) > out.indexOf(weak.id), "at gamma 4 the doubted member sinks below the weak hit: $out")
+        }
+
+    @Test
+    fun `a member two lists disagree about is placed by the higher confidence`() =
+        runBlocking {
+            // One publisher, two rosters, the same person scored 100 on one and
+            // 10 on the other — which real curators do, because a list is
+            // computed per topic. The lookups are issued per confidence bucket
+            // and the first answer wins, so the bucket ORDER decides this. Both
+            // lists are from a signer the reader delegated and both vouched, so
+            // the generous reading is the right one.
+            val ranking = RankingIndex(InMemoryEventIndex())
+            val weighted = NostrSemanticsStore(TrustProjection(ranking, InMemoryReputationIndex()), relay = relayUrl)
+            val member = key("f6")
+            weighted.insert(event(0, emptyArray(), """{"name":"Contested"}""", author = member))
+            weighted.insert(treasureMap(arrayOf("30392", curator, "wss://lists.example")))
+            // Between where c=0.10 lands (895) and where c=1.00 lands (4000).
+            val weak = event(1, emptyArray(), "podcaster note, weak match", author = stranger)
+            weighted.insert(weak)
+            weighted.insert(
+                event(30392, arrayOf(arrayOf("d", "sure"), arrayOf("title", "Podcaster Trust List"), arrayOf("p", member, "", "100"))),
+            )
+            weighted.insert(
+                event(30392, arrayOf(arrayOf("d", "doubt"), arrayOf("title", "Podcaster Roster"), arrayOf("p", member, "", "10"))),
+            )
+
+            val out = weighted.query<Event>(listOf(search("podcaster", listOf(0, 1, 30392)))).map { it.id }
+            val card = weighted.query<Event>(listOf(Filter(kinds = listOf(0), authors = listOf(member)))).single().id
+            assertTrue(card in out, "the contested member is served: $out")
+            assertTrue(out.indexOf(card) < out.indexOf(weak.id), "placed by the list that was sure, not the one that doubted: $out")
+        }
 
     @Test
     fun `the expansion can be switched off outright`() =

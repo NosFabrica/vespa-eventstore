@@ -82,24 +82,6 @@ data class SearchExpansionLimits(
         require(confidenceGamma > 0.0) { "confidenceGamma must be positive: $confidenceGamma" }
     }
 
-    /**
-     * The pointer's relevance, discounted — or null when there is nothing to
-     * discount.
-     *
-     * An UNSCORED reference is full confidence, not doubt: a NIP-32 label has
-     * no confidence field in the NIP and a NIP-85 assertion's `d` IS its
-     * subject, so neither claim is probabilistic. Absent must not read as
-     * unsure.
-     */
-    fun scoreFor(
-        pointer: Double?,
-        confidence: Double?,
-    ): Double? {
-        if (pointer == null) return null
-        val c = confidence ?: return pointer
-        return pointer * Math.pow(c.coerceIn(0.0, 1.0), confidenceGamma)
-    }
-
     companion object {
         val Default = SearchExpansionLimits()
 
@@ -194,7 +176,9 @@ internal class SearchReferenceExpansion(
      * fetches its subjects.
      */
     private val memberProfiles: List<String?> =
-        lenses.map { lookup -> searching.firstOrNull { it.forLookup() == lookup }?.let(EventYql::memberProfileOf) }
+        searching
+            .associateBy({ it.forLookup() }, { EventYql.memberProfileOf(it) })
+            .let { byLookup -> lenses.map(byLookup::get) }
 
     /** What one read may still spend, across every pointer on it. */
     private var budget = limits.maxPerRequest
@@ -221,11 +205,14 @@ internal class SearchReferenceExpansion(
         /** Index-aligned with the input: what each hit nominates, in the order it named them. */
         val subjects: List<List<R>>,
         /**
-         * Index-aligned with [subjects]: the relevance each subject inherits
-         * from its pointer, discounted by the confidence the pointer expressed.
+         * Index-aligned with [subjects]: the relevance THE ENGINE gave each
+         * subject, under the member rank profile of the ladder its finding
+         * query ranks on (`event.sd` §13).
          *
-         * Null per subject where the pointer carried no engine score to
-         * discount — see [SearchExpansionLimits.scoreFor].
+         * Null per subject whose reference expressed no confidence — a NIP-32
+         * label, a NIP-85 assertion. Those were never fetched under the member
+         * profile at all, and the caller places them at their pointer's own
+         * score.
          */
         val scores: List<List<Double?>>,
     )
@@ -434,10 +421,18 @@ internal class SearchReferenceExpansion(
             refs.pubKeys.forEach { out.getOrPut(bucketOf(refs.weightOf(it))) { Shapes() }.pubKeys.add(it) }
             refs.addresses.forEach { out.getOrPut(bucketOf(refs.weightOf(it))) { Shapes() }.addresses.add(it) }
         }
-        // Unscored first (null), then descending confidence: an unscored
-        // reference is not a doubted one, it is a claim with no confidence
-        // attached, and it must not lose a member to a scored duplicate below.
-        return out.entries.sortedWith(compareBy(nullsFirst()) { it.key }).map { it.key to it.value }
+        // UNSCORED FIRST, THEN DESCENDING CONFIDENCE, and the order is
+        // load-bearing: [lookUp] files each found subject with `putIfAbsent`, so
+        // whichever bucket runs first wins a member that two pointers name. An
+        // unscored reference is not a doubted one — it is a claim with no
+        // confidence attached — so it must not lose its subject to a scored
+        // duplicate; and between two publishers the reader delegated, both of
+        // whom vouched, the generous reading is the right one.
+        //
+        // `compareBy(nullsFirst())` sorted ASCENDING, which handed every
+        // contested member to the publisher that doubted it most.
+        val (unscored, scored) = out.entries.partition { it.key == null }
+        return (unscored + scored.sortedByDescending { it.key!! }).map { it.key to it.value }
     }
 
     /**
@@ -486,8 +481,27 @@ internal class SearchReferenceExpansion(
         /** Round trips one read's expansion may cost, whatever its page holds. */
         const val MAX_LOOKUPS = 64
 
-        /** Confidence steps one page may distinguish — see [bucketed] for why coarse is enough. */
-        const val BUCKETS = 20
+        /**
+         * Confidence steps one page may distinguish — and, because a rank
+         * feature is a property of the QUERY, the number of round trips a lens
+         * can cost: one lookup per occupied bucket per shape.
+         *
+         * FOUR, not twenty. Twenty gave 5% resolution and let a single
+         * well-scored list cost twenty round trips where the old design cost
+         * one — a real regression on the hottest thing this feature does. And
+         * the resolution bought nothing: measured against the Tapestry corpus,
+         * every confidence from 0.10 to 1.00 places a member in the SAME
+         * position relative to the page, because the member band spans x7.3
+         * while a page spans x367. A page that cannot resolve two ends of the
+         * range cannot resolve twentieths of it.
+         *
+         * Members that land in one bucket tie, and a stable sort then keeps
+         * them in the order their list named them — which for a
+         * descending-sorted list is the publisher's own ranking. The coarse
+         * bucket degrades to the best fallback available rather than to
+         * arbitrary order.
+         */
+        const val BUCKETS = 4
     }
 }
 
