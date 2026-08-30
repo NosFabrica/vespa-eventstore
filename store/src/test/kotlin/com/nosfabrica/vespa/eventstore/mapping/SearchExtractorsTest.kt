@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.eventstore.mapping
 
 import com.nosfabrica.vespa.eventstore.engine.doc.SearchFields
 import com.vitorpamplona.quartz.experimental.nip82SoftwareApps.application.SoftwareApplicationEvent
+import com.vitorpamplona.quartz.experimental.trustedLists.users.UserTrustedListEvent
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip10Notes.TextNoteEvent
@@ -29,6 +30,7 @@ import com.vitorpamplona.quartz.nip17Dm.messages.ChatMessageEvent
 import com.vitorpamplona.quartz.nip23LongContent.LongTextNoteEvent
 import com.vitorpamplona.quartz.nip34Git.repository.GitRepositoryEvent
 import com.vitorpamplona.quartz.nip35Torrents.TorrentEvent
+import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import com.vitorpamplona.quartz.nip89AppHandlers.definition.AppDefinitionEvent
 import com.vitorpamplona.quartz.nip99Classifieds.ClassifiedsEvent
 import com.vitorpamplona.quartz.nipB0WebBookmarks.WebBookmarkEvent
@@ -142,6 +144,54 @@ class SearchExtractorsTest {
             SearchFields(primary = "hello.py", secondary = "prints hello\npython\npy\npython 3.11", text = "print('hello')", website = "https://github.com/x/y"),
             fields,
         )
+    }
+
+    @Test
+    fun `a trusted list title fills the title column, not the body`() {
+        // Upstream's `is TrustedListEvent ->` branch, seen from this side: the
+        // title reaches `search_primary` and NOTHING else is indexed. Before the
+        // b10be95a6e pin it landed in `text`, which cost the phrase the title
+        // rung and the prefix/typo columns — the `Verified Human` regression.
+        val tags =
+            arrayOf(
+                arrayOf("d", "tl-pin-podcaster"),
+                arrayOf("title", "Podcaster"),
+                arrayOf("metric", "pinned-tag-membership"),
+                arrayOf("p", alice, "", "87"),
+            )
+        val fields = SearchExtractors.extract(UserTrustedListEvent("d".repeat(64), alice, 1L, tags, """{"members":[]}""", ""))
+        assertEquals(SearchFields(primary = "Podcaster"), fields)
+    }
+
+    @Test
+    fun `a contact card petname fills the title column and its topics ride the secondary`() {
+        // The join policy is OURS, not upstream's: quartz hands back petname,
+        // summary and the topics as a separate hashtag role, and THIS schema
+        // folds hashtags into the secondary column beside the summary. So a
+        // provider's petname competes on the name rung — which is the whole
+        // point for a people search — and its topics stay searchable text
+        // rather than becoming keywords.
+        val tags =
+            arrayOf(
+                arrayOf("d", alice),
+                arrayOf("petname", "Bramblecast"),
+                arrayOf("summary", "vouched by two independent raters"),
+                arrayOf("t", "podcast"),
+                arrayOf("rank", "90"),
+            )
+        val fields = SearchExtractors.extract(ContactCardEvent("e".repeat(64), alice, 1L, tags, "", ""))
+        assertEquals(SearchFields(primary = "Bramblecast", secondary = "vouched by two independent raters\npodcast"), fields)
+    }
+
+    @Test
+    fun `a contact card with only topics still indexes them`() {
+        // The shape quartz's own ContactCardEvent.build() produces: petname and
+        // summary go in the NIP-44 content, so the public card carries nothing
+        // but its topics. They must survive the fold into the secondary column
+        // rather than collapsing the extraction to NONE.
+        val tags = arrayOf(arrayOf("d", alice), arrayOf("t", "podcast"), arrayOf("t", "bitcoin"), arrayOf("rank", "90"))
+        val fields = SearchExtractors.extract(ContactCardEvent("f".repeat(64), alice, 1L, tags, "encrypted", ""))
+        assertEquals(SearchFields(secondary = "podcast bitcoin"), fields)
     }
 
     @Test

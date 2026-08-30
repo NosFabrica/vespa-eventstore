@@ -5,48 +5,52 @@ app = "1.0.0"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"
 # Quartz from JitPack (amethyst @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
-# 029c40ebb4 = amethyst main @ 2026-08-28 (PR #4006). A no-op bump for this store's
-# behavior: IEventStore, SQLiteEventStore, Filter, EventFactory, IndexableFields,
-# SearchFieldExtractor, SearchableEvent and SearchQuery are byte-identical to the
-# previous pin, so filter semantics are unchanged, the searchable set stays at 126
-# classes / 129 kind values plus the four Trusted List kinds (130 / 133), and
-# nothing needs reindexing.
+# b10be95a6e = amethyst main @ 2026-08-30 (PR #4020). Bumped FOR this store: it
+# carries the SearchFieldExtractor branches that fix where a Trusted List title and
+# a contact card petname land — see the reindex note below, which is the one thing
+# this bump requires an operator to do.
 #
-# The range touches 27 Kotlin files under quartz/src/commonMain. Three sit on
-# surfaces this module calls, and all three land where we already were:
+# The range is 35 commits and 118 files, but only TWO of them are quartz sources.
+# IEventStore, SQLiteEventStore, Filter, EventFactory, IndexableFields,
+# SearchableEvent and SearchQuery are byte-identical to the previous pin, so filter
+# semantics are unchanged and the searchable SET does not move: still 130 classes /
+# 133 kind values. What moves is the DECOMPOSITION of two families already in it.
 #
-#   ServiceProviderTag (nip85TrustedAssertions) now BOUNDS what a 10040 entry may
-#     delegate to NIP-85's own kinds: `parse` returns null — and the constructor
-#     throws — for a `<kind>:<metric>` entry outside 30382..30385. A Treasure Map is
-#     an open tag set, and Tapestry's Trusted Lists hang `3039x:<name>` entries off
-#     the same event; unbounded, those parsed as NIP-85 providers and were handed to
-#     code looking for a rank service. `ProviderMap` is unmoved either way: it reads
-#     `serviceProviders()` and then matches only `ProviderTypes.rank` /
-#     `followerCount`, both 30382, so a `3039x` entry was already dropped by that
-#     `when` and is now dropped one step earlier. We never construct the tag, so the
-#     new `require` cannot fire here.
-#   MemberTagFields.score (experimental/trustedLists) is now a 0..100 percentage:
-#     out-of-range reads back as null rather than clamped (a 950 read as 100 would
-#     rank that member above every honestly-scored peer), and the builders clamp on
-#     write. We index a Trusted List's `title()` and nothing else — member scores
-#     never reach a document — so no stored or ranked value moves.
-#   TrustedListEvent.memberValues() and the three `linked*()` accessors swapped
-#     `mapNotNull` for the new `TagArray.fastMapNotNullDense` (destination presized
-#     for scans where most tags match — a 5k-member list stops paying ~20 array
-#     copies). Same results; our extraction path calls none of them.
+#   SearchFieldExtractor (nip50Search) gained an `is TrustedListEvent ->` branch and
+#     an `is ContactCardEvent ->` branch — the change this store asked for. Both
+#     kinds previously fell through the generic `is SearchableEvent ->` fallback,
+#     which puts the whole indexableContent() in the TERTIARY tier:
+#       30392-30395: title() now fills `primary` instead of `text`. A list titled
+#         "Verified Human" was scoring the phrase on the 550 affiliation rung
+#         instead of the 130 000 title rung — a 236x discount that put it level
+#         with a bio that merely mentions the words — and reached the title only
+#         through trigram substring, never the prefix/typo columns. Measured on
+#         search-staging; see benchmark/rank_cases.json "Verified Human".
+#       30382: petName() fills `primary`, summary() fills `secondary`. A provider's
+#         petname is that provider's NAME for a person, which is what a people
+#         search is looking for. topics() is now carried ONCE, in the hashtag role
+#         the tiers() funnel already filled — the fallback had been indexing it
+#         twice, inside the concatenated body AND as hashtags. SearchExtractors
+#         folds hashtags into the secondary tier, so for THIS store a card's topics
+#         move body -> secondary; no word leaves the index.
 #
-# New upstream and unused here: `experimental/trustedLists/treasureMap`, which parses
-# the `["30392", <pubkey>, <relay>]` bare-kind entry the NIP-85 parser above now
-# refuses (one entry delegates every list of that kind, so the Map stays fixed-size);
-# a `DeletionIndex.hasBeenDeleted(Address, pubKey)` overload for addressables whose
-# event is not loaded; and BUD-11 base64url Blossom auth tokens. The rest of the
-# range is app / CLI / desktop / translations / logging hygiene and nip47 NWC — no
-# module here imports any of it.
+# REINDEX REQUIRED, and it is the only pin bump here that has needed one: the
+# extraction is derived data, so existing 30382s and 3039xs keep the old tiering
+# until `reindexFullTextSearch` re-derives them. Recall is unaffected either way —
+# the same words are indexed, on different columns — so this is a RANKING backfill,
+# not an outage, and it can run whenever.
 #
-# Prev 98f09f29c0 (2026-08-25: Trusted List titles became searchable — see PR #84).
-# Of the five .claude/skills imported from upstream, this range touches none: its
-# only skill edit is find-non-lambda-logs, which we do not carry.
-quartz = "029c40ebb4"
+# New upstream and unused here: `nip01Core/core/ReplaceableSupersession.kt`, whose
+# `Event.supersedes(existing)` is exactly the NIP-01 rule insertLocked, EventDoc's
+# NEWEST_FIRST and BulkRecordInsert each spell for themselves (highest created_at,
+# ties to the lexically smallest id). It has no consumer upstream yet either.
+# Adopting it would delete three copies of one comparison and is worth doing — as
+# its own change, not smuggled into a pin bump. The other 33 commits are app / CLI /
+# desktop / translations / ime-test tooling; no module here imports any of it.
+#
+# Prev 029c40ebb4 (2026-08-28: ServiceProviderTag bounded to 30382..30385, member
+# scores clamped to 0..100, fastMapNotNullDense — all no-ops for this store).
+quartz = "b10be95a6e"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 sqlite = "2.7.0"
