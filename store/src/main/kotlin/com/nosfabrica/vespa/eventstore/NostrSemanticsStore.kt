@@ -598,11 +598,12 @@ class NostrSemanticsStore(
      * label, a Trusted List's members behind the list.
      *
      * Runs after [recallOrdered] rather than inside it, but over the [Page] it
-     * produced rather than over a bare list: a subject is placed by its
-     * pointer's own relevance discounted by the confidence the pointer
-     * expressed about it, so the placement needs both the finished order AND the
-     * scores that produced it. Splicing inside the recall would have to answer
-     * that question once per ordering case; here it is answered once.
+     * produced rather than over a bare list: a scored member is placed by the
+     * relevance the ENGINE gave it on the member rung, and its pointer rises to
+     * sit just above the best of them, so the placement needs both the finished
+     * order AND the scores that produced it. Splicing inside the recall would
+     * have to answer that question once per ordering case; here it is answered
+     * once.
      *
      * Returns the page's hits UNTOUCHED — the same list, not a copy — whenever
      * [expansion] is null, which is every plain recall this store serves
@@ -630,31 +631,84 @@ class NostrSemanticsStore(
         val placed = ArrayList<Placed<R>>(hits.size)
         hits.forEachIndexed { i, hit ->
             val pointer = page.scores?.get(i)
-            if (expanded.fresh[i]) placed.add(Placed(hit, pointer))
+            // THE POINTER RISES TO ITS BEST MEMBER — it does not hold them down.
+            //
+            // "A reason cannot rank below the thing it explains" is still the
+            // invariant, and this is the direction that satisfies it without
+            // deciding the page. The other direction — clamping each member to
+            // its pointer's score — made the SIGNER's trust the ceiling for
+            // everyone the list names, and a trust service is a key nobody
+            // follows: on the staging relay a `Verified Human` list signed by a
+            // service scored 26 pinned sixteen members scored 65..100 to one
+            // number (550 x wot(26)), so they came back in the publisher's tag
+            // order, three orders of magnitude below their own relevance,
+            // beneath organic hits from authors trusted 7. Member trust and
+            // publisher confidence — the two things `event.sd` §13 computes —
+            // could not move a member at all.
+            //
+            // Lifting instead keeps the pill row's reading exactly: the raised
+            // score is a MAX over the pointer's own members, so no subject can
+            // pass it, and a tie between the pointer and its best member
+            // resolves to the pointer because the stable sort sees it first.
+            //
+            // Only SCORED members lift, which is why a label is untouched by
+            // this: it expresses no confidence, none of its subjects is fetched
+            // under a member profile, `lifted` collapses to `pointer`, and the
+            // placement is bit-identical to before.
+            //
+            // A LOOP, not filterNotNull().maxOrNull(): this runs for every hit
+            // of every scored page, and the overwhelming majority of them carry
+            // no subjects at all — a throwaway ArrayList per row to reduce an
+            // empty list is the wrong price for a page of 500.
+            val lifted =
+                if (pointer == null) {
+                    null
+                } else {
+                    var best: Double = pointer
+                    for (score in expanded.scores[i]) {
+                        if (score != null && score > best) best = score
+                    }
+                    best
+                }
+            if (expanded.fresh[i]) placed.add(Placed(hit, lifted))
             expanded.subjects[i].forEachIndexed { j, subject ->
                 val own = expanded.scores[i][j]
                 placed.add(
                     Placed(
                         subject,
                         when {
-                            // NO RUNG, SO NO MOVE. A reference that expressed no
-                            // confidence — a NIP-32 label, a NIP-85 assertion —
-                            // was never fetched under the member profile, so it
-                            // takes its POINTER's score and a stable sort puts it
-                            // directly behind it. That is the placement those two
-                            // families have always had, and it is right: neither
-                            // claim is probabilistic, so there is no doubt for a
-                            // rung to express.
-                            own == null -> pointer
+                            // NO RUNG, SO NO MOVE — it sits WITH its pointer.
+                            // A reference that expressed no confidence (a
+                            // NIP-32 label, a NIP-85 assertion) was never
+                            // fetched under the member profile, so it takes the
+                            // pointer's score and a stable sort puts it right
+                            // behind it. That is the placement those two
+                            // families have always had, and it is right:
+                            // neither claim is probabilistic, so there is no
+                            // doubt for a rung to express.
+                            //
+                            // The LIFTED score, not the raw one, because
+                            // adjacency is the whole point of this branch. On a
+                            // list mixing scored and unscored members the raw
+                            // pointer score would strand the unscored ones
+                            // where the block used to be — on the staging
+                            // numbers, ~340x below the siblings they were named
+                            // beside. For a label, which has no scored member
+                            // to lift anything, `lifted` IS `pointer` and this
+                            // is bit-identical to before.
+                            own == null -> lifted
 
-                            // A CEILING, NOT A DERIVATION. The rung decides where
-                            // a scored member lands among the HITS; this only
-                            // forbids it passing the hit that named it — a reason
-                            // cannot rank below the thing it explains, and the
-                            // UI's pill row is written around that reading.
-                            pointer != null -> minOf(own, pointer)
+                            // An UNSCORED pointer on a scored member is still a
+                            // null, exactly as it was under the ceiling: it is
+                            // the signal that this page cannot be sorted at all
+                            // and must keep the pointer's own order. Answering
+                            // `own` here would let one row's missing score turn
+                            // a fallback page into a sorted one.
+                            pointer == null -> null
 
-                            else -> null
+                            // THE ENGINE'S OWN NUMBER, unclamped — see the
+                            // lift above for what used to happen here.
+                            else -> own
                         },
                     ),
                 )

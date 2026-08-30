@@ -342,34 +342,45 @@ class TrustedListIndexingTest {
 
     /**
      * WHICH tier the title lands in is not ours to choose — [SearchExtractors]
-     * applies this schema's weights to the decomposition Quartz hands it, and
-     * upstream gave the family no explicit `SearchFieldExtractor` branch. So it
-     * takes the generic `is SearchableEvent ->` fallback, which puts the whole
-     * `indexableContent()` in the TERTIARY tier: the body column, not
-     * `search_primary`.
+     * applies this schema's weights to the decomposition Quartz hands it. It
+     * lands in `search_primary`, the title column, because upstream now gives
+     * the family its own `is TrustedListEvent ->` branch.
      *
-     * Pinned as observed, not endorsed. A body in this schema is reached by
-     * trigram substring rather than the prefix/typo attributes every other
-     * titled kind gets, and it carries the body's lower weight — so a list title
-     * ranks like note content and forgives no typos. The fix, if wanted, is one
-     * branch upstream (`is TrustedListEvent -> tiers(event, event.title(), null,
-     * null)`), never a local divergence: which accessor lands in which tier is
-     * Quartz's call, and diverging would break the set-diffing this store does at
-     * every pin bump.
+     * It did not always. Until the b10be95a6e pin the family took the generic
+     * `is SearchableEvent ->` fallback, which puts the whole
+     * `indexableContent()` in the TERTIARY tier — so a list title ranked like
+     * note content, on the 550 affiliation rung instead of the 130 000 title
+     * rung, and was reachable only by trigram substring rather than the
+     * prefix/typo attributes every other titled kind gets. That cost a real
+     * search: a 30392 titled exactly "Verified Human" scored the phrase level
+     * with a bio that merely mentions the words (see `rank_cases.json`). The
+     * fix went upstream rather than becoming a local divergence, because which
+     * accessor lands in which tier is Quartz's call and diverging would break
+     * the set-diffing this store does at every pin bump.
+     *
+     * The negative half is unchanged and still the interesting half: `primary`
+     * is the ONLY column the family fills. `content` is a machine echo of the
+     * membership, `metric` and `d` name the computation, and the member tags
+     * are hex ids — none of it is prose.
      */
     @Test
-    fun `the title lands in the body tier, not the title tier`() =
+    fun `the title lands in the title tier`() =
         runBlocking {
             val titled = userList(members = listOf(key("a1")), title = "Podcaster")
             store.insert(titled)
 
             val fields = SearchExtractors.extract(titled)
-            assertEquals("Podcaster", fields.text)
-            assertNull(fields.primary)
+            assertEquals("Podcaster", fields.primary)
+            assertNull(fields.text)
             assertNull(fields.secondary)
             assertEquals(fields, assertNotNull(index.get(titled.id)).search)
 
-            // Substring reaches it (the body route); an anchored-prefix column would not be consulted.
+            // Still recalled by a prefix of the title. This is the WEAK half of
+            // the assertion and deliberately so: the in-memory reference matches
+            // by substring across every column, so this line passed under the old
+            // body tiering too. Which COLUMN the prefix now reaches — and that it
+            // is the anchored one rather than a trigram scan — only a real Vespa
+            // executes; that belongs to the integration gate, not here.
             assertEquals(listOf(titled.id), store.query<Event>(Filter(search = "podcast")).map { it.id })
         }
 
