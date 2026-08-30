@@ -232,6 +232,24 @@ class SearchExpansionTest {
         }
 
     @Test
+    fun `a pointer asked for outright expands under its own lens, never a converting one`() =
+        runBlocking {
+            store.insert(note)
+            store.insert(treasureMap(arrayOf("30393", curator, "wss://lists.example")))
+            val list = event(30393, arrayOf(arrayOf("d", "episodes"), arrayOf("title", "Podcast Episodes"), arrayOf("e", note.id, "", "80")))
+            store.insert(list)
+
+            // The first filter could CONVERT a 30393, but its terms never
+            // matched this one; the second asked for the kind outright and
+            // did. Asked-for beats converted whatever the filter order, so the
+            // list's subjects are read through the lens that admits no kind 1
+            // — and the note stays out, exactly as it did before conversion
+            // existed.
+            val out = page(search("unrelatedword", listOf(1)), search("episodes", listOf(30393)))
+            assertEquals(listOf(list.id), out)
+        }
+
+    @Test
     fun `a termless kind-restricted read fetches no pointer`() =
         runBlocking {
             store.insert(profile)

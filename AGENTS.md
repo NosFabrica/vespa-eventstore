@@ -116,7 +116,17 @@ behind the pointer that named it: NIP-32 labels (1985), NIP-85 assertions
   `kinds:[30392]` ask serves strangers' lists as plain NIP-01 hits, but a
   companion is the store's own addition and only adds what the gate would
   unpack. Labels' companion is ungated, so an anonymous search converts
-  labels and nothing else.
+  labels and nothing else. Two refinements: attribution prefers a lens that
+  asked for the pointer's kind OUTRIGHT over one it merely converts into
+  (else an early filter captures a later filter's hit and reads its subjects
+  through the wrong lens), and the declaration companion waives the DEFAULT
+  trust floor, mirroring `include:spam` (its authors are already exactly the
+  enrolled signers, and the canonical provider is an unranked service key —
+  an explicit `filter:rank:` floor survives). The gate read is lazy: resolved
+  at most once per read, and only when a declaration companion is buildable
+  or a declaration pointer is met — `ProviderMap` never caches an empty pass,
+  so eager resolution would bill a query to every observer search on a
+  10040-less relay.
 - **`SearchReferences` dispatches on the KIND, never `is UserTrustedListEvent`**:
   a consumer may force its own Quartz over ours, and a pin without those kinds
   hands back a base `Event` whose `is` checks all go false — silently.

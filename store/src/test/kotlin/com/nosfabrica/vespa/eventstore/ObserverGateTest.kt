@@ -113,6 +113,53 @@ class ObserverGateTest {
         }
     }
 
+    /**
+     * The declaration companion's authors are already exactly the enrolled
+     * signers, so the default trust floor adds nothing there but a hole: the
+     * canonical NIP-85 provider is a service key nobody follows, unranked in
+     * every reputation tensor, and the floor would spam-filter out the very
+     * lists the companion exists to find. The waiver mirrors `include:spam` —
+     * the DEFAULT floor drops to zero, never to absent, and an explicit one
+     * survives — while the label companion keeps the floor a label has always
+     * had to pass. Only the companion QUERIES can be pinned without a real
+     * Vespa (the in-memory reference recalls ungated), so this asserts the
+     * wire shape and the gate ITs own the recall.
+     */
+    @Test
+    fun `a declaration companion waives the default floor, a label companion keeps it`() {
+        runBlocking {
+            val index = CapturingIndex()
+            val store = NostrSemanticsStore(index)
+            withContext(StoreQueryContext(setOf(hex))) { store.query<Event>(Filter(kinds = listOf(0), search = "vitor")) }
+            val label = index.queries.single { it.kinds == listOf(1985) }
+            val declarations = index.queries.single { q -> q.kinds.isNotEmpty() && q.kinds.all { it != 1985 && it in SearchReferences.KINDS } }
+            assertEquals(DEFAULT_MIN_RANK, label.minRank, "a label still has to survive the ranked search")
+            assertEquals(INCLUDE_SPAM_MIN_RANK, declarations.minRank, "the enrolment is the gate; the floor would drop unranked service keys")
+            assertEquals(listOf(hex), declarations.authors, "fetched from the enrolled signers — here, the reader alone")
+        }
+    }
+
+    @Test
+    fun `an explicit floor survives onto the declaration companion`() {
+        runBlocking {
+            val index = CapturingIndex()
+            val store = NostrSemanticsStore(index)
+            store.query<Event>(Filter(kinds = listOf(0), search = "vitor filter:rank:gte:50 observer:$hex"))
+            val declarations = index.queries.single { q -> q.kinds.isNotEmpty() && q.kinds.all { it != 1985 && it in SearchReferences.KINDS } }
+            assertEquals(50.0, declarations.minRank, "the caller raised this floor themselves; it gates the companion too")
+        }
+    }
+
+    @Test
+    fun `a companion identical to a sibling filter runs once`() {
+        runBlocking {
+            val index = CapturingIndex()
+            val store = NostrSemanticsStore(index)
+            store.query<Event>(listOf(Filter(kinds = listOf(1), search = "vitor"), Filter(kinds = listOf(1985), search = "vitor")))
+            assertEquals(1, index.queries.count { it.kinds == listOf(1985) }, "filter 1's label companion duplicates filter 2 and is dropped")
+        }
+    }
+
     @Test
     fun `a context observer gates plain recall at the default floor, in recency order`() {
         val q = captured(Filter(kinds = listOf(1)), observer = hex)
