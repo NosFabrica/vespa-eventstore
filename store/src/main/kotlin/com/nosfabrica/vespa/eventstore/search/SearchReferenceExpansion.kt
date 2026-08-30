@@ -23,6 +23,8 @@ package com.nosfabrica.vespa.eventstore.search
 import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
+import com.nosfabrica.vespa.eventstore.mapping.DEFAULT_MIN_RANK
+import com.nosfabrica.vespa.eventstore.mapping.INCLUDE_SPAM_MIN_RANK
 import com.nosfabrica.vespa.eventstore.trust.Enrolment
 import com.vitorpamplona.quartz.nip01Core.core.Address
 import com.vitorpamplona.quartz.nip01Core.core.Event
@@ -110,6 +112,16 @@ data class SearchExpansionLimits(
  * catch-up carry no terms, and neither does the provider-list read this gate
  * itself performs.
  *
+ * ## A kind-restricted search still reaches its pointers
+ *
+ * A query that asks for specific kinds recalls no pointer of another kind —
+ * and a client hunting people asks for `kinds:[0]`, not for the 30392 whose
+ * title is where the searched word lives. [companions] is the other half of
+ * this class's recall: the same queries re-aimed at the pointer kinds that
+ * convert into the asked-for ones, run WITH the caller's queries so the
+ * pointers arrive as rows of the same page, and [EventQuery.accepts]
+ * attributes each one back to the query it was fetched for.
+ *
  * ## The trust gate
  *
  * A LIST OR AN ASSERTION UNPACKS ONLY FOR THE READER WHO ENROLLED ITS SIGNER,
@@ -141,10 +153,22 @@ data class SearchExpansionLimits(
 internal class SearchReferenceExpansion(
     /** The queries of this read that carry terms — the only ones that expand. */
     private val searching: List<EventQuery>,
-    /** Whose declarations this read may unpack, resolved once for the whole read. */
-    private val enrolment: Enrolment,
+    /**
+     * Whose declarations this read may unpack. A SUPPLIER, not a value: on a
+     * relay holding no 10040s the provider pass is never cached (ProviderMap
+     * refuses to cache emptiness, by design), so resolving it eagerly would
+     * bill one small engine query to every observer-carrying search — paid
+     * before recall, even by reads that never meet a declaration. [enrolment]
+     * resolves it at most once, and only on the paths that consult the gate.
+     */
+    private val enrolmentSource: suspend () -> Enrolment,
     private val limits: SearchExpansionLimits,
 ) {
+    /** The resolved gate, once [enrolment] has been asked — see [enrolmentSource]. */
+    private var resolved: Enrolment? = null
+
+    private suspend fun enrolment(): Enrolment = resolved ?: enrolmentSource().also { resolved = it }
+
     /**
      * THE DISTINCT LENSES OF THIS READ: each searching query with its TERMS
      * STRIPPED, deduplicated. A lens is both halves of what a lookup needs —
@@ -179,6 +203,76 @@ internal class SearchReferenceExpansion(
         searching
             .associateBy({ it.forLookup() }, { EventYql.memberProfileOf(it) })
             .let { byLookup -> lenses.map(byLookup::get) }
+
+    /**
+     * THE ADDITIONAL RECALL A KIND-RESTRICTED SEARCH NEEDS: each searching
+     * query re-aimed at the pointer kinds that CONVERT into what it asked for.
+     *
+     * A client hunting people sends `kinds:[0]` — and the Trusted List whose
+     * title carries the searched word is a 30392, so the recall never returns
+     * it, this expansion never sees it, and the read answers with none of the
+     * profiles the corpus actually vouches for. The companions close that
+     * hole: a query whose kinds exclude a pointer family that could still
+     * name one of its kinds ([SearchReferences.convertibleInto]) is re-run
+     * against those kinds under the SAME lens, terms and window — so a
+     * companion-fetched pointer earned its place on the page exactly the way
+     * a hit does, and is served with it, since the pointer is what tells a
+     * client what its subjects mean and what more there is to fetch.
+     *
+     * The DECLARATION kinds are fetched from their enrolled signers only,
+     * plus the reader. An explicit `kinds:[30392]` is a NIP-01 ask and serves
+     * strangers' lists as plain hits, gate or no gate — but a companion is
+     * this store's own addition to the feed, so it only adds what the gate
+     * would let unpack; anything wider would surface every stranger's
+     * matching list to a reader who asked for people, as if they had asked
+     * for it. Labels are ungated and their companion keeps only the query's
+     * own author constraint. The same split means an ANONYMOUS read gets the
+     * label companion alone, without a provider-list read to prove it.
+     *
+     * A query that named ids is left alone — it may serve nothing outside
+     * them — and one with no kind constraint already recalls every pointer.
+     *
+     * THE DECLARATION COMPANION WAIVES THE DEFAULT TRUST FLOOR. Its authors
+     * are exactly the signers the reader enrolled, and the canonical NIP-85
+     * provider is a service key nobody follows — unranked in every reputation
+     * tensor, so the default `min_rank` would spam-filter out the very lists
+     * this fetch exists to find. The enrolment is the stronger, explicit
+     * signal, and it is already the whole author set of the query; the floor
+     * adds nothing but that hole. The waiver mirrors `include:spam` exactly:
+     * the DEFAULT floor drops to [INCLUDE_SPAM_MIN_RANK] (never absent —
+     * min_rank anchors the trust curve), while a floor the caller raised
+     * themselves survives, and the SUBJECT lookups keep the read's own floor
+     * untouched — admission still applies everything the caller asked.
+     * Only a real Vespa executes the gate (the in-memory reference recalls
+     * ungated), so the recall side of this lives with the integration tests.
+     */
+    suspend fun companions(): List<EventQuery> {
+        val out = LinkedHashSet<EventQuery>()
+        for (q in searching) {
+            if (q.kinds.isEmpty() || q.ids.isNotEmpty()) continue
+            val missing = SearchReferences.convertibleInto(q.kinds)
+            val labels = missing.filterNot(SearchReferences::isDeclaration)
+            if (labels.isNotEmpty()) out.add(q.copy(kinds = labels))
+            val declarations = missing.filter(SearchReferences::isDeclaration)
+            if (declarations.isEmpty()) continue
+            // The one companion path that needs the gate — an anonymous read
+            // resolves to Enrolment.NONE without a query and adds nothing.
+            val gate = enrolment()
+            declarations
+                // Kinds sharing one signer set fetch together: with one
+                // Treasure Map the common shape is a single query for
+                // all of them, not one per kind.
+                .groupBy(gate::signersOf)
+                .forEach { (signers, kinds) ->
+                    val authors = if (q.authors.isEmpty()) signers.toList() else q.authors.filter { it in signers }
+                    if (authors.isNotEmpty()) {
+                        val floor = if (q.minRank == DEFAULT_MIN_RANK) INCLUDE_SPAM_MIN_RANK else q.minRank
+                        out.add(q.copy(kinds = kinds, authors = authors, minRank = floor))
+                    }
+                }
+        }
+        return out.toList()
+    }
 
     /** What one read may still spend, across every pointer on it. */
     private var budget = limits.maxPerRequest
@@ -251,16 +345,35 @@ internal class SearchReferenceExpansion(
             // through. A read ORs its queries and answers with one union, so a
             // row cannot say which query fetched it — but it can say which would
             // ACCEPT it, and that is the same question with the words left out.
-            // First match wins, deterministically; a pointer no lens accepts
-            // came from the plain half of a mixed read and expands nothing.
-            val lens = if (pointer == null) NO_LENS else lenses.indexOfFirst { it.accepts(pointer) }
+            // First match wins, deterministically — but ASKED-FOR BEATS
+            // CONVERTED: a lens whose kinds name the pointer outright takes it
+            // before any lens it merely converts into, whatever their order.
+            // Without that pass split, a kind-restricted filter early in the
+            // REQ would capture a pointer that only a LATER filter's terms
+            // matched, and read its subjects through the wrong lens — the
+            // cross-lens leak "the lens is not pooled" exists to forbid. A
+            // pointer no lens accepts either way came from the plain half of a
+            // mixed read and expands nothing.
+            val lens =
+                when {
+                    pointer == null -> {
+                        NO_LENS
+                    }
+
+                    else -> {
+                        lenses.indexOfFirst { it.accepts(pointer, converted = false) }.let { asked ->
+                            if (asked >= 0) asked else lenses.indexOfFirst { it.accepts(pointer, converted = true) }
+                        }
+                    }
+                }
             val refs =
                 when {
                     pointer == null || lens < 0 -> References.NONE
 
-                    // Resolved once for the whole read; a page of labels never
-                    // consults it at all.
-                    SearchReferences.isDeclaration(pointer.kind) && !enrolment.admits(pointer.kind, pointer.pubKey) -> References.NONE
+                    // Resolved lazily, at most once per read — a page of labels
+                    // never consults it at all, and neither does one with no
+                    // declarations on it.
+                    SearchReferences.isDeclaration(pointer.kind) && !enrolment().admits(pointer.kind, pointer.pubKey) -> References.NONE
 
                     else -> plan(SearchReferences.of(pointer), lenses[lens])
                 }
@@ -308,7 +421,7 @@ internal class SearchReferenceExpansion(
         raw: References,
         under: EventQuery,
     ): References {
-        val refs = if (under.admitsKind(PROFILE_KIND) || raw.pubKeys.isEmpty()) raw else raw.withoutPubKeys()
+        val refs = if (under.admitsKind(SearchReferences.PROFILE_KIND) || raw.pubKeys.isEmpty()) raw else raw.withoutPubKeys()
         val room = minOf(limits.maxPerEvent, budget)
         if (room <= 0 || refs.isEmpty()) return References.NONE
         if (refs.size <= room) {
@@ -473,7 +586,6 @@ internal class SearchReferenceExpansion(
 
     private companion object {
         const val NO_LENS = -1
-        const val PROFILE_KIND = 0
 
         /** Keys per lookup query — a bound on one YQL `in` list, not on the answer. */
         const val LOOKUP_CHUNK = 500
@@ -526,10 +638,31 @@ internal class SubjectKeys<R>(
  * structural constraints and not the trust floor: the floor already decided
  * whether the pointer was served at all, and re-applying it here would need the
  * rank this row was scored with, which the read no longer carries.
+ *
+ * Two modes on the KIND, and the caller runs them as two PASSES. With
+ * [converted] false, the pointer must be of a kind this query asked for
+ * outright — the attribution that has always held. With [converted] true, a
+ * pointer whose kind merely CONVERTS into this query's kinds is accepted —
+ * that is what attributes a companion-fetched pointer
+ * ([SearchReferenceExpansion.companions]) to the query whose kinds it was
+ * fetched for, and its subjects are then admitted under THAT query's kinds,
+ * never under the companion's own. The converting pass may only run after the
+ * asked-for pass found nothing: every kind-restricted lens converts from the
+ * id-shaped families, so a single merged pass would let whichever lens came
+ * first take a pointer another lens explicitly asked for.
  */
-private fun EventQuery.accepts(event: Event): Boolean =
+private fun EventQuery.accepts(
+    event: Event,
+    converted: Boolean,
+): Boolean =
     (ids.isEmpty() || event.id in ids) &&
-        admitsKind(event.kind) &&
+        (
+            if (converted) {
+                kinds.isNotEmpty() && SearchReferences.converts(event.kind, kinds)
+            } else {
+                admitsKind(event.kind)
+            }
+        ) &&
         (authors.isEmpty() || event.pubKey in authors) &&
         (since == null || event.createdAt >= since!!) &&
         (until == null || event.createdAt <= until!!) &&

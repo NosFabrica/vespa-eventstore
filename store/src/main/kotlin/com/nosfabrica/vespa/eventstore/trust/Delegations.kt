@@ -147,6 +147,16 @@ internal class Enrolment(
         pubKey: String,
     ): Boolean = pubKey in observers || pubKey in (byKind[kind] ?: emptySet())
 
+    /**
+     * Every signer whose declaration of [kind] this read asked for — the
+     * mirror of [admits], as a set: the authors a companion fetch for that
+     * kind may name ([SearchReferenceExpansion.companions] is the caller).
+     * Empty exactly when [admits] can admit nobody, which is the anonymous
+     * read — so a companion built on this fetches nothing a gate would then
+     * refuse to unpack.
+     */
+    fun signersOf(kind: Int): Set<String> = if (observers.isEmpty()) emptySet() else observers + (byKind[kind] ?: emptySet())
+
     companion object {
         /** The anonymous read: no observer, so no declaration of any kind. */
         val NONE = Enrolment(emptySet(), emptyMap())

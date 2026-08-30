@@ -104,6 +104,29 @@ behind the pointer that named it: NIP-32 labels (1985), NIP-85 assertions
   unconditionally. `include:spam` alone is not a term, and neither is
   `observer:` — so a mirror's paging, a NIP-77 catch-up and this store's own
   provider-list read are untouched. There is no flag on the read to say so.
+- **A kind-restricted search still reaches its pointers.** A client hunting
+  people sends `kinds:[0]`, which recalls no 30392 — so the searching queries
+  are also re-run against the pointer kinds that CONVERT into the asked-for
+  ones (`SearchReferences.convertibleInto`: pubkey pointers when kind 0 is
+  asked, id pointers for any kind, coordinate pointers for addressable kinds;
+  `SearchReferenceExpansion.companions`). The pointers are served with the
+  page — the client needs them to know what to process — and their subjects
+  are admitted under the ORIGINAL query's kinds. Declaration kinds are
+  companion-fetched from enrolled signers only (plus the reader): an explicit
+  `kinds:[30392]` ask serves strangers' lists as plain NIP-01 hits, but a
+  companion is the store's own addition and only adds what the gate would
+  unpack. Labels' companion is ungated, so an anonymous search converts
+  labels and nothing else. Two refinements: attribution prefers a lens that
+  asked for the pointer's kind OUTRIGHT over one it merely converts into
+  (else an early filter captures a later filter's hit and reads its subjects
+  through the wrong lens), and the declaration companion waives the DEFAULT
+  trust floor, mirroring `include:spam` (its authors are already exactly the
+  enrolled signers, and the canonical provider is an unranked service key —
+  an explicit `filter:rank:` floor survives). The gate read is lazy: resolved
+  at most once per read, and only when a declaration companion is buildable
+  or a declaration pointer is met — `ProviderMap` never caches an empty pass,
+  so eager resolution would bill a query to every observer search on a
+  10040-less relay.
 - **`SearchReferences` dispatches on the KIND, never `is UserTrustedListEvent`**:
   a consumer may force its own Quartz over ours, and a pin without those kinds
   hands back a base `Event` whose `is` checks all go false — silently.
