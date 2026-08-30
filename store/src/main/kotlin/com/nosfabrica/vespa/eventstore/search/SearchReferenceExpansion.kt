@@ -110,6 +110,16 @@ data class SearchExpansionLimits(
  * catch-up carry no terms, and neither does the provider-list read this gate
  * itself performs.
  *
+ * ## A kind-restricted search still reaches its pointers
+ *
+ * A query that asks for specific kinds recalls no pointer of another kind —
+ * and a client hunting people asks for `kinds:[0]`, not for the 30392 whose
+ * title is where the searched word lives. [companions] is the other half of
+ * this class's recall: the same queries re-aimed at the pointer kinds that
+ * convert into the asked-for ones, run WITH the caller's queries so the
+ * pointers arrive as rows of the same page, and [EventQuery.accepts]
+ * attributes each one back to the query it was fetched for.
+ *
  * ## The trust gate
  *
  * A LIST OR AN ASSERTION UNPACKS ONLY FOR THE READER WHO ENROLLED ITS SIGNER,
@@ -179,6 +189,55 @@ internal class SearchReferenceExpansion(
         searching
             .associateBy({ it.forLookup() }, { EventYql.memberProfileOf(it) })
             .let { byLookup -> lenses.map(byLookup::get) }
+
+    /**
+     * THE ADDITIONAL RECALL A KIND-RESTRICTED SEARCH NEEDS: each searching
+     * query re-aimed at the pointer kinds that CONVERT into what it asked for.
+     *
+     * A client hunting people sends `kinds:[0]` — and the Trusted List whose
+     * title carries the searched word is a 30392, so the recall never returns
+     * it, this expansion never sees it, and the read answers with none of the
+     * profiles the corpus actually vouches for. The companions close that
+     * hole: a query whose kinds exclude a pointer family that could still
+     * name one of its kinds ([SearchReferences.convertibleInto]) is re-run
+     * against those kinds under the SAME lens, terms and window — so a
+     * companion-fetched pointer earned its place on the page exactly the way
+     * a hit does, and is served with it, since the pointer is what tells a
+     * client what its subjects mean and what more there is to fetch.
+     *
+     * The DECLARATION kinds are fetched from their enrolled signers only,
+     * plus the reader. An explicit `kinds:[30392]` is a NIP-01 ask and serves
+     * strangers' lists as plain hits, gate or no gate — but a companion is
+     * this store's own addition to the feed, so it only adds what the gate
+     * would let unpack; anything wider would surface every stranger's
+     * matching list to a reader who asked for people, as if they had asked
+     * for it. Labels are ungated and their companion keeps only the query's
+     * own author constraint. The same split means an ANONYMOUS read gets the
+     * label companion alone, without a provider-list read to prove it.
+     *
+     * A query that named ids is left alone — it may serve nothing outside
+     * them — and one with no kind constraint already recalls every pointer.
+     */
+    fun companions(): List<EventQuery> =
+        searching
+            .flatMap { q ->
+                if (q.kinds.isEmpty() || q.ids.isNotEmpty()) return@flatMap emptyList()
+                val missing = SearchReferences.convertibleInto(q.kinds)
+                buildList {
+                    val labels = missing.filterNot(SearchReferences::isDeclaration)
+                    if (labels.isNotEmpty()) add(q.copy(kinds = labels))
+                    missing
+                        .filter(SearchReferences::isDeclaration)
+                        // Kinds sharing one signer set fetch together: with one
+                        // Treasure Map the common shape is a single query for
+                        // all of them, not one per kind.
+                        .groupBy(enrolment::signersOf)
+                        .forEach { (signers, kinds) ->
+                            val authors = if (q.authors.isEmpty()) signers.toList() else q.authors.filter { it in signers }
+                            if (authors.isNotEmpty()) add(q.copy(kinds = kinds, authors = authors))
+                        }
+                }
+            }.distinct()
 
     /** What one read may still spend, across every pointer on it. */
     private var budget = limits.maxPerRequest
@@ -308,7 +367,7 @@ internal class SearchReferenceExpansion(
         raw: References,
         under: EventQuery,
     ): References {
-        val refs = if (under.admitsKind(PROFILE_KIND) || raw.pubKeys.isEmpty()) raw else raw.withoutPubKeys()
+        val refs = if (under.admitsKind(SearchReferences.PROFILE_KIND) || raw.pubKeys.isEmpty()) raw else raw.withoutPubKeys()
         val room = minOf(limits.maxPerEvent, budget)
         if (room <= 0 || refs.isEmpty()) return References.NONE
         if (refs.size <= room) {
@@ -473,7 +532,6 @@ internal class SearchReferenceExpansion(
 
     private companion object {
         const val NO_LENS = -1
-        const val PROFILE_KIND = 0
 
         /** Keys per lookup query — a bound on one YQL `in` list, not on the answer. */
         const val LOOKUP_CHUNK = 500
@@ -526,10 +584,16 @@ internal class SubjectKeys<R>(
  * structural constraints and not the trust floor: the floor already decided
  * whether the pointer was served at all, and re-applying it here would need the
  * rank this row was scored with, which the read no longer carries.
+ *
+ * On the KIND, a pointer that CONVERTS into this query's kinds is accepted
+ * alongside one it asked for outright — that is what attributes a
+ * companion-fetched pointer ([SearchReferenceExpansion.companions]) to the
+ * query whose kinds it was fetched for, and its subjects are then admitted
+ * under THAT query's kinds, never under the companion's own.
  */
 private fun EventQuery.accepts(event: Event): Boolean =
     (ids.isEmpty() || event.id in ids) &&
-        admitsKind(event.kind) &&
+        (admitsKind(event.kind) || (kinds.isNotEmpty() && SearchReferences.converts(event.kind, kinds))) &&
         (authors.isEmpty() || event.pubKey in authors) &&
         (since == null || event.createdAt >= since!!) &&
         (until == null || event.createdAt <= until!!) &&

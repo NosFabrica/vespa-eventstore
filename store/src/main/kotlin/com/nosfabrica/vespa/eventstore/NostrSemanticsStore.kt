@@ -399,11 +399,51 @@ class NostrSemanticsStore(
         val observer = coroutineContext[StoreQueryContext]?.observer
         val cutoff = nowSecs()
         val queries = filters.mapNotNull { it.toExpiryQuery(cutoff, observer) }
-        val recalled = recallOrdered(queries, EventDoc.NEWEST_FIRST, EventDoc::id, { index.search(it) }, { index.searchRanked(it) }, searchExpansion.enabled)
-        val page = spliced(queries, recalled, DOC_KEYS, { if (it.kind in SearchReferences.KINDS) it.toEvent() else null }, { index.searchRanked(it) })
+        val expansion = expansionOf(queries)
+        val recalled =
+            recallOrdered(
+                queries + (expansion?.companions() ?: emptyList()),
+                EventDoc.NEWEST_FIRST,
+                EventDoc::id,
+                { index.search(it) },
+                { index.searchRanked(it) },
+                expansion != null,
+            )
+        val page = spliced(expansion, recalled, DOC_KEYS, { if (it.kind in SearchReferences.KINDS) it.toEvent() else null }, { index.searchRanked(it) })
         // Reconstruct via Quartz's by-kind factory straight from the stored
         // fields, skipping the serialize+parse round trip; see [toEvent].
         return page.map { it.toEvent() } as List<T>
+    }
+
+    /**
+     * The reference expansion for this read, or null where nothing can ever
+     * expand: the feature switched off, or no query carrying TERMS. Terms, not
+     * "carries a search field" — every anonymous read on a lens-requiring
+     * relay stamps `include:spam`, and a mirror's paging carries it too, so
+     * gating on the field would put all of that traffic behind an expansion
+     * none of it asked for.
+     *
+     * Resolved BEFORE the recall, because the expansion now shapes it: a
+     * kind-restricted search also recalls the pointer kinds that convert into
+     * its kinds ([SearchReferenceExpansion.companions]) — otherwise the lists,
+     * assertions and labels whose text matched are never returned at all, and
+     * neither this store nor the client ever learns there was anything to
+     * unpack. The declaration companions need the enrolment to know whose
+     * lists to ask for, and the enrolment read is [ProviderMap]'s cached pass,
+     * so the move costs a map lookup on the hot path, not a query.
+     */
+    private suspend fun expansionOf(queries: List<EventQuery>): SearchReferenceExpansion? {
+        if (!searchExpansion.enabled) return null
+        val searching = queries.filter { it.search != null || it.phrases.isNotEmpty() }
+        if (searching.isEmpty()) return null
+        // An ANONYMOUS read can unpack no declaration at all, and asking the
+        // gate to say so would cost a provider-list query on a relay that holds
+        // no Treasure Maps — where the answer is never cached, by design. Labels
+        // are ungated, so the expansion still runs; it just runs with nothing
+        // enrolled.
+        val observers = searching.mapNotNullTo(HashSet()) { it.observer }
+        val enrolment = if (observers.isEmpty()) Enrolment.NONE else delegations().of(observers)
+        return SearchReferenceExpansion(searching, enrolment, searchExpansion)
     }
 
     /**
@@ -532,35 +572,22 @@ class NostrSemanticsStore(
      * that question once per ordering case; here it is answered once.
      *
      * Returns the page's hits UNTOUCHED — the same list, not a copy — whenever
-     * no query carries terms, which is every plain recall this store serves.
+     * [expansion] is null, which is every plain recall this store serves
+     * (see [expansionOf] for what qualifies). There is no cheaper early-out
+     * left to take here: since the conversion recall, EVERY searching read can
+     * splice — a kind-restricted one reaches its pointers through the
+     * companion queries — so "can serve no pointer kind" no longer exists as
+     * a shape.
      */
     private suspend fun <R> spliced(
-        queries: List<EventQuery>,
+        expansion: SearchReferenceExpansion?,
         page: Page<R>,
         keys: SubjectKeys<R>,
         pointerOf: (R) -> Event?,
         recall: suspend (EventQuery) -> List<Ranked<R>>,
     ): List<R> {
         val hits = page.hits
-        if (!searchExpansion.enabled || hits.isEmpty()) return hits
-        // Terms, not "carries a search field": every anonymous read on a
-        // lens-requiring relay stamps `include:spam`, and a mirror's paging
-        // carries it too. Gating on the field would put all of that traffic
-        // behind an expansion none of it asked for.
-        val searching = queries.filter { it.search != null || it.phrases.isNotEmpty() }
-        if (searching.isEmpty()) return hits
-        // A read that can serve no pointer kind can splice nothing, and asking
-        // the gate would cost a provider-list read to prove it.
-        if (searching.none { q -> q.kinds.isEmpty() || q.kinds.any { it in SearchReferences.KINDS } }) return hits
-
-        // An ANONYMOUS read can unpack no declaration at all, and asking the
-        // gate to say so would cost a provider-list query on a relay that holds
-        // no Treasure Maps — where the answer is never cached, by design. Labels
-        // are ungated, so the expansion still runs; it just runs with nothing
-        // enrolled.
-        val observers = searching.mapNotNullTo(HashSet()) { it.observer }
-        val enrolment = if (observers.isEmpty()) Enrolment.NONE else delegations().of(observers)
-        val expansion = SearchReferenceExpansion(searching, enrolment, searchExpansion)
+        if (expansion == null || hits.isEmpty()) return hits
         val expanded = expansion.expand(hits, keys, pointerOf, recall)
 
         // THE POINTER'S OWN ORDER FIRST, always — the sort below is a stable
@@ -635,8 +662,17 @@ class NostrSemanticsStore(
         val observer = coroutineContext[StoreQueryContext]?.observer
         val cutoff = nowSecs()
         val queries = filters.mapNotNull { it.toExpiryQuery(cutoff, observer) }
-        val ordered = recallOrdered(queries, RAW_NEWEST_FIRST, RawEvent::id, { index.rawSearch(it) }, { index.rawSearchRanked(it) }, searchExpansion.enabled)
-        spliced(queries, ordered, RAW_KEYS, { if (it.kind in SearchReferences.KINDS) it.toEvent() else null }, { index.rawSearchRanked(it) }).forEach(onEach)
+        val expansion = expansionOf(queries)
+        val ordered =
+            recallOrdered(
+                queries + (expansion?.companions() ?: emptyList()),
+                RAW_NEWEST_FIRST,
+                RawEvent::id,
+                { index.rawSearch(it) },
+                { index.rawSearchRanked(it) },
+                expansion != null,
+            )
+        spliced(expansion, ordered, RAW_KEYS, { if (it.kind in SearchReferences.KINDS) it.toEvent() else null }, { index.rawSearchRanked(it) }).forEach(onEach)
     }
 
     override suspend fun <T : Event> query(

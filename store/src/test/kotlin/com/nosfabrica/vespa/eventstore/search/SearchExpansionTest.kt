@@ -152,6 +152,115 @@ class SearchExpansionTest {
         }
 
     // ------------------------------------------------------------------
+    // Conversion: a read that only wants the subjects' kinds
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `a search for profiles alone still gets the list that converts to them`() =
+        runBlocking {
+            store.insert(profile)
+            store.insert(treasureMap(arrayOf("30392", curator, "wss://lists.example")))
+            val list = userList("Podcaster Trust List")
+            store.insert(list)
+
+            // kinds:[0] — the shape a client hunting people actually sends.
+            // The list is not an asked-for kind, but it converts to one, so it
+            // is fetched, served (the client needs the pointer to know what to
+            // process) and unpacked.
+            assertEquals(listOf(list.id, profile.id), page(search("podcaster", listOf(0))))
+        }
+
+    @Test
+    fun `a search for notes alone still gets the label that converts to them`() =
+        runBlocking {
+            store.insert(note)
+            val label = event(1985, arrayOf(arrayOf("L", "#health"), arrayOf("l", "medical", "#health"), arrayOf("e", note.id)))
+            store.insert(label)
+
+            assertEquals(listOf(label.id, note.id), page(search("medical", listOf(1), observer = null)))
+        }
+
+    @Test
+    fun `an assertion converts to the profile kind once its signer is named`() =
+        runBlocking {
+            store.insert(profile)
+            store.insert(treasureMap(arrayOf("30382:rank", curator, "wss://provider.example")))
+            val card = event(30382, arrayOf(arrayOf("d", subject), arrayOf("petname", "Bramblecast"), arrayOf("rank", "90")))
+            store.insert(card)
+
+            assertEquals(listOf(card.id, profile.id), page(search("bramblecast", listOf(0))))
+        }
+
+    @Test
+    fun `an event list converts to the notes it names`() =
+        runBlocking {
+            store.insert(note)
+            store.insert(treasureMap(arrayOf("30393", curator, "wss://lists.example")))
+            val list = event(30393, arrayOf(arrayOf("d", "episodes"), arrayOf("title", "Podcast Episodes"), arrayOf("e", note.id, "", "80")))
+            store.insert(list)
+
+            assertEquals(listOf(list.id, note.id), page(search("episodes", listOf(1))))
+        }
+
+    @Test
+    fun `the conversion fetch never surfaces a stranger's list`() =
+        runBlocking {
+            store.insert(profile)
+            store.insert(treasureMap(arrayOf("30392", curator, "wss://lists.example")))
+            val strangers = userList("Podcaster Roster", author = stranger, listId = "outsiders")
+            store.insert(strangers)
+
+            // Asked for explicitly, a stranger's list is a plain NIP-01 hit,
+            // expanding nothing. As a conversion — this store's own addition
+            // to the feed — only what the gate would unpack is fetched at all.
+            assertEquals(listOf(strangers.id), page(search("podcaster", listOf(0, 30392))))
+            assertEquals(emptyList(), page(search("podcaster", listOf(0))))
+        }
+
+    @Test
+    fun `an anonymous kind-restricted search converts labels and nothing else`() =
+        runBlocking {
+            store.insert(profile)
+            store.insert(userList("Podcaster Trust List"))
+            val label = event(1985, arrayOf(arrayOf("L", "#trades"), arrayOf("l", "podcaster", "#trades"), arrayOf("p", subject)))
+            store.insert(label)
+
+            // No observer: the declaration companion is never even fetched —
+            // the matching list stays out of the page — while the ungated
+            // label still converts to the profile it describes.
+            assertEquals(listOf(label.id, profile.id), page(search("podcaster", listOf(0), observer = null)))
+        }
+
+    @Test
+    fun `a termless kind-restricted read fetches no pointer`() =
+        runBlocking {
+            store.insert(profile)
+            store.insert(treasureMap(arrayOf("30392", curator, "wss://lists.example")))
+            store.insert(userList("Podcaster Trust List"))
+
+            // The observer lens alone is not a term: plain recall answers
+            // exactly the kinds it was asked, nothing converted, nothing added.
+            assertEquals(listOf(profile.id), page(Filter(kinds = listOf(0), search = "include:spam observer:$reader")))
+        }
+
+    @Test
+    fun `a conversion respects the read's author constraint on its subjects`() =
+        runBlocking {
+            store.insert(profile)
+            store.insert(treasureMap(arrayOf("30392", curator, "wss://lists.example")))
+            val list = userList("Podcaster Trust List")
+            store.insert(list)
+
+            // The list converts and is served either way; whether the member
+            // rides along is the engine's admission under the read's own
+            // authors filter, exactly as with an explicitly asked-for pointer.
+            val withSubject = Filter(kinds = listOf(0), authors = listOf(curator, subject), search = "podcaster include:spam observer:$reader")
+            assertEquals(listOf(list.id, profile.id), page(withSubject))
+            val withoutSubject = Filter(kinds = listOf(0), authors = listOf(curator), search = "podcaster include:spam observer:$reader")
+            assertEquals(listOf(list.id), page(withoutSubject))
+        }
+
+    // ------------------------------------------------------------------
     // The gate
     // ------------------------------------------------------------------
 

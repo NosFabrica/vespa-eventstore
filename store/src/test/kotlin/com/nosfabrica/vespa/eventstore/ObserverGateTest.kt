@@ -26,6 +26,7 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.nosfabrica.vespa.eventstore.mapping.DEFAULT_MIN_RANK
 import com.nosfabrica.vespa.eventstore.mapping.INCLUDE_SPAM_MIN_RANK
+import com.nosfabrica.vespa.eventstore.search.SearchReferences
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.store.StoreQueryContext
@@ -79,7 +80,11 @@ class ObserverGateTest {
             } else {
                 store.query<Event>(filter)
             }
-            index.queries.single()
+            // A kind-restricted SEARCH also recalls the pointer kinds that
+            // convert into its kinds (SearchReferenceExpansion.companions), so
+            // the engine may see companion queries beside the caller's own —
+            // which is the one whose gating this file asserts on.
+            index.queries.single { q -> q.kinds.none { it in SearchReferences.KINDS } }
         }
 
     /**
@@ -99,11 +104,11 @@ class ObserverGateTest {
             val index = CapturingIndex()
             val store = NostrSemanticsStore(index, nowSecs = { 1_700_000_000L + 86_400L * tick++ })
             store.query<Event>(listOf(Filter(kinds = listOf(1), search = "vitor"), Filter(kinds = listOf(0), search = "vitor")))
-            assertEquals(2, index.queries.size)
+            assertEquals(2, index.queries.count { q -> q.kinds.none { it in SearchReferences.KINDS } }, "the two filters, beside their pointer-kind companions")
             assertEquals(
-                listOf(1_700_000_000L to 1_700_000_000L, 1_700_000_000L to 1_700_000_000L),
-                index.queries.map { it.nowSecs to it.notExpiredAt },
-                "sibling filters must share one clock: ${index.queries.map { it.nowSecs }}",
+                setOf(1_700_000_000L to 1_700_000_000L),
+                index.queries.map { it.nowSecs to it.notExpiredAt }.toSet(),
+                "every query of one request — companions included — must share one clock: ${index.queries.map { it.nowSecs }}",
             )
         }
     }

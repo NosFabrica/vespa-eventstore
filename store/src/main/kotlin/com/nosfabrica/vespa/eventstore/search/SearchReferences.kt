@@ -31,6 +31,7 @@ import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.core.HexKey
 import com.vitorpamplona.quartz.nip01Core.core.Kind
 import com.vitorpamplona.quartz.nip01Core.core.TagArray
+import com.vitorpamplona.quartz.nip01Core.core.isAddressable
 import com.vitorpamplona.quartz.nip01Core.tags.aTag.ATag
 import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
 import com.vitorpamplona.quartz.nip01Core.tags.events.ETag
@@ -91,6 +92,9 @@ import com.vitorpamplona.quartz.utils.Hex
  * kind and reading only that kind's member tag gets this right by construction.
  */
 internal object SearchReferences {
+    /** Kind 0 — what a PUBKEY reference resolves to: a person is served as their profile. */
+    const val PROFILE_KIND = 0
+
     /**
      * The Trusted List and Trusted Assertion families — the kinds that only
      * expand for a reader who NAMED their signer.
@@ -130,6 +134,40 @@ internal object SearchReferences {
      * tags parse, `EventFactory` dispatch — when its kind is in here.
      */
     val KINDS: Set<Kind> = DECLARATIONS + LabelEvent.KIND
+
+    /**
+     * Whether a pointer of kind [pointer] can name a subject a read asking for
+     * [into] could serve — whether it CONVERTS into those kinds. Per shape:
+     * an EVENT-ID pointer converts into anything, since an id says nothing
+     * about its event's kind; a PUBKEY pointer resolves to its owner's kind-0
+     * profile and nothing else; a COORDINATE pointer carries its kind inside
+     * the `kind:pubkey:d` triple, which only an addressable kind can head —
+     * a replaceable coordinate exists on the wire, but the subject lookup
+     * files results by [SubjectKeys.addressOf], which is addressable-only, so
+     * claiming it here would fetch pointers whose subjects can never be
+     * admitted. 1985 can carry all three tag shapes, so it converts always.
+     *
+     * [into] is a NON-EMPTY kind list: an unrestricted read admits every
+     * pointer kind outright and has no conversion question to ask.
+     */
+    fun converts(
+        pointer: Kind,
+        into: List<Kind>,
+    ): Boolean =
+        when (pointer) {
+            LabelEvent.KIND, EventAssertionEvent.KIND, EventTrustedListEvent.KIND -> true
+            ContactCardEvent.KIND, UserTrustedListEvent.KIND -> PROFILE_KIND in into
+            AddressableAssertionEvent.KIND, AddressableTrustedListEvent.KIND -> into.any { it.isAddressable() }
+            else -> false
+        }
+
+    /**
+     * The pointer kinds a read restricted to [kinds] does NOT recall but could
+     * still serve subjects from — what the companion queries fetch
+     * ([SearchReferenceExpansion.companions]). A kind the read already asks
+     * for is excluded: its pointers arrive as ordinary hits.
+     */
+    fun convertibleInto(kinds: List<Kind>): Set<Kind> = KINDS.filterTo(LinkedHashSet()) { it !in kinds && converts(it, kinds) }
 
     /** The subjects of [event], or [References.NONE] for a kind that nominates nothing. */
     fun of(event: Event): References =
