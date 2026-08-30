@@ -549,6 +549,11 @@ class SearchExpansionTest {
                             // and one placed on the rung does not.
                             doc.content.contains("mid") -> 20_000.0
 
+                            // INSIDE the member band, above where a LOW-scoring
+                            // pointer sits — the gap a member has to cross to
+                            // reach the rung its own confidence earned it.
+                            doc.content.contains("faint") -> 2_000.0
+
                             else -> 130_000.0
                         }
                     com.nosfabrica.vespa.eventstore.engine
@@ -870,6 +875,45 @@ class SearchExpansionTest {
             val out = weighted.query<Event>(listOf(search("medical", listOf(1, 1985)))).map { it.id }
             assertEquals(listOf(label.id, note.id), out.take(2), "the label, then its note, above the mid-band hit: $out")
             assertTrue(out.indexOf(mid.id) > out.indexOf(note.id), "a rung-placed subject would have fallen below it: $out")
+        }
+
+    @Test
+    fun `a low-scoring pointer rises to its best member instead of holding it down`() =
+        runBlocking {
+            // THE STAGING BUG, in miniature. A trust service is a key nobody
+            // follows, so its lists score near the bottom of the ladder — and
+            // while a member was CLAMPED to its pointer (`minOf(own, pointer)`)
+            // that one number became the ceiling for everybody the list named.
+            // Measured on `search-staging` for the query `Verified Human`: a
+            // list signed by a service scored 26 pinned sixteen members scored
+            // 65..100 to 550 x wot(26), which put them below organic hits from
+            // authors trusted 7 and, because they all tied, back in the
+            // publisher's tag order.
+            //
+            // Here: the list scores 1 000 (the pointer), an unrelated hit
+            // scores 2 000, and the member's own confidence earns it 4 000. The
+            // member must clear the hit, and the list must come with it —
+            // never below it.
+            val ranking = RankingIndex(InMemoryEventIndex())
+            val weighted = NostrSemanticsStore(TrustProjection(ranking, InMemoryReputationIndex()), relay = relayUrl)
+            val member = key("f7")
+            weighted.insert(event(0, emptyArray(), """{"name":"Vouched"}""", author = member))
+            weighted.insert(treasureMap(arrayOf("30392", curator, "wss://lists.example")))
+            val faint = event(1, emptyArray(), "podcaster note, faint match", author = stranger)
+            weighted.insert(faint)
+            val list =
+                event(
+                    30392,
+                    arrayOf(arrayOf("d", "roster"), arrayOf("title", "Podcaster Trust List"), arrayOf("p", member, "", "100")),
+                    // Scores the pointer on the weak rung, under the hit above.
+                    content = "weak echo",
+                )
+            weighted.insert(list)
+
+            val out = weighted.query<Event>(listOf(search("podcaster", listOf(0, 1, 30392)))).map { it.id }
+            val card = weighted.query<Event>(listOf(Filter(kinds = listOf(0), authors = listOf(member)))).single().id
+            assertEquals(listOf(list.id, card), out.take(2), "the list, then the member it is sure about, both above the faint hit: $out")
+            assertTrue(out.indexOf(card) < out.indexOf(faint.id), "a clamped member would have sunk to the pointer, under the hit: $out")
         }
 
     @Test
