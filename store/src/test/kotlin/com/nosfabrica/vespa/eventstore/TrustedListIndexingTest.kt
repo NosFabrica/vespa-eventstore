@@ -375,7 +375,12 @@ class TrustedListIndexingTest {
             assertNull(fields.secondary)
             assertEquals(fields, assertNotNull(index.get(titled.id)).search)
 
-            // The anchored-prefix column the title tier gets, which the body never had.
+            // Still recalled by a prefix of the title. This is the WEAK half of
+            // the assertion and deliberately so: the in-memory reference matches
+            // by substring across every column, so this line passed under the old
+            // body tiering too. Which COLUMN the prefix now reaches — and that it
+            // is the anchored one rather than a trigram scan — only a real Vespa
+            // executes; that belongs to the integration gate, not here.
             assertEquals(listOf(titled.id), store.query<Event>(Filter(search = "podcast")).map { it.id })
         }
 

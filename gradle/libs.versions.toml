@@ -40,12 +40,19 @@ mavenPublish = "0.37.0"
 # the same words are indexed, on different columns — so this is a RANKING backfill,
 # not an outage, and it can run whenever.
 #
-# New upstream and unused here: `nip01Core/core/ReplaceableSupersession.kt`, whose
-# `Event.supersedes(existing)` is exactly the NIP-01 rule insertLocked, EventDoc's
-# NEWEST_FIRST and BulkRecordInsert each spell for themselves (highest created_at,
-# ties to the lexically smallest id). It has no consumer upstream yet either.
-# Adopting it would delete three copies of one comparison and is worth doing — as
-# its own change, not smuggled into a pin bump. The other 33 commits are app / CLI /
+# The range's other quartz source is `nip01Core/core/ReplaceableSupersession.kt`,
+# which is NOT new — it and its `Event.supersedes(existing)` were already in the
+# 029c40ebb4 jar. What the range adds are three CLIENT-side clock helpers:
+# `nextCreatedAtToSupersede`, `awaitCreatedAtToSupersede` and
+# `MAX_SUPERSEDE_WAIT_SECONDS`, which decide the `created_at` a publisher should
+# stamp to win an address it just replaced. A store never stamps anything, so none
+# of it is reachable from here.
+#
+# Worth a separate change, and NOT news from this range: `supersedes()` is exactly
+# the NIP-01 rule insertLocked, EventDoc.NEWEST_FIRST and BulkRecordInsert each
+# spell for themselves (highest created_at, ties to the lexically smallest id).
+# Adopting it would delete three copies of one comparison — it has simply been
+# available for longer than this bump. The other 33 commits are app / CLI /
 # desktop / translations / ime-test tooling; no module here imports any of it.
 #
 # Prev 029c40ebb4 (2026-08-28: ServiceProviderTag bounded to 30382..30385, member

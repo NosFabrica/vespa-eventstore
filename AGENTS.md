@@ -139,22 +139,35 @@ behind the pointer that named it: NIP-32 labels (1985), NIP-85 assertions
 - **Admission is the engine's job**: the subject lookup is the finding query
   with its terms stripped and the subject keys intersected in, so the index
   applies the same predicate it applied to the hits. No second matcher.
-- **Placement is weighted, always.** A subject inherits its pointer's relevance
-  discounted by the 0..100 confidence the Trusted List expressed about that
-  member (`confidenceGamma`, 1.0 = linear), and sorts into the page on the
-  result — so a member the publisher doubts falls past the organic hits it used
-  to sit above. It needs the per-hit relevance, which is why `recallOrdered`
-  returns a `Page` (hits plus a NULLABLE parallel score list — the unscored page
-  is the hot one, and wrapping every hit of a plain recall to carry a null was
-  two copies and an allocation per event). **The scores cost nothing**: on a
-  ranked query `recallSummaries` goes through `rankedHits` anyway, one
-  `recallRoot` call, and the ranked path differs only in keeping the `relevance`
-  Vespa already returned. An unscored reference is FULL confidence (a label and
-  an assertion express none), and a page with no scores at all — the in-memory
-  reference, a recency-ordered read — keeps the pointer's own order rather than
-  inventing a constant. The page is shifted onto a NON-NEGATIVE scale before
-  weighting: `rank_asc` subtracts trust from the match tiers, and on a negative
-  score a multiplicative discount is a promotion.
+- **Placement is the ENGINE's number, on ONE scale.** A scored member is fetched
+  under `spliced_member` (`event.sd` §13), which puts it on the affiliation rung
+  of whichever ladder the finding query used and orders it WITHIN that rung by
+  the 0..100 confidence the Trusted List expressed (`confidenceGamma`, 1.0 =
+  linear) times the member's own trust. Nothing is computed here — a number this
+  class derived could only be a guess about a scale the engine owns, and the two
+  guesses that were tried both broke: multiplying the pointer's banded relevance
+  by confidence ejected members out of their band into the gap below, and
+  clamping each member to its pointer made the SIGNER's trust the ceiling for
+  everyone the list names (a service key nobody follows, so a `Verified Human`
+  list signed at trust 26 pinned sixteen members scored 65..100 to one number and
+  handed the page back in the publisher's tag order).
+- **A reason never ranks below what it explains — by LIFTING, not clamping.** The
+  pointer takes the max of its own relevance and the best of its scored members,
+  so no subject can pass it, a tie resolves pointer-first (the pointer is
+  appended before its subjects and the sort is stable), and the block's position
+  is decided by the people on the list rather than by whoever signed it. An
+  unscored reference (a label, an assertion) expresses no doubt and so takes the
+  lifted score too, keeping it adjacent to its pointer.
+- **Which needs the per-hit relevance**, which is why `recallOrdered` returns a
+  `Page` (hits plus a NULLABLE parallel score list — the unscored page is the hot
+  one, and wrapping every hit of a plain recall to carry a null was two copies
+  and an allocation per event). **The scores cost nothing**: on a ranked query
+  `recallSummaries` goes through `rankedHits` anyway, one `recallRoot` call, and
+  the ranked path differs only in keeping the `relevance` Vespa already returned.
+  A page with no scores at all — the in-memory reference, a recency-ordered read,
+  two ranking profiles concatenated — keeps the pointer's own order rather than
+  inventing a constant, and a ladder with no member rung (`sort:rank:asc` and its
+  siblings) degrades to exactly that.
 - Caps (`SearchExpansionLimits`) arrive through `open()`: a deployment's budget
   is the operator's call, applying it is the store's.
 

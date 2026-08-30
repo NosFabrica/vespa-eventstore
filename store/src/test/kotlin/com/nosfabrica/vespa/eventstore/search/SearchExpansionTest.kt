@@ -528,7 +528,13 @@ class SearchExpansionTest {
         // the member rungs itself and this class must not be a second answer to
         // where a member sits.
         override suspend fun searchRanked(query: com.nosfabrica.vespa.eventstore.engine.query.EventQuery) =
-            if (query.ranking != null) {
+            // Delegated for a member query AND for a TERMLESS one. The terms are
+            // what separates a page query from a subject lookup (forLookup strips
+            // them), and a real Vespa answers the termless shape through
+            // isRecencyOrdered() -> Ranked(hit, null). Fabricating a band for it
+            // here made a reference with no confidence look SCORED, which is the
+            // one thing the unscored-subject placement turns on.
+            if (query.ranking != null || (query.search == null && query.phrases.isEmpty())) {
                 inner.searchRanked(query)
             } else {
                 inner.search(query).mapIndexed { i, doc ->
@@ -914,6 +920,50 @@ class SearchExpansionTest {
             val card = weighted.query<Event>(listOf(Filter(kinds = listOf(0), authors = listOf(member)))).single().id
             assertEquals(listOf(list.id, card), out.take(2), "the list, then the member it is sure about, both above the faint hit: $out")
             assertTrue(out.indexOf(card) < out.indexOf(faint.id), "a clamped member would have sunk to the pointer, under the hit: $out")
+        }
+
+    @Test
+    fun `a member the list expressed no confidence about rides with the lifted pointer`() =
+        runBlocking {
+            // A LIST THAT SCORES SOME MEMBERS AND NOT OTHERS. Every member on the
+            // eleven staging lists carries a score, but nothing in the family
+            // REQUIRES one — a bare `p` tag is a well-formed member — and such a
+            // member is looked up without the member profile, so it comes back
+            // unscored like a label's subject does.
+            //
+            // It must ride with its pointer, and the pointer is the LIFTED one.
+            // Taking the raw pointer score instead would strand it where the
+            // block used to be while its scored siblings moved up without it —
+            // here below the faint hit, and on the staging numbers about 340x
+            // under the members it was named beside.
+            val ranking = RankingIndex(InMemoryEventIndex())
+            val weighted = NostrSemanticsStore(TrustProjection(ranking, InMemoryReputationIndex()), relay = relayUrl)
+            val scored = key("f8")
+            val unscored = key("f9")
+            weighted.insert(event(0, emptyArray(), """{"name":"Scored"}""", author = scored))
+            weighted.insert(event(0, emptyArray(), """{"name":"Unscored"}""", author = unscored))
+            weighted.insert(treasureMap(arrayOf("30392", curator, "wss://lists.example")))
+            val faint = event(1, emptyArray(), "podcaster note, faint match", author = stranger)
+            weighted.insert(faint)
+            val list =
+                event(
+                    30392,
+                    arrayOf(
+                        arrayOf("d", "roster"),
+                        arrayOf("title", "Podcaster Trust List"),
+                        arrayOf("p", scored, "", "100"),
+                        // A member with no score at all — the shape this pins.
+                        arrayOf("p", unscored),
+                    ),
+                    content = "weak echo",
+                )
+            weighted.insert(list)
+
+            val out = weighted.query<Event>(listOf(search("podcaster", listOf(0, 1, 30392)))).map { it.id }
+            val scoredCard = weighted.query<Event>(listOf(Filter(kinds = listOf(0), authors = listOf(scored)))).single().id
+            val unscoredCard = weighted.query<Event>(listOf(Filter(kinds = listOf(0), authors = listOf(unscored)))).single().id
+            assertEquals(listOf(list.id, scoredCard, unscoredCard), out.take(3), "the list, then both members, in the order it named them: $out")
+            assertTrue(out.indexOf(unscoredCard) < out.indexOf(faint.id), "the unscored member rode the lift, it did not stay at the raw pointer: $out")
         }
 
     @Test

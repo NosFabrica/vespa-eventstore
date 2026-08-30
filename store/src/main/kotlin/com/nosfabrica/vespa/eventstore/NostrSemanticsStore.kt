@@ -655,14 +655,20 @@ class NostrSemanticsStore(
             // this: it expresses no confidence, none of its subjects is fetched
             // under a member profile, `lifted` collapses to `pointer`, and the
             // placement is bit-identical to before.
+            //
+            // A LOOP, not filterNotNull().maxOrNull(): this runs for every hit
+            // of every scored page, and the overwhelming majority of them carry
+            // no subjects at all — a throwaway ArrayList per row to reduce an
+            // empty list is the wrong price for a page of 500.
             val lifted =
                 if (pointer == null) {
                     null
                 } else {
-                    expanded.scores[i]
-                        .filterNotNull()
-                        .maxOrNull()
-                        ?.let { best -> maxOf(pointer, best) } ?: pointer
+                    var best: Double = pointer
+                    for (score in expanded.scores[i]) {
+                        if (score != null && score > best) best = score
+                    }
+                    best
                 }
             if (expanded.fresh[i]) placed.add(Placed(hit, lifted))
             expanded.subjects[i].forEachIndexed { j, subject ->
@@ -671,17 +677,26 @@ class NostrSemanticsStore(
                     Placed(
                         subject,
                         when {
-                            // NO RUNG, SO NO MOVE. A reference that expressed
-                            // no confidence — a NIP-32 label, a NIP-85
-                            // assertion — was never fetched under the member
-                            // profile, so it takes its POINTER's OWN score
-                            // (never the lifted one: a scored sibling's
-                            // relevance says nothing about it) and a stable
-                            // sort puts it behind the pointer. That is the
-                            // placement those two families have always had,
-                            // and it is right: neither claim is probabilistic,
-                            // so there is no doubt for a rung to express.
-                            own == null -> pointer
+                            // NO RUNG, SO NO MOVE — it sits WITH its pointer.
+                            // A reference that expressed no confidence (a
+                            // NIP-32 label, a NIP-85 assertion) was never
+                            // fetched under the member profile, so it takes the
+                            // pointer's score and a stable sort puts it right
+                            // behind it. That is the placement those two
+                            // families have always had, and it is right:
+                            // neither claim is probabilistic, so there is no
+                            // doubt for a rung to express.
+                            //
+                            // The LIFTED score, not the raw one, because
+                            // adjacency is the whole point of this branch. On a
+                            // list mixing scored and unscored members the raw
+                            // pointer score would strand the unscored ones
+                            // where the block used to be — on the staging
+                            // numbers, ~340x below the siblings they were named
+                            // beside. For a label, which has no scored member
+                            // to lift anything, `lifted` IS `pointer` and this
+                            // is bit-identical to before.
+                            own == null -> lifted
 
                             // An UNSCORED pointer on a scored member is still a
                             // null, exactly as it was under the ceiling: it is
