@@ -682,12 +682,143 @@ class SearchExpansionTest {
 
             assertTrue(out.indexOf(sureId) < out.indexOf(doubtedId), "confidence orders the two members: $out")
             assertTrue(out.indexOf(list.id) < out.indexOf(sureId), "a subject never passes its own pointer: $out")
-            // THE WHOLE POINT: the members are no longer glued behind their
-            // list. They sit on the affiliation rung, and the organic hit that
-            // scored inside that rung lands BETWEEN them — above the member its
-            // publisher doubts, below the one it is sure of.
+            // WHAT THE SPAN CHANGED. Both members are now floored at a share of
+            // the list that found them — c=1.00 ties it (130 000), c=0.10 lands
+            // a rung below (130 000 x (0.1769 + 0.8231 x 0.1) = 33 700) — so
+            // BOTH clear the bio-strength hit inside the member band, and
+            // confidence orders them between those two points rather than
+            // inside a 550..4 000 rung that no organic hit competes in.
             assertTrue(out.indexOf(weak.id) > out.indexOf(sureId), "a full-confidence member outranks a bio-strength hit: $out")
-            assertTrue(out.indexOf(weak.id) < out.indexOf(doubtedId), "and a doubted one falls below it: $out")
+            assertTrue(out.indexOf(weak.id) > out.indexOf(doubtedId), "and so does a doubted one, within a rung of its list: $out")
+
+            // The same corpus with no floor at all — the placement that came
+            // before it, kept under test rather than deleted, because the
+            // difference between the two IS the feature: on its own rung
+            // (550 + 3450 x 0.1 = 895) the doubted member falls under the hit.
+            val unfloored =
+                NostrSemanticsStore(
+                    TrustProjection(ranking, InMemoryReputationIndex()),
+                    relay = relayUrl,
+                    searchExpansion = SearchExpansionLimits(subjectFloorSpan = null),
+                )
+            val plain = unfloored.query<Event>(listOf(search("podcaster", listOf(0, 1, 30392)))).map { it.id }
+            assertTrue(plain.indexOf(weak.id) < plain.indexOf(doubtedId), "with no floor the doubted member is back on its rung: $plain")
+            assertTrue(plain.indexOf(sureId) < plain.indexOf(weak.id), "and the confident one still clears the hit on the rung alone: $plain")
+        }
+
+    /**
+     * An index that COUNTS the subject lookups — the round trips the weights
+     * exist to remove. A subject lookup is the shape nothing else has: keyed,
+     * termless, and ranked on the member profile.
+     */
+    private class CountingIndex(
+        private val inner: com.nosfabrica.vespa.eventstore.engine.EventIndex,
+    ) : com.nosfabrica.vespa.eventstore.engine.EventIndex by inner {
+        var subjectLookups = 0
+            private set
+
+        override suspend fun searchRanked(query: com.nosfabrica.vespa.eventstore.engine.query.EventQuery): List<com.nosfabrica.vespa.eventstore.engine.Ranked<com.nosfabrica.vespa.eventstore.engine.doc.EventDoc>> {
+            if (query.ranking == com.nosfabrica.vespa.eventstore.engine.query.EventYql.RANK_SPLICED_MEMBER) subjectLookups++
+            return inner.searchRanked(query)
+        }
+    }
+
+    @Test
+    fun `one lookup carries a whole list, whatever its confidences`() =
+        runBlocking {
+            // WHY THE WEIGHTS EXIST, measured rather than argued. Confidence was
+            // a query-level rank feature, so members had to be GROUPED by it and
+            // each group cost a round trip — which is also why it was quantized
+            // to quarters. The staging `Verified Human` list's seventeen members
+            // occupy four buckets; this is that list in miniature, five members
+            // across five distinct confidences that used to be four lookups.
+            val counting = CountingIndex(InMemoryEventIndex())
+            val weighted = NostrSemanticsStore(TrustProjection(counting, InMemoryReputationIndex()), relay = relayUrl)
+            val members = listOf("11", "22", "33", "44", "55").map(::key)
+            members.forEach { weighted.insert(event(0, emptyArray(), """{"name":"m"}""", author = it)) }
+            weighted.insert(treasureMap(arrayOf("30392", curator, "wss://lists.example")))
+            weighted.insert(
+                event(
+                    30392,
+                    buildList {
+                        add(arrayOf("d", "roster"))
+                        add(arrayOf("title", "Podcaster Trust List"))
+                        listOf("100", "87", "50", "12", "3").forEachIndexed { i, score -> add(arrayOf("p", members[i], "", score)) }
+                    }.toTypedArray(),
+                ),
+            )
+
+            val out = weighted.query<Event>(listOf(search("podcaster", listOf(0, 30392)))).map { it.id }
+            assertEquals(6, out.size, "the list and all five members: $out")
+            assertEquals(1, counting.subjectLookups, "five confidences, ONE keyed lookup")
+        }
+
+    @Test
+    fun `a member of a matched list rides within one rung of it`() =
+        runBlocking {
+            // THE CASE THIS FEATURE EXISTS FOR. On staging the member a list is
+            // 87% sure of — ranked 100 by that very reader — sat 30 rows under
+            // the list, because the member rung's ceiling (4 000 x wot) cannot
+            // reach a title match (130 000 x wot) from below. Here the `mid` hit
+            // at 20 000 stands in for everything in that gap: unreachable from
+            // the rung, cleared by the floor.
+            val ranking = RankingIndex(InMemoryEventIndex())
+            val weighted = NostrSemanticsStore(TrustProjection(ranking, InMemoryReputationIndex()), relay = relayUrl)
+            val member = key("e5")
+            weighted.insert(event(0, emptyArray(), """{"name":"Vouched"}""", author = member))
+            weighted.insert(treasureMap(arrayOf("30392", curator, "wss://lists.example")))
+            val mid = event(1, emptyArray(), "podcaster note, mid match", author = stranger)
+            weighted.insert(mid)
+            val list =
+                event(
+                    30392,
+                    arrayOf(arrayOf("d", "roster"), arrayOf("title", "Podcaster Trust List"), arrayOf("p", member, "", "87")),
+                )
+            weighted.insert(list)
+
+            val out = weighted.query<Event>(listOf(search("podcaster", listOf(0, 1, 30392)))).map { it.id }
+            val card = weighted.query<Event>(listOf(Filter(kinds = listOf(0), authors = listOf(member)))).single().id
+            assertEquals(list.id, out.first(), "the list still leads on its own text: $out")
+            assertEquals(card, out[1], "and the member it vouches for rides with it: $out")
+            assertTrue(out.indexOf(card) < out.indexOf(mid.id), "over the gap its own rung could never cross: $out")
+        }
+
+    @Test
+    fun `a scored list carrying an unscored member splits the lookup, not the meaning`() =
+        runBlocking {
+            // A publisher may score some members and not others. The unscored
+            // one is not DOUBTED — "as sure as the pointer itself" — so it must
+            // not ride in with weight 0, which would read as a publisher saying
+            // nothing good about it. It takes a second, unweighted lookup and
+            // the pointer's own placement, exactly as a label's subject does.
+            val counting = CountingIndex(RankingIndex(InMemoryEventIndex()))
+            val weighted = NostrSemanticsStore(TrustProjection(counting, InMemoryReputationIndex()), relay = relayUrl)
+            val scored = key("e5")
+            val silent = key("f6")
+            weighted.insert(event(0, emptyArray(), """{"name":"Scored"}""", author = scored))
+            weighted.insert(event(0, emptyArray(), """{"name":"Silent"}""", author = silent))
+            weighted.insert(treasureMap(arrayOf("30392", curator, "wss://lists.example")))
+            val list =
+                event(
+                    30392,
+                    arrayOf(
+                        arrayOf("d", "roster"),
+                        arrayOf("title", "Podcaster Trust List"),
+                        arrayOf("p", scored, "", "40"),
+                        arrayOf("p", silent),
+                    ),
+                )
+            weighted.insert(list)
+
+            val out = weighted.query<Event>(listOf(search("podcaster", listOf(0, 30392)))).map { it.id }
+            val cards = weighted.query<Event>(listOf(Filter(kinds = listOf(0)))).associateBy { it.pubKey }
+            assertEquals(3, out.size, "the list and both members: $out")
+            assertEquals(1, counting.subjectLookups, "the scored half is weighted; the unscored half is not ranked at all")
+            // And the meaning survives the split: the SILENT member takes the
+            // pointer's own placement and sits directly behind it, while the one
+            // scored 40 is floored partway down the span, below it.
+            assertEquals(cards.getValue(silent).id, out[1], "the unscored member rides its pointer: $out")
+            assertEquals(cards.getValue(scored).id, out[2], "and the doubted one is placed by what its list said: $out")
         }
 
     @Test
@@ -728,37 +859,45 @@ class SearchExpansionTest {
         }
 
     @Test
-    fun `gamma reaches the engine, where the rung applies it`() =
+    fun `gamma reaches the engine, where both the rung and the floor apply it`() =
         runBlocking {
-            // The exponent used to be applied here, to the pointer's relevance.
-            // It is a rank feature now — the store's only remaining part in it
-            // is handing it to the member profile — so what this pins is that it
-            // still ARRIVES, and that a harsher gamma sinks a doubted member
-            // further. The curve itself is `event.sd` §13's to own.
-            val ranking = RankingIndex(InMemoryEventIndex())
-            val hard =
+            // The exponent is a rank feature — the store's part is handing it
+            // over — and it now shapes BOTH halves of the placement: the rung's
+            // span, and where inside the floor's span a member lands. What this
+            // pins is that it still arrives and still sinks a doubted member.
+            //
+            // Read with the floor's SPAN set to zero, which isolates the
+            // exponent: the floor is then pointer x c^gamma, so c=0.5 lands at
+            // 65 000 with gamma 1 and at 8 125 with gamma 4, either side of the
+            // `mid` hit at 20 000. With the span at its default the same member
+            // never falls that far — see the test below, which is the point of
+            // having a span at all.
+            fun storeAt(gamma: Double) =
                 NostrSemanticsStore(
-                    TrustProjection(ranking, InMemoryReputationIndex()),
+                    TrustProjection(RankingIndex(InMemoryEventIndex()), InMemoryReputationIndex()),
                     relay = relayUrl,
-                    searchExpansion = SearchExpansionLimits(confidenceGamma = 4.0),
+                    searchExpansion = SearchExpansionLimits(confidenceGamma = gamma, subjectFloorSpan = 0.0),
                 )
-            val doubted = key("f6")
-            hard.insert(event(0, emptyArray(), """{"name":"Doubted"}""", author = doubted))
-            hard.insert(treasureMap(arrayOf("30392", curator, "wss://lists.example")))
-            // Scored inside the member band, between where c=0.5 lands at
-            // gamma 1.0 (2275) and where it lands at gamma 4.0 (766).
-            val weak = event(1, emptyArray(), "podcaster note, weak match", author = stranger)
-            hard.insert(weak)
-            val list =
-                event(
-                    30392,
-                    arrayOf(arrayOf("d", "roster"), arrayOf("title", "Podcaster Trust List"), arrayOf("p", doubted, "", "50")),
-                )
-            hard.insert(list)
 
-            val out = hard.query<Event>(listOf(search("podcaster", listOf(0, 1, 30392)))).map { it.id }
-            val card = hard.query<Event>(listOf(Filter(kinds = listOf(0), authors = listOf(doubted)))).single().id
-            assertTrue(out.indexOf(card) > out.indexOf(weak.id), "at gamma 4 the doubted member sinks below the weak hit: $out")
+            suspend fun place(store: NostrSemanticsStore): Pair<List<String>, Pair<String, String>> {
+                val doubted = key("f6")
+                store.insert(event(0, emptyArray(), """{"name":"Doubted"}""", author = doubted))
+                store.insert(treasureMap(arrayOf("30392", curator, "wss://lists.example")))
+                val mid = event(1, emptyArray(), "podcaster note, mid match", author = stranger)
+                store.insert(mid)
+                store.insert(
+                    event(30392, arrayOf(arrayOf("d", "roster"), arrayOf("title", "Podcaster Trust List"), arrayOf("p", doubted, "", "50"))),
+                )
+                val out = store.query<Event>(listOf(search("podcaster", listOf(0, 1, 30392)))).map { it.id }
+                val card = store.query<Event>(listOf(Filter(kinds = listOf(0), authors = listOf(doubted)))).single().id
+                return out to (card to mid.id)
+            }
+
+            val (soft, softIds) = place(storeAt(1.0))
+            assertTrue(soft.indexOf(softIds.first) < soft.indexOf(softIds.second), "at gamma 1 the member clears the mid hit: $soft")
+
+            val (hard, hardIds) = place(storeAt(4.0))
+            assertTrue(hard.indexOf(hardIds.first) > hard.indexOf(hardIds.second), "at gamma 4 it sinks below it: $hard")
         }
 
     @Test
@@ -850,14 +989,17 @@ class SearchExpansionTest {
 
             assertTrue(cards.getValue(past).id !in out, "the third member is past the cap and was never looked up: $out")
             assertTrue(out.indexOf(cards.getValue(sure).id) < out.indexOf(cards.getValue(doubted).id), "confidence survives the truncation: $out")
-            // The fillers are token-band hits, so BOTH survivors sit below
-            // them: a member rides the affiliation rung whatever its list
-            // scored, and a note that actually contains the word outranks a
-            // person somebody put on a list. What truncation must not lose is
-            // the ORDER between the two it kept, which is the assertion above.
+            // And the survivors are placed the way an untruncated list's are:
+            // the one it is SURE of ties its list at full confidence and comes
+            // straight after it, ahead of the token-band fillers; the one it
+            // doubts is floored a rung lower (c=0.10 -> 0.2592 x pointer) and
+            // falls below them. Truncation decides WHICH members are here,
+            // never how the ones that are get placed.
+            assertEquals(list.id, out.first(), "the list leads: $out")
+            assertEquals(cards.getValue(sure).id, out[1], "its full-confidence member directly behind it: $out")
             assertTrue(
-                filler.all { out.indexOf(it.id) < out.indexOf(cards.getValue(sure).id) },
-                "a token match outranks a member of a list: $out",
+                filler.all { out.indexOf(it.id) < out.indexOf(cards.getValue(doubted).id) },
+                "a token match outranks the member its list doubts: $out",
             )
         }
 

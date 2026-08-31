@@ -151,18 +151,33 @@ behind the pointer that named it: NIP-32 labels (1985), NIP-85 assertions
 - **Admission is the engine's job**: the subject lookup is the finding query
   with its terms stripped and the subject keys intersected in, so the index
   applies the same predicate it applied to the hits. No second matcher.
+- **The confidence rides on the KEY, not on the query** (`EventQuery.authorWeights`
+  / `idWeights` -> `dotProduct(pubkey|id, {member: 0..100})`, read back in the
+  profile as `rawScore`). That is what makes one lookup carry a whole list at the
+  publisher's own resolution: confidence used to be a query-level rank feature, so
+  members were GROUPED by it and each group cost a round trip — which is also why
+  it was quantized to quarters (`BUCKETS`, now the addressable shape's alone: a
+  coordinate is (kind, author, d) and has no single attribute to weight). The
+  operator is measured, not assumed — on a single-value `fast-search` attribute
+  `weightedSet` recalls the same rows and leaves `rawScore` at 0, so only
+  `dotProduct` carries the number; a ZERO weight still recalls its document, so a
+  publisher's honest 0 needs no offset. `SplicedMemberWeightsIT` is that proof.
 - **Placement is the ENGINE's number, on ONE scale.** A scored member is fetched
-  under `spliced_member` (`event.sd` §13), which puts it on the affiliation rung
-  of whichever ladder the finding query used and orders it WITHIN that rung by
-  the 0..100 confidence the Trusted List expressed (`confidenceGamma`, 1.0 =
-  linear) times the member's own trust. Nothing is computed here — a number this
-  class derived could only be a guess about a scale the engine owns, and the two
-  guesses that were tried both broke: multiplying the pointer's banded relevance
-  by confidence ejected members out of their band into the gap below, and
-  clamping each member to its pointer made the SIGNER's trust the ceiling for
-  everyone the list names (a service key nobody follows, so a `Verified Human`
-  list signed at trust 26 pinned sixteen members scored 65..100 to one number and
-  handed the page back in the publisher's tag order).
+  under `spliced_member` (`event.sd` §13): its own rung (the affiliation band,
+  widened by its confidence, times its own trust) OR a floor at a share of the
+  POINTER that found it — whichever is higher. The floor is what the rung cannot
+  express: the member matched none of the query's words, so only the pointer knows
+  the query, and a 4,000 x wot ceiling cannot reach a 130,000 x wot title match
+  from below (measured on staging: a `Verified Human` list at #10 on its title, the
+  member it is 87% sure of and the reader ranks 100 at #40, under 27 mirror pages
+  from one rank-30 bot). The floor is a SPAN of rungs, not a share of an arbitrary
+  number — `w_subject_floor_span` defaults to `w_near_tier / w_name_tier`, so a
+  member lands within one rung of its pointer however doubted, ordered inside that
+  span by confidence. Nothing is computed in the store: the two placements it
+  tried both broke (multiplying the pointer's banded relevance by confidence
+  ejected members into the gap below; clamping each member to its pointer made the
+  SIGNER's trust the ceiling for everyone the list names — a service key nobody
+  follows pinned sixteen members scored 65..100 to one number).
 - **A reason never ranks below what it explains — by LIFTING, not clamping.** The
   pointer takes the max of its own relevance and the best of its scored members,
   so no subject can pass it, a tie resolves pointer-first (the pointer is

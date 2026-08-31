@@ -1871,6 +1871,45 @@ schema event {
     rank-profile spliced_member inherits text_relevance {
         inputs {
             query(member_conf) double: 1.0
+            # WHERE THE CONFIDENCE COMES FROM. 0 = query(member_conf), one
+            # number for every member of the lookup, which is what a recall
+            # keyed by (kind, author, d) can carry — the addressable member
+            # shape has no single attribute to hang a per-key weight on.
+            # 1 = rawScore, the weight that rode in WITH each key (see
+            # EventQuery.authorWeights): the publisher's own 0..100, per
+            # document, unrounded, and one lookup for the whole list.
+            #
+            # An explicit switch rather than "rawScore > 0 means per-document":
+            # a publisher's honest 0 is a real confidence and reads as rawScore
+            # 0, so sniffing the value would silently promote every doubted
+            # member to the fallback's default of FULL confidence.
+            query(doc_conf) double: 0.0
+            # THE FINDING POINTER'S OWN RELEVANCE, or 0 for "no floor" — which
+            # is what every caller that does not set it gets, leaving this
+            # profile scoring exactly as it did before the floor existed.
+            #
+            # It is a query feature because it is a property of the POINTER, and
+            # the lookup is per-pointer now: that is the whole reason the
+            # per-key weights above exist. Grouping by confidence (the old
+            # BUCKETS) and grouping by pointer are mutually exclusive, and only
+            # the second can carry this number.
+            query(pointer_rel) double: 0.0
+            # HOW FAR A DOUBTED MEMBER MAY FALL BELOW ITS POINTER, as a fraction
+            # of the pointer's own relevance: the floor runs from
+            # pointer x span (confidence 0) to pointer x 1 (full confidence).
+            #
+            # 0.1769 is w_near_tier / w_name_tier — ONE RUNG. A member of a list
+            # that matched on its title lands within one rung of that list
+            # however doubted, ordered inside that span by its confidence, and a
+            # member the publisher is sure of ties its pointer exactly. Sized in
+            # a RATIO because the pointer's relevance already carries its own
+            # trust and recency multipliers; an absolute number subtracted here
+            # would mean something different for every author.
+            #
+            # This is the number the store could not compute: a share of a
+            # BANDED scale is only meaningful next to the band widths, and those
+            # live here.
+            query(w_subject_floor_span) double: 0.1769
             # The affiliation rung of text_score(), shared with w_affil_tier_text.
             query(w_member_tier) double: 550.0
             # 3450, so full confidence reaches 4000 and the weak rung
@@ -1901,8 +1940,48 @@ schema event {
             query(w_member_span) double: 3450.0
             query(w_member_gamma) double: 1.0
         }
+        # 0..1, per document when the recall carried weights — see query(doc_conf).
+        function member_confidence() {
+            expression: if (query(doc_conf) > 0, (rawScore(pubkey) + rawScore(id)) / 100, query(member_conf))
+        }
+
+        # WHAT THIS MEMBER IS WORTH ON ITS OWN: the affiliation rung, widened by
+        # the publisher's confidence, times the member's own trust. An absolute
+        # answer — "how good is this person" — and the only one available to a
+        # lookup that carries none of the query's words.
+        function member_rung() {
+            expression: (query(w_member_tier) + query(w_member_span) * pow(member_confidence(), query(w_member_gamma))) * wot_mult()
+        }
+
+        # WHAT IT IS WORTH AS THE ANSWER TO THIS QUERY: a share of the pointer
+        # that found it, since the pointer is the only row on the page that
+        # matched the words. Runs from one rung below the pointer at zero
+        # confidence to the pointer itself at full confidence, so a subject can
+        # tie its pointer and never pass it.
+        function pointer_floor() {
+            expression: query(pointer_rel) * (query(w_subject_floor_span) + (1 - query(w_subject_floor_span)) * pow(member_confidence(), query(w_member_gamma)))
+        }
+
+        # THE HIGHER OF THE TWO, never one instead of the other. A member whose
+        # own rung beats its share of the pointer keeps the rung (a high-trust
+        # person on a barely-matching list), and a member of a strongly matched
+        # list rides with it (the case the rung cannot reach: its ceiling of
+        # 4 000 x wot cannot climb to a title match's 130 000 x wot, whatever
+        # the publisher or the reader think of the person).
         first-phase {
-            expression: (query(w_member_tier) + query(w_member_span) * pow(query(member_conf), query(w_member_gamma))) * wot_mult()
+            expression: max(member_rung(), pointer_floor())
+        }
+
+        # The decisive signals, surfaced for the same reason `search` surfaces
+        # its bands: a ranking input nobody can see is one nobody can debug, and
+        # "why is this member here" is now two numbers and a max.
+        match-features {
+            member_confidence
+            member_rung
+            pointer_floor
+            wot_mult
+            rawScore(pubkey)
+            rawScore(id)
         }
     }
 

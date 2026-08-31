@@ -60,8 +60,22 @@ object EventYql {
      */
     const val RANK_SPLICED_MEMBER = "spliced_member"
 
-    /** The rank feature carrying a member's 0..1 confidence to those profiles. */
+    /**
+     * The rank feature carrying a member's 0..1 confidence to those profiles —
+     * ONE number for the whole lookup, which is all a recall keyed by
+     * (kind, author, d) can carry. The keyed shapes send [F_DOC_CONF] instead
+     * and let each member's own weight ride in with its key.
+     */
     const val F_MEMBER_CONF = "member_conf"
+
+    /** Read the confidence per DOCUMENT (`rawScore`) rather than from [F_MEMBER_CONF]. */
+    const val F_DOC_CONF = "doc_conf"
+
+    /** The finding pointer's own relevance — the floor a subject is placed at a share of. 0 = no floor. */
+    const val F_POINTER_REL = "pointer_rel"
+
+    /** How far below its pointer a doubted subject may fall, as a fraction of the pointer's relevance. */
+    const val F_SUBJECT_FLOOR_SPAN = "w_subject_floor_span"
 
     /**
      * The member profile matching what [q] itself ranked on — trust-multiplied
@@ -438,8 +452,10 @@ object EventYql {
         val clauses = ArrayList<String>()
 
         if (q.ids.isNotEmpty()) clauses += hexIn("id", q.ids) ?: return null
+        if (q.idWeights.isNotEmpty()) clauses += hexDotProduct("id", q.idWeights) ?: return null
         if (q.kinds.isNotEmpty()) clauses += "kind in (${q.kinds.joinToString(", ")})"
         if (q.authors.isNotEmpty()) clauses += hexIn("pubkey", q.authors) ?: return null
+        if (q.authorWeights.isNotEmpty()) clauses += hexDotProduct("pubkey", q.authorWeights) ?: return null
         if (q.owners.isNotEmpty()) clauses += hexIn("owner", q.owners) ?: return null
         for ((name, values) in q.tags) {
             clauses += tagClause(name, values, "or") ?: return null
@@ -581,6 +597,33 @@ object EventYql {
         val hexes = values.map { it.lowercase() }.filter(Hex::isHex64).distinct()
         if (hexes.isEmpty()) return null
         return "$field in (${hexes.joinToString(", ") { "\"$it\"" }})"
+    }
+
+    /**
+     * The same recall as [hexIn], with a NUMBER attached to each key that the
+     * ranking reads back as `rawScore(field)` — see [EventQuery.authorWeights].
+     *
+     * `dotProduct`, not `weightedSet`, and that is a measured distinction rather
+     * than a stylistic one: against a real Vespa both recall exactly the keys on
+     * a single-value `fast-search` string attribute, but only `dotProduct` sets
+     * `rawScore` — with `weightedSet` every matched document reads 0 and the
+     * per-key number is simply lost. The weights are INTEGERS by construction
+     * (quartz's 0..100 member scale), which is also what the operator takes.
+     *
+     * Same unsatisfiability rule as [hexIn]: nothing valid left, no constraint
+     * that could match, null. A weight of zero is kept — it recalls its document
+     * and scores it zero, which is what a publisher who wrote 0 said.
+     */
+    private fun hexDotProduct(
+        field: String,
+        weights: Map<String, Int>,
+    ): String? {
+        val entries =
+            weights.entries
+                .mapNotNull { (key, weight) -> key.lowercase().takeIf(Hex::isHex64)?.let { it to weight } }
+                .distinctBy { it.first }
+        if (entries.isEmpty()) return null
+        return "dotProduct($field, {${entries.joinToString(", ") { (key, weight) -> "\"$key\": $weight" }}})"
     }
 
     /** YQL string literal with backslash/quote/control escaping — for caller-supplied text. */
