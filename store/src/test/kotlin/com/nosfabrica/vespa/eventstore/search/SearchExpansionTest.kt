@@ -279,6 +279,81 @@ class SearchExpansionTest {
         }
 
     // ------------------------------------------------------------------
+    // Conversion: a read that restricted nothing
+    // ------------------------------------------------------------------
+
+    /**
+     * The hits a page fills up with: kind 1s that match the terms and are
+     * NEWER than the pointer, so a `limit` cuts the pointer off the bottom of
+     * a recall no kinds narrow. Newest-first is what this index orders an
+     * unscored page by, which makes "ranked out" reproducible without a
+     * ranking — the staging shape in miniature, where a Trusted List signed by
+     * an unranked service key sat at rank 80 and a page of 40 never saw it.
+     */
+    private suspend fun crowdOut(
+        terms: String,
+        n: Int = 2,
+    ): List<Event> =
+        (1..n).map { i ->
+            event(1, emptyArray(), "$terms $i", author = stranger).also { store.insert(it) }
+        }
+
+    @Test
+    fun `an unrestricted search reaches the list its own page ranked out`() =
+        runBlocking {
+            store.insert(profile)
+            store.insert(treasureMap(arrayOf("30392", curator, "wss://lists.example")))
+            val list = userList("Podcaster Trust List")
+            store.insert(list)
+            val newer = crowdOut("podcaster")
+
+            // No kinds at all — what a search UI's "Everything" sends. Such a
+            // read ADMITS the list, which is why it used to be skipped here,
+            // but admission is not recall: the page is two hits deep, both are
+            // newer, and without the declaration companion the reader's own
+            // list and every member it vouches for are simply not on it.
+            val out = page(Filter(search = "podcaster include:spam observer:$reader", limit = 2))
+            assertEquals(listOf(newer[1].id, newer[0].id, list.id, profile.id), out)
+        }
+
+    @Test
+    fun `an unrestricted search leaves a label its page ranked out where it fell`() =
+        runBlocking {
+            store.insert(note)
+            val label = event(1985, arrayOf(arrayOf("L", "#trades"), arrayOf("l", "podcaster", "#trades"), arrayOf("e", note.id)))
+            store.insert(label)
+            val newer = crowdOut("podcaster")
+
+            // The asymmetry is deliberate. A label companion is the caller's
+            // own query with the kinds swapped — ungated, no author constraint
+            // — so on an unrestricted read it would re-fetch rows the ranking
+            // had already placed below the page, second-guessing an order
+            // nothing says is wrong. A label has no unranked signer behind it
+            // to correct for.
+            assertEquals(listOf(newer[1].id, newer[0].id), page(Filter(search = "podcaster include:spam", limit = 2)))
+
+            // Kind-restricted, the same corpus still converts it: there the
+            // recall cannot return a 1985 at all, however deep the page.
+            val restricted = Filter(kinds = listOf(1), search = "podcaster include:spam", limit = 2)
+            assertEquals(listOf(newer[1].id, newer[0].id, label.id, note.id), page(restricted))
+        }
+
+    @Test
+    fun `the unrestricted companion never surfaces a stranger's list`() =
+        runBlocking {
+            store.insert(profile)
+            store.insert(treasureMap(arrayOf("30392", curator, "wss://lists.example")))
+            store.insert(userList("Podcaster Roster", author = stranger, listId = "outsiders"))
+            val newer = crowdOut("podcaster")
+
+            // The same gate the kind-restricted companion applies: a companion
+            // is this store's own addition to the feed, so it adds only what
+            // the reader enrolled. A stranger's list keeps the place the
+            // ranking gave it, which here is off the page.
+            assertEquals(listOf(newer[1].id, newer[0].id), page(Filter(search = "podcaster include:spam observer:$reader", limit = 2)))
+        }
+
+    // ------------------------------------------------------------------
     // The gate
     // ------------------------------------------------------------------
 

@@ -127,6 +127,18 @@ behind the pointer that named it: NIP-32 labels (1985), NIP-85 assertions
   or a declaration pointer is met — `ProviderMap` never caches an empty pass,
   so eager resolution would bill a query to every observer search on a
   10040-less relay.
+- **An UNRESTRICTED search fetches the declaration companion too.** A read with
+  no `kinds` admits every pointer, which is not the same as recalling one
+  inside the caller's `limit`: a declaration is signed by a NIP-85 service key
+  that nobody follows and no reputation tensor ranks, so it competes for a slot
+  from the bottom of the trust curve. Measured on staging — searching
+  `"Verified Human"` under a reader whose own provider signed the Trusted List
+  of that name put the 30392 at rank 80, so a page of 40 held five kind-30000
+  re-publications of it, none of the reader's own list, and unpacked nothing,
+  while the same search as `kinds:[0]` returned all seventeen member profiles.
+  The LABEL companion stays kind-restricted: it is ungated and unconstrained,
+  so on an unrestricted read it would only re-fetch what the ranking placed
+  below the page, on every searching read the relay serves.
 - **`SearchReferences` dispatches on the KIND, never `is UserTrustedListEvent`**:
   a consumer may force its own Quartz over ours, and a pin without those kinds
   hands back a base `Event` whose `is` checks all go false — silently.
