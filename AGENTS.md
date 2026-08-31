@@ -155,9 +155,10 @@ behind the pointer that named it: NIP-32 labels (1985), NIP-85 assertions
   under `spliced_member` (`event.sd` §13), which puts it on the affiliation rung
   of whichever ladder the finding query used and orders it WITHIN that rung by
   the 0..100 confidence the Trusted List expressed (`confidenceGamma`, 1.0 =
-  linear) times the member's own trust. Nothing is computed here — a number this
-  class derived could only be a guess about a scale the engine owns, and the two
-  guesses that were tried both broke: multiplying the pointer's banded relevance
+  linear) times the member's own trust. Nothing is computed here except the floor
+  below — a number this class derived could only be a guess about a scale the
+  engine owns, and the two guesses that were tried as PLACEMENTS both broke:
+  multiplying the pointer's banded relevance
   by confidence ejected members out of their band into the gap below, and
   clamping each member to its pointer made the SIGNER's trust the ceiling for
   everyone the list names (a service key nobody follows, so a `Verified Human`
@@ -170,6 +171,22 @@ behind the pointer that named it: NIP-32 labels (1985), NIP-85 assertions
   is decided by the people on the list rather than by whoever signed it. An
   unscored reference (a label, an assertion) expresses no doubt and so takes the
   lifted score too, keeping it adjacent to its pointer.
+- **And what a reason explains is never stranded below it — by FLOORING.** The
+  same rule from the other end: a scored subject is floored at
+  `pointer relevance x subjectFloorShare x confidence^gamma` (share 1.0 by
+  default; 0.0 restores the rung-only placement). The rung is an absolute answer
+  ("how good is this member") and cannot be a relative one ("how good is it for
+  THIS query") — the member matched none of the words, so the pointer is the only
+  row on the page that knows the query, and the member ceiling (4 000 x wot)
+  cannot reach the token rung (130 000 x wot) from below whatever the publisher
+  or the reader think of the person. Measured on staging: `verified human` put a
+  `Verified Human` list at #10 on its title and the member it is 87% sure of,
+  ranked 100 by that reader, at #40 — under 27 mirror pages from one rank-30 bot
+  matching ONE word in a title. A FLOOR, not a placement, is what makes this safe:
+  `pointer x confidence` AS the score was tried and ejected discounted members out
+  of their band into the gap below; `max()` can only raise, so a member whose own
+  rung already beats its share keeps the rung, and share/confidence <= 1 keeps it
+  under its own pointer.
 - **Which needs the per-hit relevance**, which is why `recallOrdered` returns a
   `Page` (hits plus a NULLABLE parallel score list — the unscored page is the hot
   one, and wrapping every hit of a plain recall to carry a null was two copies

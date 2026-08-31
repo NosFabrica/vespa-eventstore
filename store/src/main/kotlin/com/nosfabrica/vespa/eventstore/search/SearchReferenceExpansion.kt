@@ -79,9 +79,49 @@ data class SearchExpansionLimits(
      * one that applies the publisher's number as given.
      */
     val confidenceGamma: Double = 1.0,
+    /**
+     * HOW MUCH OF ITS POINTER A SUBJECT IS WORTH — the share of the pointer's
+     * own relevance that FLOORS a scored subject, before confidence discounts
+     * it. 0.0 switches the floor off and restores the placement that came
+     * before it: every subject on its own absolute rung, wherever its pointer
+     * landed.
+     *
+     * WHY A FLOOR AT ALL. `event.sd` §13 scores a member on the affiliation
+     * rung (550..4,000) times its own trust, which is an ABSOLUTE answer to
+     * "how good is this person" and no answer at all to "how good is this
+     * person FOR THIS QUERY". The member matched none of the words — the
+     * lookup that fetched it carries none — so the only thing on the page that
+     * knows the query is the pointer. Measured on staging, searching `verified
+     * human` under a reader whose own service signed the `Verified Human` list:
+     * the list ranked #10 on its title, and the member it is 87% sure of, whom
+     * that reader ranks 100, sat at #40 — under 27 Wikipedia mirror pages from
+     * one rank-30 bot, each matching ONE of the two words in a title. The
+     * member ceiling (4,000 x wot) simply cannot reach the token rung (130,000
+     * x wot): break-even needs the title's author below rank ~29, so a perfect
+     * member of a perfectly-matched list loses to almost any title hit.
+     *
+     * WHY A FLOOR AND NOT A PLACEMENT, which is the distinction the whole
+     * design turns on. `pointer x confidence` AS THE SCORE was tried and it
+     * broke: on a banded scale a discounted member leaves its band and lands in
+     * the gap below, which is nowhere. As a floor it can only ever raise a
+     * subject toward the reason that brought it in — `max()` with the engine's
+     * own number, never instead of it — so that failure is unreachable, and a
+     * member whose own rung already beats its share keeps the rung.
+     *
+     * The ceiling is the pointer itself: `share <= 1` and `confidence <= 1`, so
+     * a subject can tie its pointer and never pass it, and the stable sort
+     * resolves that tie pointer-first. That is the same invariant the lift
+     * states from the other side.
+     *
+     * 1.0 — a subject is worth its pointer, discounted by the confidence its
+     * pointer expressed — is the reading with no arbitrary constant in it. As
+     * with [confidenceGamma], there is no corpus to tune it against yet.
+     */
+    val subjectFloorShare: Double = 1.0,
 ) {
     init {
         require(confidenceGamma > 0.0) { "confidenceGamma must be positive: $confidenceGamma" }
+        require(subjectFloorShare in 0.0..1.0) { "subjectFloorShare must be a 0..1 share of the pointer: $subjectFloorShare" }
     }
 
     companion object {
@@ -337,6 +377,18 @@ internal class SearchReferenceExpansion(
          * score.
          */
         val scores: List<List<Double?>>,
+        /**
+         * Index-aligned with [subjects]: how sure its pointer was about it,
+         * ALREADY QUANTIZED AND ALREADY RAISED TO [SearchExpansionLimits.confidenceGamma]
+         * — the very number the engine scored the member with, not the raw tag
+         * value, so the floor the caller applies and the rung the engine
+         * applied cannot disagree about how confident a member is.
+         *
+         * Null exactly where [scores] is null-by-nature: a reference that
+         * expressed no confidence. Those need no floor — they already ride
+         * their pointer's own score.
+         */
+        val confidences: List<List<Double?>>,
     )
 
     /**
@@ -358,10 +410,10 @@ internal class SearchReferenceExpansion(
     ): Expanded<R> {
         val fresh = BooleanArray(hits.size) { i -> sent.add(keys.idOf(hits[i])) }
 
-        // Built only when it is actually returned: it is two lists the size of
-        // the page, and the ordinary outcome of a searching read is that the
+        // Built only when it is actually returned: it is three lists the size
+        // of the page, and the ordinary outcome of a searching read is that the
         // expansion has something to add.
-        fun nothing() = Expanded(fresh, hits.map { emptyList<R>() }, hits.map { emptyList<Double?>() })
+        fun nothing() = Expanded(fresh, hits.map { emptyList<R>() }, hits.map { emptyList<Double?>() }, hits.map { emptyList<Double?>() })
         if (!limits.enabled || budget <= 0 || lenses.isEmpty()) return nothing()
 
         var any = false
@@ -416,6 +468,7 @@ internal class SearchReferenceExpansion(
         val found = lookUp(planned, lensOfRow, keys, recall)
         val admitted = ArrayList<List<R>>(hits.size)
         val scores = ArrayList<List<Double?>>(hits.size)
+        val confidences = ArrayList<List<Double?>>(hits.size)
         planned.forEachIndexed { i, refs ->
             val taken = admit(refs, found[lensOfRow[i]], keys)
             admitted.add(taken.map { it.subject })
@@ -425,14 +478,21 @@ internal class SearchReferenceExpansion(
             // already comparable to the hits. Deriving it from the pointer's
             // relevance is the thing that broke: see event.sd §13.
             scores.add(taken.map { it.score })
+            // The confidence rides out beside it, unused by that rung and
+            // needed by the FLOOR the caller applies over it — which is the one
+            // question this rung cannot answer, "how good is this member for
+            // THIS query" (see [SearchExpansionLimits.subjectFloorShare]).
+            confidences.add(taken.map { it.confidence })
         }
-        return Expanded(fresh, admitted, scores)
+        return Expanded(fresh, admitted, scores, confidences)
     }
 
-    /** One admitted subject and the relevance the engine gave it under the member profile. */
+    /** One admitted subject, the relevance the engine gave it under the member profile, and how sure its pointer was. */
     private class Taken<R>(
         val subject: R,
         val score: Double?,
+        /** Quantized and gamma'd, exactly as the lookup scored it — null where the pointer expressed nothing. */
+        val confidence: Double?,
     )
 
     /**
@@ -603,12 +663,22 @@ internal class SearchReferenceExpansion(
         if (refs.isEmpty() || found == null) return emptyList()
         val out = ArrayList<Taken<R>>(refs.size)
 
-        fun take(r: Ranked<R>) {
-            if (sent.add(keys.idOf(r.hit))) out.add(Taken(r.hit, r.score))
+        // The confidence is read back through the SAME two steps the lookup
+        // scored with — quantize to a bucket, then raise to gamma — rather than
+        // off the raw tag: [bucketed] is what decided which rank feature the
+        // engine saw, and a floor computed from a finer number than the rung
+        // would put a member above where its own rung says it belongs.
+        fun take(
+            r: Ranked<R>,
+            key: String,
+        ) {
+            if (!sent.add(keys.idOf(r.hit))) return
+            val conf = bucketOf(refs.weightOf(key))?.let { Math.pow(it, limits.confidenceGamma) }
+            out.add(Taken(r.hit, r.score, conf))
         }
-        refs.eventIds.forEach { key -> found.byId[key]?.let(::take) }
-        refs.pubKeys.forEach { key -> found.byKey[key]?.let(::take) }
-        refs.addresses.forEach { key -> found.byAddress[key]?.let(::take) }
+        refs.eventIds.forEach { key -> found.byId[key]?.let { take(it, key) } }
+        refs.pubKeys.forEach { key -> found.byKey[key]?.let { take(it, key) } }
+        refs.addresses.forEach { key -> found.byAddress[key]?.let { take(it, key) } }
         return out
     }
 

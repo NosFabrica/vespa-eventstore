@@ -604,11 +604,19 @@ class NostrSemanticsStore(
      *
      * Runs after [recallOrdered] rather than inside it, but over the [Page] it
      * produced rather than over a bare list: a scored member is placed by the
-     * relevance the ENGINE gave it on the member rung, and its pointer rises to
-     * sit just above the best of them, so the placement needs both the finished
+     * relevance the ENGINE gave it on the member rung — floored at the share of
+     * its pointer that pointer's confidence buys — and its pointer rises to sit
+     * just above the best of them, so the placement needs both the finished
      * order AND the scores that produced it. Splicing inside the recall would
      * have to answer that question once per ordering case; here it is answered
      * once.
+     *
+     * The two directions are one rule read from both ends: a reason never ranks
+     * below what it explains (the lift), and what a reason explains is never
+     * stranded far below it (the floor). Neither can invert the pair — the lift
+     * is a max over the pointer's own members and the floor a share of the
+     * pointer — so pointer and subjects stay one block wherever the page puts
+     * it, ordered inside by the confidence the pointer expressed.
      *
      * Returns the page's hits UNTOUCHED — the same list, not a copy — whenever
      * [expansion] is null, which is every plain recall this store serves
@@ -628,6 +636,7 @@ class NostrSemanticsStore(
         val hits = page.hits
         if (expansion == null || hits.isEmpty()) return hits
         val expanded = expansion.expand(hits, keys, pointerOf, recall)
+        val share = searchExpansion.subjectFloorShare
 
         // THE POINTER'S OWN ORDER FIRST, always — the sort below is a stable
         // re-sort of it, so a tie between a subject and its own pointer resolves
@@ -711,9 +720,10 @@ class NostrSemanticsStore(
                             // a fallback page into a sorted one.
                             pointer == null -> null
 
-                            // THE ENGINE'S OWN NUMBER, unclamped — see the
-                            // lift above for what used to happen here.
-                            else -> own
+                            // THE ENGINE'S OWN NUMBER, unclamped — see the lift
+                            // above for what used to happen here — under the
+                            // floor its pointer buys it.
+                            else -> flooredAtPointer(own, pointer, expanded.confidences[i][j], share)
                         },
                     ),
                 )
@@ -721,10 +731,11 @@ class NostrSemanticsStore(
         }
         // ONE SCALE, THE ENGINE'S. Hits carry the relevance their rank profile
         // gave them; members carry the relevance a MEMBER profile gave them on
-        // the same ladder (event.sd §13), so the two sort together without this
-        // class doing arithmetic on either. Nothing to normalize, nothing to
-        // shift: a number computed here could only ever be a guess about a
-        // scale the engine owns, and the guess is what broke.
+        // the same ladder (event.sd §13), so the two sort together with nothing
+        // normalized and nothing shifted — the only arithmetic is
+        // [flooredAtPointer], and its inputs are two numbers already on this
+        // scale. A number INVENTED here could only be a guess about a scale the
+        // engine owns, and the guess is what broke.
         //
         // A page missing any score cannot be sorted at all — the in-memory
         // reference reports null rather than fabricating a constant, and a
@@ -739,6 +750,44 @@ class NostrSemanticsStore(
         val row: R,
         val score: Double?,
     )
+
+    /**
+     * A SCORED SUBJECT'S PLACEMENT: the engine's member rung, or the share of
+     * its pointer that pointer's confidence buys, whichever is higher.
+     *
+     * The rung answers "how good is this member" absolutely and cannot answer
+     * "how good is it FOR THIS QUERY" — the member matched none of the words,
+     * and the pointer is the only row on the page that did. So the rung is a
+     * floor's worth of evidence and the pointer is the rest. Measured on
+     * staging: a member the reader ranks 100, 87% vouched for by that reader's
+     * own trust service, sat 30 rows under the list that named it because a
+     * rank-30 mirror had one of the two query words in 27 titles. The member
+     * ceiling (4 000 x wot) cannot reach the token rung (130 000 x wot) from
+     * below, whatever the publisher or the reader think of the person.
+     *
+     * A FLOOR, NEVER A PLACEMENT, and the whole design turns on that:
+     * `pointer x confidence` AS the score was tried and it ejected a discounted
+     * member out of its band into the gap below. [maxOf] cannot move a subject
+     * down, so that failure is unreachable here — a member whose own rung
+     * already beats its share simply keeps the rung.
+     *
+     * It cannot pass its pointer either: [share] and [confidence] are both
+     * <= 1 and the pointer is placed at `lifted >= pointer`, so a subject can
+     * tie its pointer at most, and the stable sort resolves that tie
+     * pointer-first because the pointer was appended before its subjects. That
+     * is the lift's invariant read from this side.
+     *
+     * [confidence] null — a reference that expressed none — takes no floor: it
+     * is already placed at its pointer's lifted score, adjacent by construction.
+     * A NON-POSITIVE pointer relevance takes none either: a share of it moves
+     * the wrong way.
+     */
+    private fun flooredAtPointer(
+        own: Double,
+        pointer: Double,
+        confidence: Double?,
+        share: Double,
+    ): Double = if (confidence == null || pointer <= 0.0) own else maxOf(own, pointer * share * confidence)
 
     /**
      * Raw read path: recall matches as Quartz [RawEvent]s, skipping the
