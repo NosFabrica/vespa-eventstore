@@ -780,14 +780,17 @@ class NostrSemanticsStore(
      * [confidence] null — a reference that expressed none — takes no floor: it
      * is already placed at its pointer's lifted score, adjacent by construction.
      * A NON-POSITIVE pointer relevance takes none either: a share of it moves
-     * the wrong way.
+     * the wrong way. A zero [share] is the feature switched off, and returns
+     * [own] rather than `maxOf(own, 0.0)` — which is the same number for every
+     * score a rank profile can produce, and the same number by CONSTRUCTION
+     * rather than by luck.
      */
     private fun flooredAtPointer(
         own: Double,
         pointer: Double,
         confidence: Double?,
         share: Double,
-    ): Double = if (confidence == null || pointer <= 0.0) own else maxOf(own, pointer * share * confidence)
+    ): Double = if (confidence == null || share <= 0.0 || pointer <= 0.0) own else maxOf(own, pointer * share * confidence)
 
     /**
      * Raw read path: recall matches as Quartz [RawEvent]s, skipping the

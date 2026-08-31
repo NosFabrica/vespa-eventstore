@@ -410,10 +410,16 @@ internal class SearchReferenceExpansion(
     ): Expanded<R> {
         val fresh = BooleanArray(hits.size) { i -> sent.add(keys.idOf(hits[i])) }
 
-        // Built only when it is actually returned: it is three lists the size
-        // of the page, and the ordinary outcome of a searching read is that the
-        // expansion has something to add.
-        fun nothing() = Expanded(fresh, hits.map { emptyList<R>() }, hits.map { emptyList<Double?>() }, hits.map { emptyList<Double?>() })
+        // Built only when it is actually returned: it is lists the size of the
+        // page, and the ordinary outcome of a searching read is that the
+        // expansion has something to add. The two Double? columns SHARE one
+        // list here — they are empty and immutable, and a page of 500 hits that
+        // expands nothing is a hot enough shape to not allocate the same thing
+        // twice for it.
+        fun nothing(): Expanded<R> {
+            val none = hits.map { emptyList<Double?>() }
+            return Expanded(fresh, hits.map { emptyList<R>() }, none, none)
+        }
         if (!limits.enabled || budget <= 0 || lenses.isEmpty()) return nothing()
 
         var any = false
