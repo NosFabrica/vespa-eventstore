@@ -205,8 +205,11 @@ internal class SearchReferenceExpansion(
             .let { byLookup -> lenses.map(byLookup::get) }
 
     /**
-     * THE ADDITIONAL RECALL A KIND-RESTRICTED SEARCH NEEDS: each searching
-     * query re-aimed at the pointer kinds that CONVERT into what it asked for.
+     * THE ADDITIONAL RECALL A SEARCH NEEDS TO REACH ITS POINTERS: each
+     * searching query re-aimed at the pointer kinds that CONVERT into what it
+     * asked for — because a pointer its own recall cannot return, or cannot
+     * return within the caller's `limit`, is a subject the read never learns
+     * about.
      *
      * A client hunting people sends `kinds:[0]` — and the Trusted List whose
      * title carries the searched word is a 30392, so the recall never returns
@@ -230,7 +233,32 @@ internal class SearchReferenceExpansion(
      * label companion alone, without a provider-list read to prove it.
      *
      * A query that named ids is left alone — it may serve nothing outside
-     * them — and one with no kind constraint already recalls every pointer.
+     * them.
+     *
+     * AN UNRESTRICTED QUERY GETS THE DECLARATION COMPANION TOO, and that is a
+     * correction. This used to skip a query with no kinds on the grounds that
+     * it "already recalls every pointer" — true of what such a read ADMITS,
+     * and never the whole question, because a pointer still has to win one of
+     * the caller's `limit` slots to be on the page at all. A declaration is
+     * signed by a NIP-85 service key, which nobody follows and every
+     * reputation tensor therefore leaves unranked, so it competes for those
+     * slots from the bottom of the trust curve. Measured on staging: searching
+     * `"Verified Human"` under a reader whose own provider signed the Trusted
+     * List of that name put the 30392 at rank 80, while the ordinary kind-30000
+     * copies people had re-published from it ranked 1-5 — so a page of 40 held
+     * five look-alikes, none of the reader's own list, and unpacked nothing,
+     * while the same search narrowed to `kinds:[0]` came back with all
+     * seventeen member profiles. The companion is what makes an enrolled
+     * signer reachable at any page depth; the floor waiver below is the other
+     * half of the same handicap.
+     *
+     * THE LABEL COMPANION STAYS KIND-RESTRICTED. It carries no author
+     * constraint and no waiver — it is the caller's own query with the kinds
+     * swapped — so on an unrestricted read it would re-fetch rows the ranking
+     * had already placed below the page, on every searching read a relay
+     * serves, to second-guess an order nothing says is wrong. A label has no
+     * signer handicap to correct: it is ungated, and it earned its rank the
+     * way the hits around it did.
      *
      * THE DECLARATION COMPANION WAIVES THE DEFAULT TRUST FLOOR. Its authors
      * are exactly the signers the reader enrolled, and the canonical NIP-85
@@ -249,9 +277,9 @@ internal class SearchReferenceExpansion(
     suspend fun companions(): List<EventQuery> {
         val out = LinkedHashSet<EventQuery>()
         for (q in searching) {
-            if (q.kinds.isEmpty() || q.ids.isNotEmpty()) continue
+            if (q.ids.isNotEmpty()) continue
             val missing = SearchReferences.convertibleInto(q.kinds)
-            val labels = missing.filterNot(SearchReferences::isDeclaration)
+            val labels = if (q.kinds.isEmpty()) emptyList() else missing.filterNot(SearchReferences::isDeclaration)
             if (labels.isNotEmpty()) out.add(q.copy(kinds = labels))
             val declarations = missing.filter(SearchReferences::isDeclaration)
             if (declarations.isEmpty()) continue

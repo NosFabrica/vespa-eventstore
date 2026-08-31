@@ -147,18 +147,28 @@ internal object SearchReferences {
      * claiming it here would fetch pointers whose subjects can never be
      * admitted. 1985 can carry all three tag shapes, so it converts always.
      *
-     * [into] is a NON-EMPTY kind list: an unrestricted read admits every
-     * pointer kind outright and has no conversion question to ask.
+     * AN EMPTY [into] IS A READ WITH NO KIND CONSTRAINT, and every pointer
+     * kind converts into it: it can serve a subject of any kind, which is the
+     * question this function asks. It used to be documented as an input this
+     * never sees, on the reasoning that such a read "admits every pointer kind
+     * outright" — true about ADMISSION and never the whole question, because
+     * admitting a pointer is not recalling one within the caller's `limit`.
+     * [SearchReferenceExpansion.companions] is where that difference is
+     * decided; this answers only what a subject of [into] can be named by.
      */
     fun converts(
         pointer: Kind,
         into: List<Kind>,
     ): Boolean =
-        when (pointer) {
-            LabelEvent.KIND, EventAssertionEvent.KIND, EventTrustedListEvent.KIND -> true
-            ContactCardEvent.KIND, UserTrustedListEvent.KIND -> PROFILE_KIND in into
-            AddressableAssertionEvent.KIND, AddressableTrustedListEvent.KIND -> into.any { it.isAddressable() }
-            else -> false
+        if (into.isEmpty()) {
+            pointer in KINDS
+        } else {
+            when (pointer) {
+                LabelEvent.KIND, EventAssertionEvent.KIND, EventTrustedListEvent.KIND -> true
+                ContactCardEvent.KIND, UserTrustedListEvent.KIND -> PROFILE_KIND in into
+                AddressableAssertionEvent.KIND, AddressableTrustedListEvent.KIND -> into.any { it.isAddressable() }
+                else -> false
+            }
         }
 
     /**
@@ -166,6 +176,12 @@ internal object SearchReferences {
      * still serve subjects from — what the companion queries fetch
      * ([SearchReferenceExpansion.companions]). A kind the read already asks
      * for is excluded: its pointers arrive as ordinary hits.
+     *
+     * An EMPTY [kinds] excludes nothing and converts everything, so this is
+     * the whole pointer vocabulary — a read with no kind constraint recalls
+     * all of it as ordinary hits and still fetches the declaration half as
+     * companions, for the ranking reason [SearchReferenceExpansion.companions]
+     * gives.
      */
     fun convertibleInto(kinds: List<Kind>): Set<Kind> = KINDS.filterTo(LinkedHashSet()) { it !in kinds && converts(it, kinds) }
 

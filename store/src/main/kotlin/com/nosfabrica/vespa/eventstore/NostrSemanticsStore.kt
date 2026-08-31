@@ -435,11 +435,12 @@ class NostrSemanticsStore(
      * none of it asked for.
      *
      * Created BEFORE the recall, because the expansion now shapes it: a
-     * kind-restricted search also recalls the pointer kinds that convert into
-     * its kinds ([SearchReferenceExpansion.companions]) — otherwise the lists,
-     * assertions and labels whose text matched are never returned at all, and
-     * neither this store nor the client ever learns there was anything to
-     * unpack.
+     * searching read also recalls the pointer kinds it would otherwise miss
+     * ([SearchReferenceExpansion.companions]) — the ones a kind-restricted
+     * query cannot return at all, and the enrolled signers' declarations an
+     * unrestricted one ranks below its own page. Without that, the lists,
+     * assertions and labels whose text matched are never returned, and neither
+     * this store nor the client ever learns there was anything to unpack.
      *
      * The GATE READ STAYS LAZY. [ProviderMap] never caches an empty pass, so
      * on a relay holding no 10040s the delegations read is one small engine
@@ -447,8 +448,12 @@ class NostrSemanticsStore(
      * supplier the expansion resolves at most once, and only on the paths
      * that consult the gate: building a declaration companion, or meeting a
      * declaration pointer in the page. An anonymous read resolves to
-     * [Enrolment.NONE] without ever querying, as before; a termless or
-     * unrestricted-kind read with an observer never resolves it at all.
+     * [Enrolment.NONE] without ever querying, as before, and a termless one
+     * never reaches the gate at all. An UNRESTRICTED-kind read with an
+     * observer now does resolve it — it builds a declaration companion like
+     * any other searching read — which is one small query per such read on a
+     * relay with no 10040s to cache, the price of the reader's own lists
+     * reaching a page they were ranked off.
      */
     private fun expansionOf(queries: List<EventQuery>): SearchReferenceExpansion? {
         if (!searchExpansion.enabled) return null
