@@ -717,11 +717,47 @@ class SearchExpansionTest {
         var subjectLookups = 0
             private set
 
+        /**
+         * EVERY round trip the expansion spends, the unranked ones included —
+         * a label's subject is fetched under no member profile at all, so
+         * [subjectLookups] cannot see it, and the cost of a page of labels is
+         * exactly what regressed once.
+         */
+        var keyedLookups = 0
+            private set
+
         override suspend fun searchRanked(query: com.nosfabrica.vespa.eventstore.engine.query.EventQuery): List<com.nosfabrica.vespa.eventstore.engine.Ranked<com.nosfabrica.vespa.eventstore.engine.doc.EventDoc>> {
             if (query.ranking == com.nosfabrica.vespa.eventstore.engine.query.EventYql.RANK_SPLICED_MEMBER) subjectLookups++
+            // Keyed and TERMLESS is the shape only a subject lookup has: the
+            // page's own queries carry the words, `forLookup` strips them.
+            val keyed = query.ids.isNotEmpty() || query.idWeights.isNotEmpty() || query.authorWeights.isNotEmpty() || query.authors.isNotEmpty()
+            if (keyed && query.search == null && query.phrases.isEmpty()) keyedLookups++
             return inner.searchRanked(query)
         }
     }
+
+    @Test
+    fun `a page of labels costs one lookup, however long the page`() =
+        runBlocking {
+            // THE COST OF THE FLOOR, BOUNDED. A pointer's relevance is a
+            // query-level number, so a floored lookup cannot pool two pointers
+            // that ranked differently — and an early cut of this fed EVERY row
+            // its own round trip, which turned a page of fifty labels from one
+            // lookup into fifty. A label carries no confidence and takes no
+            // floor, so nothing about it varies per row and the whole page
+            // shares one query. Twenty here; the number must not move with it.
+            val counting = CountingIndex(RankingIndex(InMemoryEventIndex()))
+            val store = NostrSemanticsStore(TrustProjection(counting, InMemoryReputationIndex()), relay = relayUrl)
+            repeat(20) { i ->
+                val subject = event(1, emptyArray(), "episode $i", author = key("d4"))
+                store.insert(subject)
+                store.insert(event(1985, arrayOf(arrayOf("L", "#topic"), arrayOf("l", "podcaster", "#topic"), arrayOf("e", subject.id))))
+            }
+
+            val out = store.query<Event>(listOf(search("podcaster", listOf(1, 1985)))).map { it.id }
+            assertEquals(40, out.size, "twenty labels and the twenty notes they describe: ${out.size}")
+            assertEquals(1, counting.keyedLookups, "one round trip for the whole page, not one per label")
+        }
 
     @Test
     fun `one lookup carries a whole list, whatever its confidences`() =

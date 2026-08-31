@@ -162,6 +162,16 @@ behind the pointer that named it: NIP-32 labels (1985), NIP-85 assertions
   `weightedSet` recalls the same rows and leaves `rawScore` at 0, so only
   `dotProduct` carries the number; a ZERO weight still recalls its document, so a
   publisher's honest 0 needs no offset. `SplicedMemberWeightsIT` is that proof.
+- **Lookups are batched by the QUERY, and only the floor can split them.** A
+  per-key weight never forces two pointers apart — each key carries its own
+  number — so every row that would send the same query shares one round trip:
+  all unscored references (a label, an assertion: no weights, no floor), and all
+  scored ones when `subjectFloorSpan` is null. Only `query(pointer_rel)` varies
+  per pointer, so a page of N *differently-ranked Trusted Lists* costs N, and a
+  page of N labels costs ONE. That distinction is load-bearing and was measured:
+  an early cut gave every row its own lookup and turned a page of twenty labels
+  from 1 round trip into 20 — labels being most of a relay's searching traffic.
+  `a page of labels costs one lookup, however long the page` is the guard.
 - **Placement is the ENGINE's number, on ONE scale.** A scored member is fetched
   under `spliced_member` (`event.sd` §13): its own rung (the affiliation band,
   widened by its confidence, times its own trust) OR a floor at a share of the

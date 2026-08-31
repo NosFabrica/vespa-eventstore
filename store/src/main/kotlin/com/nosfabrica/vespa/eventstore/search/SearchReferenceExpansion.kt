@@ -548,49 +548,72 @@ internal class SearchReferenceExpansion(
             val byKey = HashMap<String, Ranked<R>>()
             val byAddress = HashMap<String, Ranked<R>>()
 
-            // ONE LOOKUP PER POINTER for the keyed shapes, because the two
-            // numbers a member's placement needs are a property of the PAIR
-            // (how sure this list is about this person) and of the POINTER (how
-            // well the list matched the query) — and a query can now carry
-            // both. The confidence rides with each key as a weight the ranking
-            // reads back per document (`rawScore`, see [EventQuery.authorWeights]);
-            // the pointer's own relevance is the one query-level number left.
+            // ONE LOOKUP PER DISTINCT QUERY for the keyed shapes — which is one
+            // per POINTER only where the pointers actually differ in what they
+            // send. The two numbers a member's placement needs are a property
+            // of the PAIR (how sure this list is about this person) and of the
+            // POINTER (how well the list matched the query), and a query can
+            // now carry both: the confidence rides with each key as a weight
+            // the ranking reads back per document (`rawScore`, see
+            // [EventQuery.authorWeights]), leaving the pointer's own relevance
+            // as the one query-level number.
             //
-            // This replaces one lookup per CONFIDENCE BUCKET. Buckets existed
-            // only because a rank feature is per-query, and they cost a round
-            // trip each: the staging `Verified Human` list's seventeen members
-            // occupy four of them, so its page paid four lookups where this
-            // pays one — and the confidence arrives unrounded, so a member
-            // scored 12 is no longer quantized to zero.
+            // That per-query number is the ONLY thing that can force two
+            // pointers apart, so rows are BATCHED by it. Everything a floor
+            // cannot reach shares one round trip however long the page:
+            // unscored references (a label, an assertion — no weights, no
+            // floor, the caller's own lens unchanged), and every scored member
+            // on a read with the floor switched off. A page of fifty labels is
+            // one lookup, as it was before the weights existed; only a page of
+            // fifty *differently-ranked Trusted Lists* costs fifty, and that is
+            // the case the floor is for.
             //
-            // A key CLAIMED by an earlier row is not asked for again: rows are
-            // walked in page order, which on any page that can be sorted is
-            // relevance order, so a subject two lists name is fetched under the
-            // better-ranked of them — the same pointer [admit] will file it
-            // under, and one fewer round trip than asking twice.
+            // The weights themselves cost nothing to batch: a key carries its
+            // own number, so members of different lists ride in one query at
+            // their own confidences. That is what replaced one lookup per
+            // CONFIDENCE BUCKET — buckets existed only because a rank feature
+            // is per-query, and the staging `Verified Human` list's seventeen
+            // members occupy four of them, so its page paid four lookups where
+            // this pays one, with the confidence unrounded (a member scored 12
+            // is no longer quantized to zero).
+            //
+            // A key CLAIMED by an earlier row is not asked for again, and
+            // batches are emitted in the order their first row created them:
+            // rows are walked in page order, which on any page that can be
+            // sorted is relevance order, so a subject two lists name is fetched
+            // under the better-ranked of them — the same pointer [admit] will
+            // file it under, and one fewer round trip than asking twice.
+            val idBatches = LinkedHashMap<Any, Batch>()
+            val keyBatches = LinkedHashMap<Any, Batch>()
             val claimedIds = HashSet<String>()
             val claimedKeys = HashSet<String>()
             for (row in planned.indices) {
                 if (lensOfRow[row] != lens) continue
                 val refs = planned[row]
                 val rel = pointerRel(row)
-                for ((weights, ids) in refs.eventIds.filterNot { it in claimedIds }.splitByScored(refs)) {
+                for ((weighted, ids) in refs.eventIds.filterNot { it in claimedIds }.splitByScored(refs)) {
                     claimedIds += ids
-                    val q = if (weights) under.withWeightedMember(profile, limits.confidenceGamma, rel, limits.subjectFloorSpan) else under
-                    for (chunk in ids.chunked(LOOKUP_CHUNK)) {
-                        if (spent++ >= MAX_LOOKUPS) break
-                        val narrowed = if (weights) q.narrowIdWeights(chunk, refs) else q.narrowIds(chunk)
-                        narrowed?.let { recall(it).forEach { r -> byId.putIfAbsent(keys.idOf(r.hit), r) } }
-                    }
+                    idBatches.batch(weighted, rel).take(ids, refs)
                 }
-                for ((weights, pubKeys) in refs.pubKeys.filterNot { it in claimedKeys }.splitByScored(refs)) {
+                for ((weighted, pubKeys) in refs.pubKeys.filterNot { it in claimedKeys }.splitByScored(refs)) {
                     claimedKeys += pubKeys
-                    val q = if (weights) under.withWeightedMember(profile, limits.confidenceGamma, rel, limits.subjectFloorSpan) else under
-                    for (chunk in pubKeys.chunked(LOOKUP_CHUNK)) {
-                        if (spent++ >= MAX_LOOKUPS) break
-                        val narrowed = if (weights) q.narrowProfileWeights(chunk, refs) else q.narrowProfiles(chunk)
-                        narrowed?.let { recall(it).forEach { r -> byKey.putIfAbsent(keys.authorOf(r.hit), r) } }
-                    }
+                    keyBatches.batch(weighted, rel).take(pubKeys, refs)
+                }
+            }
+            for (b in idBatches.values) {
+                val q = b.query(under, profile, limits)
+                for (chunk in b.keys.keys.chunked(LOOKUP_CHUNK)) {
+                    if (spent++ >= MAX_LOOKUPS) break
+                    val narrowed = if (b.weighted) q.narrowIdWeights(chunk, b.keys) else q.narrowIds(chunk)
+                    narrowed?.let { recall(it).forEach { r -> byId.putIfAbsent(keys.idOf(r.hit), r) } }
+                }
+            }
+            for (b in keyBatches.values) {
+                val q = b.query(under, profile, limits)
+                for (chunk in b.keys.keys.chunked(LOOKUP_CHUNK)) {
+                    if (spent++ >= MAX_LOOKUPS) break
+                    val narrowed = if (b.weighted) q.narrowProfileWeights(chunk, b.keys) else q.narrowProfiles(chunk)
+                    narrowed?.let { recall(it).forEach { r -> byKey.putIfAbsent(keys.authorOf(r.hit), r) } }
                 }
             }
 
@@ -614,6 +637,61 @@ internal class SearchReferenceExpansion(
             out[lens] = Found(byId, byKey, byAddress)
         }
         return out
+    }
+
+    /**
+     * ONE ROUND TRIP'S WORTH OF KEYS: everything that can be asked for in a
+     * single query, with each key's own confidence.
+     *
+     * Two rows share a batch when they would send the SAME query, which is the
+     * only thing that has to force them apart — the per-key weights never do,
+     * since each key carries its own. Unscored references send the caller's
+     * lens untouched, so they all share one; scored ones differ only in
+     * [pointerRel], and not even in that when the floor is off.
+     */
+    private class Batch(
+        val weighted: Boolean,
+        val pointerRel: Double,
+    ) {
+        /** Key -> the 0..100 confidence its pointer gave it; 0 and unread on an unscored batch. */
+        val keys = LinkedHashMap<String, Int>()
+
+        fun take(
+            batched: List<String>,
+            refs: References,
+        ) {
+            batched.forEach { keys[it] = refs.confidence[it] ?: 0 }
+        }
+
+        fun query(
+            under: EventQuery,
+            profile: String?,
+            limits: SearchExpansionLimits,
+        ): EventQuery =
+            if (weighted) {
+                under.withWeightedMember(profile, limits.confidenceGamma, pointerRel, limits.subjectFloorSpan)
+            } else {
+                under
+            }
+    }
+
+    /**
+     * The batch this row's half belongs in — created on first use, so the map's
+     * insertion order is page order and the best-ranked pointer keeps a
+     * contested key.
+     *
+     * The identity is what the QUERY would carry: nothing at all for the
+     * unscored, and for the scored either the pointer's relevance or, with the
+     * floor off, one shared batch — [withWeightedMember] does not send the
+     * relevance then, so splitting on it would buy identical queries.
+     */
+    private fun MutableMap<Any, Batch>.batch(
+        weighted: Boolean,
+        rel: Double,
+    ): Batch {
+        val floored = weighted && limits.subjectFloorSpan != null
+        val identity: Any = if (floored) rel else weighted
+        return getOrPut(identity) { Batch(weighted, if (floored) rel else 0.0) }
     }
 
     /**
@@ -916,19 +994,19 @@ private fun EventQuery.narrowProfiles(chunk: List<String>): EventQuery? {
  */
 private fun EventQuery.narrowIdWeights(
     chunk: List<String>,
-    refs: References,
+    weights: Map<String, Int>,
 ): EventQuery? {
-    val wanted = (if (ids.isEmpty()) chunk else chunk.filter { it in ids }).weighedBy(refs)
+    val wanted = (if (ids.isEmpty()) chunk else chunk.filter { it in ids }).weighedBy(weights)
     return if (wanted.isEmpty()) null else copy(ids = emptyList(), idWeights = wanted)
 }
 
 /** [narrowProfiles] with each member's confidence attached. */
 private fun EventQuery.narrowProfileWeights(
     chunk: List<String>,
-    refs: References,
+    weights: Map<String, Int>,
 ): EventQuery? {
     if (!admitsKind(0)) return null
-    val wanted = (if (authors.isEmpty()) chunk else chunk.filter { it in authors }).weighedBy(refs)
+    val wanted = (if (authors.isEmpty()) chunk else chunk.filter { it in authors }).weighedBy(weights)
     // `ids` survives for the reason [narrowProfiles] keeps it.
     return if (wanted.isEmpty()) null else copy(kinds = listOf(0), authors = emptyList(), authorWeights = wanted)
 }
@@ -936,12 +1014,13 @@ private fun EventQuery.narrowProfileWeights(
 /**
  * These keys with the 0..100 score their pointer gave them — quartz's own
  * scale, unrounded, which is also the integer scale a weighted recall takes.
- * A key the pointer said nothing about cannot reach here ([splitByScored] sent
- * it down the unscored path), so a missing weight would be a bug rather than a
- * silence; it is dropped rather than defaulted, because defaulting one would
- * invent a confidence the publisher never expressed.
+ *
+ * [weights] is the BATCH's map rather than one row's, because a batch pools the
+ * members of every pointer that sends the same query — so a key must carry the
+ * confidence ITS OWN list expressed, not the confidence of whichever list is
+ * being read at the time.
  */
-private fun List<String>.weighedBy(refs: References): Map<String, Int> = mapNotNull { key -> refs.confidence[key]?.let { key to it } }.toMap()
+private fun List<String>.weighedBy(weights: Map<String, Int>): Map<String, Int> = mapNotNull { key -> weights[key]?.let { key to it } }.toMap()
 
 /** Narrowed to one owner's events of one kind — the coarsest key an addressable has. */
 private fun EventQuery.narrowAddresses(
