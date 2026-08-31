@@ -150,6 +150,28 @@ class SplicedMemberWeightsIT {
                             floored.sortedByDescending { it.score ?: 0.0 }.map { it.hit.pubkey },
                             "the floor reorders nothing inside the block: confidence still orders it",
                         )
+
+                        // THE OTHER KEYED SHAPE. A Trusted List of EVENTS names
+                        // its members by id, so the same claim has to hold for
+                        // `dotProduct(id, ...)` -> `rawScore(id)`. It is a
+                        // separate measurement rather than an inference from the
+                        // pubkey case: the two fields are declared identically in
+                        // `event.sd`, which is exactly the kind of "should behave
+                        // the same" that only a real engine settles. (These
+                        // fixtures use the pubkey as the id, so one corpus proves
+                        // both.)
+                        val byIdWeight =
+                            index.searchRanked(
+                                weighted.copy(authorWeights = emptyMap(), idWeights = MEMBERS.toMap()),
+                            )
+                        assertEquals(
+                            MEMBERS.map { it.first }.toSet(),
+                            byIdWeight.map { it.hit.id }.toSet(),
+                            "an id-weighted recall is the key set too, zero weight included",
+                        )
+                        val idScores = byIdWeight.associate { it.hit.id to (it.score ?: 0.0) }
+                        assertEquals(4_000.0, idScores.getValue(FULL), 1.0, "rawScore(id) reaches the top of the member band")
+                        assertEquals(550.0, idScores.getValue(NONE), 1.0, "and a zero weight scores the rung's floor, not a lost number")
                     }
                 }
             }
