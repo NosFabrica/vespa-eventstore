@@ -65,6 +65,41 @@ class EventYqlTest {
     }
 
     @Test
+    fun `a weighted recall goes out as dotProduct, carrying each key's number`() {
+        val q =
+            EventYql.build(
+                EventQuery(
+                    kinds = listOf(0),
+                    authorWeights = mapOf(hexA to 87, hexB to 0),
+                    ranking = EventYql.RANK_SPLICED_MEMBER,
+                ),
+            )!!
+        // dotProduct, NOT weightedSet: measured against a real Vespa, both
+        // recall exactly these keys on a single-value fast-search attribute and
+        // only dotProduct sets rawScore — with weightedSet every matched
+        // document reads 0 and the per-key number is lost. A ZERO weight is
+        // kept: it recalls its document and scores it zero, which is what a
+        // publisher who wrote 0 said.
+        assertEquals(
+            "select ${EventYql.SUMMARY_FIELDS} from event where kind in (0) " +
+                "and dotProduct(pubkey, {\"$hexA\": 87, \"$hexB\": 0})",
+            q.yql,
+        )
+        assertEquals(EventYql.RANK_SPLICED_MEMBER, q.ranking)
+    }
+
+    @Test
+    fun `a weighted recall of ids keys the id attribute, and invalid keys cannot match`() {
+        val ids = EventYql.build(EventQuery(idWeights = mapOf(hexA to 40), ranking = EventYql.RANK_SPLICED_MEMBER))!!
+        assertTrue(ids.yql.contains("dotProduct(id, {\"$hexA\": 40})"), ids.yql)
+
+        // Same unsatisfiability rule the unweighted key clauses follow: a
+        // constraint whose every key is invalid can match nothing, and that is
+        // a null query rather than an unconstrained one.
+        assertNull(EventYql.build(EventQuery(authorWeights = mapOf("not-hex" to 50))))
+    }
+
+    @Test
     fun `existence queries are summary-free — dedup class, no order, no limit`() {
         val q = EventYql.buildExistence(listOf(hexA.uppercase(), hexB, hexB, "invalid"))!!
         // Order and limit are deliberately absent: membership is unordered, and

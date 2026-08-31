@@ -32,6 +32,35 @@ data class EventQuery(
     val kinds: List<Int> = emptyList(),
     /** 64-hex pubkeys. */
     val authors: List<String> = emptyList(),
+    /**
+     * A KEYED RECALL THAT CARRIES A NUMBER PER KEY — the constraint [authors]
+     * expresses, plus a 0..100 weight the RANKING reads back per document as
+     * `rawScore(pubkey)`.
+     *
+     * It exists because a rank feature is a property of the QUERY and a
+     * publisher's confidence is not: the search expansion knows how sure a
+     * Trusted List is about each member it names, and one lookup serves many
+     * members. Without this the only way to tell the engine a per-member number
+     * was to GROUP members by that number and pay a round trip per group — which
+     * is why `spliced_member` quantized confidence to quarters. A weight rides
+     * with its key instead, so one query carries a whole list and every member
+     * is scored by what its own publisher said about it, unrounded.
+     *
+     * REPLACES [authors] for that field rather than joining it: a query carries
+     * one or the other, and the caller is expected to have intersected its own
+     * author constraint into these keys already.
+     *
+     * MEASURED against a real Vespa (2026-08-31), because the operator choice
+     * is not obvious from the docs: `dotProduct` on a single-value `fast-search`
+     * string attribute recalls exactly the keys AND sets `rawScore` to the
+     * matched key's weight, while `weightedSet` recalls the same rows and leaves
+     * `rawScore` at 0 — which is why this is not that operator. A weight of ZERO
+     * still recalls its document (recall and score are independent), so a
+     * publisher's honest 0 survives without an offset.
+     */
+    val authorWeights: Map<String, Int> = emptyMap(),
+    /** [authorWeights] for [ids] — `rawScore(id)`, the shape a Trusted List of EVENTS names. */
+    val idWeights: Map<String, Int> = emptyMap(),
     /** 64-hex owner pubkeys (the semantic owner: gift-wrap recipient or author). */
     val owners: List<String> = emptyList(),
     /** Single-letter tag name -> values. OR within a name, AND across names. */

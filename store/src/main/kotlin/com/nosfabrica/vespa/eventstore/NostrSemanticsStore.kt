@@ -627,7 +627,7 @@ class NostrSemanticsStore(
     ): List<R> {
         val hits = page.hits
         if (expansion == null || hits.isEmpty()) return hits
-        val expanded = expansion.expand(hits, keys, pointerOf, recall)
+        val expanded = expansion.expand(hits, page.scores, keys, pointerOf, recall)
 
         // THE POINTER'S OWN ORDER FIRST, always — the sort below is a stable
         // re-sort of it, so a tie between a subject and its own pointer resolves

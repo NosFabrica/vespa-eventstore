@@ -64,30 +64,59 @@ class InMemoryEventIndex(
      * Everything else here reports a null score on purpose: a fabricated
      * relevance would let a test pass against a ranking this index cannot
      * actually perform. But `spliced_member` is not a judgement about text, it
-     * is a placement rule stated in `event.sd` §13 — a rung plus a confidence
-     * span — so a reference implementation can hold it exactly, and a consumer
-     * assembling this index gets the same order it would get from Vespa for the
-     * same confidences. The constants are the schema's own defaults.
+     * is a placement rule stated in `event.sd` §13 — a rung, a confidence span,
+     * and a floor at a share of the pointer that found it — so a reference
+     * implementation can hold it exactly, and a consumer assembling this index
+     * gets the same order it would get from Vespa for the same confidences and
+     * the same pointer. The constants are the schema's own defaults.
+     *
+     * PER DOCUMENT, because the confidence is: a weighted recall carries each
+     * member's own number with its key ([EventQuery.authorWeights]), which is
+     * what `rawScore` reads back on the real engine and [Compiled.rawScoreOf]
+     * reads back here.
      */
-    private fun memberScoreOf(query: EventQuery): Double? {
+    private fun memberScoreOf(
+        query: EventQuery,
+        compiled: Compiled,
+        doc: EventDoc,
+    ): Double? {
         if (query.ranking != EventYql.RANK_SPLICED_MEMBER) return null
-        val conf = query.rankFeatures[EventYql.F_MEMBER_CONF] ?: 1.0
         val gamma = query.rankFeatures["w_member_gamma"] ?: 1.0
+        // Per DOCUMENT when the recall carried weights, per QUERY otherwise —
+        // the schema's own switch, for the same reason: a publisher's honest 0
+        // reads as rawScore 0, so the value cannot double as the flag.
+        val conf =
+            if ((query.rankFeatures[EventYql.F_DOC_CONF] ?: 0.0) > 0.0) {
+                compiled.rawScoreOf(doc) / 100.0
+            } else {
+                query.rankFeatures[EventYql.F_MEMBER_CONF] ?: 1.0
+            }
+        val weighted = Math.pow(conf.coerceIn(0.0, 1.0), gamma)
 
         // No reputation here, so wot_mult() is 1.0 — which is also what the
         // trust-multiplied profile computes for an unlensed read.
-        return MEMBER_TIER + MEMBER_SPAN * Math.pow(conf.coerceIn(0.0, 1.0), gamma)
+        val rung = MEMBER_TIER + MEMBER_SPAN * weighted
+        // The pointer floor, absent (0) unless the caller sent one. Same max()
+        // the profile takes, so this reference orders a spliced page the way
+        // Vespa would for the same confidences and the same pointer.
+        val span = query.rankFeatures[EventYql.F_SUBJECT_FLOOR_SPAN] ?: DEFAULT_FLOOR_SPAN
+        val floor = (query.rankFeatures[EventYql.F_POINTER_REL] ?: 0.0) * (span + (1 - span) * weighted)
+        return maxOf(rung, floor)
     }
 
-    override suspend fun searchRanked(query: EventQuery): List<Ranked<EventDoc>> {
-        val member = memberScoreOf(query)
-        return search(query).map { Ranked(it, member) }
+    /** Both ranked paths score per DOCUMENT now — the weights ride with the keys, so the page is not one number. */
+    private fun <R> rankedBy(
+        query: EventQuery,
+        hits: List<EventDoc>,
+        project: (EventDoc) -> R,
+    ): List<Ranked<R>> {
+        val compiled = Compiled(query)
+        return hits.map { Ranked(project(it), memberScoreOf(query, compiled, it)) }
     }
 
-    override suspend fun rawSearchRanked(query: EventQuery): List<Ranked<RawEvent>> {
-        val member = memberScoreOf(query)
-        return rawSearch(query).map { Ranked(it, member) }
-    }
+    override suspend fun searchRanked(query: EventQuery): List<Ranked<EventDoc>> = rankedBy(query, search(query)) { it }
+
+    override suspend fun rawSearchRanked(query: EventQuery): List<Ranked<RawEvent>> = rankedBy(query, search(query)) { it.toRawEvent() }
 
     override suspend fun search(query: EventQuery): List<EventDoc> {
         // A present limit <= 0 is the "matches nothing" sentinel, as in
@@ -133,12 +162,32 @@ class InMemoryEventIndex(
         private val kinds = q.kinds.toHashSet()
         private val authors = q.authors.normHex()
         private val owners = q.owners.normHex()
+
+        // A WEIGHTED recall constrains exactly as its unweighted twin does —
+        // `dotProduct(field, {key: weight})` recalls those keys and nothing
+        // else, and a ZERO weight recalls its document like any other key
+        // (measured against a real Vespa). The numbers matter only to
+        // [rawScoreOf]; to matching they are a key set.
+        private val idWeights = q.idWeights.normHexKeys()
+        private val authorWeights = q.authorWeights.normHexKeys()
         private val unsatisfiable =
             (q.ids.isNotEmpty() && ids.isEmpty()) ||
                 (q.authors.isNotEmpty() && authors.isEmpty()) ||
+                (q.idWeights.isNotEmpty() && idWeights.isEmpty()) ||
+                (q.authorWeights.isNotEmpty() && authorWeights.isEmpty()) ||
                 (q.owners.isNotEmpty() && owners.isEmpty())
 
         private fun List<String>.normHex(): HashSet<String> = mapTo(HashSet()) { it.lowercase() }.apply { retainAll { Hex.isHex64(it) } }
+
+        private fun Map<String, Int>.normHexKeys(): Map<String, Int> = entries.mapNotNull { (key, weight) -> key.lowercase().takeIf(Hex::isHex64)?.let { it to weight } }.toMap()
+
+        /**
+         * `rawScore(pubkey) + rawScore(id)` for one document — the weight its
+         * own key carried, or 0 where this query weighted nothing it matched.
+         * Only one of the two is ever non-zero on a real lookup: a subject is
+         * named by an id or by a pubkey, never both.
+         */
+        fun rawScoreOf(d: EventDoc): Double = ((authorWeights[d.pubkey] ?: 0) + (idWeights[d.id] ?: 0)).toDouble()
 
         /** One set of `name:value` pairs per OR-tag constraint: the doc matches if any of ITS pairs is in the set. */
         private val tagAny: List<HashSet<String>> = q.tags.map { (name, values) -> values.mapTo(HashSet()) { "$name:$it" } }
@@ -150,8 +199,10 @@ class InMemoryEventIndex(
             if (unsatisfiable) return false
             val pairs = if (tagAny.isEmpty() && tagAll.isEmpty()) emptyList() else d.tagIndex()
             return (ids.isEmpty() || d.id in ids) &&
+                (idWeights.isEmpty() || d.id in idWeights) &&
                 (kinds.isEmpty() || d.kind in kinds) &&
                 (authors.isEmpty() || d.pubkey in authors) &&
+                (authorWeights.isEmpty() || d.pubkey in authorWeights) &&
                 (owners.isEmpty() || d.owner in owners) &&
                 tagAny.all { set -> pairs.any { it in set } } &&
                 tagAll.all { required -> required.all { it in pairs } } &&
@@ -172,5 +223,8 @@ class InMemoryEventIndex(
         /** `event.sd` §13 defaults, mirrored so this reference orders as Vespa would. */
         const val MEMBER_TIER = 550.0
         const val MEMBER_SPAN = 3450.0
+
+        /** `event.sd`'s query(w_subject_floor_span) default — one rung below the pointer. */
+        const val DEFAULT_FLOOR_SPAN = 0.1769
     }
 }
