@@ -25,7 +25,7 @@ A Vespa-backed implementation of Quartz's `IEventStore` (Quartz is the Nostr lib
 - First build installs git hooks (`.git-hooks` → `.git/hooks`): pre-commit runs `spotlessCheck`, pre-push runs `test`.
 - Spotless enforces ktlint plus the MIT license header (`.spotless/copyright.kt`) on every `.kt` file — new files without the header fail the build; `spotlessApply` inserts it.
 - Dependency versions live in `gradle/libs.versions.toml`. Quartz comes from JitPack **pinned by commit** (`quartz = "<sha>"`); bumps are deliberate and the comment there records what the new pin contains. The published library version is `app`.
-- Benchmarks (against a live Vespa): `./gradlew :benchmark:run`, plus targeted tasks (`searchBench`, `queryBench`, `visitBench`, `multiFilterBench`, `rankAb`, …) — see `benchmark/README.md`, which is also the repo's performance knowledge base (measured numbers, config A/Bs, why decisions were made).
+- Benchmarks (against a live Vespa): `./gradlew :benchmark:run`, plus targeted tasks (`searchBench`, `queryBench`, `visitBench`, `multiFilterBench`, `rankAb`, `searchTrace` — the per-clause-family latency split for one NIP-50 term, …) — see `benchmark/README.md`, which is also the repo's performance knowledge base (measured numbers, config A/Bs, why decisions were made).
 - Local Vespa for manual testing: `docker run --detach --name vespa --publish 8080:8080 --publish 19071:19071 vespaengine/vespa`; `VespaEventStore.open(url)` auto-deploys the bundled schema on first contact.
 
 ## The live staging system (real data to pull into a local environment)
