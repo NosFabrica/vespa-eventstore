@@ -174,8 +174,8 @@ behind the pointer that named it: NIP-32 labels (1985), NIP-85 assertions
   `a page of labels costs one lookup, however long the page` is the guard.
 - **Placement is the ENGINE's number, on ONE scale.** A scored member is fetched
   under `spliced_member` (`event.sd` §13): its own rung (the affiliation band,
-  widened by its confidence, times its own trust) OR a floor at a share of the
-  POINTER that found it — whichever is higher. The floor is what the rung cannot
+  widened by its confidence) OR a floor at a share of the POINTER that found it
+  — whichever is higher, and **neither carries the member's own trust**. The floor is what the rung cannot
   express: the member matched none of the query's words, so only the pointer knows
   the query, and a 4,000 x wot ceiling cannot reach a 130,000 x wot title match
   from below (measured on staging: a `Verified Human` list at #10 on its title, the
@@ -183,7 +183,23 @@ behind the pointer that named it: NIP-32 labels (1985), NIP-85 assertions
   from one rank-30 bot). The floor is a SPAN of rungs, not a share of an arbitrary
   number — `w_subject_floor_span` defaults to `w_near_tier / w_name_tier`, so a
   member lands within one rung of its pointer however doubted, ordered inside that
-  span by confidence. Nothing is computed in the store: the two placements it
+  span by confidence.
+- **`wot_mult()` IS NOT IN THE MEMBER RUNG, and removing it is what made the floor
+  work.** The floor is a share of `query(pointer_rel)`, which is the pointer's
+  FINISHED relevance and so already carries the SIGNER's trust — and a Trusted
+  List is signed by a NIP-85 service key nobody follows. Multiplying the rung by
+  the MEMBER's trust put the two sides of the `max()` in different units: the
+  floor's side times 1, the rung's times up to 251,189, so the floor never bound.
+  Measured on the production corpus (page span 610..2.39e5): with the trust term,
+  members scored 2.19e8..1.00e9 — four orders of magnitude above the page, ordered
+  by trust rather than by the publisher, and the SAME whether the list matched on
+  its title or barely at all; without it, 1.70e5..2.39e5 behind a title match and
+  2.85e3..4.00e3 behind a weak one. Putting `wot_mult()` on the FLOOR instead was
+  measured and is worse — once the floor wins the max the score is
+  `wot_mult x floor`, so trust decides the order again and members reach 6.02e10.
+  A member's trust still decides ADMISSION (the gate runs on the lookup); it does
+  not decide placement. `SplicedMemberWeightsIT` pins that a reader who trusts a
+  member at 90 sees it on the same rung as one they have never heard of. Nothing is computed in the store: the two placements it
   tried both broke (multiplying the pointer's banded relevance by confidence
   ejected members into the gap below; clamping each member to its pointer made the
   SIGNER's trust the ceiling for everyone the list names — a service key nobody

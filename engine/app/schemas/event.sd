@@ -1946,11 +1946,41 @@ schema event {
         }
 
         # WHAT THIS MEMBER IS WORTH ON ITS OWN: the affiliation rung, widened by
-        # the publisher's confidence, times the member's own trust. An absolute
-        # answer — "how good is this person" — and the only one available to a
-        # lookup that carries none of the query's words.
+        # the publisher's confidence. An absolute answer — "how sure is the list
+        # about this person" — and the only one available to a lookup that
+        # carries none of the query's words.
+        #
+        # NO wot_mult() HERE, AND THAT IS THE POINT. It used to be multiplied in,
+        # which put the two sides of the max() below in different units: the rung
+        # carried the MEMBER's trust and pointer_floor() carries the SIGNER's,
+        # because query(pointer_rel) is the pointer's finished relevance. A
+        # Trusted List is signed by a NIP-85 service key nobody follows, so its
+        # side was multiplied by 1 while the member's side was multiplied by up
+        # to 251 189 — and the floor never bound. Measured on the production
+        # corpus, against the real `Verified Human` list and its members' real
+        # trust ranks, with the page itself spanning 610..2.39e5:
+        #
+        #   rung x wot_mult   members 2.19e8..1.00e9, four orders of magnitude
+        #                     ABOVE the page they are meant to sit on, ordered by
+        #                     trust rather than by what the publisher said, and
+        #                     the same 2.19e8..1.00e9 whether the list matched the
+        #                     query on its title or barely at all
+        #   rung alone        members 1.70e5..2.39e5 behind a title match and
+        #                     2.85e3..4.00e3 behind a weak one — inside the page,
+        #                     tracking how well the list actually answered, and
+        #                     ordered by the publisher's confidence
+        #
+        # Multiplying the FLOOR by wot_mult() instead was measured too and is
+        # worse: once the floor wins the max() the score is wot_mult x floor, so
+        # trust decides the order again, and members land at 6.02e10.
+        #
+        # A member's own reputation still decides whether it is ADMITTED — the
+        # observer gate runs on the lookup like any other read — it just no
+        # longer decides where it sits. Placement is the publisher's confidence
+        # and the pointer's relevance, which are the two things a spliced row
+        # actually has to say for itself.
         function member_rung() {
-            expression: (query(w_member_tier) + query(w_member_span) * pow(member_confidence(), query(w_member_gamma))) * wot_mult()
+            expression: query(w_member_tier) + query(w_member_span) * pow(member_confidence(), query(w_member_gamma))
         }
 
         # WHAT IT IS WORTH AS THE ANSWER TO THIS QUERY: a share of the pointer
@@ -1962,19 +1992,26 @@ schema event {
             expression: query(pointer_rel) * (query(w_subject_floor_span) + (1 - query(w_subject_floor_span)) * pow(member_confidence(), query(w_member_gamma)))
         }
 
-        # THE HIGHER OF THE TWO, never one instead of the other. A member whose
-        # own rung beats its share of the pointer keeps the rung (a high-trust
-        # person on a barely-matching list), and a member of a strongly matched
-        # list rides with it (the case the rung cannot reach: its ceiling of
-        # 4 000 x wot cannot climb to a title match's 130 000 x wot, whatever
-        # the publisher or the reader think of the person).
+        # THE HIGHER OF THE TWO, never one instead of the other, and now in the
+        # same units so the comparison means something. A member of a strongly
+        # matched list rides with it; one whose list barely matched keeps the
+        # rung, which is the floor of the affiliation band rather than a fall off
+        # the page. Both sides are bounded above by query(pointer_rel), so no
+        # subject can pass the pointer that found it — the invariant the store's
+        # LIFT exists to protect, now held by the arithmetic as well.
         first-phase {
             expression: max(member_rung(), pointer_floor())
         }
 
         # The decisive signals, surfaced for the same reason `search` surfaces
         # its bands: a ranking input nobody can see is one nobody can debug, and
-        # "why is this member here" is now two numbers and a max.
+        # "why is this member here" is two numbers and a max.
+        #
+        # wot_mult stays although it no longer places anything. It is what the
+        # GATE ran on — "why is this member here at all" is still a trust
+        # question even though "why is it HERE" is not — and it is the number
+        # that read 251 189 while the floor read 1, which is how the inert floor
+        # was found. Reading it back is cheap and the next person will want it.
         match-features {
             member_confidence
             member_rung
