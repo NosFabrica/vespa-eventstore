@@ -168,6 +168,47 @@ run-to-run variance of the same size as the deltas (one `before` run spans
 change is smaller than this rig can resolve**. Don't measure a rank-profile A/B
 while anything else runs on the box.
 
+### The reader's own list, end to end (2026-09-01)
+
+`rankAb` cannot show this and never could: the expansion lives in
+`NostrSemanticsStore`, so a spliced row exists only on the store path. That is
+what `storeDump` is for. Same 10 961-event slice, replayed through the store's
+own write path, asked the way the relay asks:
+
+```bash
+VESPA_URL=http://localhost:8080 ./gradlew :benchmark:storeDump \
+  --args="--search 'Verified Human' --observer f8ff11c7…a17a --limit 14"
+```
+
+| # | name / title | kind | author |
+| --- | --- | --- | --- |
+| 1 | `Verified Human` | **30000** | f8ff11c7 (the reader) |
+| 2 | david | 0 | e5272de9 |
+| 3 | Avi Burra | 0 | b83a28b7 |
+| 4 | Jackthemimic | 0 | dd1f9d50 |
+
+Three things are visible in four rows. The pointer is the reader's OWN NIP-51
+people list, which before `SearchReferences.PEOPLE_LISTS` was an ordinary hit
+that spliced nobody — on `--kinds 0` it was dropped on the way out and the tab
+served nothing from it. The people behind it are its members. And their ORDER is
+§13.1 rung (b) at work: NIP-51 has nowhere to put a per-member score, so each
+member is placed by its own rank under this reader — 100, 98, 82 in the staging
+tensors, which is the order they come back in.
+
+**The gate, in the same run.** Under `observer:460c25…065c` — the observer this
+slice was captured for, whose 10040 names a rank service and no list service —
+the identical query returns three ordinary text hits and NO spliced rows at all.
+The Tapestry key that signs the `Verified Human` 30392s is not one this reader
+enrolled, so it unpacks nothing for them. Same corpus, same query, two lenses,
+and the difference is entirely whose 10040 said what.
+
+**What this slice cannot show.** It carries reputation cells for the observers
+whose provider cards were captured, so a member with no card under the lens you
+ask through is gated out before placement can be read — 4 rows here where
+staging serves 21. Capture the lens you intend to measure (its 10040, and its
+rank provider's 30382s for the authors involved), or read the ordering claims
+off `MemberTrustIT`, which seeds its own trust.
+
 ### Recency in text ranking — the baseline the sweep has to beat (2026-08-22)
 
 `event.sd` ships **`w_recency` 0.1** with a 30-day half-life on the trust
