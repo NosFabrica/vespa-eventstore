@@ -73,22 +73,21 @@ internal data class Delegations(
     private val byObserver: Map<String, Map<Int, Set<String>>>,
 ) {
     /**
-     * What [observers] have asked for: themselves, plus each kind's delegated
-     * signers. An empty [observers] admits nothing, which is the anonymous read
-     * that expands no declaration at all.
+     * What ONE observer has asked for: themselves, plus each kind's delegated
+     * signers. The anonymous read has no observer and so expands no declaration
+     * at all — its caller passes [Enrolment.NONE] rather than a key.
      *
-     * Two observers UNION per kind — a REQ naming both is one reader asking
-     * through two points of view, and a declaration either of them delegated is
-     * one they asked for.
+     * ONE OBSERVER, DELIBERATELY. This took a `Set` and unioned across it, so a
+     * read carrying two `observer:` lenses unpacked any declaration EITHER had
+     * enrolled — defensible for a client sending its own two points of view,
+     * and wrong for anything else: a relay multiplexing two people's filters
+     * into one store call would let B's trust service place rows on A's page,
+     * when the entire premise of the gate is that A chose their services in A's
+     * own 10040. An observer's service key may never unpack for another, so the
+     * union is gone and [SearchReferenceExpansion] keys the gate by the lens
+     * that found each pointer.
      */
-    fun of(observers: Set<String>): Enrolment {
-        if (observers.isEmpty()) return Enrolment.NONE
-        val byKind = HashMap<Int, MutableSet<String>>()
-        for (observer in observers) {
-            byObserver[observer]?.forEach { (kind, keys) -> byKind.getOrPut(kind) { HashSet() }.addAll(keys) }
-        }
-        return Enrolment(observers, byKind)
-    }
+    fun of(observer: String): Enrolment = Enrolment(setOf(observer), byObserver[observer] ?: emptyMap())
 
     companion object {
         val NONE = Delegations(emptyMap())

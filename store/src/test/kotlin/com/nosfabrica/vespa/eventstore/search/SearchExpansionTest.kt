@@ -73,8 +73,11 @@ class SearchExpansionTest {
         at: Long = next(),
     ): Event = EventFactory.create(id(), author, at, kind, tags, content, "")
 
-    /** The reader's Treasure Map: `curator` computes for them, and per kind. */
-    private fun treasureMap(vararg entries: Array<String>) = event(10040, arrayOf(*entries), author = reader)
+    /** A Treasure Map: `curator` computes for [owner], and per kind. */
+    private fun treasureMap(
+        vararg entries: Array<String>,
+        owner: String = reader,
+    ) = event(10040, arrayOf(*entries), author = owner)
 
     /** A kind-0 for [subject] — what a list of pubkeys and a contact card both splice. */
     private val profile = event(0, emptyArray(), """{"name":"Ada Bramble"}""", author = subject)
@@ -514,6 +517,60 @@ class SearchExpansionTest {
             assertEquals(listOf(mine.id, profile.id), page(search("podcaster", listOf(0, 30392))))
             // No observer: nothing to have delegated, so nothing unpacks.
             assertEquals(listOf(mine.id), page(search("podcaster", listOf(0, 30392), observer = null)))
+        }
+
+    @Test
+    fun `one observer's service key never unpacks for another`() =
+        runBlocking {
+            store.insert(profile)
+            // Only the STRANGER enrolled the curator. The reader enrolled
+            // nobody, and the two read together.
+            store.insert(treasureMap(arrayOf("30392", curator, "wss://lists.example"), owner = stranger))
+            val list = userList("Podcaster Trust List")
+            store.insert(list)
+
+            // Both filters are points of view on ONE page, and only one of them
+            // enrolled the signer — so the list is served as the ordinary hit
+            // it is and unpacks nothing. Under the pooled gate the stranger's
+            // delegation opened it for the reader too, and `profile` rode a
+            // page the reader never asked for it on.
+            assertEquals(
+                listOf(list.id),
+                page(search("podcaster", listOf(0, 30392), observer = reader), search("podcaster", listOf(0, 30392), observer = stranger)),
+                "a signer only one observer enrolled must not unpack onto the page they share",
+            )
+            // ...in either order: `accepts` ignores the terms, so which filter
+            // "found" the pointer is not a question the page can answer, and
+            // the gate must not depend on the answer.
+            assertEquals(
+                listOf(list.id),
+                page(search("podcaster", listOf(0, 30392), observer = stranger), search("podcaster", listOf(0, 30392), observer = reader)),
+                "…whatever order the filters arrived in",
+            )
+
+            // The stranger reading ALONE unpacks it: the gate is unpooled, not off.
+            assertEquals(
+                listOf(list.id, profile.id),
+                page(search("podcaster", listOf(0, 30392), observer = stranger)),
+                "the enrolling observer's own read still unpacks",
+            )
+        }
+
+    @Test
+    fun `a declaration both observers enrolled unpacks for the read they share`() =
+        runBlocking {
+            store.insert(profile)
+            store.insert(treasureMap(arrayOf("30392", curator, "wss://lists.example")))
+            store.insert(treasureMap(arrayOf("30392", curator, "wss://lists.example"), owner = stranger))
+            val list = userList("Podcaster Trust List")
+            store.insert(list)
+
+            // Unanimous: every point of view on the read asked for this signer,
+            // so the members ride the shared page for both of them.
+            assertEquals(
+                listOf(list.id, profile.id),
+                page(search("podcaster", listOf(0, 30392), observer = reader), search("podcaster", listOf(0, 30392), observer = stranger)),
+            )
         }
 
     @Test

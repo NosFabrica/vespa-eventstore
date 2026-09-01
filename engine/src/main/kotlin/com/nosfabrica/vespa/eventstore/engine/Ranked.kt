@@ -39,4 +39,21 @@ package com.nosfabrica.vespa.eventstore.engine
 data class Ranked<T>(
     val hit: T,
     val score: Double?,
+    /**
+     * The hit's TEXT band alone — `event.sd`'s text_score match-feature, before
+     * the trust and recency multipliers [score] carries.
+     *
+     * Only the trust-ranked profiles report one, so this is null wherever
+     * [score] is and also wherever the serving profile declares no
+     * match-features. It costs nothing on the wire: `search` computes and
+     * serializes its match-features per hit already (see the comment on
+     * recency_gated_exact for why the termless profiles refuse to), so this is
+     * a field read on a JSON object the client parses either way.
+     *
+     * WHO NEEDS IT: the search expansion, to place a Trusted List's member by
+     * how well the LIST answered the query times what the list says about that
+     * MEMBER — the signer's own trust, which [score] multiplies in, is the one
+     * number that must not decide it (`event.sd` §13).
+     */
+    val textScore: Double? = null,
 )

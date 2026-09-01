@@ -521,7 +521,9 @@ class VespaEventIndex(
                 if (q.isRecencyOrdered()) {
                     recallSummaries(q).mapNotNull { project(it) }.map { Ranked(it, null) }
                 } else {
-                    rankedHits(q).mapNotNull { hit -> hit.fields?.let(project)?.let { Ranked(it, hit.relevance) } }
+                    rankedHits(q).mapNotNull { hit ->
+                        hit.fields?.let(project)?.let { Ranked(it, hit.relevance, textScoreOf(hit.fields?.matchfeatures)) }
+                    }
                 }
             }
         }
@@ -612,6 +614,14 @@ class VespaEventIndex(
                     .mapNotNull { hit -> hit.fields?.let { f -> f.toDoc()?.let { ScoredHit(it, hit.relevance, tierOf(f.matchfeatures)) } } }
             }
         }
+
+    /**
+     * The TEXT band behind a hit's relevance — `text_score`, straight off the
+     * match-features the trust profiles already serialize. Null on a profile
+     * that declares none (every termless/recency shape), which is exactly where
+     * a caller must fall back rather than invent a number.
+     */
+    private fun textScoreOf(mf: JsonObject?): Double? = (mf?.get("text_score") as? JsonPrimitive)?.content?.toDoubleOrNull()
 
     /** The rank band a hit arrived through, from the profile's match-features; null when none were served. */
     private fun tierOf(mf: JsonObject?): String? {

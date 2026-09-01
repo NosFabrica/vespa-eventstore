@@ -516,10 +516,16 @@ class NostrSemanticsStore(
         // no Treasure Maps — where the answer is never cached, by design. Labels
         // are ungated, so the expansion still runs; it just runs with nothing
         // enrolled.
-        val observers = searching.mapNotNullTo(HashSet()) { it.observer }
+        //
+        // PER OBSERVER, never pooled: the supplier takes the lens's own observer
+        // and the expansion memoizes per key, so one filter's `observer:` can
+        // never unpack a declaration only the filter beside it enrolled. The
+        // resolution is the same one either way — `delegations()` caches the
+        // parsed Maps, and `of()` is a pure fold over that cache — so a
+        // two-lens read costs a second fold, not a second query.
         return SearchReferenceExpansion(
             searching,
-            { if (observers.isEmpty()) Enrolment.NONE else delegations().of(observers) },
+            { observer -> if (observer == null) Enrolment.NONE else delegations().of(observer) },
             searchExpansion,
         )
     }
@@ -644,9 +650,17 @@ class NostrSemanticsStore(
     private class Page<R>(
         val hits: List<R>,
         val scores: List<Double?>?,
+        /**
+         * The TEXT band behind each score — `Ranked.textScore`, index-aligned
+         * with [hits] and null wherever [scores] is. The splice places a
+         * Trusted List's member by the band the LIST earned times what the list
+         * says about that MEMBER, so it needs the pointer's text apart from the
+         * signer's trust that [scores] multiplies in.
+         */
+        val texts: List<Double?>? = null,
     ) {
         companion object {
-            fun <R> of(ranked: List<Ranked<R>>) = Page(ranked.map { it.hit }, ranked.map { it.score })
+            fun <R> of(ranked: List<Ranked<R>>) = Page(ranked.map { it.hit }, ranked.map { it.score }, ranked.map { it.textScore })
         }
     }
 
@@ -679,7 +693,7 @@ class NostrSemanticsStore(
     ): List<R> {
         val hits = page.hits
         if (expansion == null || hits.isEmpty()) return hits
-        val expanded = expansion.expand(hits, page.scores, keys, pointerOf, recall)
+        val expanded = expansion.expand(hits, page.scores, page.texts, keys, pointerOf, recall)
 
         // THE POINTER'S OWN ORDER FIRST, always — the sort below is a stable
         // re-sort of it, so a tie between a subject and its own pointer resolves

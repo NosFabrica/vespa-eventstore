@@ -1627,8 +1627,16 @@ schema event {
         # regression; the store sends 0.0 for that case). query(min_rank) is
         # therefore ALSO the curve's anchor, not just the gate: a sender that
         # wants "no gate" must pass min_rank=0, never omit the feature.
+        # THE CURVE ITSELF, over any 0..100 trust number — extracted from
+        # wot_mult() when §13 needed to run it over a number that is NOT the
+        # author's own rank (a Trusted List's score for one of its members).
+        # One expression, so the two can never drift into two calibrations.
+        function wot_of(r) {
+            expression: if(r < query(min_rank), 0.0, 1.0 + query(w_wot) * pow(min(max(0.0, r - query(min_rank)), 100.0), query(w_wot_pow)))
+        }
+
         function wot_mult() {
-            expression: if(user_score() < query(min_rank), 0.0, 1.0 + query(w_wot) * pow(min(max(0.0, user_score() - query(min_rank)), 100.0), query(w_wot_pow)))
+            expression: wot_of(user_score())
         }
 
         # ---- RECENCY (docs/recency-ranking.md) ------------------------
@@ -2034,6 +2042,11 @@ schema event {
             # BUCKETS) and grouping by pointer are mutually exclusive, and only
             # the second can carry this number.
             query(pointer_rel) double: 0.0
+            # THE POINTER'S TEXT BAND — its relevance with the SIGNER'S TRUST
+            # and the recency multiplier left out (see EventYql.F_POINTER_TEXT).
+            # 0 means the caller sent none, and every member then places exactly
+            # as it did before §13.1 existed.
+            query(pointer_text) double: 0.0
             # HOW FAR A DOUBTED MEMBER MAY FALL BELOW ITS POINTER, as a fraction
             # of the pointer's own relevance: the floor runs from
             # pointer x span (confidence 0) to pointer x 1 (full confidence).
@@ -2085,6 +2098,53 @@ schema event {
             expression: if (query(doc_conf) > 0, (rawScore(pubkey) + rawScore(id)) / 100, query(member_conf))
         }
 
+        # ---- §13.1 WHOSE TRUST PLACES A MEMBER ------------------------------
+        #
+        # NOT THE SIGNER'S, whenever anything better exists. A NIP-85 provider
+        # is a key the reader APPOINTED in their 10040, and the write path has
+        # always read it that way: TrustRecompute stores a provider's asserted
+        # rank AS the observer's trust in that subject, at face value, with the
+        # provider's own rank nowhere in the equation. Ranking asked a different
+        # question — "who follows this key?" — and got the only answer a follow
+        # graph can give about a robot: measured on staging, 0 for a reader who
+        # has not enrolled it and 26 for one who has. Every member of every list
+        # it signs inherited that number as its magnitude.
+        #
+        # The precedence, most specific first:
+        #   (a) THE LIST'S OWN SCORE for this member (rawScore, per document —
+        #       see query(doc_conf)). The publisher appointed to compute this
+        #       says 87 about this person for this list; that is the whole
+        #       reason the reader enrolled them.
+        #   (b) THE MEMBER'S OWN RANK under this observer, when the list scored
+        #       nobody (bare `p` tags — a NIP-51 set, or a Trusted List
+        #       published without the score element). Still per member, still
+        #       from a provider this reader enrolled, just a different assertion
+        #       — a 30382 rank card rather than a list entry.
+        #   (c) NEITHER, and the placement falls through to pointer_floor()
+        #       below, which carries the signer's trust inside query(pointer_rel)
+        #       — the one case where the key that signed is all anybody said.
+        #
+        # -1 is the "(c)" sentinel: a publisher's honest 0 is a real confidence
+        # (see query(doc_conf)) and must place at the bottom, not fall through
+        # to a fallback that would promote it.
+        function member_trust() {
+            expression: if (query(doc_conf) > 0, rawScore(pubkey) + rawScore(id), if (user_score() > 0, user_score(), -1))
+        }
+
+        # WHERE A MEMBER SITS when somebody scored it: the band the POINTER
+        # earned with its words, times the curve over the member's own trust.
+        #
+        # The same shape as every organic hit on the page — text band x trust —
+        # which is what makes the number comparable to the page it joins, and
+        # the reason the text half must arrive separately from the pointer's
+        # finished relevance (query(pointer_text) vs query(pointer_rel)).
+        #
+        # NOT x recency_mult(), for the reason §13 gives: a member is fetched as
+        # a kind 0 whose created_at is when that person last edited a profile.
+        function delegated_place() {
+            expression: query(pointer_text) * wot_of(member_trust())
+        }
+
         # WHAT THIS MEMBER IS WORTH ON ITS OWN: the affiliation rung, widened by
         # the publisher's confidence. An absolute answer — "how sure is the list
         # about this person" — and the only one available to a lookup that
@@ -2115,10 +2175,19 @@ schema event {
         # trust decides the order again, and members land at 6.02e10.
         #
         # A member's own reputation still decides whether it is ADMITTED — the
-        # observer gate runs on the lookup like any other read — it just no
-        # longer decides where it sits. Placement is the publisher's confidence
-        # and the pointer's relevance, which are the two things a spliced row
-        # actually has to say for itself.
+        # observer gate runs on the lookup like any other read.
+        #
+        # WHAT CHANGED IN §13.1, and why this rung survives it. The measurement
+        # above rejected `rung x wot_mult()` — the member's OWN rank, on a rung
+        # of 550..4000, against a page that then spanned 610..2.39e5 because the
+        # pointer itself sat on the 550 affiliation band. Both halves of that
+        # setup are gone (the tiering fix put a title match on the 130 000 rung;
+        # §12.2 cleared the docs that never belonged there), so the numbers in
+        # it no longer describe anything, and §13.1 does place a scored member
+        # by a trust curve — over what the LIST said about it, which is a
+        # different number from the one that was rejected here and is not the
+        # signer's either. This rung stays as the FLOOR under both branches and
+        # as the whole answer for a lookup carrying no pointer numbers at all.
         function member_rung() {
             expression: query(w_member_tier) + query(w_member_span) * pow(member_confidence(), query(w_member_gamma))
         }
@@ -2139,8 +2208,32 @@ schema event {
         # the page. Both sides are bounded above by query(pointer_rel), so no
         # subject can pass the pointer that found it — the invariant the store's
         # LIFT exists to protect, now held by the arithmetic as well.
+        # WHICH PLACEMENT APPLIES IS A QUESTION ABOUT WHO SCORED THIS MEMBER,
+        # not a max() over both — because the two carry different trust and the
+        # max() would quietly hand the answer back to the signer.
+        #
+        # member_trust() >= 0 means somebody scored this person: the list did,
+        # or the reader's own rank service did. Then §13.1 places it, and
+        # query(pointer_rel) — the only number here carrying the SIGNER's trust
+        # — does not enter at all. Taking max(delegated, floor) instead would
+        # mean that a list signed by a well-followed key lifted every member it
+        # named back to the signer's own magnitude, flat, which is precisely the
+        # behaviour §13.1 exists to end.
+        #
+        # Nobody scored it, and the floor is the honest fallback: the signer is
+        # then the only opinion anyone expressed, and a member lands within one
+        # rung of the pointer that found it, as it has since the floor shipped.
+        #
+        # member_rung() floors both branches — the affiliation band rather than
+        # a fall off the page — and is the whole answer when a lookup carries no
+        # pointer numbers at all (an unranked finding query).
+        # ...and INERT until both halves arrive. query(pointer_text) is 0 on a
+        # caller that sends none — an engine whose profile reports no
+        # match-features, an older serving schema, the in-memory reference — and
+        # the floor answers exactly as it did before §13.1, rather than placing
+        # every scored member at zero.
         first-phase {
-            expression: max(member_rung(), pointer_floor())
+            expression: max(member_rung(), if (query(pointer_text) > 0, if (member_trust() >= 0, delegated_place(), pointer_floor()), pointer_floor()))
         }
 
         # The decisive signals, surfaced for the same reason `search` surfaces
@@ -2154,8 +2247,10 @@ schema event {
         # was found. Reading it back is cheap and the next person will want it.
         match-features {
             member_confidence
+            member_trust
             member_rung
             pointer_floor
+            delegated_place
             wot_mult
             rawScore(pubkey)
             rawScore(id)
