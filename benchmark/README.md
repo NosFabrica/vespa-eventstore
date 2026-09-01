@@ -116,6 +116,58 @@ the split rung onto the weak band, losing the distinction between "half the quer
 in a name" and "a bio mention"; 23 000 is the value that clears the page and
 keeps the ladder.
 
+### Whose trust places a spliced member — §13.1 (2026-09-01)
+
+A Trusted List's member is not a text match, so `spliced_member` synthesizes a
+score for it — and that score used to carry the trust of the KEY THAT SIGNED THE
+LIST. Measured on staging under `observer:460c25…065c` by bisecting
+`filter:rank:gte:N` per author:
+
+| author | rank |
+| --- | --- |
+| the Tapestry service key signing the `Verified Human` 30392s | **0** (26 under the enrolling reader's own lens) |
+| the kind-30000/39089 pins' signers (human curators) | 100 / 96 / 86 / 47 |
+| the Wikipedia-mirror bot whose 27 pages took the page | 28 |
+
+The write path never read enrolment that way: `TrustRecompute` stores an
+enrolled provider's asserted rank AS the observer's trust in that subject, face
+value, with the provider's own rank nowhere in it. §13.1 makes ranking agree —
+(a) the list's own score for the member, (b) the member's own rank when the list
+scored nobody, (c) neither, and only then the signer through the floor. Under
+(a)/(b) a member is placed at `query(pointer_text) × wot_of(member_trust)`: the
+band the POINTER earned with its words, times the curve over the member's own
+number, which is the same shape as every organic hit on the page.
+
+`MemberTrustIT` pins all three rungs, including the property that motivates
+them: a tenfold change in `query(pointer_rel)` — the only number carrying the
+signer's trust — leaves a scored member exactly where it was.
+
+**What it costs (2026-09-01).** The hot path gains one JSON field read per
+ranked hit (`text_score`, off a match-features object the client already parses
+— `search` computes and serializes match-features per hit regardless) and
+`wot_mult()` becomes an inlined call to `wot_of(user_score())`. A/B on one box:
+`searchBench`'s self-fed 100k-note corpus, single-node Vespa in Docker,
+`BENCH_SEARCH_REPS` 30, p50 per run, **four runs per variant, alternating
+deploys** (a rank-profile-only change, so the corpus is fed once and never
+re-fed):
+
+| shape | before (3 runs) | after (3 runs) | median Δ |
+| --- | --- | --- | --- |
+| common term (~50k matches) | 172.0 / 176.8 / 183.4 ms | 198.0 / 176.6 / 174.0 ms | **−0.1 %** |
+| common term limit=1000 | 214.5 / 214.5 / 215.0 | 247.2 / 229.0 / 214.7 | +6.7 % |
+| text (single-phase) | 31.8 / 31.1 / 31.7 | 30.8 / 29.9 / 31.2 | −2.9 % |
+| text2 (rerank 1000) | 37.5 / 36.3 / 41.6 | 36.7 / 38.1 / 38.5 | +1.6 % |
+| rare term | 23.7 / 19.7 / 21.4 | 23.7 / 22.7 / 24.9 | +10.9 % (of 20 ms) |
+| profile directory | 10.4 / 8.5 / 8.7 | 8.4 / 9.0 / 9.0 | +2.8 % |
+
+Round 1 is excluded and the reason is worth recording: its `text` 43.0 ms and
+`text2` 51.7 ms were a concurrent `compileTestKotlin` on the same box, not the
+change — runs 2–4 land back on 30/31 ms, identical to `before`. What remains is
+run-to-run variance of the same size as the deltas (one `before` run spans
+214.5–215.0 while one `after` run hits 247), so the honest reading is that **the
+change is smaller than this rig can resolve**. Don't measure a rank-profile A/B
+while anything else runs on the box.
+
 ### Recency in text ranking — the baseline the sweep has to beat (2026-08-22)
 
 `event.sd` ships **`w_recency` 0.1** with a 30-day half-life on the trust

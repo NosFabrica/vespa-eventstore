@@ -118,6 +118,13 @@ object RankAb {
             // synthetic shapes put four orders under a title match).
             "split_60k" to mapOf("w_split_tier" to 60000.0),
             "split_weak" to mapOf("w_split_tier" to 4000.0),
+            // §12.3, shipped INERT: a band above the token rung for a field
+            // that IS a multi-word query. Sweep these against the whole case
+            // table before shipping a value — a rung above the token band
+            // re-prices every crossing beneath it.
+            "perfect_tier_130k" to mapOf("w_perfect_tier" to 130000.0, "w_perfect_tier_text" to 1100.0),
+            "perfect_tier_400k" to mapOf("w_perfect_tier" to 400000.0, "w_perfect_tier_text" to 3400.0),
+            "perfect_tier_735k" to mapOf("w_perfect_tier" to 735000.0, "w_perfect_tier_text" to 6200.0),
             "perfect_max" to mapOf("w_perfect_pop" to 98000.0),
             "cutoff_50" to mapOf("text_score_cutoff" to 50.0),
             // Isolate the trust multiplier — the "is it ranking or is it data" test.

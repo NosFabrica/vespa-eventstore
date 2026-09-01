@@ -684,6 +684,32 @@ schema event {
             # jack, primal, amethyst) sits exactly where it did. Set to
             # query(w_name_tier) to switch the rung off.
             query(w_split_tier) double: 23000.0
+            # ---- §12.3 THE PERFECT RUNG, FOR MULTI-WORD QUERIES ONLY --------
+            #
+            # A field that IS the query, whole and in order, on a query of more
+            # than one word: `Verified Human` the Trusted List against `Verified
+            # Human Bot` and against `Human Verified`. Those three sat in one
+            # band separated only by query(w_perfect_pop)'s second-phase rung —
+            # ~9-12% of trust delta after w_perfect_pow, which is a tie-break,
+            # not a band.
+            #
+            # WHY IT COULD NOT SIMPLY BE query(w_perfect_pop) RAISED: that rung
+            # is bounded at a MEASURED 98 306 by the odell crossing (a trust-97
+            # bio mention must stay above a trust-13 `ODELL mirror`), and odell
+            # is a SINGLE-WORD query. Gating a real band on query(n_words) > 1
+            # leaves that pin — and jack, primal, amethyst, the whole
+            # single-word calibration — untouched by construction, which is the
+            # same argument that made §12.2 safe.
+            #
+            # 0.0 SHIPS IT INERT. A band above the token rung changes every
+            # crossing calculus beneath it, and nothing in the corpus has yet
+            # shown a multi-word page where the in-band ordering is wrong — the
+            # `Verified Human` page is already led by its five exact titles once
+            # §12.2 demotes the scattered matches. Sweep it with rankAb
+            # (`perfect_tier_*`) the day a report shows one, and ship the value
+            # that report measures.
+            query(w_perfect_tier) double: 0.0
+            query(w_perfect_tier_text) double: 0.0
             # The same rung on the pure-text ladder (exact 1100 > near 700 >
             # weak 620 > affiliation 550): scattered lands on near, as above.
             query(w_split_tier_text) double: 700.0
@@ -1358,6 +1384,14 @@ schema event {
             expression: max(max(field_perfect(name), field_perfect(display_name)), field_perfect(search_primary))
         }
 
+        # §12.3: the whole-field rung, and ONLY on a multi-word query — see
+        # query(w_perfect_tier) for why the gate is the safety argument rather
+        # than a refinement of it. > 0.999 rather than == 1 because
+        # perfect_match() is a product of three ratios.
+        function perfect_tier() {
+            expression: if (query(n_words) > 1, if (perfect_match() > 0.999, 1, 0), 0)
+        }
+
         # ---- §12.2 the scattered test (see query(w_split_tier)) -------------
         #
         # HOW MUCH OF THE QUERY THE NAMING SURFACE CARRIED: name, display_name
@@ -1593,6 +1627,7 @@ schema event {
         function text_score() {
             expression {
                 name_match() * token_tier()
+                + perfect_tier() * query(w_perfect_tier)
                 + near_name_match() * query(w_near_tier)
                 + weak_match() * query(w_weak_tier)
                 + primary_text()
@@ -1710,6 +1745,7 @@ schema event {
         function relevance() {
             expression {
                 any_token_match() * token_tier_text()
+                + perfect_tier() * query(w_perfect_tier_text)
                 + any_near_match() * query(w_near_tier_text)
                 + weak_match() * query(w_weak_tier_text)
                 + match_quality() * query(w_match_step)
@@ -2275,6 +2311,7 @@ schema event {
         function relevance_cheap() {
             expression {
                 any_token_match() * token_tier_text()
+                + perfect_tier() * query(w_perfect_tier_text)
                 + any_near_match() * query(w_near_tier_text)
                 + weak_match() * query(w_weak_tier_text)
                 + max(affiliation_match(), tier_body_match()) * query(w_affil_tier_text)

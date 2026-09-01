@@ -59,6 +59,46 @@ class SearchExtractorsTest {
     }
 
     @Test
+    fun `a declared shortcode is a picture, not a name token`() {
+        // The reported shape: a bridged Mastodon profile whose display name
+        // carries a custom-emoji badge, declared as one in the event's own
+        // tags. Indexed as text it put this account on the name rung for the
+        // word "verified".
+        val content = """{"name":"DotardTed :verified:","about":"raw humanity :thinking: and more"}"""
+        val tags = arrayOf(arrayOf("emoji", "verified", "https://static/verified.png"), arrayOf("emoji", "thinking", "https://static/think.png"))
+        val fields = SearchExtractors.extract(MetadataEvent("5".repeat(64), alice, 1L, tags, content, ""))
+        assertEquals("DotardTed", fields.name, "the badge is gone and the name it decorated is not")
+        assertEquals("raw humanity and more", fields.about, "…in every field the event indexes")
+    }
+
+    @Test
+    fun `an undeclared colon run is left exactly as it is`() {
+        // `:[a-z0-9_]+:` is also what a clock looks like. Nothing here is
+        // declared as an emoji, so nothing is a picture, and a regex would
+        // have turned the first of these into "845".
+        val content = """{"name":"8:30:45","about":"ratio 1:2:1 and :verified: said by nobody"}"""
+        val fields = SearchExtractors.extract(MetadataEvent("6".repeat(64), alice, 1L, emptyArray(), content, ""))
+        assertEquals("8:30:45", fields.name)
+        assertEquals("ratio 1:2:1 and :verified: said by nobody", fields.about)
+    }
+
+    @Test
+    fun `a name that is nothing but badges indexes as nothing`() {
+        val content = """{"name":":verified:","display_name":" :verified: "}"""
+        val tags = arrayOf(arrayOf("emoji", "verified", "https://static/verified.png"))
+        val fields = SearchExtractors.extract(MetadataEvent("7".repeat(64), alice, 1L, tags, content, ""))
+        assertEquals(null, fields.name, "an empty name is absent, not blank")
+        assertEquals(null, fields.displayName)
+    }
+
+    @Test
+    fun `a declared shortcode is stripped from a titled kind too`() {
+        val tags = arrayOf(arrayOf("d", "post"), arrayOf("title", "My :verified: Post"), arrayOf("emoji", "verified", "https://static/v.png"))
+        val fields = SearchExtractors.extract(LongTextNoteEvent("8".repeat(64), alice, 1L, tags, "body", ""))
+        assertEquals("My Post", fields.primary)
+    }
+
+    @Test
     fun `long-form decomposes into title, summary plus hashtags, content`() {
         val tags = arrayOf(arrayOf("d", "post"), arrayOf("title", "My Post"), arrayOf("summary", "tl;dr"), arrayOf("t", "nostr"), arrayOf("t", "search"))
         val fields = SearchExtractors.extract(LongTextNoteEvent("2".repeat(64), alice, 1L, tags, "the whole article", ""))

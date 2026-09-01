@@ -37,6 +37,8 @@ import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
 import com.vitorpamplona.quartz.nip01Core.tags.events.ETag
 import com.vitorpamplona.quartz.nip01Core.tags.people.PTag
 import com.vitorpamplona.quartz.nip32Labeling.LabelEvent
+import com.vitorpamplona.quartz.nip51Lists.followList.FollowListEvent
+import com.vitorpamplona.quartz.nip51Lists.peopleList.PeopleListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.addressables.AddressableAssertionEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.events.EventAssertionEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
@@ -75,6 +77,7 @@ import com.vitorpamplona.quartz.utils.Hex
  * | 1985 | NIP-32 label | every `e` / `p` / `a` tag (`r` and `t` are not nostr records) |
  * | 30382-30384 | NIP-85 assertion | the `d` tag: a pubkey, an event id, an a-coordinate |
  * | 30392-30394 | Trusted List | the member tag this kind's last digit denotes: `p` / `e` / `a` |
+ * | 30000, 39089 | NIP-51 people list / follow pack | every `p` tag |
  *
  * The 5-suffixed pair (30385, 30395) carries NIP-73 EXTERNAL identifiers —
  * urls, ISBNs, podcast guids. There is no nostr event to add for those, so
@@ -94,6 +97,39 @@ import com.vitorpamplona.quartz.utils.Hex
 internal object SearchReferences {
     /** Kind 0 — what a PUBKEY reference resolves to: a person is served as their profile. */
     const val PROFILE_KIND = 0
+
+    /**
+     * NIP-51 LISTS OF PEOPLE — a people list (30000) and a follow pack (39089),
+     * both of which carry a searchable title and name their members in `p`
+     * tags.
+     *
+     * WHY THEY ARE HERE AT ALL. A reader who curates a list called `Verified
+     * Human` is answering the query "verified human" with the people on it, and
+     * until now that list could rank #1 on the page and splice nobody: only a
+     * trust service's computed output converted into profiles, so on a
+     * `kinds:[0]` read — the People tab — the reader's own curation was dropped
+     * on the way out and contributed nothing. The staging report that opened
+     * this work had FOUR such lists titled exactly `Verified Human`, signed by
+     * humans the reader trusts at 47..100, above the service-signed 30392 that
+     * did the splicing at rank 26.
+     *
+     * WHY THEY ARE DECLARATIONS, which is the whole safety argument. A NIP-51
+     * list is not a provider's computed output — the sentence above this set
+     * does not describe them — but they need the same GATE for a different
+     * reason: anyone may title a list `bitcoin` and name a thousand accounts in
+     * it, and an ungated expansion would let that stranger place a thousand
+     * people on every bitcoin people-search. [Enrolment.admits] already answers
+     * this exactly: a reader is always their own signer on every kind, so a
+     * reader's OWN lists unpack and nobody else's does — unless that reader
+     * deliberately delegated the kind in their 10040, which is a choice they
+     * are entitled to make and nobody makes by accident.
+     *
+     * NO PER-MEMBER CONFIDENCE, deliberately: NIP-51 has nowhere to put one. So
+     * a member of one of these places on `event.sd` §13.1's rung (b) — its OWN
+     * rank under this reader — which is the honest reading of "somebody I trust
+     * put this person on a list and said nothing more about them".
+     */
+    val PEOPLE_LISTS: Set<Kind> = setOf(PeopleListEvent.KIND, FollowListEvent.KIND)
 
     /**
      * The Trusted List and Trusted Assertion families — the kinds that only
@@ -122,7 +158,7 @@ internal object SearchReferences {
             UserTrustedListEvent.KIND,
             EventTrustedListEvent.KIND,
             AddressableTrustedListEvent.KIND,
-        )
+        ) + PEOPLE_LISTS
 
     /** Whether [kind] is a Trusted List or Trusted Assertion, and so gated on its signer. */
     fun isDeclaration(kind: Kind) = kind in DECLARATIONS
@@ -166,6 +202,7 @@ internal object SearchReferences {
             when (pointer) {
                 LabelEvent.KIND, EventAssertionEvent.KIND, EventTrustedListEvent.KIND -> true
                 ContactCardEvent.KIND, UserTrustedListEvent.KIND -> PROFILE_KIND in into
+                PeopleListEvent.KIND, FollowListEvent.KIND -> PROFILE_KIND in into
                 AddressableAssertionEvent.KIND, AddressableTrustedListEvent.KIND -> into.any { it.isAddressable() }
                 else -> false
             }
@@ -231,6 +268,15 @@ internal object SearchReferences {
                     // a score nothing could look up.
                     confidence = event.tags.memberScores(AddressMemberTag.TAG_NAME) { canonical(AddressMemberTag.parseAddressId(it)) },
                 )
+            }
+
+            PeopleListEvent.KIND, FollowListEvent.KIND -> {
+                // Every public `p` tag, and no confidence: see [PEOPLE_LISTS].
+                // The PRIVATE half of a NIP-51 list is NIP-44 encrypted to its
+                // owner and a store holds no signer, so a reader who keeps a
+                // list private gets no expansion from it — the same blind spot,
+                // and the same safe direction, as `Delegations`.
+                References(pubKeys = event.tags.mapNotNull(PTag::parseKey))
             }
 
             else -> {

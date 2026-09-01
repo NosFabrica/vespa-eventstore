@@ -522,7 +522,7 @@ class VespaEventIndex(
                     recallSummaries(q).mapNotNull { project(it) }.map { Ranked(it, null) }
                 } else {
                     rankedHits(q).mapNotNull { hit ->
-                        hit.fields?.let(project)?.let { Ranked(it, hit.relevance, textScoreOf(hit.fields?.matchfeatures)) }
+                        hit.fields?.let { fields -> project(fields)?.let { Ranked(it, hit.relevance, textScoreOf(fields.matchfeatures)) } }
                     }
                 }
             }

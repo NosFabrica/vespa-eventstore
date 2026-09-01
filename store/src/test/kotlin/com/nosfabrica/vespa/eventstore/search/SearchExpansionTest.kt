@@ -85,6 +85,22 @@ class SearchExpansionTest {
     /** The note a label points at. None of the searched words are in it. */
     private val note = event(1, emptyArray(), "the third episode is up", author = subject)
 
+    /** A NIP-51 people list: a title to match on, `p` tags naming members, and nowhere to put a confidence. */
+    private fun peopleList(
+        title: String,
+        members: List<String> = listOf(subject),
+        author: String = reader,
+        listId: String = "roster",
+    ) = event(
+        30000,
+        buildList {
+            add(arrayOf("d", listId))
+            add(arrayOf("title", title))
+            members.forEach { add(arrayOf("p", it)) }
+        }.toTypedArray(),
+        author = author,
+    )
+
     private fun userList(
         title: String,
         members: List<String> = listOf(subject),
@@ -571,6 +587,59 @@ class SearchExpansionTest {
                 listOf(list.id, profile.id),
                 page(search("podcaster", listOf(0, 30392), observer = reader), search("podcaster", listOf(0, 30392), observer = stranger)),
             )
+        }
+
+    @Test
+    fun `a reader's own people list brings the people on it, and a stranger's brings nobody`() =
+        runBlocking {
+            store.insert(profile)
+            val mine = peopleList("Podcaster Roster", author = reader)
+            val theirs = peopleList("Podcaster Roster", author = stranger, listId = "theirs")
+            store.insert(mine)
+            store.insert(theirs)
+
+            // A NIP-51 list is not a trust service's output, so nothing
+            // delegates it — but a reader is always their own signer, and a
+            // list they curated is an answer to their own search.
+            assertEquals(
+                listOf(theirs.id, mine.id, profile.id),
+                page(search("podcaster", listOf(0, 30000))),
+                "the reader's own list splices its members; the stranger's is an ordinary hit",
+            )
+
+            // ...and the People tab shape: the list itself is a kind the read
+            // did not ask for, so only the person comes back.
+            assertEquals(listOf(profile.id), page(search("podcaster", listOf(0))))
+        }
+
+    @Test
+    fun `a follow pack converts to profiles like a people list`() =
+        runBlocking {
+            store.insert(profile)
+            val pack = event(39089, arrayOf(arrayOf("d", "pack"), arrayOf("title", "Podcaster Pack"), arrayOf("p", subject)), author = reader)
+            store.insert(pack)
+
+            assertEquals(listOf(pack.id, profile.id), page(search("podcaster", listOf(0, 39089))))
+        }
+
+    @Test
+    fun `the per-author cap thins a ranked page and never a recency one`() =
+        runBlocking {
+            val capped = NostrSemanticsStore(TrustProjection(InMemoryEventIndex(), InMemoryReputationIndex()), relay = relayUrl, maxHitsPerAuthor = 2)
+            // One author, five matching notes — the mirror-bot shape.
+            val bulk = (1..5).map { event(1, arrayOf(arrayOf("subject", "podcaster roundup $it")), author = stranger) }
+            bulk.forEach { capped.insert(it) }
+            val other = event(1, arrayOf(arrayOf("subject", "podcaster weekly")), author = curator)
+            capped.insert(other)
+
+            val ranked = capped.query<Event>(listOf(search("podcaster", listOf(1)))).map { it.id }
+            assertEquals(3, ranked.size, "two from the bulk author, plus the other author's one: $ranked")
+            assertEquals(2, ranked.count { id -> bulk.any { it.id == id } }, "the cap is per author, not per page")
+            assertTrue(other.id in ranked, "and it never costs an author their only row")
+
+            // A RECENCY read is a mirror paging a corpus: dropping rows there
+            // is data loss, not an editorial choice.
+            assertEquals(6, capped.query<Event>(listOf(Filter(kinds = listOf(1)))).size, "plain recall keeps everything")
         }
 
     @Test
