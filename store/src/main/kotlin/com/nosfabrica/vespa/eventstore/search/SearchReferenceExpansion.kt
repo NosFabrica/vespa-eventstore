@@ -52,9 +52,11 @@ import com.vitorpamplona.quartz.nip01Core.core.Event
  * that does not sort degrades to a deterministic-but-arbitrary top N, not to a
  * wrong one.
  *
- * Both are TRUNCATIONS, not refusals: the pointer itself is served either way,
- * so a client that wants the whole membership reads the member tags and asks
- * for them by `#p` / `#e` / `#a` recall, which is what that recall is for.
+ * Both are TRUNCATIONS, not refusals: the pointer is unaffected by either, so a
+ * client that wants the whole membership reads the member tags and asks for
+ * them by `#p` / `#e` / `#a` recall, which is what that recall is for —
+ * provided the read asked for the pointer's kind, since a read that did not
+ * never sees it (see [SearchReferenceExpansion]).
  */
 data class SearchExpansionLimits(
     /** Off entirely: reads answer exactly what they matched, and nothing is spliced. */
@@ -162,6 +164,15 @@ data class SearchExpansionLimits(
  * pointers arrive as rows of the same page, and [EventQuery.accepts]
  * attributes each one back to the query it was fetched for.
  *
+ * A COMPANION IS RECALL, NOT AN ANSWER. The pointer it fetches earns the
+ * subjects a place on the page; it does not earn itself one. A read that named
+ * `kinds:[0]` gets the profiles the 30392 vouches for and not the 30392, which
+ * is a kind it said it did not want — the store drops what the caller's kinds
+ * exclude on the way out (`NostrSemanticsStore.servedKinds`). Where a filter
+ * of the same read DID name the pointer kind, it stays: it is an ordinary
+ * NIP-01 hit for that filter. And a read that named no kinds narrows nothing,
+ * because it excluded nothing.
+ *
  * ## The trust gate
  *
  * A LIST OR AN ASSERTION UNPACKS ONLY FOR THE READER WHO ENROLLED ITS SIGNER,
@@ -258,9 +269,18 @@ internal class SearchReferenceExpansion(
      * hole: a query whose kinds exclude a pointer family that could still
      * name one of its kinds ([SearchReferences.convertibleInto]) is re-run
      * against those kinds under the SAME lens, terms and window — so a
-     * companion-fetched pointer earned its place on the page exactly the way
-     * a hit does, and is served with it, since the pointer is what tells a
-     * client what its subjects mean and what more there is to fetch.
+     * companion-fetched pointer is admitted here exactly the way a hit is,
+     * and its subjects are served on the strength of it.
+     *
+     * The pointer ITSELF is served only if the caller's own kinds admit it.
+     * The companion buys recall — without it neither this store nor the
+     * client ever learns there was anything to unpack — but a REQ that asked
+     * for `kinds:[0]` asked a NIP-01 question, and answering it with a 30392
+     * hands back a kind the client has no parser for and did not budget a slot
+     * for. `NostrSemanticsStore.servedKinds` is where that narrowing happens,
+     * after the splice, so the pointer still places its subjects (they rise
+     * with it, and sit under it in its own order) before it steps out of the
+     * answer.
      *
      * The DECLARATION kinds are fetched from their enrolled signers only,
      * plus the reader. An explicit `kinds:[30392]` is a NIP-01 ask and serves
