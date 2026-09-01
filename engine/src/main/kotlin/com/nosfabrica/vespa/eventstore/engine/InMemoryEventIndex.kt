@@ -74,6 +74,10 @@ class InMemoryEventIndex(
      * member's own number with its key ([EventQuery.authorWeights]), which is
      * what `rawScore` reads back on the real engine and [Compiled.rawScoreOf]
      * reads back here.
+     *
+     * And EXACTLY reproducible now, where it used to be reproducible only on a
+     * corpus with no reputation in it: placement no longer multiplies by the
+     * member's own trust, so there is no term left that this index cannot see.
      */
     private fun memberScoreOf(
         query: EventQuery,
@@ -93,8 +97,11 @@ class InMemoryEventIndex(
             }
         val weighted = Math.pow(conf.coerceIn(0.0, 1.0), gamma)
 
-        // No reputation here, so wot_mult() is 1.0 — which is also what the
-        // trust-multiplied profile computes for an unlensed read.
+        // The rung carries NO trust term, here or in the schema: `event.sd` §13
+        // dropped it so both sides of the max() below are in the pointer's
+        // units. This line used to be right by accident (no reputation in a
+        // reference index, so wot_mult() was 1.0) and is now right by
+        // construction — which is the only reason it is unchanged.
         val rung = MEMBER_TIER + MEMBER_SPAN * weighted
         // The pointer floor, absent (0) unless the caller sent one. Same max()
         // the profile takes, so this reference orders a spliced page the way

@@ -22,7 +22,9 @@ package com.nosfabrica.vespa.eventstore.benchmark
 
 import com.nosfabrica.vespa.eventstore.SchemaDeployer
 import com.nosfabrica.vespa.eventstore.engine.client.VespaEventIndex
+import com.nosfabrica.vespa.eventstore.engine.client.VespaReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
+import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.SearchFields
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
@@ -172,6 +174,37 @@ class SplicedMemberWeightsIT {
                         val idScores = byIdWeight.associate { it.hit.id to (it.score ?: 0.0) }
                         assertEquals(4_000.0, idScores.getValue(FULL), 1.0, "rawScore(id) reaches the top of the member band")
                         assertEquals(550.0, idScores.getValue(NONE), 1.0, "and a zero weight scores the rung's floor, not a lost number")
+
+                        // TRUST DOES NOT MOVE A MEMBER — the property `event.sd`
+                        // §13 was changed to have, and the one that would go
+                        // back silently.
+                        //
+                        // The rung used to be multiplied by wot_mult(), which
+                        // put it in the MEMBER's trust units while the floor
+                        // stayed in the SIGNER's — a Trusted List is signed by a
+                        // service key nobody follows, so the floor never bound
+                        // and a well-trusted member outran the page by four
+                        // orders of magnitude. Give one member a reputation the
+                        // gate can see and read the same two numbers back: they
+                        // must not budge.
+                        VespaReputationIndex(queryUrl).use { reputation ->
+                            reputation.putAll(listOf(ReputationDoc(FULL, influenceScores = mapOf(OBSERVER to 90))))
+                            awaitInfluence(index, weighted)
+
+                            val lensed = index.searchRanked(weighted.copy(observer = OBSERVER, minRank = 0.0))
+                            val lensedScores = lensed.associate { it.hit.pubkey to (it.score ?: 0.0) }
+                            assertEquals(
+                                4_000.0,
+                                lensedScores.getValue(FULL),
+                                1.0,
+                                "a member the reader trusts at 90 sits on the same rung as one they have never heard of: $lensedScores",
+                            )
+                            assertEquals(
+                                MEMBERS.sortedByDescending { it.second }.map { it.first },
+                                lensed.sortedByDescending { it.score ?: 0.0 }.map { it.hit.pubkey },
+                                "and the publisher's confidence still orders the block, not the reader's trust",
+                            )
+                        }
                     }
                 }
             }
@@ -188,6 +221,18 @@ class SplicedMemberWeightsIT {
             sig = "e".repeat(128),
             search = SearchFields(name = "member"),
         )
+
+    /** Reputation lands asynchronously like anything else; wait for the lens to see it. */
+    private suspend fun awaitInfluence(
+        index: VespaEventIndex,
+        weighted: EventQuery,
+    ) {
+        repeat(120) {
+            val seen = index.searchRanked(weighted.copy(observer = OBSERVER, minRank = 0.0))
+            if (seen.size == MEMBERS.size) return
+            delay(500)
+        }
+    }
 
     private suspend fun awaitCorpus(
         index: VespaEventIndex,
@@ -207,6 +252,9 @@ class SplicedMemberWeightsIT {
         val FULL = "1".padStart(64, 'a')
         val NONE = "5".padStart(64, 'a')
         val OUTSIDER = "9".padStart(64, 'a')
+
+        /** The reader whose trust must NOT decide where a member sits. */
+        val OBSERVER = "7".padStart(64, 'b')
 
         /**
          * The confidences a real Trusted List carries — quartz's 0..100, and
