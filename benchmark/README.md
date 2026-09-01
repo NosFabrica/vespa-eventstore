@@ -96,9 +96,21 @@ recipe below, `--dump 'Verified Human'` under `observer:460c25…065c`:
 
 | | `pre_split` | shipped |
 | --- | --- | --- |
-| the five `Verified Human` lists | #1–4, #8 | **#1–5** |
+| the five `Verified Human` lists (kind 30000 — see below) | #1–4, #8 | **#1–5** |
 | the reported profile (`:verified:` + "humanity") | #12 | #44 |
 | Wikipedia mirrors in the top 50 (one rank-30 author, each matching ONE word in a title) | **29**, from #13 | **2**, from #49 |
+
+**WHICH KIND those five lists are matters, and they are not the reported one.**
+The capture holds 125 kind-30000 people lists, 37 kind-39089 follow packs and
+**no 30392 at all** — the REQ that made it never asked for one. The staging
+report is about a 30392 (`eb75f8c7`, 17 members scored 65..100), so what this
+slice measures is the pointer document's own placement on the ladder, which is
+kind-blind: the title lands in `search_primary` for a 30000 and a 30392 alike,
+and the rung is decided by which column answered. What it does NOT measure is
+that list's MEMBERS being spliced and ranked, because the corpus has no such
+list to splice from. `MemberTrustIT`'s second case is where that runs — a real
+30392, a real 10040 enrolling its signer, real 30382 cards, and the People
+tab's own filter, on a real Vespa.
 
 Those mirrors are the ones `rank_cases.json`'s `Verified Human` row calls out as
 what stranded the list's members at #40: the member rung's ceiling (4 000 × wot)
