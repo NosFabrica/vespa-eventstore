@@ -148,6 +148,12 @@ behind the pointer that named it: NIP-32 labels (1985), NIP-85 assertions
   delegation shapes count: NIP-85's `<kind>:<metric>` and the Tapestry ADR's
   generic bare `<kind>`, which NIP-85's parser refuses. Labels are ungated by
   design. A store built without `TrustProjection` admits no declaration at all.
+  **Never pooled across observers**: a read carrying two `observer:` lenses
+  resolves a gate PER observer and unpacks a declaration only if every lens that
+  could have found it enrolled the signer. One observer's service key may not
+  unpack for another, and `accepts` deliberately ignores the terms, so "which
+  filter found it" is not a question the page can answer — being unanimous is
+  the only rule that does not depend on the filter order.
 - **Admission is the engine's job**: the subject lookup is the finding query
   with its terms stripped and the subject keys intersected in, so the index
   applies the same predicate it applied to the hits. No second matcher.
@@ -172,10 +178,25 @@ behind the pointer that named it: NIP-32 labels (1985), NIP-85 assertions
   an early cut gave every row its own lookup and turned a page of twenty labels
   from 1 round trip into 20 — labels being most of a relay's searching traffic.
   `a page of labels costs one lookup, however long the page` is the guard.
+- **A member is placed by what was SAID about it, not by who signed the list**
+  (`event.sd` §13.1). Most specific answer first: (a) the list's own score for
+  that member, (b) the member's own rank under this observer when the list
+  scored nobody, (c) neither — and only then the signer, through the floor
+  below. Under (a)/(b) the score is the band the POINTER earned with its words
+  (`query(pointer_text)`, carried out of the pointer's match-features) times the
+  trust curve over that member's number, which is the same shape as every
+  organic hit on the page. The signer's own rank — the one thing
+  `query(pointer_rel)` carries — then cannot move a scored member at all, and
+  that is the point: a NIP-85 provider is a key the reader APPOINTED in their
+  10040 and nobody follows (measured on staging: rank 0 for a reader who has not
+  enrolled it, 26 for one who has), while `TrustRecompute` has always read that
+  appointment as delegation — it stores the provider's asserted rank AS the
+  observer's trust, at face value. Ranking now agrees with the write path.
 - **Placement is the ENGINE's number, on ONE scale.** A scored member is fetched
   under `spliced_member` (`event.sd` §13): its own rung (the affiliation band,
-  widened by its confidence) OR a floor at a share of the POINTER that found it
-  — whichever is higher, and **neither carries the member's own trust**. The floor is what the rung cannot
+  widened by its confidence) OR — where §13.1 does not apply — a floor at a
+  share of the POINTER that found it, whichever is higher, and **neither carries
+  the member's own trust**. The floor is what the rung cannot
   express: the member matched none of the query's words, so only the pointer knows
   the query, and a 4,000 x wot ceiling cannot reach a 130,000 x wot title match
   from below (measured on staging: a `Verified Human` list at #10 on its title, the
@@ -226,7 +247,7 @@ behind the pointer that named it: NIP-32 labels (1985), NIP-85 assertions
 
 ### Search
 
-Only kinds Quartz parses as `SearchableEvent` are searchable. The per-kind decomposition lives UPSTREAM in Quartz (`SearchFieldExtractor`/`IndexableFields`, beside the kinds themselves); `mapping/SearchExtractors` is this store's thin wrapper applying Vespa sanitization and the join/weighting policy (the kind table is in README). Search-string extensions (`observer:`, `sort:rank`, `filter:rank:gte:N`, `include:spam`, and the `-word` / `"exact phrase"` term syntax) are interpreted by the store; ranking profiles live in `event.sd`. When changing ranking: cases live in `benchmark/rank_cases.json` (add one for every reported bad search), A/B with `./gradlew :benchmark:rankAb` against a live Vespa (no redeploy needed), and `RankRegressionIT` must stay green.
+Only kinds Quartz parses as `SearchableEvent` are searchable. The per-kind decomposition lives UPSTREAM in Quartz (`SearchFieldExtractor`/`IndexableFields`, beside the kinds themselves); `mapping/SearchExtractors` is this store's thin wrapper applying Vespa sanitization and the join/weighting policy (the kind table is in README). Search-string extensions (`observer:`, `sort:rank`, `filter:rank:gte:N`, `include:spam`, and the `-word` / `"exact phrase"` term syntax) are interpreted by the store; ranking profiles live in `event.sd`. The text ladder is BANDS, not a score, and WHICH FIELD ANSWERED decides the band: `event.sd` §12.2 puts a multi-word query no single naming field answered — `Verified` in a name, `human` in a bio — one rung below the token band (`w_split_tier`), where a prefix/typo hit on the whole query already sits, so crossing it takes ~1.93x the trust delta instead of ~1.14x. Single-word queries cannot reach that rung by construction (`naming_coverage()` is 1.0 at one word), which is why every calibrated pin holds. When changing ranking: cases live in `benchmark/rank_cases.json` (add one for every reported bad search), A/B with `./gradlew :benchmark:rankAb` against a live Vespa (no redeploy needed), and `RankRegressionIT` must stay green.
 
 ## Conventions
 

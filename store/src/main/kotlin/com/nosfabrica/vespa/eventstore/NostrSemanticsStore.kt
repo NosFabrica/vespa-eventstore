@@ -126,6 +126,32 @@ class NostrSemanticsStore(
      * [SearchExpansionLimits.Off] turns it off outright.
      */
     private val searchExpansion: SearchExpansionLimits = SearchExpansionLimits.Default,
+    /**
+     * HOW MANY HITS ONE AUTHOR MAY HOLD ON A RANKED PAGE, or null — the
+     * default — for no cap at all.
+     *
+     * Ranking answers "how good is this document"; nothing in it answers "how
+     * many of these does one page need". A single Wikipedia-mirror bot took 27
+     * of the top 50 for `Verified Human` (measured 2026-09-01), and
+     * `rank_cases.json`'s `jack` row has the same shape from a different
+     * author — 13 of 40 slots, one account's identical kind-20 pictures. Both
+     * are one document being right many times, which is a DIVERSITY problem
+     * and not a relevance one: no rung can fix it, because every one of those
+     * documents genuinely earned its rung.
+     *
+     * OFF BY DEFAULT, and this is a deliberate refusal rather than caution. A
+     * cap DROPS events a filter matched, so a page can come back shorter than
+     * the limit the client asked for — a NIP-01 answer with rows missing, which
+     * is the operator's call to make and not a library's. The store adds no
+     * cap of its own anywhere else either (see [count]); bounding a read is the
+     * FILTER's job.
+     *
+     * RANKED PAGES ONLY when it is on. A recency-ordered recall is a mirror
+     * paging a corpus or a NIP-77 catch-up, where dropping an author's events
+     * is data loss rather than an editorial choice; only a relevance page is
+     * making a judgement that a cap can participate in.
+     */
+    private val maxHitsPerAuthor: Int? = null,
 ) : IEventStore {
     private val writes = Mutex()
 
@@ -420,7 +446,9 @@ class NostrSemanticsStore(
                 { index.searchRanked(it) },
                 expansion != null,
             )
-        val page = spliced(expansion, recalled, DOC_KEYS, { if (it.kind in SearchReferences.KINDS) it.toEvent() else null }, { index.searchRanked(it) })
+        val page =
+            spliced(expansion, recalled, DOC_KEYS, { if (it.kind in SearchReferences.KINDS) it.toEvent() else null }, { index.searchRanked(it) })
+                .diverse(queries.all { it.keepsEngineOrder() }, EventDoc::pubkey)
         // Reconstruct via Quartz's by-kind factory straight from the stored
         // fields, skipping the serialize+parse round trip; see [toEvent].
         return page.asked(servedKinds(expansion, queries), EventDoc::kind).map { it.toEvent() } as List<T>
@@ -462,6 +490,39 @@ class NostrSemanticsStore(
         if (expansion == null) return null
         if (queries.any { it.kinds.isEmpty() }) return null
         return queries.flatMapTo(HashSet()) { it.kinds }
+    }
+
+    /**
+     * The page with no author holding more than [maxHitsPerAuthor] rows —
+     * the same list, not a copy, whenever the cap is off or nothing exceeds it,
+     * which is every read on a default store.
+     *
+     * STABLE and FIRST-WINS: the rows an author keeps are the ones the ranking
+     * put highest, and everything else stays exactly where it was. A spliced
+     * member cannot be dropped by this in practice — a person has one profile,
+     * so one row — which is the right asymmetry: the cap exists to stop one
+     * author's BULK from taking a page, not to ration the people a list names.
+     */
+    private fun <R> List<R>.diverse(
+        /**
+         * Read off the QUERIES, not off whether the page came back with scores.
+         * The two differ on an engine that does not rank — the in-memory
+         * reference reports a null score per hit — and which pages an operator
+         * capped must not depend on which engine answered them.
+         */
+        ranked: Boolean,
+        authorOf: (R) -> String,
+    ): List<R> {
+        val cap = maxHitsPerAuthor ?: return this
+        if (!ranked || size <= cap) return this
+        val seen = HashMap<String, Int>()
+        var dropped = false
+        val kept = ArrayList<R>(size)
+        for (hit in this) {
+            val n = seen.merge(authorOf(hit), 1, Int::plus)!!
+            if (n <= cap) kept.add(hit) else dropped = true
+        }
+        return if (dropped) kept else this
     }
 
     /**
@@ -516,10 +577,16 @@ class NostrSemanticsStore(
         // no Treasure Maps — where the answer is never cached, by design. Labels
         // are ungated, so the expansion still runs; it just runs with nothing
         // enrolled.
-        val observers = searching.mapNotNullTo(HashSet()) { it.observer }
+        //
+        // PER OBSERVER, never pooled: the supplier takes the lens's own observer
+        // and the expansion memoizes per key, so one filter's `observer:` can
+        // never unpack a declaration only the filter beside it enrolled. The
+        // resolution is the same one either way — `delegations()` caches the
+        // parsed Maps, and `of()` is a pure fold over that cache — so a
+        // two-lens read costs a second fold, not a second query.
         return SearchReferenceExpansion(
             searching,
-            { if (observers.isEmpty()) Enrolment.NONE else delegations().of(observers) },
+            { observer -> if (observer == null) Enrolment.NONE else delegations().of(observer) },
             searchExpansion,
         )
     }
@@ -644,9 +711,17 @@ class NostrSemanticsStore(
     private class Page<R>(
         val hits: List<R>,
         val scores: List<Double?>?,
+        /**
+         * The TEXT band behind each score — `Ranked.textScore`, index-aligned
+         * with [hits] and null wherever [scores] is. The splice places a
+         * Trusted List's member by the band the LIST earned times what the list
+         * says about that MEMBER, so it needs the pointer's text apart from the
+         * signer's trust that [scores] multiplies in.
+         */
+        val texts: List<Double?>? = null,
     ) {
         companion object {
-            fun <R> of(ranked: List<Ranked<R>>) = Page(ranked.map { it.hit }, ranked.map { it.score })
+            fun <R> of(ranked: List<Ranked<R>>) = Page(ranked.map { it.hit }, ranked.map { it.score }, ranked.map { it.textScore })
         }
     }
 
@@ -679,7 +754,7 @@ class NostrSemanticsStore(
     ): List<R> {
         val hits = page.hits
         if (expansion == null || hits.isEmpty()) return hits
-        val expanded = expansion.expand(hits, page.scores, keys, pointerOf, recall)
+        val expanded = expansion.expand(hits, page.scores, page.texts, keys, pointerOf, recall)
 
         // THE POINTER'S OWN ORDER FIRST, always — the sort below is a stable
         // re-sort of it, so a tie between a subject and its own pointer resolves
@@ -817,6 +892,7 @@ class NostrSemanticsStore(
                 expansion != null,
             )
         spliced(expansion, ordered, RAW_KEYS, { if (it.kind in SearchReferences.KINDS) it.toEvent() else null }, { index.rawSearchRanked(it) })
+            .diverse(queries.all { it.keepsEngineOrder() }, RawEvent::pubKey)
             .asked(servedKinds(expansion, queries), RawEvent::kind)
             .forEach(onEach)
     }

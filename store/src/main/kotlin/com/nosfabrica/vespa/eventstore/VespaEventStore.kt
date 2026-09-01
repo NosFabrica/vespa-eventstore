@@ -206,6 +206,15 @@ class VespaEventStore internal constructor(
              * and a NIP-77 catch-up are untouched whatever this says.
              */
             searchExpansion: SearchExpansionLimits = SearchExpansionLimits.Default,
+            /**
+             * How many hits ONE AUTHOR may hold on a ranked page, or null — the
+             * default — for no cap. Off because a cap drops events a filter
+             * matched, which is an editorial decision an operator makes and a
+             * library does not; see `NostrSemanticsStore.maxHitsPerAuthor` for
+             * what it is for (one mirror bot taking 27 of a page's top 50) and
+             * why it never touches a recency-ordered recall.
+             */
+            maxHitsPerAuthor: Int? = null,
         ): VespaEventStore {
             if (autoDeploy) SchemaDeployer(configUrl).deployIfAbsent(url)
             val eventIndex = VespaEventIndex(url, endpoints = endpoints)
@@ -218,6 +227,7 @@ class VespaEventStore internal constructor(
                     writers = writers,
                     guardRefreshMillis = guardRefreshSeconds * 1000,
                     searchExpansion = searchExpansion,
+                    maxHitsPerAuthor = maxHitsPerAuthor,
                 )
             // The reconciler's and drainer's mutating batches take the store's
             // writer lock (the gate): repairs must not race live inserts'

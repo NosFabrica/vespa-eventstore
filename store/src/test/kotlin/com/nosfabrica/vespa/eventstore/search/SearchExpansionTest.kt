@@ -73,14 +73,33 @@ class SearchExpansionTest {
         at: Long = next(),
     ): Event = EventFactory.create(id(), author, at, kind, tags, content, "")
 
-    /** The reader's Treasure Map: `curator` computes for them, and per kind. */
-    private fun treasureMap(vararg entries: Array<String>) = event(10040, arrayOf(*entries), author = reader)
+    /** A Treasure Map: `curator` computes for [owner], and per kind. */
+    private fun treasureMap(
+        vararg entries: Array<String>,
+        owner: String = reader,
+    ) = event(10040, arrayOf(*entries), author = owner)
 
     /** A kind-0 for [subject] — what a list of pubkeys and a contact card both splice. */
     private val profile = event(0, emptyArray(), """{"name":"Ada Bramble"}""", author = subject)
 
     /** The note a label points at. None of the searched words are in it. */
     private val note = event(1, emptyArray(), "the third episode is up", author = subject)
+
+    /** A NIP-51 people list: a title to match on, `p` tags naming members, and nowhere to put a confidence. */
+    private fun peopleList(
+        title: String,
+        members: List<String> = listOf(subject),
+        author: String = reader,
+        listId: String = "roster",
+    ) = event(
+        30000,
+        buildList {
+            add(arrayOf("d", listId))
+            add(arrayOf("title", title))
+            members.forEach { add(arrayOf("p", it)) }
+        }.toTypedArray(),
+        author = author,
+    )
 
     private fun userList(
         title: String,
@@ -514,6 +533,113 @@ class SearchExpansionTest {
             assertEquals(listOf(mine.id, profile.id), page(search("podcaster", listOf(0, 30392))))
             // No observer: nothing to have delegated, so nothing unpacks.
             assertEquals(listOf(mine.id), page(search("podcaster", listOf(0, 30392), observer = null)))
+        }
+
+    @Test
+    fun `one observer's service key never unpacks for another`() =
+        runBlocking {
+            store.insert(profile)
+            // Only the STRANGER enrolled the curator. The reader enrolled
+            // nobody, and the two read together.
+            store.insert(treasureMap(arrayOf("30392", curator, "wss://lists.example"), owner = stranger))
+            val list = userList("Podcaster Trust List")
+            store.insert(list)
+
+            // Both filters are points of view on ONE page, and only one of them
+            // enrolled the signer — so the list is served as the ordinary hit
+            // it is and unpacks nothing. Under the pooled gate the stranger's
+            // delegation opened it for the reader too, and `profile` rode a
+            // page the reader never asked for it on.
+            assertEquals(
+                listOf(list.id),
+                page(search("podcaster", listOf(0, 30392), observer = reader), search("podcaster", listOf(0, 30392), observer = stranger)),
+                "a signer only one observer enrolled must not unpack onto the page they share",
+            )
+            // ...in either order: `accepts` ignores the terms, so which filter
+            // "found" the pointer is not a question the page can answer, and
+            // the gate must not depend on the answer.
+            assertEquals(
+                listOf(list.id),
+                page(search("podcaster", listOf(0, 30392), observer = stranger), search("podcaster", listOf(0, 30392), observer = reader)),
+                "…whatever order the filters arrived in",
+            )
+
+            // The stranger reading ALONE unpacks it: the gate is unpooled, not off.
+            assertEquals(
+                listOf(list.id, profile.id),
+                page(search("podcaster", listOf(0, 30392), observer = stranger)),
+                "the enrolling observer's own read still unpacks",
+            )
+        }
+
+    @Test
+    fun `a declaration both observers enrolled unpacks for the read they share`() =
+        runBlocking {
+            store.insert(profile)
+            store.insert(treasureMap(arrayOf("30392", curator, "wss://lists.example")))
+            store.insert(treasureMap(arrayOf("30392", curator, "wss://lists.example"), owner = stranger))
+            val list = userList("Podcaster Trust List")
+            store.insert(list)
+
+            // Unanimous: every point of view on the read asked for this signer,
+            // so the members ride the shared page for both of them.
+            assertEquals(
+                listOf(list.id, profile.id),
+                page(search("podcaster", listOf(0, 30392), observer = reader), search("podcaster", listOf(0, 30392), observer = stranger)),
+            )
+        }
+
+    @Test
+    fun `a reader's own people list brings the people on it, and a stranger's brings nobody`() =
+        runBlocking {
+            store.insert(profile)
+            val mine = peopleList("Podcaster Roster", author = reader)
+            val theirs = peopleList("Podcaster Roster", author = stranger, listId = "theirs")
+            store.insert(mine)
+            store.insert(theirs)
+
+            // A NIP-51 list is not a trust service's output, so nothing
+            // delegates it — but a reader is always their own signer, and a
+            // list they curated is an answer to their own search.
+            assertEquals(
+                listOf(theirs.id, mine.id, profile.id),
+                page(search("podcaster", listOf(0, 30000))),
+                "the reader's own list splices its members; the stranger's is an ordinary hit",
+            )
+
+            // ...and the People tab shape: the list itself is a kind the read
+            // did not ask for, so only the person comes back.
+            assertEquals(listOf(profile.id), page(search("podcaster", listOf(0))))
+        }
+
+    @Test
+    fun `a follow pack converts to profiles like a people list`() =
+        runBlocking {
+            store.insert(profile)
+            val pack = event(39089, arrayOf(arrayOf("d", "pack"), arrayOf("title", "Podcaster Pack"), arrayOf("p", subject)), author = reader)
+            store.insert(pack)
+
+            assertEquals(listOf(pack.id, profile.id), page(search("podcaster", listOf(0, 39089))))
+        }
+
+    @Test
+    fun `the per-author cap thins a ranked page and never a recency one`() =
+        runBlocking {
+            val capped = NostrSemanticsStore(TrustProjection(InMemoryEventIndex(), InMemoryReputationIndex()), relay = relayUrl, maxHitsPerAuthor = 2)
+            // One author, five matching notes — the mirror-bot shape.
+            val bulk = (1..5).map { event(1, arrayOf(arrayOf("subject", "podcaster roundup $it")), author = stranger) }
+            bulk.forEach { capped.insert(it) }
+            val other = event(1, arrayOf(arrayOf("subject", "podcaster weekly")), author = curator)
+            capped.insert(other)
+
+            val ranked = capped.query<Event>(listOf(search("podcaster", listOf(1)))).map { it.id }
+            assertEquals(3, ranked.size, "two from the bulk author, plus the other author's one: $ranked")
+            assertEquals(2, ranked.count { id -> bulk.any { it.id == id } }, "the cap is per author, not per page")
+            assertTrue(other.id in ranked, "and it never costs an author their only row")
+
+            // A RECENCY read is a mirror paging a corpus: dropping rows there
+            // is data loss, not an editorial choice.
+            assertEquals(6, capped.query<Event>(listOf(Filter(kinds = listOf(1)))).size, "plain recall keeps everything")
         }
 
     @Test

@@ -61,10 +61,34 @@ internal object VespaText {
      * The first code point of [s] Vespa will not store, or null. Walks by code
      * point, not char, so a surrogate pair is judged as the one character it
      * encodes rather than two halves that are illegal alone.
+     *
+     * THE HOTTEST LOOP ON THE WRITE PATH, which is why it has a fast path.
+     * Every stored event runs it over its whole `content` and every tag value
+     * ([firstIllegalField]) and again over each derived search field
+     * ([sanitize]) — so a kind 1 pays it at least twice over the same text, and
+     * a staging slice averages 5 880 content characters per event. MEASURED on
+     * 64.5M characters of that corpus (`benchmark/README.md`): the plain
+     * codePointAt walk runs at 1.96 ns/char, and reading a CHAR first — the
+     * overwhelming majority of them — at 0.78, a 2.5x difference that is most
+     * of what an ingest spends deriving a document.
+     *
+     * The fast band is `[0x20, 0xD800)` and it is storable BY CONSTRUCTION, not
+     * by assumption: every rule [isStorable] can reject on lies outside it —
+     * C0 below it, surrogates at its top edge, and both the U+FDD0 block and
+     * the U+xFFFE/U+xFFFF pattern far above it. Anything else goes to
+     * [isStorable] exactly as before, which stays the SINGLE place the rules
+     * live. An inlined second copy of them (surrogate pairs decoded by hand)
+     * measured no better than this once the JVMs were separated, and a second
+     * copy of a table verified against a live engine code point by code point
+     * is the last thing this file should carry.
      */
     fun firstIllegalCodePoint(s: String): Int? {
         var i = 0
         while (i < s.length) {
+            if (s[i] >= '\u0020' && s[i] < '\uD800') {
+                i++
+                continue
+            }
             val cp = s.codePointAt(i)
             if (!isStorable(cp)) return cp
             i += Character.charCount(cp)

@@ -205,20 +205,77 @@ internal class SearchReferenceExpansion(
     /** The queries of this read that carry terms — the only ones that expand. */
     private val searching: List<EventQuery>,
     /**
-     * Whose declarations this read may unpack. A SUPPLIER, not a value: on a
+     * Whose declarations ONE OBSERVER may unpack. A SUPPLIER, not a value: on a
      * relay holding no 10040s the provider pass is never cached (ProviderMap
      * refuses to cache emptiness, by design), so resolving it eagerly would
      * bill one small engine query to every observer-carrying search — paid
-     * before recall, even by reads that never meet a declaration. [enrolment]
-     * resolves it at most once, and only on the paths that consult the gate.
+     * before recall, even by reads that never meet a declaration.
+     * [enrolmentOf] resolves it at most once PER OBSERVER, and only on the
+     * paths that consult the gate.
      */
-    private val enrolmentSource: suspend () -> Enrolment,
+    private val enrolmentSource: suspend (String?) -> Enrolment,
     private val limits: SearchExpansionLimits,
 ) {
-    /** The resolved gate, once [enrolment] has been asked — see [enrolmentSource]. */
-    private var resolved: Enrolment? = null
+    /** The lens a pointer is read through: the first that ACCEPTS it outright, else the first that merely converts into it. */
+    private fun pickLens(pointer: Event): Int {
+        for (converted in ACCEPT_PASSES) {
+            val i = lenses.indexOfFirst { it.accepts(pointer, converted) }
+            if (i >= 0) return i
+        }
+        return NO_LENS
+    }
 
-    private suspend fun enrolment(): Enrolment = resolved ?: enrolmentSource().also { resolved = it }
+    /**
+     * MAY THIS DECLARATION UNPACK ON THIS READ — asked of EVERY lens that could
+     * have found it, and answered yes only if all of them enrolled its signer.
+     *
+     * A read ORs its filters into ONE page, so there is no version of this
+     * answer that gives filter A a page without filter B's subjects on it. What
+     * the gate can guarantee is that nothing unpacks unless every point of view
+     * on the read asked for it — so one observer's service key never places
+     * rows a reader beside them did not enrol, whatever order the filters
+     * arrived in.
+     *
+     * The alternative was to attribute the pointer to whichever lens accepts it
+     * first and ask only that one. It is cheaper and it is order-dependent:
+     * `accepts` deliberately ignores the TERMS (that is the whole point of a
+     * lens), so both filters of a two-observer read accept a pointer only one
+     * of them actually matched, and which of them gets asked is then a property
+     * of the filter order rather than of the corpus. Being unanimous costs a
+     * mixed read the unpacks only one side enrolled — conservative, and the
+     * side to err on — while a SINGLE-lens read, which is every shape we
+     * serve today, asks exactly one lens and one gate, as before.
+     */
+    private suspend fun unanimouslyAdmitted(pointer: Event): Boolean {
+        var accepted = false
+        for (lens in lenses) {
+            if (!lens.accepts(pointer, converted = false) && !lens.accepts(pointer, converted = true)) continue
+            accepted = true
+            if (!enrolmentOf(lens.observer).admits(pointer.kind, pointer.pubKey)) return false
+        }
+        return accepted
+    }
+
+    /**
+     * The resolved gate PER OBSERVER — never pooled across them.
+     *
+     * A read may carry several filters with different `observer:` tokens, and
+     * an earlier version resolved ONE gate for their union: a declaration any
+     * of them enrolled unpacked for all of them. That reads fine for a client
+     * sending its own two points of view and is wrong for anything else — a
+     * relay that multiplexes two people's filters into one store call would let
+     * B's trust service place rows on A's page, and the whole point of the gate
+     * is that A picked their services in A's 10040. One observer's service key
+     * may never unpack for another, so the gate is keyed by the lens that found
+     * the pointer, the same way [lookUp] keeps the lens unpooled.
+     *
+     * A HashMap and not a single field because a two-lens read asks twice; it
+     * holds at most one entry per distinct observer on the read, which is one
+     * or two in every shape we serve.
+     */
+    private val resolved = HashMap<String?, Enrolment>()
+
+    private suspend fun enrolmentOf(observer: String?): Enrolment = resolved[observer] ?: enrolmentSource(observer).also { resolved[observer] = it }
 
     /**
      * THE DISTINCT LENSES OF THIS READ: each searching query with its TERMS
@@ -356,7 +413,7 @@ internal class SearchReferenceExpansion(
             if (declarations.isEmpty()) continue
             // The one companion path that needs the gate — an anonymous read
             // resolves to Enrolment.NONE without a query and adds nothing.
-            val gate = enrolment()
+            val gate = enrolmentOf(q.observer)
             declarations
                 // Kinds sharing one signer set fetch together: with one
                 // Treasure Map the common shape is a single query for
@@ -430,6 +487,19 @@ internal class SearchReferenceExpansion(
          * subjects are placed by their own rung exactly as before.
          */
         relevance: List<Double?>?,
+        /**
+         * THE POINTERS' TEXT BANDS, index-aligned with [hits] — how well each
+         * answered the QUERY, with the signer's trust and the recency
+         * multiplier that [relevance] carries left out. Null (or 0 per row)
+         * wherever the serving profile reports no match-features, and then a
+         * member is placed exactly as it was before this existed.
+         *
+         * It is a second list rather than a richer score because it answers a
+         * second question: [relevance] is where the pointer BELONGS on the
+         * page, this is how much the pointer's own words earned — and only the
+         * second may be handed to a member, whose trust is its own.
+         */
+        textBand: List<Double?>?,
         keys: SubjectKeys<R>,
         pointerOf: (R) -> Event?,
         recall: suspend (EventQuery) -> List<Ranked<R>>,
@@ -467,9 +537,7 @@ internal class SearchReferenceExpansion(
                     }
 
                     else -> {
-                        lenses.indexOfFirst { it.accepts(pointer, converted = false) }.let { asked ->
-                            if (asked >= 0) asked else lenses.indexOfFirst { it.accepts(pointer, converted = true) }
-                        }
+                        pickLens(pointer)
                     }
                 }
             val refs =
@@ -479,7 +547,9 @@ internal class SearchReferenceExpansion(
                     // Resolved lazily, at most once per read — a page of labels
                     // never consults it at all, and neither does one with no
                     // declarations on it.
-                    SearchReferences.isDeclaration(pointer.kind) && !enrolment().admits(pointer.kind, pointer.pubKey) -> References.NONE
+                    // The gate is PER OBSERVER and never pooled — see
+                    // [unanimouslyAdmitted] and [resolved].
+                    SearchReferences.isDeclaration(pointer.kind) && !unanimouslyAdmitted(pointer) -> References.NONE
 
                     else -> plan(SearchReferences.of(pointer), lenses[lens])
                 }
@@ -491,7 +561,8 @@ internal class SearchReferenceExpansion(
         }
         if (!any) return nothing()
 
-        val found = lookUp(planned, lensOfRow, { row -> relevance?.get(row) ?: 0.0 }, keys, recall)
+        val found =
+            lookUp(planned, lensOfRow, { row -> relevance?.get(row) ?: 0.0 }, { row -> textBand?.get(row) ?: 0.0 }, keys, recall)
         val admitted = ArrayList<List<R>>(hits.size)
         val scores = ArrayList<List<Double?>>(hits.size)
         planned.forEachIndexed { i, refs ->
@@ -567,6 +638,7 @@ internal class SearchReferenceExpansion(
         planned: List<References>,
         lensOfRow: IntArray,
         pointerRel: (Int) -> Double,
+        pointerText: (Int) -> Double,
         keys: SubjectKeys<R>,
         recall: suspend (EventQuery) -> List<Ranked<R>>,
     ): Map<Int, Found<R>> {
@@ -627,13 +699,14 @@ internal class SearchReferenceExpansion(
                 if (lensOfRow[row] != lens) continue
                 val refs = planned[row]
                 val rel = pointerRel(row)
+                val text = pointerText(row)
                 for ((weighted, ids) in refs.eventIds.filterNot { it in claimedIds }.splitByScored(refs)) {
                     claimedIds += ids
-                    idBatches.batch(weighted, rel).take(ids, refs)
+                    idBatches.batch(weighted, rel, text).take(ids, refs)
                 }
                 for ((weighted, pubKeys) in refs.pubKeys.filterNot { it in claimedKeys }.splitByScored(refs)) {
                     claimedKeys += pubKeys
-                    keyBatches.batch(weighted, rel).take(pubKeys, refs)
+                    keyBatches.batch(weighted, rel, text).take(pubKeys, refs)
                 }
             }
             for (b in idBatches.values) {
@@ -688,6 +761,7 @@ internal class SearchReferenceExpansion(
     private class Batch(
         val weighted: Boolean,
         val pointerRel: Double,
+        val pointerText: Double,
     ) {
         /** Key -> the 0..100 confidence its pointer gave it; 0 and unread on an unscored batch. */
         val keys = LinkedHashMap<String, Int>()
@@ -705,7 +779,7 @@ internal class SearchReferenceExpansion(
             limits: SearchExpansionLimits,
         ): EventQuery =
             if (weighted) {
-                under.withWeightedMember(profile, limits.confidenceGamma, pointerRel, limits.subjectFloorSpan)
+                under.withWeightedMember(profile, limits.confidenceGamma, pointerRel, pointerText, limits.subjectFloorSpan)
             } else {
                 under
             }
@@ -724,10 +798,15 @@ internal class SearchReferenceExpansion(
     private fun MutableMap<Any, Batch>.batch(
         weighted: Boolean,
         rel: Double,
+        text: Double,
     ): Batch {
         val floored = weighted && limits.subjectFloorSpan != null
-        val identity: Any = if (floored) rel else weighted
-        return getOrPut(identity) { Batch(weighted, if (floored) rel else 0.0) }
+        // BOTH numbers are the identity now: two pointers that happen to share
+        // a relevance may still have earned it differently (one on a title
+        // match under a trusted signer, one on a weaker match under a better
+        // one), and their members are placed by the TEXT half.
+        val identity: Any = if (floored) listOf(rel, text) else weighted
+        return getOrPut(identity) { Batch(weighted, if (floored) rel else 0.0, if (floored) text else 0.0) }
     }
 
     /**
@@ -834,6 +913,9 @@ internal class SearchReferenceExpansion(
 
     private companion object {
         const val NO_LENS = -1
+
+        /** [pickLens]'s two passes: a lens that names the pointer's kind outright, then one that merely converts into it. */
+        val ACCEPT_PASSES = listOf(false, true)
 
         /** Keys per lookup query — a bound on one YQL `in` list, not on the answer. */
         const val LOOKUP_CHUNK = 500
@@ -986,6 +1068,7 @@ private fun EventQuery.withWeightedMember(
     profile: String?,
     gamma: Double,
     pointerRelevance: Double,
+    pointerText: Double,
     floorSpan: Double?,
 ): EventQuery =
     if (profile == null) {
@@ -1003,6 +1086,7 @@ private fun EventQuery.withWeightedMember(
                         floorSpan?.let {
                             mapOf(
                                 EventYql.F_POINTER_REL to pointerRelevance.coerceAtLeast(0.0),
+                                EventYql.F_POINTER_TEXT to pointerText.coerceAtLeast(0.0),
                                 EventYql.F_SUBJECT_FLOOR_SPAN to it,
                             )
                         } ?: emptyMap()

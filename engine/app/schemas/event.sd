@@ -643,6 +643,76 @@ schema event {
             # weak 620 > affiliation 550 > gram (<= gram_cap 80).
             query(w_near_tier_text) double: 700.0
             query(w_weak_tier_text) double: 620.0
+            # The pure-text token band itself, an input now rather than the
+            # literal 1100 it was written as in relevance()/relevance_cheap():
+            # the split rung below is its sibling and a rung nobody can sweep
+            # is a rung nobody can calibrate.
+            query(w_token_tier_text) double: 1100.0
+            # ---- §12.2 THE SPLIT RUNG: one field answered, or several did ----
+            #
+            # w_split_tier is the token band for a doc NO naming field
+            # answered on its own — the query's words are SCATTERED, part in a
+            # name or a title, the rest in a bio, a handle, a body. Before it,
+            # `matchCount(name) > 0` bought the whole 130 000 rung for ONE word
+            # of a multi-word query, so "Verified" in a display name plus
+            # "human" in a bio stood on the SAME rung as a profile named
+            # `Verified Human` and a Trusted List titled `Verified Human`,
+            # separated only by the second phase's <= 89 000 (see
+            # query(w_perfect_pop)) — well under one rung, hence crossable by
+            # ~14% of trust delta. MEASURED on a container Vespa (2026-09-01,
+            # the shapes FieldCoverageRankIT seeds, one trust for every
+            # author, relative to the perfect match):
+            #     `Verified Human`                    1.000
+            #     `Verified Human Bot`                0.869
+            #     `Human Verified` (wrong order)      0.817
+            #     `Verified` + bio "a human being"    0.812
+            #     `DotardTed :verified:` + "humanity" 0.706
+            # and a trust-60 author of the SPLIT shape outscored a trust-50
+            # perfect match — the reported bug (sot 2026-09-01 `Verified
+            # Human`, People tab) in one line.
+            #
+            # 23 000 = w_near_tier: a doc that answered half the query in its
+            # name is worth what a PREFIX OR TYPO hit on the whole query is
+            # worth — real name-side evidence, not a naming claim. That keeps
+            # the ladder's rung ratio (x5.65 up to the token band) and with it
+            # the crossing calculus: 5.65^(1/w_wot_pow) = ~1.93, so only an
+            # overwhelming trust advantage now lifts a scattered match over a
+            # doc that answered in one field, where ~1.14 used to do it.
+            #
+            # SINGLE-WORD QUERIES ARE UNTOUCHED — naming_coverage() reads 1.0
+            # whenever query(n_words) is 1 — so every calibrated pin (odell,
+            # jack, primal, amethyst) sits exactly where it did. Set to
+            # query(w_name_tier) to switch the rung off.
+            query(w_split_tier) double: 23000.0
+            # ---- §12.3 THE PERFECT RUNG, FOR MULTI-WORD QUERIES ONLY --------
+            #
+            # A field that IS the query, whole and in order, on a query of more
+            # than one word: `Verified Human` the Trusted List against `Verified
+            # Human Bot` and against `Human Verified`. Those three sat in one
+            # band separated only by query(w_perfect_pop)'s second-phase rung —
+            # ~9-12% of trust delta after w_perfect_pow, which is a tie-break,
+            # not a band.
+            #
+            # WHY IT COULD NOT SIMPLY BE query(w_perfect_pop) RAISED: that rung
+            # is bounded at a MEASURED 98 306 by the odell crossing (a trust-97
+            # bio mention must stay above a trust-13 `ODELL mirror`), and odell
+            # is a SINGLE-WORD query. Gating a real band on query(n_words) > 1
+            # leaves that pin — and jack, primal, amethyst, the whole
+            # single-word calibration — untouched by construction, which is the
+            # same argument that made §12.2 safe.
+            #
+            # 0.0 SHIPS IT INERT. A band above the token rung changes every
+            # crossing calculus beneath it, and nothing in the corpus has yet
+            # shown a multi-word page where the in-band ordering is wrong — the
+            # `Verified Human` page is already led by its five exact titles once
+            # §12.2 demotes the scattered matches. Sweep it with rankAb
+            # (`perfect_tier_*`) the day a report shows one, and ship the value
+            # that report measures.
+            query(w_perfect_tier) double: 0.0
+            query(w_perfect_tier_text) double: 0.0
+            # The same rung on the pure-text ladder (exact 1100 > near 700 >
+            # weak 620 > affiliation 550): scattered lands on near, as above.
+            query(w_split_tier_text) double: 700.0
             # ---- second-phase precision signals (Meilisearch's "words" and
             # "exactness" rules + within-near ordering). Computed ONLY in the
             # second phase over the top rerank-count hits — fieldMatch is a
@@ -745,6 +815,20 @@ schema event {
             # RE-MEASURE THIS CEILING (do not re-derive it on paper) if
             # w_affil_tier_text, w_about, w_wot_pow or the tier weights move.
             query(w_perfect_pop) double: 80000.0
+            # w_perfect_pow — CONTRAST inside the perfect-match rung. The base
+            # is 0..1, so this can only ever LOWER a partial match's share of
+            # query(w_perfect_pop); it never raises the rung itself. That is
+            # what makes it free against the odell ceiling derived above: the
+            # ceiling bounds the rung's TOP, which this does not move, and it
+            # takes the `ODELL mirror` half-match (perfect_match 0.5) from
+            # 40 000 down to 20 000 — slack under that pin, not pressure on it.
+            #
+            # 2.0 turns the flat 1.00 / 0.87 / 0.82 spread measured for
+            # `Verified Human` / `Verified Human Bot` / `Human Verified` into
+            # 1.00 / 0.79 / 0.73: a whole-field answer needs ~9-12% of trust
+            # delta to be crossed instead of ~7%, in the order the linear rung
+            # already had. 1.0 restores that linear rung exactly.
+            query(w_perfect_pow) double: 2.0
             # Word count as TYPED, sent by EventYql on every search with terms
             # (see the n_words comment there). 1.0 is the fail-safe default: a
             # sender that omits it degrades perfect_match() to "the field is
@@ -1300,6 +1384,92 @@ schema event {
             expression: max(max(field_perfect(name), field_perfect(display_name)), field_perfect(search_primary))
         }
 
+        # §12.3: the whole-field rung, and ONLY on a multi-word query — see
+        # query(w_perfect_tier) for why the gate is the safety argument rather
+        # than a refinement of it. > 0.999 rather than == 1 because
+        # perfect_match() is a product of three ratios.
+        function perfect_tier() {
+            expression: if (query(n_words) > 1, if (perfect_match() > 0.999, 1, 0), 0)
+        }
+
+        # ---- §12.2 the scattered test (see query(w_split_tier)) -------------
+        #
+        # HOW MUCH OF THE QUERY THE NAMING SURFACE CARRIED: name, display_name
+        # and the generic tier's title/subject, SUMMED because they are one
+        # surface — a doc naming itself across `name` and `display_name` has
+        # split nothing, it filled two columns with one identity — and clamped
+        # because matchCount can exceed the words typed (FuzzyWordGroup's
+        # duplicated pair groups count twice, and a field may hold more tokens
+        # than the query has words).
+        #
+        # matchCount over query(n_words), never fieldMatch's queryCompleteness,
+        # for the reason field_perfect() gives: queryCompleteness divides by
+        # every term in the tree, and the synthetic joined/pair terms are
+        # exactly the ones a normally-spelled doc can never match.
+        #
+        # 1.0 ON EVERY SINGLE-WORD QUERY, which is the whole safety argument
+        # for the rung it feeds.
+        function naming_coverage() {
+            expression: min(1.0, (matchCount(name) + matchCount(display_name) + matchCount(search_primary)) / max(1.0, query(n_words)))
+        }
+
+        # Did a NON-NAMING column carry part of the answer — a bio, a handle, a
+        # website, a hashtag, a body, a location?
+        #
+        # This is the second half of the scattered test on purpose, and it is
+        # what keeps a COMPOUND handle whole: `@johncarvalho` answers "John
+        # Carvalho" through FuzzyWordGroup's joined variant — ONE term against
+        # a one-token field — so its naming_coverage() reads 0.5, and only
+        # "nothing else matched" tells that doc apart from one that really did
+        # answer half the query in a name and half in a bio.
+        #
+        # WHICH COLUMNS COUNT, and why the list is not simply "everything but
+        # the three in naming_coverage()": the naming surface's OWN near and
+        # gram siblings (name_near, search_primary_near, name_gram,
+        # display_name_gram, search_primary_gram) are that same surface at
+        # another granularity — name_near holds the parts of that very compound
+        # handle — so counting them would demote the case this clause exists to
+        # protect. The bio/body grams are a different surface at another
+        # granularity, so they count: a word reachable only as an INFIX inside a
+        # bio word is weaker evidence than the exact bio hit beside it in this
+        # list, never stronger, and leaving them out would let that shape keep
+        # the whole token rung.
+        function offname_match() {
+            expression {
+                matchCount(about) + matchCount(nip05) + matchCount(lud16) + matchCount(website)
+                + matchCount(search_secondary) + matchCount(search_text) + matchCount(search_location)
+                + matchCount(affil_tokens) + matchCount(search_secondary_tokens)
+                + matchCount(about_gram) + matchCount(search_secondary_gram) + matchCount(search_text_gram)
+            }
+        }
+
+        # THE QUERY IS SCATTERED: a naming surface answered PART of it and a
+        # different kind of column answered the rest. All three clauses are
+        # required — see offname_match() for the second, and note the first:
+        # a doc no naming field matched at all has not split anything, it is an
+        # ordinary bio/body hit on the affiliation rung, and saying otherwise
+        # would mislabel most of the tail of every page. Scores are unaffected
+        # by that clause either way (token_tier() is multiplied by
+        # name_match()/tier_token_match(), which are 0 there); the FLAG is what
+        # it fixes, and the flag is what `searchScored` reports as the band.
+        function scattered_match() {
+            expression: if (naming_coverage() <= 0 || naming_coverage() > 0.999, 0, if (offname_match() > 0, 1, 0))
+        }
+
+        # The token band a doc is entitled to: the full rung when one naming
+        # surface answered the query, the split rung when several kinds of
+        # column did. Read by BOTH groups (profile and generic tier), so a
+        # title that answered half the query is treated exactly like a name
+        # that did.
+        function token_tier() {
+            expression: if (scattered_match() > 0, query(w_split_tier), query(w_name_tier))
+        }
+
+        # The same choice on the pure-text ladder.
+        function token_tier_text() {
+            expression: if (scattered_match() > 0, query(w_split_tier_text), query(w_token_tier_text))
+        }
+
         # The precision rules at the `search` profile's scale — see
         # query(w_words_pop) and query(w_perfect_pop). Kept a separate function,
         # not a scale factor on precision_boost(), so the text profiles'
@@ -1308,7 +1478,7 @@ schema event {
             expression {
                 query(w_words_pop) * words_coverage()
                 + query(w_exactness_pop) * exactness()
-                + query(w_perfect_pop) * perfect_match()
+                + query(w_perfect_pop) * pow(perfect_match(), query(w_perfect_pow))
             }
         }
 
@@ -1380,7 +1550,7 @@ schema event {
 
         function tier_text() {
             expression {
-                tier_token_match() * query(w_name_tier)
+                tier_token_match() * token_tier()
                 + tier_near_match() * query(w_near_tier)
                 + tier_primary_text()
                 + query(w_secondary) * secondary_text()
@@ -1456,7 +1626,8 @@ schema event {
         # + the tier group.)
         function text_score() {
             expression {
-                name_match() * query(w_name_tier)
+                name_match() * token_tier()
+                + perfect_tier() * query(w_perfect_tier)
                 + near_name_match() * query(w_near_tier)
                 + weak_match() * query(w_weak_tier)
                 + primary_text()
@@ -1491,8 +1662,16 @@ schema event {
         # regression; the store sends 0.0 for that case). query(min_rank) is
         # therefore ALSO the curve's anchor, not just the gate: a sender that
         # wants "no gate" must pass min_rank=0, never omit the feature.
+        # THE CURVE ITSELF, over any 0..100 trust number — extracted from
+        # wot_mult() when §13 needed to run it over a number that is NOT the
+        # author's own rank (a Trusted List's score for one of its members).
+        # One expression, so the two can never drift into two calibrations.
+        function wot_of(r) {
+            expression: if(r < query(min_rank), 0.0, 1.0 + query(w_wot) * pow(min(max(0.0, r - query(min_rank)), 100.0), query(w_wot_pow)))
+        }
+
         function wot_mult() {
-            expression: if(user_score() < query(min_rank), 0.0, 1.0 + query(w_wot) * pow(min(max(0.0, user_score() - query(min_rank)), 100.0), query(w_wot_pow)))
+            expression: wot_of(user_score())
         }
 
         # ---- RECENCY (docs/recency-ranking.md) ------------------------
@@ -1565,7 +1744,8 @@ schema event {
         # affiliation above gram noise, bm25 ordering inside each band.
         function relevance() {
             expression {
-                any_token_match() * 1100
+                any_token_match() * token_tier_text()
+                + perfect_tier() * query(w_perfect_tier_text)
                 + any_near_match() * query(w_near_tier_text)
                 + weak_match() * query(w_weak_tier_text)
                 + match_quality() * query(w_match_step)
@@ -1589,6 +1769,8 @@ schema event {
         match-features {
             user_score
             freshness
+            naming_coverage
+            scattered_match
             name_text
             display_name_text
             about_text
@@ -1809,6 +1991,8 @@ schema event {
             affiliation_match
             tier_body_match
             real_match
+            naming_coverage
+            scattered_match
             text_score
             wot_mult
             name_text
@@ -1894,6 +2078,11 @@ schema event {
             # BUCKETS) and grouping by pointer are mutually exclusive, and only
             # the second can carry this number.
             query(pointer_rel) double: 0.0
+            # THE POINTER'S TEXT BAND — its relevance with the SIGNER'S TRUST
+            # and the recency multiplier left out (see EventYql.F_POINTER_TEXT).
+            # 0 means the caller sent none, and every member then places exactly
+            # as it did before §13.1 existed.
+            query(pointer_text) double: 0.0
             # HOW FAR A DOUBTED MEMBER MAY FALL BELOW ITS POINTER, as a fraction
             # of the pointer's own relevance: the floor runs from
             # pointer x span (confidence 0) to pointer x 1 (full confidence).
@@ -1945,6 +2134,53 @@ schema event {
             expression: if (query(doc_conf) > 0, (rawScore(pubkey) + rawScore(id)) / 100, query(member_conf))
         }
 
+        # ---- §13.1 WHOSE TRUST PLACES A MEMBER ------------------------------
+        #
+        # NOT THE SIGNER'S, whenever anything better exists. A NIP-85 provider
+        # is a key the reader APPOINTED in their 10040, and the write path has
+        # always read it that way: TrustRecompute stores a provider's asserted
+        # rank AS the observer's trust in that subject, at face value, with the
+        # provider's own rank nowhere in the equation. Ranking asked a different
+        # question — "who follows this key?" — and got the only answer a follow
+        # graph can give about a robot: measured on staging, 0 for a reader who
+        # has not enrolled it and 26 for one who has. Every member of every list
+        # it signs inherited that number as its magnitude.
+        #
+        # The precedence, most specific first:
+        #   (a) THE LIST'S OWN SCORE for this member (rawScore, per document —
+        #       see query(doc_conf)). The publisher appointed to compute this
+        #       says 87 about this person for this list; that is the whole
+        #       reason the reader enrolled them.
+        #   (b) THE MEMBER'S OWN RANK under this observer, when the list scored
+        #       nobody (bare `p` tags — a NIP-51 set, or a Trusted List
+        #       published without the score element). Still per member, still
+        #       from a provider this reader enrolled, just a different assertion
+        #       — a 30382 rank card rather than a list entry.
+        #   (c) NEITHER, and the placement falls through to pointer_floor()
+        #       below, which carries the signer's trust inside query(pointer_rel)
+        #       — the one case where the key that signed is all anybody said.
+        #
+        # -1 is the "(c)" sentinel: a publisher's honest 0 is a real confidence
+        # (see query(doc_conf)) and must place at the bottom, not fall through
+        # to a fallback that would promote it.
+        function member_trust() {
+            expression: if (query(doc_conf) > 0, rawScore(pubkey) + rawScore(id), if (user_score() > 0, user_score(), -1))
+        }
+
+        # WHERE A MEMBER SITS when somebody scored it: the band the POINTER
+        # earned with its words, times the curve over the member's own trust.
+        #
+        # The same shape as every organic hit on the page — text band x trust —
+        # which is what makes the number comparable to the page it joins, and
+        # the reason the text half must arrive separately from the pointer's
+        # finished relevance (query(pointer_text) vs query(pointer_rel)).
+        #
+        # NOT x recency_mult(), for the reason §13 gives: a member is fetched as
+        # a kind 0 whose created_at is when that person last edited a profile.
+        function delegated_place() {
+            expression: query(pointer_text) * wot_of(member_trust())
+        }
+
         # WHAT THIS MEMBER IS WORTH ON ITS OWN: the affiliation rung, widened by
         # the publisher's confidence. An absolute answer — "how sure is the list
         # about this person" — and the only one available to a lookup that
@@ -1975,10 +2211,19 @@ schema event {
         # trust decides the order again, and members land at 6.02e10.
         #
         # A member's own reputation still decides whether it is ADMITTED — the
-        # observer gate runs on the lookup like any other read — it just no
-        # longer decides where it sits. Placement is the publisher's confidence
-        # and the pointer's relevance, which are the two things a spliced row
-        # actually has to say for itself.
+        # observer gate runs on the lookup like any other read.
+        #
+        # WHAT CHANGED IN §13.1, and why this rung survives it. The measurement
+        # above rejected `rung x wot_mult()` — the member's OWN rank, on a rung
+        # of 550..4000, against a page that then spanned 610..2.39e5 because the
+        # pointer itself sat on the 550 affiliation band. Both halves of that
+        # setup are gone (the tiering fix put a title match on the 130 000 rung;
+        # §12.2 cleared the docs that never belonged there), so the numbers in
+        # it no longer describe anything, and §13.1 does place a scored member
+        # by a trust curve — over what the LIST said about it, which is a
+        # different number from the one that was rejected here and is not the
+        # signer's either. This rung stays as the FLOOR under both branches and
+        # as the whole answer for a lookup carrying no pointer numbers at all.
         function member_rung() {
             expression: query(w_member_tier) + query(w_member_span) * pow(member_confidence(), query(w_member_gamma))
         }
@@ -1999,8 +2244,32 @@ schema event {
         # the page. Both sides are bounded above by query(pointer_rel), so no
         # subject can pass the pointer that found it — the invariant the store's
         # LIFT exists to protect, now held by the arithmetic as well.
+        # WHICH PLACEMENT APPLIES IS A QUESTION ABOUT WHO SCORED THIS MEMBER,
+        # not a max() over both — because the two carry different trust and the
+        # max() would quietly hand the answer back to the signer.
+        #
+        # member_trust() >= 0 means somebody scored this person: the list did,
+        # or the reader's own rank service did. Then §13.1 places it, and
+        # query(pointer_rel) — the only number here carrying the SIGNER's trust
+        # — does not enter at all. Taking max(delegated, floor) instead would
+        # mean that a list signed by a well-followed key lifted every member it
+        # named back to the signer's own magnitude, flat, which is precisely the
+        # behaviour §13.1 exists to end.
+        #
+        # Nobody scored it, and the floor is the honest fallback: the signer is
+        # then the only opinion anyone expressed, and a member lands within one
+        # rung of the pointer that found it, as it has since the floor shipped.
+        #
+        # member_rung() floors both branches — the affiliation band rather than
+        # a fall off the page — and is the whole answer when a lookup carries no
+        # pointer numbers at all (an unranked finding query).
+        # ...and INERT until both halves arrive. query(pointer_text) is 0 on a
+        # caller that sends none — an engine whose profile reports no
+        # match-features, an older serving schema, the in-memory reference — and
+        # the floor answers exactly as it did before §13.1, rather than placing
+        # every scored member at zero.
         first-phase {
-            expression: max(member_rung(), pointer_floor())
+            expression: max(member_rung(), if (query(pointer_text) > 0, if (member_trust() >= 0, delegated_place(), pointer_floor()), pointer_floor()))
         }
 
         # The decisive signals, surfaced for the same reason `search` surfaces
@@ -2014,8 +2283,10 @@ schema event {
         # was found. Reading it back is cheap and the next person will want it.
         match-features {
             member_confidence
+            member_trust
             member_rung
             pointer_floor
+            delegated_place
             wot_mult
             rawScore(pubkey)
             rawScore(id)
@@ -2027,15 +2298,20 @@ schema event {
     # relevance() MINUS its two expensive within-band tie-breakers —
     # fieldMatch proximity (a positional analysis per field per hit) and the
     # match-quality ladder (itemRawScore, currently inert anyway) — which
-    # keeps BAND membership exact: the dropped terms (≤ ~280 points) can
-    # never cross the 1100-point token-match band gap. Phase 2 re-applies the
-    # full tuned relevance() to the top rerank-count hits per node, restoring
-    # today's exact within-band order inside the window. Query-time override:
-    # `ranking.rerankCount`.
+    # keeps BAND membership exact where the ladder's steps are wide: the
+    # dropped terms (≤ ~280 points) cannot cross the token band's own gap
+    # (query(w_token_tier_text), 1100, down to 700). They CAN cross the 80
+    # points between the near/split rung (700) and the weak one (620) — true
+    # of near before §12.2 existed and of a scattered match now — so phase 1
+    # may hand phase 2 a window ordered differently down there. Phase 2
+    # re-applies the full tuned relevance() to the top rerank-count hits per
+    # node, restoring today's exact within-band order inside the window.
+    # Query-time override: `ranking.rerankCount`.
     rank-profile text2 inherits text_relevance {
         function relevance_cheap() {
             expression {
-                any_token_match() * 1100
+                any_token_match() * token_tier_text()
+                + perfect_tier() * query(w_perfect_tier_text)
                 + any_near_match() * query(w_near_tier_text)
                 + weak_match() * query(w_weak_tier_text)
                 + max(affiliation_match(), tier_body_match()) * query(w_affil_tier_text)

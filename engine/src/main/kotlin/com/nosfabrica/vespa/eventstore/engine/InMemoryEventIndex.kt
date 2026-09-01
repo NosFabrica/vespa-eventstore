@@ -75,9 +75,16 @@ class InMemoryEventIndex(
      * what `rawScore` reads back on the real engine and [Compiled.rawScoreOf]
      * reads back here.
      *
-     * And EXACTLY reproducible now, where it used to be reproducible only on a
-     * corpus with no reputation in it: placement no longer multiplies by the
-     * member's own trust, so there is no term left that this index cannot see.
+     * ONE TERM IT CANNOT SEE, and it is named rather than approximated:
+     * `event.sd` §13.1 places a scored member at the pointer's TEXT band times
+     * the trust curve over the member's own trust, and that trust is (a) the
+     * list's score for it — carried per key, so this index has it — else (b)
+     * the member's RANK under the observer, which lives in the reputation
+     * index this one does not hold. So (a) and the (c) fallback are exact here
+     * and (b) is engine-only: a scoreless list places its members on the floor
+     * instead, one rung low, and `FieldCoverageRankIT`/`SplicedMemberWeightsIT`
+     * are where (b) is pinned. A reference that guessed at a rank it cannot
+     * read would be the fabricated relevance this whole class refuses.
      */
     private fun memberScoreOf(
         query: EventQuery,
@@ -108,7 +115,37 @@ class InMemoryEventIndex(
         // Vespa would for the same confidences and the same pointer.
         val span = query.rankFeatures[EventYql.F_SUBJECT_FLOOR_SPAN] ?: DEFAULT_FLOOR_SPAN
         val floor = (query.rankFeatures[EventYql.F_POINTER_REL] ?: 0.0) * (span + (1 - span) * weighted)
-        return maxOf(rung, floor)
+        // §13.1: what the LIST said about this member decides where it goes,
+        // on the band the pointer's own words earned. Case (a) only — see the
+        // KDoc for why (b) is engine-only — and inert until a caller sends
+        // both halves, which is exactly when the schema's own branch fires.
+        // ...and it REPLACES the floor rather than competing with it: the floor
+        // is where the signer's trust lives, and a scored member is not placed
+        // by its signer (see the schema's first-phase for the whole argument).
+        // ...and inert until BOTH halves arrive: an engine that reports no text
+        // band sends none, and the floor answers as it always did rather than
+        // placing every scored member at zero. This reference is one such
+        // engine, so the branch below is exercised by the ITs and held here for
+        // the callers that do send it.
+        val text = query.rankFeatures[EventYql.F_POINTER_TEXT] ?: 0.0
+        val scored = (query.rankFeatures[EventYql.F_DOC_CONF] ?: 0.0) > 0.0
+        val placed = if (text > 0.0 && scored) text * wotOf(compiled.rawScoreOf(doc), query) else floor
+        return maxOf(rung, placed)
+    }
+
+    /**
+     * `event.sd`'s wot_of(): the convex trust curve over a 0..100 number, with
+     * the schema's own defaults and the query's own floor. Reproduced rather
+     * than approximated because §13.1 runs it over the LIST's score for a
+     * member, which is a contract this index can hold exactly.
+     */
+    private fun wotOf(
+        rank: Double,
+        query: EventQuery,
+    ): Double {
+        val floor = query.rankFeatures["min_rank"] ?: query.minRank ?: 0.0
+        if (rank < floor) return 0.0
+        return 1.0 + W_WOT * Math.pow((rank - floor).coerceIn(0.0, 100.0), W_WOT_POW)
     }
 
     /** Both ranked paths score per DOCUMENT now — the weights ride with the keys, so the page is not one number. */
@@ -230,6 +267,10 @@ class InMemoryEventIndex(
         /** `event.sd` §13 defaults, mirrored so this reference orders as Vespa would. */
         const val MEMBER_TIER = 550.0
         const val MEMBER_SPAN = 3450.0
+
+        /** `event.sd`'s query(w_wot) / query(w_wot_pow) defaults — the trust curve §13.1 runs over a list's score. */
+        const val W_WOT = 1.0
+        const val W_WOT_POW = 2.7
 
         /** `event.sd`'s query(w_subject_floor_span) default — one rung below the pointer. */
         const val DEFAULT_FLOOR_SPAN = 0.1769

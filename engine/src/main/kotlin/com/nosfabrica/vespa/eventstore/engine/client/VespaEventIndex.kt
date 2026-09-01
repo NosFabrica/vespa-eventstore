@@ -521,7 +521,9 @@ class VespaEventIndex(
                 if (q.isRecencyOrdered()) {
                     recallSummaries(q).mapNotNull { project(it) }.map { Ranked(it, null) }
                 } else {
-                    rankedHits(q).mapNotNull { hit -> hit.fields?.let(project)?.let { Ranked(it, hit.relevance) } }
+                    rankedHits(q).mapNotNull { hit ->
+                        hit.fields?.let { fields -> project(fields)?.let { Ranked(it, hit.relevance, textScoreOf(fields.matchfeatures)) } }
+                    }
                 }
             }
         }
@@ -613,12 +615,29 @@ class VespaEventIndex(
             }
         }
 
+    /**
+     * The TEXT band behind a hit's relevance — `text_score`, straight off the
+     * match-features the trust profiles already serialize. Null on a profile
+     * that declares none (every termless/recency shape), which is exactly where
+     * a caller must fall back rather than invent a number.
+     */
+    private fun textScoreOf(mf: JsonObject?): Double? = (mf?.get("text_score") as? JsonPrimitive)?.content?.toDoubleOrNull()
+
     /** The rank band a hit arrived through, from the profile's match-features; null when none were served. */
     private fun tierOf(mf: JsonObject?): String? {
         if (mf == null) return null
 
         fun on(feature: String): Boolean = ((mf[feature] as? JsonPrimitive)?.content?.toDoubleOrNull() ?: 0.0) > 0.0
         return when {
+            // BEFORE name: a scattered match (event.sd §12.2 — no naming field
+            // answered the query on its own, another kind of column carried the
+            // rest) is still a token match, so name_match/any_token_match are 1
+            // for it too and testing them first would swallow the more specific
+            // route. It is a RUNG of its own, though — w_split_tier, one below
+            // the token band — so "why is this here" deserves its own answer.
+            // Reads 0, hence "name", on a serving schema that predates the rung.
+            on("scattered_match") -> "split"
+
             on("any_token_match") || on("name_match") -> "name"
 
             on("any_near_match") || on("near_name_match") -> "near"

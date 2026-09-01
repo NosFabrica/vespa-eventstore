@@ -435,6 +435,42 @@ open class NostrSemanticsStoreTest {
             assertEquals(0, store.query<Event>(Filter(search = "⚡")).size)
         }
 
+    /**
+     * NIP-30 badges, both ends: the feed rewrites a DECLARED `:shortcode:` to
+     * one term and the query rewrites a whole-word `:shortcode:` to the same
+     * one, so the badge is findable as itself and unfindable as the word
+     * inside it — the `verified` regression, closed at the tokenizer instead
+     * of by deleting the badge.
+     */
+    @Test
+    fun `a badge is searchable as a badge, not as the word inside it`() =
+        runBlocking {
+            val badged =
+                MetadataEvent(
+                    id(),
+                    alice,
+                    next(),
+                    arrayOf(arrayOf("emoji", "verified", "https://static/v.png")),
+                    """{"name":"DotardTed :verified:"}""",
+                    "",
+                )
+            val says = MetadataEvent(id(), bob, next(), emptyArray(), """{"name":"Carol","about":"verified human"}""", "")
+            store.insert(badged)
+            store.insert(says)
+
+            assertEquals(listOf(badged.id), store.query<Event>(Filter(search = ":verified:")).map { it.id }, "the badge finds the badge")
+            // …and the word finds the word. Only CONTAINS here: both reference
+            // engines reach the badge term from inside it — the in-memory one
+            // by substring (SearchFields.matches' documented looseness), the
+            // real one by the AND-gram net over search_secondary_gram. On
+            // Vespa that route is gram-ONLY, so it scores under
+            // text_score_cutoff and the profile's rank-score-drop-limit
+            // deletes the hit; BadgeTermIT pins that, since only a real engine
+            // ranks.
+            assertTrue(store.query<Event>(Filter(search = "verified")).map { it.id }.contains(says.id))
+            assertEquals(listOf(badged.id), store.query<Event>(Filter(search = "dotardted")).map { it.id }, "the name it decorated is untouched")
+        }
+
     /** `-word` (FilterMapping): a leading minus flips a term into an exclusion. */
     @Test
     fun `a minus term excludes its word from the search`() =

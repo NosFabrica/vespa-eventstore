@@ -74,6 +74,18 @@ object EventYql {
     /** The finding pointer's own relevance — the floor a subject is placed at a share of. 0 = no floor. */
     const val F_POINTER_REL = "pointer_rel"
 
+    /**
+     * The finding pointer's TEXT band — its relevance with the signer's trust
+     * and the recency multiplier left out (`event.sd`'s text_score).
+     *
+     * Sent beside [F_POINTER_REL] because they answer different questions: the
+     * relevance says where the POINTER belongs on the page, this says how much
+     * the pointer's own words earned, and only the second may be handed to a
+     * member. A member's trust is its own — the list's score for it, else its
+     * own rank — never the trust of the key that signed the list.
+     */
+    const val F_POINTER_TEXT = "pointer_text"
+
     /** How far below its pointer a doubted subject may fall, as a fraction of the pointer's relevance. */
     const val F_SUBJECT_FLOOR_SPAN = "w_subject_floor_span"
 

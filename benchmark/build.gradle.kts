@@ -105,6 +105,17 @@ tasks.named<JavaExec>("run") {
     maxHeapSize = System.getenv("BENCH_HEAP") ?: "2g"
 }
 
+// One filter through the WHOLE store, printed — the only view that shows a
+// page's spliced rows, since the expansion lives in NostrSemanticsStore and not
+// in the engine. See StoreDump.kt.
+tasks.register<JavaExec>("storeDump") {
+    group = "verification"
+    description = "Print the page one filter returns through the full store, spliced rows included"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.StoreDump")
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "2g"
+}
+
 tasks.register<JavaExec>("visitBench") {
     group = "verification"
     description = "A/B the full-corpus visit transports (paged serial / sliced / streamed) against a real Vespa"
@@ -138,6 +149,17 @@ tasks.register<JavaExec>("exportLoad") {
     classpath = sourceSets["main"].runtimeClasspath
     mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.ExportLoad")
     maxHeapSize = System.getenv("BENCH_HEAP") ?: "2g"
+    workingDir = rootDir
+}
+
+// Time the write path's own derivation (SearchExtractors) over a captured
+// corpus, with and without NIP-30 badges on every event. See ExtractBench.kt.
+tasks.register<JavaExec>("extractBench") {
+    group = "verification"
+    description = "Time SearchExtractors.extract over a captured corpus (--corpus, optional --badges N)"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.ExtractBench")
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "3g"
     workingDir = rootDir
 }
 
