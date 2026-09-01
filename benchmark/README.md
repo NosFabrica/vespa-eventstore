@@ -401,36 +401,75 @@ Medians of 15 rounds after two warm-up passes.
 
 | stage | ns/event | share |
 |---|---:|---:|
-| `--stage upstream` — quartz's per-kind decomposition alone | 4 269 | 25 % |
-| `--stage emojis` — the NIP-30 declaration lookup | 129 | <1 % |
-| the rest: `VespaText.sanitize` over every derived field, plus the joins | ~12 300 | 73 % |
-| **`--stage full`** — what an ingest actually pays | **16 264** | |
+| `--stage upstream` — quartz's per-kind decomposition alone | 3 573 | 37 % |
+| `--stage emojis` — the NIP-30 declaration lookup | 129 | 1 % |
+| the rest: `VespaText.sanitize` over every derived field, plus the joins | ~5 825 | 61 % |
+| **`--stage full`** — what an ingest actually pays | **9 527** | |
 
-Three things this settles:
+It read 16 264 ns before the sanitize fast path below (~12 300 of it in that
+last row). Two things this settles:
 
-- **Sanitization is the write path's derivation cost**, not the extraction and
-  not the badges: ~2 ns per content character, and this corpus averages 5 880 of
-  them. Anything that wants a faster ingest looks there first.
+- **Sanitization is the write path's derivation cost.** It was 73 % of it, and
+  after a 2.5x fix it is still 61 %: the work is proportional to TEXT, and this
+  corpus averages 5 880 content characters per event. Anything wanting a faster
+  ingest looks there, not at extraction.
 - **A badge nobody declares costs 129 ns.** SEVEN of the 10 961 events declare
-  an emoji (0.06 %), so that is what the feature costs a real corpus — inside
-  the noise of a 16 µs derivation. An allocation-free `any {}` guard in front of
-  `emojis()` measured 165 ns, i.e. no better: the list `mapNotNull` builds never
-  escapes, so the JIT does not allocate it. The guard was reverted.
-- **`--badges N` is the corpus that does not exist yet** — every event wearing
-  N declared badges, worn in its indexed text, which is what a Mastodon bridge
-  could actually produce. Here the *shape* of the rewrite is the whole cost:
+  an emoji (0.06 %), so that is what the feature costs a real corpus. An
+  allocation-free `any {}` guard in front of `emojis()` measured 165 ns, i.e. no
+  better: the list `mapNotNull` builds never escapes, so the JIT does not
+  allocate it. The guard was reverted.
+
+**`--badges N` is the corpus that does not exist yet** — every event wearing N
+declared badges, worn in its indexed text, which is what a Mastodon bridge could
+produce. There the SHAPE of the rewrite is the whole cost (both columns measured
+against the same post-fast-path baseline):
 
 | rewrite | 1 badge/event | 3 badges | 10 badges |
 |---|---:|---:|---:|
-| `replace()` per code + a `Regex` space-collapse | 55 µs | 76 µs | 118 µs |
-| **single pass, colon to colon (shipped)** | **24 µs** | **25 µs** | **28 µs** |
+| `replace()` per code + a `Regex` space-collapse | 54.2 µs | 63.5 µs | 114.6 µs |
+| **single pass, colon to colon (shipped)** | **14.5 µs** | **16.9 µs** | **15.9 µs** |
 
-The per-code shape walks the field twice per code and then hands the whole
-field to a regex engine, so it grows with the badge count; the single pass does
-the removal and the space-collapse together and is nearly flat in it, while
-returning an untouched field as itself, uncopied. Neither is visible on the real
-corpus — this is insurance against a corpus that changes shape, bought at no
-cost to the one we have.
+The per-code shape walks the field twice per code and then hands the whole field
+to a regex engine, so it grows with the badge count; the single pass does the
+removal and the space-collapse together and is FLAT in it (5-7 µs over the
+9.5 µs no-badge baseline, all of it the one extra walk), while returning an
+untouched field as itself, uncopied. Neither is visible on the real corpus —
+this is insurance against a corpus that changes shape, bought at no cost to the
+one we have.
+
+### `VespaText.firstIllegalCodePoint`: reading a char before a code point (2026-09-01)
+
+The loop above is the hottest on the write path: every stored event runs it over
+its whole `content` and every tag value (`firstIllegalField`, the admission
+check) and again over each derived search field (`sanitize`), so a kind 1 pays
+it at least twice over the same text. On this corpus NOTHING is ever rejected —
+0 of 10 961 events carry an illegal code point — so the scan always runs to
+completion and no early exit ever helps.
+
+Measured over **64.5M characters of that corpus's real content** (47 % pure
+ASCII, 13 % carrying astral emoji), one variant per JVM to keep C2's profile
+from leaking between them, best of 8 rounds after 4 warm-ups:
+
+| variant | all | ASCII-only | non-ASCII |
+|---|---:|---:|---:|
+| `codePointAt` per character (before) | 1.96 ns/char | 1.76 | 2.10 |
+| **read a CHAR first, code point only outside `[0x20, 0xD800)`** | **0.77** | **0.40** | **0.78** |
+| branch-free band accumulator, precise pass on trip | 1.29 | 0.86 | 1.32 |
+| the same fast path with surrogate pairs decoded by hand | 0.72–0.84 | 0.32–0.52 | 0.61–0.84 |
+
+**2.5x, from one branch** (509 → 1 294 MB/s; 4.4x on ASCII-only text). The fast
+band is storable BY CONSTRUCTION — every rule `isStorable` can reject on lies
+outside it — so this is not a heuristic that trades correctness for speed, and
+`isStorable` stays the single place the rules live.
+
+The two rejected variants are the interesting part. **Branch-free is SLOWER**:
+accumulating a band test over every char cannot early-exit and, on the 67 % of
+strings that are not pure ASCII, pays a second precise pass — the branch it
+removes was predicted almost perfectly anyway. **Hand-inlining the surrogate
+decode is inside the noise**: it won by 8-20 % in one run and lost in the next,
+which is JVM-to-JVM variance, and it costs a second copy of a table verified
+against a live engine code point by code point. Not a trade worth making for a
+number that does not reproduce.
 
 ## Targeted benches (gradle tasks against a live Vespa)
 

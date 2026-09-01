@@ -175,13 +175,16 @@ object SearchExtractors {
          * ONE PASS, and only over a field that can contain a run. The obvious
          * shape — `replace(run, " ")` per declared code, then a `Regex` sweep to
          * collapse the doubled spaces it left — walks the field twice per code
-         * and then hands the whole thing to a regex engine, which on a corpus
-         * where every event wears three badges measured 77 us/event against a
-         * 17 us baseline (benchmark/README.md: `extractBench --badges 3`).
+         * and then hands the whole thing to a regex engine. On a corpus where
+         * every event wears badges that measured 54 us/event at one badge,
+         * 64 at three and 115 at ten, climbing with the count, against a 9.5 us
+         * no-badge baseline (benchmark/README.md: `extractBench --badges N`).
          * Scanning colon to colon instead, appending as it goes and swallowing
-         * the space where the previous character is already one, does the
-         * removal and the collapse together: 20 us on the same corpus, and an
-         * untouched field is returned as ITSELF, uncopied.
+         * the spaces around what it removed, does the removal and the collapse
+         * together: 14.5 / 16.9 / 15.9 us at one / three / ten badges — FLAT in
+         * the count, the whole cost being the one extra walk — and an untouched
+         * field is returned as ITSELF, uncopied. On the real corpus neither
+         * shape is measurable: seven of 10 961 events declare an emoji at all.
          *
          * The one behavioural difference is a narrowing: this collapses only the
          * spaces around a run it removed, where the regex also collapsed
