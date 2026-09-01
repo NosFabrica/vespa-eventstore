@@ -1204,6 +1204,30 @@ class SearchExpansionTest {
         }
 
     @Test
+    fun `a label reaches an addressable subject, on the unscored bucket`() =
+        runBlocking {
+            // The coordinate shape is the one family that still groups its
+            // subjects by quantized confidence, and a NIP-32 label is how the
+            // UNSCORED bucket of that grouping is reached — it expresses no
+            // confidence, so it takes the `null` key rather than a number. The
+            // scored half has the 30394 test below it; without this one, half
+            // of `bucketed` is exercised by nothing.
+            val article = event(30023, arrayOf(arrayOf("d", "kept"), arrayOf("title", "Kept Article")), author = subject)
+            store.insert(article)
+            val label =
+                event(
+                    1985,
+                    arrayOf(arrayOf("L", "#trades"), arrayOf("l", "podcaster", "#trades"), arrayOf("a", "30023:$subject:kept")),
+                )
+            store.insert(label)
+
+            // Ungated, so no observer is needed — and kind-restricted, so the
+            // label itself stays off the answer while the article it describes
+            // arrives.
+            assertEquals(listOf(article.id), page(search("podcaster", listOf(30023), observer = null)))
+        }
+
+    @Test
     fun `an unscored pointer keeps its subject, the rung is only for a scored member`() =
         runBlocking {
             // A NIP-32 label expresses no confidence, so there is no doubt for a

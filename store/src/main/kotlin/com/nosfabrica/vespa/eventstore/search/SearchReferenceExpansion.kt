@@ -252,7 +252,18 @@ internal class SearchReferenceExpansion(
      */
     private val memberProfiles: List<String?> =
         searching
-            .associateBy({ it.forLookup() }, { EventYql.memberProfileOf(it) })
+            // FIRST WINS, because [lenses] is `distinct()` and distinct keeps the
+            // first too. `associateBy` kept the LAST, so two queries sharing a
+            // lens but ranking on different ladders — `search:"x"` beside
+            // `search:"x sort:recent"`, identical once the terms and the ranking
+            // are stripped — left lens i pointing at query i's lookup and query
+            // j's rung. Today that pair also splits `EventYql.profileOf`, which
+            // sends the page down the unscored branch where no member score is
+            // read, so the mismatch is masked rather than harmless; it is one
+            // profile rule away from placing a whole list on a ladder its
+            // finding query never ranked on.
+            .asReversed()
+            .associate { it.forLookup() to EventYql.memberProfileOf(it) }
             .let { byLookup -> lenses.map(byLookup::get) }
 
     /**
@@ -560,7 +571,12 @@ internal class SearchReferenceExpansion(
         recall: suspend (EventQuery) -> List<Ranked<R>>,
     ): Map<Int, Found<R>> {
         val out = HashMap<Int, Found<R>>()
-        for (lens in lensOfRow.toSortedSet().filter { it != NO_LENS }) {
+        // The lenses this page actually attributed a pointer to, in index
+        // order. `lensOfRow.toSortedSet()` boxed one Integer per ROW into a
+        // TreeSet — 500 of them on a full page — to arrive at a set that can
+        // never hold more than `lenses.size` entries, which is one on the REQ
+        // shape a relay serves all day.
+        for (lens in lenses.indices.filter { lens -> lensOfRow.any { it == lens } }) {
             val under = lenses[lens]
             // The member profile of THIS lens's ladder — see [memberProfiles].
             val profile = memberProfiles[lens]
@@ -645,9 +661,9 @@ internal class SearchReferenceExpansion(
             // `tag_index` array (`d:<value>`, fast-search) could carry weights
             // inside one owner's group if this family ever earns the work; on
             // the staging corpus it has no instances at all.
-            for ((bucket, refs) in bucketed(planned, lensOfRow, lens)) {
+            for ((bucket, addresses) in bucketed(planned, lensOfRow, lens)) {
                 val conf = if (bucket == null) under else under.withMember(profile, bucket, limits.confidenceGamma)
-                for ((owner, addrs) in refs.addresses.mapNotNull { Address.parse(it) }.groupBy { it.kind to it.pubKeyHex }) {
+                for ((owner, addrs) in addresses.mapNotNull { Address.parse(it) }.groupBy { it.kind to it.pubKeyHex }) {
                     if (spent++ >= MAX_LOOKUPS) break
                     conf.narrowAddresses(owner.first, owner.second, addrs.map { it.dTag })?.let { q ->
                         recall(q).forEach { r -> keys.addressOf(r.hit)?.let { byAddress.putIfAbsent(it, r) } }
@@ -734,34 +750,38 @@ internal class SearchReferenceExpansion(
         )
     }
 
-    /** One bucket's worth of references, keyed the three ways a pointer names a record. */
-    private class Shapes(
-        val ids: LinkedHashSet<String> = LinkedHashSet(),
-        val pubKeys: LinkedHashSet<String> = LinkedHashSet(),
-        val addresses: LinkedHashSet<String> = LinkedHashSet(),
-    )
-
     /**
-     * This lens's references, grouped by quantized confidence.
+     * This lens's COORDINATE references, grouped by quantized confidence.
      *
      * Ordered HIGHEST FIRST so that a member two lists disagree about is looked
      * up under the higher one — `putIfAbsent` above then keeps that first
      * answer. The generous reading is the right one for a disagreement between
      * two publishers the reader delegated: they both vouched, and the reader
      * asked for both.
+     *
+     * COORDINATES ONLY, because they are the only shape left that buckets. This
+     * used to collect all three and hand back a `Shapes` holding each, from when
+     * the buckets were how EVERY member reached its rung; the keyed shapes moved
+     * to weighted batches ([Batch]) and their two sets became write-only. They
+     * were not free: a page is walked here for every scored searching read, so a
+     * list of 1,000 members cost 1,000 boxed bucket keys, hash lookups and
+     * `LinkedHashSet` inserts that nothing ever read — and the addressable
+     * family it all fed has no instances at all on the staging corpus. Buckets
+     * that only ids or pubkeys created are gone with them, which changes
+     * nothing: they reached the loop below with no addresses and issued no
+     * query.
      */
     private fun bucketed(
         planned: List<References>,
         lensOfRow: IntArray,
         lens: Int,
-    ): List<Pair<Double?, Shapes>> {
-        val out = HashMap<Double?, Shapes>()
+    ): List<Pair<Double?, LinkedHashSet<String>>> {
+        val out = HashMap<Double?, LinkedHashSet<String>>()
         planned.forEachIndexed { i, refs ->
-            if (lensOfRow[i] != lens) return@forEachIndexed
-            refs.eventIds.forEach { out.getOrPut(bucketOf(refs.weightOf(it))) { Shapes() }.ids.add(it) }
-            refs.pubKeys.forEach { out.getOrPut(bucketOf(refs.weightOf(it))) { Shapes() }.pubKeys.add(it) }
-            refs.addresses.forEach { out.getOrPut(bucketOf(refs.weightOf(it))) { Shapes() }.addresses.add(it) }
+            if (lensOfRow[i] != lens || refs.addresses.isEmpty()) return@forEachIndexed
+            refs.addresses.forEach { out.getOrPut(bucketOf(refs.weightOf(it))) { LinkedHashSet() }.add(it) }
         }
+        if (out.isEmpty()) return emptyList()
         // UNSCORED FIRST, THEN DESCENDING CONFIDENCE, and the order is
         // load-bearing: [lookUp] files each found subject with `putIfAbsent`, so
         // whichever bucket runs first wins a member that two pointers name. An
