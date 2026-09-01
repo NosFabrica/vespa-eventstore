@@ -96,9 +96,21 @@ recipe below, `--dump 'Verified Human'` under `observer:460c25…065c`:
 
 | | `pre_split` | shipped |
 | --- | --- | --- |
-| the five `Verified Human` lists | #1–4, #8 | **#1–5** |
+| the five `Verified Human` lists (kind 30000 — see below) | #1–4, #8 | **#1–5** |
 | the reported profile (`:verified:` + "humanity") | #12 | #44 |
 | Wikipedia mirrors in the top 50 (one rank-30 author, each matching ONE word in a title) | **29**, from #13 | **2**, from #49 |
+
+**WHICH KIND those five lists are matters, and they are not the reported one.**
+The capture holds 125 kind-30000 people lists, 37 kind-39089 follow packs and
+**no 30392 at all** — the REQ that made it never asked for one. The staging
+report is about a 30392 (`eb75f8c7`, 17 members scored 65..100), so what this
+slice measures is the pointer document's own placement on the ladder, which is
+kind-blind: the title lands in `search_primary` for a 30000 and a 30392 alike,
+and the rung is decided by which column answered. What it does NOT measure is
+that list's MEMBERS being spliced and ranked, because the corpus has no such
+list to splice from. `MemberTrustIT`'s second case is where that runs — a real
+30392, a real 10040 enrolling its signer, real 30382 cards, and the People
+tab's own filter, on a real Vespa.
 
 Those mirrors are the ones `rank_cases.json`'s `Verified Human` row calls out as
 what stranded the list's members at #40: the member rung's ceiling (4 000 × wot)
@@ -115,6 +127,79 @@ SPLICED MEMBER, which the store produces and a direct engine query like
 the split rung onto the weak band, losing the distinction between "half the query
 in a name" and "a bio mention"; 23 000 is the value that clears the page and
 keeps the ladder.
+
+### The live case, re-captured — and the 30392 is gone (2026-09-01)
+
+A second read-only capture, asking for the declaration families BY KIND rather
+than taking whatever a search returned, to check the corpus measurement above
+against the case the report was actually about. It found that the case had
+MOVED, which is the headline:
+
+- **The relay holds nine kind-30392 events in total, every one of them with an
+  empty title, and none matching `Verified Human`.** The Trusted List
+  `eb75f8c7` this file's `rank_cases.json` row was written against is no longer
+  there under that kind. The Tapestry service key now publishes 30382 cards and
+  no lists at all.
+- **The case is now SIX kind-30000 people lists and TWO kind-39089 follow
+  packs**, all titled exactly `Verified Human`, signed by six humans (david,
+  vinney, Edo and three others) rather than by a service.
+
+So the people-list splicing is not a nice-to-have beside the Trusted List path
+— on today's corpus it is the ONLY path that reaches the reported case, and the
+30392 half of §13.1 is exercised by `MemberTrustIT`'s end-to-end case rather
+than by any corpus we can capture.
+
+**What staging answers today**, without this branch, People tab (`kinds:[0]`,
+observer `460c25…065c`, 26 rows): `DotardTed 🇺🇸 :verified:` at #1, seven
+badge-named accounts inside the top 22 (`Em :official_verified:` at #5 and #8,
+`MaddestMax :antiverified:`, `Hermann Assmann :verified:`,
+`Darnell Clayton :verified:`, `J. R. DePriest :verified_trans:`,
+`Lesley Carhart :unverified:`), and **not one member** of the six lists that are
+titled exactly what was searched for.
+
+**The same corpus, replayed locally with this branch** (359 fresh events plus
+the 10 961-event slice for corpus statistics, fed through the real write path):
+
+| page | staging today | this branch |
+| --- | --- | --- |
+| People tab, `DotardTed 🇺🇸 :verified:` | **#1** | #4 |
+| People tab, the two declaring `Em :official_verified:` | #5, #8 | **off the page** |
+| the scattered `DotardTed` (one word in a name, one in a bio) | text 130 159 | **text 23 159** |
+| Everything tab, the `Verified Human` lists | #1–4, #8 | **#1–5** |
+| Everything tab, Wikipedia mirrors in the top 50 | **29**, from #12 | **3**, from #47 |
+| Everything tab, scattered-match rows in the top 50 | **33** | **7** |
+
+(The last three are `rankAb --dump` against `pre_split` and the shipped
+defaults on the identical corpus, so they isolate §12.2 from everything else.)
+
+**The People tab under the CURATOR's own lens** — david, who signed one of the
+`Verified Human` lists — is the splice working on real data:
+
+```
+1  vinney…axkl   2  Nathan Day   3  david        4  Bill Cypher
+5  Alex Gleason  6  Ghulam M.    7  Avi Burra    8  Shawn
+9  YODL         10  marcan0     11  ManiMe      12  STIMD
+```
+
+Twelve profiles, none of which contains either query word — they are on the
+page only because a list he curated named them. Under the observer above, who
+never enrolled those signers, none of them appear: the gate holds, and a
+stranger's list stays a stranger's list.
+
+**The badge rule, visible on real data.** `:verified:` returns exactly the four
+accounts wearing a DECLARED badge and nothing else; the bare word `verified`
+returns accounts that actually say it. The corpus even supplies the control:
+THREE profiles are named `Em :official_verified:`, two of which declare the
+emoji in their tags and one of which does not. The two declaring ones are found
+by `:official_verified:` and are gone from a `Verified Human` search; the third
+keeps the run as the literal text it is. Same display name, opposite treatment,
+decided by what each event says about itself.
+
+Capture recipe (read-only, REQ only): the page three ways (lensed, People tab,
+`include:spam`), then `kinds:[30392,30393,30394]` and
+`kinds:[30000,39089]` asked for directly, then the `p` tags of everything that
+came back as one `kinds:[0]` REQ for the members, then the provider's 30382s
+for every pubkey in play, plus the observer's 10040.
 
 ### Whose trust places a spliced member — §13.1 (2026-09-01)
 
