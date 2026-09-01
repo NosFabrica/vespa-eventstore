@@ -209,6 +209,31 @@ class FilterMappingTest {
         assertNull(map("\"vitor\"").search)
     }
 
+    /**
+     * A word that is entirely a NIP-30 `:shortcode:` is one term — the query
+     * half of [Shortcodes], meeting the term the feed side wrote for that
+     * badge. Anchored on the WHOLE word, which is what keeps a clock a clock.
+     */
+    @Test
+    fun `a whole-word shortcode becomes the badge term`() {
+        assertEquals("xemojiverified", map(":verified:").search)
+        assertEquals("bitcoin xemojiverified", map("bitcoin :verified:").search, "beside ordinary words, in place")
+        assertEquals("xemojiofficialverified", map(":official_verified:").search, "flattened exactly as the feed side flattens it")
+        assertEquals(listOf("xemojiverified"), map("-:verified:").notSearch, "an excluded badge is the badge, not the word")
+    }
+
+    @Test
+    fun `everything that is not a whole-word shortcode is left alone`() {
+        assertEquals("8:30:45", map("8:30:45").search, "a clock is one word that is not a shortcode end to end")
+        assertEquals("1:2:1", map("1:2:1").search)
+        assertEquals("verified", map("verified").search, "the WORD still finds the profiles that say it")
+        assertNull(
+            map("re:verified:").search,
+            "an extension-shaped token never reaches the rewrite — quartz's pass eats `re:` as an unknown extension, per NIP-50",
+        )
+        assertEquals(listOf(":verified:"), map("\":verified:\"").phrases, "quoting asks for the text as typed")
+    }
+
     @Test
     fun `quotes are lifted before the extension pass — the closing quote survives`() {
         // Quartz's extension pass is quote-blind: parsed AFTER it, the span's

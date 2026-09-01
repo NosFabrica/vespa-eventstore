@@ -5,59 +5,51 @@ app = "1.0.0"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"
 # Quartz from JitPack (amethyst @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
-# b10be95a6e = amethyst main @ 2026-08-30 (PR #4020). Bumped FOR this store: it
-# carries the SearchFieldExtractor branches that fix where a Trusted List title and
-# a contact card petname land — see the reindex note below, which is the one thing
-# this bump requires an operator to do.
+# cecc3287b2 = amethyst main @ 2026-09-01. Bumped FOR this store, again: it carries
+# the audit of every SearchFieldExtractor branch that THIS repo asked upstream for
+# (the roles are this store's ranking inputs, and no other client reads them), plus
+# the Profile-XOR-Tiered contract the schema silently depends on.
 #
-# The range is 35 commits and 118 files, but only TWO of them are quartz sources.
-# IEventStore, SQLiteEventStore, Filter, EventFactory, IndexableFields,
-# SearchableEvent and SearchQuery are byte-identical to the previous pin, so filter
-# semantics are unchanged and the searchable SET does not move: still 130 classes /
-# 133 kind values. What moves is the DECOMPOSITION of two families already in it.
+# The range is 38 commits; two of them are nip50Search sources, the rest is
+# NIP-47 wallet-connect and pool tooling no module here imports. IEventStore,
+# SQLiteEventStore, Filter, EventFactory, SearchableEvent and SearchQuery are
+# byte-identical to the previous pin, so filter semantics are unchanged and the
+# searchable SET does not move — 133 kind values, as before. What moves is the
+# DECOMPOSITION of 19 of them.
 #
-#   SearchFieldExtractor (nip50Search) gained an `is TrustedListEvent ->` branch and
-#     an `is ContactCardEvent ->` branch — the change this store asked for. Both
-#     kinds previously fell through the generic `is SearchableEvent ->` fallback,
-#     which puts the whole indexableContent() in the TERTIARY tier:
-#       30392-30395: title() now fills `primary` instead of `text`. A list titled
-#         "Verified Human" was scoring the phrase on the 550 affiliation rung
-#         instead of the 130 000 title rung — a 236x discount that put it level
-#         with a bio that merely mentions the words — and reached the title only
-#         through trigram substring, never the prefix/typo columns. Measured on
-#         search-staging; see benchmark/rank_cases.json "Verified Human".
-#       30382: petName() fills `primary`, summary() fills `secondary`. A provider's
-#         petname is that provider's NAME for a person, which is what a people
-#         search is looking for. topics() is now carried ONCE, in the hashtag role
-#         the tiers() funnel already filled — the fallback had been indexing it
-#         twice, inside the concatenated body AND as hashtags. SearchExtractors
-#         folds hashtags into the secondary tier, so for THIS store a card's topics
-#         move body -> secondary; no word leaves the index.
+#   SearchFieldExtractor: 17 kinds that fell through to the catch-all — which dumps
+#     the whole indexableContent() into the BODY role — now split. Their titles were
+#     unreachable by the title band, a 236x discount (the same one the Trusted List
+#     title had in the previous bump): the NIP-15 marketplace family
+#     (30017/30018/30019/30020), the Podcasting-2.0 pair (30054/30055), the group
+#     metadata EDIT (9002, whose published twin 39000 already had a branch), plus
+#     1010, 1065, 1068, 1163, 1985, 2473, 6969, 12473, 38192, 38383. Four kinds
+#     with a public URL now fill the affiliation role: a repository's clone URLs
+#     (30617), a meeting space's streaming endpoint (30312/30313) and the two nSite
+#     kinds' source. Six kinds stop indexing their `t` tags twice (1111, 1311, 9002,
+#     30018, 30020, 30054) — the funnel already carried them as hashtags.
+#     README's kind table is updated to match, row by row.
 #
-# REINDEX REQUIRED, and it is the only pin bump here that has needed one: the
-# extraction is derived data, so existing 30382s and 3039xs keep the old tiering
-# until `reindexFullTextSearch` re-derives them. Recall is unaffected either way —
-# the same words are indexed, on different columns — so this is a RANKING backfill,
-# not an outage, and it can run whenever.
+#   IndexableFields: the Profile-XOR-Tiered contract, written down. event.sd
+#     composes the two column groups with a plain SUM on that premise, so a doc
+#     filling a naming column in BOTH would claim the token band twice (~260 000
+#     against the ~130 000 a whole-field match earns). The sealed type enforced it
+#     and nothing said it was load-bearing; now a both-shapes kind is a decision
+#     with a known downstream cost rather than an accident.
 #
-# The range's other quartz source is `nip01Core/core/ReplaceableSupersession.kt`,
-# which is NOT new — it and its `Event.supersedes(existing)` were already in the
-# 029c40ebb4 jar. What the range adds are three CLIENT-side clock helpers:
-# `nextCreatedAtToSupersede`, `awaitCreatedAtToSupersede` and
-# `MAX_SUPERSEDE_WAIT_SECONDS`, which decide the `created_at` a publisher should
-# stamp to win an address it just replaced. A store never stamps anything, so none
-# of it is reachable from here.
+# Also upstream, and free here: extraction stopped allocating three throwaway lists
+# per event (`cleanOne`, lazy `cleanAll`, a `t`-tag scan before `hashtags()`), which
+# is the same hot path benchmark/README.md's extractBench measures at ~4.3 us/event.
 #
-# Worth a separate change, and NOT news from this range: `supersedes()` is exactly
-# the NIP-01 rule insertLocked, EventDoc.NEWEST_FIRST and BulkRecordInsert each
-# spell for themselves (highest created_at, ties to the lexically smallest id).
-# Adopting it would delete three copies of one comparison — it has simply been
-# available for longer than this bump. The other 33 commits are app / CLI /
-# desktop / translations / ime-test tooling; no module here imports any of it.
+# REINDEX REQUIRED, for the same reason as the previous bump and no more urgently:
+# extraction is derived data, so events of those 19 kinds keep their old tiering
+# until `reindexFullTextSearch` re-derives them. Recall is unaffected — the same
+# words are indexed, on different columns — so it is a RANKING backfill, not an
+# outage, and it can run whenever.
 #
-# Prev 029c40ebb4 (2026-08-28: ServiceProviderTag bounded to 30382..30385, member
-# scores clamped to 0..100, fastMapNotNullDense — all no-ops for this store).
-quartz = "b10be95a6e"
+# Prev b10be95a6e (2026-08-30: the TrustedListEvent and ContactCardEvent branches —
+# a list title 550 -> 130 000, a card's petname into the name rung; also reindexed).
+quartz = "cecc3287b2"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 sqlite = "2.7.0"

@@ -26,6 +26,7 @@ import com.vitorpamplona.quartz.experimental.trustedLists.users.UserTrustedListE
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip10Notes.TextNoteEvent
+import com.vitorpamplona.quartz.nip15Marketplace.stall.StallEvent
 import com.vitorpamplona.quartz.nip17Dm.messages.ChatMessageEvent
 import com.vitorpamplona.quartz.nip23LongContent.LongTextNoteEvent
 import com.vitorpamplona.quartz.nip34Git.repository.GitRepositoryEvent
@@ -35,6 +36,7 @@ import com.vitorpamplona.quartz.nip89AppHandlers.definition.AppDefinitionEvent
 import com.vitorpamplona.quartz.nip99Classifieds.ClassifiedsEvent
 import com.vitorpamplona.quartz.nipB0WebBookmarks.WebBookmarkEvent
 import com.vitorpamplona.quartz.nipC0CodeSnippets.CodeSnippetEvent
+import com.vitorpamplona.quartz.nipXXPodcasting20.episode.Podcasting20EpisodeEvent
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -56,6 +58,120 @@ class SearchExtractorsTest {
             ),
             fields,
         )
+    }
+
+    @Test
+    fun `a declared shortcode is one term of its own, not a name token`() {
+        // The reported shape: a bridged Mastodon profile whose display name
+        // carries a custom-emoji badge, declared as one in the event's own
+        // tags. Tokenized as text it put this account on the 130 000 name rung
+        // for the word "verified"; as its own term it keeps the badge
+        // findable, on the weak rung, as the badge it is.
+        val content = """{"name":"DotardTed :verified:","about":"raw humanity :thinking: and more"}"""
+        val tags = arrayOf(arrayOf("emoji", "verified", "https://static/verified.png"), arrayOf("emoji", "thinking", "https://static/think.png"))
+        val fields = SearchExtractors.extract(MetadataEvent("5".repeat(64), alice, 1L, tags, content, ""))
+        assertEquals("DotardTed", fields.name, "the picture leaves the name it decorated, whole and its own length")
+        assertEquals("raw humanity and more", fields.about, "…in every field the event indexes")
+        assertEquals("xemojiverified xemojithinking", fields.secondary, "both badges, once each, on the secondary tier")
+    }
+
+    @Test
+    fun `a shortcode term is flattened to one alphanumeric token`() {
+        // Vespa splits at `_` and `-` as readily as at `:`. An unflattened
+        // `xemoji_official_verified` would index as three tokens, one of them
+        // the bare `verified` this whole rewrite exists to remove.
+        val content = """{"name":":official_verified: Em"}"""
+        val tags = arrayOf(arrayOf("emoji", "official_verified", "https://static/ov.png"))
+        val fields = SearchExtractors.extract(MetadataEvent("9".repeat(64), alice, 1L, tags, content, ""))
+        assertEquals("Em", fields.name)
+        assertEquals("xemojiofficialverified", fields.secondary)
+    }
+
+    @Test
+    fun `a declared badge the text never wears indexes nothing`() {
+        // Declaration is not use: an emoji tag left over from an edit names a
+        // picture no field carries, and an unworn badge is not a badge.
+        val content = """{"name":"DotardTed"}"""
+        val tags = arrayOf(arrayOf("emoji", "verified", "https://static/verified.png"))
+        val fields = SearchExtractors.extract(MetadataEvent("b".repeat(64), alice, 1L, tags, content, ""))
+        assertEquals(SearchFields(name = "DotardTed"), fields)
+    }
+
+    @Test
+    fun `the rewrite leaves one token boundary where the picture was`() {
+        // The single-pass rewriter's whole job beyond removal: a badge between
+        // two words leaves ONE space, a badge welded to a word still separates
+        // it, and a bio's newlines survive — they are its paragraphs, and a
+        // badge alone on a line must not weld them together.
+        val content =
+            """{"name":"a:verified:b","display_name":":verified:Em:verified:","about":"one :verified: two :verified::verified: three","website":"line1\n:verified:\nline2"}"""
+        val tags = arrayOf(arrayOf("emoji", "verified", "https://static/v.png"))
+        val fields = SearchExtractors.extract(MetadataEvent("d".repeat(64), alice, 1L, tags, content, ""))
+        assertEquals("a b", fields.name, "two words, not one")
+        assertEquals("Em", fields.displayName, "leading and trailing badges leave no edge whitespace")
+        assertEquals("one two three", fields.about, "…and adjacent badges collapse to one boundary")
+        assertEquals("line1\n\nline2", fields.website, "newlines are paragraphs, not spaces")
+        assertEquals("xemojiverified", fields.secondary, "one badge, however many times it is worn")
+    }
+
+    @Test
+    fun `a field with a colon but no badge is returned untouched`() {
+        // The early exit the rewrite leans on, and the case that proves it does
+        // not corrupt what it skips: this event DOES declare a badge, but these
+        // fields carry colons that are not it.
+        val content = """{"name":"8:30 stand-up","about":"see https://example.com/x :thinking:"}"""
+        val tags = arrayOf(arrayOf("emoji", "verified", "https://static/v.png"))
+        val fields = SearchExtractors.extract(MetadataEvent("e".repeat(64), alice, 1L, tags, content, ""))
+        assertEquals("8:30 stand-up", fields.name)
+        assertEquals("see https://example.com/x :thinking:", fields.about, "an undeclared code is not a picture")
+        assertEquals(null, fields.secondary, "nothing was worn, so nothing is indexed")
+    }
+
+    @Test
+    fun `an undeclared colon run is left exactly as it is`() {
+        // `:[a-z0-9_]+:` is also what a clock looks like. Nothing here is
+        // declared as an emoji, so nothing is a picture, and a regex would
+        // have turned the first of these into "845".
+        val content = """{"name":"8:30:45","about":"ratio 1:2:1 and :verified: said by nobody"}"""
+        val fields = SearchExtractors.extract(MetadataEvent("6".repeat(64), alice, 1L, emptyArray(), content, ""))
+        assertEquals("8:30:45", fields.name)
+        assertEquals("ratio 1:2:1 and :verified: said by nobody", fields.about)
+        assertEquals(null, fields.secondary, "nothing was declared, so nothing is a badge")
+    }
+
+    @Test
+    fun `a name that is nothing but badges is still findable as its badge`() {
+        // The reason this is a tokenization and not a deletion: deleting the
+        // run deletes the account. The name is empty because it was a picture,
+        // and the picture is what is left to find it by.
+        val content = """{"name":":verified:","display_name":" :verified: "}"""
+        val tags = arrayOf(arrayOf("emoji", "verified", "https://static/verified.png"))
+        val fields = SearchExtractors.extract(MetadataEvent("7".repeat(64), alice, 1L, tags, content, ""))
+        assertEquals(null, fields.name, "an empty name is absent, not blank")
+        assertEquals(null, fields.displayName)
+        assertEquals("xemojiverified", fields.secondary, "declared twice, indexed once")
+    }
+
+    @Test
+    fun `a declared shortcode is rewritten in a titled kind too`() {
+        val tags = arrayOf(arrayOf("d", "post"), arrayOf("title", "My :verified: Post"), arrayOf("emoji", "verified", "https://static/v.png"))
+        val fields = SearchExtractors.extract(LongTextNoteEvent("8".repeat(64), alice, 1L, tags, "body", ""))
+        assertEquals("My Post", fields.primary)
+        assertEquals("xemojiverified", fields.secondary, "the badge tier is the same for every kind")
+    }
+
+    @Test
+    fun `badge terms ride beside a kind's own secondary tier, never over it`() {
+        val tags =
+            arrayOf(
+                arrayOf("d", "post"),
+                arrayOf("title", "My Post"),
+                arrayOf("summary", "tl;dr :verified:"),
+                arrayOf("t", "nostr"),
+                arrayOf("emoji", "verified", "https://static/v.png"),
+            )
+        val fields = SearchExtractors.extract(LongTextNoteEvent("c".repeat(64), alice, 1L, tags, "body", ""))
+        assertEquals("tl;dr\nnostr\nxemojiverified", fields.secondary)
     }
 
     @Test
@@ -192,6 +308,29 @@ class SearchExtractorsTest {
         val tags = arrayOf(arrayOf("d", alice), arrayOf("t", "podcast"), arrayOf("t", "bitcoin"), arrayOf("rank", "90"))
         val fields = SearchExtractors.extract(ContactCardEvent("f".repeat(64), alice, 1L, tags, "encrypted", ""))
         assertEquals(SearchFields(secondary = "podcast bitcoin"), fields)
+    }
+
+    /**
+     * The `cecc3287b2` pin, seen from this side: 19 kinds that fell through
+     * quartz's catch-all — which puts a whole `indexableContent()` in the body
+     * tier — now split, so their titles reach `search_primary` and the title
+     * band. Two of them here, one carrying its title inside a JSON blob and one
+     * in tags, because a role that arrives is only useful if THIS wrapper
+     * routes it to the column the schema ranks.
+     */
+    @Test
+    fun `a marketplace stall's name fills the title column, not the body`() {
+        val content = """{"id":"s1","name":"Vitor's Coffee","description":"beans from Minas","currency":"BRL"}"""
+        val tags = arrayOf(arrayOf("d", "s1"), arrayOf("t", "coffee"))
+        val fields = SearchExtractors.extract(StallEvent("10".repeat(32), alice, 1L, tags, content, ""))
+        assertEquals(SearchFields(primary = "Vitor's Coffee", secondary = "beans from Minas\ncoffee"), fields)
+    }
+
+    @Test
+    fun `a podcast episode title fills the title column, not the body`() {
+        val tags = arrayOf(arrayOf("d", "ep1"), arrayOf("title", "Episode 42"), arrayOf("description", "on search"), arrayOf("t", "podcast"))
+        val fields = SearchExtractors.extract(Podcasting20EpisodeEvent("11".repeat(32), alice, 1L, tags, "show notes", ""))
+        assertEquals(SearchFields(primary = "Episode 42", secondary = "on search\npodcast", text = "show notes"), fields)
     }
 
     @Test

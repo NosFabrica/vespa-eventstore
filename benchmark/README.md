@@ -42,7 +42,172 @@ measures what the emitted query actually does:
   ```bash
   ./gradlew :benchmark:rankAb --args="--vespa http://localhost:8080"
   ./gradlew :benchmark:rankAb --args="--configs baseline,near_off --profile text"
+  # one query, the whole page, per config — kind, title, band, §12.2 flags
+  ./gradlew :benchmark:rankAb --args="--vespa http://localhost:8080 --observer 460c25…065c \
+    --configs pre_split,baseline --dump 'Verified Human' --hits 13"
   ```
+
+- **`FieldCoverageRankIT`** (test, `@Tag("integration")`) — `event.sd` §12.2 on
+  a real Vespa: the same synthetic shapes the section below measures, asserting
+  that one field answering the whole query outranks several fields sharing it,
+  that a compound handle and a name/display_name pair are NOT splits, and that
+  a single-word query cannot reach the split rung at all. Run with
+  `-Pintegration`.
+
+### Which field answered the query — the split rung (2026-09-01)
+
+Reported against staging: searching `Verified Human` in the People tab put a
+profile with "Verified" in its display name and "human" in its bio above a
+Trusted List titled exactly `Verified Human` — and above every member that list
+vouched for. `matchCount(name) > 0` bought the whole `w_name_tier` (130 000)
+rung for ONE word of a two-word query, so "answered half the query in a name"
+and "IS the query" stood on the same rung, separated only by the second phase's
+≤ 89 000 — well under a rung, hence crossable by ~14 % of trust delta.
+
+`event.sd` §12.2 adds the rung the ladder was missing: `naming_coverage()`
+(matchCount over the words TYPED, summed across name/display_name/title, so it
+is 1.0 on every single-word query) plus `offname_match()` (did a bio, handle,
+website, hashtag, body or location carry the rest). Both true ⇒
+`scattered_match()`, and the doc lands on **`w_split_tier` = 23 000** — one rung
+down, `w_near_tier`, where a prefix or typo hit on the WHOLE query already sits.
+`w_perfect_pow` = 2.0 then sharpens the contrast inside the band that remains.
+
+**Synthetic shapes** (`FieldCoverageRankIT`'s corpus, one trust for every
+author, so `wot_mult()` cancels and this is the text ladder alone), relative to
+the perfect match:
+
+| shape | field(s) that answered | before | after |
+| --- | --- | --- | --- |
+| `Verified Human` | name (is the query) | 1.000 | 1.000 |
+| `Verified Human Bot` | name (contains it) | 0.869 | 0.787 |
+| `Human Verified` | name (wrong order) | 0.817 | 0.726 |
+| `Verified` + bio "a human being" | name + about | 0.812 | **0.230** |
+| `DotardTed :verified:` + bio "…humanity…" | name + about | 0.706 | **0.147** |
+| `Somebody` + bio "verified human" | about only (affiliation band) | 0.003 | 0.003 |
+
+In trust terms: crossing a whole-field answer with a split one needed a **1.14×**
+trust delta before and needs **1.93×** now (one rung, `5.65^(1/w_wot_pow)`).
+Measured the same way: a trust-60 author of the split shape outranked a trust-50
+perfect match before, and a trust-80 one does not now — a trust-100 one still
+does, which is what a rung is for.
+
+**Real corpus** — the 10 961-event / 2 123-card staging slice captured by the
+recipe below, `--dump 'Verified Human'` under `observer:460c25…065c`:
+
+| | `pre_split` | shipped |
+| --- | --- | --- |
+| the five `Verified Human` lists | #1–4, #8 | **#1–5** |
+| the reported profile (`:verified:` + "humanity") | #12 | #44 |
+| Wikipedia mirrors in the top 50 (one rank-30 author, each matching ONE word in a title) | **29**, from #13 | **2**, from #49 |
+
+Those mirrors are the ones `rank_cases.json`'s `Verified Human` row calls out as
+what stranded the list's members at #40: the member rung's ceiling (4 000 × wot)
+cannot reach the token rung (130 000 × wot) from below, so no confidence and no
+trust could have fixed it — but demoting the docs that never belonged in the
+token band does. **Every pinned rank case is position-identical** across
+`pre_split`, the shipped defaults, `split_off`, `perfect_pow_off`, `split_60k`
+and `split_weak` (found 2/8, MRR 0.156 — a property of the SLICE, not of the
+configs: four of the eight pinned ids are replaceable events superseded
+upstream since the case was recorded, and the `Verified Human` pin is a
+SPLICED MEMBER, which the store produces and a direct engine query like
+`rankAb`'s cannot).
+`split_60k` only halves the mirrors (12 of 50) and `split_weak` (4 000) collapses
+the split rung onto the weak band, losing the distinction between "half the query
+in a name" and "a bio mention"; 23 000 is the value that clears the page and
+keeps the ladder.
+
+### Whose trust places a spliced member — §13.1 (2026-09-01)
+
+A Trusted List's member is not a text match, so `spliced_member` synthesizes a
+score for it — and that score used to carry the trust of the KEY THAT SIGNED THE
+LIST. Measured on staging under `observer:460c25…065c` by bisecting
+`filter:rank:gte:N` per author:
+
+| author | rank |
+| --- | --- |
+| the Tapestry service key signing the `Verified Human` 30392s | **0** (26 under the enrolling reader's own lens) |
+| the kind-30000/39089 pins' signers (human curators) | 100 / 96 / 86 / 47 |
+| the Wikipedia-mirror bot whose 27 pages took the page | 28 |
+
+The write path never read enrolment that way: `TrustRecompute` stores an
+enrolled provider's asserted rank AS the observer's trust in that subject, face
+value, with the provider's own rank nowhere in it. §13.1 makes ranking agree —
+(a) the list's own score for the member, (b) the member's own rank when the list
+scored nobody, (c) neither, and only then the signer through the floor. Under
+(a)/(b) a member is placed at `query(pointer_text) × wot_of(member_trust)`: the
+band the POINTER earned with its words, times the curve over the member's own
+number, which is the same shape as every organic hit on the page.
+
+`MemberTrustIT` pins all three rungs, including the property that motivates
+them: a tenfold change in `query(pointer_rel)` — the only number carrying the
+signer's trust — leaves a scored member exactly where it was.
+
+**What it costs (2026-09-01).** The hot path gains one JSON field read per
+ranked hit (`text_score`, off a match-features object the client already parses
+— `search` computes and serializes match-features per hit regardless) and
+`wot_mult()` becomes an inlined call to `wot_of(user_score())`. A/B on one box:
+`searchBench`'s self-fed 100k-note corpus, single-node Vespa in Docker,
+`BENCH_SEARCH_REPS` 30, p50 per run, **four runs per variant, alternating
+deploys** (a rank-profile-only change, so the corpus is fed once and never
+re-fed):
+
+| shape | before (3 runs) | after (3 runs) | median Δ |
+| --- | --- | --- | --- |
+| common term (~50k matches) | 172.0 / 176.8 / 183.4 ms | 198.0 / 176.6 / 174.0 ms | **−0.1 %** |
+| common term limit=1000 | 214.5 / 214.5 / 215.0 | 247.2 / 229.0 / 214.7 | +6.7 % |
+| text (single-phase) | 31.8 / 31.1 / 31.7 | 30.8 / 29.9 / 31.2 | −2.9 % |
+| text2 (rerank 1000) | 37.5 / 36.3 / 41.6 | 36.7 / 38.1 / 38.5 | +1.6 % |
+| rare term | 23.7 / 19.7 / 21.4 | 23.7 / 22.7 / 24.9 | +10.9 % (of 20 ms) |
+| profile directory | 10.4 / 8.5 / 8.7 | 8.4 / 9.0 / 9.0 | +2.8 % |
+
+Round 1 is excluded and the reason is worth recording: its `text` 43.0 ms and
+`text2` 51.7 ms were a concurrent `compileTestKotlin` on the same box, not the
+change — runs 2–4 land back on 30/31 ms, identical to `before`. What remains is
+run-to-run variance of the same size as the deltas (one `before` run spans
+214.5–215.0 while one `after` run hits 247), so the honest reading is that **the
+change is smaller than this rig can resolve**. Don't measure a rank-profile A/B
+while anything else runs on the box.
+
+### The reader's own list, end to end (2026-09-01)
+
+`rankAb` cannot show this and never could: the expansion lives in
+`NostrSemanticsStore`, so a spliced row exists only on the store path. That is
+what `storeDump` is for. Same 10 961-event slice, replayed through the store's
+own write path, asked the way the relay asks:
+
+```bash
+VESPA_URL=http://localhost:8080 ./gradlew :benchmark:storeDump \
+  --args="--search 'Verified Human' --observer f8ff11c7…a17a --limit 14"
+```
+
+| # | name / title | kind | author |
+| --- | --- | --- | --- |
+| 1 | `Verified Human` | **30000** | f8ff11c7 (the reader) |
+| 2 | david | 0 | e5272de9 |
+| 3 | Avi Burra | 0 | b83a28b7 |
+| 4 | Jackthemimic | 0 | dd1f9d50 |
+
+Three things are visible in four rows. The pointer is the reader's OWN NIP-51
+people list, which before `SearchReferences.PEOPLE_LISTS` was an ordinary hit
+that spliced nobody — on `--kinds 0` it was dropped on the way out and the tab
+served nothing from it. The people behind it are its members. And their ORDER is
+§13.1 rung (b) at work: NIP-51 has nowhere to put a per-member score, so each
+member is placed by its own rank under this reader — 100, 98, 82 in the staging
+tensors, which is the order they come back in.
+
+**The gate, in the same run.** Under `observer:460c25…065c` — the observer this
+slice was captured for, whose 10040 names a rank service and no list service —
+the identical query returns three ordinary text hits and NO spliced rows at all.
+The Tapestry key that signs the `Verified Human` 30392s is not one this reader
+enrolled, so it unpacks nothing for them. Same corpus, same query, two lenses,
+and the difference is entirely whose 10040 said what.
+
+**What this slice cannot show.** It carries reputation cells for the observers
+whose provider cards were captured, so a member with no card under the lens you
+ask through is gated out before placement can be read — 4 rows here where
+staging serves 21. Capture the lens you intend to measure (its 10040, and its
+rank provider's 30382s for the authors involved), or read the ordering claims
+off `MemberTrustIT`, which seeds its own trust.
 
 ### Recency in text ranking — the baseline the sweep has to beat (2026-08-22)
 
@@ -225,10 +390,92 @@ Corpus scale caveat: 26k documents, where fixed per-query overhead still
 dominates, so read the **absolute** +2.11 ms rather than the percentage. Re-run
 at 45k+ before treating the percentage as a planning number.
 
+### The write path's own derivation, and what a NIP-30 badge costs (2026-09-01)
+
+`extractBench` times `SearchExtractors.extract` and nothing else — no Vespa, no
+HTTP. Every other bench here measures a round trip in milliseconds, which hides
+everything the JVM does on the way in; a batch feed runs this 500 times between
+round trips. Corpus: the same **10 961-event staging slice** the split-rung work
+used (16.5 tags and 5 880 content chars per event, median 501, p99 104 202).
+Medians of 15 rounds after two warm-up passes.
+
+| stage | ns/event | share |
+|---|---:|---:|
+| `--stage upstream` — quartz's per-kind decomposition alone | 3 573 | 37 % |
+| `--stage emojis` — the NIP-30 declaration lookup | 129 | 1 % |
+| the rest: `VespaText.sanitize` over every derived field, plus the joins | ~5 825 | 61 % |
+| **`--stage full`** — what an ingest actually pays | **9 527** | |
+
+It read 16 264 ns before the sanitize fast path below (~12 300 of it in that
+last row). Two things this settles:
+
+- **Sanitization is the write path's derivation cost.** It was 73 % of it, and
+  after a 2.5x fix it is still 61 %: the work is proportional to TEXT, and this
+  corpus averages 5 880 content characters per event. Anything wanting a faster
+  ingest looks there, not at extraction.
+- **A badge nobody declares costs 129 ns.** SEVEN of the 10 961 events declare
+  an emoji (0.06 %), so that is what the feature costs a real corpus. An
+  allocation-free `any {}` guard in front of `emojis()` measured 165 ns, i.e. no
+  better: the list `mapNotNull` builds never escapes, so the JIT does not
+  allocate it. The guard was reverted.
+
+**`--badges N` is the corpus that does not exist yet** — every event wearing N
+declared badges, worn in its indexed text, which is what a Mastodon bridge could
+produce. There the SHAPE of the rewrite is the whole cost (both columns measured
+against the same post-fast-path baseline):
+
+| rewrite | 1 badge/event | 3 badges | 10 badges |
+|---|---:|---:|---:|
+| `replace()` per code + a `Regex` space-collapse | 54.2 µs | 63.5 µs | 114.6 µs |
+| **single pass, colon to colon (shipped)** | **14.5 µs** | **16.9 µs** | **15.9 µs** |
+
+The per-code shape walks the field twice per code and then hands the whole field
+to a regex engine, so it grows with the badge count; the single pass does the
+removal and the space-collapse together and is FLAT in it (5-7 µs over the
+9.5 µs no-badge baseline, all of it the one extra walk), while returning an
+untouched field as itself, uncopied. Neither is visible on the real corpus —
+this is insurance against a corpus that changes shape, bought at no cost to the
+one we have.
+
+### `VespaText.firstIllegalCodePoint`: reading a char before a code point (2026-09-01)
+
+The loop above is the hottest on the write path: every stored event runs it over
+its whole `content` and every tag value (`firstIllegalField`, the admission
+check) and again over each derived search field (`sanitize`), so a kind 1 pays
+it at least twice over the same text. On this corpus NOTHING is ever rejected —
+0 of 10 961 events carry an illegal code point — so the scan always runs to
+completion and no early exit ever helps.
+
+Measured over **64.5M characters of that corpus's real content** (47 % pure
+ASCII, 13 % carrying astral emoji), one variant per JVM to keep C2's profile
+from leaking between them, best of 8 rounds after 4 warm-ups:
+
+| variant | all | ASCII-only | non-ASCII |
+|---|---:|---:|---:|
+| `codePointAt` per character (before) | 1.96 ns/char | 1.76 | 2.10 |
+| **read a CHAR first, code point only outside `[0x20, 0xD800)`** | **0.77** | **0.40** | **0.78** |
+| branch-free band accumulator, precise pass on trip | 1.29 | 0.86 | 1.32 |
+| the same fast path with surrogate pairs decoded by hand | 0.72–0.84 | 0.32–0.52 | 0.61–0.84 |
+
+**2.5x, from one branch** (509 → 1 294 MB/s; 4.4x on ASCII-only text). The fast
+band is storable BY CONSTRUCTION — every rule `isStorable` can reject on lies
+outside it — so this is not a heuristic that trades correctness for speed, and
+`isStorable` stays the single place the rules live.
+
+The two rejected variants are the interesting part. **Branch-free is SLOWER**:
+accumulating a band test over every char cannot early-exit and, on the 67 % of
+strings that are not pure ASCII, pays a second precise pass — the branch it
+removes was predicted almost perfectly anyway. **Hand-inlining the surrogate
+decode is inside the noise**: it won by 8-20 % in one run and lost in the next,
+which is JVM-to-JVM variance, and it costs a second copy of a table verified
+against a live engine code point by code point. Not a trade worth making for a
+number that does not reproduce.
+
 ## Targeted benches (gradle tasks against a live Vespa)
 
 Beyond the head-to-head suite (`:benchmark:run`), these tasks each own one
-performance surface, expect `VESPA_URL` (default `http://localhost:8080`), and
+performance surface, expect `VESPA_URL` (default `http://localhost:8080`) —
+`extractBench` is the exception, it needs no engine at all — and
 carry their own CORRECTNESS gates — a wrong result set fails the run, so every
 timing is also a proof:
 
@@ -240,6 +487,7 @@ timing is also a proof:
 | `searchBench` | NIP-50: rare/common terms, multi-word, trigram/fuzzy, search+filters, profile directory, `text` vs `text2` rerank sweep | feeds its own 200k-doc zipfian text band once (`BENCH_SEARCH_DOCS`) | 37 planted sentinel docs must be recalled exactly |
 | `corpusLoad` | setup: loads the deterministic `NostrCorpus` a workload bench samples its filters from | 30k mixed events (`BENCH_SIZE`) | — |
 | `dedupProbe` | the bulk-dedup existence check: full-summary vs summary-free variants at mirror hit rates, chunk × fan-out curves, REQ latency under dedup load | reuses a `corpusLoad` corpus (ids sampled off the live store) | every variant must return the identical member set |
+| `extractBench` | the write path's own derivation (`SearchExtractors`), decomposed by stage, with `--badges N` for the every-event-wears-one corpus | any captured JSON export (`--corpus`), no Vespa | — |
 | `transportProbe` | read-transport isolation: JDK h1 / OkHttp h1 / OkHttp h2c on identical queries across body sizes | any loaded store | — |
 
 The workload benches (`corpusLoad`, `BENCH_MIXED`, `BENCH_THROUGHPUT`,
