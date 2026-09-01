@@ -42,7 +42,79 @@ measures what the emitted query actually does:
   ```bash
   ./gradlew :benchmark:rankAb --args="--vespa http://localhost:8080"
   ./gradlew :benchmark:rankAb --args="--configs baseline,near_off --profile text"
+  # one query, the whole page, per config — kind, title, band, §12.2 flags
+  ./gradlew :benchmark:rankAb --args="--vespa http://localhost:8080 --observer 460c25…065c \
+    --configs pre_split,baseline --dump 'Verified Human' --hits 13"
   ```
+
+- **`FieldCoverageRankIT`** (test, `@Tag("integration")`) — `event.sd` §12.2 on
+  a real Vespa: the same synthetic shapes the section below measures, asserting
+  that one field answering the whole query outranks several fields sharing it,
+  that a compound handle and a name/display_name pair are NOT splits, and that
+  a single-word query cannot reach the split rung at all. Run with
+  `-Pintegration`.
+
+### Which field answered the query — the split rung (2026-09-01)
+
+Reported against staging: searching `Verified Human` in the People tab put a
+profile with "Verified" in its display name and "human" in its bio above a
+Trusted List titled exactly `Verified Human` — and above every member that list
+vouched for. `matchCount(name) > 0` bought the whole `w_name_tier` (130 000)
+rung for ONE word of a two-word query, so "answered half the query in a name"
+and "IS the query" stood on the same rung, separated only by the second phase's
+≤ 89 000 — well under a rung, hence crossable by ~14 % of trust delta.
+
+`event.sd` §12.2 adds the rung the ladder was missing: `naming_coverage()`
+(matchCount over the words TYPED, summed across name/display_name/title, so it
+is 1.0 on every single-word query) plus `offname_match()` (did a bio, handle,
+website, hashtag, body or location carry the rest). Both true ⇒
+`scattered_match()`, and the doc lands on **`w_split_tier` = 23 000** — one rung
+down, `w_near_tier`, where a prefix or typo hit on the WHOLE query already sits.
+`w_perfect_pow` = 2.0 then sharpens the contrast inside the band that remains.
+
+**Synthetic shapes** (`FieldCoverageRankIT`'s corpus, one trust for every
+author, so `wot_mult()` cancels and this is the text ladder alone), relative to
+the perfect match:
+
+| shape | field(s) that answered | before | after |
+| --- | --- | --- | --- |
+| `Verified Human` | name (is the query) | 1.000 | 1.000 |
+| `Verified Human Bot` | name (contains it) | 0.869 | 0.787 |
+| `Human Verified` | name (wrong order) | 0.817 | 0.726 |
+| `Verified` + bio "a human being" | name + about | 0.812 | **0.230** |
+| `DotardTed :verified:` + bio "…humanity…" | name + about | 0.706 | **0.147** |
+| `Somebody` + bio "verified human" | about only (affiliation band) | 0.003 | 0.003 |
+
+In trust terms: crossing a whole-field answer with a split one needed a **1.14×**
+trust delta before and needs **1.93×** now (one rung, `5.65^(1/w_wot_pow)`).
+Measured the same way: a trust-60 author of the split shape outranked a trust-50
+perfect match before, and a trust-80 one does not now — a trust-100 one still
+does, which is what a rung is for.
+
+**Real corpus** — the 10 961-event / 2 123-card staging slice captured by the
+recipe below, `--dump 'Verified Human'` under `observer:460c25…065c`:
+
+| | `pre_split` | shipped |
+| --- | --- | --- |
+| the five `Verified Human` lists | #1–4, #8 | **#1–5** |
+| the reported profile (`:verified:` + "humanity") | #12 | #44 |
+| Wikipedia mirrors in the top 50 (one rank-30 author, each matching ONE word in a title) | **29**, from #13 | **2**, from #49 |
+
+Those mirrors are the ones `rank_cases.json`'s `Verified Human` row calls out as
+what stranded the list's members at #40: the member rung's ceiling (4 000 × wot)
+cannot reach the token rung (130 000 × wot) from below, so no confidence and no
+trust could have fixed it — but demoting the docs that never belonged in the
+token band does. **Every pinned rank case is position-identical** across
+`pre_split`, the shipped defaults, `split_off`, `perfect_pow_off`, `split_60k`
+and `split_weak` (found 2/8, MRR 0.156 — a property of the SLICE, not of the
+configs: four of the eight pinned ids are replaceable events superseded
+upstream since the case was recorded, and the `Verified Human` pin is a
+SPLICED MEMBER, which the store produces and a direct engine query like
+`rankAb`'s cannot).
+`split_60k` only halves the mirrors (12 of 50) and `split_weak` (4 000) collapses
+the split rung onto the weak band, losing the distinction between "half the query
+in a name" and "a bio mention"; 23 000 is the value that clears the page and
+keeps the ladder.
 
 ### Recency in text ranking — the baseline the sweep has to beat (2026-08-22)
 

@@ -643,6 +643,50 @@ schema event {
             # weak 620 > affiliation 550 > gram (<= gram_cap 80).
             query(w_near_tier_text) double: 700.0
             query(w_weak_tier_text) double: 620.0
+            # The pure-text token band itself, an input now rather than the
+            # literal 1100 it was written as in relevance()/relevance_cheap():
+            # the split rung below is its sibling and a rung nobody can sweep
+            # is a rung nobody can calibrate.
+            query(w_token_tier_text) double: 1100.0
+            # ---- §12.2 THE SPLIT RUNG: one field answered, or several did ----
+            #
+            # w_split_tier is the token band for a doc NO naming field
+            # answered on its own — the query's words are SCATTERED, part in a
+            # name or a title, the rest in a bio, a handle, a body. Before it,
+            # `matchCount(name) > 0` bought the whole 130 000 rung for ONE word
+            # of a multi-word query, so "Verified" in a display name plus
+            # "human" in a bio stood on the SAME rung as a profile named
+            # `Verified Human` and a Trusted List titled `Verified Human`,
+            # separated only by the second phase's <= 89 000 (see
+            # query(w_perfect_pop)) — well under one rung, hence crossable by
+            # ~14% of trust delta. MEASURED on a container Vespa (2026-09-01,
+            # the shapes FieldCoverageRankIT seeds, one trust for every
+            # author, relative to the perfect match):
+            #     `Verified Human`                    1.000
+            #     `Verified Human Bot`                0.869
+            #     `Human Verified` (wrong order)      0.817
+            #     `Verified` + bio "a human being"    0.812
+            #     `DotardTed :verified:` + "humanity" 0.706
+            # and a trust-60 author of the SPLIT shape outscored a trust-50
+            # perfect match — the reported bug (sot 2026-09-01 `Verified
+            # Human`, People tab) in one line.
+            #
+            # 23 000 = w_near_tier: a doc that answered half the query in its
+            # name is worth what a PREFIX OR TYPO hit on the whole query is
+            # worth — real name-side evidence, not a naming claim. That keeps
+            # the ladder's rung ratio (x5.65 up to the token band) and with it
+            # the crossing calculus: 5.65^(1/w_wot_pow) = ~1.93, so only an
+            # overwhelming trust advantage now lifts a scattered match over a
+            # doc that answered in one field, where ~1.14 used to do it.
+            #
+            # SINGLE-WORD QUERIES ARE UNTOUCHED — naming_coverage() reads 1.0
+            # whenever query(n_words) is 1 — so every calibrated pin (odell,
+            # jack, primal, amethyst) sits exactly where it did. Set to
+            # query(w_name_tier) to switch the rung off.
+            query(w_split_tier) double: 23000.0
+            # The same rung on the pure-text ladder (exact 1100 > near 700 >
+            # weak 620 > affiliation 550): scattered lands on near, as above.
+            query(w_split_tier_text) double: 700.0
             # ---- second-phase precision signals (Meilisearch's "words" and
             # "exactness" rules + within-near ordering). Computed ONLY in the
             # second phase over the top rerank-count hits — fieldMatch is a
@@ -745,6 +789,20 @@ schema event {
             # RE-MEASURE THIS CEILING (do not re-derive it on paper) if
             # w_affil_tier_text, w_about, w_wot_pow or the tier weights move.
             query(w_perfect_pop) double: 80000.0
+            # w_perfect_pow — CONTRAST inside the perfect-match rung. The base
+            # is 0..1, so this can only ever LOWER a partial match's share of
+            # query(w_perfect_pop); it never raises the rung itself. That is
+            # what makes it free against the odell ceiling derived above: the
+            # ceiling bounds the rung's TOP, which this does not move, and it
+            # takes the `ODELL mirror` half-match (perfect_match 0.5) from
+            # 40 000 down to 20 000 — slack under that pin, not pressure on it.
+            #
+            # 2.0 turns the flat 1.00 / 0.87 / 0.82 spread measured for
+            # `Verified Human` / `Verified Human Bot` / `Human Verified` into
+            # 1.00 / 0.79 / 0.73: a whole-field answer needs ~9-12% of trust
+            # delta to be crossed instead of ~7%, in the order the linear rung
+            # already had. 1.0 restores that linear rung exactly.
+            query(w_perfect_pow) double: 2.0
             # Word count as TYPED, sent by EventYql on every search with terms
             # (see the n_words comment there). 1.0 is the fail-safe default: a
             # sender that omits it degrades perfect_match() to "the field is
@@ -1300,6 +1358,84 @@ schema event {
             expression: max(max(field_perfect(name), field_perfect(display_name)), field_perfect(search_primary))
         }
 
+        # ---- §12.2 the scattered test (see query(w_split_tier)) -------------
+        #
+        # HOW MUCH OF THE QUERY THE NAMING SURFACE CARRIED: name, display_name
+        # and the generic tier's title/subject, SUMMED because they are one
+        # surface — a doc naming itself across `name` and `display_name` has
+        # split nothing, it filled two columns with one identity — and clamped
+        # because matchCount can exceed the words typed (FuzzyWordGroup's
+        # duplicated pair groups count twice, and a field may hold more tokens
+        # than the query has words).
+        #
+        # matchCount over query(n_words), never fieldMatch's queryCompleteness,
+        # for the reason field_perfect() gives: queryCompleteness divides by
+        # every term in the tree, and the synthetic joined/pair terms are
+        # exactly the ones a normally-spelled doc can never match.
+        #
+        # 1.0 ON EVERY SINGLE-WORD QUERY, which is the whole safety argument
+        # for the rung it feeds.
+        function naming_coverage() {
+            expression: min(1.0, (matchCount(name) + matchCount(display_name) + matchCount(search_primary)) / max(1.0, query(n_words)))
+        }
+
+        # Did a NON-NAMING column carry part of the answer — a bio, a handle, a
+        # website, a hashtag, a body, a location?
+        #
+        # This is the second half of the scattered test on purpose, and it is
+        # what keeps a COMPOUND handle whole: `@johncarvalho` answers "John
+        # Carvalho" through FuzzyWordGroup's joined variant — ONE term against
+        # a one-token field — so its naming_coverage() reads 0.5, and only
+        # "nothing else matched" tells that doc apart from one that really did
+        # answer half the query in a name and half in a bio.
+        #
+        # WHICH COLUMNS COUNT, and why the list is not simply "everything but
+        # the three in naming_coverage()": the naming surface's OWN near and
+        # gram siblings (name_near, search_primary_near, name_gram,
+        # display_name_gram, search_primary_gram) are that same surface at
+        # another granularity — name_near holds the parts of that very compound
+        # handle — so counting them would demote the case this clause exists to
+        # protect. The bio/body grams are a different surface at another
+        # granularity, so they count: a word reachable only as an INFIX inside a
+        # bio word is weaker evidence than the exact bio hit beside it in this
+        # list, never stronger, and leaving them out would let that shape keep
+        # the whole token rung.
+        function offname_match() {
+            expression {
+                matchCount(about) + matchCount(nip05) + matchCount(lud16) + matchCount(website)
+                + matchCount(search_secondary) + matchCount(search_text) + matchCount(search_location)
+                + matchCount(affil_tokens) + matchCount(search_secondary_tokens)
+                + matchCount(about_gram) + matchCount(search_secondary_gram) + matchCount(search_text_gram)
+            }
+        }
+
+        # THE QUERY IS SCATTERED: a naming surface answered PART of it and a
+        # different kind of column answered the rest. All three clauses are
+        # required — see offname_match() for the second, and note the first:
+        # a doc no naming field matched at all has not split anything, it is an
+        # ordinary bio/body hit on the affiliation rung, and saying otherwise
+        # would mislabel most of the tail of every page. Scores are unaffected
+        # by that clause either way (token_tier() is multiplied by
+        # name_match()/tier_token_match(), which are 0 there); the FLAG is what
+        # it fixes, and the flag is what `searchScored` reports as the band.
+        function scattered_match() {
+            expression: if (naming_coverage() <= 0 || naming_coverage() > 0.999, 0, if (offname_match() > 0, 1, 0))
+        }
+
+        # The token band a doc is entitled to: the full rung when one naming
+        # surface answered the query, the split rung when several kinds of
+        # column did. Read by BOTH groups (profile and generic tier), so a
+        # title that answered half the query is treated exactly like a name
+        # that did.
+        function token_tier() {
+            expression: if (scattered_match() > 0, query(w_split_tier), query(w_name_tier))
+        }
+
+        # The same choice on the pure-text ladder.
+        function token_tier_text() {
+            expression: if (scattered_match() > 0, query(w_split_tier_text), query(w_token_tier_text))
+        }
+
         # The precision rules at the `search` profile's scale — see
         # query(w_words_pop) and query(w_perfect_pop). Kept a separate function,
         # not a scale factor on precision_boost(), so the text profiles'
@@ -1308,7 +1444,7 @@ schema event {
             expression {
                 query(w_words_pop) * words_coverage()
                 + query(w_exactness_pop) * exactness()
-                + query(w_perfect_pop) * perfect_match()
+                + query(w_perfect_pop) * pow(perfect_match(), query(w_perfect_pow))
             }
         }
 
@@ -1380,7 +1516,7 @@ schema event {
 
         function tier_text() {
             expression {
-                tier_token_match() * query(w_name_tier)
+                tier_token_match() * token_tier()
                 + tier_near_match() * query(w_near_tier)
                 + tier_primary_text()
                 + query(w_secondary) * secondary_text()
@@ -1456,7 +1592,7 @@ schema event {
         # + the tier group.)
         function text_score() {
             expression {
-                name_match() * query(w_name_tier)
+                name_match() * token_tier()
                 + near_name_match() * query(w_near_tier)
                 + weak_match() * query(w_weak_tier)
                 + primary_text()
@@ -1565,7 +1701,7 @@ schema event {
         # affiliation above gram noise, bm25 ordering inside each band.
         function relevance() {
             expression {
-                any_token_match() * 1100
+                any_token_match() * token_tier_text()
                 + any_near_match() * query(w_near_tier_text)
                 + weak_match() * query(w_weak_tier_text)
                 + match_quality() * query(w_match_step)
@@ -1589,6 +1725,8 @@ schema event {
         match-features {
             user_score
             freshness
+            naming_coverage
+            scattered_match
             name_text
             display_name_text
             about_text
@@ -1809,6 +1947,8 @@ schema event {
             affiliation_match
             tier_body_match
             real_match
+            naming_coverage
+            scattered_match
             text_score
             wot_mult
             name_text
@@ -2027,15 +2167,19 @@ schema event {
     # relevance() MINUS its two expensive within-band tie-breakers —
     # fieldMatch proximity (a positional analysis per field per hit) and the
     # match-quality ladder (itemRawScore, currently inert anyway) — which
-    # keeps BAND membership exact: the dropped terms (≤ ~280 points) can
-    # never cross the 1100-point token-match band gap. Phase 2 re-applies the
-    # full tuned relevance() to the top rerank-count hits per node, restoring
-    # today's exact within-band order inside the window. Query-time override:
-    # `ranking.rerankCount`.
+    # keeps BAND membership exact where the ladder's steps are wide: the
+    # dropped terms (≤ ~280 points) cannot cross the token band's own gap
+    # (query(w_token_tier_text), 1100, down to 700). They CAN cross the 80
+    # points between the near/split rung (700) and the weak one (620) — true
+    # of near before §12.2 existed and of a scattered match now — so phase 1
+    # may hand phase 2 a window ordered differently down there. Phase 2
+    # re-applies the full tuned relevance() to the top rerank-count hits per
+    # node, restoring today's exact within-band order inside the window.
+    # Query-time override: `ranking.rerankCount`.
     rank-profile text2 inherits text_relevance {
         function relevance_cheap() {
             expression {
-                any_token_match() * 1100
+                any_token_match() * token_tier_text()
                 + any_near_match() * query(w_near_tier_text)
                 + weak_match() * query(w_weak_tier_text)
                 + max(affiliation_match(), tier_body_match()) * query(w_affil_tier_text)

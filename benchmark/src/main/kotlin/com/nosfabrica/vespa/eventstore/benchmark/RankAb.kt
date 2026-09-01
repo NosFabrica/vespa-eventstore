@@ -105,6 +105,19 @@ object RankAb {
             "perfect_off" to mapOf("w_perfect_pop" to 0.0),
             // Word order off — what the default profile did before the audit.
             "order_off" to mapOf("w_order_floor" to 1.0),
+            // ---- §12.2 the split rung + the perfect exponent ----
+            // `pre_split` is the ranking as it shipped BEFORE them: the token
+            // band was one rung whether a doc answered the query in one field
+            // or spread it across a name and a bio, and the perfect-match rung
+            // was linear. Read every candidate against this row.
+            "pre_split" to mapOf("w_split_tier" to 130000.0, "w_split_tier_text" to 1100.0, "w_perfect_pow" to 1.0),
+            "split_off" to mapOf("w_split_tier" to 130000.0, "w_split_tier_text" to 1100.0),
+            "perfect_pow_off" to mapOf("w_perfect_pow" to 1.0),
+            // Where the split rung could sit instead: half a rung down
+            // (60000), or all the way onto the weak rung (4000, which the
+            // synthetic shapes put four orders under a title match).
+            "split_60k" to mapOf("w_split_tier" to 60000.0),
+            "split_weak" to mapOf("w_split_tier" to 4000.0),
             "perfect_max" to mapOf("w_perfect_pop" to 98000.0),
             "cutoff_50" to mapOf("text_score_cutoff" to 50.0),
             // Isolate the trust multiplier — the "is it ranking or is it data" test.
@@ -189,6 +202,21 @@ object RankAb {
             return
         }
 
+        // ---- --dump: ONE query, the whole page, per config ----------------
+        // The case table answers "did the pinned doc move"; this answers "what
+        // is on the page and why it is there" — kind, name, the band
+        // (text_score) and `event.sd` §12.2's scattered/coverage flags — which
+        // is the reading a ranking change is argued from. No expected doc, no
+        // MRR: just the page, side by side, from the same request the library
+        // sends.
+        opts["--dump"]?.let { text ->
+            for (config in names) {
+                println("\n=== $config === $text")
+                dumpPage(search(vespa, buildJsonObject { put("query", text) }, profile, observer, hits, CONFIGS.getValue(config), nowSecs, kinds))
+            }
+            return
+        }
+
         val cases =
             Json
                 .parseToJsonElement(Files.readString(Path.of(casesPath)))
@@ -263,13 +291,69 @@ object RankAb {
         println("pay for in positions — a config that trades a pinned case for fresher results has lost.")
     }
 
+    /**
+     * What to call a hit on a dumped page. The schema's summary carries the
+     * LOSSLESS NIP-01 fields, not the derived search columns (see event.sd), so
+     * the readable name comes back out of the event itself: a `title` tag for
+     * the kinds that have one, the profile name for a kind 0. Best-effort by
+     * design — this labels a diagnostic page, it does not parse events.
+     */
+    private fun labelOf(
+        kind: String?,
+        tags: String?,
+        content: String?,
+    ): String? {
+        val title =
+            tags
+                ?.let { runCatching { Json.parseToJsonElement(it).jsonArray }.getOrNull() }
+                ?.map { it.jsonArray.map { v -> v.jsonPrimitive.content } }
+                ?.firstOrNull { it.size > 1 && (it[0] == "title" || it[0] == "name") }
+                ?.get(1)
+        if (title != null) return title
+        if (kind != "0") return null
+        val profile = content?.let { runCatching { Json.parseToJsonElement(it).jsonObject }.getOrNull() }
+        return (profile?.get("display_name") ?: profile?.get("name"))?.jsonPrimitive?.content
+    }
+
+    /** One page, labelled: what each hit is and which rung it arrived on. */
+    private fun dumpPage(page: List<Hit>) {
+        val top = page.firstOrNull()?.relevance ?: 0.0
+        println("  %-4s %-30s %13s %6s %9s %5s %5s %7s".format("kind", "name/title", "relevance", "ratio", "text", "cov", "scat", "perfect"))
+        page.forEach {
+            println(
+                "  %-4s %-30s %13.0f %6.3f %9.0f %5.2f %5.0f %7.3f".format(
+                    it.kind,
+                    it.label.take(30),
+                    it.relevance,
+                    if (top > 0) it.relevance / top else 0.0,
+                    it.textScore,
+                    it.coverage,
+                    it.scattered,
+                    it.perfect,
+                ),
+            )
+        }
+    }
+
     /** How deep the age column looks — a page of results, not the whole recall. */
     private const val AGE_DEPTH = 10
 
-    /** One ranked hit: the id a case matches on, and the timestamp the age column reads. */
+    /**
+     * One ranked hit: the id a case matches on, the timestamp the age column
+     * reads, and — for [dumpPage] — the WHY: what the doc is, which band it
+     * landed in, and whether one field answered the query or several shared it
+     * (`event.sd` §12.2).
+     */
     private data class Hit(
         val id: String,
         val createdAt: Long,
+        val kind: String = "?",
+        val label: String = "",
+        val relevance: Double = 0.0,
+        val textScore: Double = 0.0,
+        val scattered: Double = 0.0,
+        val coverage: Double = 0.0,
+        val perfect: Double = 0.0,
     )
 
     /**
@@ -343,9 +427,25 @@ object RankAb {
             ?.jsonArray
             .orEmpty()
             .mapNotNull { child ->
-                val fields = (child as? JsonObject)?.get("fields") as? JsonObject ?: return@mapNotNull null
+                val hit = child as? JsonObject ?: return@mapNotNull null
+                val fields = hit["fields"] as? JsonObject ?: return@mapNotNull null
                 val id = (fields["id"] as? JsonPrimitive)?.content ?: return@mapNotNull null
-                Hit(id, (fields["created_at"] as? JsonPrimitive)?.content?.toLongOrNull() ?: 0L)
+
+                fun str(k: String) = (fields[k] as? JsonPrimitive)?.content
+                val mf = fields["matchfeatures"] as? JsonObject
+
+                fun feature(k: String) = (mf?.get(k) as? JsonPrimitive)?.content?.toDoubleOrNull() ?: -1.0
+                Hit(
+                    id = id,
+                    createdAt = str("created_at")?.toLongOrNull() ?: 0L,
+                    kind = str("kind") ?: "?",
+                    label = labelOf(str("kind"), str("tags"), str("content")) ?: id.take(8),
+                    relevance = (hit["relevance"] as? JsonPrimitive)?.content?.toDoubleOrNull() ?: 0.0,
+                    textScore = feature("text_score"),
+                    scattered = feature("scattered_match"),
+                    coverage = feature("naming_coverage"),
+                    perfect = feature("perfect_match"),
+                )
             }
     }
 
