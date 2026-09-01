@@ -56,6 +56,29 @@ internal class SearchEnvelope(
 internal class SearchRoot(
     val children: List<SearchHit> = emptyList(),
     val coverage: SearchCoverage = SearchCoverage(),
+    val fields: SearchRootFields = SearchRootFields(),
+)
+
+/**
+ * The response's own summary line. [totalCount] is HOW MANY DOCUMENTS THE QUERY
+ * WOULD HAVE SERVED — not how many it returned, and, on a profile that drops
+ * hits (the trust gate's `rank-score-drop-limit`), not how many merely matched
+ * either: a dropped hit is gone from this number too. That is what makes it an
+ * answer to NIP-45 rather than a diagnostic, and what lets a count ask for ZERO
+ * hits (VespaEventIndex.count).
+ *
+ * MEASURED against a real Vespa (2026-09-01, 360k real events, a 65k-pubkey web
+ * of trust): `totalCount` equalled the number of documents the same query
+ * actually served at every `min_rank` from 0 to 95 — 12,215 ungated, 4,950 at
+ * floor 20, 530 at floor 95 — while costing 39 ms against 4,559 ms to serve the
+ * documents and count them client-side.
+ *
+ * It is NOT trustworthy under a match phase, which caps it (10x+ undercount);
+ * see EventYql.countProfileOf, which is what keeps those profiles away from it.
+ */
+@Serializable
+internal class SearchRootFields(
+    val totalCount: Int = 0,
 )
 
 /**

@@ -424,6 +424,84 @@ exact —
   the query that is text ranking. Worth its own diff, its own integration gate,
   and a measurement of what share of a real match set the floor actually drops.
 
+## What a NIP-45 COUNT was really doing (2026-09-01)
+
+Measured while pricing the search above, and it inverted the expected order: on
+the production relay a COUNT cost **15x the search it summarizes**.
+
+| term | search (limit 50) | COUNT | excess |
+| --- | ---: | ---: | ---: |
+| bitcoin | 4.9 s | **76.0 s** | 71.1 s |
+| nostr | 19.2 s | **84.7 s** | 65.5 s |
+
+The engine was not the culprit — against a local Vespa the grouping count runs at
+**0.5x** the search on the identical match set, which is what "no ranking" should
+cost. The giveaway is in the table: `nostr`'s match set is three times
+`bitcoin`'s, yet the EXCESS is the same on both rows. What the extra minute
+bought was documents, not matching — 100,000 of them at ~0.7 ms each, because the
+relay stamps `limit: 100000` on a COUNT and the store was answering with
+
+```kotlin
+q.isRanked() -> index.rawSearch(q).size
+```
+
+A full document summary per counted event — `id, pubkey, created_at, kind, tags,
+content, sig, owner` — over the wire and through the JSON decoder, to produce an
+integer. Confirmed from outside by the answer's own shape: the same COUNT filter
+returns exactly its limit, every time.
+
+| COUNT `bitcoin` with limit | answer |
+| ---: | ---: |
+| 10 | 10 |
+| 100 | 100 |
+| 1000 | 1000 |
+| 5000 | 5000 |
+
+That part is NOT a bug — **STORE-C01** makes a count honour its filter's limit
+(`count(Filter(kinds=…, limit=10))` is at most 10 in Quartz's reference store
+too), so the store was contract-correct and the uninformative answer is the
+relay's injected limit. The waste was how it got there.
+
+### The fix: `totalCount` is already net of the gate
+
+Counting could not use the unranked grouping, and for a real reason: the grouping
+counts the UNGATED match set, while a trust-lensed REQ serves less than it matches
+(`wot_mult()` maps a below-floor author to 0 and `rank-score-drop-limit` deletes
+the hit). But the response's own `totalCount` has that subtraction already
+applied. Measured on the 360k-event corpus with its real 65k-pubkey web of trust:
+
+| `min_rank` | `totalCount` at `hits=0` | documents actually served | time |
+| ---: | ---: | ---: | --- |
+| 0 | 12,215 | 12,215 | 39 ms → 4,559 ms |
+| 20 | 4,950 | 4,950 | 37 ms → 395 ms |
+| 60 | 2,623 | 2,623 | 32 ms → 247 ms |
+| 95 | 530 | 530 | 29 ms → 67 ms |
+
+Exact at every floor, on every term, for **117x less** — and zero documents cross
+the wire. So a ranked count is now the same query with `hits=0`, and the answer
+is unchanged (`EventYql.countProfileOf`, `VespaEventIndex.count`).
+
+Two profiles must not answer this way, and they split for opposite reasons — a
+**match phase caps `totalCount`** (the same 10x+ undercount `buildCount` avoids by
+omitting `order by`):
+
+- `recency` gates nothing, so the unranked grouping already counts it exactly.
+- `recency_gated` does gate, so it counts on its full-scan twin
+  `recency_gated_exact` — same gate, no cut.
+
+`SearchCountIT` pins all of it against a real Vespa, in pairs: the count must
+equal the page the same query serves, AND be strictly smaller than the raw match
+set wherever the floor bites. The second half is the anti-regression — a grouping
+count would pass the first and fail the second.
+
+**Latent hazard found on the way, not yet fixed.** A searching COUNT with no
+limit at all asks for `unboundedHits` = `Int.MAX_VALUE` hits. `VespaEventIndex`'s
+own comment records what that does on multi-node dispatch: "Requested array size
+exceeds VM limit", crash-looping the jdisc container (observed 2026-08-17). The
+count path no longer requests hits, so it is out of that line of fire; every
+other unbounded `rawSearch` caller is still in it, and the operator's guard
+remains `VESPA_UNBOUNDED_HITS`.
+
 ## Targeted benches (gradle tasks against a live Vespa)
 
 Beyond the head-to-head suite (`:benchmark:run`), these tasks each own one

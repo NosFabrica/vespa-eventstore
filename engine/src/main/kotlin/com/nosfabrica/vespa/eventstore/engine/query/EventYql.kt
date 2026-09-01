@@ -365,6 +365,38 @@ object EventYql {
         return if (requested == RANK_RECENCY_GATED && !usesGatedMatchPhase(q)) RANK_RECENCY_GATED_EXACT else requested
     }
 
+    /**
+     * THE PROFILE A COUNT MUST RUN ON, or null when the query needs no profile
+     * at all and the unranked grouping counts it exactly ([buildCount]).
+     *
+     * A count is "how many documents would this query serve", and for a ranked
+     * query that is NOT the size of the match set: the trust profiles map a
+     * below-floor author to the sentinel and `rank-score-drop-limit` deletes the
+     * hit, so the served count is strictly smaller. Vespa reports the served
+     * number as the response's own `totalCount` ([SearchRootFields]), which is
+     * why a count on those profiles is one hit-less query rather than a page the
+     * caller has to materialize and measure.
+     *
+     * The two MATCH-PHASE profiles are the exception, and they split:
+     *
+     *  - [RANK_RECENCY] gates nothing — its score IS `created_at` and it drops
+     *    no hit — so the served count equals the match count and the unranked
+     *    grouping already answers it exactly, for less. It maps to null rather
+     *    than to itself because its match phase would CAP `totalCount`
+     *    (10x+ undercount; the same trap [buildCount]'s missing `order by`
+     *    avoids).
+     *  - [RANK_RECENCY_GATED] does gate, so it cannot fall back to the grouping
+     *    — but its own `totalCount` is capped by the same match phase. It counts
+     *    on the full-scan twin ([RANK_RECENCY_GATED_EXACT]), which applies the
+     *    identical gate and carries no cut.
+     */
+    fun countProfileOf(q: EventQuery): String? =
+        when (val profile = profileOf(q)) {
+            RANK_UNRANKED, RANK_RECENCY -> null
+            RANK_RECENCY_GATED -> RANK_RECENCY_GATED_EXACT
+            else -> profile
+        }
+
     fun build(q: EventQuery): VespaQuery? {
         val params = LinkedHashMap<String, String>()
         val clauses = filterClauses(q, params) ?: return null

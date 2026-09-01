@@ -778,6 +778,38 @@ class EventYqlTest {
         assertEquals(one, EventYql.buildExistence(listOf(hexA))!!.params[EventYql.MATCH_THREADS])
     }
 
+    /**
+     * WHICH PROFILE COUNTS A QUERY. A count is "how many would this SERVE", so a
+     * profile that drops hits has to do the counting itself (its `totalCount` is
+     * already net of the drop) while a profile that drops nothing can be counted
+     * by the cheaper unranked grouping.
+     *
+     * The two match-phase profiles are the trap and they split: their
+     * `totalCount` is capped by the cut, so neither may answer with it —
+     * `recency` gates nothing and falls to the grouping, `recency_gated` gates
+     * and must move to its full-scan twin.
+     */
+    @Test
+    fun `a count runs on the profile that would drop its hits`() {
+        fun profile(q: EventQuery) = EventYql.countProfileOf(q)
+
+        // Nothing ranks, nothing drops: the grouping is exact and cheapest.
+        assertNull(profile(EventQuery(kinds = listOf(1))), "plain recall")
+        assertNull(profile(EventQuery(kinds = listOf(1), limit = 50)), "the recency match-phase caps totalCount, and gates nothing")
+
+        // The gate drops hits, so the count must be taken after it.
+        assertEquals(EventYql.RANK_SEARCH, profile(EventQuery(search = "bitcoin", observer = hexA)))
+        assertEquals(EventYql.RANK_TEXT, profile(EventQuery(search = "bitcoin")))
+        assertEquals(EventYql.RANK_DESC, profile(EventQuery(search = "bitcoin", ranking = EventYql.RANK_DESC)))
+
+        // sort:recent — gated AND match-phased, so it counts on the full scan.
+        assertEquals(
+            EventYql.RANK_RECENCY_GATED_EXACT,
+            profile(EventQuery(kinds = listOf(1), search = "bitcoin", observer = hexA, ranking = EventYql.RANK_RECENCY_GATED)),
+            "the cut would cap totalCount; the exact twin applies the same gate without one",
+        )
+    }
+
     @Test
     fun `rerankCount rides out-of-band as a ranking parameter`() {
         val q = EventYql.build(EventQuery(search = "vitor", ranking = "text2", rerankCount = 500))!!

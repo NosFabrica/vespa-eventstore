@@ -866,16 +866,25 @@ class NostrSemanticsStore(
             val q = queries[0]
             return when {
                 // Ranked/searching: only the search path applies the observer's
-                // trust floor and spam gate, so the count must recall what the
-                // feed would serve.
-                q.isRanked() -> index.rawSearch(q).size
-
-                // Plain with a limit: the feed caps at the limit, so the count
-                // does too — the cheap exact engine count, clamped.
-                q.limit != null -> minOf(index.count(q.copy(limit = null)), q.limit ?: 0)
+                // trust floor and spam gate, so the count must be of what the
+                // feed would SERVE, not of what the filter matches. That used to
+                // mean recalling the page and taking its size, which fetched a
+                // full document summary per counted event to produce an integer
+                // — 76.0s for a "bitcoin" COUNT on the production relay against
+                // 4.9s for the same search (2026-09-01). [EventIndex.count]
+                // answers the same gated number from the engine's own
+                // `totalCount` with zero hits; the clamp below is unchanged, so
+                // the ANSWER is identical (STORE-C01: a count honours its
+                // filter's limit).
+                q.isRanked() || q.limit != null -> {
+                    val served = index.count(q.copy(limit = null))
+                    q.limit?.let { minOf(served, it) } ?: served
+                }
 
                 // Plain, unbounded: the engine's exact grouping count.
-                else -> index.count(q)
+                else -> {
+                    index.count(q)
+                }
             }
         }
         // Multi-filter: the feed dedups across filters, so collect each

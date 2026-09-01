@@ -162,6 +162,22 @@ interface EventIndex : AutoCloseable {
         return DocsPage(batch, batch.lastOrNull()?.id?.takeIf { batch.size == maxDocs })
     }
 
+    /**
+     * HOW MANY DOCUMENTS [query] WOULD SERVE — the size of its match set for a
+     * plain filter, and of its GATED page for a ranked one, which is smaller
+     * whenever an observer's trust floor deletes hits. "Would serve" rather than
+     * "matches" is the load-bearing half: NIP-45 asks what a REQ with this
+     * filter would answer with, and a trust-lensed REQ answers with less than it
+     * matched.
+     *
+     * A positive `limit` is about HITS and is ignored here; a caller wanting the
+     * STORE-C01 clamp applies it to this number (NostrSemanticsStore.count
+     * does). A limit <= 0 is the "matches nothing" sentinel and counts 0.
+     *
+     * The reference implementation counts matches, which satisfies this contract
+     * for the reason it satisfies every other trust-shaped one: it holds no
+     * reputation data, so nothing is ever gated out and served == matched.
+     */
     suspend fun count(query: EventQuery): Int
 
     /**
