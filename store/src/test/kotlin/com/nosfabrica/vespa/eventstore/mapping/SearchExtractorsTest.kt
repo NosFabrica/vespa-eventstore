@@ -96,6 +96,36 @@ class SearchExtractorsTest {
     }
 
     @Test
+    fun `the rewrite leaves one token boundary where the picture was`() {
+        // The single-pass rewriter's whole job beyond removal: a badge between
+        // two words leaves ONE space, a badge welded to a word still separates
+        // it, and a bio's newlines survive — they are its paragraphs, and a
+        // badge alone on a line must not weld them together.
+        val content =
+            """{"name":"a:verified:b","display_name":":verified:Em:verified:","about":"one :verified: two :verified::verified: three","website":"line1\n:verified:\nline2"}"""
+        val tags = arrayOf(arrayOf("emoji", "verified", "https://static/v.png"))
+        val fields = SearchExtractors.extract(MetadataEvent("d".repeat(64), alice, 1L, tags, content, ""))
+        assertEquals("a b", fields.name, "two words, not one")
+        assertEquals("Em", fields.displayName, "leading and trailing badges leave no edge whitespace")
+        assertEquals("one two three", fields.about, "…and adjacent badges collapse to one boundary")
+        assertEquals("line1\n\nline2", fields.website, "newlines are paragraphs, not spaces")
+        assertEquals("xemojiverified", fields.secondary, "one badge, however many times it is worn")
+    }
+
+    @Test
+    fun `a field with a colon but no badge is returned untouched`() {
+        // The early exit the rewrite leans on, and the case that proves it does
+        // not corrupt what it skips: this event DOES declare a badge, but these
+        // fields carry colons that are not it.
+        val content = """{"name":"8:30 stand-up","about":"see https://example.com/x :thinking:"}"""
+        val tags = arrayOf(arrayOf("emoji", "verified", "https://static/v.png"))
+        val fields = SearchExtractors.extract(MetadataEvent("e".repeat(64), alice, 1L, tags, content, ""))
+        assertEquals("8:30 stand-up", fields.name)
+        assertEquals("see https://example.com/x :thinking:", fields.about, "an undeclared code is not a picture")
+        assertEquals(null, fields.secondary, "nothing was worn, so nothing is indexed")
+    }
+
+    @Test
     fun `an undeclared colon run is left exactly as it is`() {
         // `:[a-z0-9_]+:` is also what a clock looks like. Nothing here is
         // declared as an emoji, so nothing is a picture, and a regex would

@@ -152,6 +152,17 @@ tasks.register<JavaExec>("exportLoad") {
     workingDir = rootDir
 }
 
+// Time the write path's own derivation (SearchExtractors) over a captured
+// corpus, with and without NIP-30 badges on every event. See ExtractBench.kt.
+tasks.register<JavaExec>("extractBench") {
+    group = "verification"
+    description = "Time SearchExtractors.extract over a captured corpus (--corpus, optional --badges N)"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.ExtractBench")
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "3g"
+    workingDir = rootDir
+}
+
 tasks.register<JavaExec>("corpusLoad") {
     group = "verification"
     description = "Load the deterministic NostrCorpus into a live store (setup for the workload benches)"

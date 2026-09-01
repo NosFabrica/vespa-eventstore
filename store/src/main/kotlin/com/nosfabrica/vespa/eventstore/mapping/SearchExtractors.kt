@@ -41,16 +41,19 @@ import com.vitorpamplona.quartz.nip50Search.SearchFieldExtractor
  * `reindexFullTextSearch`, no resync.
  */
 object SearchExtractors {
-    fun extract(event: Event): SearchFields {
-        // The event's own NIP-30 declarations, resolved once and threaded
-        // through every string it extracts — see [Emoji].
-        val emoji = Emoji(event)
-        return when (val fields = SearchFieldExtractor.extract(event)) {
+    fun extract(event: Event): SearchFields =
+        when (val fields = SearchFieldExtractor.extract(event)) {
             IndexableFields.None -> {
+                // Not searchable: the NIP-30 declarations are never read, so
+                // they are never looked up. Reactions and receipts are most of
+                // what a relay ingests and none of what it searches.
                 SearchFields.NONE
             }
 
             is IndexableFields.Profile -> {
+                // The event's own NIP-30 declarations, resolved once and
+                // threaded through every string it extracts — see [Emoji].
+                val emoji = Emoji(event)
                 // Cleaned FIRST, then read: the badge terms are whatever the
                 // rewrite met on the way through, so nothing may be built
                 // before every field has passed [Emoji.clean].
@@ -72,6 +75,7 @@ object SearchExtractors {
             }
 
             is IndexableFields.Tiered -> {
+                val emoji = Emoji(event)
                 val primary = emoji.joinLines(fields.primary)
                 val secondary = emoji.joinLines(fields.secondary + listOfNotNull(emoji.joinSpaced(fields.hashtags)))
                 val text = emoji.clean(fields.text)
@@ -86,7 +90,6 @@ object SearchExtractors {
                 )
             }
         }
-    }
 
     /**
      * THE `:shortcode:` RUNS AN EVENT DECLARED AS PICTURES (NIP-30), rewritten
@@ -114,11 +117,21 @@ object SearchExtractors {
     private class Emoji(
         event: Event,
     ) {
-        private companion object {
-            val DOUBLE_SPACE = Regex(" {2,}")
-        }
-
-        /** `:code:` -> the term it indexes as, for the codes THIS event declares; a code with no alphanumeric strips but indexes nothing. */
+        /**
+         * `:code:` -> the term it indexes as, for the codes THIS event declares;
+         * a code with no alphanumeric strips but indexes nothing.
+         *
+         * Upstream's `emojis()`, deliberately, after measuring the obvious
+         * alternative: a real corpus almost never declares an emoji (SEVEN of
+         * 10 961 events in a staging slice, 0.06%, against 16.5 tags per event),
+         * so an allocation-free `any {}` scan to decide whether to parse at all
+         * looks like the cheap move — and is not one. Both forms measure
+         * 130-165 ns/event (`extractBench --stage emojis|declared`, medians of
+         * 15 rounds, inside each other's spread): the list `mapNotNull` builds
+         * never escapes, so the JIT does not allocate it, and both shapes are
+         * the same walk over the same tags. The idiom upstream owns wins the
+         * tie.
+         */
         private val declared: List<Pair<String, String?>> = event.tags.emojis().map { Shortcodes.runOf(it.code) to Shortcodes.termOf(it.code) }
 
         /** The terms actually met while cleaning — declaration is not use, and a badge the text never wears is not indexed. Ordered, deduped. */
@@ -158,23 +171,75 @@ object SearchExtractors {
          * and a name that is nothing BUT shortcodes must collapse to empty
          * rather than to a run of punctuation. The trim in [clean] finishes the
          * job; the term itself is carried out of band, by [seen].
+         *
+         * ONE PASS, and only over a field that can contain a run. The obvious
+         * shape — `replace(run, " ")` per declared code, then a `Regex` sweep to
+         * collapse the doubled spaces it left — walks the field twice per code
+         * and then hands the whole thing to a regex engine, which on a corpus
+         * where every event wears three badges measured 77 us/event against a
+         * 17 us baseline (benchmark/README.md: `extractBench --badges 3`).
+         * Scanning colon to colon instead, appending as it goes and swallowing
+         * the space where the previous character is already one, does the
+         * removal and the collapse together: 20 us on the same corpus, and an
+         * untouched field is returned as ITSELF, uncopied.
+         *
+         * The one behavioural difference is a narrowing: this collapses only the
+         * spaces around a run it removed, where the regex also collapsed
+         * unrelated double spaces elsewhere in a field that happened to carry a
+         * badge. Nothing downstream tokenizes on either.
          */
         private fun rewrite(s: String): String {
             if (declared.isEmpty()) return s
-            var out = s
-            var hit = false
-            for ((run, term) in declared) {
-                if (out.contains(run)) {
-                    out = out.replace(run, " ")
-                    hit = true
-                    term?.let { seen += it }
+            // No colon, no shortcode: one vectorized indexOf over the field
+            // instead of a substring search per declared code. Most of what an
+            // event declaring a badge indexes does not carry it.
+            var at = s.indexOf(':')
+            if (at < 0) return s
+
+            var out: StringBuilder? = null
+            var copied = 0
+            while (at >= 0) {
+                val run = runAt(s, at)
+                if (run != null) {
+                    val sb = out ?: StringBuilder(s.length).also { out = it }
+                    sb.append(s, copied, at)
+                    // The space the picture leaves, unless what it followed
+                    // already ends in whitespace — and then the spaces on the
+                    // other side of it, so `My :verified: Post` is two tokens
+                    // and not three. This is the collapse, done in place.
+                    // Whitespace, not ' ', on the left and ONLY ' ' on the
+                    // right: a bio's newlines are its paragraphs, and a badge
+                    // alone on a line must not weld them together.
+                    if (sb.isNotEmpty() && !sb[sb.length - 1].isWhitespace()) sb.append(' ')
+                    copied = at + run.length
+                    while (copied < s.length && s[copied] == ' ') copied++
+                    at = s.indexOf(':', copied)
+                } else {
+                    at = s.indexOf(':', at + 1)
                 }
             }
-            // The doubled SPACES a rewrite leaves, and only those: a bio's own
-            // newlines are its paragraphs and stay exactly as written. Nothing
-            // downstream tokenizes differently for either, so this is about the
-            // value being canonical rather than about matching.
-            return if (hit) out.replace(DOUBLE_SPACE, " ") else out
+            val sb = out ?: return s
+            sb.append(s, copied, s.length)
+            return sb.toString()
+        }
+
+        /**
+         * The declared run starting at [at], or null. Indexed loop and
+         * `startsWith`: the list is a handful of codes at most, and neither a
+         * substring nor an iterator is allocated to compare them.
+         */
+        private fun runAt(
+            s: String,
+            at: Int,
+        ): String? {
+            for (i in declared.indices) {
+                val (run, term) = declared[i]
+                if (s.startsWith(run, at)) {
+                    term?.let { seen += it }
+                    return run
+                }
+            }
+            return null
         }
     }
 }

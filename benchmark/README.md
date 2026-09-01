@@ -390,10 +390,53 @@ Corpus scale caveat: 26k documents, where fixed per-query overhead still
 dominates, so read the **absolute** +2.11 ms rather than the percentage. Re-run
 at 45k+ before treating the percentage as a planning number.
 
+### The write path's own derivation, and what a NIP-30 badge costs (2026-09-01)
+
+`extractBench` times `SearchExtractors.extract` and nothing else — no Vespa, no
+HTTP. Every other bench here measures a round trip in milliseconds, which hides
+everything the JVM does on the way in; a batch feed runs this 500 times between
+round trips. Corpus: the same **10 961-event staging slice** the split-rung work
+used (16.5 tags and 5 880 content chars per event, median 501, p99 104 202).
+Medians of 15 rounds after two warm-up passes.
+
+| stage | ns/event | share |
+|---|---:|---:|
+| `--stage upstream` — quartz's per-kind decomposition alone | 4 269 | 25 % |
+| `--stage emojis` — the NIP-30 declaration lookup | 129 | <1 % |
+| the rest: `VespaText.sanitize` over every derived field, plus the joins | ~12 300 | 73 % |
+| **`--stage full`** — what an ingest actually pays | **16 264** | |
+
+Three things this settles:
+
+- **Sanitization is the write path's derivation cost**, not the extraction and
+  not the badges: ~2 ns per content character, and this corpus averages 5 880 of
+  them. Anything that wants a faster ingest looks there first.
+- **A badge nobody declares costs 129 ns.** SEVEN of the 10 961 events declare
+  an emoji (0.06 %), so that is what the feature costs a real corpus — inside
+  the noise of a 16 µs derivation. An allocation-free `any {}` guard in front of
+  `emojis()` measured 165 ns, i.e. no better: the list `mapNotNull` builds never
+  escapes, so the JIT does not allocate it. The guard was reverted.
+- **`--badges N` is the corpus that does not exist yet** — every event wearing
+  N declared badges, worn in its indexed text, which is what a Mastodon bridge
+  could actually produce. Here the *shape* of the rewrite is the whole cost:
+
+| rewrite | 1 badge/event | 3 badges | 10 badges |
+|---|---:|---:|---:|
+| `replace()` per code + a `Regex` space-collapse | 55 µs | 76 µs | 118 µs |
+| **single pass, colon to colon (shipped)** | **24 µs** | **25 µs** | **28 µs** |
+
+The per-code shape walks the field twice per code and then hands the whole
+field to a regex engine, so it grows with the badge count; the single pass does
+the removal and the space-collapse together and is nearly flat in it, while
+returning an untouched field as itself, uncopied. Neither is visible on the real
+corpus — this is insurance against a corpus that changes shape, bought at no
+cost to the one we have.
+
 ## Targeted benches (gradle tasks against a live Vespa)
 
 Beyond the head-to-head suite (`:benchmark:run`), these tasks each own one
-performance surface, expect `VESPA_URL` (default `http://localhost:8080`), and
+performance surface, expect `VESPA_URL` (default `http://localhost:8080`) —
+`extractBench` is the exception, it needs no engine at all — and
 carry their own CORRECTNESS gates — a wrong result set fails the run, so every
 timing is also a proof:
 
@@ -405,6 +448,7 @@ timing is also a proof:
 | `searchBench` | NIP-50: rare/common terms, multi-word, trigram/fuzzy, search+filters, profile directory, `text` vs `text2` rerank sweep | feeds its own 200k-doc zipfian text band once (`BENCH_SEARCH_DOCS`) | 37 planted sentinel docs must be recalled exactly |
 | `corpusLoad` | setup: loads the deterministic `NostrCorpus` a workload bench samples its filters from | 30k mixed events (`BENCH_SIZE`) | — |
 | `dedupProbe` | the bulk-dedup existence check: full-summary vs summary-free variants at mirror hit rates, chunk × fan-out curves, REQ latency under dedup load | reuses a `corpusLoad` corpus (ids sampled off the live store) | every variant must return the identical member set |
+| `extractBench` | the write path's own derivation (`SearchExtractors`), decomposed by stage, with `--badges N` for the every-event-wears-one corpus | any captured JSON export (`--corpus`), no Vespa | — |
 | `transportProbe` | read-transport isolation: JDK h1 / OkHttp h1 / OkHttp h2c on identical queries across body sizes | any loaded store | — |
 
 The workload benches (`corpusLoad`, `BENCH_MIXED`, `BENCH_THROUGHPUT`,
