@@ -156,7 +156,7 @@ class SearchExpansionTest {
     // ------------------------------------------------------------------
 
     @Test
-    fun `a search for profiles alone still gets the list that converts to them`() =
+    fun `a search for profiles alone gets the list's members and not the list`() =
         runBlocking {
             store.insert(profile)
             store.insert(treasureMap(arrayOf("30392", curator, "wss://lists.example")))
@@ -165,19 +165,26 @@ class SearchExpansionTest {
 
             // kinds:[0] — the shape a client hunting people actually sends.
             // The list is not an asked-for kind, but it converts to one, so it
-            // is fetched, served (the client needs the pointer to know what to
-            // process) and unpacked.
-            assertEquals(listOf(list.id, profile.id), page(search("podcaster", listOf(0))))
+            // is fetched and unpacked: the member arrives because the list
+            // vouched for them. The LIST itself does not, because the read said
+            // kind 0 and a 30392 is not one — the companion buys recall, not a
+            // seat on the answer.
+            assertEquals(listOf(profile.id), page(search("podcaster", listOf(0))))
+
+            // Ask for the kind and it is a plain NIP-01 hit again, member and
+            // all — the same corpus, the same terms, one more kind.
+            assertEquals(listOf(list.id, profile.id), page(search("podcaster", listOf(0, 30392))))
         }
 
     @Test
-    fun `a search for notes alone still gets the label that converts to them`() =
+    fun `a search for notes alone gets what the label describes and not the label`() =
         runBlocking {
             store.insert(note)
             val label = event(1985, arrayOf(arrayOf("L", "#health"), arrayOf("l", "medical", "#health"), arrayOf("e", note.id)))
             store.insert(label)
 
-            assertEquals(listOf(label.id, note.id), page(search("medical", listOf(1), observer = null)))
+            assertEquals(listOf(note.id), page(search("medical", listOf(1), observer = null)))
+            assertEquals(listOf(label.id, note.id), page(search("medical", listOf(1, 1985), observer = null)))
         }
 
     @Test
@@ -188,7 +195,10 @@ class SearchExpansionTest {
             val card = event(30382, arrayOf(arrayOf("d", subject), arrayOf("petname", "Bramblecast"), arrayOf("rank", "90")))
             store.insert(card)
 
-            assertEquals(listOf(card.id, profile.id), page(search("bramblecast", listOf(0))))
+            // The whole point of the narrowing, in the shape it was reported
+            // in: a read for kind 0 gets the profile the card is about, and no
+            // 30382 — a kind it has no parser for and reserved no slot for.
+            assertEquals(listOf(profile.id), page(search("bramblecast", listOf(0))))
         }
 
     @Test
@@ -199,7 +209,7 @@ class SearchExpansionTest {
             val list = event(30393, arrayOf(arrayOf("d", "episodes"), arrayOf("title", "Podcast Episodes"), arrayOf("e", note.id, "", "80")))
             store.insert(list)
 
-            assertEquals(listOf(list.id, note.id), page(search("episodes", listOf(1))))
+            assertEquals(listOf(note.id), page(search("episodes", listOf(1))))
         }
 
     @Test
@@ -226,9 +236,91 @@ class SearchExpansionTest {
             store.insert(label)
 
             // No observer: the declaration companion is never even fetched —
-            // the matching list stays out of the page — while the ungated
-            // label still converts to the profile it describes.
-            assertEquals(listOf(label.id, profile.id), page(search("podcaster", listOf(0), observer = null)))
+            // the matching list unpacks nothing — while the ungated label still
+            // converts to the profile it describes. The label is a 1985 and the
+            // read asked for kind 0, so what comes back is the profile alone.
+            assertEquals(listOf(profile.id), page(search("podcaster", listOf(0), observer = null)))
+        }
+
+    // ------------------------------------------------------------------
+    // A companion is recall, not an answer
+    // ------------------------------------------------------------------
+
+    /**
+     * THE RULE THE CONVERSION IS BOUNDED BY: a read answers with the kinds it
+     * asked for.
+     *
+     * The companion queries deliberately step outside the caller's kinds —
+     * a pointer of another kind is the only route to the subjects it names —
+     * and that is a RECALL device. The answer is still a NIP-01 answer: a
+     * client that sent `kinds:[0]` has no parser for a 30382 and budgeted no
+     * slot for one, so the assertion does its job (it puts the profile on the
+     * page, at the position its own relevance earned) and then steps out.
+     *
+     * Every family at once, under one read, because the narrowing is not
+     * per-family and a regression in any one of them would be invisible in the
+     * others.
+     */
+    @Test
+    fun `a kind-restricted search never answers with a kind it excluded`() =
+        runBlocking {
+            store.insert(profile)
+            store.insert(treasureMap(arrayOf("30382:rank", curator, "wss://p.example"), arrayOf("30392", curator, "wss://l.example")))
+            val card = event(30382, arrayOf(arrayOf("d", subject), arrayOf("petname", "Podcaster Ada"), arrayOf("rank", "90")))
+            val list = userList("Podcaster Trust List")
+            val label = event(1985, arrayOf(arrayOf("L", "#trades"), arrayOf("l", "podcaster", "#trades"), arrayOf("p", subject)))
+            listOf(card, list, label).forEach { store.insert(it) }
+
+            // Three pointers, all matched, all unpacked to the same profile —
+            // and the answer is that one profile.
+            assertEquals(listOf(profile.id), page(search("podcaster", listOf(0))))
+        }
+
+    @Test
+    fun `a sibling filter that asked for the pointer kind keeps it on the page`() =
+        runBlocking {
+            store.insert(profile)
+            store.insert(treasureMap(arrayOf("30392", curator, "wss://lists.example")))
+            val list = userList("Podcaster Trust List")
+            store.insert(list)
+
+            // A REQ ORs its filters and answers with ONE page, so the kinds it
+            // asked for are the union: the second filter named 30392, which
+            // makes the list a plain NIP-01 hit for the read as a whole. The
+            // narrowing is not per filter — that would drop a row one filter
+            // asked for because another did not.
+            val out = page(search("podcaster", listOf(0)), Filter(kinds = listOf(30392), authors = listOf(curator)))
+            assertEquals(setOf(list.id, profile.id), out.toSet())
+        }
+
+    @Test
+    fun `an unrestricted read narrows nothing`() =
+        runBlocking {
+            store.insert(profile)
+            store.insert(treasureMap(arrayOf("30392", curator, "wss://lists.example")))
+            val list = userList("Podcaster Trust List")
+            store.insert(list)
+
+            // No kinds is not "kinds:[]" as a constraint — it admits every kind
+            // by definition, so there is nothing the pointer could be excluded
+            // from. The mixed page is what this read asked for.
+            assertEquals(listOf(list.id, profile.id), page(Filter(search = "podcaster include:spam observer:$reader")))
+        }
+
+    @Test
+    fun `the raw path narrows to the caller's kinds too`() =
+        runBlocking {
+            store.insert(profile)
+            store.insert(treasureMap(arrayOf("30392", curator, "wss://lists.example")))
+            store.insert(userList("Podcaster Trust List"))
+
+            // A relay serves REQs off `rawQuery`, so the rule has to hold on
+            // the path that actually reaches the wire — the two read paths
+            // splice through the same code and would be trivial to narrow in
+            // only one of them.
+            val out = mutableListOf<String>()
+            store.rawQuery(listOf(search("podcaster", listOf(0)))) { out.add(it.id) }
+            assertEquals(listOf(profile.id), out)
         }
 
     @Test
@@ -269,13 +361,16 @@ class SearchExpansionTest {
             val list = userList("Podcaster Trust List")
             store.insert(list)
 
-            // The list converts and is served either way; whether the member
+            // The list converts and unpacks either way; whether the member
             // rides along is the engine's admission under the read's own
             // authors filter, exactly as with an explicitly asked-for pointer.
+            // The list is never on the answer — kinds:[0] — so the second read,
+            // whose author constraint the member fails, comes back empty rather
+            // than with the pointer alone.
             val withSubject = Filter(kinds = listOf(0), authors = listOf(curator, subject), search = "podcaster include:spam observer:$reader")
-            assertEquals(listOf(list.id, profile.id), page(withSubject))
+            assertEquals(listOf(profile.id), page(withSubject))
             val withoutSubject = Filter(kinds = listOf(0), authors = listOf(curator), search = "podcaster include:spam observer:$reader")
-            assertEquals(listOf(list.id), page(withoutSubject))
+            assertEquals(emptyList(), page(withoutSubject))
         }
 
     // ------------------------------------------------------------------
@@ -333,9 +428,11 @@ class SearchExpansionTest {
             assertEquals(listOf(newer[1].id, newer[0].id), page(Filter(search = "podcaster include:spam", limit = 2)))
 
             // Kind-restricted, the same corpus still converts it: there the
-            // recall cannot return a 1985 at all, however deep the page.
+            // recall cannot return a 1985 at all, however deep the page — so
+            // the note the label describes joins the page, while the label,
+            // whose kind the read excluded, does not.
             val restricted = Filter(kinds = listOf(1), search = "podcaster include:spam", limit = 2)
-            assertEquals(listOf(newer[1].id, newer[0].id, label.id, note.id), page(restricted))
+            assertEquals(listOf(newer[1].id, newer[0].id, note.id), page(restricted))
         }
 
     @Test
@@ -1104,6 +1201,30 @@ class SearchExpansionTest {
             val out = page(narrowed)
             assertTrue(wanted.id in out, "the member whose d the read asked for: $out")
             assertTrue(other.id !in out, "the member whose d the read excluded: $out")
+        }
+
+    @Test
+    fun `a label reaches an addressable subject, on the unscored bucket`() =
+        runBlocking {
+            // The coordinate shape is the one family that still groups its
+            // subjects by quantized confidence, and a NIP-32 label is how the
+            // UNSCORED bucket of that grouping is reached — it expresses no
+            // confidence, so it takes the `null` key rather than a number. The
+            // scored half has the 30394 test below it; without this one, half
+            // of `bucketed` is exercised by nothing.
+            val article = event(30023, arrayOf(arrayOf("d", "kept"), arrayOf("title", "Kept Article")), author = subject)
+            store.insert(article)
+            val label =
+                event(
+                    1985,
+                    arrayOf(arrayOf("L", "#trades"), arrayOf("l", "podcaster", "#trades"), arrayOf("a", "30023:$subject:kept")),
+                )
+            store.insert(label)
+
+            // Ungated, so no observer is needed — and kind-restricted, so the
+            // label itself stays off the answer while the article it describes
+            // arrives.
+            assertEquals(listOf(article.id), page(search("podcaster", listOf(30023), observer = null)))
         }
 
     @Test

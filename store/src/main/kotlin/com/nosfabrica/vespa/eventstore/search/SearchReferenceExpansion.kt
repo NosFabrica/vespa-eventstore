@@ -52,9 +52,11 @@ import com.vitorpamplona.quartz.nip01Core.core.Event
  * that does not sort degrades to a deterministic-but-arbitrary top N, not to a
  * wrong one.
  *
- * Both are TRUNCATIONS, not refusals: the pointer itself is served either way,
- * so a client that wants the whole membership reads the member tags and asks
- * for them by `#p` / `#e` / `#a` recall, which is what that recall is for.
+ * Both are TRUNCATIONS, not refusals: the pointer is unaffected by either, so a
+ * client that wants the whole membership reads the member tags and asks for
+ * them by `#p` / `#e` / `#a` recall, which is what that recall is for —
+ * provided the read asked for the pointer's kind, since a read that did not
+ * never sees it (see [SearchReferenceExpansion]).
  */
 data class SearchExpansionLimits(
     /** Off entirely: reads answer exactly what they matched, and nothing is spliced. */
@@ -162,6 +164,15 @@ data class SearchExpansionLimits(
  * pointers arrive as rows of the same page, and [EventQuery.accepts]
  * attributes each one back to the query it was fetched for.
  *
+ * A COMPANION IS RECALL, NOT AN ANSWER. The pointer it fetches earns the
+ * subjects a place on the page; it does not earn itself one. A read that named
+ * `kinds:[0]` gets the profiles the 30392 vouches for and not the 30392, which
+ * is a kind it said it did not want — the store drops what the caller's kinds
+ * exclude on the way out (`NostrSemanticsStore.servedKinds`). Where a filter
+ * of the same read DID name the pointer kind, it stays: it is an ordinary
+ * NIP-01 hit for that filter. And a read that named no kinds narrows nothing,
+ * because it excluded nothing.
+ *
  * ## The trust gate
  *
  * A LIST OR AN ASSERTION UNPACKS ONLY FOR THE READER WHO ENROLLED ITS SIGNER,
@@ -241,7 +252,18 @@ internal class SearchReferenceExpansion(
      */
     private val memberProfiles: List<String?> =
         searching
-            .associateBy({ it.forLookup() }, { EventYql.memberProfileOf(it) })
+            // FIRST WINS, because [lenses] is `distinct()` and distinct keeps the
+            // first too. `associateBy` kept the LAST, so two queries sharing a
+            // lens but ranking on different ladders — `search:"x"` beside
+            // `search:"x sort:recent"`, identical once the terms and the ranking
+            // are stripped — left lens i pointing at query i's lookup and query
+            // j's rung. Today that pair also splits `EventYql.profileOf`, which
+            // sends the page down the unscored branch where no member score is
+            // read, so the mismatch is masked rather than harmless; it is one
+            // profile rule away from placing a whole list on a ladder its
+            // finding query never ranked on.
+            .asReversed()
+            .associate { it.forLookup() to EventYql.memberProfileOf(it) }
             .let { byLookup -> lenses.map(byLookup::get) }
 
     /**
@@ -258,9 +280,18 @@ internal class SearchReferenceExpansion(
      * hole: a query whose kinds exclude a pointer family that could still
      * name one of its kinds ([SearchReferences.convertibleInto]) is re-run
      * against those kinds under the SAME lens, terms and window — so a
-     * companion-fetched pointer earned its place on the page exactly the way
-     * a hit does, and is served with it, since the pointer is what tells a
-     * client what its subjects mean and what more there is to fetch.
+     * companion-fetched pointer is admitted here exactly the way a hit is,
+     * and its subjects are served on the strength of it.
+     *
+     * The pointer ITSELF is served only if the caller's own kinds admit it.
+     * The companion buys recall — without it neither this store nor the
+     * client ever learns there was anything to unpack — but a REQ that asked
+     * for `kinds:[0]` asked a NIP-01 question, and answering it with a 30392
+     * hands back a kind the client has no parser for and did not budget a slot
+     * for. `NostrSemanticsStore.servedKinds` is where that narrowing happens,
+     * after the splice, so the pointer still places its subjects (they rise
+     * with it, and sit under it in its own order) before it steps out of the
+     * answer.
      *
      * The DECLARATION kinds are fetched from their enrolled signers only,
      * plus the reader. An explicit `kinds:[30392]` is a NIP-01 ask and serves
@@ -540,7 +571,12 @@ internal class SearchReferenceExpansion(
         recall: suspend (EventQuery) -> List<Ranked<R>>,
     ): Map<Int, Found<R>> {
         val out = HashMap<Int, Found<R>>()
-        for (lens in lensOfRow.toSortedSet().filter { it != NO_LENS }) {
+        // The lenses this page actually attributed a pointer to, in index
+        // order. `lensOfRow.toSortedSet()` boxed one Integer per ROW into a
+        // TreeSet — 500 of them on a full page — to arrive at a set that can
+        // never hold more than `lenses.size` entries, which is one on the REQ
+        // shape a relay serves all day.
+        for (lens in lenses.indices.filter { lens -> lensOfRow.any { it == lens } }) {
             val under = lenses[lens]
             // The member profile of THIS lens's ladder — see [memberProfiles].
             val profile = memberProfiles[lens]
@@ -625,9 +661,9 @@ internal class SearchReferenceExpansion(
             // `tag_index` array (`d:<value>`, fast-search) could carry weights
             // inside one owner's group if this family ever earns the work; on
             // the staging corpus it has no instances at all.
-            for ((bucket, refs) in bucketed(planned, lensOfRow, lens)) {
+            for ((bucket, addresses) in bucketed(planned, lensOfRow, lens)) {
                 val conf = if (bucket == null) under else under.withMember(profile, bucket, limits.confidenceGamma)
-                for ((owner, addrs) in refs.addresses.mapNotNull { Address.parse(it) }.groupBy { it.kind to it.pubKeyHex }) {
+                for ((owner, addrs) in addresses.mapNotNull { Address.parse(it) }.groupBy { it.kind to it.pubKeyHex }) {
                     if (spent++ >= MAX_LOOKUPS) break
                     conf.narrowAddresses(owner.first, owner.second, addrs.map { it.dTag })?.let { q ->
                         recall(q).forEach { r -> keys.addressOf(r.hit)?.let { byAddress.putIfAbsent(it, r) } }
@@ -714,34 +750,38 @@ internal class SearchReferenceExpansion(
         )
     }
 
-    /** One bucket's worth of references, keyed the three ways a pointer names a record. */
-    private class Shapes(
-        val ids: LinkedHashSet<String> = LinkedHashSet(),
-        val pubKeys: LinkedHashSet<String> = LinkedHashSet(),
-        val addresses: LinkedHashSet<String> = LinkedHashSet(),
-    )
-
     /**
-     * This lens's references, grouped by quantized confidence.
+     * This lens's COORDINATE references, grouped by quantized confidence.
      *
      * Ordered HIGHEST FIRST so that a member two lists disagree about is looked
      * up under the higher one — `putIfAbsent` above then keeps that first
      * answer. The generous reading is the right one for a disagreement between
      * two publishers the reader delegated: they both vouched, and the reader
      * asked for both.
+     *
+     * COORDINATES ONLY, because they are the only shape left that buckets. This
+     * used to collect all three and hand back a `Shapes` holding each, from when
+     * the buckets were how EVERY member reached its rung; the keyed shapes moved
+     * to weighted batches ([Batch]) and their two sets became write-only. They
+     * were not free: a page is walked here for every scored searching read, so a
+     * list of 1,000 members cost 1,000 boxed bucket keys, hash lookups and
+     * `LinkedHashSet` inserts that nothing ever read — and the addressable
+     * family it all fed has no instances at all on the staging corpus. Buckets
+     * that only ids or pubkeys created are gone with them, which changes
+     * nothing: they reached the loop below with no addresses and issued no
+     * query.
      */
     private fun bucketed(
         planned: List<References>,
         lensOfRow: IntArray,
         lens: Int,
-    ): List<Pair<Double?, Shapes>> {
-        val out = HashMap<Double?, Shapes>()
+    ): List<Pair<Double?, LinkedHashSet<String>>> {
+        val out = HashMap<Double?, LinkedHashSet<String>>()
         planned.forEachIndexed { i, refs ->
-            if (lensOfRow[i] != lens) return@forEachIndexed
-            refs.eventIds.forEach { out.getOrPut(bucketOf(refs.weightOf(it))) { Shapes() }.ids.add(it) }
-            refs.pubKeys.forEach { out.getOrPut(bucketOf(refs.weightOf(it))) { Shapes() }.pubKeys.add(it) }
-            refs.addresses.forEach { out.getOrPut(bucketOf(refs.weightOf(it))) { Shapes() }.addresses.add(it) }
+            if (lensOfRow[i] != lens || refs.addresses.isEmpty()) return@forEachIndexed
+            refs.addresses.forEach { out.getOrPut(bucketOf(refs.weightOf(it))) { LinkedHashSet() }.add(it) }
         }
+        if (out.isEmpty()) return emptyList()
         // UNSCORED FIRST, THEN DESCENDING CONFIDENCE, and the order is
         // load-bearing: [lookUp] files each found subject with `putIfAbsent`, so
         // whichever bucket runs first wins a member that two pointers name. An

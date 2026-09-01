@@ -395,15 +395,15 @@ class NostrSemanticsStore(
     override suspend fun <T : Event> query(filter: Filter): List<T> = query(listOf(filter))
 
     /**
-     * NOTE ON [T]: a SEARCHING read can return kinds the filter did not name —
-     * the reference expansion serves the labels, assertions and Trusted Lists
-     * that convert into the asked-for kinds, plus their subjects (see
-     * [SearchReferenceExpansion.companions]). The unchecked cast below is the
-     * interface's own idiom, but it means a kind-restricted search must be
-     * consumed as a mixed page (`query<Event>`), never as a single event
-     * subtype — `query<MetadataEvent>(kinds=[0], search=…)` will hand back a
-     * list with a `UserTrustedListEvent` in it. Plain recall is unaffected:
-     * without terms, every row matches the filter's own kinds.
+     * NOTE ON [T]: the reference expansion adds rows the caller's own recall
+     * never returned — the subjects a matched label, assertion or Trusted List
+     * nominates — so a SEARCHING read can serve more events than it matched.
+     * What it cannot do is serve a KIND the filters did not name: [servedKinds]
+     * holds the page to the caller's own kinds, so `query<MetadataEvent>(
+     * kinds=[0], search=…)` is still all kind 0 and the unchecked cast below —
+     * the interface's own idiom — stays honest. A read that named NO kinds
+     * admits everything by definition, and there a mixed page is what was
+     * asked for.
      */
     @Suppress("UNCHECKED_CAST")
     override suspend fun <T : Event> query(filters: List<Filter>): List<T> {
@@ -423,7 +423,59 @@ class NostrSemanticsStore(
         val page = spliced(expansion, recalled, DOC_KEYS, { if (it.kind in SearchReferences.KINDS) it.toEvent() else null }, { index.searchRanked(it) })
         // Reconstruct via Quartz's by-kind factory straight from the stored
         // fields, skipping the serialize+parse round trip; see [toEvent].
-        return page.map { it.toEvent() } as List<T>
+        return page.asked(servedKinds(expansion, queries), EventDoc::kind).map { it.toEvent() } as List<T>
+    }
+
+    /**
+     * THE KINDS THE CALLER ASKED FOR, or null where the page needs no
+     * narrowing at all — nothing expanded, or some filter left its kinds open
+     * and so admits every kind by definition.
+     *
+     * A kind-restricted search recalls MORE than its own kinds on purpose: the
+     * pointer families that convert into them are fetched as companion queries
+     * ([SearchReferenceExpansion.companions]), because a label, assertion or
+     * Trusted List is the only route to the subjects it names. That is a recall
+     * device, and it stops at recall. A REQ that asked for `kinds:[0]` asked a
+     * NIP-01 question with a NIP-01 answer, and a 30382 on that page is a kind
+     * the client said it did not want — it has no parser for it, it did not
+     * budget a slot for it, and on a relay it is a protocol violation rather
+     * than a bonus. So the pointer does its job (it names subjects, and those
+     * subjects ARE of an asked-for kind) and is then dropped from the answer.
+     *
+     * The union across filters, not per filter: a REQ ORs its filters and
+     * answers with one page, so a pointer kind ANY filter named is a kind the
+     * client asked for — `kinds:[0]` beside `kinds:[30392]` serves both, and
+     * the 30392 arrives as the plain NIP-01 hit it is.
+     *
+     * KINDS ONLY, not the whole filter. The rest of what a filter says is
+     * already applied by the engine — a subject is looked up under the finding
+     * query with its terms stripped, so it passed the same authors, tags,
+     * window and trust floor the hits did (see [SearchReferenceExpansion]) —
+     * and re-deciding admission here would be a second answer to a question the
+     * index already answered. The kind is the one constraint the companion
+     * queries deliberately step outside of, so it is the one this restores.
+     */
+    private fun servedKinds(
+        expansion: SearchReferenceExpansion?,
+        queries: List<EventQuery>,
+    ): Set<Int>? {
+        if (expansion == null) return null
+        if (queries.any { it.kinds.isEmpty() }) return null
+        return queries.flatMapTo(HashSet()) { it.kinds }
+    }
+
+    /**
+     * The page narrowed to [kinds] — the same list, not a copy, whenever there
+     * is nothing to narrow (see [servedKinds]) or nothing fell outside, which
+     * is every plain recall and every search whose expansion added only
+     * asked-for kinds.
+     */
+    private fun <R> List<R>.asked(
+        kinds: Set<Int>?,
+        kindOf: (R) -> Int,
+    ): List<R> {
+        if (kinds == null || all { kindOf(it) in kinds }) return this
+        return filter { kindOf(it) in kinds }
     }
 
     /**
@@ -764,7 +816,9 @@ class NostrSemanticsStore(
                 { index.rawSearchRanked(it) },
                 expansion != null,
             )
-        spliced(expansion, ordered, RAW_KEYS, { if (it.kind in SearchReferences.KINDS) it.toEvent() else null }, { index.rawSearchRanked(it) }).forEach(onEach)
+        spliced(expansion, ordered, RAW_KEYS, { if (it.kind in SearchReferences.KINDS) it.toEvent() else null }, { index.rawSearchRanked(it) })
+            .asked(servedKinds(expansion, queries), RawEvent::kind)
+            .forEach(onEach)
     }
 
     override suspend fun <T : Event> query(
