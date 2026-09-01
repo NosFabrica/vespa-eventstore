@@ -212,27 +212,27 @@ place column:
 | **3302** | chat message edit (Concord CORD-02) | content |
 | **40002** | Buzz stream chat message | content |
 | **45001 / 45003** | Buzz forum post / comment | content |
-| **1010** | note modification / edit | content |
-| **1068** | poll (NIP-88) | content |
+| **1010** | note modification / edit | summary, content |
+| **1068** | poll (NIP-88) | option labels, content |
 | **1111** | comment (NIP-22) | content |
-| **1163** | profile-gallery entry | content |
+| **1163** | profile-gallery entry | summary |
 | **20** | picture | title, content |
 | **21 / 22 / 34235 / 34236** | video (normal / short / horizontal / vertical) | title, content |
 | **1063** | file | summary, content |
-| **1065** | file-storage header | content |
+| **1065** | file-storage header | summary |
 | **31337** | audio track | subject |
 | **1808** | audio header | content |
 | **36787** | music track | title, artist + album, content |
 | **34139** | music playlist | title, description, content |
 | **54 / 10154** | podcast episode / show | title, description, content |
-| **30054 / 30055** | Podcasting-2.0 episode / trailer | content |
+| **30054 / 30055** | Podcasting-2.0 episode / trailer | title, description, content |
 | **2003** | torrent | title, content |
 | **2004** | torrent comment | content |
 | **9802** | highlight | comment + context, content |
 | **30311 / 1313** | live event / clip | title, summary, content |
 | **1311** | live-stream chat message | content |
 | **1312** | live-stream raid | content |
-| **30617** | git repository | name, description, content |
+| **30617** | git repository | name, description, content, homepage + clone URLs |
 | **1621 / 1618** | git issue / pull request | subject, content |
 | **1617** | git patch | content |
 | **1622** | git reply | content |
@@ -245,10 +245,10 @@ place column:
 | **30402** | classified listing | title, summary, content |
 | **31924 / 31922 / 31923** | calendar & slots | title, summary, content |
 | **31925** | calendar RSVP | content |
-| **30312 / 30313** | meeting space / room | room or title, summary, content |
+| **30312 / 30313** | meeting space / room | room or title, summary, content, streaming endpoint |
 | **34550** | community | name, description + rules, content |
 | **39000** | group | name, about |
-| **9002** | group-metadata edit (NIP-29) | content |
+| **9002** | group-metadata edit (NIP-29) | name, about |
 | **31990** | app handler | name + display name, about |
 | **10100** | Buzz agent profile | name, display name |
 | **30175** | Buzz agent persona | display name, system prompt |
@@ -259,20 +259,20 @@ place column:
 | **48106** | Buzz huddle guidelines | content |
 | **15128 / 35128** | website | title, description |
 | **15129 / 35129 / 5129** | napplet root / named / snapshot | title, description |
-| **38192** | PlayStation-1 memory-card save | content |
+| **38192** | PlayStation-1 memory-card save | title, summary + region + filename |
 | **30009** | badge | name, description, content |
 | **30030** | emoji pack | title, description, content |
-| **30017 / 30018 / 30019 / 30020** | marketplace stall / product / config / auction (NIP-15) | content |
-| **38383** | P2P order (NIP-69) | content |
+| **30017 / 30018 / 30019 / 30020** | marketplace stall / product / config / auction (NIP-15) | name, description |
+| **38383** | P2P order (NIP-69) | maker name, currency + payment methods |
 | **9041** | zap goal | summary, content |
 | **33863** | fundraiser | title, content |
 | **9734 / 9735** | zap request / receipt (NIP-57) | content |
 | **9321** | nutzap (NIP-61) | content |
 | **8333** | onchain zap (NIP-BC) | content |
-| **6969** | zap poll | content |
+| **6969** | zap poll | option labels, content |
 | **9736 / 9737** | BOLT12 zap / intent (NIP-B1) | content |
 | **30315** | user status (NIP-38) | content |
-| **1985** | label (NIP-32) | content |
+| **1985** | label (NIP-32) | label values, content |
 | **30000 / 39089** | people list / follow pack | title, description |
 | **10003 / 30001 / 30003** | bookmark lists | title, description |
 | **30015** | interest set | title, description + hashtags |
@@ -288,8 +288,8 @@ place column:
 | **11871 / 31873** | attestor proficiency / recommendation | content |
 | **31871 / 31872** | attestation / attestation request | content |
 | **38000** | mint recommendation | content |
-| **2473** | bird detection (Birdstar) | content |
-| **12473** | Birdex species collection | content |
+| **2473** | bird detection (Birdstar) | species + common name, alt |
+| **12473** | Birdex species collection | summary + species names |
 | **1315** | road event report (Roadstr) | content |
 
 Anything Quartz parses to a `SearchableEvent` is indexed, current or future. The

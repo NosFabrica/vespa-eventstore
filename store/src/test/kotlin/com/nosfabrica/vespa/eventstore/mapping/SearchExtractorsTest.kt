@@ -26,6 +26,7 @@ import com.vitorpamplona.quartz.experimental.trustedLists.users.UserTrustedListE
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip10Notes.TextNoteEvent
+import com.vitorpamplona.quartz.nip15Marketplace.stall.StallEvent
 import com.vitorpamplona.quartz.nip17Dm.messages.ChatMessageEvent
 import com.vitorpamplona.quartz.nip23LongContent.LongTextNoteEvent
 import com.vitorpamplona.quartz.nip34Git.repository.GitRepositoryEvent
@@ -35,6 +36,7 @@ import com.vitorpamplona.quartz.nip89AppHandlers.definition.AppDefinitionEvent
 import com.vitorpamplona.quartz.nip99Classifieds.ClassifiedsEvent
 import com.vitorpamplona.quartz.nipB0WebBookmarks.WebBookmarkEvent
 import com.vitorpamplona.quartz.nipC0CodeSnippets.CodeSnippetEvent
+import com.vitorpamplona.quartz.nipXXPodcasting20.episode.Podcasting20EpisodeEvent
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -306,6 +308,29 @@ class SearchExtractorsTest {
         val tags = arrayOf(arrayOf("d", alice), arrayOf("t", "podcast"), arrayOf("t", "bitcoin"), arrayOf("rank", "90"))
         val fields = SearchExtractors.extract(ContactCardEvent("f".repeat(64), alice, 1L, tags, "encrypted", ""))
         assertEquals(SearchFields(secondary = "podcast bitcoin"), fields)
+    }
+
+    /**
+     * The `cecc3287b2` pin, seen from this side: 19 kinds that fell through
+     * quartz's catch-all — which puts a whole `indexableContent()` in the body
+     * tier — now split, so their titles reach `search_primary` and the title
+     * band. Two of them here, one carrying its title inside a JSON blob and one
+     * in tags, because a role that arrives is only useful if THIS wrapper
+     * routes it to the column the schema ranks.
+     */
+    @Test
+    fun `a marketplace stall's name fills the title column, not the body`() {
+        val content = """{"id":"s1","name":"Vitor's Coffee","description":"beans from Minas","currency":"BRL"}"""
+        val tags = arrayOf(arrayOf("d", "s1"), arrayOf("t", "coffee"))
+        val fields = SearchExtractors.extract(StallEvent("10".repeat(32), alice, 1L, tags, content, ""))
+        assertEquals(SearchFields(primary = "Vitor's Coffee", secondary = "beans from Minas\ncoffee"), fields)
+    }
+
+    @Test
+    fun `a podcast episode title fills the title column, not the body`() {
+        val tags = arrayOf(arrayOf("d", "ep1"), arrayOf("title", "Episode 42"), arrayOf("description", "on search"), arrayOf("t", "podcast"))
+        val fields = SearchExtractors.extract(Podcasting20EpisodeEvent("11".repeat(32), alice, 1L, tags, "show notes", ""))
+        assertEquals(SearchFields(primary = "Episode 42", secondary = "on search\npodcast", text = "show notes"), fields)
     }
 
     @Test
