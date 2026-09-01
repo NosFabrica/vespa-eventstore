@@ -118,7 +118,7 @@ class FieldCoverageRankIT {
                         // not a rung. Pinning one over the other would pin
                         // noise.
                         assertTrue(
-                            label(page.first { label(it) !in TRUST_VARIANTS }) in setOf("perfect", "title_perfect"),
+                            label(page.first { label(it) !in OFF_LADDER }) in setOf("perfect", "title_perfect"),
                             "a whole-field answer leads the equal-trust page: ${page.map { label(it) }}",
                         )
                         assertOrder(page, "perfect", "extra_token", "the field that IS the query beats the field that merely contains it")
@@ -130,6 +130,24 @@ class FieldCoverageRankIT {
                         assertOrder(page, "extra_token", "split_nip05", "…and a name+handle split")
                         assertOrder(page, "title_perfect", "title_split", "the generic tier gets the same rung: title vs title+body")
                         assertEquals("split", tier(page, "split_bio"), "a split match reports its own band")
+
+                        // EVERY COLUMN offname_match() COUNTS, one at a time.
+                        // They are declared alike in `event.sd` and searched
+                        // alike by FuzzyWordGroup.SEARCH_FIELDS, which is
+                        // precisely the kind of "should behave the same" only a
+                        // real engine settles — and a column silently missing
+                        // from the function would leave that shape holding the
+                        // whole 130 000 rung with nothing to show for it.
+                        listOf("split_nip05", "split_lud16", "split_website", "split_hashtag", "split_location", "split_bio_gram").forEach {
+                            assertEquals("split", tier(page, it), "$it must land on the split rung: ${page.map { h -> label(h) to h.tier }}")
+                        }
+
+                        // ...AND THE ONE THAT LOOKS LIKE A SPLIT AND IS NOT: a
+                        // doc that named itself across the profile group AND the
+                        // generic tier answered the query with one naming
+                        // surface, which is why naming_coverage() sums them.
+                        assertEquals("name", tier(page, "both_groups"), "name + title is one naming surface, not a split")
+                        assertOrder(page, "both_groups", "split_bio", "…and it keeps the token band a split loses")
                         assertEquals("split", tier(page, "dotard"), "…including the shape that was reported")
                         assertEquals("name", tier(page, "perfect"), "a whole-field answer stays in the token band")
 
@@ -159,6 +177,19 @@ class FieldCoverageRankIT {
                         // naming_coverage() is 1.0 whenever query(n_words) is 1,
                         // so the split rung cannot fire and the band is the one
                         // every RankRegressionIT pin was calibrated against.
+                        // ---- the PURE-TEXT ladder: the same shapes, no lens ----
+                        // `relevance()` has its own rungs (1100 / 700 / 620 /
+                        // 550) and §12.2 gave it its own split rung beside
+                        // them. It is the profile an ANONYMOUS read gets — most
+                        // of a public relay's traffic — and nothing exercised
+                        // its split band, only the trust-multiplied one.
+                        val text = index.scoredText("verified human")
+                        println("  verified human (text): " + text.joinToString(" > ") { "${label(it)}[${it.tier}]" })
+                        assertEquals("split", tier(text, "dotard"), "the pure-text ladder has the same bands")
+                        assertOrder(text, "perfect", "split_bio", "…and the same order inside them")
+                        assertOrder(text, "reversed", "dotard", "…without a trust multiplier anywhere in it")
+                        assertEquals("name", tier(text, "compound"), "…and the same compound protection")
+
                         val single = index.scored("verified")
                         println("  verified: " + single.joinToString(" > ") { "${label(it)}[${it.tier}]" })
                         assertTrue(
@@ -173,6 +204,9 @@ class FieldCoverageRankIT {
     }
 
     // ------------------------------------------------------------------
+
+    /** The same page with NO lens: no observer means `EventYql.profileOf` picks the pure-text profile. */
+    private suspend fun VespaEventIndex.scoredText(text: String): List<ScoredHit> = searchScored(EventQuery(search = text, nowSecs = NOW, limit = 50))
 
     private suspend fun VespaEventIndex.scored(text: String): List<ScoredHit> = searchScored(EventQuery(search = text, observer = OBSERVER, minRank = 2.0, nowSecs = NOW, limit = 50))
 
@@ -210,8 +244,12 @@ class FieldCoverageRankIT {
         val displayName: String? = null,
         val about: String? = null,
         val nip05: String? = null,
+        val lud16: String? = null,
+        val website: String? = null,
         val primary: String? = null,
+        val secondary: String? = null,
         val text: String? = null,
+        val location: String? = null,
         val kind: Int = 0,
     ) {
         fun doc(n: Int) =
@@ -223,7 +261,19 @@ class FieldCoverageRankIT {
                 tags = emptyList(),
                 content = """{"name":"${name.orEmpty()}"}""",
                 sig = "e".repeat(128),
-                search = SearchFields(name = name, displayName = displayName, about = about, nip05 = nip05, primary = primary, text = text),
+                search =
+                    SearchFields(
+                        name = name,
+                        displayName = displayName,
+                        about = about,
+                        nip05 = nip05,
+                        lud16 = lud16,
+                        website = website,
+                        primary = primary,
+                        secondary = secondary,
+                        text = text,
+                        location = location,
+                    ),
             )
     }
 
@@ -256,10 +306,27 @@ class FieldCoverageRankIT {
                 Shape("compound_bio", name = "VerifiedHuman", about = "a bio that answers nothing"),
                 Shape("name_plus_display", name = "Verified", displayName = "Human"),
                 Shape("title_perfect", primary = "Verified Human", kind = 30392),
+                // ONE NAMING SURFACE ACROSS BOTH GROUPS. `event.sd` lets a kind
+                // fill a profile role beside its own tier (an app handler fills
+                // the whole profile group), and naming_coverage() SUMS
+                // name/display_name/search_primary for exactly this doc: it has
+                // split nothing, it named itself in two columns.
+                Shape("both_groups", name = "Verified", primary = "Human", kind = 31990),
                 Shape("title_long", primary = "Verified Human Trusted List of Nostr", kind = 30392),
-                // several fields share it
+                // several fields share it — one shape per column offname_match()
+                // counts, because each is a different index field and "they are
+                // declared the same way" is exactly the reasoning a real engine
+                // is here to check
                 Shape("split_bio", name = "Verified", about = "a human being who posts"),
                 Shape("split_nip05", name = "Human", nip05 = "me@verified-nostr.com"),
+                Shape("split_lud16", name = "Human", lud16 = "verified@wallet.example"),
+                Shape("split_website", name = "Verified", website = "https://human-rights.example"),
+                Shape("split_hashtag", primary = "Verified list", secondary = "human", kind = 30023),
+                Shape("split_location", primary = "Verified meetup", location = "Human Valley", kind = 31923),
+                // The word reachable ONLY as an infix inside a bio word, so
+                // about_gram is the only column that carries it — the gram half
+                // of offname_match(), which nothing else here exercises.
+                Shape("split_bio_gram", name = "Verified", about = "superhumanity notes"),
                 Shape("dotard", name = "DotardTed :verified:", about = "raw humanity by combining fair use footage"),
                 Shape("title_split", primary = "Verified list", text = "for every human", kind = 30392),
                 // no naming field at all — the affiliation/body floor
@@ -273,8 +340,49 @@ class FieldCoverageRankIT {
         /** The two shapes that carry their own trust: they answer the "how big is the rung" question, not the text one. */
         val TRUST_VARIANTS = listOf("split_bio_t80", "split_bio_t100")
 
+        /**
+         * Shapes that do not belong in the equal-trust text comparison at all.
+         *
+         * [TRUST_VARIANTS] name their own trust, so they answer the rung's SIZE
+         * rather than the ladder's order.
+         *
+         * `both_groups` is here for a different and more interesting reason,
+         * recorded rather than asserted: a doc that fills the profile group AND
+         * the generic tier claims the token band TWICE, because `event.sd`
+         * composes the two groups with a plain sum (`name_match() *
+         * token_tier()` in text_score, `tier_token_match() * token_tier()` in
+         * tier_text) on the stated ground that the groups are disjoint per
+         * kind. So it leads this page at 260 000 where a whole-field answer
+         * scores 130 000 — a doc that answered with ONE word per column
+         * outranking one that IS the query.
+         *
+         * It is not reachable from this store: `SearchExtractors` returns
+         * Profile XOR Tiered, so nothing it feeds can fill both. This file
+         * seeds it by hand to pin what naming_coverage() does with it (SUMS the
+         * columns, so it is correctly NOT a split), and the double band is the
+         * latent cost of the disjointness assumption if an extractor ever
+         * stops honouring it. Claiming the band once — `any_token_match() *
+         * token_tier()` at the composite — is the fix if that day comes, and it
+         * is not worth re-pricing every dual-group doc today for a shape
+         * production cannot produce.
+         */
+        val OFF_LADDER = TRUST_VARIANTS + "both_groups"
+
         /** Every shape whose words really are scattered — none of them may reach the split rung on a one-word query. */
-        val SPLIT_SHAPES = listOf("split_bio", "split_nip05", "dotard", "title_split", "split_bio_t80", "split_bio_t100")
+        val SPLIT_SHAPES =
+            listOf(
+                "split_bio",
+                "split_nip05",
+                "split_lud16",
+                "split_website",
+                "split_hashtag",
+                "split_location",
+                "split_bio_gram",
+                "dotard",
+                "title_split",
+                "split_bio_t80",
+                "split_bio_t100",
+            )
 
         fun dockerAvailable(): Boolean = runCatching { DockerClientFactory.instance().isDockerAvailable }.getOrDefault(false)
 
