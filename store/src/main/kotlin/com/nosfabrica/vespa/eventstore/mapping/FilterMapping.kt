@@ -86,9 +86,13 @@ internal fun Filter.toEventQuery(): EventQuery? {
     // query arrives with search=null and takes the plain-recall paths instead of
     // masquerading as a ranked search.
     val parsed = SearchQuery.parse(search)
-    val terms = parsed.terms.ifEmpty { null }
+    // A word that is entirely a NIP-30 `:shortcode:` is one term, matching the
+    // term the feed side wrote for that badge ([Shortcodes]) — on requirements
+    // and exclusions alike. Quoted phrases are left literal: quoting asks for
+    // the text as typed.
+    val terms = Shortcodes.rewriteQuery(parsed.terms.ifEmpty { null })
     // Exclusions no index can hold ("-⚡") are vacuous either way — dropped.
-    val notSearch = (parsed.notTerms + parsed.notPhrases).filter { w -> w.any(Char::isLetterOrDigit) }
+    val notSearch = (parsed.notTerms.map(Shortcodes::rewriteWord) + parsed.notPhrases).filter { w -> w.any(Char::isLetterOrDigit) }
     val sort = parsed.extensions["sort"]?.let(::rankReputationOf)
     val floor = parsed.extensions["filter"]?.let(::rankFloorOf)
     val observer = parsed.extensions["observer"]?.lowercase()?.takeIf(Hex::isHex64)

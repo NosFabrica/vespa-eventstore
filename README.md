@@ -70,6 +70,7 @@ tokens stay part of the search text:
 | `filter:rank:gte:N` / `filter:rank:gt:N` | Raise the trust floor from the default 2 to N (0–100 scale) — a pure filter, the ordering is untouched. |
 | `include:spam` | Turn off the default trust floor. An explicit `filter:rank:` floor always survives it. |
 | `-word` | Google-style exclusion: drop hits containing the word. Exact-match only — the typo/prefix tolerance the positive terms enjoy never widens an exclusion (though the prose fields stem, so `-runs` also drops `running` there) — and hyphenated exclusions (`-e-cash`) exclude the adjacent phrase. A query of *only* exclusions is plain newest-first recall minus the words (the observer gate still applies), and events search can't see (non-searchable kinds) are never excluded. |
+| `:shortcode:` | A NIP-30 custom emoji, searched as the picture it is: a word that is entirely a shortcode matches the accounts and events whose own `emoji` tags DECLARE that badge, never the word inside it (and `verified` never matches the badge). Undeclared runs are ordinary text, so a clock (`8:30:45`) is untouched; quoting (`":verified:"`) asks for the literal text instead. `-:verified:` excludes badge wearers. |
 | `"exact phrase"` | Google-style quotes: the words must appear adjacently, in order. Exact-match only — quoting a single word (`"vitor"`) is the opt-out from typo/prefix matching (not from prose-field stemming). Unlike exclusions, phrases are search text: a phrase-only query is a relevance-ranked search with the normal trust/spam treatment. `-"exact phrase"` excludes the phrase. An unclosed quote runs to the end; quotes protect extension-shaped tokens (`"sort:rank"` is a phrase, not a sort). |
 
 **Where the observer comes from.** The `observer:` token is only one of two
@@ -294,6 +295,12 @@ place column:
 Anything Quartz parses to a `SearchableEvent` is indexed, current or future. The
 authoritative mapping is
 [`store/…/SearchExtractors.kt`](store/src/main/kotlin/com/nosfabrica/vespa/eventstore/mapping/SearchExtractors.kt).
+
+A NIP-30 `:shortcode:` the event itself declares is not text in any of these
+roles: it leaves the field it decorated and indexes as one synthetic term on the
+secondary tier, so a badge is searchable as a badge (`:verified:`) and never as
+the word inside it. Extraction is derived data — a corpus fed before a change
+here is repaired by `reindexFullTextSearch()`, with no resync.
 
 ## Quick start
 
