@@ -2078,6 +2078,10 @@ schema event {
             # BUCKETS) and grouping by pointer are mutually exclusive, and only
             # the second can carry this number.
             query(pointer_rel) double: 0.0
+            # THE READER'S OWN FLOOR, as a hard gate rather than a placement —
+            # see the first phase. Fail-open: below every real user_score, so a
+            # query that does not send one gates nothing.
+            query(member_floor) double: -1000000000.0
             # THE POINTER'S TEXT BAND — its relevance with the SIGNER'S TRUST
             # and the recency multiplier left out (see EventYql.F_POINTER_TEXT).
             # 0 means the caller sent none, and every member then places exactly
@@ -2268,8 +2272,32 @@ schema event {
         # match-features, an older serving schema, the in-memory reference — and
         # the floor answers exactly as it did before §13.1, rather than placing
         # every scored member at zero.
+        #
+        # THE GATE IS BACK, AS ITS OWN NUMBER. Dropping wot_mult() from the
+        # placement (above) also dropped the only thing that suppressed a member
+        # below the reader's floor: this profile declares no
+        # rank-score-drop-limit, so wot_mult()=0 never DELETED anything — it
+        # pinned the score to 0, and `max(member_rung(), …)` now floors that
+        # straight back up to the affiliation band. A `filter:rank:gte:N` was
+        # therefore honoured for every row on the page except the spliced ones,
+        # which is the one place a reader cannot see it failing.
+        #
+        # query(member_floor) carries the reader's floor separately from
+        # query(min_rank) BECAUSE min_rank has the other job here: it anchors
+        # wot_of() inside delegated_place(), so raising it to gate would move
+        # every placement the gate did not delete. Sent only when the reader
+        # ASKED for a floor (EventQuery.memberFloor) — the default floor
+        # deliberately does not travel, since a member arrives on a provider's
+        # say-so and gating that on the reader's own opinion of a stranger would
+        # leave the delegation serving nothing.
+        #
+        # Fail-open by default (-1e9, below every real user_score) so an
+        # unsent feature cannot gate, and the sentinel sits far under the
+        # drop-limit while every real placement — the rungs are positive — sits
+        # far above it.
         first-phase {
-            expression: max(member_rung(), if (query(pointer_text) > 0, if (member_trust() >= 0, delegated_place(), pointer_floor()), pointer_floor()))
+            expression: if (user_score() < query(member_floor), -1000000000.0, max(member_rung(), if (query(pointer_text) > 0, if (member_trust() >= 0, delegated_place(), pointer_floor()), pointer_floor())))
+            rank-score-drop-limit: -1000000.0
         }
 
         # The decisive signals, surfaced for the same reason `search` surfaces

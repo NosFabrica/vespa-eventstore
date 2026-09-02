@@ -71,6 +71,13 @@ object EventYql {
     /** Read the confidence per DOCUMENT (`rawScore`) rather than from [F_MEMBER_CONF]. */
     const val F_DOC_CONF = "doc_conf"
 
+    /**
+     * The reader's own trust floor as a HARD GATE on a spliced subject — see
+     * [EventQuery.memberFloor] for why it cannot ride `min_rank` here. Sent only
+     * on [RANK_SPLICED_MEMBER], the one profile that declares it.
+     */
+    const val F_MEMBER_FLOOR = "member_floor"
+
     /** The finding pointer's own relevance — the floor a subject is placed at a share of. 0 = no floor. */
     const val F_POINTER_REL = "pointer_rel"
 
@@ -459,6 +466,12 @@ object EventYql {
         q.rankFeatures.forEach { (name, value) ->
             require(RANK_FEATURE_NAME.matches(name)) { "illegal rank feature name: $name" }
             params["ranking.features.query($name)"] = value.toString()
+        }
+
+        // Only the member profile declares it, and only a reader who asked for a
+        // floor sends one (EventQuery.memberFloor).
+        if (ranking == RANK_SPLICED_MEMBER) {
+            q.memberFloor?.let { params["ranking.features.query($F_MEMBER_FLOOR)"] = it.toString() }
         }
 
         if (singleMatchThread(q, ranking)) params[MATCH_THREADS] = SINGLE_MATCH_THREAD

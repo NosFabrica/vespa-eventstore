@@ -810,6 +810,25 @@ class EventYqlTest {
         )
     }
 
+    /**
+     * The spliced-member gate travels on its own feature, and only when the
+     * reader asked for a floor. It cannot ride `min_rank` there: that number
+     * anchors the trust curve inside the member's PLACEMENT, so raising it to
+     * gate would move every member it did not drop (event.sd §13).
+     */
+    @Test
+    fun `the member floor rides only on the member profile`() {
+        fun floor(q: EventQuery) = EventYql.build(q)!!.params["ranking.features.query(${EventYql.F_MEMBER_FLOOR})"]
+
+        val lookup = EventQuery(kinds = listOf(0), authorWeights = mapOf(hexB to 80), observer = hexA, ranking = EventYql.RANK_SPLICED_MEMBER)
+        assertEquals("20.0", floor(lookup.copy(memberFloor = 20.0)), "the reader asked for a floor")
+        assertNull(floor(lookup), "no explicit floor, no gate — the default one deliberately does not travel")
+
+        // Every other profile ignores it: only spliced_member declares the input.
+        assertNull(floor(EventQuery(search = "bitcoin", observer = hexA, memberFloor = 20.0)), "the page's own query")
+        assertNull(floor(EventQuery(kinds = listOf(1), limit = 50, memberFloor = 20.0)), "plain recall")
+    }
+
     @Test
     fun `rerankCount rides out-of-band as a ranking parameter`() {
         val q = EventYql.build(EventQuery(search = "vitor", ranking = "text2", rerankCount = 500))!!

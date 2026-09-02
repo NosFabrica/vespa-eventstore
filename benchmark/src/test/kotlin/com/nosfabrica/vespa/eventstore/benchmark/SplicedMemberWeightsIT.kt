@@ -204,6 +204,38 @@ class SplicedMemberWeightsIT {
                                 lensed.sortedByDescending { it.score ?: 0.0 }.map { it.hit.pubkey },
                                 "and the publisher's confidence still orders the block, not the reader's trust",
                             )
+
+                            // ...BUT AN EXPLICIT FLOOR STILL BINDS. Trust not
+                            // PLACING a member is the decision above; trust not
+                            // ADMITTING one is a different question, and the
+                            // answer had gone missing with the multiply: this
+                            // profile declares no rank-score-drop-limit, so
+                            // wot_mult()=0 never deleted anything, and
+                            // `max(member_rung(), …)` floored an untrusted
+                            // member straight back into the affiliation band. A
+                            // reader asking `filter:rank:gte:20` got it honoured
+                            // for every row on the page except the spliced ones.
+                            //
+                            // FULL is the only member with a reputation the
+                            // observer can see (90, set just above); every other
+                            // one reads 0.
+                            val gated = index.searchRanked(weighted.copy(observer = OBSERVER, minRank = 0.0, memberFloor = 20.0))
+                            assertEquals(
+                                listOf(FULL),
+                                gated.map { it.hit.pubkey },
+                                "an explicit floor drops every member under it, spliced or not: ${gated.map { it.hit.pubkey }}",
+                            )
+                            assertEquals(
+                                4_000.0,
+                                (gated.single().score ?: 0.0),
+                                1.0,
+                                "and the survivor is placed exactly where it was — the gate admits, it does not rank",
+                            )
+                            assertEquals(
+                                MEMBERS.size,
+                                index.searchRanked(weighted.copy(observer = OBSERVER, minRank = 0.0)).size,
+                                "no explicit floor, no gate: the default read is untouched",
+                            )
                         }
                     }
                 }

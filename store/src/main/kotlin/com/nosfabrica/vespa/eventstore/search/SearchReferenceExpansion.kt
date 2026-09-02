@@ -1080,8 +1080,27 @@ private fun EventQuery.admitsKind(kind: Int): Boolean = kinds.isEmpty() || kind 
  * including the ranking profile the terms selected, since what remains is a
  * keyed recall. The `limit` goes too: a limit is the caller's budget for HITS,
  * and the expansion's own caps already bound the subjects.
+ *
+ * The floor survives TWICE OVER, because on the member profile `min_rank` no
+ * longer gates: it anchors the trust curve inside the member's placement, and
+ * `max(member_rung(), …)` floors an untrusted member back up (event.sd §13). An
+ * EXPLICIT floor therefore also travels as [EventQuery.memberFloor], which that
+ * profile reads as a hard gate. "Explicit" is read the way [companions] already
+ * reads it — a floor that is not the default one the store stamps on every
+ * lensed read — because that is the only signal left by the time a query gets
+ * here, and the two decisions must not disagree about what the reader asked for.
+ * A reader who explicitly asks for exactly [DEFAULT_MIN_RANK] is indistinguishable
+ * from one who asked for nothing, and gets the default's behaviour.
  */
-private fun EventQuery.forLookup(): EventQuery = copy(search = null, phrases = emptyList(), notSearch = emptyList(), ranking = null, limit = null)
+private fun EventQuery.forLookup(): EventQuery =
+    copy(
+        search = null,
+        phrases = emptyList(),
+        notSearch = emptyList(),
+        ranking = null,
+        limit = null,
+        memberFloor = minRank?.takeIf { it != DEFAULT_MIN_RANK },
+    )
 
 /**
  * The same lookup, asked to SCORE what it finds as a member of a list this
