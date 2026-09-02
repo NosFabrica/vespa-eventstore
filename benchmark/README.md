@@ -555,6 +555,282 @@ decode is inside the noise**: it won by 8-20 % in one run and lost in the next,
 which is JVM-to-JVM variance, and it costs a second copy of a table verified
 against a live engine code point by code point. Not a trade worth making for a
 number that does not reproduce.
+## Where a common word's seconds go (`searchTrace`, 2026-09-01)
+
+Reported: on the production relay (~211M events, 132M kind 1s) a NIP-50 search
+for **bitcoin** takes 5-6s and **nostr** takes 19s, while a rare term answers in
+130ms. `rankAb` measures ranking QUALITY, `searchBench` measures whole shapes and
+`traceProbe` dumps plans for FILTER shapes — nothing here could say which half of
+a slow search was slow, so **`searchTrace`** was written for it: it takes
+[`EventYql`]'s own assembled query (byte-identical to production's, the rule
+`rankAb` already follows), then re-times it with one clause family ABLATED at a
+time and on each rank profile in turn. Ablations are measurements, not proposals
+— every row prints `totalCount` beside its latency, because a variant that got
+fast by matching less is not a speedup.
+
+```bash
+VESPA_URL=http://localhost:8080 SEARCH_OBSERVER=<hex> \
+  ./gradlew :benchmark:searchTrace --args="bitcoin nostr"
+# SEARCH_KINDS/SEARCH_LIMIT/SEARCH_REPS; SEARCH_YQL=1 prints every variant's YQL;
+# TRACE_LEVEL=5 adds Vespa's optimized blueprint with per-branch cost.
+```
+
+### 1. What the relay actually does (read-only, against staging)
+
+Plain NIP-01 REQs through `wss://search-staging.brainstorm.world/`, observer
+`460c25…065c`, `kind 1`, `limit 50` unless noted, medians of 3:
+
+| shape | p50 | what it isolates |
+| --- | ---: | --- |
+| `bitcoin` | **4.9 s** | the reported query |
+| `nostr` | **19.2 s** | the reported query, worse |
+| `nostr` limit **1** | 19.4 s | — |
+| `nostr` limit **500** | 23.0 s | — |
+| `nostr relay` (two words) | 2.9 s | AND'ing a second word |
+| `zzqxwv` (rare) | 0.13 s | everything that is NOT the match set |
+| `"nostr"` quoted (phrase only, no fuzzy word group) | 10.5 s | the loose matchers' share |
+| `nostr sort:rank` | 17.0 s | a different, simpler text ladder |
+| `nostr sort:recent`, limit 50 (`recency_gated`, match-phase) | **0.50 s** | matching WITH the newest-N cut |
+| `nostr sort:recent`, limit 1500 (still under the band) | 1.4 s | the cut, one page deeper |
+| `nostr sort:recent`, limit 2500 (`recency_gated_exact`, full scan) | **14.5 s** | matching with NO text ranking |
+| `bitcoin sort:recent`, limit 50 / limit 2500 | 0.46 s / 5.4 s | the same pair, cheaper term |
+
+Three things fall out, and they redirect the whole investigation:
+
+- **The limit is irrelevant** — 19.2s at limit 50, 19.4s at limit 1, 23.0s at limit 500. So it is not
+  summary fetch, not the second phase, not the store's own expansion round trips.
+  The rare-term row is the ceiling on all of those together: **130ms**.
+- **The cost is the match set.** One common word is 19.2s; the same word AND'd
+  with a second is 2.9s.
+- **Both halves scale with it.** `recency_gated_exact` gates and scores every
+  match by `created_at` with no text signal at all: 14.5s of the 19.2s is
+  matching, and the text cascade is the ~5s on top. And the ONLY shape that is fast —
+  `sort:recent` under the match-phase band, 0.50s — is fast because it stops
+  looking at most of the match set, which relevance ranking cannot do.
+
+### 2. Reproducing it locally (the corpus this was measured on)
+
+A synthetic corpus cannot stand in: the question is about real word frequencies,
+real bodies and a real web of trust. Captured READ-ONLY from staging and fed
+through the store's own write path with `exportLoad` — **360,507 events**
+(219,910 kind 1, 64,986 kind 0 profiles, 9,999 kind 30023 long-form) plus the
+observer's real lens (its kind 10040 and the provider's 65,611 kind 30382 cards,
+which `TrustProjection` turns into 65,612 reputation documents). Note that this
+relay answers a lens-less filter with NOTHING, so every capture REQ carries
+`search: "observer:<hex> sort:recent"` and pages backwards on `until`.
+
+At that scale the same shapes land at 42ms (bitcoin, 12,215 matches) and 48ms
+(nostr, 40,395) — ~400x under production, which is what 600x fewer documents
+buys. The RATIOS hold, and they are what the tool reads.
+
+### 3. Where the time goes (`searchTrace`, kind 1, limit 50, p50 of 7)
+
+| variant | bitcoin | vs full | nostr | vs full |
+| --- | ---: | ---: | ---: | ---: |
+| **FULL (as production)** | **42 ms** | — | **48 ms** | — |
+| `profile=text` (no trust multiply) | 29 ms | −31% | 36 ms | −25% |
+| `profile=recency_gated_exact` (no text ranking) | 23 ms | −45% | 25 ms | −48% |
+| −bodygram (`search_text_gram` phrase) | 28 ms | −33% | 40 ms | −17% |
+| −namegram (name/display/primary AND nets) | 30 ms | −29% | 46 ms | −4% |
+| −textgram (about/secondary AND nets) | 27 ms | −36% | 44 ms | −8% |
+| −allgram | 21 ms | −50% | 37 ms | −23% |
+| −fuzzy | 29 ms | −31% | 47 ms | −2% |
+| −prefix | 27 ms | −36% | 44 ms | −8% |
+| −profilecols (the kind-0 columns) | 30 ms | −29% | 44 ms | −8% |
+| exact index columns only | 20 ms | −52% | 35 ms | −27% |
+
+And Vespa's own optimized blueprint, whose `abs_cost` apportions the matching
+half branch by branch (`TRACE_LEVEL=5`):
+
+| branch | bitcoin | nostr |
+| --- | ---: | ---: |
+| whole query | 1.786 | 2.529 |
+| the word group (OR of every matcher) | 1.547 | 2.190 |
+| — index columns (10 exact terms + 5 AND-gram nets + the body phrase) | 0.623 | 1.242 |
+| — of which the `search_text_gram` trigram PHRASE alone | 0.068 | **0.305** |
+| — the 6 near-attribute clauses (4 prefix + 2 fuzzy) | **0.572** | 0.452 |
+| — of which `affil_tokens` prefix alone | 0.264 | 0.259 |
+| `kind in (1)` | 0.125 | 0.177 |
+
+Two branches stand out and they are different ones per term: the body's trigram
+phrase net dominates a long common word (`nostr`, 12% of the whole plan), and the
+attribute prefix/fuzzy clauses dominate `bitcoin` (32% between them, with the
+`affil_tokens` prefix the single most expensive branch in the query). A prefix hit
+on a fast-search attribute costs roughly **10x per hit** what an index term does.
+
+**Nothing in that list is droppable.** Each family carries recall a query cannot
+get any other way — as-you-type prefixes, the typo budget, infix/CJK reach into
+bodies — and the ablation rows are the price list, not a proposal. The `−profilecols`
+row is the closest thing to free lunch here (a `kinds:[1]` REQ can never match a
+column only a profile event fills) and it is deliberately not taken: which kinds
+fill which columns is decided UPSTREAM in Quartz's `SearchFieldExtractor`, and a
+copy of that table here would be a silent recall outage the day a kind moves.
+
+### 4. What was changed: the match threads
+
+That leaves the one lever that cuts both halves at once and changes no answer —
+splitting the query across match threads. It had been off (`numthreadspersearch`
+1) on the reasoning that a relay serves MANY concurrent queries rather than one
+big one, so a thread spent on parallelism is a thread another query could have
+had. That reasoning is right about the shapes it was written for and wrong about
+this one, which is the only shape in the store whose cost neither the corpus nor
+the request can bound.
+
+So the config value is now a **ceiling** (4), spent by relevance searches only:
+`EventYql` sends `ranking.matching.numThreadsPerSearch=1` on everything else —
+plain recall, both match-phase profiles, counts, groupings and the snapshot walk
+— which is exactly the traffic the old rationale was about. The match-phase pair
+has a second reason to stay single-threaded: their `max-hits` cut is a per-node
+depth this client MIRRORS to decide which limits it may serve, and a query is not
+the place to find out whether the engine applies that cut per node or per thread.
+
+Measured on the 360k corpus above, 4-core container, query instant pinned:
+
+| term | 1 thread | 2 threads | 4 threads |
+| --- | ---: | ---: | ---: |
+| bitcoin | 44.6 ms | 29.3 ms | **25.1 ms** (−44%) |
+| nostr | 84.3 ms | 51.0 ms | **44.1 ms** (−48%) |
+| lightning | 23.9 ms | 17.8 ms | 17.0 ms (−29%) |
+| zap | 12.8 ms | 10.7 ms | 10.1 ms (−21%) |
+
+The page is **byte-identical** at every thread count on `search` — same ids, same
+order, same relevance to six decimals — across 20 terms at both page depths;
+`MatchThreadPageIT` pins it against a real Vespa. And the throughput the old
+comment was protecting, measured directly (8 concurrent clients hammering those
+four terms, 20s per arm):
+
+| threads | queries/sec |
+| ---: | ---: |
+| 1 | 85.0 |
+| 2 | 82.9 |
+| 4 | 81.8 |
+
+**−3.8% throughput for roughly half the latency of the slowest thing this store
+serves.**
+
+**PIN THE QUERY INSTANT WHEN YOU A/B THIS.** The first run of the thread sweep
+reported pages that "differed" at 2 and 4 threads, and the differences were the
+wall clock: without `query(now_secs)`, `recency_mult()` moves between arms and
+re-orders near-ties. Production always stamps it (`EventQuery.nowSecs`, one
+instant per REQ), so pinning it is not a test artefact — it is what production
+does, and A/Bing without it measures the clock.
+
+**Ties are the edge of the claim.** On `text` — pure relevance, `w_recency_text`
+0, so nothing separates documents in the same band — 17 of those 20 terms return
+a different page at 4 threads. Every one of those differences is a TIE: the score
+SEQUENCE is identical to six decimals and only which equally-scored document
+holds a tied slot moves. Nothing defines that order today either (it is already
+unstable run to run as the corpus ages), and the trust-multiplied default profile
+separates its scores well enough that the question does not arise there. A store
+that wants a stable `sort:text` page needs a client-side tiebreak, not fewer
+threads.
+
+### 5. What is left, and what it would cost
+
+The floor for this shape is unchanged: an exact top-K over a match set of
+millions has to visit every match. Everything that would beat it stops being
+exact —
+
+- **A match-phase or `weakAnd` on the relevance profiles.** This is what makes
+  `sort:recent` 40x faster than `search` on the same match set. It is also
+  precisely "different results", which is what the brief excluded.
+- **A cheap first phase, full `relevance()` in the second** — the shape `text2`
+  already carries and `search` does not. Same trade in a milder form: the page is
+  only the same while the cheap phase selects the same rerank window.
+- **Gating on trust before the text cascade instead of after it.** This one is
+  provably result-preserving and is the most promising thing left. `wot_mult()`
+  maps a below-floor author to 0 and `rank-score-drop-limit` deletes the hit — so
+  under the production floor (`min_rank` 2) a large share of every match set is
+  fully text-scored and then thrown away. A scalar `max_rank` on the REPUTATION
+  document ("the best rank any observer gives this author"), imported the way the
+  trust tensors already are, bounds that from above: a hit the gate keeps for any
+  observer has `max_rank >= min_rank`, so nothing the query would have served can
+  be excluded, and an author with no reputation document at all reads 0 — which is
+  exactly what the gate does with them today. It costs no event-side write
+  amplification (the field rides on the parent `TrustRecompute` already rewrites),
+  and `include:spam` lowers the floor to 0, where the clause is a no-op. What it
+  CANNOT do is shrink the posting walk: an imported attribute has no posting list,
+  so it filters rather than drives, and the saving is bounded by the ~28-45% of
+  the query that is text ranking. Worth its own diff, its own integration gate,
+  and a measurement of what share of a real match set the floor actually drops.
+
+## What a NIP-45 COUNT was really doing (2026-09-01)
+
+Measured while pricing the search above, and it inverted the expected order: on
+the production relay a COUNT cost **15x the search it summarizes**.
+
+| term | search (limit 50) | COUNT | excess |
+| --- | ---: | ---: | ---: |
+| bitcoin | 4.9 s | **76.0 s** | 71.1 s |
+| nostr | 19.2 s | **84.7 s** | 65.5 s |
+
+The engine was not the culprit — against a local Vespa the grouping count runs at
+**0.5x** the search on the identical match set, which is what "no ranking" should
+cost. The giveaway is in the table: `nostr`'s match set is three times
+`bitcoin`'s, yet the EXCESS is the same on both rows. What the extra minute
+bought was documents, not matching — 100,000 of them at ~0.7 ms each, because the
+relay stamps `limit: 100000` on a COUNT and the store was answering with
+
+```kotlin
+q.isRanked() -> index.rawSearch(q).size
+```
+
+A full document summary per counted event — `id, pubkey, created_at, kind, tags,
+content, sig, owner` — over the wire and through the JSON decoder, to produce an
+integer. Confirmed from outside by the answer's own shape: the same COUNT filter
+returns exactly its limit, every time.
+
+| COUNT `bitcoin` with limit | answer |
+| ---: | ---: |
+| 10 | 10 |
+| 100 | 100 |
+| 1000 | 1000 |
+| 5000 | 5000 |
+
+That part is NOT a bug — **STORE-C01** makes a count honour its filter's limit
+(`count(Filter(kinds=…, limit=10))` is at most 10 in Quartz's reference store
+too), so the store was contract-correct and the uninformative answer is the
+relay's injected limit. The waste was how it got there.
+
+### The fix: `totalCount` is already net of the gate
+
+Counting could not use the unranked grouping, and for a real reason: the grouping
+counts the UNGATED match set, while a trust-lensed REQ serves less than it matches
+(`wot_mult()` maps a below-floor author to 0 and `rank-score-drop-limit` deletes
+the hit). But the response's own `totalCount` has that subtraction already
+applied. Measured on the 360k-event corpus with its real 65k-pubkey web of trust:
+
+| `min_rank` | `totalCount` at `hits=0` | documents actually served | time |
+| ---: | ---: | ---: | --- |
+| 0 | 12,215 | 12,215 | 39 ms → 4,559 ms |
+| 20 | 4,950 | 4,950 | 37 ms → 395 ms |
+| 60 | 2,623 | 2,623 | 32 ms → 247 ms |
+| 95 | 530 | 530 | 29 ms → 67 ms |
+
+Exact at every floor, on every term, for **117x less** — and zero documents cross
+the wire. So a ranked count is now the same query with `hits=0`, and the answer
+is unchanged (`EventYql.countProfileOf`, `VespaEventIndex.count`).
+
+Two profiles must not answer this way, and they split for opposite reasons — a
+**match phase caps `totalCount`** (the same 10x+ undercount `buildCount` avoids by
+omitting `order by`):
+
+- `recency` gates nothing, so the unranked grouping already counts it exactly.
+- `recency_gated` does gate, so it counts on its full-scan twin
+  `recency_gated_exact` — same gate, no cut.
+
+`SearchCountIT` pins all of it against a real Vespa, in pairs: the count must
+equal the page the same query serves, AND be strictly smaller than the raw match
+set wherever the floor bites. The second half is the anti-regression — a grouping
+count would pass the first and fail the second.
+
+**Latent hazard found on the way, not yet fixed.** A searching COUNT with no
+limit at all asks for `unboundedHits` = `Int.MAX_VALUE` hits. `VespaEventIndex`'s
+own comment records what that does on multi-node dispatch: "Requested array size
+exceeds VM limit", crash-looping the jdisc container (observed 2026-08-17). The
+count path no longer requests hits, so it is out of that line of fire; every
+other unbounded `rawSearch` caller is still in it, and the operator's guard
+remains `VESPA_UNBOUNDED_HITS`.
 
 ## Targeted benches (gradle tasks against a live Vespa)
 
@@ -573,6 +849,7 @@ timing is also a proof:
 | `corpusLoad` | setup: loads the deterministic `NostrCorpus` a workload bench samples its filters from | 30k mixed events (`BENCH_SIZE`) | — |
 | `dedupProbe` | the bulk-dedup existence check: full-summary vs summary-free variants at mirror hit rates, chunk × fan-out curves, REQ latency under dedup load | reuses a `corpusLoad` corpus (ids sampled off the live store) | every variant must return the identical member set |
 | `extractBench` | the write path's own derivation (`SearchExtractors`), decomposed by stage, with `--badges N` for the every-event-wears-one corpus | any captured JSON export (`--corpus`), no Vespa | — |
+| `searchTrace` | one NIP-50 term, split per clause family and per rank profile (ablations + Vespa's blueprint cost) | any loaded store — capture one with `exportLoad` | every row prints `totalCount`, so a variant that got fast by matching less shows it |
 | `transportProbe` | read-transport isolation: JDK h1 / OkHttp h1 / OkHttp h2c on identical queries across body sizes | any loaded store | — |
 
 The workload benches (`corpusLoad`, `BENCH_MIXED`, `BENCH_THROUGHPUT`,

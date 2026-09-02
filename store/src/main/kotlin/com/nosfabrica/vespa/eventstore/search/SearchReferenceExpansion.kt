@@ -20,7 +20,9 @@
  */
 package com.nosfabrica.vespa.eventstore.search
 
+import com.nosfabrica.vespa.eventstore.engine.QUERY_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.Ranked
+import com.nosfabrica.vespa.eventstore.engine.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.nosfabrica.vespa.eventstore.mapping.DEFAULT_MIN_RANK
@@ -65,6 +67,27 @@ data class SearchExpansionLimits(
     val maxPerEvent: Int = 100,
     /** Subjects one read may bring, across every pointer on it. */
     val maxPerRequest: Int = 1_000,
+    /**
+     * ENGINE ROUND TRIPS one read's expansion may spend, whatever its page
+     * holds — the bound that stops a wide page turning one REQ into hundreds of
+     * queries.
+     *
+     * WHAT IT DROPS WHEN IT BITES, because it does not fail the read: lookups
+     * are planned in PAGE order, which on any page that can be sorted is
+     * relevance order, so the budget is spent on the best-ranked pointers first
+     * and a page too wide loses the subjects of its WORST-ranked ones. That is
+     * the only defensible cut — the alternative is dropping whichever family
+     * the loop reached last — and it is pinned by test rather than left to the
+     * shape of the code.
+     *
+     * The number is per read and not per lens. One batch per pointer is the
+     * shape a ranked page of Trusted Lists has (a pointer's own relevance is a
+     * query-level feature, so no two differently-ranked rows can share a
+     * query), so this is the page width past which subjects start going
+     * missing. The trips overlap ([QUERY_FANOUT] of them in flight), so it
+     * bounds cluster work rather than wall-clock.
+     */
+    val maxLookups: Int = 64,
     /**
      * HOW HARD A DOUBTED MEMBER SINKS — the exponent on the confidence a
      * Trusted List expressed about each member, on quartz's 0..100 scale.
@@ -709,20 +732,44 @@ internal class SearchReferenceExpansion(
                     keyBatches.batch(weighted, rel, text).take(pubKeys, refs)
                 }
             }
+            // PLANNED FIRST, SENT SECOND. Every lookup this lens needs is
+            // listed before any of them goes out, for two reasons that both
+            // used to be broken by sending them inline:
+            //
+            //  - THE BUDGET NOW CUTS A DEFINED PLACE. [SearchExpansionLimits.maxLookups] is spent in
+            //    plan order, and plan order is page order — which on any page
+            //    that can be sorted is relevance order — so a page too wide for
+            //    the budget loses the subjects of its LOWEST-ranked pointers and
+            //    never a higher one's. Sending inline made that true only by
+            //    accident of loop nesting, and untested either way.
+            //  - THE ROUND TRIPS OVERLAP. One batch per pointer is the shape a
+            //    ranked page of Trusted Lists actually has (the identity below
+            //    is the pointer's own relevance, and no two rows share one), so
+            //    this was up to [SearchExpansionLimits.maxLookups] SEQUENTIAL engine queries on a
+            //    single REQ — on the read path whose latency is already the
+            //    thing being optimized.
+            //
+            // Results are merged in PLAN order, not completion order, which is
+            // what keeps `putIfAbsent` deciding exactly what it decided when
+            // these ran one after another: a subject two pointers name stays
+            // filed under the better-ranked one. [mapBounded] preserves list
+            // order for the same reason it is used here rather than
+            // [forEachBounded], whose results arrive as they finish.
+            val plan = ArrayList<Pair<Target, EventQuery>>()
             for (b in idBatches.values) {
                 val q = b.query(under, profile, limits)
                 for (chunk in b.keys.keys.chunked(LOOKUP_CHUNK)) {
-                    if (spent++ >= MAX_LOOKUPS) break
+                    if (spent++ >= limits.maxLookups) break
                     val narrowed = if (b.weighted) q.narrowIdWeights(chunk, b.keys) else q.narrowIds(chunk)
-                    narrowed?.let { recall(it).forEach { r -> byId.putIfAbsent(keys.idOf(r.hit), r) } }
+                    narrowed?.let { plan += Target.ID to it }
                 }
             }
             for (b in keyBatches.values) {
                 val q = b.query(under, profile, limits)
                 for (chunk in b.keys.keys.chunked(LOOKUP_CHUNK)) {
-                    if (spent++ >= MAX_LOOKUPS) break
+                    if (spent++ >= limits.maxLookups) break
                     val narrowed = if (b.weighted) q.narrowProfileWeights(chunk, b.keys) else q.narrowProfiles(chunk)
-                    narrowed?.let { recall(it).forEach { r -> byKey.putIfAbsent(keys.authorOf(r.hit), r) } }
+                    narrowed?.let { plan += Target.KEY to it }
                 }
             }
 
@@ -737,9 +784,19 @@ internal class SearchReferenceExpansion(
             for ((bucket, addresses) in bucketed(planned, lensOfRow, lens)) {
                 val conf = if (bucket == null) under else under.withMember(profile, bucket, limits.confidenceGamma)
                 for ((owner, addrs) in addresses.mapNotNull { Address.parse(it) }.groupBy { it.kind to it.pubKeyHex }) {
-                    if (spent++ >= MAX_LOOKUPS) break
-                    conf.narrowAddresses(owner.first, owner.second, addrs.map { it.dTag })?.let { q ->
-                        recall(q).forEach { r -> keys.addressOf(r.hit)?.let { byAddress.putIfAbsent(it, r) } }
+                    if (spent++ >= limits.maxLookups) break
+                    conf.narrowAddresses(owner.first, owner.second, addrs.map { it.dTag })?.let { plan += Target.ADDRESS to it }
+                }
+            }
+
+            // The plan, concurrently, folded back in plan order.
+            val answers = plan.mapBounded(QUERY_FANOUT) { (_, q) -> recall(q) }
+            plan.forEachIndexed { i, (target, _) ->
+                answers[i].forEach { r ->
+                    when (target) {
+                        Target.ID -> byId.putIfAbsent(keys.idOf(r.hit), r)
+                        Target.KEY -> byKey.putIfAbsent(keys.authorOf(r.hit), r)
+                        Target.ADDRESS -> keys.addressOf(r.hit)?.let { byAddress.putIfAbsent(it, r) }
                     }
                 }
             }
@@ -911,6 +968,9 @@ internal class SearchReferenceExpansion(
         return out
     }
 
+    /** Which of [Found]'s three maps a planned lookup fills. */
+    private enum class Target { ID, KEY, ADDRESS }
+
     private companion object {
         const val NO_LENS = -1
 
@@ -919,9 +979,6 @@ internal class SearchReferenceExpansion(
 
         /** Keys per lookup query — a bound on one YQL `in` list, not on the answer. */
         const val LOOKUP_CHUNK = 500
-
-        /** Round trips one read's expansion may cost, whatever its page holds. */
-        const val MAX_LOOKUPS = 64
 
         /**
          * Confidence steps one page may distinguish, FOR THE ADDRESSABLE SHAPE
@@ -1023,8 +1080,27 @@ private fun EventQuery.admitsKind(kind: Int): Boolean = kinds.isEmpty() || kind 
  * including the ranking profile the terms selected, since what remains is a
  * keyed recall. The `limit` goes too: a limit is the caller's budget for HITS,
  * and the expansion's own caps already bound the subjects.
+ *
+ * The floor survives TWICE OVER, because on the member profile `min_rank` no
+ * longer gates: it anchors the trust curve inside the member's placement, and
+ * `max(member_rung(), …)` floors an untrusted member back up (event.sd §13). An
+ * EXPLICIT floor therefore also travels as [EventQuery.memberFloor], which that
+ * profile reads as a hard gate. "Explicit" is read the way [companions] already
+ * reads it — a floor that is not the default one the store stamps on every
+ * lensed read — because that is the only signal left by the time a query gets
+ * here, and the two decisions must not disagree about what the reader asked for.
+ * A reader who explicitly asks for exactly [DEFAULT_MIN_RANK] is indistinguishable
+ * from one who asked for nothing, and gets the default's behaviour.
  */
-private fun EventQuery.forLookup(): EventQuery = copy(search = null, phrases = emptyList(), notSearch = emptyList(), ranking = null, limit = null)
+private fun EventQuery.forLookup(): EventQuery =
+    copy(
+        search = null,
+        phrases = emptyList(),
+        notSearch = emptyList(),
+        ranking = null,
+        limit = null,
+        memberFloor = minRank?.takeIf { it != DEFAULT_MIN_RANK },
+    )
 
 /**
  * The same lookup, asked to SCORE what it finds as a member of a list this

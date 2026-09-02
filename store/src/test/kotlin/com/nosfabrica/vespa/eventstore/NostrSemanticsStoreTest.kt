@@ -735,6 +735,69 @@ open class NostrSemanticsStoreTest {
         }
 
     /**
+     * AND IT COSTS ONE COUNT, NOT A PAGE. The number above is the SERVED page's
+     * size, and the obvious way to get it — recall the page, take its size — is
+     * what this used to do. It was exact and it was ruinous: every counted event
+     * arrived as a full document summary, over the wire and through the JSON
+     * decoder, to be discarded. MEASURED on the production relay (2026-09-01),
+     * where the relay stamps `limit: 100000` on a COUNT: 76.0s for "bitcoin"
+     * against 4.9s for the same search, 84.7s for "nostr" against 19.2s.
+     *
+     * The engine answers the same gated number from its own `totalCount` with
+     * zero hits ([EventIndex.count]), so the assertion is about CALLS: a
+     * searching count must reach for the counting method and never for a recall.
+     */
+    @Test
+    fun `a searching count asks the engine for a count, never for the page`() =
+        runBlocking {
+            val spy = CallCountingIndex(InMemoryEventIndex())
+            val counted = NostrSemanticsStore(spy, relay = "wss://sot.test/".normalizeRelayUrl())
+            // Profiles rather than notes: the search surface is derived from the
+            // event's parsed CLASS (Quartz's SearchFieldExtractor), so a bare
+            // Event of kind 1 indexes no text at all — one per author, since
+            // kind 0 is replaceable.
+            listOf("satoshi one", "satoshi two", "satoshi three").forEachIndexed { i, name ->
+                counted.insert(MetadataEvent(id(), "c$i".repeat(32), next(), emptyArray(), """{"name":"$name"}""", ""))
+            }
+
+            // Ingest probes the index too; only the count's own calls are the subject.
+            val recallsBefore = spy.recalls
+            val countsBefore = spy.counts
+
+            val searching = Filter(kinds = listOf(0), search = "satoshi")
+            assertEquals(3, counted.count(searching))
+            assertEquals(countsBefore + 1, spy.counts, "one engine count")
+            assertEquals(recallsBefore, spy.recalls, "and no page recalled to measure")
+
+            // The STORE-C01 clamp still rides on top, and still costs no page.
+            assertEquals(2, counted.count(searching.copy(limit = 2)))
+            assertEquals(recallsBefore, spy.recalls, "a clamped count recalls nothing either")
+        }
+
+    /** [EventIndex] with the recall and count calls tallied — see the test above. */
+    private class CallCountingIndex(
+        private val inner: EventIndex,
+    ) : EventIndex by inner {
+        var recalls = 0
+        var counts = 0
+
+        override suspend fun search(query: EventQuery): List<EventDoc> {
+            recalls++
+            return inner.search(query)
+        }
+
+        override suspend fun rawSearch(query: EventQuery): List<RawEvent> {
+            recalls++
+            return inner.rawSearch(query)
+        }
+
+        override suspend fun count(query: EventQuery): Int {
+            counts++
+            return inner.count(query)
+        }
+    }
+
+    /**
      * NIP-45: COUNT == the REQ's feed, EXACTLY — same limits, same gates, same
      * cross-filter dedup. The number a client could verify by running the REQ.
      */

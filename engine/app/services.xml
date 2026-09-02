@@ -139,14 +139,43 @@
       <feeding>
         <concurrency>0.4</concurrency>
       </feeding>
-      <!-- One matching thread per query. A relay's load is MANY concurrent
-           queries, not one big query needing low latency; splitting a query
-           across cores would cut its latency but waste cores that another query
-           could be using, lowering total throughput. With 1 thread/query the
-           cores stay saturated with independent queries — the throughput-optimal
-           setting for concurrent serving (a latency-critical deployment would
-           raise it). -->
-      <numthreadspersearch>1</numthreadspersearch>
+      <!-- The CEILING on match threads per query, not the setting every query
+           gets: this is a per-query parameter, and a query may only ask for a
+           value at or BELOW what is configured here. EventYql spends that
+           headroom on exactly one shape and asks for a single thread on every
+           other (EventYql.MATCH_THREADS says which, and why).
+
+           Shipped at 1 until 2026-09-01 on the reasoning that a relay's load is
+           MANY concurrent queries rather than one big query needing low latency,
+           so splitting a query across cores wastes cores another query could
+           use. That reasoning is right about the shapes it was written for and
+           wrong about the one that got measured: a NIP-50 relevance search for a
+           common word matches millions of postings and both matches and SCORES
+           every one of them, so it is not a query the corpus or the request can
+           make small ("bitcoin" 4.9s, "nostr" 19.2s on the production relay, and
+           the limit changes neither). Nothing else in this store has that shape.
+
+           MEASURED (2026-09-01, 4-core container, 360k real staging events with
+           a real 65k-pubkey web of trust, query instant pinned):
+
+             term        1 thread   2 threads   4 threads
+             bitcoin       44.6ms      29.3ms      25.1ms   (-44%)
+             nostr         84.3ms      51.0ms      44.1ms   (-48%)
+             lightning     23.9ms      17.8ms      17.0ms   (-29%)
+             zap           12.8ms      10.7ms      10.1ms   (-21%)
+
+           The served page is byte-identical at every thread count on the `search`
+           profile — same ids, same order, same relevance to six decimals, across
+           20 terms at both page depths (MatchThreadPageIT pins this). The cost
+           the old comment predicted is real but small: 8 concurrent clients
+           hammering those four terms got 85.0 q/s at 1 thread and 81.8 q/s at 4,
+           a 3.8% throughput give-back for roughly halving the latency of the
+           slowest thing this store serves. See benchmark/README.md.
+
+           An operator serving a very different mix may still want 1 here; that
+           is the knob, and lowering it only makes the ranked search slower, never
+           wrong. -->
+      <numthreadspersearch>4</numthreadspersearch>
       <!-- The transaction log is a durability journal that is pruned once its
            contents are flushed to the persisted index. Its default flush
            trigger (maxtlssize) is 20 GiB, and for small events the in-memory

@@ -71,6 +71,13 @@ object EventYql {
     /** Read the confidence per DOCUMENT (`rawScore`) rather than from [F_MEMBER_CONF]. */
     const val F_DOC_CONF = "doc_conf"
 
+    /**
+     * The reader's own trust floor as a HARD GATE on a spliced subject — see
+     * [EventQuery.memberFloor] for why it cannot ride `min_rank` here. Sent only
+     * on [RANK_SPLICED_MEMBER], the one profile that declares it.
+     */
+    const val F_MEMBER_FLOOR = "member_floor"
+
     /** The finding pointer's own relevance — the floor a subject is placed at a share of. 0 = no floor. */
     const val F_POINTER_REL = "pointer_rel"
 
@@ -170,6 +177,67 @@ object EventYql {
     val MATCH_PHASE_BAND: Int get() = MATCH_PHASE_MAX_HITS / MATCH_PHASE_HEADROOM
 
     /**
+     * Vespa's per-query match-thread override. The cluster config
+     * (`numthreadspersearch` in services.xml) is the CEILING; this parameter
+     * can only select a value at or below it, never above — which is what makes
+     * it safe to send from a client that cannot see the serving config.
+     *
+     * WHY THE PARALLELISM IS OPT-OUT RATHER THAN OPT-IN. A relevance search for
+     * a common word matches millions of postings and pays for every one of them
+     * TWICE — once to match it, once to score it — so its latency is a straight
+     * function of the match set and nothing about the request can shrink it
+     * (measured on the production relay 2026-09-01: "nostr", kind 1, the limit
+     * makes NO difference — 19.2s at limit 50, 19.4s at limit 1, 23.0s at limit
+     * 500). Splitting that work across match threads is the one lever that cuts
+     * it without cutting recall. The cheap shapes — plain recall, the
+     * match-phase profiles, counts, the snapshot walk — are the opposite case:
+     * they are already fast, they are what a relay serves thousands of per
+     * second, and services.xml's own reasoning (one thread per query keeps the
+     * cores saturated with INDEPENDENT queries) is about exactly them. So they
+     * ask for one thread and the ranked search takes the ceiling.
+     *
+     * The match-phase profiles have a second, harder reason: their `max-hits`
+     * cut is a PER-NODE depth this client mirrors ([MATCH_PHASE_MAX_HITS]) to
+     * decide which limits it may serve. Whether Vespa applies that cut per node
+     * or per thread is not something a query may be uncertain about, so these
+     * profiles stay on the one thread the mirrored number was measured against.
+     */
+    const val MATCH_THREADS = "ranking.matching.numThreadsPerSearch"
+
+    /** What [MATCH_THREADS] carries on every shape that is not a relevance search. */
+    const val SINGLE_MATCH_THREAD = "1"
+
+    /**
+     * The profiles that ask for [SINGLE_MATCH_THREAD]: unranked recall and both
+     * match-phase profiles. Everything else here ranks text over a match set the
+     * caller cannot bound, which is the shape parallelism exists for.
+     *
+     * `recency_gated_exact` is deliberately NOT here. It carries no match phase
+     * — it gates and scores EVERY match — and it is the shape a `sort:recent`
+     * search past the band falls to, measured at 14.5s against the production
+     * relay where the match-phase variant of the same query took 1.4s.
+     */
+    private val SINGLE_THREADED_PROFILES = setOf(RANK_UNRANKED, RANK_RECENCY, RANK_RECENCY_GATED)
+
+    /**
+     * Whether [q] asks for one match thread — the profile says so, or the query
+     * has already bounded its own match set by NAMING the documents it wants.
+     *
+     * The keyed shapes are the reference expansion's lookups: a label's subject,
+     * a Trusted List's members, fetched by id or by (author, kind, d) with the
+     * finding query's TERMS STRIPPED (SearchReferenceExpansion). They land on a
+     * relevance profile — `spliced_member` places a member on its own rung — so
+     * the profile alone would hand them the ceiling, and there is nothing there
+     * to parallelise: a handful of keys is a handful of postings, and the
+     * threads would cost more to start than the query costs to run. Several of
+     * them run per searching REQ, so that is not a rounding error.
+     */
+    private fun singleMatchThread(
+        q: EventQuery,
+        ranking: String,
+    ): Boolean = ranking in SINGLE_THREADED_PROFILES || q.ids.isNotEmpty() || q.idWeights.isNotEmpty() || q.authorWeights.isNotEmpty()
+
+    /**
      * The summary fields needed to reconstruct an event
      * ([com.nosfabrica.vespa.eventstore.engine.doc.EventDoc.fromSummary]).
      * Selecting these instead of `*` omits the BM25 index fields — ~35% fewer
@@ -207,6 +275,7 @@ object EventYql {
         val clauses = filterClauses(q, params) ?: return null
         val limit = q.limit?.let { if (it <= 0) return null else " limit $it" } ?: ""
         params["presentation.summary"] = if (withDTag) SUMMARY_IDTIME_TAG else SUMMARY_IDTIME
+        params[MATCH_THREADS] = SINGLE_MATCH_THREAD
         return VespaQuery(
             yql = "select ${if (withDTag) "id, created_at, tag_index" else "id, created_at"} from event where ${whereOf(clauses)} order by created_at desc$limit",
             params = params,
@@ -226,7 +295,7 @@ object EventYql {
         val clause = hexIn("id", ids) ?: return null
         return VespaQuery(
             yql = "select id from event where $clause",
-            params = mapOf("presentation.summary" to SUMMARY_DEDUP),
+            params = mapOf("presentation.summary" to SUMMARY_DEDUP, MATCH_THREADS to SINGLE_MATCH_THREAD),
             ranking = RANK_UNRANKED,
         )
     }
@@ -315,6 +384,38 @@ object EventYql {
         return if (requested == RANK_RECENCY_GATED && !usesGatedMatchPhase(q)) RANK_RECENCY_GATED_EXACT else requested
     }
 
+    /**
+     * THE PROFILE A COUNT MUST RUN ON, or null when the query needs no profile
+     * at all and the unranked grouping counts it exactly ([buildCount]).
+     *
+     * A count is "how many documents would this query serve", and for a ranked
+     * query that is NOT the size of the match set: the trust profiles map a
+     * below-floor author to the sentinel and `rank-score-drop-limit` deletes the
+     * hit, so the served count is strictly smaller. Vespa reports the served
+     * number as the response's own `totalCount` ([SearchRootFields]), which is
+     * why a count on those profiles is one hit-less query rather than a page the
+     * caller has to materialize and measure.
+     *
+     * The two MATCH-PHASE profiles are the exception, and they split:
+     *
+     *  - [RANK_RECENCY] gates nothing — its score IS `created_at` and it drops
+     *    no hit — so the served count equals the match count and the unranked
+     *    grouping already answers it exactly, for less. It maps to null rather
+     *    than to itself because its match phase would CAP `totalCount`
+     *    (10x+ undercount; the same trap [buildCount]'s missing `order by`
+     *    avoids).
+     *  - [RANK_RECENCY_GATED] does gate, so it cannot fall back to the grouping
+     *    — but its own `totalCount` is capped by the same match phase. It counts
+     *    on the full-scan twin ([RANK_RECENCY_GATED_EXACT]), which applies the
+     *    identical gate and carries no cut.
+     */
+    fun countProfileOf(q: EventQuery): String? =
+        when (val profile = profileOf(q)) {
+            RANK_UNRANKED, RANK_RECENCY -> null
+            RANK_RECENCY_GATED -> RANK_RECENCY_GATED_EXACT
+            else -> profile
+        }
+
     fun build(q: EventQuery): VespaQuery? {
         val params = LinkedHashMap<String, String>()
         val clauses = filterClauses(q, params) ?: return null
@@ -366,6 +467,14 @@ object EventYql {
             require(RANK_FEATURE_NAME.matches(name)) { "illegal rank feature name: $name" }
             params["ranking.features.query($name)"] = value.toString()
         }
+
+        // Only the member profile declares it, and only a reader who asked for a
+        // floor sends one (EventQuery.memberFloor).
+        if (ranking == RANK_SPLICED_MEMBER) {
+            q.memberFloor?.let { params["ranking.features.query($F_MEMBER_FLOOR)"] = it.toString() }
+        }
+
+        if (singleMatchThread(q, ranking)) params[MATCH_THREADS] = SINGLE_MATCH_THREAD
 
         val where = whereOf(clauses)
         // Plain recall orders newest first; anything ranked keeps Vespa's
@@ -425,6 +534,7 @@ object EventYql {
         val where = whereOf(clauses)
         params["grouping.defaultMaxGroups"] = UNLIMITED_GROUPS
         params["grouping.defaultMaxHits"] = UNLIMITED_GROUPS
+        params[MATCH_THREADS] = SINGLE_MATCH_THREAD
         return VespaQuery(
             yql = "select * from event where $where limit 0 | $pipeline",
             params = params,

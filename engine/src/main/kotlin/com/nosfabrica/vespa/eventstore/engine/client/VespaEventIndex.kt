@@ -709,6 +709,12 @@ class VespaEventIndex(
             ids.isNotEmpty() && ids.size <= ID_GET_FANOUT &&
             kinds.isEmpty() && authors.isEmpty() && owners.isEmpty() &&
             tags.isEmpty() && tagsAll.isEmpty() &&
+            // The WEIGHTED key sets are recall constraints too (a dotProduct
+            // over `id` / `pubkey`), and a document-API get sees neither them
+            // nor the rawScore the member profile ranks on — so a query
+            // carrying one must take the search path even when its `ids` alone
+            // would have qualified.
+            idWeights.isEmpty() && authorWeights.isEmpty() &&
             since == null && until == null && expiresBefore == null &&
             // Text constraints of EVERY polarity: a doc-API get never sees the
             // search fields, so an id lookup riding a phrase requirement or a
@@ -948,11 +954,58 @@ class VespaEventIndex(
 
     // ---- counts and groupings -----------------------------------------------
 
-    override suspend fun count(query: EventQuery): Int =
-        fallbacks.withNearFallback(query) { q ->
-            val root = EventYql.buildCount(q)?.let { queryRoot(it, hits = 0) }
-            root?.let { GroupingResults.firstCount(it) } ?: 0
+    /**
+     * How many documents [query] would SERVE — the match set for a plain filter,
+     * and the GATED page for a ranked one, which is smaller whenever the
+     * observer's trust floor deletes hits.
+     *
+     * Two engine shapes, because one number has two exact answers and the cheap
+     * one is not always available:
+     *
+     *  - **Unranked** ([EventYql.countProfileOf] null): the grouping count over
+     *    the match set. Exact, and no rank phase runs at all.
+     *  - **Ranked**: the query's own profile with ZERO hits, reading the
+     *    response's `totalCount` — which the profile's drop-limit has already
+     *    subtracted from. The grouping cannot answer this shape: it counts the
+     *    UNGATED match set and would over-report every trust-lensed count.
+     *
+     * The ranked shape used to be answered by materializing the page and taking
+     * its size (`rawSearch(q).size` in NostrSemanticsStore.count). It was exact
+     * for the same reason this is — the served page IS the gated set — but it
+     * paid a full document summary, over the wire and through the JSON decoder,
+     * per counted event. MEASURED on the production relay (2026-09-01): a COUNT
+     * for "bitcoin" under the relay's injected `limit: 100000` took 76.0s
+     * against 4.9s for the same search, and "nostr" 84.7s against 19.2s — the
+     * excess IDENTICAL on both terms (~0.7 ms x 100,000 documents) although
+     * nostr's match set is three times bitcoin's, because what the extra time
+     * bought was documents, not matching. Locally, 39 ms against 4,559 ms.
+     *
+     * The limit is dropped before building: a positive limit bounds HITS, never
+     * a count (the contract [EventYql.grouping] states and
+     * [InMemoryEventIndex.count] mirrors), and here it would also decide which
+     * profile serves the query — a `sort:recent` count would land on the
+     * match-phase variant whose `totalCount` is capped.
+     */
+    override suspend fun count(query: EventQuery): Int {
+        // The "matches nothing" sentinel, checked BEFORE the limit is dropped
+        // below — dropping it would turn the sentinel into a real query.
+        if ((query.limit ?: 1) <= 0) return 0
+        return fallbacks.withNearFallback(query) { qn ->
+            // The profile net too: a count is now a ranked query on the paths
+            // where the gate applies, so a serving schema that predates the
+            // gated profiles must demote it the same way a recall does.
+            fallbacks.withProfileFallback(qn.copy(limit = null)) { q ->
+                val ranked = EventYql.countProfileOf(q)
+                if (ranked == null) {
+                    val root = EventYql.buildCount(q)?.let { queryRoot(it, hits = 0) }
+                    root?.let { GroupingResults.firstCount(it) } ?: 0
+                } else {
+                    val vq = EventYql.build(q.copy(ranking = ranked)) ?: return@withProfileFallback 0
+                    searchRoot(vq, hits = 0).fields.totalCount
+                }
+            }
         }
+    }
 
     /**
      * `all(group(pubkey) each(output(count())))` — one leaf group per distinct

@@ -202,3 +202,13 @@ tasks.register<JavaExec>("traceProbe") {
     mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.TraceProbe")
     maxHeapSize = System.getenv("BENCH_HEAP") ?: "2g"
 }
+
+// Attribute a slow NIP-50 search to its clause families and its rank phases —
+// the harness the "bitcoin/nostr take seconds" report needed. See SearchTrace.kt.
+tasks.register<JavaExec>("searchTrace") {
+    group = "verification"
+    description = "Per-clause-family and per-rank-phase latency split for a NIP-50 term against a loaded cluster"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.SearchTrace")
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "1g"
+}

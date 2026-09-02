@@ -130,6 +130,30 @@ data class EventQuery(
      */
     val minRank: Double? = null,
     /**
+     * THE READER'S OWN FLOOR, APPLIED TO A SPLICED SUBJECT — emitted as
+     * query(member_floor) on [EventYql.RANK_SPLICED_MEMBER] and read by nothing
+     * else. Null (every ordinary query) leaves the profile's fail-open default,
+     * where the gate cannot fire.
+     *
+     * It exists because [minRank] cannot do this job on that profile. minRank is
+     * BOTH the gate and the anchor of the trust curve, and `spliced_member`
+     * deliberately does not multiply by wot_mult() — a member is placed by what
+     * its list said about it, not by the reader's own view of it (event.sd §13)
+     * — so the only place minRank still reaches is `wot_of(member_trust())`
+     * inside one branch, which `max(member_rung(), …)` then floors back up.
+     * Suppression and placement had collapsed into one number, and removing the
+     * multiply removed the suppression with it.
+     *
+     * So the gate travels separately, and only when the reader ASKED for one:
+     * a `filter:rank:gte:N` is a constraint on the whole answer, and a spliced
+     * row is part of the answer. The DEFAULT floor deliberately does not travel
+     * — a member arrives because a provider the reader enrolled vouched for it,
+     * which is the entire point of the delegation, and gating that on the
+     * reader's own opinion of a stranger would leave the feature serving
+     * nothing.
+     */
+    val memberFloor: Double? = null,
+    /**
      * Overrides a two-phase profile's rerank window (`ranking.rerankCount`, PER
      * CONTENT NODE); ignored on single-phase profiles. For the ranking A/B
      * harness — production queries should trust the profile.

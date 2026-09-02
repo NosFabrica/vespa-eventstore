@@ -1012,6 +1012,54 @@ class SearchExpansionTest {
             assertEquals(1, counting.subjectLookups, "five confidences, ONE keyed lookup")
         }
 
+    /**
+     * THE ROUND-TRIP BUDGET CUTS THE BOTTOM OF THE PAGE, NEVER THE TOP.
+     *
+     * A pointer's own relevance is a query-level rank feature, so two lists that
+     * ranked differently cannot share a lookup — which means a wide page of
+     * Trusted Lists costs one round trip each, and past
+     * [SearchExpansionLimits.maxLookups] some of them get none. That bound is
+     * fine; WHICH pointers it drops is not a detail. Lookups are planned in page
+     * order — relevance order on any page that can be sorted — so the budget is
+     * spent on the best-ranked pointers and the worst-ranked lose their members.
+     *
+     * Pinned with a budget of one and two lists, because that is the whole
+     * property: before, the cut fell wherever the loop nesting happened to
+     * reach it, and nothing said so.
+     */
+    @Test
+    fun `the lookup budget spends itself on the best-ranked pointers`() =
+        runBlocking {
+            val ranking = RankingIndex(InMemoryEventIndex())
+            val store =
+                NostrSemanticsStore(
+                    TrustProjection(ranking, InMemoryReputationIndex()),
+                    relay = relayUrl,
+                    searchExpansion = SearchExpansionLimits(maxLookups = 1),
+                )
+            val first = key("e5")
+            val second = key("f6")
+            store.insert(event(0, emptyArray(), """{"name":"First member"}""", author = first))
+            store.insert(event(0, emptyArray(), """{"name":"Second member"}""", author = second))
+            store.insert(treasureMap(arrayOf("30392", curator, "wss://lists.example")))
+            // Two lists, same text, so only their page POSITION separates them.
+            // The reference orders equal matches newest-first and RankingIndex
+            // scores by that position, so the list inserted LAST is the one the
+            // page ranks first — and the one the single lookup must be spent on.
+            val bottom = event(30392, arrayOf(arrayOf("d", "bottom"), arrayOf("title", "Podcaster Trust List"), arrayOf("p", second, "", "90")))
+            val top = event(30392, arrayOf(arrayOf("d", "top"), arrayOf("title", "Podcaster Trust List"), arrayOf("p", first, "", "90")))
+            store.insert(bottom)
+            store.insert(top)
+
+            val out = store.query<Event>(listOf(search("podcaster", listOf(0, 30392)))).map { it.id }
+            val firstCard = store.query<Event>(listOf(Filter(kinds = listOf(0), authors = listOf(first)))).single().id
+            val secondCard = store.query<Event>(listOf(Filter(kinds = listOf(0), authors = listOf(second)))).single().id
+
+            assertTrue(out.indexOf(top.id) < out.indexOf(bottom.id), "the better-ranked list leads: $out")
+            assertTrue(firstCard in out, "its member is the one the single lookup bought: $out")
+            assertTrue(secondCard !in out, "and the budget stopped before the lower-ranked list's: $out")
+        }
+
     @Test
     fun `a member of a matched list rides within one rung of it`() =
         runBlocking {

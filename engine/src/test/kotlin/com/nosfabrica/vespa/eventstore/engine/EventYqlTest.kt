@@ -40,7 +40,9 @@ class EventYqlTest {
         val q = EventYql.build(EventQuery())!!
         assertEquals("select ${EventYql.SUMMARY_FIELDS} from event where true order by created_at desc", q.yql)
         assertEquals(EventYql.RANK_UNRANKED, q.ranking)
-        assertTrue(q.params.isEmpty())
+        // Nothing but the match-thread opt-out: plain recall is the shape the
+        // cluster's thread ceiling is NOT meant for (EventYql.MATCH_THREADS).
+        assertEquals(mapOf(EventYql.MATCH_THREADS to EventYql.SINGLE_MATCH_THREAD), q.params)
     }
 
     @Test
@@ -703,11 +705,128 @@ class EventYqlTest {
     @Test
     fun `observer is ranking context only — never emitted for unranked recall`() {
         val unranked = EventYql.build(EventQuery(kinds = listOf(1), observer = hexA))!!
-        assertTrue(unranked.params.isEmpty(), "no term, no profile: pure NIP-01 recall")
+        assertEquals(
+            mapOf(EventYql.MATCH_THREADS to EventYql.SINGLE_MATCH_THREAD),
+            unranked.params,
+            "no term, no profile: pure NIP-01 recall, and no ranking context at all",
+        )
         assertEquals(EventYql.RANK_UNRANKED, unranked.ranking)
 
         val ranked = EventYql.build(EventQuery(search = "vitor", observer = hexA))!!
         assertEquals("{$hexA:1.0}", ranked.params["ranking.features.query(user_q)"])
+    }
+
+    /**
+     * WHICH SHAPES SPEND THE CLUSTER'S MATCH-THREAD HEADROOM. The ceiling lives
+     * in services.xml and a query can only ask for a value under it, so "how
+     * many threads" is decided here, by shape: a relevance search takes the
+     * ceiling (the parameter is absent, so the config's value stands) and
+     * everything else asks for one.
+     *
+     * The match-phase profiles are the load-bearing half of that list — their
+     * per-node `max-hits` cut is a number this client MIRRORS
+     * ([EventYql.MATCH_PHASE_MAX_HITS]) to decide which limits it may serve, so
+     * they must not be the query that finds out whether Vespa applies the cut
+     * per node or per thread.
+     */
+    @Test
+    fun `only a relevance search spends the match-thread headroom`() {
+        fun threads(q: EventQuery) = EventYql.build(q)!!.params[EventYql.MATCH_THREADS]
+
+        // Ranked text: no parameter, so the cluster ceiling applies.
+        assertNull(threads(EventQuery(search = "bitcoin")), "text relevance")
+        assertNull(threads(EventQuery(search = "bitcoin", observer = hexA)), "trust relevance")
+        assertNull(threads(EventQuery(phrases = listOf("bitcoin standard"))), "a phrase is search text")
+        assertNull(threads(EventQuery(search = "bitcoin", ranking = EventYql.RANK_DESC)), "sort:rank")
+        assertNull(
+            threads(EventQuery(search = "bitcoin", ranking = EventYql.RANK_RECENCY_GATED_EXACT)),
+            "the full-scan gated variant gates and scores every match — no cut to mirror",
+        )
+
+        // Everything else asks for one thread.
+        val one = EventYql.SINGLE_MATCH_THREAD
+        assertEquals(one, threads(EventQuery(kinds = listOf(1), limit = 50)), "plain recall")
+        assertEquals(one, threads(EventQuery(kinds = listOf(1))), "unbounded recall")
+        assertEquals(
+            one,
+            threads(EventQuery(kinds = listOf(1), limit = 50, observer = hexA, ranking = EventYql.RANK_RECENCY_GATED)),
+            "the match-phase gate, whose cut this client mirrors",
+        )
+
+        // The splice's lookups: a relevance profile, but a match set the query
+        // named itself, so there is nothing to spread across threads.
+        assertEquals(one, threads(EventQuery(ids = listOf(hexB), observer = hexA)), "by id")
+        assertEquals(
+            one,
+            threads(EventQuery(idWeights = mapOf(hexB to 80), ranking = EventYql.RANK_SPLICED_MEMBER, observer = hexA)),
+            "a Trusted List of events, each member carrying its own confidence",
+        )
+        assertEquals(
+            one,
+            threads(EventQuery(kinds = listOf(0), authorWeights = mapOf(hexB to 80), ranking = EventYql.RANK_SPLICED_MEMBER, observer = hexA)),
+            "a Trusted List of people",
+        )
+    }
+
+    /** The always-unranked builders ask for one thread too — same reasoning, no profile to read it off. */
+    @Test
+    fun `the aggregation and projection builders stay single-threaded`() {
+        val one = EventYql.SINGLE_MATCH_THREAD
+        assertEquals(one, EventYql.buildCount(EventQuery(kinds = listOf(1)))!!.params[EventYql.MATCH_THREADS])
+        assertEquals(one, EventYql.buildDistinctAuthors(EventQuery(kinds = listOf(1)))!!.params[EventYql.MATCH_THREADS])
+        assertEquals(one, EventYql.buildIdTime(EventQuery(kinds = listOf(1)))!!.params[EventYql.MATCH_THREADS])
+        assertEquals(one, EventYql.buildExistence(listOf(hexA))!!.params[EventYql.MATCH_THREADS])
+    }
+
+    /**
+     * WHICH PROFILE COUNTS A QUERY. A count is "how many would this SERVE", so a
+     * profile that drops hits has to do the counting itself (its `totalCount` is
+     * already net of the drop) while a profile that drops nothing can be counted
+     * by the cheaper unranked grouping.
+     *
+     * The two match-phase profiles are the trap and they split: their
+     * `totalCount` is capped by the cut, so neither may answer with it —
+     * `recency` gates nothing and falls to the grouping, `recency_gated` gates
+     * and must move to its full-scan twin.
+     */
+    @Test
+    fun `a count runs on the profile that would drop its hits`() {
+        fun profile(q: EventQuery) = EventYql.countProfileOf(q)
+
+        // Nothing ranks, nothing drops: the grouping is exact and cheapest.
+        assertNull(profile(EventQuery(kinds = listOf(1))), "plain recall")
+        assertNull(profile(EventQuery(kinds = listOf(1), limit = 50)), "the recency match-phase caps totalCount, and gates nothing")
+
+        // The gate drops hits, so the count must be taken after it.
+        assertEquals(EventYql.RANK_SEARCH, profile(EventQuery(search = "bitcoin", observer = hexA)))
+        assertEquals(EventYql.RANK_TEXT, profile(EventQuery(search = "bitcoin")))
+        assertEquals(EventYql.RANK_DESC, profile(EventQuery(search = "bitcoin", ranking = EventYql.RANK_DESC)))
+
+        // sort:recent — gated AND match-phased, so it counts on the full scan.
+        assertEquals(
+            EventYql.RANK_RECENCY_GATED_EXACT,
+            profile(EventQuery(kinds = listOf(1), search = "bitcoin", observer = hexA, ranking = EventYql.RANK_RECENCY_GATED)),
+            "the cut would cap totalCount; the exact twin applies the same gate without one",
+        )
+    }
+
+    /**
+     * The spliced-member gate travels on its own feature, and only when the
+     * reader asked for a floor. It cannot ride `min_rank` there: that number
+     * anchors the trust curve inside the member's PLACEMENT, so raising it to
+     * gate would move every member it did not drop (event.sd §13).
+     */
+    @Test
+    fun `the member floor rides only on the member profile`() {
+        fun floor(q: EventQuery) = EventYql.build(q)!!.params["ranking.features.query(${EventYql.F_MEMBER_FLOOR})"]
+
+        val lookup = EventQuery(kinds = listOf(0), authorWeights = mapOf(hexB to 80), observer = hexA, ranking = EventYql.RANK_SPLICED_MEMBER)
+        assertEquals("20.0", floor(lookup.copy(memberFloor = 20.0)), "the reader asked for a floor")
+        assertNull(floor(lookup), "no explicit floor, no gate — the default one deliberately does not travel")
+
+        // Every other profile ignores it: only spliced_member declares the input.
+        assertNull(floor(EventQuery(search = "bitcoin", observer = hexA, memberFloor = 20.0)), "the page's own query")
+        assertNull(floor(EventQuery(kinds = listOf(1), limit = 50, memberFloor = 20.0)), "plain recall")
     }
 
     @Test

@@ -256,6 +256,14 @@ class VespaEventIndexTest {
         check(EventQuery(ids = listOf(expiring.id), notExpiredAt = 1000)) // not yet expired — kept
         check(EventQuery(ids = listOf(expiring.id), notExpiredAt = 3000)) // expired — dropped
         check(EventQuery(ids = docs.take(10).map { it.id }, limit = 3)) // limit after ordering
+        // A WEIGHTED key set is a recall constraint (a dotProduct over `pubkey`)
+        // that a document-API get cannot see, so an id set carrying one must
+        // leave the fast path. These ids all belong to one author; naming a
+        // different one must answer EMPTY, which is what the reference does and
+        // what the get path — returning the ids and forgetting the constraint —
+        // did not.
+        check(EventQuery(ids = docs.take(5).map { it.id }, authorWeights = mapOf("b2".repeat(32) to 80)))
+        check(EventQuery(ids = docs.take(5).map { it.id }, authorWeights = mapOf("a1".repeat(32) to 80)))
     }
 
     /**

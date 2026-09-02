@@ -832,6 +832,24 @@ object MockYql {
                         q.copy(owners = strings(clause))
                     }
 
+                    // THE WEIGHTED KEY SETS (EventQuery.idWeights /
+                    // authorWeights): a dotProduct over the id / pubkey
+                    // attribute, which recalls exactly those keys AND hands each
+                    // hit its own weight back as rawScore for the member rung.
+                    // Parsed here so the wire format of a weighted subject
+                    // lookup is guarded like every other clause — it had NO
+                    // coverage at all, which is how a query carrying one could
+                    // take a fast path that silently dropped the constraint
+                    // without a mock test noticing. Matching comes for free: the
+                    // reference below applies both maps as recall constraints.
+                    clause.startsWith("dotProduct(id, ") -> {
+                        q.copy(idWeights = weights(clause))
+                    }
+
+                    clause.startsWith("dotProduct(pubkey, ") -> {
+                        q.copy(authorWeights = weights(clause))
+                    }
+
                     clause.startsWith("kind in (") -> {
                         q.copy(kinds = ints(clause))
                     }
@@ -1005,6 +1023,18 @@ object MockYql {
         parts += s.substring(start)
         return parts
     }
+
+    /**
+     * The `{"<64-hex>": <weight>, …}` map of a dotProduct clause. Anchored on
+     * the hex so a drifted key shape fails to parse rather than parsing to an
+     * empty (and therefore unconstrained) map.
+     */
+    private fun weights(clause: String): Map<String, Int> =
+        WEIGHT_ENTRY
+            .findAll(clause.substringAfter('{').substringBeforeLast('}'))
+            .associate { it.groupValues[1] to it.groupValues[2].toInt() }
+
+    private val WEIGHT_ENTRY = Regex("\"([0-9a-fA-F]{64})\"\\s*:\\s*(-?\\d+)")
 
     private fun strings(clause: String): List<String> =
         clause
