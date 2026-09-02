@@ -28,7 +28,8 @@ import com.vitorpamplona.quartz.utils.Hex
  * Only attribute-shaped constraints translate: kinds, authors, owners,
  * since/until, and the not-yet-expired guard.
  *
- * Returns null when [q] carries anything a selection can't express — ids,
+ * Returns null when [q] carries anything a selection can't express — ids, the
+ * weighted key sets ([EventQuery.idWeights] / [EventQuery.authorWeights]),
  * tags, any search constraint (including `notSearch`: a silently dropped
  * exclusion would stream exactly the docs the query subtracted), a limit, the
  * expiry-sweep bound, or a non-64-hex key — and the caller falls back to the
@@ -38,6 +39,14 @@ import com.vitorpamplona.quartz.utils.Hex
 object EventSelection {
     fun build(q: EventQuery): String? {
         if (q.ids.isNotEmpty() || q.tags.isNotEmpty() || q.tagsAll.isNotEmpty()) return null
+        // The WEIGHTED key sets, for the same reason as [EventQuery.ids] above
+        // and with more at stake: they are a RECALL constraint (a dotProduct
+        // over `id` / `pubkey`) that happens to carry a ranking number, and a
+        // selection has no dotProduct. Omitting them would not narrow anything —
+        // it would hand back a selection that streams the whole corpus while
+        // looking like it asked for a few hundred keys, which is precisely the
+        // silent-superset failure this builder returns null to avoid.
+        if (q.idWeights.isNotEmpty() || q.authorWeights.isNotEmpty()) return null
         if (!q.search.isNullOrBlank() || q.phrases.isNotEmpty() || q.notSearch.isNotEmpty() || q.limit != null || q.expiresBefore != null) return null
         val clauses = ArrayList<String>()
         if (q.kinds.isNotEmpty()) clauses += q.kinds.joinToString(" or ", "(", ")") { "event.kind==$it" }

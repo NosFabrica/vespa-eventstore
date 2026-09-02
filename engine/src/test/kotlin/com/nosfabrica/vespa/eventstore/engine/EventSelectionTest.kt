@@ -73,6 +73,12 @@ class EventSelectionTest {
         // phrase would stream everything the requirement filtered out.
         assertNull(EventSelection.build(EventQuery(notSearch = listOf("vitor"))))
         assertNull(EventSelection.build(EventQuery(phrases = listOf("vitor pamplona"))))
+        // The WEIGHTED key sets recall through a dotProduct a selection has no
+        // form for. Dropping one would not narrow the walk — it would widen it
+        // to the whole corpus while the caller believed it named a few hundred
+        // keys.
+        assertNull(EventSelection.build(EventQuery(idWeights = mapOf("f".repeat(64) to 80))))
+        assertNull(EventSelection.build(EventQuery(authorWeights = mapOf("a1".repeat(32) to 80))))
         assertNull(EventSelection.build(EventQuery(limit = 10)))
         assertNull(EventSelection.build(EventQuery(expiresBefore = 100)))
         // Injection rule: a non-64-hex key never reaches the expression.

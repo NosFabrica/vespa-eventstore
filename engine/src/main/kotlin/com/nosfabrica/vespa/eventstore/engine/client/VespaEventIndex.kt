@@ -709,6 +709,12 @@ class VespaEventIndex(
             ids.isNotEmpty() && ids.size <= ID_GET_FANOUT &&
             kinds.isEmpty() && authors.isEmpty() && owners.isEmpty() &&
             tags.isEmpty() && tagsAll.isEmpty() &&
+            // The WEIGHTED key sets are recall constraints too (a dotProduct
+            // over `id` / `pubkey`), and a document-API get sees neither them
+            // nor the rawScore the member profile ranks on — so a query
+            // carrying one must take the search path even when its `ids` alone
+            // would have qualified.
+            idWeights.isEmpty() && authorWeights.isEmpty() &&
             since == null && until == null && expiresBefore == null &&
             // Text constraints of EVERY polarity: a doc-API get never sees the
             // search fields, so an id lookup riding a phrase requirement or a
