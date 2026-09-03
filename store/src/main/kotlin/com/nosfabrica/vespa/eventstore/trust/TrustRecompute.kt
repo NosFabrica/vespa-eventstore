@@ -54,6 +54,8 @@ internal class TrustRecompute(
     private val inner: EventIndex,
     private val reputations: ReputationIndex,
     private val nowSecs: () -> Long = { System.currentTimeMillis() / 1000 },
+    /** Told what every whole-document write stored, so the cell path never reads a stale-high value — see [MaxRankCache]. */
+    private val maxRanks: MaxRankCache? = null,
 ) {
     /** Per-dimension `service key -> observers` (NIP-85 attribution), cached across a pass; see [ProviderMap]. */
     private val providers = ProviderMap(inner, nowSecs)
@@ -87,7 +89,12 @@ internal class TrustRecompute(
         val derived = deriveBatch(subjects, serviceProviders)
         IngestStats.timed("proj.write") {
             reputations.putAll(derived.values.toList())
-            if (removeEmpties) subjects.filter { it !in derived }.mapBounded(QUERY_FANOUT) { reputations.remove(it) }
+            maxRanks?.remember(derived.values)
+            if (removeEmpties) {
+                val gone = subjects.filter { it !in derived }
+                gone.mapBounded(QUERY_FANOUT) { reputations.remove(it) }
+                maxRanks?.forget(gone)
+            }
         }
     }
 

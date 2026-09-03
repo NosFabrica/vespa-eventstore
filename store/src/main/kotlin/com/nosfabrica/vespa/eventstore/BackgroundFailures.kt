@@ -49,6 +49,9 @@ internal object BackgroundFailures {
     /** The guard-owner cache refresher (`GuardOwners.startRefresher`). */
     const val GUARD_REFRESH = "guards.refresh"
 
+    /** The one-time `max_rank` walk the trust descent waits on (MaxRankBackfill). */
+    const val MAX_RANK_BACKFILL = "trust.maxRankBackfill"
+
     /** Longest failure message kept — enough to name the cause, not to hold a stack trace. */
     private const val MAX_MESSAGE = 200
 

@@ -29,5 +29,21 @@ schema reputation {
         field follower_counts type tensor<float>(user{}) {
             indexing: attribute
         }
+        # THE BEST RANK ANY OBSERVER GIVES THIS AUTHOR — the max over the
+        # influence_scores cells, kept as a scalar so the child events can
+        # import it (event.sd's author_max_rank) and a relevance search can
+        # carry `author_max_rank >= T`: the trust descent's rung, which makes
+        # Vespa walk the trusted authors' documents instead of a common word's
+        # postings, and which the client PROVES is the exact page with
+        # (TrustDescent). An upper bound on the author's rank under every
+        # observer, which is what makes excluding by it sound. Whole-document
+        # writes carry the max of their cells; the cell path raises it in the
+        # same update as the cell that overtakes it (MaxRankCache); a store
+        # fed before this field existed is walked once (MaxRankBackfill).
+        # fast-search: the range is meant to DRIVE the query.
+        field max_rank type int {
+            indexing: attribute | summary
+            attribute: fast-search
+        }
     }
 }

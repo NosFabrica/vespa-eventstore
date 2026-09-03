@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.eventstore
 import com.nosfabrica.vespa.eventstore.engine.client.VespaEventIndex
 import com.nosfabrica.vespa.eventstore.engine.client.VespaReputationIndex
 import com.nosfabrica.vespa.eventstore.search.SearchExpansionLimits
+import com.nosfabrica.vespa.eventstore.trust.MaxRankBackfill
 import com.nosfabrica.vespa.eventstore.trust.TrustProjection
 import com.nosfabrica.vespa.eventstore.trust.TrustReconciler
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
@@ -31,6 +32,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
@@ -61,9 +63,21 @@ class VespaEventStore internal constructor(
     private val trust: TrustProjection,
     /** The background drain worker's scope in deferred mode; null when the projection settles inline. */
     private val drainScope: CoroutineScope? = null,
+    /** The `max_rank` backfill's job, so a test or a boot line can wait for the descent to be on — see [awaitTrustDescent]. */
+    private val backfill: kotlinx.coroutines.Deferred<Int>? = null,
 ) : IEventStore by store {
     /** The engine's feed-health status line (bulk-ingest backpressure), for progress/status output. */
     fun feedStatus(): String = eventIndex.feedStatus()
+
+    /**
+     * Wait until the trust descent may serve pages: the one-time walk that
+     * writes `max_rank` onto every reputation document fed before the field
+     * existed (MaxRankBackfill). Returns how many documents it wrote — 0 on a
+     * store that already carried it. A failed walk rethrows: the descent
+     * stays off, and nothing served in the meantime was any different from
+     * before, since [VespaEventIndex.trustDescent] is only set on success.
+     */
+    suspend fun awaitTrustDescent(): Int = backfill?.await() ?: 0
 
     /**
      * The background workers' failure line — EMPTY while they are healthy, so a
@@ -150,6 +164,7 @@ class VespaEventStore internal constructor(
         // Drainer first: queued work survives in the persisted marker for the
         // next open — shutdown must not block on a six-figure walk.
         drainScope?.cancel()
+        backfill?.cancel()
         store.close()
     }
 
@@ -235,7 +250,25 @@ class VespaEventStore internal constructor(
             val gate: suspend (suspend () -> Unit) -> Unit = { store.withWriteLock(it) }
             val reconciler = TrustReconciler(eventIndex, reputations, trust.recompute, trust.dirt, gate = gate)
             val drainScope = if (deferTrustProjection) startDrainer(trust, gate) else null
-            return VespaEventStore(store, eventIndex, reconciler, trust, drainScope)
+            // The descent is off until every reputation document carries the
+            // scalar it cuts on. One walk, once, in the background — and the
+            // switch is thrown only when it returns, so a boot that finds the
+            // marker already there is on within one read.
+            val backfill =
+                CoroutineScope(SupervisorJob() + Dispatchers.Default).async {
+                    try {
+                        val written = MaxRankBackfill(reputations).run()
+                        eventIndex.trustDescent = true
+                        BackgroundFailures.succeeded(BackgroundFailures.MAX_RANK_BACKFILL)
+                        written
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (t: Throwable) {
+                        BackgroundFailures.record(BackgroundFailures.MAX_RANK_BACKFILL, t)
+                        throw t
+                    }
+                }
+            return VespaEventStore(store, eventIndex, reconciler, trust, drainScope, backfill)
         }
 
         /**

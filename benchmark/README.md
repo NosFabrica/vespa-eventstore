@@ -754,6 +754,77 @@ exact —
   the query that is text ranking. Worth its own diff, its own integration gate,
   and a measurement of what share of a real match set the floor actually drops.
 
+### 6. What was taken instead: the trust descent (2026-09-03)
+
+Section 5 is right that nothing exact beats the posting walk — and the walk
+it means is the WORD's. There is another walk, and it is exact: the trusted
+authors' documents. The ranking is trust first (`search` scores `text ×
+wot_mult(trust) × recency`; text spans ×236 across its bands, trust ×250,000
+across ranks 0..100), so the page is, overwhelmingly, the documents of the
+most trusted authors, and the reputation parent already knows who those are.
+
+`reputation.max_rank` is the best rank ANY observer gives an author, imported
+into every event as `author_max_rank`; a relevance search under an observer
+runs with `author_max_rank >= T` (a rung, `EventQuery.trustFloor`), and Vespa
+drives the AND with that range. `TrustDescent` then PROVES the page: every
+excluded document is by an author ranked at most `T − 1` under this observer
+(a rank cannot exceed its max), so it scores at most `ceiling × wot_mult(T −
+1)`, where the ceiling is assembled from the profile's own weights
+(TrustDescentTest pins them to event.sd) plus a bound on the bm25 tails. A
+page whose K-th hit beats that is the exact page; the K-th score also says
+which rung it proves, so the descent is two queries — rank ≥ 90, then the
+rung that page proves — and a page nothing proves goes to the floor rung,
+which excludes only what the gate deletes (`max_rank < floor` ⇒ `rank <
+floor`) and is today's exact answer. T only decides how fast the page was
+found. `include:spam` reads have no gate and no rung; keyed lookups and the
+explicit sorts are not this score and do not descend.
+
+Measured on 1.28M real kind-1 notes captured read-only from staging, the
+observer's provider's real cards, K = 40, 4 match threads (the relay's
+`docs/proposals/search-latency-harness/descent.mjs`):
+
+```
+"the"      exact 154ms, served 31,604
+  rank>=90  13ms kept  2,138   rank>=50  22ms kept  7,409   rank>=20  30ms kept 11,716
+  rank>=10  35ms kept 16,157   PROVEN — page identical to the exact page
+"nostr"    exact  86ms — rank>=20 35ms PROVEN, identical
+"bitcoin"  exact  39ms — rank>=20 25ms PROVEN, identical
+"love"     exact  32ms — rank>=10 24ms PROVEN, identical
+"zap"      exact   8ms — rank>=10  8ms PROVEN, identical (a rare word pays the rungs, ~5ms each)
+```
+
+And through the WHOLE store — `storeDump`, the expansion's splice included,
+against the pinned build's page for the same three words: **identical, row
+for row**, with the backfill having written `max_rank` onto the slice's
+11,228 reputation documents on first open (`storeDump` now waits for it and
+says so). Two rungs cost 46ms for `the` against 154 exact. The shares are what transfer
+to staging: authors ranked ≥ 10 by the provider wrote 5.0% of the slice's
+notes, ≥ 20 wrote 3.8%, ≥ 90 wrote 0.5%. At ~0.5µs per trusted-author note
+checked, an exact `the` on staging becomes a walk of a few million notes —
+roughly 0.5-1s where it is 16s — and every common word costs the same,
+since the walk is the trusted corpus rather than the word. Rare words stay
+on the text driver and stay fast.
+
+Why exact cannot be 200ms, in one line: 200ms buys a walk of ~1.5M notes,
+which is authors ranked ≥ 50; the proof at that rung needs the K-th hit to
+score 5e9, and no note can (a body hit by a rank-100 author scores 1.3e8).
+The ×236 text spread is what defeats a trust-only stop.
+
+The other half is keeping `max_rank` true: a whole-document write carries the
+max of its cells by construction; the incremental cell path raises it IN THE
+SAME UPDATE as the cell that overtakes it (`MaxRankCache` stands in for the
+stored value, read once per subject, moved with every write); and a store fed
+before the field existed is walked once at open (`MaxRankBackfill`, a marker
+document behind it) with the descent off until the walk returns — a document
+whose author has no `max_rank` yet reads 0 and would be excluded from every
+rung above the floor.
+
+Checked and set aside on the way: a match phase keyed on the imported
+attribute (Vespa accepts it, and at moderate depths it was exact on every
+word tried) has an ESTIMATED threshold — kept sets held rank-2 documents while
+excluding rank-40 ones — so no bound can be proven over it. The explicit
+range clause is what makes the proof sound, and it is as cheap.
+
 ## What a NIP-45 COUNT was really doing (2026-09-01)
 
 Measured while pricing the search above, and it inverted the expected order: on

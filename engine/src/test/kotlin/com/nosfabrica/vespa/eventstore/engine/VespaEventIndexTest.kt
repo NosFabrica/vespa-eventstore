@@ -19,6 +19,7 @@
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 package com.nosfabrica.vespa.eventstore.engine
+import com.nosfabrica.vespa.eventstore.engine.client.TrustDescent
 import com.nosfabrica.vespa.eventstore.engine.client.VespaEventIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.SearchFields
@@ -583,6 +584,72 @@ class VespaEventIndexTest {
                 )
             } finally {
                 mock.matchPhaseUnderdeliver = 0
+            }
+        }
+
+    /**
+     * THE DESCENT, rung by rung, through the mock: a ranked search under an
+     * observer asks the first rung, reads its K-th score, asks the rung that
+     * score proves, and serves it — the same page the undescended query
+     * serves, since every author here is above the floor. A page whose first
+     * rung holds too few hits goes straight to the floor rung. Off, nothing
+     * carries a rung; an ungated read never does.
+     */
+    @Test
+    fun `a ranked search descends the trust rungs and serves the same page`() =
+        runBlocking {
+            val top = "f1".repeat(32)
+            val mid = "f2".repeat(32)
+            val low = "f3".repeat(32)
+            mock.authorMaxRank[top] = 95
+            mock.authorMaxRank[mid] = 40
+            mock.authorMaxRank[low] = 5
+            seed(
+                doc(kind = 1, pubkey = top, search = SearchFields(text = "alpha one")),
+                doc(kind = 1, pubkey = top, search = SearchFields(text = "alpha two")),
+                doc(kind = 1, pubkey = mid, search = SearchFields(text = "alpha three")),
+                doc(kind = 1, pubkey = low, search = SearchFields(text = "alpha four")),
+                doc(kind = 1, pubkey = low, search = SearchFields(text = "alpha five")),
+            )
+            // Scores that mean what the profile's mean: a body hit times the author's trust curve.
+            mock.relevanceOf = { d -> 550.0 * TrustDescent.wotMult((mock.authorMaxRank[d.pubkey] ?: 0).toDouble(), 2.0) }
+            val q = EventQuery(kinds = listOf(1), search = "alpha", observer = "ab".repeat(32), minRank = 2.0, limit = 2)
+
+            fun rungs(from: Int) =
+                mock.searchRequests.drop(from).map { r ->
+                    Regex("author_max_rank >= (\\d+)")
+                        .find(r.getValue("yql"))
+                        ?.groupValues
+                        ?.get(1)
+                        ?.toInt()
+                }
+            try {
+                val exact = index.search(q).map { it.id }
+                assertEquals(2, exact.size, "the page")
+                assertEquals(listOf<Int?>(null), rungs(0), "off: the query carries no rung")
+
+                index.trustDescent = true
+                val at = mock.searchRequests.size
+                assertEquals(exact, index.search(q).map { it.id }, "the descended page is the page")
+                val proven = TrustDescent.provenRung(550.0 * TrustDescent.wotMult(95.0, 2.0), 2.0, 1)
+                assertEquals(listOf<Int?>(TrustDescent.FIRST_RUNG, proven), rungs(at), "the first rung, then the rung its page proved")
+                assertTrue(proven in 3 until TrustDescent.FIRST_RUNG, "a body hit by a top author proves a rung between the floor and the first, got $proven")
+
+                // Too few hits at the first rung: the floor rung, which is exact by the gate.
+                val short = q.copy(limit = 4)
+                val whole = index.search(short.copy(observer = null, minRank = null)).map { it.id }
+                val at2 = mock.searchRequests.size
+                assertEquals(whole, index.search(short).map { it.id }, "the floor rung serves the whole page")
+                assertEquals(listOf<Int?>(TrustDescent.FIRST_RUNG, 2), rungs(at2).take(2), "the first rung came up short, so the floor")
+
+                // include:spam: no gate, no rung.
+                val at3 = mock.searchRequests.size
+                index.search(q.copy(minRank = 0.0))
+                assertEquals(listOf<Int?>(null), rungs(at3))
+            } finally {
+                index.trustDescent = false
+                mock.relevanceOf = null
+                mock.authorMaxRank.clear()
             }
         }
 

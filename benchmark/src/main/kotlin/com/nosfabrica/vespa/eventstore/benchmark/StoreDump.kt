@@ -70,11 +70,20 @@ object StoreDump {
             val configUrl = System.getenv("VESPA_CONFIG_URL")
             val store = if (configUrl != null) VespaEventStore.open(url = url, configUrl = configUrl) else VespaEventStore.open(url)
             store.use {
+                // The descent is on only once every reputation document carries
+                // max_rank: wait for that walk, so the page printed is the page
+                // a relay serves after boot, not the one it serves during it.
+                val backfilled = store.awaitTrustDescent()
+                if (backfilled > 0) println("trust descent: on, after writing max_rank onto $backfilled reputation documents")
                 // The search string the relay would build: the terms plus the
                 // NIP-50 extensions, so what runs here is what runs there.
                 val search = terms + (observer?.let { " observer:$it" } ?: "")
-                val page = store.query<Event>(listOf(Filter(kinds = kinds.ifEmpty { null }, search = search, limit = limit)))
-                println("filter kinds=${kinds.ifEmpty { "any" }} limit=$limit search=${search.take(80)}")
+                val filter = Filter(kinds = kinds.ifEmpty { null }, search = search, limit = limit)
+                // Warm once (dictionary and posting page-ins), then time the ask.
+                store.query<Event>(listOf(filter))
+                val t0 = System.nanoTime()
+                val page = store.query<Event>(listOf(filter))
+                println("filter kinds=${kinds.ifEmpty { "any" }} limit=$limit search=${search.take(80)} took ${(System.nanoTime() - t0) / 1_000_000}ms")
                 println("  %-4s %-34s %-10s %s".format("#", "name / title", "kind", "author"))
                 page.forEachIndexed { i, event ->
                     println("  %-4d %-34s %-10d %s".format(i + 1, label(event).take(34), event.kind, event.pubKey.take(8)))

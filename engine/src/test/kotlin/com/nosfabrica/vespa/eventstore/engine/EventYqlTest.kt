@@ -768,6 +768,18 @@ class EventYqlTest {
         )
     }
 
+    /** A rung is one range clause on the imported attribute, and nothing a caller's query carries. */
+    @Test
+    fun `a trust-descent rung is a range on the author's max rank`() {
+        val q = EventQuery(kinds = listOf(1), search = "bitcoin", observer = hexA, minRank = 2.0, limit = 40)
+        val plain = EventYql.build(q)!!
+        assertFalse("author_max_rank" in plain.yql, "no rung unless the descent set one")
+        val rung = EventYql.build(q.copy(trustFloor = 19))!!
+        assertTrue("kind in (1) and author_max_rank >= 19 and" in rung.yql, rung.yql)
+        assertEquals(plain.ranking, rung.ranking, "a rung is the same profile: the page it serves is the same page")
+        assertEquals(plain.params, rung.params, "…with the same features")
+    }
+
     /** The always-unranked builders ask for one thread too — same reasoning, no profile to read it off. */
     @Test
     fun `the aggregation and projection builders stay single-threaded`() {

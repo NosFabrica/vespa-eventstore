@@ -61,4 +61,12 @@ interface ReputationIndex : AutoCloseable {
      * engine-defined.
      */
     suspend fun visitPubkeys(onPage: suspend (List<String>) -> Boolean)
+
+    /**
+     * Every document, cells included, a page at a time; the walk the
+     * `max_rank` backfill takes once over a store fed before the field
+     * existed. Default: the pubkey walk plus a get per document, which is what
+     * an in-memory index can afford and a real one overrides.
+     */
+    suspend fun visitDocs(onPage: suspend (List<ReputationDoc>) -> Boolean) = visitPubkeys { pubkeys -> onPage(pubkeys.mapNotNull { get(it) }) }
 }

@@ -237,6 +237,9 @@ object EventYql {
         ranking: String,
     ): Boolean = ranking in SINGLE_THREADED_PROFILES || q.ids.isNotEmpty() || q.idWeights.isNotEmpty() || q.authorWeights.isNotEmpty()
 
+    /** The event's imported copy of its author's `max_rank` (event.sd) — the trust descent's attribute. */
+    const val AUTHOR_MAX_RANK = "author_max_rank"
+
     /**
      * The summary fields needed to reconstruct an event
      * ([com.nosfabrica.vespa.eventstore.engine.doc.EventDoc.fromSummary]).
@@ -576,6 +579,12 @@ object EventYql {
         if (q.ids.isNotEmpty()) clauses += hexIn("id", q.ids) ?: return null
         if (q.idWeights.isNotEmpty()) clauses += hexDotProduct("id", q.idWeights) ?: return null
         if (q.kinds.isNotEmpty()) clauses += "kind in (${q.kinds.joinToString(", ")})"
+        // The descent's rung: a range on the IMPORTED attribute, which Vespa
+        // drives the AND with — it walks the trusted authors' documents and
+        // checks the word, rather than the word's postings and the gate.
+        // MEASURED (2026-09-03, 1.28M real notes): `the` under the observer,
+        // 154ms exact, 13ms at rank>=90, 35ms at the rung the bound proved.
+        q.trustFloor?.let { clauses += "$AUTHOR_MAX_RANK >= $it" }
         if (q.authors.isNotEmpty()) clauses += hexIn("pubkey", q.authors) ?: return null
         if (q.authorWeights.isNotEmpty()) clauses += hexDotProduct("pubkey", q.authorWeights) ?: return null
         if (q.owners.isNotEmpty()) clauses += hexIn("owner", q.owners) ?: return null

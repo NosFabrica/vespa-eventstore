@@ -60,8 +60,11 @@ class TrustProjection(
     private val reputations: ReputationIndex,
     nowSecs: () -> Long = { System.currentTimeMillis() / 1000 },
 ) : EventIndex {
+    /** The stored `max_rank` per subject, so a cell can raise it in the same write — see [MaxRankCache]. */
+    internal val maxRanks = MaxRankCache(reputations)
+
     /** The recompute engine the ledger's drains drive; [TrustReconciler] shares it. */
-    internal val recompute = TrustRecompute(inner, reputations, nowSecs)
+    internal val recompute = TrustRecompute(inner, reputations, nowSecs, maxRanks)
 
     /** The work ledger: crash marker + (optionally deferred) projection queue; [TrustReconciler] drains it at startup. */
     internal val dirt = DirtLedger(reputations, recompute)
@@ -194,7 +197,11 @@ class TrustProjection(
                         )
                 }
             }
-            IngestStats.timed("proj.write") { reputations.updateCells(updates) }
+            // Each cell that overtakes its document's `max_rank` carries the
+            // new value in the same update — the invariant the trust descent
+            // proves pages with (TrustDescent), kept on the hot path.
+            val raised = IngestStats.timed("proj.fetch") { maxRanks.raise(updates) }
+            IngestStats.timed("proj.write") { reputations.updateCells(raised) }
             Unit to DirtLedger.Dirt(retracted, listServices)
         }
     }

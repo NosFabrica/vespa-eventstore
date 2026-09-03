@@ -187,6 +187,16 @@ data class EventQuery(
      */
     val rankFeatures: Map<String, Double> = emptyMap(),
     /**
+     * ONE RUNG OF THE TRUST DESCENT: keep only documents whose author some
+     * observer ranks at least this (`author_max_rank >= trustFloor`, the
+     * scalar the reputation parent carries). Set by VespaEventIndex's descent,
+     * never by a caller: a rung is a way of finding the exact page faster,
+     * and which rung a page stops on is decided by the bound in TrustDescent,
+     * not by anything a filter can say. Null (every caller's query) is the
+     * whole corpus.
+     */
+    val trustFloor: Int? = null,
+    /**
      * Emit the direct prefix/fuzzy terms against the *_parts / *_tokens
      * attribute fields (the near tier). Not a caller-facing knob: the client
      * flips it off ONLY as a compatibility demotion when the serving schema
