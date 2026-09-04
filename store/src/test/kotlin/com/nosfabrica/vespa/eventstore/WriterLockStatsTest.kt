@@ -23,12 +23,14 @@ package com.nosfabrica.vespa.eventstore
 import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.IngestStats
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
+import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.yield
+import kotlin.system.measureTimeMillis
 import kotlin.test.Test
 import kotlin.test.assertTrue
 
@@ -49,7 +51,16 @@ import kotlin.test.assertTrue
 class WriterLockStatsTest {
     private val alice = "a".repeat(64)
 
-    private fun card(id: String) = MetadataEvent(id, alice, 1, emptyArray(), """{"name":"n"}""", "")
+    /**
+     * A kind-0. NOT trust-relevant — [NostrSemanticsStore.touchesTrust] books
+     * no reputation work for it, so it does not queue for the trust gate. The
+     * old name of this helper was `card`, which read as a 30382 and is exactly
+     * the confusion the split made load-bearing.
+     */
+    private fun metadata(id: String) = MetadataEvent(id, alice, 1, emptyArray(), """{"name":"n"}""", "")
+
+    /** A real contact card (30382): trust-relevant, so it DOES queue for the trust gate. */
+    private fun contactCard(id: String) = ContactCardEvent(id, alice, 1, arrayOf(arrayOf("d", "c".repeat(64)), arrayOf("rank", "50")), "", "")
 
     /**
      * Seconds booked to [stage] in [line].
@@ -90,18 +101,65 @@ class WriterLockStatsTest {
                 // nothing, which would make the test pass for the wrong reason.
                 yield()
                 delay(50)
-                launch { store.insert(card("b".repeat(64))) }
+                launch { store.insert(contactCard("b".repeat(64))) }
                 holding.await()
             }
 
             val line = IngestStats.statusLine()
             val gateHold = seconds(line, "lock.gate.hold")
-            val ingestWait = seconds(line, "lock.ingest.wait")
+            // A CARD is trust-relevant, so it queues for the trust gate — and
+            // that wait is booked to `lock.ingest.trust.wait`, its own stage.
+            // It was `lock.ingest.wait` while one mutex served both, and
+            // keeping it there would merge an insert's wait for the drain with
+            // the drain's own (see NostrSemanticsStore.trustGate).
+            val trustWait = seconds(line, "lock.ingest.trust.wait")
 
             assertTrue(gateHold >= 0.3, "the gate's hold must be charged to the gate, got ${gateHold}s in `$line`")
             assertTrue(
-                ingestWait >= 0.2,
-                "the insert blocked behind it must be charged as ingest WAIT, not hidden inside a fast-looking stage; got ${ingestWait}s in `$line`",
+                trustWait >= 0.2,
+                "the trust-relevant insert blocked behind it must be charged as its own trust WAIT, not hidden inside a fast-looking stage; got ${trustWait}s in `$line`",
+            )
+        }
+
+    /**
+     * THE POINT OF THE TRUST-GATE SPLIT, asserted rather than assumed.
+     *
+     * A kind-0 (or a kind-1, a reaction, a repost — anything
+     * [NostrSemanticsStore.touchesTrust] books no work for) must not wait on a
+     * trust holder. Measured on staging before the split: an ephemeral event,
+     * which takes the lock and immediately returns without storing anything,
+     * answered OK in 35-41 SECONDS while the drain re-derived reputation
+     * documents. One mutex served both, so every client write paid for trust
+     * maintenance it had nothing to do with.
+     */
+    @Test
+    fun `a non-trust insert is not blocked by a trust gate holder`() =
+        runBlocking {
+            val store = NostrSemanticsStore(InMemoryEventIndex())
+            IngestStats.statusLine()
+
+            coroutineScope {
+                val holding = async { store.withWriteLock { delay(400) } }
+                yield()
+                delay(50)
+                val tookMs =
+                    measureTimeMillis {
+                        store.insert(metadata("d".repeat(64)))
+                    }
+                // Generous: the assertion is "did not wait out the 400ms
+                // holder", not a latency budget. The in-memory index makes the
+                // insert itself sub-millisecond.
+                assertTrue(
+                    tookMs < 200,
+                    "a kind-0 waited on the trust gate it has no work for: ${tookMs}ms",
+                )
+                holding.await()
+            }
+
+            val line = IngestStats.statusLine()
+            assertTrue(
+                seconds(line, "lock.ingest.trust.wait") < 0.1,
+                "a non-trust insert must book no trust wait at all, got `$line`",
             )
         }
 
@@ -111,7 +169,7 @@ class WriterLockStatsTest {
             val store = NostrSemanticsStore(InMemoryEventIndex())
             IngestStats.statusLine()
 
-            store.insert(card("c".repeat(64)))
+            store.insert(metadata("c".repeat(64)))
 
             // Below statusLine()'s own 50ms reporting floor, so an uncontended
             // writer never invents contention — the number has to stay
