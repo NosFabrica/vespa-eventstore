@@ -1060,6 +1060,33 @@ class VespaEventIndex(
     }
 
     /**
+     * [EventIndex.distinctTagIndexValues] against the engine: ONE grouping over
+     * `tag_index`, then the `"<letter>:"` prefix stripped off each group.
+     *
+     * The groups come back for EVERY tag letter the match set carries, not just
+     * the asked-for one — `tag_index` is one attribute — so the prefix filter
+     * here is what makes the answer the caller's question rather than a
+     * superset of it. Cheap: it runs over distinct values, of which a relay
+     * corpus has tens of thousands, not over the documents.
+     */
+    override suspend fun distinctTagIndexValues(
+        query: EventQuery,
+        tagName: String,
+    ): Set<String>? {
+        val vq = EventYql.buildDistinctTagValues(query, tagName) ?: return emptySet()
+        val root = queryRoot(vq, hits = 0) ?: return emptySet()
+        val prefix = "$tagName:"
+        return GroupingResults
+            .groupCounts(root)
+            .keys
+            .asSequence()
+            .filter { it.startsWith(prefix) }
+            .map { it.removePrefix(prefix) }
+            .filter { it.isNotEmpty() }
+            .toSet()
+    }
+
+    /**
      * `all(group(pubkey) each(output(count())))` — one leaf group per distinct
      * author, each carrying its doc count. So the author set AND the per-author
      * counts cost exactly one query.
