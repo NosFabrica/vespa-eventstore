@@ -233,7 +233,38 @@ seconds. For the read path, where many container threads book concurrently at
 on the hot path. **Read-side counters are `LongAdder`; the write path keeps what
 it has.**
 
-### 5.2 The clock is host-dependent
+### 5.2 Declaring an activity costs more than counting one
+
+**Measured 2026-09-04**, and it was the audit's biggest surprise: installing the
+ambient [`Activity`] context is **956 ns**, roughly ten times the ~97 ns of
+everything else in §5 put together.
+
+| | ns/op |
+| --- | ---: |
+| direct call (baseline) | 3.2 |
+| `withActivity`, activity changes | **956** |
+| `withActivity`, activity already ambient — before the short-circuit | 933 |
+| **`withActivity`, already ambient — after** | **40** |
+
+`withContext` runs a full coroutine state-machine transition; it is not a field
+write. The figure is the same under `runBlocking` and `Dispatchers.Default`, so
+it is not a harness artifact.
+
+Two consequences, both acted on:
+
+- **Re-declaring the ambient activity short-circuits** to the body — 22× cheaper
+  and semantically identical, since installing the value that is already there
+  is a no-op. That is what makes it safe to apply at *every* entry point without
+  a caller needing to know whether it is the outermost one.
+  `reindexFullTextSearch()` already re-enters its own paged overload once per
+  page.
+- **A top-level declaration still pays the full 956 ns**, and that is accepted:
+  it is ~0.1 % of a read that crosses a network. At 30k req/s it is ~2.9 % of
+  one core — an order of magnitude above what §5's headline implies, and still
+  the right trade for knowing which operation caused which cost. An embedder
+  who disagrees can measure it with §5.3's harness shape.
+
+### 5.3 The clock is host-dependent
 
 22 ns here because this box's clocksource is `tsc`, where `nanoTime` is a vDSO
 read. On a VM fallen back to `xen` or `hpet` it becomes a syscall in the
@@ -245,7 +276,7 @@ diagnosing unexpected overhead should check it first:
 cat /sys/devices/system/clocksource/clocksource0/current_clocksource
 ```
 
-### 5.3 Reproducing §5
+### 5.4 Reproducing §5
 
 Single-file source launch, no build wiring, JDK 11+:
 
@@ -912,3 +943,99 @@ Four things this settles that no unit test could:
 - **`calls/doc 0.025`** is the amortization claim as a live number: one port
   call carried all forty documents. `TelemetryTest` turns the same measurement
   into the gate CLAUDE.md's rule always deserved.
+
+## 14. Audit findings
+
+An adversarial pass over the shipped code (2026-09-04), after everything was
+green. Six defects and two efficiency fixes. Recorded because most of them
+share a cause worth naming: **a test that exercises a representative sample
+passes while the unrepresented paths are broken.**
+
+### 14.1 Half the entry points were unattributed
+
+The worst of them. `withActivity` had been applied to the obvious surface —
+`insert`, `batchInsert`, `query`, `count`, `delete` — and missed:
+
+| entry point | why it matters |
+| --- | --- |
+| **`rawQuery`** | the raw read path a relay serves CLIENTS from; arguably the hottest read in production |
+| **`snapshotIdsForNegentropy`** | a full-corpus sync walk |
+| **`distinctTagValues`** | a full-corpus tag walk |
+| **`reindexFullTextSearch`** (both overloads) | a corpus rewrite |
+| **the background guard refresher** | `startRefresher` calls `refresh()` directly, bypassing the wrapped `refreshGuardOwners()` — so a distinct-author scan per guard kind, on a schedule, landed in `Other` |
+
+All of it booked to `Activity.Other`: the "nobody declared" bucket, which is
+where a resource question goes to die.
+
+**The tell was in the enum the whole time.** `Activity.Snapshot` was declared
+and had **zero uses** — a value defined for an entry point that never got
+wrapped. A dead enum value in a closed key set is evidence, not tidiness.
+
+**Why the test passed.** `nothing is attributed to Other` exercised three entry
+points, and all three were among the ones that worked. It now drives *every*
+public entry point, and a second test asserts every declared `Activity` is
+reachable — the check that would have caught the dead value. Both were verified
+to fail against the unfixed code before being kept.
+
+### 14.2 `transaction` booked no outcomes
+
+Wrapped in an activity, but it calls `insertLocked` directly rather than going
+through a path that returns typed outcomes — so its admitted events never
+reached the tally and `offered`/`admitted` under-reported. Now booked per
+event, which is exact here: the first rejection propagates and aborts the rest,
+so everything reaching the tally was admitted.
+
+### 14.3 The COUNT path published no engine stats
+
+`searchRoot` published to the ledger; `queryRoot` — the grouping path behind
+NIP-45 `count` and the distinct-author scan — did not. So a COUNT was invisible
+in the engine altitude while still asking Vespa for `presentation.timing` and
+discarding the answer.
+
+Visible in the integration output: `unranked` went from `matched 0` to
+`matched 78` once the grouping path started publishing.
+
+### 14.4 "Not measured" and "instant" rendered identically
+
+Histograms ride only the read shapes, so `PortStat.p50Nanos` was `0` for every
+write — and the dashboard row read `p50 0.00 ms`, which says *instant* when it
+means *unmeasured*. Now nullable, and the integration output prints `—`.
+
+The type change immediately found all three call sites that were papering over
+it, which is the argument for making it a type rather than a convention.
+
+### 14.5 A KDoc that described behaviour the code did not have
+
+`Latencies` claimed sub-microsecond samples "read back as 500 ns"; bucket 0's
+midpoint is 0, so they read back as 0. Corrected to state the floor honestly —
+a microsecond scale cannot say anything below a microsecond, and if that ever
+matters the scale is wrong rather than the bucket.
+
+### 14.6 Efficiency
+
+| fix | before | after |
+| --- | ---: | ---: |
+| `withActivity` when the activity is already ambient (§5.2) | 933 ns | **40 ns** |
+| outcome booking per event → tally then book once per reason | 63.2 ns/ev | **33.3 ns/ev** |
+| `Latencies` percentiles: 4 traversals per histogram per scrape → 1 | 4× | **1×** |
+
+The first is the one that mattered and is the subject of §5.2. The second is a
+tidy-up — 30 ns/event against a write path already spending 9,527 ns/event
+deriving search fields — kept because it is free and keeps a per-event cost off
+the ingest path on principle. The third also removes a real inconsistency:
+separate `percentile` calls could straddle a concurrent record and report a p50
+above the p99.
+
+### 14.7 Checked and found sound
+
+- **`visitIds`/`visitTags` counter mutation.** These accumulate a document count
+  across page callbacks from a walk that fans out across parallel slices. That
+  would be a data race — except `VespaVisits` funnels every producer through one
+  channel to a single consumer, and says so: *"`onDocuments` runs strictly
+  serially (callers mutate plain collections)"*. Sound as written, and dependent
+  on a contract worth citing rather than rediscovering.
+- **`putIfNewer` double-counting.** `MeteredEventIndex` forwards it rather than
+  riding the port's default, so the search and removes a supersession issues are
+  not counted twice.
+- **`Rejections.reasonOf`.** A linear scan over seven prefixes, 13.7 ns —
+  left alone.

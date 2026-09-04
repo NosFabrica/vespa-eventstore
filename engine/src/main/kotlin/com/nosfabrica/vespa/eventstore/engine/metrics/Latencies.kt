@@ -41,8 +41,10 @@ import java.util.concurrent.atomic.AtomicLongArray
  * costs [BUCKETS] longs (~1.6 KiB) rather than the ~2.3 KiB a nanosecond scale
  * would need for the same precision. Nothing this store measures at the port is
  * meaningfully sub-microsecond — every call crosses a network or a data
- * structure large enough to dwarf that — and anything faster lands in bucket 0
- * and reads back as 500 ns.
+ * structure large enough to dwarf that — and anything faster lands in bucket 0,
+ * which reports 0. That floor is the honest statement of what a microsecond
+ * scale can say, not a rounding bug: if sub-microsecond percentiles ever
+ * matter here, the scale is wrong rather than the bucket.
  *
  * Thread-safe and allocation-free on the write path: one [AtomicLongArray],
  * whose buckets spread contention across cache lines without the per-core cell
@@ -62,6 +64,44 @@ class Latencies {
         var n = 0L
         for (i in 0 until BUCKETS) n += buckets.get(i)
         return n
+    }
+
+    /** A distribution read back: the count and the percentiles a caller displays. */
+    class Reading(
+        val count: Long,
+        val p50Nanos: Long,
+        val p99Nanos: Long,
+    )
+
+    /**
+     * Count and both percentiles in ONE pass over the volatile array.
+     *
+     * [percentile] alone costs two traversals (a [count] then the scan), so
+     * asking it for p50 and p99 walked 192 atomic slots four times per
+     * histogram per scrape. Copying once into a local array and computing from
+     * that also makes the two percentiles mutually consistent — separate calls
+     * can straddle a concurrent record and report a p50 above the p99.
+     */
+    fun read(): Reading {
+        val snap = LongArray(BUCKETS) { buckets.get(it) }
+        var total = 0L
+        for (v in snap) total += v
+        if (total == 0L) return Reading(0, 0, 0)
+        return Reading(total, quantile(snap, total, 0.50), quantile(snap, total, 0.99))
+    }
+
+    private fun quantile(
+        snap: LongArray,
+        total: Long,
+        p: Double,
+    ): Long {
+        val target = Math.max(1L, Math.ceil(p * total).toLong())
+        var seen = 0L
+        for (i in snap.indices) {
+            seen += snap[i]
+            if (seen >= target) return midpointMicros(i) * 1_000L
+        }
+        return midpointMicros(BUCKETS - 1) * 1_000L
     }
 
     /**

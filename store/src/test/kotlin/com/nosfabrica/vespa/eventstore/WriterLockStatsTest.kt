@@ -48,6 +48,7 @@ import kotlin.test.assertTrue
  * caused by contention is ATTRIBUTABLE from the status line alone: the waiter
  * shows the wait, the holder shows the hold, and the two are separable.
  */
+@Suppress("DEPRECATION") // statusLine() is destructive BY DESIGN here: this suite is its only consumer in the JVM and asserts on the per-call delta, which is exactly what the deprecation warns two consumers not to share.
 class WriterLockStatsTest {
     private val alice = "a".repeat(64)
 

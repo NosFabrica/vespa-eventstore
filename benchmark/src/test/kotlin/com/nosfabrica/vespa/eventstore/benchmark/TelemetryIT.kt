@@ -131,8 +131,15 @@ class TelemetryIT {
                         val reads = snap.ports.filter { it.activity == Activity.Query }
                         assertTrue(reads.isNotEmpty(), "no port calls booked under Query")
                         assertTrue(
-                            reads.any { it.p99Nanos > 0 },
+                            reads.any { (it.p99Nanos ?: 0L) > 0 },
                             "a search over a network must land in a latency bucket above zero",
+                        )
+                        // Distributions ride the read shapes only, and the
+                        // snapshot must SAY so rather than reporting an
+                        // unmeasured call as instant.
+                        assertTrue(
+                            writesOf(snap).all { it.latency == null },
+                            "a write shape keeps no histogram, so its percentiles must be null rather than 0",
                         )
                         val writes = snap.ports.filter { it.activity == Activity.BatchInsert }
                         assertTrue(writes.isNotEmpty(), "no port calls booked under BatchInsert")
@@ -162,6 +169,11 @@ class TelemetryIT {
             }
     }
 
+    private fun writesOf(snap: com.nosfabrica.vespa.eventstore.engine.metrics.CostLedger.Snapshot) = snap.ports.filter { it.call == com.nosfabrica.vespa.eventstore.engine.metrics.PortCall.Put }
+
+    /** "not measured" and "instant" must not render the same. */
+    private fun ms(nanos: Long?): String = if (nanos == null) "—" else "%.2f ms".format(nanos / 1e6)
+
     /** Print what the engine actually said — the point of an IT is the evidence, not just the pass. */
     private fun report(snap: com.nosfabrica.vespa.eventstore.engine.metrics.CostLedger.Snapshot) {
         println("\n=== engine, by rank profile ===")
@@ -181,15 +193,15 @@ class TelemetryIT {
         println("=== ports, by activity ===")
         snap.ports.sortedByDescending { it.nanos }.forEach {
             println(
-                "  %-12s %-8s %4d calls  %8.2f ms  %5d docs  calls/doc %.3f  p50 %.2f ms  p99 %.2f ms".format(
+                "  %-12s %-8s %4d calls  %8.2f ms  %5d docs  calls/doc %.3f  p50 %-9s p99 %-9s".format(
                     it.activity,
                     it.call,
                     it.calls,
                     it.nanos / 1e6,
                     it.docs,
                     it.callsPerDoc,
-                    it.p50Nanos / 1e6,
-                    it.p99Nanos / 1e6,
+                    ms(it.p50Nanos),
+                    ms(it.p99Nanos),
                 ),
             )
         }

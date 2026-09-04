@@ -288,9 +288,22 @@ class CostLedger(
         val calls: Long,
         val nanos: Long,
         val docs: Long,
-        val p50Nanos: Long,
-        val p99Nanos: Long,
+        /**
+         * The distribution, or NULL where none is kept — histograms ride only
+         * the read shapes ([PortCall.Search], [PortCall.Count]).
+         *
+         * Nullable rather than zero because those are different statements and
+         * a dashboard renders them identically: a bulk `Put` with no histogram
+         * showed "p50 0.00 ms", which reads as instant when it means unmeasured.
+         */
+        val latency: Latencies.Reading?,
     ) {
+        /** p50 in nanos, or null when no distribution is kept for this call shape. */
+        val p50Nanos: Long? get() = latency?.p50Nanos
+
+        /** p99 in nanos, or null when no distribution is kept for this call shape. */
+        val p99Nanos: Long? get() = latency?.p99Nanos
+
         /** Port invocations per document — the "never ingest in a loop over insert()" number. */
         val callsPerDoc: Double get() = if (docs > 0) calls.toDouble() / docs else 0.0
 
@@ -346,7 +359,6 @@ class CostLedger(
                         val s = slot(a, c)
                         val calls = s.calls.sum()
                         if (calls == 0L) continue
-                        val lat = s.latencies
                         add(
                             PortStat(
                                 activity = a,
@@ -354,8 +366,8 @@ class CostLedger(
                                 calls = calls,
                                 nanos = s.nanos.sum(),
                                 docs = s.docs.sum(),
-                                p50Nanos = lat?.percentile(0.50) ?: 0L,
-                                p99Nanos = lat?.percentile(0.99) ?: 0L,
+                                // One pass per histogram, not four: see Latencies.read.
+                                latency = s.latencies?.read(),
                             ),
                         )
                     }

@@ -1154,12 +1154,37 @@ class VespaEventIndex(
     private suspend fun queryRoot(
         vq: VespaQuery,
         hits: Int,
-    ): JsonObject? =
-        Json
-            .parseToJsonElement(queryBody(vq, hits))
-            .jsonObject["root"]
+    ): JsonObject? {
+        val text = queryBody(vq, hits)
+        val envelope = Json.parseToJsonElement(text).jsonObject
+        // Published here too, not just in [searchRoot]. COUNT and the
+        // distinct-author grouping come through this path, so without it a
+        // NIP-45 count was invisible in the engine altitude while still paying
+        // for the `presentation.timing` it asked for and threw away.
+        publishGrouping(vq, envelope)
+        return envelope["root"]
             ?.jsonObject
             ?.also { root -> root["coverage"]?.let { VESPA_JSON.decodeFromJsonElement(SearchCoverage.serializer(), it) }?.requireComplete() }
+    }
+
+    /** [publish] for the grouping/count shape, whose tree is walked generically rather than decoded into [SearchRoot]. */
+    private fun publishGrouping(
+        vq: VespaQuery,
+        envelope: JsonObject,
+    ) {
+        val l = ledger ?: return
+        val timing = envelope["timing"]?.let { runCatching { VESPA_JSON.decodeFromJsonElement(VespaTiming.serializer(), it) }.getOrNull() }
+        val fields = envelope["root"]?.jsonObject?.get("fields")?.jsonObject
+        val matched = (fields?.get("totalCount") as? JsonPrimitive)?.content?.toLongOrNull() ?: 0L
+        l.engineQuery(
+            profile = vq.ranking,
+            engineNanos = timing?.totalNanos() ?: 0L,
+            summaryNanos = timing?.summaryNanos() ?: 0L,
+            docsMatched = matched,
+            hitsServed = 0L,
+            degraded = false,
+        )
+    }
 
     /** One-line feed-client health for status lines; see [VespaFeed.statusLine]. */
     fun feedStatus(): String = feed.statusLine()

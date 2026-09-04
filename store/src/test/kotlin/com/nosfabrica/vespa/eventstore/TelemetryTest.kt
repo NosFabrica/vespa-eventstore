@@ -26,6 +26,8 @@ import com.nosfabrica.vespa.eventstore.engine.metrics.Activity
 import com.nosfabrica.vespa.eventstore.engine.metrics.CostLedger
 import com.nosfabrica.vespa.eventstore.engine.metrics.MeteredEventIndex
 import com.nosfabrica.vespa.eventstore.engine.metrics.PortCall
+import com.nosfabrica.vespa.eventstore.engine.metrics.currentActivity
+import com.nosfabrica.vespa.eventstore.engine.metrics.withActivity
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import kotlinx.coroutines.runBlocking
@@ -96,17 +98,78 @@ class TelemetryTest {
     @Test
     fun `nothing is attributed to Other once entry points declare themselves`() =
         runBlocking {
+            // EVERY public entry point, not a representative three. The first
+            // version of this test exercised batchInsert/query/count, passed,
+            // and missed that `rawQuery` — the path a relay actually serves
+            // clients from — booked to Other, along with the negentropy
+            // snapshot, the tag walk and the reindex. `Activity.Snapshot` was
+            // declared and never used, which was the tell.
             val rig = Rig()
             rig.store.batchInsert(List(5) { note() })
+            rig.store.insert(note())
+            rig.store.transaction { insert(note()) }
             rig.store.query<Event>(Filter(kinds = listOf(1)))
+            rig.store.rawQuery(listOf(Filter(kinds = listOf(1)))) { }
             rig.store.count(Filter(kinds = listOf(1)))
+            rig.store.snapshotIdsForNegentropy(listOf(Filter(kinds = listOf(1))), null, null)
+            rig.store.distinctTagValues(Filter(kinds = listOf(1)), "p")
+            rig.store.deleteExpiredEvents()
+            rig.store.refreshGuardOwners()
+            rig.store.reindexFullTextSearch()
 
             val stray =
                 rig.ledger
                     .snapshot()
                     .ports
                     .filter { it.activity == Activity.Other }
-            assertTrue(stray.isEmpty(), "an entry point forgot withActivity: ${stray.map { it.call }}")
+            assertTrue(stray.isEmpty(), "an entry point forgot withActivity: ${stray.map { "${it.call}(${it.calls})" }}")
+        }
+
+    @Test
+    fun `every declared Activity is reachable from some entry point`() =
+        runBlocking {
+            // A declared-but-unused Activity means an entry point was missed —
+            // that is precisely how the rawQuery/Snapshot gap announced itself.
+            // Only the values a bare store can reach are checked here; the
+            // background workers (Drain, Reconcile, Sweep, Backfill) belong to
+            // VespaEventStore and are covered where they are wired.
+            val rig = Rig()
+            rig.store.insert(note())
+            rig.store.batchInsert(List(20) { note() })
+            rig.store.query<Event>(Filter(kinds = listOf(1)))
+            rig.store.count(Filter(kinds = listOf(1)))
+            rig.store.snapshotIdsForNegentropy(listOf(Filter(kinds = listOf(1))), null, null)
+            rig.store.deleteExpiredEvents()
+            rig.store.refreshGuardOwners()
+
+            val seen =
+                rig.ledger
+                    .snapshot()
+                    .ports
+                    .map { it.activity }
+                    .toSet()
+            for (expected in listOf(Activity.Insert, Activity.BatchInsert, Activity.Query, Activity.Count, Activity.Snapshot)) {
+                assertTrue(expected in seen, "$expected is declared but no entry point books port calls under it")
+            }
+        }
+
+    @Test
+    fun `re-declaring the ambient activity is a no-op, and an inner one still wins`() =
+        runBlocking {
+            // withActivity short-circuits when the activity is already ambient
+            // (measured 933 -> 40 ns), so the semantics of that fast path have
+            // to be identical to installing it again.
+            withActivity(Activity.Query) {
+                assertEquals(Activity.Query, currentActivity())
+                withActivity(Activity.Query) {
+                    assertEquals(Activity.Query, currentActivity(), "re-declaring the same activity must change nothing")
+                }
+                withActivity(Activity.Drain) {
+                    assertEquals(Activity.Drain, currentActivity(), "an inner declaration wins for its own extent")
+                }
+                assertEquals(Activity.Query, currentActivity(), "and the outer one is restored after it")
+            }
+            assertEquals(Activity.Other, currentActivity(), "outside any declaration, work is Other")
         }
 
     // -------------------------------------------------------------- outcomes
