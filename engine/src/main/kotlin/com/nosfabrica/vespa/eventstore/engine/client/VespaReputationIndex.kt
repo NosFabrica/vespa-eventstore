@@ -87,6 +87,9 @@ class VespaReputationIndex(
                         u.followers?.let { f ->
                             put("follower_counts", buildJsonObject { put("add", buildJsonObject { put("cells", buildJsonObject { put(u.observer, f) }) }) })
                         }
+                        // In the SAME update as the cell: a document update is atomic, so
+                        // the bound the descent relies on never lags the cell it covers.
+                        u.maxRank?.let { m -> put("max_rank", buildJsonObject { put("assign", m) }) }
                     }
                 feed.client.update(
                     DocumentId.of(NAMESPACE, DOCTYPE, u.subject),
@@ -127,6 +130,24 @@ class VespaReputationIndex(
                         ?.content
                 }
             if (pubkeys.isNotEmpty() && !onPage(pubkeys)) return
+            continuation = env["continuation"]?.jsonPrimitive?.content ?: return
+        }
+    }
+
+    override suspend fun visitDocs(onPage: suspend (List<ReputationDoc>) -> Boolean) {
+        val base =
+            "$baseUrl/document/v1/$NAMESPACE/$DOCTYPE/docid" +
+                "?selection=${URLEncoder.encode(DOCTYPE, "UTF-8")}" +
+                "&wantedDocumentCount=$VISIT_PAGE" +
+                "&timeout=$VISIT_SERVER_TIMEOUT_SECONDS" +
+                "&concurrency=$VISIT_CONCURRENCY"
+        var continuation: String? = null
+        while (true) {
+            val resp = http.getVisit(continuation?.let { "$base&continuation=$it" } ?: base)
+            require(resp.statusCode() < 400) { "vespa reputation visit ${resp.statusCode()}: ${resp.body().take(300)}" }
+            val env = Json.parseToJsonElement(resp.body()).jsonObject
+            val docs = env["documents"]?.jsonArray.orEmpty().mapNotNull { it.jsonObject["fields"]?.jsonObject?.let(ReputationDoc::fromSummary) }
+            if (docs.isNotEmpty() && !onPage(docs)) return
             continuation = env["continuation"]?.jsonPrimitive?.content ?: return
         }
     }

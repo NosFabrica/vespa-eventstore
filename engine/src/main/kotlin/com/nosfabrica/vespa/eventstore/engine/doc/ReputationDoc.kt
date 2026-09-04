@@ -47,12 +47,26 @@ data class ReputationDoc(
     /** No cells at all — the projection removes the doc instead of storing it. */
     fun isEmpty(): Boolean = influenceScores.isEmpty() && followerCounts.isEmpty()
 
+    /**
+     * THE BEST RANK ANY OBSERVER GIVES THIS AUTHOR — the one scalar the child
+     * events import (`author_max_rank`) and the trust descent cuts on
+     * (VespaEventIndex's TrustDescent). An upper bound on the author's rank
+     * under EVERY observer, which is what makes a clause on it sound: a doc
+     * this excludes is by an author every observer ranks below the line.
+     * Derived, never stored separately from the cells that define it — a
+     * whole-document write carries the max of its cells by construction, and
+     * the incremental cell path ([ReputationCells.maxRank]) raises it in the
+     * same update as the cell that raised it.
+     */
+    val maxRank: Int get() = influenceScores.values.maxOrNull() ?: 0
+
     /** The document's field map (mapped tensors in Vespa's short object form). */
     fun indexFields(): JsonObject =
         buildJsonObject {
             put("pubkey", JsonPrimitive(pubkey))
             putJsonObject("influence_scores") { influenceScores.forEach { (observer, rank) -> put(observer, JsonPrimitive(rank)) } }
             putJsonObject("follower_counts") { followerCounts.forEach { (observer, count) -> put(observer, JsonPrimitive(count)) } }
+            put("max_rank", JsonPrimitive(maxRank))
         }
 
     companion object {
@@ -82,4 +96,13 @@ data class ReputationCells(
     val observer: String,
     val influence: Int?,
     val followers: Double?,
+    /**
+     * The document's new `max_rank`, when this cell RAISES it — assigned in
+     * the same update as the cell, so the bound the descent relies on is never
+     * below a cell it covers, not even between two writes. Null leaves the
+     * stored value alone (the cell is at or under it). The projection is what
+     * knows the stored value (TrustProjection's cache of it); this class only
+     * carries the answer.
+     */
+    val maxRank: Int? = null,
 )

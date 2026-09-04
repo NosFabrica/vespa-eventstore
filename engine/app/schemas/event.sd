@@ -331,6 +331,10 @@ schema event {
 
     import field author_ref.influence_scores as author_influence_scores {}
     import field author_ref.follower_counts as author_follower_counts {}
+    # The trust descent's attribute — see reputation.sd's max_rank. A
+    # document whose author has no reputation document reads 0 here, which is
+    # why the descent's floor rung is the gate's own floor and nothing lower.
+    import field author_ref.max_rank as author_max_rank {}
 
     # ---- derived trigram views (recall safety-net + tie-breaker) ----
 

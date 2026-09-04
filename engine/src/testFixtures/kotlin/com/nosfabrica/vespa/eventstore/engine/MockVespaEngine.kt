@@ -187,6 +187,25 @@ class MockVespaEngine {
     @Volatile var matchPhaseNodes: Int = 1
 
     /**
+     * The `max_rank` the reputation parent would import for each author —
+     * what a trust-descent rung (`author_max_rank >= T`) reads. An author
+     * absent here reads 0, exactly as an author with no reputation document
+     * does in Vespa.
+     */
+    val authorMaxRank = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+    /**
+     * The relevance a hit is served with, and the order hits come back in
+     * when set — the descent decides on the K-th hit's score, so a test of it
+     * needs scores that mean something. Null (the default) serves 0.0 and
+     * the recency order every other test expects.
+     */
+    @Volatile var relevanceOf: ((EventDoc) -> Double)? = null
+
+    /** Every `/search/` request's parameters, in order — a test reads the rung each query of a descent asked for. */
+    val searchRequests = java.util.concurrent.CopyOnWriteArrayList<Map<String, String>>()
+
+    /**
      * Serve recall hits with the id order REVERSED within each equal-created_at
      * group — the engine's single-key sort leaves tie order ARBITRARY, and the
      * client must restore `id asc` (and exact boundary membership under a
@@ -356,6 +375,7 @@ class MockVespaEngine {
         }
         val yql = params["yql"] ?: return Reply(400, """{"message":"missing yql"}""")
         params["ranking"]?.let { searchRankings += it }
+        searchRequests += params
         // The existence check rides a dedicated attribute-only summary class; a
         // schema deployed before it 400s naming the class (verified against
         // real Vespa: `Summary 'dedup' does not exist`).
@@ -385,7 +405,10 @@ class MockVespaEngine {
         // inside the reference's tiebroken order would hide exactly the bug
         // [scrambleTieOrder] exists to surface.
         val matches =
-            runBlocking { inner.search(query.copy(limit = null)) }
+            runBlocking { inner.search(query.copy(limit = null, trustFloor = null)) }
+                // The rung: an author with no max_rank here reads 0, as in Vespa.
+                .filter { doc -> query.trustFloor?.let { (authorMaxRank[doc.pubkey] ?: 0) >= it } ?: true }
+                .let { docs -> relevanceOf?.let { score -> docs.sortedByDescending(score) } ?: docs }
                 .let { sorted ->
                     if (scrambleTieOrder && !grouped) {
                         // created_at groups stay newest-first; ids within each
@@ -401,15 +424,30 @@ class MockVespaEngine {
         val served = if (underdeliver) minOf(matchPhaseUnderdeliver, hits) else hits
         val children =
             when {
-                isAuthorHistogram -> histogramChildren("pubkey", matches.groupingBy { it.pubkey }.eachCount().map { (k, v) -> JsonPrimitive(k) to v })
+                isAuthorHistogram -> {
+                    histogramChildren("pubkey", matches.groupingBy { it.pubkey }.eachCount().map { (k, v) -> JsonPrimitive(k) to v })
+                }
 
-                isCount -> countChildren(matches.size)
+                isCount -> {
+                    countChildren(matches.size)
+                }
 
                 // The dedup summary class carries ONLY the id attribute — the
                 // client must resolve membership from that alone.
-                dedupSummary -> JsonArray(matches.take(served).map { doc -> buildJsonObject { put("fields", buildJsonObject { put("id", JsonPrimitive(doc.id)) }) } })
+                dedupSummary -> {
+                    JsonArray(matches.take(served).map { doc -> buildJsonObject { put("fields", buildJsonObject { put("id", JsonPrimitive(doc.id)) }) } })
+                }
 
-                else -> JsonArray(matches.take(served).map { doc -> buildJsonObject { put("fields", doc.indexFields()) } })
+                else -> {
+                    JsonArray(
+                        matches.take(served).map { doc ->
+                            buildJsonObject {
+                                put("relevance", JsonPrimitive(relevanceOf?.invoke(doc) ?: 0.0))
+                                put("fields", doc.indexFields())
+                            }
+                        },
+                    )
+                }
             }
         val root =
             buildJsonObject {
@@ -852,6 +890,10 @@ object MockYql {
 
                     clause.startsWith("kind in (") -> {
                         q.copy(kinds = ints(clause))
+                    }
+
+                    clause.startsWith("author_max_rank >= ") -> {
+                        q.copy(trustFloor = clause.substringAfterLast(' ').toInt())
                     }
 
                     clause.startsWith("created_at >= ") -> {
