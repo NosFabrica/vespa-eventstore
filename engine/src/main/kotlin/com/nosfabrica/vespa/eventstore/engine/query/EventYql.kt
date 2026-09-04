@@ -385,7 +385,7 @@ object EventYql {
         // The match-phase cut is only sound for shapes [usesGatedMatchPhase]
         // admits — others would silently lose every hit older than the newest
         // ~max-hits candidates, so they demote to the full-scan variant.
-        return if (requested == RANK_RECENCY_GATED && !usesGatedMatchPhase(q)) RANK_RECENCY_GATED_EXACT else requested
+        return if (requested == RANK_RECENCY_GATED && !q.keepMatchPhase && !usesGatedMatchPhase(q)) RANK_RECENCY_GATED_EXACT else requested
     }
 
     /**

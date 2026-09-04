@@ -198,6 +198,8 @@ internal class VisitedDoc(
 /** The projected fields the walks ask for (`created_at[,tag_index]` / `pubkey` / `tags`); everything else is server-trimmed. */
 @Serializable
 internal class VisitFields(
+    /** The event id — projected by the id walks, since the docid is NOT the event id for an address-keyed replaceable. */
+    val id: String? = null,
     @SerialName("created_at") val createdAt: Long? = null,
     @SerialName("tag_index") val tagIndex: List<String>? = null,
     val pubkey: String? = null,

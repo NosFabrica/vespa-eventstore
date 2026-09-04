@@ -28,6 +28,7 @@ import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import com.nosfabrica.vespa.eventstore.engine.mapBounded
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * WHAT `max_rank` IS STORED AS, per subject, as far as this process knows —
@@ -50,26 +51,34 @@ import kotlinx.coroutines.delay
  * Bounded: past [CAPACITY] entries it forgets everything, and the next cell
  * for each subject reads again. A production store has ~340k scored
  * subjects, so the bound is headroom, not a working limit.
+ *
+ * LOCK-FREE: a [ConcurrentHashMap], no monitor. Every caller already runs
+ * under the store's trust gate (the cell path, the recompute, the drain), so
+ * the map was never contended; the monitors it used to take were pure cost.
+ * The one non-atomic step left — the capacity `clear()` beside a concurrent
+ * put — is in the safe direction either way: a put that lands after the
+ * clear is the value its own write is about to store, and a lost put is a
+ * miss, which reads again. A fill from the engine uses `putIfAbsent`, so it
+ * can never overwrite a [raise] that has since moved the value UP — the one
+ * direction (stale-high) that would be unsound.
  */
 internal class MaxRankCache(
     private val reputations: ReputationIndex,
 ) {
-    private val known = HashMap<String, Int>()
+    private val known = ConcurrentHashMap<String, Int>()
 
     /** The stored `max_rank` for each of [subjects], read where unknown. */
     suspend fun stored(subjects: Collection<String>): Map<String, Int> {
-        val missing = subjects.filter { it !in known }.distinct()
+        val missing = subjects.filter { !known.containsKey(it) }.distinct()
         if (missing.isNotEmpty()) {
             // The STORED scalar, not the cells' maximum: the two came apart on
             // staging when a schema flip dropped the field, and a cache that
             // read the cells would have believed every raise already made.
             val read = missing.mapBounded(QUERY_FANOUT) { s -> s to (reputations.storedMaxRank(s) ?: 0) }
-            synchronized(known) {
-                if (known.size + read.size > CAPACITY) known.clear()
-                read.forEach { (s, m) -> known[s] = m }
-            }
+            if (known.size + read.size > CAPACITY) known.clear()
+            read.forEach { (s, m) -> known.putIfAbsent(s, m) }
         }
-        return synchronized(known) { subjects.associateWith { known[it] ?: 0 } }
+        return subjects.associateWith { known[it] ?: 0 }
     }
 
     /**
@@ -85,21 +94,19 @@ internal class MaxRankCache(
             if (q > (raised[u.subject] ?: current.getValue(u.subject))) raised[u.subject] = q
         }
         if (raised.isEmpty()) return updates
-        synchronized(known) { raised.forEach { (s, m) -> known[s] = m } }
+        raised.forEach { (s, m) -> known[s] = m }
         return updates.map { u -> raised[u.subject]?.let { u.copy(maxRank = it) } ?: u }
     }
 
     /** A whole document was just written: its `max_rank` is now exactly [ReputationDoc.maxRank]. */
     fun remember(docs: Collection<ReputationDoc>) {
-        synchronized(known) {
-            if (known.size + docs.size > CAPACITY) known.clear()
-            docs.forEach { known[it.pubkey] = it.maxRank }
-        }
+        if (known.size + docs.size > CAPACITY) known.clear()
+        docs.forEach { known[it.pubkey] = it.maxRank }
     }
 
     /** A document was removed: nothing is stored, so the next cell starts from 0. */
     fun forget(subjects: Collection<String>) {
-        synchronized(known) { subjects.forEach { known.remove(it) } }
+        subjects.forEach { known.remove(it) }
     }
 
     private companion object {
@@ -148,9 +155,15 @@ internal class MaxRankBackfill(
         }
         var written = 0
         reputations.visitDocs { page ->
-            val cells = page.filter { it.pubkey != MARKER_KEY && it.pubkey != DirtLedger.MARKER_KEY }.map { ReputationCells(it.pubkey, SELF, null, null, maxRank = it.maxRank) }
-            if (cells.isNotEmpty()) reputations.updateCells(cells)
-            written += cells.size
+            // RAISED, never assigned: the bound comes from the cells this page
+            // held when it was read, and the walk runs ungated beside live
+            // ingest, whose cell path may have raised the same document since.
+            // An assign would put the scalar back below that cell — and the
+            // projection's cache, which saw its own raise, would then never
+            // raise it again. The engine decides at write time instead.
+            val floors = page.filter { it.pubkey != MARKER_KEY && it.pubkey != DirtLedger.MARKER_KEY }.associate { it.pubkey to it.maxRank }
+            if (floors.isNotEmpty()) reputations.raiseMaxRank(floors)
+            written += floors.size
             onProgress?.invoke(written)
             true
         }
@@ -198,8 +211,5 @@ internal class MaxRankBackfill(
         const val MARKER_KEY = "max-rank-backfilled"
 
         private const val DONE = "done"
-
-        /** The observer key of an update that changes no cell — [ReputationCells] needs one; `max_rank` is all this write carries. */
-        private const val SELF = "backfill"
     }
 }

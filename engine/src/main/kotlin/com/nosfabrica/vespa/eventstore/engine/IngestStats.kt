@@ -112,12 +112,14 @@ object IngestStats {
     }
 
     /**
-     * WHO HOLDS THE WRITE LOCK RIGHT NOW, and since when. The cumulative
+     * WHO HOLDS A WRITE LOCK RIGHT NOW, and since when. The cumulative
      * stages say the gate was held for 24 minutes; they cannot say whether it
      * is held *at this instant*, by what, or for how long so far — which is
-     * the only question worth asking while ingest is stalled. One field
-     * because the store serialises every write behind ONE mutex, so there is
-     * never more than one holder.
+     * the only question worth asking while ingest is stalled. ONE SLOT PER
+     * LOCK, keyed by the hold stage: the store has two mutexes since the trust
+     * gate split, and a single slot let a plain insert's short `writes` hold
+     * overwrite — and then, on release, ERASE — the drain's seconds-long gate
+     * hold, so [heldNow] answered "nothing" for most of every drain slice.
      */
     class Held(
         val stage: String,
@@ -127,34 +129,38 @@ object IngestStats {
         fun heldForMillis(): Long = (System.nanoTime() - sinceNanos) / 1_000_000
     }
 
-    @Volatile
-    private var held: Held? = null
+    private val held = ConcurrentHashMap<String, Held>()
 
     /** Called by the lock helper once the mutex is actually acquired. */
     fun beginHold(
         stage: String,
         detail: String? = null,
     ) {
-        held = Held(stage, System.nanoTime(), detail)
+        held[stage] = Held(stage, System.nanoTime(), detail)
     }
 
     /**
      * Say what the holder is DOING, from inside the critical section — the
      * stage name alone is `lock.gate.hold`, which names the lock and not the
      * work. Keeps the original start time: this annotates a hold, it does not
-     * restart one.
+     * restart one. Annotates every current hold: the caller is inside the
+     * critical section of whichever lock(s) it holds, and the work it names
+     * is what all of them are held for.
      */
     fun annotateHold(detail: String) {
-        held?.let { held = Held(it.stage, it.sinceNanos, detail) }
+        held.replaceAll { _, h -> Held(h.stage, h.sinceNanos, detail) }
     }
 
-    /** Called on release. Tolerates a missing begin — an unmatched end is a no-op, never a wrong holder. */
-    fun endHold() {
-        held = null
+    /** Called on release of the lock booked under [stage]. Tolerates a missing begin — an unmatched end is a no-op, never a wrong holder. */
+    fun endHold(stage: String) {
+        held.remove(stage)
     }
 
-    /** The current holder, or null when nothing holds the write lock. */
-    fun heldNow(): Held? = held
+    /** The LONGEST current holder, or null when no write lock is held; [heldAll] lists every one. */
+    fun heldNow(): Held? = held.values.minByOrNull { it.sinceNanos }
+
+    /** Every lock held right now, longest first. */
+    fun heldAll(): List<Held> = held.values.sortedBy { it.sinceNanos }
 
     /**
      * The structured read the formatted ones should have been. Cumulative and

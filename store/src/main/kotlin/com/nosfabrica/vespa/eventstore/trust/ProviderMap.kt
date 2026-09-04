@@ -26,6 +26,7 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.mapping.toEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.tags.ProviderTypes
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * The NIP-85 attribution maps, PER DIMENSION: which observers named a service
@@ -58,9 +59,14 @@ internal data class TrustProviders(
  * per service, silently unranking everyone else trusting it).
  *
  * [get] is CACHED across a pass — the maps only change on a 10040
- * write/removal, each of which [invalidate]s. Safe as a plain @Volatile field
- * because every caller that can observe a stale value runs under the store's
- * single-writer lock (the reconciler's mutating passes take it via gate).
+ * write/removal, each of which [invalidate]s. The rebuild runs UNLOCKED (an
+ * observer-carrying search asks for the read-side gate with no lock at all),
+ * so a 10040 write can land while a pass is reading the corpus; a pass that
+ * then stored its result would cache a map missing that write, and nothing
+ * would drop it until the next 10040 — the drain's walk of the new service
+ * would derive every subject without the new observer's cells. So every
+ * [invalidate] bumps a generation, and a pass is stored only if the
+ * generation it started under is still current.
  */
 internal class ProviderMap(
     private val inner: EventIndex,
@@ -80,6 +86,9 @@ internal class ProviderMap(
     )
 
     @Volatile private var cached: Pass? = null
+
+    /** Bumped by every [invalidate]; a pass built under an older generation is not cached. */
+    private val generation = AtomicLong()
 
     /**
      * The maps, rebuilt once per pass. Already-expired 10040s (NIP-40) are
@@ -105,6 +114,7 @@ internal class ProviderMap(
 
     private suspend fun pass(): Pass {
         cached?.let { return it }
+        val startedUnder = generation.get()
         // `complete`: a map built from SOME of the 10040s attributes every
         // service the missing lists name to nobody, and a derivation under it
         // drops those observers' cells from every subject it touches — the
@@ -122,12 +132,13 @@ internal class ProviderMap(
         // those. Judging it on the trust half instead would also refuse to cache
         // a relay whose Maps carry nothing but bare-kind Trusted List entries —
         // a real shape, and one with no rank or followers provider in it.
-        if (docs.isNotEmpty()) cached = fresh
+        if (docs.isNotEmpty() && generation.get() == startedUnder) cached = fresh
         return fresh
     }
 
     /** Drop the cache; the next [get] rebuilds. Call after any 10040 write/remove. */
     fun invalidate() {
+        generation.incrementAndGet()
         cached = null
     }
 

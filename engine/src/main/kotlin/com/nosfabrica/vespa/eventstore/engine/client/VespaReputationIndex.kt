@@ -73,7 +73,8 @@ class VespaReputationIndex(
 
     /** All puts stay in flight together — the feed client multiplexes them over HTTP/2. */
     override suspend fun putAll(reputations: List<ReputationDoc>) {
-        reputations.map { putOp(it) }.forEach { it.await() }
+        // Chunked for the enqueue-time deadline, as VespaEventIndex.putAll is.
+        reputations.chunked(VespaEventIndex.FEED_CHUNK).forEach { chunk -> chunk.map { putOp(it) }.forEach { it.await() } }
     }
 
     /**
@@ -82,6 +83,10 @@ class VespaReputationIndex(
      * satisfying [ReputationIndex.updateCells]'s list-order contract.
      */
     override suspend fun updateCells(updates: List<ReputationCells>) {
+        updates.chunked(VespaEventIndex.FEED_CHUNK).forEach { chunk -> updateCellsChunk(chunk) }
+    }
+
+    private suspend fun updateCellsChunk(updates: List<ReputationCells>) {
         updates
             .map { u ->
                 val fields =
@@ -107,6 +112,36 @@ class VespaReputationIndex(
 
     override suspend fun remove(pubkey: String) {
         feed.client.remove(DocumentId.of(NAMESPACE, DOCTYPE, pubkey), feedParams()).await()
+    }
+
+    /** All removes in flight together over HTTP/2, like [putAll]. */
+    override suspend fun removeAll(pubkeys: List<String>) {
+        pubkeys.chunked(VespaEventIndex.FEED_CHUNK).forEach { chunk ->
+            chunk.map { feed.client.remove(DocumentId.of(NAMESPACE, DOCTYPE, it), feedParams()) }.forEach { it.await() }
+        }
+    }
+
+    /**
+     * Conditional assigns, pipelined: `max_rank` moves only where the stored
+     * value is below the floor, decided by the engine at write time, so a cell
+     * raise that landed since the caller read the document wins. A condition
+     * not met is the intended outcome, not an error; a missing document is
+     * left missing (no create).
+     */
+    override suspend fun raiseMaxRank(floors: Map<String, Int>) {
+        floors.entries.chunked(VespaEventIndex.FEED_CHUNK).forEach { chunk -> raiseChunk(chunk) }
+    }
+
+    private suspend fun raiseChunk(floors: List<Map.Entry<String, Int>>) {
+        floors
+            .map { (subject, floor) ->
+                val fields = buildJsonObject { put("max_rank", buildJsonObject { put("assign", floor) }) }
+                feed.client.update(
+                    DocumentId.of(NAMESPACE, DOCTYPE, subject),
+                    buildJsonObject { put("fields", fields) }.toString(),
+                    feedParams().testAndSetCondition("$DOCTYPE.max_rank < $floor"),
+                )
+            }.forEach { it.await() }
     }
 
     /**

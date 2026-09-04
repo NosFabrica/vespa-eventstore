@@ -197,6 +197,15 @@ data class EventQuery(
      */
     val trustFloor: Int? = null,
     /**
+     * Keep the gated match-phase profile even where THIS query's limit sits
+     * past [EventYql.MATCH_PHASE_BAND]. Not a caller-facing knob: the client
+     * stamps it on its tie-slack overfetch of a query whose OWN limit was
+     * inside the band, so its few extra units of `limit` ride on the engine's
+     * headroom instead of demoting the query to the full-scan variant (see
+     * VespaEventIndex.keepingProfileOf).
+     */
+    val keepMatchPhase: Boolean = false,
+    /**
      * Emit the direct prefix/fuzzy terms against the *_parts / *_tokens
      * attribute fields (the near tier). Not a caller-facing knob: the client
      * flips it off ONLY as a compatibility demotion when the serving schema
