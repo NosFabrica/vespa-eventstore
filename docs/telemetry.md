@@ -4,10 +4,16 @@
 exists; §7 says how it decomposes into this rather than being replaced by it.
 
 This document is in two halves, for the same reason `attribute-memory.md` is.
-First **where the model should come from** — the argument that telemetry belongs
-at the seams the architecture already has, rather than at hand-placed call
-sites. Second **what it costs to run**, measured, because a library that ships
-always-on instrumentation owes its embedder that number before it ships it.
+First **where the model should come from** (§§1–4) — the argument that telemetry
+belongs at the seams the architecture already has, rather than at hand-placed
+call sites. Second **what it costs to run** (§§5–6), measured, because a library
+that ships always-on instrumentation owes its embedder that number before it
+ships it. §§7–9 say what it replaces, what was rejected, and what it leaves out.
+
+**§10 is the implementer's index**: every quantity an operator dashboard shows,
+which altitude produces it, and the two additions to the model that auditing a
+mocked page against §§1–9 turned up. Start there if you are building rather than
+reviewing.
 
 ## 1. The gap
 
@@ -146,6 +152,12 @@ Two dimensions and a containment relation:
 - **what** — the port call (`get`, `put`, `search`, `count`, `visit`)
 - **who** — the `Activity` it happened under
 - **containment** — which lock scope it ran inside
+
+Two things do not fit this shape and are not counters at the port: the store's
+own admission **outcomes** (`duplicate:`, `replaced:`, `blocked:` — decided
+above the port, so a refused event never reaches it) and **gauges** (queue
+depth, in-flight, current lock holder — instantaneous, with no cumulative
+form). Both are part of the model; §10.1 defines them.
 
 Everything the current dotted-string convention encodes falls out as a
 dimension. `proj.fetch.derive` is `search` under `Drain`; `dedup` is
@@ -317,6 +329,10 @@ are fixed-width and the ring is bounded. Against a 1536m default container heap
 and proton's 75 GiB resident at 176.7M documents
 (`docs/attribute-memory.md`), it is noise.
 
+Displaying an actionable p99 needs finer buckets than the 24 measured here,
+which raises this to **~80 KiB** — see §10.3 for the arithmetic and why the
+recording cost is unchanged.
+
 ### 6.1 `LongAdder` inflation scales with the host, not the traffic
 
 A `LongAdder` is one word until threads collide, then it allocates a padded cell
@@ -450,5 +466,167 @@ memory. It should be a gate.
 - **The size of that metrics payload.** Not measured here; it is one
   `curl … | wc -c` against a live deployment, and it decides whether the scrape
   interval can be 15 s or must be longer.
-- **Anything per-observer or per-term.** Deliberately — see the cardinality
-  invariant in §4.
+- **Anything per-observer or per-term** *as a counter key*. Deliberately — see
+  the cardinality invariant in §4. The slow-query ring (§10.5) is the one place
+  a term is retained at all, and it is a bounded sample rather than a key: its
+  size is fixed by the ring, not by how many distinct terms exist.
+
+## 10. What the operator page needs
+
+An operator dashboard ("Eventstore Pulse") was mocked before this document, and
+auditing one against the other is what produced this section: §§1–9 describe the
+*architecture* well and leave several of the page's actual *quantities*
+unnamed. Two are gaps in the model itself; the rest are line items the model can
+carry once someone says so. This section closes both, so an implementer works
+from one document rather than a document plus a screenshot.
+
+### 10.1 Two additions to the model
+
+**Outcomes are a third altitude.** §3 has two — the port decorator and the Vespa
+client — and neither can see a *refused* event. `duplicate:`, `replaced:` and
+`blocked:` are decided in `NostrSemanticsStore.insertLocked`, above the port,
+and an event rejected there never reaches `EventIndex` at all. The decorator
+sees the `existingIds` probe and whatever `putAll` followed; inferring the
+rejection from the gap between them is fragile and breaks the first time a batch
+path changes.
+
+So the store books its own outcomes where the decision is made. The key space is
+already closed, which is what makes this safe under §4 — Quartz's
+`RejectionReason` (`EXPIRED`, `DUPLICATE`, `DELETED`, `VANISHED`, `REPLACED`,
+`INSERT_FAILED`) plus this store's `UNSTORABLE_TEXT`, and `admitted`. Counted
+per `Activity`, so a mirror's duplicate rate and a live relay's are separable.
+
+This altitude is worth more than the page that prompted it. "81 % of what this
+node is offered is already stored" is the number that tells an operator to
+narrow a sync, and nothing in the store can currently say it.
+
+**Gauges are a metric kind, not a counter.** Everything in §§1–9 is cumulative
+and diffable. Three of the page's most useful figures are not, because they have
+no meaningful cumulative form:
+
+| gauge | owner | why it cannot be a counter |
+| --- | --- | --- |
+| pending trust work (subjects, services) | `DirtLedger` | a queue depth; "total ever queued" answers nothing |
+| feed operations in flight | `VespaFeed` (`client.stats()`) | an instantaneous window |
+| who holds the write lock, and for how long | lock scope stack (§3.4) | already a gauge — `heldNow()` |
+
+Gauges are **pulled at snapshot time**, so they cost nothing until read. Two
+rules follow. They are never diffed between snapshots — a consumer that treats a
+queue depth as a rate gets nonsense. And the owner must expose the value
+*safely*: `DirtLedger.pending` is a plain `private var` today, so the metrics
+layer must not reach into it — the ledger publishes a count through a volatile
+read or its own atomic, or the gauge is a data race.
+
+### 10.2 Every quantity the page shows, and where it comes from
+
+Altitudes: **P** port decorator · **E** Vespa client · **O** store outcomes
+(§10.1) · **G** gauge (§10.1) · **X** existing code · **M** metrics proxy,
+deferred (§9).
+
+| page region | quantity | where | note |
+| --- | --- | --- | --- |
+| health strip | REQ / COUNT / search rate | P | per `Activity` |
+| | ingest rate | P | `putAll` under `BatchInsert` |
+| | admitted / duplicate / replaced | **O** | §10.1 |
+| | ranked-search p99 | P | §10.3 |
+| | feed in-flight, latency, retries | X + **G** | `VespaFeed.statusLine()` exists |
+| | degraded responses | E | `SearchCoverage` already parsed |
+| | pending trust work | **G** | §10.1 |
+| | content memory vs. feed-block limit | M | separate reader |
+| hero | engine time per rank profile | **E** | §10.4 |
+| reads table | queries, rate, engine share | P + E | |
+| | p50 / p99 | P | §10.3 |
+| | docs matched per query | **E** | `SearchRootFields.totalCount`, already parsed — free |
+| | trust-descent rungs | **E** | count rungs walked per search in `TrustDescent` |
+| | degraded count | E | |
+| ingest panel | stage split, calls, mean, max | P | §7.1 |
+| | writer lock wait / hold / unaccounted | P | §3.4 |
+| engine resources | memory, disk, tlog, doc counts | M | separate reader |
+| attribute memory | per-field resident bytes | M | `benchmark/attribute_memory.py` is the model |
+| background workers | failures, consecutive, last message | X | `BackgroundFailures` exists |
+| | drain cycle duration | P | `Drain` activity |
+| slow queries | the log itself | **E** | §10.5 |
+
+Two panels — engine resources and attribute memory — are **M** throughout. They
+need the metrics-proxy reader §9 defers, and no amount of store-side work
+produces them. An implementer should expect the page to land in two stages, and
+the first stage is worth shipping without them.
+
+### 10.3 Percentiles, and what that costs
+
+§6 budgets a 24-bucket log2 histogram. That is fine for a *distribution* and too
+coarse for a **p99 anyone will act on**: adjacent octaves are 2× apart, so a 4 s
+search reports as "between 2.1 s and 4.2 s".
+
+Percentiles worth displaying need sub-buckets. **8 linear sub-buckets per
+octave** bounds the relative error of a reported percentile at **1/(2·8) ≈ 6 %**,
+which is well inside the run-to-run noise of the thing being measured. Covering
+1 µs to 16 s is 24 octaves, so **192 buckets** per histogram.
+
+Histograms go on **read slots only** — roughly 15 (the rank profiles plus a few
+activity classes). Ingest stages do not need percentiles; total, calls and max
+already answer the question they are asked (§7.1).
+
+```
+15 slots × 192 buckets × 8 B  ≈  22.5 KiB
+```
+
+That replaces the 5.4 KiB the 24-bucket design implied, so **§6's ~60 KiB
+becomes ~80 KiB**. Still flat in traffic, still noise against a 1536m heap. The
+recording cost is unchanged from §5 — the bucket index is one
+`numberOfLeadingZeros` plus a shift and an add either way.
+
+### 10.4 Engine time per request
+
+The hero panel splits engine time by rank profile, and the store cannot compute
+that: it knows wall time around the round trip, which includes the network and
+the client's own JSON parse.
+
+Vespa will report its own split if the query asks, via `presentation.timing`.
+That gives query time apart from summary-fetch time — the difference between
+"the match phase is expensive" and "we asked for 2,500 summaries", which is a
+different fix in each case and is invisible from the client side.
+
+**Unverified against a live Vespa.** The exact field names and their meaning
+must be pinned by an integration test before anything renders them, for the
+reason the rest of this repo pins engine behaviour that way: only a real Vespa
+executes it, and `MockVespaEngine` will happily return whatever shape the test
+author imagined. Whether the flag costs the engine anything measurable is the
+same question and the same test.
+
+### 10.5 The slow-query log
+
+The one place this design retains a query string, and therefore the one place
+that needs an explicit privacy answer.
+
+- **Threshold, not sampling.** Reads slower than a configured wall time are
+  captured; everything else costs one comparison. §8 rejects sampling for the
+  counters, and the same argument applies here in reverse — the pathological
+  query is the entire point, so capture is triggered by the property that makes
+  it interesting.
+- **Bounded by the ring, not by the term space.** 256 entries, overwriting.
+  This is what keeps it inside the §4 cardinality invariant: the term is
+  retained as part of a bounded *sample*, never used as a counter key. §9 says
+  the same from the other direction.
+- **What is captured**: timestamp, rank profile, wall / engine / summary-fetch
+  time, hits served, docs matched, descent rungs, coverage verdict, and the
+  query's terms.
+- **Observer keys are truncated.** A NIP-50 `observer:` term is a pubkey — it
+  identifies a person. Truncate it to a prefix, enough to correlate two slow
+  queries from one lens and not enough to be a log of who searched for what.
+- **Off unless a threshold is set.** An operator opting in to retaining user
+  queries should have to say so, and the default should not decide that for
+  them.
+
+### 10.6 What the library will not keep
+
+The page has a 60 s / 15 min / 1 h selector. The library provides none of that,
+deliberately: it exposes **cumulative counters and instantaneous gauges**, and a
+window is the difference between two snapshots.
+
+Retaining history is the consumer's job — Prometheus, or a ring of snapshots in
+the relay. Keeping a time series inside the store would put an unbounded,
+retention-policy-shaped decision inside a library whose entire memory budget
+(§6, §10.3) rests on being flat in traffic. It is the same argument §8 makes for
+not choosing a tracing framework: the embedder owns that, and the snapshot is a
+plain value they can feed to whatever they already run.
