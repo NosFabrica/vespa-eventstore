@@ -1101,11 +1101,18 @@ class NostrSemanticsStore(
      * WHOLE tag, so a positional condition on another element is expressible
      * (NIP-65's write marker, NIP-85's relay position).
      *
-     * It rides the tags-only visit projection ([EventIndex.visitTags]), NOT a
-     * grouping over `tag_index`: that field is a derived, lossy view
-     * (single-letter names, first values only), so a grouping never sees a
+     * It rides the tags-only visit projection ([EventIndex.visitTags]) BY
+     * DEFAULT, not a grouping over `tag_index`: that field is a derived, lossy
+     * view (single-letter names, first values only), so a grouping never sees a
      * multi-character name and cannot apply a positional condition — it would
      * return a SUPERSET.
+     *
+     * WHERE THE SUPERSET IS THE ANSWER, though, the grouping is exactly right,
+     * and [unconditional] is how a caller says so: a one-letter tag read at
+     * position 1 with no condition on the rest of it. Then the engine
+     * aggregates and the corpus is never walked — measured at ~1s against
+     * ~157s for every relay url in 3.27M NIP-65 lists. Any other shape takes
+     * the walk and gets the exact set.
      *
      * Empty values are skipped, and expiry is honored like [count].
      */
@@ -1113,9 +1120,29 @@ class NostrSemanticsStore(
         filter: Filter,
         tagName: String,
         valueIndex: Int = 1,
+        /**
+         * Whether the caller's [where] actually looks at the tag. It cannot be
+         * inferred — a lambda is opaque — and guessing wrong would answer a
+         * SUPERSET silently, so the default is the safe one and only a caller
+         * that knows it has no positional condition opts in.
+         *
+         * BEFORE [where], not after: `where` is function-typed, so a parameter
+         * added past it captures every trailing-lambda call site as this
+         * Boolean instead. The compiler caught it; the ordering keeps it caught
+         * for good.
+         */
+        unconditional: Boolean = false,
         where: (List<String>) -> Boolean = { true },
     ): Set<String> {
         val q = filter.toExpiryQuery(nowSecs()) ?: return emptySet()
+        // THE FAST PATH, and every one of these conditions is load-bearing.
+        // `tag_index` is lossy in three ways at once — single-letter names,
+        // first values only, nothing of the rest of the tag — so a grouping
+        // over it answers this question and no other. Drop any condition and
+        // the answer silently widens.
+        if (unconditional && valueIndex == 1 && tagName.length == 1) {
+            index.distinctTagIndexValues(q, tagName)?.let { return it }
+        }
         val out = HashSet<String>()
         index.visitTags(q) { page ->
             for (tags in page) {

@@ -126,6 +126,31 @@ interface EventIndex : AutoCloseable {
     }
 
     /**
+     * DISTINCT values of a one-letter [tagName] at position 1, aggregated by
+     * the engine rather than walked — or null where this index cannot.
+     *
+     * The narrow twin of [visitTags], and narrow ON PURPOSE. It reads
+     * `tag_index`, whose projection is lossy in three ways at once
+     * (single-letter names, first values only, nothing of the rest of the
+     * tag), so it can answer only the question that survives all three: every
+     * value of one short tag, with no condition on any other element. A
+     * positional condition — NIP-65's write marker, NIP-85's relay position —
+     * is NOT expressible here and must take [visitTags] instead, which is why
+     * this returns a set and not a predicate: there is nothing to filter on.
+     *
+     * Null, never a partial answer, where the backing index has no such
+     * aggregate. The caller then walks, and gets the same set more slowly.
+     *
+     * Measured on a 334M-event corpus: every relay url in 3.27M NIP-65 lists
+     * in ~1s, against ~157s for the paged walk that reads each list to pull
+     * the same tag out client-side.
+     */
+    suspend fun distinctTagIndexValues(
+        query: EventQuery,
+        tagName: String,
+    ): Set<String>? = null
+
+    /**
      * Stream every match's exact TAG ARRAY (distinct-tag-value discovery), same
      * walk contract as [visitIds]. Deliberately a projection of the stored
      * `tags` field, NOT a grouping over the lossy `tag_index` (single-letter
