@@ -122,6 +122,62 @@ class WriterLockStatsTest {
         }
 
     /**
+     * THE BUG THE SPLIT FIRST SHIPPED WITH, pinned so it cannot return.
+     *
+     * `insert` took both locks and `batchInsert` took neither, so the mirror's
+     * bulk card ingest — which writes reputation cells inline through
+     * `TrustProjection.putAll` — ran with no exclusion against the drain at
+     * all. The single-lock design could not have this bug; a split has to earn
+     * its exclusion at EVERY write entry point, and there are several.
+     */
+    @Test
+    fun `a batch carrying a card waits for the trust gate`() =
+        runBlocking {
+            val store = NostrSemanticsStore(InMemoryEventIndex())
+            IngestStats.statusLine()
+
+            coroutineScope {
+                val holding = async { store.withWriteLock { delay(400) } }
+                yield()
+                delay(50)
+                // A batch of ordinary events with ONE card in it: the card is
+                // what makes the whole batch trust-relevant.
+                launch {
+                    store.batchInsert(
+                        listOf(metadata("e".repeat(64)), contactCard("f".repeat(64))),
+                    )
+                }
+                holding.await()
+            }
+
+            val line = IngestStats.statusLine()
+            assertTrue(
+                seconds(line, "lock.ingest.trust.wait") >= 0.2,
+                "a batch containing a card must queue for the trust gate; got `$line`",
+            )
+        }
+
+    /** …and a batch with nothing trust-relevant in it must NOT wait. */
+    @Test
+    fun `a batch with no trust events is not blocked by a trust gate holder`() =
+        runBlocking {
+            val store = NostrSemanticsStore(InMemoryEventIndex())
+            IngestStats.statusLine()
+
+            coroutineScope {
+                val holding = async { store.withWriteLock { delay(400) } }
+                yield()
+                delay(50)
+                val tookMs =
+                    measureTimeMillis {
+                        store.batchInsert(listOf(metadata("a1".repeat(32)), metadata("a2".repeat(32))))
+                    }
+                assertTrue(tookMs < 200, "a batch of kind-0s waited on the trust gate: ${tookMs}ms")
+                holding.await()
+            }
+        }
+
+    /**
      * THE POINT OF THE TRUST-GATE SPLIT, asserted rather than assumed.
      *
      * A kind-0 (or a kind-1, a reaction, a repost — anything
