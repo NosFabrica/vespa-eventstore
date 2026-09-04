@@ -301,8 +301,8 @@ class TrustProjection(
         return DirtLedger.Dirt(subjects, services)
     }
 
-    private companion object {
-        /** The only kinds whose removal can invalidate the projection. */
+    internal companion object {
+        /** The only kinds whose write or removal can touch the projection — what the store's trust gate is taken for. */
         val TRUST_KINDS = listOf(ContactCardEvent.KIND, TrustProviderListEvent.KIND)
 
         /** Ids per removeAll read-back query — round-trip width, not a result cap. */

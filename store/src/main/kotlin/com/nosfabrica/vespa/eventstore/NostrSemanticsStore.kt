@@ -1321,7 +1321,17 @@ class NostrSemanticsStore(
                 val nearStale = !columnsChanged && doc.storedNearFields?.let { it != fields.nearFieldsWritten() } == true
                 if (columnsChanged || nearStale) changed += doc.copy(search = fields)
             }
-            if (changed.isNotEmpty()) index.putAll(changed)
+            // A page can carry cards, and the projection applies their cells
+            // INLINE on putAll — the same documents the drain re-derives, so
+            // that write queues for the trust gate like every other write that
+            // touches reputation (see [lockedForBatch]). Values agree either
+            // way (the card is the newest for its address), so this is the
+            // split's rule kept at its fifth entry point, not a repair.
+            if (changed.any { it.kind in TrustProjection.TRUST_KINDS }) {
+                lockedOn(trustGate, LOCK_INGEST_TRUST) { index.putAll(changed) }
+            } else if (changed.isNotEmpty()) {
+                index.putAll(changed)
+            }
             FtsReindexProgress(cursor = page.continuation, processedThisBatch = page.docs.size, done = page.continuation == null)
         }
 

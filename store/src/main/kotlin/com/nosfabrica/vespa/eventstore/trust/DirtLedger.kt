@@ -25,6 +25,8 @@ import com.nosfabrica.vespa.eventstore.engine.doc.ReputationCells
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * The trust projection's WORK LEDGER — crash safety and optional deferral for
@@ -50,9 +52,32 @@ import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
  * influence cells, services the follower cells; small dirt persists as
  * pipelined cell ADDs, a bulk batch's as one marker-doc put ([DELTA_ADD_MAX]).
  *
- * Every entry point except [drain]'s gated parts runs under the store's single
- * writer lock — what makes the plain fields here safe; [drain] takes the same
- * lock per bounded batch through its gate.
+ * THE IN-MEMORY LEDGER IS LOCK-FREE, since 2026-09-04. It used to be plain
+ * fields, safe because every entry point ran under the store's ONE writer
+ * lock. The trust-gate split (NostrSemanticsStore.trustGate) ended that: a
+ * kind-1 insert now runs [guarded] under the event lock alone, while the
+ * background [drain] mutates the same ledger under the trust gate alone, and
+ * two read-modify-writes of a plain field under different locks is a lost
+ * update — a kind-1 that read `pending` before a drain cleared it wrote the
+ * cleared dirt back, so the next card for that subject computed an empty
+ * write-ahead delta against an over-covering memory, and a crash before the
+ * following drain would have been permanent drift with no marker naming it.
+ * So [pending] is an [AtomicReference] moved only by monotone CAS updates
+ * (an op ADDS its work, a drain TAKES a snapshot), which is correct under any
+ * interleaving and costs no lock. The persisted marker is still only ever
+ * written under the trust gate ([guarded]'s write-ahead by a trust write,
+ * [drain]'s rewrite through its gate), which is what keeps disk and memory
+ * agreeing.
+ *
+ * A [drain] TAKES its snapshot out of [pending] rather than subtracting it at
+ * the end. Subtraction lost work: a card written for a subject AFTER that
+ * subject's slice had been derived, but before the drain finished, added a
+ * subject already in `pending`, and the final `pending - snapshot` removed it
+ * — with the marker rewritten clean, the newer card was never projected until
+ * a reconcile. Taking the snapshot first means anything added mid-drain,
+ * whether or not it was in the snapshot, is what the NEXT round finds; the
+ * marker keeps covering the snapshot until the round completes, and a failed
+ * round puts its snapshot back.
  */
 internal class DirtLedger(
     private val reputations: ReputationIndex,
@@ -74,18 +99,24 @@ internal class DirtLedger(
         }
     }
 
-    /** Unhealed work: null until the persisted marker (a previous process's leftovers) has been read once. */
-    private var pending: Dirt? = null
+    /**
+     * Unhealed work: null until the persisted marker (a previous process's
+     * leftovers) has been read once. Moved only by CAS — see the class KDoc for
+     * why a plain field under two locks is not enough.
+     */
+    private val pending = AtomicReference<Dirt?>(null)
 
     /**
      * True while dirt inherited from a PREVIOUS process is unhealed: it may
      * have died between writing a 10040 and invalidating the provider-map
      * cache, so the heal must drop the cache even when the dirt names no
-     * services. In-process dirt invalidates inline.
+     * services. In-process dirt invalidates inline. Consumed by the drain
+     * round that takes the inherited snapshot.
      */
-    private var inherited = false
+    private val inherited = AtomicBoolean(false)
 
     /** The drain signal; null = settle work inline (the read-your-writes mode). */
+    @Volatile
     private var signal: (() -> Unit)? = null
 
     /**
@@ -129,14 +160,15 @@ internal class DirtLedger(
             result = r.first
             work = r.second
         } catch (t: Throwable) {
-            pending = before + insurance
+            add(insurance)
             // Wake the drainer even though the op failed: its retry loop repairs
             // a transient failure's dirt without waiting for the next write.
             signal?.invoke()
             throw t
         }
-        val queued = before + work
-        pending = queued
+        // ADDED, never assigned: `before + work` written back would resurrect
+        // whatever a concurrent drain took out between the read above and here.
+        val queued = add(work)
         val deferred = signal
         if (deferred == null) {
             drain { it() } // settle inline: the caller holds the writer lock
@@ -145,6 +177,9 @@ internal class DirtLedger(
         }
         return result
     }
+
+    /** Union [dirt] into the ledger and return the result; a no-op CAS when [dirt] is empty. */
+    private fun add(dirt: Dirt): Dirt = pending.updateAndGet { (it ?: Dirt.NONE) + dirt }!!
 
     /**
      * Heal everything pending, in gated batches: snapshot, re-derive its
@@ -158,36 +193,51 @@ internal class DirtLedger(
      */
     suspend fun drain(gate: suspend (suspend () -> Unit) -> Unit) {
         while (true) {
-            var snapshot = Dirt.NONE
-            gate { snapshot = load() }
+            load() // the marker a previous process left is only discovered by reading it
+            // TAKEN, not read: everything added from here on — a card for a
+            // subject this round is about to derive included — belongs to the
+            // next round. No gate needed for the take itself; the CAS is the
+            // atomicity, and the marker on disk still names all of it.
+            val snapshot = pending.getAndSet(Dirt.NONE) ?: Dirt.NONE
+            val inheritedRound = inherited.getAndSet(false)
             if (snapshot.isEmpty()) return
-            if (snapshot.services.isNotEmpty() || inherited) recompute.invalidateProviders()
-            snapshot.subjects.chunked(DRAIN_BATCH).forEach { chunk ->
-                // The gate is taken PER SLICE inside, not once for the whole
-                // 20,000-subject chunk: that hold was measured at 13 minutes on
-                // staging with ingest queueing behind it. See
-                // [TrustRecompute.recomputeBatchGated].
-                recompute.recomputeBatchGated(chunk, recompute.providerMap(), removeEmpties = true, gate = gate)
+            try {
+                if (snapshot.services.isNotEmpty() || inheritedRound) recompute.invalidateProviders()
+                snapshot.subjects.chunked(DRAIN_BATCH).forEach { chunk ->
+                    // The gate is taken PER SLICE inside, not once for the whole
+                    // 20,000-subject chunk: that hold was measured at 13 minutes on
+                    // staging with ingest queueing behind it. See
+                    // [TrustRecompute.recomputeBatchGated].
+                    recompute.recomputeBatchGated(chunk, recompute.providerMap(), removeEmpties = true, gate = gate)
+                }
+                if (snapshot.services.isNotEmpty()) {
+                    recompute.recomputeWalk(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = snapshot.services.toList()), gate = gate)
+                }
+            } catch (t: Throwable) {
+                // The marker still names the snapshot (it is only narrowed
+                // below); put it back in memory too, so the retry — and every
+                // write-ahead delta computed meanwhile — sees it as pending.
+                add(snapshot)
+                if (inheritedRound) inherited.set(true)
+                throw t
             }
-            if (snapshot.services.isNotEmpty()) {
-                recompute.recomputeWalk(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = snapshot.services.toList()), gate = gate)
-            }
-            gate {
-                val rest = load() - snapshot // work deferred mid-drain survives
-                persist(rest)
-                pending = rest
-                inherited = false
-            }
+            // The marker shrinks to what is STILL pending: work deferred
+            // mid-drain, which the loop picks up next. Under the gate because
+            // a trust write's write-ahead ([persistDelta]) and this rewrite
+            // touch the same document.
+            gate { persist(pending.get() ?: Dirt.NONE) }
         }
     }
 
     /** The pending dirt, reading the persisted marker once per process. */
     private suspend fun load(): Dirt {
-        pending?.let { return it }
+        pending.get()?.let { return it }
         val stored = reputations.get(MARKER_KEY)?.let { Dirt(it.influenceScores.keys, it.followerCounts.keys) } ?: Dirt.NONE
-        inherited = !stored.isEmpty()
-        pending = stored
-        return stored
+        // Two first readers race harmlessly: both read the same marker, and
+        // the loser's copy is dropped rather than overwriting work the winner
+        // has since added.
+        if (pending.compareAndSet(null, stored) && !stored.isEmpty()) inherited.set(true)
+        return pending.get()!!
     }
 
     /** Write-ahead append: one pipelined tensor-cell add per NEW dirt entry — no read, no doc rewrite. */
