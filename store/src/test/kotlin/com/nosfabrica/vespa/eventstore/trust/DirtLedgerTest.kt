@@ -158,6 +158,38 @@ class DirtLedgerTest {
             assertEquals(90, d.rankOf(subject))
         }
 
+    /**
+     * A BULK write-ahead mid-round rewrites the marker as a whole document
+     * (past DELTA_ADD_MAX the write-ahead is one put, not cell adds). The
+     * round's own snapshot must survive that rewrite: a version of this ledger
+     * that TOOK its snapshot out of memory computed the write-ahead without
+     * it, so the marker stopped naming the subjects still being derived — a
+     * crash before the round's final rewrite would have lost them for good.
+     */
+    @Test
+    fun `a bulk write-ahead during a round keeps the marker covering the round's subjects`() =
+        runBlocking {
+            val d = Deferred()
+            d.projection.put(list10040().toDoc())
+            d.projection.dirt.drain { it() }
+            d.projection.put(card(40).toDoc())
+
+            var landed = false
+            d.projection.dirt.drain { body ->
+                body()
+                if (!landed && d.rankOf(subject) == 40) {
+                    landed = true
+                    // 100 cards for OTHER subjects: a delta past DELTA_ADD_MAX,
+                    // persisted as one marker-doc put.
+                    d.projection.putAll((1..100).map { i -> ContactCardEvent(id(), service, next(), arrayOf(arrayOf("d", i.toString(16).padStart(64, 'e')), arrayOf("rank", "1")), "", "").toDoc() })
+                    val marker = assertNotNull(d.marker(), "the marker still stands")
+                    assertTrue(subject in marker.influenceScores, "the marker still names the subject the round is deriving")
+                }
+            }
+            assertTrue(landed)
+            assertNull(d.marker(), "everything drained in the end")
+        }
+
     /** A failed round leaves the snapshot pending in memory as well as on disk, so the retry re-derives it. */
     @Test
     fun `a failed drain puts its snapshot back`() =

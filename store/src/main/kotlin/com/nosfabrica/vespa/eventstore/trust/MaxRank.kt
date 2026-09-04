@@ -155,9 +155,15 @@ internal class MaxRankBackfill(
         }
         var written = 0
         reputations.visitDocs { page ->
-            val cells = page.filter { it.pubkey != MARKER_KEY && it.pubkey != DirtLedger.MARKER_KEY }.map { ReputationCells(it.pubkey, SELF, null, null, maxRank = it.maxRank) }
-            if (cells.isNotEmpty()) reputations.updateCells(cells)
-            written += cells.size
+            // RAISED, never assigned: the bound comes from the cells this page
+            // held when it was read, and the walk runs ungated beside live
+            // ingest, whose cell path may have raised the same document since.
+            // An assign would put the scalar back below that cell — and the
+            // projection's cache, which saw its own raise, would then never
+            // raise it again. The engine decides at write time instead.
+            val floors = page.filter { it.pubkey != MARKER_KEY && it.pubkey != DirtLedger.MARKER_KEY }.associate { it.pubkey to it.maxRank }
+            if (floors.isNotEmpty()) reputations.raiseMaxRank(floors)
+            written += floors.size
             onProgress?.invoke(written)
             true
         }
@@ -205,8 +211,5 @@ internal class MaxRankBackfill(
         const val MARKER_KEY = "max-rank-backfilled"
 
         private const val DONE = "done"
-
-        /** The observer key of an update that changes no cell — [ReputationCells] needs one; `max_rank` is all this write carries. */
-        private const val SELF = "backfill"
     }
 }

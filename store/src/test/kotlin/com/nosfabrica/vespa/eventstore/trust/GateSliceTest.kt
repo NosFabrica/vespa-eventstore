@@ -56,7 +56,6 @@ class GateSliceTest {
 
             projection.recompute.recomputeBatchGated(
                 subjects,
-                projection.recompute.providerMap(),
                 removeEmpties = false,
             ) { body ->
                 entries += 1
@@ -86,7 +85,6 @@ class GateSliceTest {
             var entries = 0
             projection.recompute.recomputeBatchGated(
                 emptyList(),
-                projection.recompute.providerMap(),
                 removeEmpties = false,
             ) { body ->
                 entries += 1

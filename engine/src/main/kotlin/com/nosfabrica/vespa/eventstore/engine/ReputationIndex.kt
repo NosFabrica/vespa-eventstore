@@ -54,6 +54,24 @@ interface ReputationIndex : AutoCloseable {
 
     suspend fun remove(pubkey: String)
 
+    /** Bulk [remove]; implementations may pipeline (see [EventIndex.removeAll]). */
+    suspend fun removeAll(pubkeys: List<String>) = pubkeys.forEach { remove(it) }
+
+    /**
+     * Raise each subject's stored `max_rank` to AT LEAST the given value —
+     * never lower it — and only on documents that exist. The backfill's
+     * write: it computes a bound from the cells it READ a page ago, and a
+     * live cell raise may have moved the document past that bound since; an
+     * unconditional assign would then put `max_rank` BELOW a cell it holds,
+     * the one state the trust descent cannot serve correctly. Implementations
+     * make the assign conditional on the stored value; the default reads.
+     */
+    suspend fun raiseMaxRank(floors: Map<String, Int>) =
+        floors.forEach { (subject, floor) ->
+            val stored = storedMaxRank(subject) ?: return@forEach
+            if (stored < floor) updateCells(listOf(ReputationCells(subject, "", null, null, maxRank = floor)))
+        }
+
     /**
      * The `max_rank` the document STORES — the scalar the trust descent cuts
      * on — as distinct from [ReputationDoc.maxRank], the maximum of its cells.
