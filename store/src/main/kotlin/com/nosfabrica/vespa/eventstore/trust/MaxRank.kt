@@ -28,6 +28,7 @@ import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import com.nosfabrica.vespa.eventstore.engine.mapBounded
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * WHAT `max_rank` IS STORED AS, per subject, as far as this process knows —
@@ -50,26 +51,34 @@ import kotlinx.coroutines.delay
  * Bounded: past [CAPACITY] entries it forgets everything, and the next cell
  * for each subject reads again. A production store has ~340k scored
  * subjects, so the bound is headroom, not a working limit.
+ *
+ * LOCK-FREE: a [ConcurrentHashMap], no monitor. Every caller already runs
+ * under the store's trust gate (the cell path, the recompute, the drain), so
+ * the map was never contended; the monitors it used to take were pure cost.
+ * The one non-atomic step left — the capacity `clear()` beside a concurrent
+ * put — is in the safe direction either way: a put that lands after the
+ * clear is the value its own write is about to store, and a lost put is a
+ * miss, which reads again. A fill from the engine uses `putIfAbsent`, so it
+ * can never overwrite a [raise] that has since moved the value UP — the one
+ * direction (stale-high) that would be unsound.
  */
 internal class MaxRankCache(
     private val reputations: ReputationIndex,
 ) {
-    private val known = HashMap<String, Int>()
+    private val known = ConcurrentHashMap<String, Int>()
 
     /** The stored `max_rank` for each of [subjects], read where unknown. */
     suspend fun stored(subjects: Collection<String>): Map<String, Int> {
-        val missing = subjects.filter { it !in known }.distinct()
+        val missing = subjects.filter { !known.containsKey(it) }.distinct()
         if (missing.isNotEmpty()) {
             // The STORED scalar, not the cells' maximum: the two came apart on
             // staging when a schema flip dropped the field, and a cache that
             // read the cells would have believed every raise already made.
             val read = missing.mapBounded(QUERY_FANOUT) { s -> s to (reputations.storedMaxRank(s) ?: 0) }
-            synchronized(known) {
-                if (known.size + read.size > CAPACITY) known.clear()
-                read.forEach { (s, m) -> known[s] = m }
-            }
+            if (known.size + read.size > CAPACITY) known.clear()
+            read.forEach { (s, m) -> known.putIfAbsent(s, m) }
         }
-        return synchronized(known) { subjects.associateWith { known[it] ?: 0 } }
+        return subjects.associateWith { known[it] ?: 0 }
     }
 
     /**
@@ -85,21 +94,19 @@ internal class MaxRankCache(
             if (q > (raised[u.subject] ?: current.getValue(u.subject))) raised[u.subject] = q
         }
         if (raised.isEmpty()) return updates
-        synchronized(known) { raised.forEach { (s, m) -> known[s] = m } }
+        raised.forEach { (s, m) -> known[s] = m }
         return updates.map { u -> raised[u.subject]?.let { u.copy(maxRank = it) } ?: u }
     }
 
     /** A whole document was just written: its `max_rank` is now exactly [ReputationDoc.maxRank]. */
     fun remember(docs: Collection<ReputationDoc>) {
-        synchronized(known) {
-            if (known.size + docs.size > CAPACITY) known.clear()
-            docs.forEach { known[it.pubkey] = it.maxRank }
-        }
+        if (known.size + docs.size > CAPACITY) known.clear()
+        docs.forEach { known[it.pubkey] = it.maxRank }
     }
 
     /** A document was removed: nothing is stored, so the next cell starts from 0. */
     fun forget(subjects: Collection<String>) {
-        synchronized(known) { subjects.forEach { known.remove(it) } }
+        subjects.forEach { known.remove(it) }
     }
 
     private companion object {

@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import com.vitorpamplona.quartz.utils.Hex
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * The in-memory reference [EventIndex]: a map of docs plus a direct
@@ -41,19 +42,23 @@ class InMemoryEventIndex(
     // the read-based default — so outcomes must match the read-then-supersede path.
     override val supersedesViaPut: Boolean = false,
 ) : EventIndex {
-    // Guarded by synchronized(docs): the store deliberately runs its lock-free
-    // dedup reads beside locked writes, so the reference must survive a reader
-    // scanning while a writer mutates — exactly as the real engine does.
-    private val docs = LinkedHashMap<String, EventDoc>()
+    // A ConcurrentHashMap, no monitor: the store deliberately runs its
+    // lock-free dedup reads beside locked writes, so the reference must survive
+    // a reader scanning while a writer mutates — exactly as the real engine
+    // does — and a weakly-consistent scan is that, without serialising every
+    // reader behind every other (this is also the bulk mixed path's replay
+    // snapshot, not only a test double). Nothing here depends on iteration
+    // order: every recall sorts by [EventDoc.NEWEST_FIRST], a total order.
+    private val docs = ConcurrentHashMap<String, EventDoc>()
 
-    override suspend fun get(id: String): EventDoc? = synchronized(docs) { docs[id] }
+    override suspend fun get(id: String): EventDoc? = docs[id]
 
     override suspend fun put(doc: EventDoc) {
-        synchronized(docs) { docs[doc.id] = doc }
+        docs[doc.id] = doc
     }
 
     override suspend fun remove(id: String) {
-        synchronized(docs) { docs.remove(id) }
+        docs.remove(id)
     }
 
     /**
@@ -167,7 +172,7 @@ class InMemoryEventIndex(
         // EventYql.build (which returns null for it, never a negative take).
         if ((query.limit ?: 1) <= 0) return emptyList()
         val c = Compiled(query)
-        val hits = synchronized(docs) { docs.values.filter { c.matches(it) } }.sortedWith(EventDoc.NEWEST_FIRST)
+        val hits = docs.values.filter { c.matches(it) }.sortedWith(EventDoc.NEWEST_FIRST)
         return query.limit?.let(hits::take) ?: hits
     }
 
@@ -176,19 +181,22 @@ class InMemoryEventIndex(
         // positive limit is about hits, not the count, and is ignored.
         if ((query.limit ?: 1) <= 0) return 0
         val c = Compiled(query)
-        return synchronized(docs) { docs.values.count { c.matches(it) } }
+        return docs.values.count { c.matches(it) }
     }
 
     /** Same sentinel rule as [count]: a positive limit bounds HITS, never a grouping. */
     override suspend fun countByAuthor(query: EventQuery): Map<String, Int> {
         if ((query.limit ?: 1) <= 0) return emptyMap()
         val c = Compiled(query)
-        return synchronized(docs) { docs.values.filter { c.matches(it) } }.groupingBy { it.pubkey }.eachCount()
+        return docs.values
+            .filter { c.matches(it) }
+            .groupingBy { it.pubkey }
+            .eachCount()
     }
 
     override fun close() {}
 
-    fun size(): Int = synchronized(docs) { docs.size }
+    fun size(): Int = docs.size
 
     /**
      * List constraints compiled to hash sets ONCE per scan: matching runs per
