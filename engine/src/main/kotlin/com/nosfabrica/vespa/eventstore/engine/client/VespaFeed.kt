@@ -85,6 +85,9 @@ internal class VespaFeed(
             if (s.exceptions() > 0) " EXC ${s.exceptions()}" else ""
     }
 
+    /** Feed operations in flight RIGHT NOW — a gauge, not a counter: it has no cumulative form. */
+    fun inflight(): Long = client.stats().inflight()
+
     /** Graceful: waits for in-flight feed operations before closing the connections. */
     fun close() = client.close(true)
 }

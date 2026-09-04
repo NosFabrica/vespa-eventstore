@@ -29,6 +29,7 @@ import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.ScoredHit
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.mapBounded
+import com.nosfabrica.vespa.eventstore.engine.metrics.CostLedger
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventSelection
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
@@ -108,6 +109,17 @@ class VespaEventIndex(
     /** Window-plan bare recency scans via count probes; `VESPA_QUERY_PLANNER=0` disables. See [RecencyPlanner]. */
     private val queryPlanning: Boolean =
         System.getenv("VESPA_QUERY_PLANNER")?.let { it != "0" && !it.equals("false", ignoreCase = true) } ?: true,
+    /**
+     * WHERE ENGINE-LEVEL COST IS PUBLISHED, or null to publish none.
+     *
+     * The rank profile, the documents matched and Vespa's own timing split are
+     * knowable only here: a port decorator sees an `EventQuery`, not the
+     * profile `EventYql` compiled it into, and `totalCount` and coverage live
+     * in the response. That is the correct split rather than a compromise —
+     * port-level metering stays engine-agnostic and works for
+     * `InMemoryEventIndex`, which has no rank profiles at all.
+     */
+    private val ledger: CostLedger? = null,
 ) : EventIndex {
     private val urls: List<String> = endpoints.ifEmpty { listOf(baseUrl) }.map { it.trimEnd('/') }
 
@@ -1086,6 +1098,10 @@ class VespaEventIndex(
                 put("yql", vq.yql)
                 put("hits", hits.toString())
                 put("ranking", vq.ranking)
+                // Vespa's own split of the time it spent. Asked for only when
+                // somebody is listening, so a store with no ledger sends the
+                // byte-identical request it always did.
+                if (ledger != null) put("presentation.timing", "true")
                 vq.params.forEach { (k, v) -> put(k, v) }
             }.toString()
         // A busy engine sheds load transiently (504 under heavy concurrent
@@ -1105,14 +1121,34 @@ class VespaEventIndex(
     private suspend fun searchRoot(
         vq: VespaQuery,
         hits: Int,
-    ): SearchRoot =
-        VESPA_JSON
-            .decodeFromString<SearchEnvelope>(queryBody(vq, hits))
-            .root
-            .also {
-                it.coverage.requireComplete(allowMatchPhase = vq.ranking == EventYql.RANK_RECENCY || vq.ranking == EventYql.RANK_RECENCY_GATED)
-                if (vq.complete) it.requireEverything()
-            }
+    ): SearchRoot {
+        val envelope = VESPA_JSON.decodeFromString<SearchEnvelope>(queryBody(vq, hits))
+        val root = envelope.root
+        // Published BEFORE the coverage check, deliberately: a degraded answer
+        // is the one an operator most wants to see in the numbers, and
+        // requireComplete throws.
+        publish(vq, root, envelope.timing)
+        root.coverage.requireComplete(allowMatchPhase = vq.ranking == EventYql.RANK_RECENCY || vq.ranking == EventYql.RANK_RECENCY_GATED)
+        if (vq.complete) root.requireEverything()
+        return root
+    }
+
+    /** Book one engine query against the ledger, keyed by the rank profile that priced it. */
+    private fun publish(
+        vq: VespaQuery,
+        root: SearchRoot,
+        timing: VespaTiming?,
+    ) {
+        val l = ledger ?: return
+        l.engineQuery(
+            profile = vq.ranking,
+            engineNanos = timing?.totalNanos() ?: 0L,
+            summaryNanos = timing?.summaryNanos() ?: 0L,
+            docsMatched = root.fields.totalCount.toLong(),
+            hitsServed = root.children.size.toLong(),
+            degraded = !root.coverage.undegraded,
+        )
+    }
 
     /** The grouping/count paths need the full tree; [searchRoot] does not (it decodes hits directly). */
     private suspend fun queryRoot(
@@ -1127,6 +1163,9 @@ class VespaEventIndex(
 
     /** One-line feed-client health for status lines; see [VespaFeed.statusLine]. */
     fun feedStatus(): String = feed.statusLine()
+
+    /** Feed operations in flight right now — the gauge behind a backpressure tile. */
+    fun feedInflight(): Long = feed.inflight()
 
     /** Graceful: waits for in-flight feed operations before closing the connections. */
     override fun close() = feed.close()

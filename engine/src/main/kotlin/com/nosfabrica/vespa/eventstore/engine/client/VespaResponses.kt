@@ -50,7 +50,37 @@ internal val SUMMARY_NEWEST_FIRST = compareByDescending(VespaSummary::createdAt)
 @Serializable
 internal class SearchEnvelope(
     val root: SearchRoot = SearchRoot(),
+    /** Present only when the request asked for it (`presentation.timing`); see [VespaTiming]. */
+    val timing: VespaTiming? = null,
 )
+
+/**
+ * VESPA'S OWN ACCOUNTING of a query, in SECONDS — what the engine spent, as
+ * opposed to what the client waited.
+ *
+ * The client's wall clock around a round trip includes the network and its own
+ * JSON parse, so it cannot answer "is the engine busy or is this a big page".
+ * This splits it: [querytime] is matching and ranking, [summaryfetchtime] is
+ * filling the hits that survived. "The match phase is expensive" and "we asked
+ * for 2,500 summaries" are different faults with different fixes, and only this
+ * tells them apart.
+ *
+ * Field names are Vespa's and are pinned by `TelemetryIT` against a real
+ * engine — the mock will happily return whatever shape a test author imagined.
+ */
+@Serializable
+internal class VespaTiming(
+    val querytime: Double = 0.0,
+    val summaryfetchtime: Double = 0.0,
+    val searchtime: Double = 0.0,
+) {
+    fun queryNanos(): Long = (querytime * 1e9).toLong()
+
+    fun summaryNanos(): Long = (summaryfetchtime * 1e9).toLong()
+
+    /** Total engine time; falls back to the parts when `searchtime` is absent. */
+    fun totalNanos(): Long = if (searchtime > 0) (searchtime * 1e9).toLong() else queryNanos() + summaryNanos()
+}
 
 @Serializable
 internal class SearchRoot(

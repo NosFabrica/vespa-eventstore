@@ -76,6 +76,26 @@ internal class DirtLedger(
 
     /** Unhealed work: null until the persisted marker (a previous process's leftovers) has been read once. */
     private var pending: Dirt? = null
+        set(value) {
+            field = value
+            // PUBLISHED for the backlog gauge, which is read from a snapshot
+            // thread that holds none of this ledger's locks. `pending` itself is
+            // a plain var mutated under the store's write gate, so reading it
+            // from there would be a data race; the owner publishes a safe copy
+            // rather than letting the metrics layer reach in.
+            publishedSubjects = value?.subjects?.size ?: 0
+            publishedServices = value?.services?.size ?: 0
+        }
+
+    @Volatile private var publishedSubjects = 0
+
+    @Volatile private var publishedServices = 0
+
+    /** Subjects queued for re-derivation, right now — a GAUGE, never diffed like a counter. */
+    fun pendingSubjects(): Long = publishedSubjects.toLong()
+
+    /** Services queued for a re-walk, right now. */
+    fun pendingServices(): Long = publishedServices.toLong()
 
     /**
      * True while dirt inherited from a PREVIOUS process is unhealed: it may

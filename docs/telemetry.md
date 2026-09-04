@@ -1,7 +1,8 @@
 # Telemetry — what the store spends, and what measuring it costs
 
-**Status: PROPOSAL** (2026-09-04). Nothing here is built. `IngestStats` is what
-exists; §7 says how it decomposes into this rather than being replaced by it.
+**Status: SHIPPED** (2026-09-04). Built as described, with four deviations the
+implementation forced — see §12, which is the record of what changed and why.
+`IngestStats` was decomposed rather than replaced, as §7 proposed.
 
 This document is in two halves, for the same reason `attribute-memory.md` is.
 First **where the model should come from** (§§1–4) — the argument that telemetry
@@ -811,3 +812,103 @@ rather than left to infer it from the first.
 Still flat in traffic, still bounded by closed key sets, still noise against a
 1536m heap. The per-request cost is unchanged for everything except a search
 carrying an observer or terms, which additionally pays the ~63 ns of §11.2.
+
+## 12. What shipped, and where the plan was wrong
+
+Written after building it. Four things the implementation contradicted, kept
+here rather than quietly corrected in place, because a design document that
+edits away its own mistakes teaches nobody anything.
+
+### 12.1 `ThreadLocal` would have reintroduced the bug it was fixing
+
+§3.4 says lock holds become "scopes that stack" and §7.2 diagnoses the
+single-field holder as the defect. The obvious repair is a `ThreadLocal` stack,
+and it is **wrong for exactly the reason §11.4 gives about CPU counters**: this
+store is coroutines end to end, so a `suspend` body may resume on a different
+dispatcher thread than it started on, and a push and its pop can land on two
+different stacks.
+
+Shipped instead: an open set keyed by identity, plus a `CoroutineContext`
+element carrying the current hold so `annotateHold` finds it wherever it
+resumes. `HoldStackTest` pins both — the nested-release regression and a hold
+surviving forty forced dispatches.
+
+The lesson generalises past this one field: in a coroutine codebase,
+**thread-affine state is the default mistake in observability code**, and
+§11.4's warning about `ThreadMXBean` was a specific case of it rather than a
+one-off.
+
+### 12.2 One metering depth, not two
+
+§3.3 proposes wrapping both the store and the engine so their difference
+reveals the trust projection's own traffic. Shipped with **one**, at the engine
+seam.
+
+The reason is the cardinality rule turned on itself: two depths writing to one
+ledger land in the same `(activity × call)` cells and double-count, so telling
+them apart needs a third key dimension. That is a real feature, not a line of
+wiring, and it was not worth inventing before anything has asked for it. The
+depth that survived is the one that answers "where did my resources go" — what
+actually reached Vespa.
+
+### 12.3 `withActivity` cannot be inline, so two bodies moved
+
+`query` and `count` both `return` from inside their bodies, and `withActivity`
+is a real suspend call (`withContext`), not an inline one — so a `return` in
+its lambda is a non-local return it cannot express, and `crossinline` forbids
+it too. Both bodies were extracted into private `queryUnder` / `countUnder`
+functions.
+
+Worth stating because it is the shape of every future entry point: declaring an
+activity is free for an expression body and costs an extraction for a block
+body that returns early.
+
+### 12.4 The histogram's first octave was off by one
+
+The bucket arithmetic double-covered 8–15 µs — the linear region already spans
+0–15, so the sub-bucketed octaves must start at 4 rather than at `SUB_BITS`.
+Caught by asserting the structural invariant (**every bucket's reported
+midpoint must land back in that bucket**) rather than by the percentile tests,
+which passed throughout: the error was small enough to stay inside the ~6 %
+budget while still putting some values in two buckets at once.
+
+An accuracy test alone would have shipped it.
+
+## 13. Measured against a real engine
+
+`TelemetryIT` (40 events, single-node Vespa in Docker, 2026-09-04). The numbers
+are cold-start and prove shape rather than performance:
+
+```
+=== engine, by rank profile ===
+  text        2 q  engine 255.00 ms  summary 2.00 ms  matched  2  hits  2  degraded 0
+  unranked    4 q  engine 110.00 ms  summary 0.00 ms  matched  0  hits  0  degraded 0
+  recency     1 q  engine  28.00 ms  summary 8.00 ms  matched 38  hits 38  degraded 0
+=== ports, by activity ===
+  BatchInsert Put      1 calls   40 docs  calls/doc 0.025
+  BatchInsert Exists   1 calls   40 docs  calls/doc 0.025
+  Query       Search   3 calls   12 docs  p50 139.26 ms  p99 172.03 ms
+  Count       Count    2 calls    2 docs  p50  23.55 ms  p99 139.26 ms
+=== outcomes ===  offered 40, admitted 40
+=== gauges ===   {lock.held=0, trust.pending.subjects=0, trust.pending.services=0, feed.inflight=0}
+```
+
+Four things this settles that no unit test could:
+
+- **`presentation.timing` is real, and the field names are right.** §10.4
+  flagged this as unverified. `VespaTiming` is a lenient `@Serializable`, so a
+  renamed field would deserialize to `0.0` in silence and every engine-time
+  figure would become a confident zero. The IT asserts on Vespa's raw wire text
+  for `querytime`, `summaryfetchtime` and `searchtime`, so a future Vespa that
+  renames one fails loudly instead of lying quietly.
+- **Vespa reports timing at millisecond resolution** (every value above is a
+  whole millisecond). Fine for attributing load across profiles; not a
+  microbenchmark.
+- **The two altitudes disagree usefully.** `BatchInsert Put` shows 568 ms of
+  wall time at the port for one call; the engine's own accounting for the same
+  window is far smaller. That gap is the network and the feed client — exactly
+  the "wall time is not consumption" distinction §11.4 makes, visible in the
+  first real run.
+- **`calls/doc 0.025`** is the amortization claim as a live number: one port
+  call carried all forty documents. `TelemetryTest` turns the same measurement
+  into the gate CLAUDE.md's rule always deserved.
