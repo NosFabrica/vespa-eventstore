@@ -65,6 +65,8 @@ class VespaEventStore internal constructor(
     private val drainScope: CoroutineScope? = null,
     /** The `max_rank` backfill's job, so a test or a boot line can wait for the descent to be on — see [awaitTrustDescent]. */
     private val backfill: kotlinx.coroutines.Deferred<Int>? = null,
+    /** Whether the descent is switched on for this store — [open]'s `trustDescent`; the walk runs either way. */
+    val trustDescent: Boolean = true,
 ) : IEventStore by store {
     /** The engine's feed-health status line (bulk-ingest backpressure), for progress/status output. */
     fun feedStatus(): String = eventIndex.feedStatus()
@@ -75,9 +77,10 @@ class VespaEventStore internal constructor(
      * existed (MaxRankBackfill). Returns how many documents it wrote — 0 on a
      * store that already carried it. A walk the engine refuses is retried
      * until it finishes ([MaxRankBackfill.runUntilDone]), so this returns only
-     * with the descent on, or throws [CancellationException] when the store
+     * with the walk done, or throws [CancellationException] when the store
      * closed first; nothing served in the meantime is any different from
-     * before, since [VespaEventIndex.trustDescent] is only set on success.
+     * before, since [VespaEventIndex.trustDescent] is only set on success —
+     * and only when [trustDescent] is on, which a boot line should say.
      * Until then, [backgroundStatus] names each refused attempt.
      */
     suspend fun awaitTrustDescent(): Int = backfill?.await() ?: 0
@@ -233,6 +236,19 @@ class VespaEventStore internal constructor(
              * why it never touches a recency-ordered recall.
              */
             maxHitsPerAuthor: Int? = null,
+            /**
+             * Whether a ranked search may take the trust descent (TrustDescent)
+             * once its `max_rank` walk has run. An OPERATOR'S switch, not a
+             * knob in the answer: the descent serves the exact page at every
+             * rung, so off and on differ only in cost — and on a cluster where
+             * the engine does not drive a rung by the imported `author_max_rank`
+             * range, each rung is a full text walk and the descent costs two to
+             * three of them (staging, 2026-09-04: `bitcoin` 2.7–4.4 s → 8.4 s).
+             * Off keeps the schema, the walk and the upkeep, so turning it back
+             * on is a restart. Defaults to `VESPA_TRUST_DESCENT` (`off`, `false`
+             * or `0` disable; unset is on) — see [trustDescentFromEnv].
+             */
+            trustDescent: Boolean = trustDescentFromEnv(),
         ): VespaEventStore {
             if (autoDeploy) SchemaDeployer(configUrl).deployIfAbsent(url)
             val eventIndex = VespaEventIndex(url, endpoints = endpoints)
@@ -261,11 +277,14 @@ class VespaEventStore internal constructor(
             // (the failure accounting is inside runUntilDone).
             val backfill =
                 CoroutineScope(SupervisorJob() + Dispatchers.Default).async {
+                    // The walk runs even with the descent switched off: it keeps
+                    // the invariant the descent needs, so switching on later is
+                    // a restart and not a migration.
                     val written = MaxRankBackfill(reputations).runUntilDone(BACKFILL_RETRY_MILLIS)
-                    eventIndex.trustDescent = true
+                    if (trustDescent) eventIndex.trustDescent = true
                     written
                 }
-            return VespaEventStore(store, eventIndex, reconciler, trust, drainScope, backfill)
+            return VespaEventStore(store, eventIndex, reconciler, trust, drainScope, backfill, trustDescent)
         }
 
         /**
@@ -310,6 +329,12 @@ class VespaEventStore internal constructor(
 
         /** Backoff between `max_rank` walk attempts after an engine failure — the same cadence as the drain's, for the same reason. */
         private const val BACKFILL_RETRY_MILLIS = 5_000L
+
+        /** The environment's name for the descent switch — see [open]'s `trustDescent`. */
+        const val TRUST_DESCENT_ENV = "VESPA_TRUST_DESCENT"
+
+        /** `VESPA_TRUST_DESCENT` read the way [open] reads it: unset is on; `off`, `false` and `0` (any case, trimmed) are off; anything else is on. */
+        fun trustDescentFromEnv(value: String? = System.getenv(TRUST_DESCENT_ENV)): Boolean = value?.trim()?.lowercase() !in setOf("off", "false", "0")
 
         /** The config server sits on :19071 by convention, on the same host as the :8080 query endpoint. */
         internal fun deriveConfigUrl(queryUrl: String): String {
