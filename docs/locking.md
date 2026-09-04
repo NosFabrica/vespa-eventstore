@@ -21,7 +21,7 @@ Terminology, because "blocking" means two different things here:
 | site | primitive | guards | verdict |
 |---|---|---|---|
 | `NostrSemanticsStore.writes` | coroutine `Mutex` | query-then-write atomicity for event documents: dedup GET → guard probes → put, supersession, kind-5/62 sweeps | **load-bearing, but coarser than the invariant needs** — every constraint is scoped to one OWNER (see below); a per-owner scheme or an engine-conditioned fast path is the real win |
-| `NostrSemanticsStore.trustGate` | coroutine `Mutex` | a reputation document's derive+write against a live card's cell update; the dirt marker's rewrite against a write-ahead | **load-bearing** — the derive reads N cards and writes one document, which no engine condition can express; slicing (`GATE_SLICE`) is the fairness knob |
+| `NostrSemanticsStore.trustGate` | coroutine `Mutex` | a reputation document's derive+write against a live card's cell update; the dirt marker's rewrite against a write-ahead | **load-bearing** — the derive reads N cards and writes one document, which no engine condition can express; slicing (`GATE_SLICE`) is the fairness knob. Taken BEFORE `writes`, never while holding it — see "What the audit found" |
 | `DirtLedger.pending` / `inherited` | was plain fields | the in-memory work ledger | **was wrong since the gate split; now lock-free** (`AtomicReference` with CAS union / take) — see "What the audit found" |
 | `GuardOwners.loadLock` | coroutine `Mutex` | one corpus walk at a time (load and rebuild) | **fine** — it serialises a multi-minute scan, which is the point; a CAS "in progress" flag would only turn a waiter into a spinner |
 | `GuardOwners.swapLock` | JVM monitor | a note landing either fully before or fully after a bloom swap | **fine, replaceable** — held for two set-adds, never across I/O, and notes arrive under `writes` anyway; the lock-free shape is below for the record |
@@ -69,6 +69,33 @@ round completes, and a failed round puts its snapshot back.
 pages through the projection, whose `putAll` applies card cells inline; it took
 `writes` only. It now queues for the trust gate when a page carries trust
 kinds, like every other write that touches reputation.
+
+**The lock order leaked the drain's stall back onto plain writers.** The split
+took `writes` first and then waited for `trustGate` while still holding it.
+For the length of a drain slice, every kind-1 in the process queued behind
+whichever card was waiting, so the split bought a plain writer nothing
+whenever a card happened to be queued — which on a relay receiving a trickle
+of cards is most of the time. The order is now `trustGate` then `writes`,
+through one helper (`gated`) so it is a property of the file: a card waits for
+the drain holding nothing, then takes `writes` for one short hold. The drain
+and the reconciler never take `writes`, so the pair stays deadlock-free. The
+reindex, which reads its page under `writes`, hands the lock back and re-takes
+both in order for the trust docs on the page, re-checking that each is still
+stored before re-putting it (events are immutable, so an id that still exists
+is exactly the page's copy).
+
+**A pure-record batch is split by trust.** The cards and provider lists in a
+batch commit under the gate; everything else commits under `writes` alone,
+first. The halves cannot interact — a trust kind's supersession address
+`(kind, pubkey, d)` is shared by no other kind, dedup is per id, the guard
+probes are per owner and read-only — so outcomes are unchanged and merged back
+by position. What it buys: the mirror's 999 notes no longer wait out the drain
+slice their one card has to, and the gate is held for one small commit
+instead of the whole write stage, so the drain gets it back sooner. A mixed
+batch (any kind 5/62) stays whole, because `BulkMixedInsert` replays it in
+order and a kind 5 by id may be pointing at a card. The status line shows the
+effect: `lock.ingest.trust.wait` is booked only by the trust half, and
+`lock.ingest.wait` no longer tracks `lock.gate.hold`.
 
 ## Why `writes` cannot simply go away
 

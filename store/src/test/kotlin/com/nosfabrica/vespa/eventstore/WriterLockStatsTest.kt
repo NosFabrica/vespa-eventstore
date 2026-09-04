@@ -22,7 +22,10 @@ package com.nosfabrica.vespa.eventstore
 
 import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.IngestStats
+import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
+import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
+import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -32,6 +35,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.yield
 import kotlin.system.measureTimeMillis
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
@@ -60,7 +64,15 @@ class WriterLockStatsTest {
     private fun metadata(id: String) = MetadataEvent(id, alice, 1, emptyArray(), """{"name":"n"}""", "")
 
     /** A real contact card (30382): trust-relevant, so it DOES queue for the trust gate. */
-    private fun contactCard(id: String) = ContactCardEvent(id, alice, 1, arrayOf(arrayOf("d", "c".repeat(64)), arrayOf("rank", "50")), "", "")
+    private fun contactCard(
+        id: String,
+        about: String = "c".repeat(64),
+    ) = ContactCardEvent(id, alice, 1, arrayOf(arrayOf("d", about), arrayOf("rank", "50")), "", "")
+
+    /** A kind-1 with its own id — not replaceable, so a batch of them all survive. */
+    private fun textNote(id: String) = Event(id, alice, 1, 1, emptyArray(), "hello", "")
+
+    private fun hex(n: Int) = n.toString(16).padStart(64, '0')
 
     /**
      * Seconds booked to [stage] in [line].
@@ -235,5 +247,94 @@ class WriterLockStatsTest {
                 seconds(IngestStats.statusLine(), "lock.ingest.wait") == 0.0,
                 "an uncontended acquisition must not surface as wait time",
             )
+        }
+
+    /**
+     * THE LOCK ORDER, asserted from the plain writer's side.
+     *
+     * With writes-then-gate, a card took [writes] and then waited for the
+     * trust gate WHILE HOLDING IT — so every kind-1 behind the card waited out
+     * the drain slice the card was waiting for, and the split bought a plain
+     * writer nothing whenever a card happened to be queued. Gate-then-writes
+     * means the queued card holds nothing while it waits, and this metadata
+     * insert must go straight through.
+     */
+    @Test
+    fun `a plain insert is not blocked by a card queued behind the trust gate`() =
+        runBlocking {
+            val store = NostrSemanticsStore(InMemoryEventIndex())
+            IngestStats.statusLine()
+
+            coroutineScope {
+                val holding = async { store.withWriteLock { delay(400) } }
+                yield()
+                delay(50)
+                // The card queues for the gate the holder has.
+                val card = launch { store.insert(contactCard("b".repeat(64))) }
+                yield()
+                delay(50)
+                val tookMs = measureTimeMillis { store.insert(metadata("d".repeat(64))) }
+                assertTrue(tookMs < 200, "a kind-0 waited behind a card that was itself waiting for the drain: ${tookMs}ms")
+                holding.await()
+                card.join()
+            }
+        }
+
+    /**
+     * THE BATCH SPLIT. A pure-record batch's plain events commit under
+     * [writes] alone while its cards wait for the gate — so with the gate held
+     * for the whole test, the notes are readable long before the holder lets
+     * go, and the cards only after.
+     */
+    @Test
+    fun `a batch's plain events commit while its cards wait for the trust gate`() =
+        runBlocking {
+            val store = NostrSemanticsStore(InMemoryEventIndex())
+            IngestStats.statusLine()
+            // Past BULK_MIN, so this is the bulk path and not the loop.
+            val notes = (1..20).map { textNote(hex(it)) }
+            val cards = listOf(contactCard(hex(100), "a".repeat(64)), contactCard(hex(101), "b".repeat(64)))
+            val batch = notes.take(10) + cards.take(1) + notes.drop(10) + cards.drop(1)
+
+            coroutineScope {
+                val holding = async { store.withWriteLock { delay(400) } }
+                yield()
+                delay(50)
+                val inserting = async { store.batchInsert(batch) }
+                yield()
+                delay(100)
+                // The gate is still held: notes in, cards not.
+                assertEquals(20, store.query<Event>(Filter(kinds = listOf(1))).size, "the notes committed while the cards waited")
+                assertEquals(0, store.query<Event>(Filter(kinds = listOf(ContactCardEvent.KIND))).size, "the cards are still queued for the gate")
+                holding.await()
+                val outcomes = inserting.await()
+                assertEquals(2, store.query<Event>(Filter(kinds = listOf(ContactCardEvent.KIND))).size, "the cards committed once the gate was free")
+                assertTrue(outcomes.all { it == IEventStore.InsertOutcome.Accepted }, "every event was accepted: $outcomes")
+            }
+        }
+
+    /** The split merges outcomes back BY POSITION: a rejection lands on the event that earned it, in either half. */
+    @Test
+    fun `a split batch reports outcomes in the caller's order`() =
+        runBlocking {
+            val store = NostrSemanticsStore(InMemoryEventIndex())
+            val dupNote = textNote(hex(7))
+            val dupCard = contactCard(hex(200), "d".repeat(64))
+            store.insert(dupNote)
+            store.insert(dupCard)
+
+            val batch =
+                (1..6).map { textNote(hex(it)) } +
+                    dupNote + // index 6: rejected as a duplicate, in the plain half
+                    contactCard(hex(201), "e".repeat(64)) + // index 7: accepted, in the trust half
+                    (8..20).map { textNote(hex(it)) } +
+                    dupCard // index 21: rejected as a duplicate, in the trust half
+            val outcomes = store.batchInsert(batch)
+
+            assertEquals(batch.size, outcomes.size)
+            val rejectedAt = outcomes.indices.filter { outcomes[it] != IEventStore.InsertOutcome.Accepted }
+            assertEquals(listOf(6, 21), rejectedAt, "rejections sit at the positions of the events that earned them: $outcomes")
+            assertEquals(20, store.query<Event>(Filter(kinds = listOf(1))).size, "the duplicate note was already stored; every other note is new")
+            assertEquals(2, store.query<Event>(Filter(kinds = listOf(ContactCardEvent.KIND))).size)
         }
 }
