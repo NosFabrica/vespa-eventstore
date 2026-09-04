@@ -115,7 +115,13 @@ internal class TrustRecompute(
         // per batch beats one per chunk.
         val derived = LinkedHashMap<String, ReputationDoc>(subjects.size * 2)
         val cutoff = nowSecs()
-        IngestStats.timed("proj.fetch") {
+        // SPLIT from the old shared `proj.fetch` (2026-09-04): this and
+        // TrustProjection's max_rank raise both booked to that one name, so a
+        // gate held for 24 minutes could not be attributed to either. The
+        // annotation names the shape of THIS call — the chunk count is the
+        // loop, the subject count is the work.
+        IngestStats.annotateHold("derive ${subjects.size} subject(s) in ${(subjects.size + FETCH_CHUNK - 1) / FETCH_CHUNK} chunk(s), fanout $QUERY_FANOUT")
+        IngestStats.timed("proj.fetch.derive") {
             subjects.chunked(FETCH_CHUNK).forEachBounded(
                 QUERY_FANOUT,
                 // A partial score set derives a WRONG parent card, so this query

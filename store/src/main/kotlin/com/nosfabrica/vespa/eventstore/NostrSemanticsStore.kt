@@ -211,7 +211,17 @@ class NostrSemanticsStore(
         try {
             return writes.withLock {
                 acquired = System.nanoTime()
-                body()
+                // Live holder, for the question the cumulative stages cannot
+                // answer: not "the gate was held for 24 minutes since boot"
+                // but "the gate is held RIGHT NOW, by this, for this long".
+                // Two volatile writes per critical section, against a section
+                // that is measured in seconds.
+                IngestStats.beginHold(stage.hold)
+                try {
+                    body()
+                } finally {
+                    IngestStats.endHold()
+                }
             }
         } finally {
             // Booked AFTER release: recording inside would put two map lookups

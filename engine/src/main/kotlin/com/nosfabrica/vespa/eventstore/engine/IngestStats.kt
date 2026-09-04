@@ -36,6 +36,26 @@ object IngestStats {
     private val stages = ConcurrentHashMap<String, AtomicLong>()
     private val lastSeen = ConcurrentHashMap<String, Long>()
 
+    /**
+     * How a stage's time was SPENT, not just how much: the same 24 minutes is
+     * one pathological call or a hundred thousand ordinary ones, and only the
+     * count tells them apart. Measured on staging 2026-09-04, where
+     * `proj.fetch` held the store's write gate for 24 minutes and the total
+     * alone could not say whether to look at the query or at the loop around
+     * it.
+     */
+    class Stage(
+        val totalNanos: Long,
+        val calls: Long,
+        val maxNanos: Long,
+    ) {
+        /** Mean call, in nanos — 0 when nothing has been booked (a stage can be added to without being timed). */
+        val meanNanos: Long get() = if (calls > 0) totalNanos / calls else 0L
+    }
+
+    private val calls = ConcurrentHashMap<String, AtomicLong>()
+    private val maxima = ConcurrentHashMap<String, AtomicLong>()
+
     /** Add [nanos] of wall time to [stage]. */
     fun add(
         stage: String,
@@ -57,7 +77,14 @@ object IngestStats {
         try {
             return body()
         } finally {
-            add(stage, System.nanoTime() - t0)
+            val took = System.nanoTime() - t0
+            add(stage, took)
+            // Booked only by [timed]: `add` is also called with a duration
+            // measured elsewhere (the lock stages book wait and hold from one
+            // pair of timestamps), and counting those as calls here would
+            // report a mean over two different populations.
+            calls.computeIfAbsent(stage) { AtomicLong() }.incrementAndGet()
+            maxima.computeIfAbsent(stage) { AtomicLong() }.accumulateAndGet(took, ::maxOf)
         }
     }
 
@@ -83,4 +110,70 @@ object IngestStats {
                 .sortedByDescending { it.second }
                 .joinToString(" ") { (n, ns) -> "$n %.2fs".format(ns / 1e9) }
     }
+
+    /**
+     * WHO HOLDS THE WRITE LOCK RIGHT NOW, and since when. The cumulative
+     * stages say the gate was held for 24 minutes; they cannot say whether it
+     * is held *at this instant*, by what, or for how long so far — which is
+     * the only question worth asking while ingest is stalled. One field
+     * because the store serialises every write behind ONE mutex, so there is
+     * never more than one holder.
+     */
+    class Held(
+        val stage: String,
+        val sinceNanos: Long,
+        val detail: String?,
+    ) {
+        fun heldForMillis(): Long = (System.nanoTime() - sinceNanos) / 1_000_000
+    }
+
+    @Volatile
+    private var held: Held? = null
+
+    /** Called by the lock helper once the mutex is actually acquired. */
+    fun beginHold(
+        stage: String,
+        detail: String? = null,
+    ) {
+        held = Held(stage, System.nanoTime(), detail)
+    }
+
+    /**
+     * Say what the holder is DOING, from inside the critical section — the
+     * stage name alone is `lock.gate.hold`, which names the lock and not the
+     * work. Keeps the original start time: this annotates a hold, it does not
+     * restart one.
+     */
+    fun annotateHold(detail: String) {
+        held?.let { held = Held(it.stage, it.sinceNanos, detail) }
+    }
+
+    /** Called on release. Tolerates a missing begin — an unmatched end is a no-op, never a wrong holder. */
+    fun endHold() {
+        held = null
+    }
+
+    /** The current holder, or null when nothing holds the write lock. */
+    fun heldNow(): Held? = held
+
+    /**
+     * The structured read the formatted ones should have been. Cumulative and
+     * repeatable like [dump] — never destructive like [statusLine] — so any
+     * number of callers may sample it.
+     *
+     * Exists because the relay parses [dump]'s String today and says so in its
+     * own comment ("the wrong shape, and it is the only one available"). A
+     * stage that was added to but never [timed] reports `calls = 0`, which is
+     * the honest answer rather than a mean over a denominator that does not
+     * exist.
+     */
+    fun snapshot(): Map<String, Stage> =
+        stages.entries.associate { (name, total) ->
+            name to
+                Stage(
+                    totalNanos = total.get(),
+                    calls = calls[name]?.get() ?: 0L,
+                    maxNanos = maxima[name]?.get() ?: 0L,
+                )
+        }
 }

@@ -200,7 +200,12 @@ class TrustProjection(
             // Each cell that overtakes its document's `max_rank` carries the
             // new value in the same update — the invariant the trust descent
             // proves pages with (TrustDescent), kept on the hot path.
-            val raised = IngestStats.timed("proj.fetch") { maxRanks.raise(updates) }
+            // See TrustRecompute: this was the other half of the shared
+            // `proj.fetch`. It reads a reputation document per subject the
+            // cache has not seen, so its cost is a function of cache misses,
+            // not of the corpus.
+            IngestStats.annotateHold("max_rank raise over ${updates.size} cell update(s)")
+            val raised = IngestStats.timed("proj.fetch.maxrank") { maxRanks.raise(updates) }
             IngestStats.timed("proj.write") { reputations.updateCells(raised) }
             Unit to DirtLedger.Dirt(retracted, listServices)
         }
