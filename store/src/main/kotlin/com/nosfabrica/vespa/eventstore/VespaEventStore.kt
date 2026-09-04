@@ -73,9 +73,12 @@ class VespaEventStore internal constructor(
      * Wait until the trust descent may serve pages: the one-time walk that
      * writes `max_rank` onto every reputation document fed before the field
      * existed (MaxRankBackfill). Returns how many documents it wrote — 0 on a
-     * store that already carried it. A failed walk rethrows: the descent
-     * stays off, and nothing served in the meantime was any different from
+     * store that already carried it. A walk the engine refuses is retried
+     * until it finishes ([MaxRankBackfill.runUntilDone]), so this returns only
+     * with the descent on, or throws [CancellationException] when the store
+     * closed first; nothing served in the meantime is any different from
      * before, since [VespaEventIndex.trustDescent] is only set on success.
+     * Until then, [backgroundStatus] names each refused attempt.
      */
     suspend fun awaitTrustDescent(): Int = backfill?.await() ?: 0
 
@@ -253,20 +256,14 @@ class VespaEventStore internal constructor(
             // The descent is off until every reputation document carries the
             // scalar it cuts on. One walk, once, in the background — and the
             // switch is thrown only when it returns, so a boot that finds the
-            // marker already there is on within one read.
+            // marker already there is on within one read. A boot that finds
+            // the engine still coming up retries the walk until it is there
+            // (the failure accounting is inside runUntilDone).
             val backfill =
                 CoroutineScope(SupervisorJob() + Dispatchers.Default).async {
-                    try {
-                        val written = MaxRankBackfill(reputations).run()
-                        eventIndex.trustDescent = true
-                        BackgroundFailures.succeeded(BackgroundFailures.MAX_RANK_BACKFILL)
-                        written
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (t: Throwable) {
-                        BackgroundFailures.record(BackgroundFailures.MAX_RANK_BACKFILL, t)
-                        throw t
-                    }
+                    val written = MaxRankBackfill(reputations).runUntilDone(BACKFILL_RETRY_MILLIS)
+                    eventIndex.trustDescent = true
+                    written
                 }
             return VespaEventStore(store, eventIndex, reconciler, trust, drainScope, backfill)
         }
@@ -310,6 +307,9 @@ class VespaEventStore internal constructor(
 
         /** Backoff between drain retries after an engine failure. */
         private const val DRAIN_RETRY_MILLIS = 5_000L
+
+        /** Backoff between `max_rank` walk attempts after an engine failure — the same cadence as the drain's, for the same reason. */
+        private const val BACKFILL_RETRY_MILLIS = 5_000L
 
         /** The config server sits on :19071 by convention, on the same host as the :8080 query endpoint. */
         internal fun deriveConfigUrl(queryUrl: String): String {
