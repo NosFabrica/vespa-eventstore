@@ -12,8 +12,10 @@ ships it. §§7–9 say what it replaces, what was rejected, and what it leaves 
 
 **§10 is the implementer's index**: every quantity an operator dashboard shows,
 which altitude produces it, and the two additions to the model that auditing a
-mocked page against §§1–9 turned up. Start there if you are building rather than
-reviewing.
+mocked page against §§1–9 turned up. **§11 turns a latency model into a resource
+model** — denominators, bounded heavy hitters, and the one causal edge worth
+having — and is honest about the part no counter can answer. Start at §10 if you
+are building rather than reviewing.
 
 ## 1. The gap
 
@@ -168,8 +170,9 @@ dimension instead of a substring.
 **Cardinality is closed, and must stay closed.** Activities and port calls are
 both fixed sets; their product is ~11 × 6 = 66 slots, plus the lock scopes.
 Every memory figure in §6 depends on that. Keying a counter by search term,
-observer pubkey, filter shape or document id turns a fixed 60 KiB into an
-unbounded leak. This is the one invariant of the design that a reviewer should
+observer pubkey, filter shape or document id turns a fixed ~100 KiB (§11.5)
+into an unbounded leak. §11.2 is how those dimensions get answered anyway,
+in bounded memory, without becoming keys. This is the one invariant of the design that a reviewer should
 enforce without negotiation.
 
 ## 5. What it costs — CPU
@@ -630,3 +633,181 @@ retention-policy-shaped decision inside a library whose entire memory budget
 (§6, §10.3) rests on being flat in traffic. It is the same argument §8 makes for
 not choosing a tracing framework: the embedder owns that, and the snapshot is a
 plain value they can feed to whatever they already run.
+
+## 11. From a latency model to a resource model
+
+§10 made an operator page buildable. It did not make the model a good answer to
+*"where are my resources going"*, which is a different question: §§1–10 measure
+**elapsed time**, and elapsed time around a network round trip is mostly
+waiting, not consuming. Three additions close most of that distance. The fourth
+thing — actual CPU — cannot be closed by counters at all, and §11.4 says so
+rather than implying otherwise.
+
+### 11.1 Denominators, and the rule about ratios
+
+A total does not normalize. Twenty-four minutes of held gate means nothing until
+you know how many events went through it, and this repo already reasons in
+ratios everywhere — 456 B/doc, 9,527 ns/event, round trips per event, 3.2 GB/h.
+
+**The rule: expose counters, never ratios.** A pre-divided rate cannot be
+re-windowed. To get a ratio over any window you must sum the numerator and the
+denominator separately and divide once, at the end; a library that divides
+first has destroyed the information needed to do that, and averaging its
+per-scrape ratios gives a subtly wrong answer that looks plausible. So the
+snapshot carries denominators as ordinary counters beside the costs, and the
+consumer divides.
+
+The denominators worth carrying, all of which the model already has or gains in
+§10.1:
+
+| denominator | where it comes from |
+| --- | --- |
+| events offered / admitted | outcomes altitude (§10.1) |
+| queries served | port decorator, per `Activity` |
+| hits served | port decorator (page size actually returned) |
+| round trips | port decorator |
+| documents in the corpus | engine, for the per-doc figures `attribute-memory.md` uses |
+
+**Alignment is the constraint that makes them usable.** A numerator and its
+denominator must be counted at the same altitude and under the same `Activity`,
+or the quotient is nonsense — round-trips-per-event needs both the round trips
+and the admitted events booked under the *same* `BatchInsert`, not a global
+total of each. This is the part an implementer gets wrong by default, because
+each counter looks correct on its own.
+
+The canonical denominator differs per cost family, and naming it is what makes a
+panel readable rather than merely populated:
+
+| cost | read it per |
+| --- | --- |
+| ingest stage time, lock hold | event admitted |
+| round trips | event admitted (the "~47×" claim, watchable in production) |
+| engine time, docs matched | query served, and hit served |
+| trust projection time | subject settled |
+| attribute memory | document (as `attribute-memory.md` already does) |
+
+### 11.2 Heavy hitters: the forbidden dimension, bounded
+
+§4 forbids keying counters by observer or search term, and is right to — the key
+space is unbounded. But *"which observer or term is costing me most"* is the
+resource question a multi-tenant relay operator most wants answered, and
+refusing it outright is a gap rather than an answer.
+
+A **weighted Space-Saving sketch** answers it in fixed memory. Capacity `m`
+entries; anything holding more than `1/m` of total weight is guaranteed to be
+present, and every entry carries its own error bound, so the summary can say how
+much it might be overstating. Weighted by **cost** — engine milliseconds, or
+docs matched — not by frequency: the question is who is expensive, not who is
+chatty, and one `nostr`-shaped query outweighs a thousand id lookups.
+
+**Measured 2026-09-04**, same box, 64-hex (pubkey-shaped) keys, 5M ops/round,
+median of 5 rounds after 2 warm-ups:
+
+| traffic shape | K=64 | K=256 |
+| --- | ---: | ---: |
+| skewed — 80 % of weight from 20 heavy keys (realistic) | **62.9 ns** | 135.0 ns |
+| churning — 1M distinct keys, nearly every add evicts (worst case) | **159.5 ns** | 601.3 ns |
+| retained memory per sketch | **7.7 KiB** | 45.2 KiB |
+
+**Ship K=64.** The jump to 601 ns at K=256 under churn is the O(m) minimum scan
+on eviction, so `K` is not a free knob — it is quadratic-ish in the case that
+matters least and costs the most. K=64 tracks the twenty-odd heavy observers a
+relay actually has, at a cost comparable to the ~97 ns of §5.
+
+Two properties make even the worst case irrelevant here:
+
+- **It only sits on the search path.** Only a read carrying an observer or terms
+  feeds a sketch; id lookups, dedup probes and guard checks never touch it. That
+  is the low-frequency, high-cost path — hundreds of queries per second, not
+  millions.
+- **Concurrency can therefore be a plain lock.** The measurements above are
+  single-threaded throughput in the millions of ops/second, four orders of
+  magnitude above real search traffic, so a `synchronized` sketch will never be
+  the contended thing. Per-thread sketches merged at snapshot are available if
+  that is ever wrong, but shipping striping first would be solving a problem
+  nobody has.
+
+**Privacy is the same answer as §10.5, and it is not optional.** A top-K by
+observer is a ranked list of who searched the most — truncate the key to a
+prefix, and keep the whole feature behind explicit configuration. An operator
+choosing to rank their users should have to say so.
+
+### 11.3 Causality: attribute the wait to whoever caused it
+
+You can see that `proj.fetch.derive` is slow and that `lock.ingest.wait` spiked,
+and nothing in §§1–10 links the two. §8 rejects a tracing dependency, which is
+the textbook fix, so the link has to come from somewhere else.
+
+It is already there. In `lockedOn`, `requested` is captured *before*
+`mutex.withLock`, and `heldNow()` is readable at that instant — so a writer
+about to queue can see **exactly what it is about to wait behind**, for the cost
+of one volatile read (~1 ns, against a wait measured in seconds).
+
+That turns `lock.*.wait` from a scalar into an attribution:
+
+```
+lock.ingest.wait  41.2 s total
+    38.4 s  behind  proj.fetch.derive   (Drain)
+     2.1 s  behind  write               (BatchInsert)
+     0.7 s  behind  supersede           (BatchInsert)
+```
+
+Which is the actionable form. "Ingest waited 41 s" prompts a question; "ingest
+waited 38 s behind the trust drain's contact-card recall" names the fix.
+
+**The honest limitation: this is first-holder attribution.** A waiter samples
+the holder it queues behind, and over a long wait the lock may change hands
+several times — all of that wait is charged to the head of the queue.
+Re-sampling would cost a read per poll and still miss handovers. For the case
+this exists to catch (one pathological holder stalling everyone) it is exactly
+right; for a uniformly busy queue it over-attributes to whoever happened to be
+first, and a reader should know that before drawing conclusions from a flat
+distribution.
+
+**The companion signal**: a hold exceeding a threshold gets recorded the way a
+slow query does (§10.5) — stage, activity, duration, and its `annotateHold`
+detail. The slow-query log finds expensive reads; this finds expensive
+*critical sections*, which is the thing that actually stalls a relay's ingest.
+
+This is not per-request causality and does not pretend to be. It is the one
+causal edge that matters in a store where every write serialises through two
+mutexes, bought for a volatile read instead of a dependency.
+
+### 11.4 What no counter will tell you
+
+Wall time is not CPU, and none of the above changes that. A store blocked on
+Vespa for 90 % of its wall time is consuming almost no CPU, so every store-side
+duration in this document is **latency and contention, not consumption**. (The
+engine-side figures are different: Vespa's reported query time *is* the engine's
+work.)
+
+The obvious repair does not work here. `ThreadMXBean.getCurrentThreadCpuTime()`
+measures **200 ns** on this box (7.4× `nanoTime`, so a pair is ~400 ns —
+affordable at batch granularity, not per port call). But this store is
+coroutines end to end, and a `suspend` function may resume on a different
+dispatcher thread: a start/end delta then subtracts one thread's lifetime
+counter from another's, which is meaningless and can be negative. Per-activity
+CPU accounting is only sound around sections that provably do not suspend, which
+is not where the interesting time goes.
+
+So **true CPU attribution belongs to a profiler** — JFR or async-profiler, both
+cheap enough to leave running. This does not contradict §8's rejection of
+sampling: that rejects sampling *the counters*, where the pathological call is
+the whole point and would be sampled away. Sampling is the right tool for the
+question counters cannot express at all, which is "which code burned the CPU".
+The two compose — this model says *which activity* is expensive, a profiler says
+*why* — and an operator hunting CPU should be told to reach for the second
+rather than left to infer it from the first.
+
+### 11.5 What this does to the budget
+
+| | |
+| --- | ---: |
+| §6 counters, gauges, slow-query ring | ~60 KiB |
+| §10.3 percentile-grade histograms (replaces the 24-bucket figure) | ~+17 KiB |
+| §11.2 three sketches at K=64 (observer, term, filter shape) | ~+23 KiB |
+| **total** | **~100 KiB** |
+
+Still flat in traffic, still bounded by closed key sets, still noise against a
+1536m heap. The per-request cost is unchanged for everything except a search
+carrying an observer or terms, which additionally pays the ~63 ns of §11.2.
