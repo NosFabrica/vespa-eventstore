@@ -163,7 +163,11 @@ internal class DirtLedger(
             if (snapshot.isEmpty()) return
             if (snapshot.services.isNotEmpty() || inherited) recompute.invalidateProviders()
             snapshot.subjects.chunked(DRAIN_BATCH).forEach { chunk ->
-                gate { recompute.recomputeBatch(chunk, recompute.providerMap(), removeEmpties = true) }
+                // The gate is taken PER SLICE inside, not once for the whole
+                // 20,000-subject chunk: that hold was measured at 13 minutes on
+                // staging with ingest queueing behind it. See
+                // [TrustRecompute.recomputeBatchGated].
+                recompute.recomputeBatchGated(chunk, recompute.providerMap(), removeEmpties = true, gate = gate)
             }
             if (snapshot.services.isNotEmpty()) {
                 recompute.recomputeWalk(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = snapshot.services.toList()), gate = gate)

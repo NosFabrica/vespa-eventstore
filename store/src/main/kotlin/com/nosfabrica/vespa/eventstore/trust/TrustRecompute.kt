@@ -77,6 +77,44 @@ internal class TrustRecompute(
     fun invalidateProviders() = providers.invalidate()
 
     /**
+     * [recomputeBatch] under a gate, taken PER SLICE rather than once for the
+     * whole batch.
+     *
+     * The batch sizes upstream ([DirtLedger.DRAIN_BATCH], [RECOMPUTE_BATCH],
+     * [TrustReconciler.ORPHAN_BATCH], all 20,000) were chosen to bound MEMORY,
+     * and every caller wrapped the whole of one in `gate { }` — so the store's
+     * single write mutex was held for as long as 20,000 subjects took to
+     * derive. Measured on staging 2026-09-04, one such call:
+     *
+     *     lockHeldBy  lock.gate.hold  656s and counting
+     *                 "derive 20000 subject(s) in 400 chunk(s), fanout 4"
+     *     proj.fetch.derive  ms=769980  calls=1
+     *     lock.ingest.hold   ms=560          (ingest's own work: 0.56s)
+     *     lock.ingest.wait   ms=2276280      (ingest queueing: 38 minutes)
+     *
+     * The derivation is per subject and each slice writes only what it
+     * derived, so slicing changes no result — it only decides how long anyone
+     * else waits. Ingest, the monitor's verdicts and the sweeps all queue on
+     * this mutex, so the hold is the whole store's fairness knob.
+     *
+     * The reads are NOT hoisted out of the gate instead, deliberately: a
+     * derive that read before a live insert and wrote after it would clobber
+     * that insert's own recompute, with the dirt marker already cleared —
+     * permanent drift, which is exactly what the gate exists to prevent.
+     * Slicing keeps every subject's derive and write atomic against writers.
+     */
+    suspend fun recomputeBatchGated(
+        subjects: List<String>,
+        serviceProviders: TrustProviders,
+        removeEmpties: Boolean,
+        gate: suspend (suspend () -> Unit) -> Unit,
+    ) {
+        subjects.chunked(GATE_SLICE).forEach { slice ->
+            gate { recomputeBatch(slice, serviceProviders, removeEmpties) }
+        }
+    }
+
+    /**
      * The batched recompute behind every [DirtLedger] drain and the walks:
      * chunked, concurrency-bounded fetches (unbounded fan-out measurably times
      * the engine out), local derivation, one pipelined [ReputationIndex.putAll].
@@ -115,7 +153,13 @@ internal class TrustRecompute(
         // per batch beats one per chunk.
         val derived = LinkedHashMap<String, ReputationDoc>(subjects.size * 2)
         val cutoff = nowSecs()
-        IngestStats.timed("proj.fetch") {
+        // SPLIT from the old shared `proj.fetch` (2026-09-04): this and
+        // TrustProjection's max_rank raise both booked to that one name, so a
+        // gate held for 24 minutes could not be attributed to either. The
+        // annotation names the shape of THIS call — the chunk count is the
+        // loop, the subject count is the work.
+        IngestStats.annotateHold("derive ${subjects.size} subject(s) in ${(subjects.size + FETCH_CHUNK - 1) / FETCH_CHUNK} chunk(s), fanout $QUERY_FANOUT")
+        IngestStats.timed("proj.fetch.derive") {
             subjects.chunked(FETCH_CHUNK).forEachBounded(
                 QUERY_FANOUT,
                 // A partial score set derives a WRONG parent card, so this query
@@ -170,7 +214,7 @@ internal class TrustRecompute(
 
         suspend fun flush() {
             if (buffer.isNotEmpty()) {
-                gate { recomputeBatch(buffer.toList(), providers.get(), removeEmpties = true) }
+                recomputeBatchGated(buffer.toList(), providers.get(), removeEmpties = true, gate = gate)
                 derived += buffer.size
                 buffer.clear()
                 // Reported after the batch is written, not per page — the page
@@ -215,7 +259,7 @@ internal class TrustRecompute(
         return ReputationDoc(subject, influence, followers)
     }
 
-    private companion object {
+    internal companion object {
         // Subjects per batched score-fetch, sized for DENSE subjects (~50
         // services each observed, so 100 subjects recall ~5k docs). Chunking
         // bounds each response and keeps the derivation correct under a lowered
@@ -224,6 +268,18 @@ internal class TrustRecompute(
 
         // Subjects per recompute round in a full walk (memory-bounded batches).
         const val RECOMPUTE_BATCH = 20_000
+
+        /**
+         * Subjects per WRITE-GATE hold, which is a different question from
+         * every batch size above it: those bound memory, this bounds how long
+         * every other writer in the store waits. One [FETCH_CHUNK] of 50 took
+         * ~1.9s on staging, so 500 is ~19s of hold against the ~13 minutes a
+         * whole 20,000-subject batch took. Overridable per deployment.
+         *
+         * Lower is fairer and costs only the mutex round trip (microseconds
+         * against seconds of work); higher approaches the old behaviour.
+         */
+        val GATE_SLICE: Int = System.getenv("VESPA_TRUST_GATE_SLICE")?.toIntOrNull()?.coerceAtLeast(1) ?: 500
 
         /**
          * The serving order REVERSED — oldest first, ties iterated highest-id

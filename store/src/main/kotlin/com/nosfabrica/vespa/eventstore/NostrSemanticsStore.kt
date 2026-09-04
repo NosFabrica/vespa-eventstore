@@ -61,6 +61,8 @@ import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
 import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
 import com.vitorpamplona.quartz.nip40Expiration.isExpired
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
+import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
+import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Mutex
@@ -155,6 +157,28 @@ class NostrSemanticsStore(
 ) : IEventStore {
     private val writes = Mutex()
 
+    /**
+     * THE TRUST GATE, separate from [writes] since 2026-09-04.
+     *
+     * One mutex used to serialise every write in this store, and the hazard it
+     * was documented against is recompute-versus-recompute: "repairs must not
+     * race live inserts' recomputes". A plain kind-1 note has NO recompute —
+     * [TrustProjection.opDirt] returns `Dirt.NONE` for every kind but 30382 and
+     * 10040 — so it was excluded against work it cannot conflict with. Measured
+     * on staging: an ephemeral event, which takes the lock and returns without
+     * storing anything, took 35-41 SECONDS to answer OK while the trust drain
+     * held the lock re-deriving reputation documents.
+     *
+     * What a plain insert genuinely needs exclusion for is the DELETION race —
+     * check `isDeleted`, then put, with a kind-5 landing in between would
+     * resurrect a deleted event. That is event-document work and stays on
+     * [writes]. Reputation-document work moves here.
+     *
+     * LOCK ORDER, where both are needed (a card insert does inline projection):
+     * [writes] then [trustGate], never the reverse.
+     */
+    private val trustGate = Mutex()
+
     // Owners with any stored tombstone/vanish; everyone else's inserts skip the
     // NIP-09/62 guard probes entirely (see GuardOwners for the safety argument).
     private val guards = GuardOwners(index, writers, guardRefreshMillis)
@@ -205,13 +229,30 @@ class NostrSemanticsStore(
     private suspend fun <T> locked(
         stage: LockStage,
         body: suspend () -> T,
+    ): T = lockedOn(writes, stage, body)
+
+    /** [locked], on a named mutex — see [trustGate] for why there are two. */
+    private suspend fun <T> lockedOn(
+        mutex: Mutex,
+        stage: LockStage,
+        body: suspend () -> T,
     ): T {
         val requested = System.nanoTime()
         var acquired = 0L
         try {
-            return writes.withLock {
+            return mutex.withLock {
                 acquired = System.nanoTime()
-                body()
+                // Live holder, for the question the cumulative stages cannot
+                // answer: not "the gate was held for 24 minutes since boot"
+                // but "the gate is held RIGHT NOW, by this, for this long".
+                // Two volatile writes per critical section, against a section
+                // that is measured in seconds.
+                IngestStats.beginHold(stage.hold)
+                try {
+                    body()
+                } finally {
+                    IngestStats.endHold()
+                }
             }
         } finally {
             // Booked AFTER release: recording inside would put two map lookups
@@ -227,10 +268,45 @@ class NostrSemanticsStore(
         }
     }
 
-    override suspend fun insert(event: Event) = locked(LOCK_INGEST) { insertLocked(event) }
+    /**
+     * Trust-relevant writes take BOTH gates; everything else takes only
+     * [writes].
+     *
+     * CONSERVATIVE BY CONSTRUCTION — the question asked is "could this write
+     * change a reputation document?", and anything that might answers yes:
+     * a contact card (30382) and a provider list (10040) are the two kinds
+     * [TrustProjection.opDirt] books work for, and a deletion or a
+     * request-to-vanish can REMOVE one, which is trust work through
+     * `TrustProjection.remove`. A kind-1 note, a reaction, a repost and a zap
+     * are none of those, and they are the overwhelming majority of what a
+     * relay is asked to store.
+     */
+    private fun touchesTrust(event: Event): Boolean =
+        event.kind == ContactCardEvent.KIND ||
+            event.kind == TrustProviderListEvent.KIND ||
+            event is DeletionEvent ||
+            event is RequestToVanishEvent
 
     /**
-     * Run [body] under this store's single writer lock. For the trust
+     * LOCK ORDER: [writes] first, [trustGate] second — the single order every
+     * two-lock path in this file takes, so the pair cannot deadlock.
+     */
+    private suspend fun <T> lockedForWrite(
+        event: Event,
+        body: suspend () -> T,
+    ): T =
+        locked(LOCK_INGEST) {
+            // Charged to its OWN stage, not to LOCK_GATE: `lock.gate.*` is the
+            // drain's, and folding an insert's wait for the drain into the same
+            // name would make "the drain is slow" and "a card is waiting for
+            // the drain" one number. They have different remedies.
+            if (touchesTrust(event)) lockedOn(trustGate, LOCK_INGEST_TRUST) { body() } else body()
+        }
+
+    override suspend fun insert(event: Event) = lockedForWrite(event) { insertLocked(event) }
+
+    /**
+     * Run [body] under this store's TRUST writer lock. For the trust
      * reconciler's mutating batches: its repairs derive from a read of the
      * corpus, and racing a live insert would let a derivation from pre-write
      * state land after the insert's own recompute. NOT reentrant (a plain
@@ -239,8 +315,13 @@ class NostrSemanticsStore(
      * Booked under [LOCK_GATE], separately from ingest's own acquisitions: the
      * callers are the projection drain and the reconciler, and telling their
      * hold apart from ingest's is the entire point of the split.
+     *
+     * ON [trustGate], NOT [writes], since 2026-09-04: this is
+     * reputation-document work, so holding it no longer stalls a kind-1 insert
+     * that has no reputation work to do. Writes that DO touch reputation still
+     * queue for it — see [touchesTrust].
      */
-    internal suspend fun <T> withWriteLock(body: suspend () -> T): T = locked(LOCK_GATE) { body() }
+    internal suspend fun <T> withWriteLock(body: suspend () -> T): T = lockedOn(trustGate, LOCK_GATE) { body() }
 
     /**
      * Batches take a BULK path — the per-event path costs 3–5 index round
@@ -1202,6 +1283,9 @@ class NostrSemanticsStore(
          */
         val LOCK_INGEST = LockStage("lock.ingest")
         val LOCK_GATE = LockStage("lock.gate")
+
+        /** A trust-relevant insert queueing for [trustGate] — see [touchesTrust]. */
+        val LOCK_INGEST_TRUST = LockStage("lock.ingest.trust")
         val LOCK_SWEEP = LockStage("lock.sweep")
         val LOCK_REINDEX = LockStage("lock.reindex")
 
