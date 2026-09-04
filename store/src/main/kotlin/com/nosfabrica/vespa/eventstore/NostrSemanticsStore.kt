@@ -324,6 +324,27 @@ class NostrSemanticsStore(
     internal suspend fun <T> withWriteLock(body: suspend () -> T): T = lockedOn(trustGate, LOCK_GATE) { body() }
 
     /**
+     * [lockedForWrite] for a BATCH: the trust gate is taken when ANY event in
+     * it touches reputation.
+     *
+     * The bulk path writes reputation state inline — `TrustProjection.putAll`
+     * ends in `reputations.updateCells` for the cards in the batch — so a batch
+     * carrying one card mutates the same documents the drain re-derives.
+     * Missing this is how the trust-gate split first shipped: `insert` took
+     * both locks and `batchInsert` took neither, which left the mirror's bulk
+     * card ingest racing the drain with no mutual exclusion at all. The
+     * single-lock design could not have this bug; the split has to earn its
+     * exclusion at every write entry point, and there are two.
+     */
+    private suspend fun <T> lockedForBatch(
+        events: List<Event>,
+        body: suspend () -> T,
+    ): T =
+        locked(LOCK_INGEST) {
+            if (events.any { touchesTrust(it) }) lockedOn(trustGate, LOCK_INGEST_TRUST) { body() } else body()
+        }
+
+    /**
      * Batches take a BULK path — the per-event path costs 3–5 index round
      * trips each, which caps ingest in the low thousands per second. Two
      * shapes, by whether the batch mutates via deletions:
@@ -339,12 +360,13 @@ class NostrSemanticsStore(
      * Sub-[BULK_MIN] batches aren't worth the setup and just loop [insertLocked].
      */
     override suspend fun batchInsert(events: List<Event>): List<IEventStore.InsertOutcome> {
-        if (events.size < BULK_MIN) return locked(LOCK_INGEST) { events.map { tryInsertLocked(it) } }
+        if (events.size < BULK_MIN) return lockedForBatch(events) { events.map { tryInsertLocked(it) } }
         return if (events.any { it is DeletionEvent || it is RequestToVanishEvent }) {
-            locked(LOCK_INGEST) { bulkMixed.run(events) }
+            lockedForBatch(events) { bulkMixed.run(events) }
         } else {
+            // PLANNED OUTSIDE THE LOCKS, as before: the plan is reads only.
             val plan = bulkRecords.plan(events)
-            locked(LOCK_INGEST) { bulkRecords.commit(plan) }
+            lockedForBatch(events) { bulkRecords.commit(plan) }
         }
     }
 
@@ -367,7 +389,7 @@ class NostrSemanticsStore(
                 buffered += event
             }
         }.body()
-        locked(LOCK_INGEST) { buffered.forEach { insertLocked(it) } }
+        lockedForBatch(buffered) { buffered.forEach { insertLocked(it) } }
     }
 
     private suspend fun insertLocked(event: Event) {
@@ -1172,13 +1194,32 @@ class NostrSemanticsStore(
 
     override suspend fun delete(filter: Filter) = delete(listOf(filter))
 
+    /**
+     * BOTH LOCKS, unconditionally — a sweep is defined by a filter, so what it
+     * will delete is not known until it runs, and it may well be cards. A
+     * removal does not write reputation inline (it marks dirt and the drain
+     * re-derives), but `DirtLedger.guarded` PERSISTS that mark as a reputation
+     * document, and the drain loads and rewrites the same marker under the
+     * trust gate. Racing it would drop work the drain had already snapshotted.
+     *
+     * Cheap where it matters: a sweep is periodic, not the client write path
+     * the gate split exists to keep clear.
+     */
     override suspend fun delete(filters: List<Filter>) {
-        locked(LOCK_SWEEP) { filters.mapNotNull { it.toEventQuery() }.forEach { deletions.sweep(it) } }
+        locked(LOCK_SWEEP) {
+            lockedOn(trustGate, LOCK_INGEST_TRUST) {
+                filters.mapNotNull { it.toEventQuery() }.forEach { deletions.sweep(it) }
+            }
+        }
     }
 
     override suspend fun deleteExpiredEvents() {
         // expiresBefore is strict (<): +1 makes "expires exactly now" due, per NIP-40.
-        locked(LOCK_SWEEP) { deletions.sweep(EventQuery(expiresBefore = nowSecs() + 1)) }
+        locked(LOCK_SWEEP) {
+            // Both locks, for the reason on [delete]: NIP-40 expiry does not
+            // ask what kind it is reaping, so it can reap cards.
+            lockedOn(trustGate, LOCK_INGEST_TRUST) { deletions.sweep(EventQuery(expiresBefore = nowSecs() + 1)) }
+        }
     }
 
     // ---- full-text reindex --------------------------------------------------
