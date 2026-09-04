@@ -26,6 +26,7 @@ import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.InMemoryReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
+import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationCells
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
@@ -104,6 +105,40 @@ class TrustProjectionTest {
                 ReputationDoc(subject, mapOf(observer to 87), mapOf(observer to 120.0)),
                 reputations.get(subject),
             )
+        }
+
+    /**
+     * Every read the projection WRITES from is a complete read: the card fetch
+     * a derivation rests on and the 10040 read the attribution map rests on.
+     * An engine that would answer either short refuses them instead
+     * (VespaCoverageTest), so no parent is derived or removed from a fetch
+     * that missed cards.
+     */
+    @Test
+    fun `the card fetch and the provider-list read are complete reads`() =
+        runBlocking {
+            val seen = mutableListOf<EventQuery>()
+            val inner = InMemoryEventIndex()
+            val recording =
+                object : EventIndex by inner {
+                    override suspend fun search(query: EventQuery): List<EventDoc> {
+                        seen += query
+                        return inner.search(query)
+                    }
+                }
+            val reps = InMemoryReputationIndex()
+            val recorded = NostrSemanticsStore(TrustProjection(recording, reps), relay = RelayUrlNormalizer.normalize("ws://localhost:7778"))
+            // Card first, so the list's arrival walks the service and FETCHES it.
+            recorded.insert(card())
+            recorded.insert(list10040())
+            assertEquals(mapOf(observer to 87), reps.get(subject)?.influenceScores, "derived through the fetch")
+            // The derivation's shape: cards BY SUBJECT (`d`), any signer, live at
+            // the cutoff — not the store's own by-author dedup read of the card.
+            val cardFetches = seen.filter { it.kinds == listOf(ContactCardEvent.KIND) && it.authors.isEmpty() && it.notExpiredAt != null }
+            // Likewise the attribution map's read: EVERY live 10040, not the store's by-author dedup read of the one arriving.
+            val listReads = seen.filter { it.kinds == listOf(TrustProviderListEvent.KIND) && it.authors.isEmpty() }
+            assertTrue(cardFetches.isNotEmpty() && cardFetches.all { it.complete }, "every unlimited card fetch is complete: $cardFetches")
+            assertTrue(listReads.isNotEmpty() && listReads.all { it.complete }, "every 10040 read is complete: $listReads")
         }
 
     @Test

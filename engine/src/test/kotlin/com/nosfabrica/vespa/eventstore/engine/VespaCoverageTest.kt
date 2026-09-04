@@ -166,6 +166,42 @@ class VespaCoverageTest {
             assertEquals(1, index.search(EventQuery()).size, "and so must plain unlimited recall")
         }
 
+    /**
+     * The write-side counterpart of the carve-out above: a reader that DERIVES
+     * and DELETES from what it reads (the trust projection's card fetch) asks
+     * for `complete`, and the same not-full-at-a-rounded-100 answer that the
+     * read path rightly serves is refused to it — a node still opening its
+     * buckets is exactly the engine that removed 17k parents on staging.
+     */
+    @Test
+    fun `a complete read refuses the rounded-100 shape the read path serves`() =
+        runBlocking {
+            index.put(doc("1".repeat(64)))
+            mock.roundedCompleteCoverage = true
+
+            assertEquals(1, index.search(EventQuery()).size, "the read path still serves it")
+            val refused = runCatching { index.search(EventQuery(complete = true)) }.exceptionOrNull() ?: fail("a complete read must refuse full: false")
+            assertTrue("full: false" in refused.message.orEmpty(), "names the reason: ${refused.message}")
+
+            mock.roundedCompleteCoverage = false
+            assertEquals(1, index.search(EventQuery(complete = true)).size, "…and serves once the engine calls itself full")
+        }
+
+    /** The other short answer that passes every coverage flag: a deployment whose query profile caps hits. */
+    @Test
+    fun `a complete read refuses a hits-capped answer`() =
+        runBlocking {
+            index.put(doc("1".repeat(64)))
+            index.put(doc("2".repeat(64)))
+            mock.hitsCap = 1
+
+            val refused = runCatching { index.search(EventQuery(complete = true)) }.exceptionOrNull() ?: fail("one of two served must refuse")
+            assertTrue("served 1 of 2" in refused.message.orEmpty(), "names the cap: ${refused.message}")
+
+            mock.hitsCap = null
+            assertEquals(2, index.search(EventQuery(complete = true)).size)
+        }
+
     /** The grouping funnel checks coverage separately (queryRoot), so it needs its own proof. */
     @Test
     fun `the count path serves an undegraded not-full response too`() =

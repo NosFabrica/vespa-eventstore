@@ -57,7 +57,31 @@ internal class SearchRoot(
     val children: List<SearchHit> = emptyList(),
     val coverage: SearchCoverage = SearchCoverage(),
     val fields: SearchRootFields = SearchRootFields(),
-)
+) {
+    /**
+     * [EventQuery.complete]'s check, on top of [SearchCoverage.requireComplete]:
+     * the engine must call the answer `full` — the exact `docs == active`,
+     * which the read path deliberately does NOT key on (see
+     * [SearchCoverage.undegraded]) — and must have served every match it
+     * counted. Refuses the two shorter-than-it-looks shapes that pass the
+     * read path's guard: the not-full-at-a-rounded-100 answer of a node still
+     * opening buckets, and the hits-capped answer of a deployment whose query
+     * profile caps `maxHits` (`VESPA_UNBOUNDED_HITS`). Loud on purpose: the
+     * callers that ask for this derive and delete from what they read, and a
+     * retry after the engine settles costs nothing while a wrong write costs
+     * a document.
+     */
+    fun requireEverything() {
+        require(coverage.full) {
+            "vespa answered full: false (${coverage.coverage}% of the corpus, degraded: ${coverage.degraded ?: "unspecified"}) to a read that " +
+                "must see everything — a node still opening its buckets, most likely; refused rather than derived from"
+        }
+        require(fields.totalCount <= children.size) {
+            "vespa served ${children.size} of ${fields.totalCount} matches to a read that must see everything — the deployed hits cap " +
+                "(the query profile's maxHits / VESPA_UNBOUNDED_HITS) is below this match set; refused rather than derived from"
+        }
+    }
+}
 
 /**
  * The response's own summary line. [totalCount] is HOW MANY DOCUMENTS THE QUERY

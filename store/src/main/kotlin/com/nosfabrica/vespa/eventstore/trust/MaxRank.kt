@@ -20,11 +20,14 @@
  */
 package com.nosfabrica.vespa.eventstore.trust
 
+import com.nosfabrica.vespa.eventstore.BackgroundFailures
 import com.nosfabrica.vespa.eventstore.engine.QUERY_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationCells
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import com.nosfabrica.vespa.eventstore.engine.mapBounded
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 
 /**
  * WHAT `max_rank` IS STORED AS, per subject, as far as this process knows —
@@ -110,6 +113,15 @@ internal class MaxRankCache(
  * returns (VespaEventStore.open). Every write since the field shipped keeps
  * the value itself ([MaxRankCache]), so the walk is the migration and not
  * the upkeep.
+ *
+ * It runs at BOOT, which is exactly when the engine may not be there: a
+ * relay restarting beside a Vespa that is itself restarting lands the walk
+ * on a refused connection (seen on staging, 2026-09-04, where the walk died
+ * on its first page and the descent stayed off for the life of the process
+ * with nothing served any differently to say so). So [runUntilDone] is the
+ * entry the store uses: a failed walk is counted, waited out, and started
+ * again from the top — the marker is only written by a walk that finished,
+ * and the writes are assigns, so a restart rewrites idempotently.
  */
 internal class MaxRankBackfill(
     private val reputations: ReputationIndex,
@@ -127,6 +139,29 @@ internal class MaxRankBackfill(
         }
         reputations.put(ReputationDoc(MARKER_KEY, mapOf(DONE to 1)))
         return written
+    }
+
+    /**
+     * [run] until it returns: every failure is recorded under
+     * [BackgroundFailures.MAX_RANK_BACKFILL] (so a walk that keeps failing is
+     * visible in the store's status line, not just absent from it) and the
+     * walk restarts after [retryMillis]. Returns only with the walk done;
+     * cancellation is the one way out without it.
+     */
+    suspend fun runUntilDone(
+        retryMillis: Long,
+        onProgress: ((Int) -> Unit)? = null,
+    ): Int {
+        while (true) {
+            try {
+                return run(onProgress).also { BackgroundFailures.succeeded(BackgroundFailures.MAX_RANK_BACKFILL) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                BackgroundFailures.record(BackgroundFailures.MAX_RANK_BACKFILL, t)
+                delay(retryMillis)
+            }
+        }
     }
 
     companion object {

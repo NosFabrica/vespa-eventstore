@@ -119,8 +119,14 @@ internal class TrustRecompute(
             subjects.chunked(FETCH_CHUNK).forEachBounded(
                 QUERY_FANOUT,
                 // A partial score set derives a WRONG parent card, so this query
-                // carries no limit.
-                produce = { chunk -> chunk to inner.search(EventQuery(kinds = listOf(ContactCardEvent.KIND), tags = mapOf("d" to chunk), notExpiredAt = cutoff)) },
+                // carries no limit — and `complete`, so an engine that would
+                // answer short (still opening buckets after a restart, or
+                // capping hits) refuses instead: the batch aborts with its
+                // dirt marker intact, and nothing is written or removed from
+                // a fetch that missed cards. That is the write-side counterpart
+                // of the read path's rounded-100 carve-out, and the failure
+                // that removed 17k parents on staging (2026-09-04).
+                produce = { chunk -> chunk to inner.search(EventQuery(kinds = listOf(ContactCardEvent.KIND), tags = mapOf("d" to chunk), notExpiredAt = cutoff, complete = true)) },
             ) { (chunk, docs) ->
                 // Serialized by forEachBounded, so this plain map needs no lock.
                 val bySubject = HashMap<String, MutableList<EventDoc>>(chunk.size * 2)

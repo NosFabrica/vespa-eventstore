@@ -20,13 +20,17 @@
  */
 package com.nosfabrica.vespa.eventstore.trust
 
+import com.nosfabrica.vespa.eventstore.BackgroundFailures
 import com.nosfabrica.vespa.eventstore.engine.InMemoryReputationIndex
+import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationCells
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import kotlinx.coroutines.runBlocking
+import java.io.IOException
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
  * THE INVARIANT THE DESCENT RESTS ON: a reputation document's `max_rank` is
@@ -83,5 +87,30 @@ class MaxRankTest {
             assertEquals(65, reputations.get(s)!!.maxRank)
             assertEquals(1, reputations.get(MaxRankBackfill.MARKER_KEY)!!.influenceScores.size, "the marker stands")
             assertEquals(0, backfill.run(), "…and the walk is a no-op while it does")
+        }
+
+    @Test
+    fun `a walk the engine refuses is counted and started again, and the marker waits for the one that finished`() =
+        runBlocking {
+            BackgroundFailures.reset()
+            reputations.put(ReputationDoc(s, mapOf(o1 to 40)))
+            reputations.put(ReputationDoc("c1".repeat(32), mapOf(o1 to 3)))
+            var refusals = 2
+            var walks = 0
+            // The staging shape: the visit itself is what a restarting engine refuses.
+            val flaky =
+                object : ReputationIndex by reputations {
+                    override suspend fun visitDocs(onPage: suspend (List<ReputationDoc>) -> Boolean) {
+                        walks++
+                        if (refusals-- > 0) throw IOException("Connection refused")
+                        reputations.visitDocs(onPage)
+                    }
+                }
+            assertEquals(2, MaxRankBackfill(flaky).runUntilDone(retryMillis = 1), "the third walk wrote both authors")
+            assertEquals(3, walks, "two refused, one finished")
+            assertEquals(40, reputations.get(s)!!.maxRank)
+            assertEquals(1, reputations.get(MaxRankBackfill.MARKER_KEY)!!.influenceScores.size, "the marker is the finished walk's")
+            assertEquals(0, BackgroundFailures.consecutiveFailures(BackgroundFailures.MAX_RANK_BACKFILL), "recovered")
+            assertTrue(BackgroundFailures.statusLine().contains("${BackgroundFailures.MAX_RANK_BACKFILL} 2 fail"), "…and the two refusals stay on the record: ${BackgroundFailures.statusLine()}")
         }
 }

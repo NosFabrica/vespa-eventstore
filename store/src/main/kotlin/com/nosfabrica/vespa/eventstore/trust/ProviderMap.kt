@@ -105,7 +105,11 @@ internal class ProviderMap(
 
     private suspend fun pass(): Pass {
         cached?.let { return it }
-        val docs = inner.search(EventQuery(kinds = listOf(TrustProviderListEvent.KIND), notExpiredAt = nowSecs()))
+        // `complete`: a map built from SOME of the 10040s attributes every
+        // service the missing lists name to nobody, and a derivation under it
+        // drops those observers' cells from every subject it touches — the
+        // same wrong write as a short card fetch, one level up.
+        val docs = inner.search(EventQuery(kinds = listOf(TrustProviderListEvent.KIND), notExpiredAt = nowSecs(), complete = true))
         // ONE parse for both projections. Each doc costs a tags parse and an
         // `EventFactory` dispatch, and this rebuilds on every 10040 write, so
         // handing each side the documents to decode itself would double the
