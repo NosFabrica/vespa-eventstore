@@ -393,7 +393,7 @@ class TrustReconciler internal constructor(
 
         suspend fun flush() {
             if (buffer.isNotEmpty()) {
-                gate { recompute.recomputeBatch(buffer.toList(), recompute.providerMap(), removeEmpties = true) }
+                recompute.recomputeBatchGated(buffer.toList(), recompute.providerMap(), removeEmpties = true, gate = gate)
                 buffer.clear()
             }
         }
