@@ -157,7 +157,13 @@ internal class BulkRecordInsert(
                 // the vanish query usually disappears even in a flagged batch.
                 val flaggedDeleters = guards.filterFlaggedDeleters(owners.keys)
                 val flaggedVanishers = guards.filterFlaggedVanishers(owners.keys)
-                val tombs = if (flaggedDeleters.isEmpty()) emptyMap() else guardDocs(flaggedDeleters, DeletionEvent.KIND)
+                val alive = alive()
+                val tombs =
+                    if (flaggedDeleters.isEmpty()) {
+                        emptyMap()
+                    } else {
+                        tombstoneDocs(flaggedDeleters, alive.map { events[it].id }, alive.mapNotNull { events[it].addressOrNull() }.distinct())
+                    }
                 val vanishes = if (flaggedVanishers.isEmpty()) emptyMap() else guardDocs(flaggedVanishers, RequestToVanishEvent.KIND)
                 owners.keys.associateWith { (tombs[it].orEmpty() to vanishes[it].orEmpty()) }
             }
@@ -350,6 +356,35 @@ internal class BulkRecordInsert(
                 index.search(EventQuery(kinds = listOf(kind), authors = chunk))
             }.flatten()
             .groupBy { it.pubkey }
+
+    /**
+     * The owners' tombstones that can guard THIS batch: those e-tagging one
+     * of its ids or a-tagging one of its addresses — the only tombstones
+     * `guards.apply` can act on. Every tombstone the owner ever stored was
+     * fetched before, as full summaries, per content batch: a heavy deleter
+     * (an outbox stream is ~98% kind 5) with 100k stored tombstones made every
+     * batch carrying one of their events pull all 100k under the writer lock.
+     * Two tag-narrowed queries per chunk instead, the shape the mixed path's
+     * preload already takes; a doc named by both arrives once.
+     */
+    private suspend fun tombstoneDocs(
+        owners: Collection<String>,
+        ids: List<String>,
+        addresses: List<String>,
+    ): Map<String, List<EventDoc>> {
+        val queries =
+            owners.toList().chunked(CHECK_CHUNK).flatMap { chunk ->
+                buildList {
+                    if (ids.isNotEmpty()) add(EventQuery(kinds = listOf(DeletionEvent.KIND), authors = chunk, tags = mapOf("e" to ids)))
+                    if (addresses.isNotEmpty()) add(EventQuery(kinds = listOf(DeletionEvent.KIND), authors = chunk, tags = mapOf("a" to addresses)))
+                }
+            }
+        return queries
+            .mapBounded(QUERY_FANOUT) { index.search(it) }
+            .flatten()
+            .distinctBy { it.id }
+            .groupBy { it.pubkey }
+    }
 
     private companion object {
         // Ids/authors/d-tags per check query. Not a result cap — no query here

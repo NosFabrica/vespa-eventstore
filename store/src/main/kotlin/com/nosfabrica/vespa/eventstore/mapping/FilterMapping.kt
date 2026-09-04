@@ -98,9 +98,13 @@ internal fun Filter.toEventQuery(): EventQuery? {
     val observer = parsed.extensions["observer"]?.lowercase()?.takeIf(Hex::isHex64)
     val ranked = parsed.hasText || sort != null
     return EventQuery(
-        ids = ids.orEmpty(),
+        // Lowercased ONCE here: the engine matches hex keys uncased, but the
+        // reference expansion compares them as strings against stored keys
+        // and the enrolment, and an upper-case author would have recalled its
+        // events and then silently skipped its declarations.
+        ids = ids.orEmpty().map { it.lowercase() },
         kinds = kinds.orEmpty(),
-        authors = authors.orEmpty(),
+        authors = authors.orEmpty().map { it.lowercase() },
         tags = tags.orEmpty(),
         tagsAll = tagsAll.orEmpty(),
         since = since,
@@ -166,7 +170,9 @@ private fun rankReputationOf(value: String): String? =
 private fun rankFloorOf(value: String): Double? {
     val parts = value.split(':')
     if (parts.size != 3 || parts[0] != "rank") return null
-    val n = parts[2].toDoubleOrNull() ?: return null
+    // Finite only: `NaN` and `Infinity` parse as doubles, and a NaN floor
+    // reaches the profile's gate where every comparison is false.
+    val n = parts[2].toDoubleOrNull()?.takeIf { it.isFinite() } ?: return null
     return when (parts[1]) {
         "gte" -> n
 

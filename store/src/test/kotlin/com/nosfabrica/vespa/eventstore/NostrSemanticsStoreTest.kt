@@ -819,4 +819,16 @@ open class NostrSemanticsStoreTest {
             assertEquals(store.query<Event>(filters).size, store.count(filters), "multi-filter dedup")
             assertEquals(5, store.count(filters))
         }
+
+    /** STORE-F10: an empty filter QUERIES everything and DELETES nothing — the reference's deliberate asymmetry, so a stray empty filter cannot wipe the store. */
+    @Test
+    fun `delete with an empty filter deletes nothing`() =
+        runBlocking {
+            store.insert(note())
+            store.insert(note())
+            store.delete(listOf(Filter()))
+            assertEquals(2, storedDocs(), "an empty filter is a no-op for delete")
+            store.delete(listOf(Filter(kinds = listOf(1))))
+            assertEquals(0, storedDocs(), "a real filter still sweeps")
+        }
 }

@@ -337,4 +337,26 @@ class WriterLockStatsTest {
             assertEquals(20, store.query<Event>(Filter(kinds = listOf(1))).size, "the duplicate note was already stored; every other note is new")
             assertEquals(2, store.query<Event>(Filter(kinds = listOf(ContactCardEvent.KIND))).size)
         }
+
+    /**
+     * ONE HOLDER SLOT PER LOCK. With a single slot, a plain insert's short
+     * `writes` hold overwrote the drain's seconds-long gate hold and then, on
+     * release, erased it — so "who holds the gate right now" answered
+     * "nobody" for most of every drain slice.
+     */
+    @Test
+    fun `a plain insert's hold does not erase the gate holder`() =
+        runBlocking {
+            val store = NostrSemanticsStore(InMemoryEventIndex())
+            coroutineScope {
+                val holding = async { store.withWriteLock { delay(300) } }
+                yield()
+                delay(50)
+                store.insert(metadata("9".repeat(64)))
+                val now = IngestStats.heldNow()
+                assertTrue(now != null && now.stage == "lock.gate.hold", "the gate holder is still reported after a plain insert came and went: $now")
+                holding.await()
+            }
+            assertTrue(IngestStats.heldNow() == null, "released: nothing held")
+        }
 }
