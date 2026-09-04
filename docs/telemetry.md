@@ -1,0 +1,454 @@
+# Telemetry — what the store spends, and what measuring it costs
+
+**Status: PROPOSAL** (2026-09-04). Nothing here is built. `IngestStats` is what
+exists; §7 says how it decomposes into this rather than being replaced by it.
+
+This document is in two halves, for the same reason `attribute-memory.md` is.
+First **where the model should come from** — the argument that telemetry belongs
+at the seams the architecture already has, rather than at hand-placed call
+sites. Second **what it costs to run**, measured, because a library that ships
+always-on instrumentation owes its embedder that number before it ships it.
+
+## 1. The gap
+
+The store can say a great deal about a write and nothing at all about a read.
+
+| path | instrumented? |
+| --- | --- |
+| ingest stages (`dedup`, `guards`, `versions`, `supersede`, `write`) | yes — `IngestStats` |
+| writer-lock wait / hold, and who holds it now | yes — `IngestStats`, `heldNow()` |
+| trust projection (`proj.fetch.derive`, `proj.fetch.maxrank`, `proj.write`) | yes |
+| **REQ / COUNT / NIP-50 search** | **no** |
+| **round trips to the engine** | **no** |
+| **engine-side cost: docs matched, coverage, rank profile** | **no** |
+
+On a relay the reads *are* the load, and the slowest thing this store serves is
+a ranked search over a common word (`bitcoin` 2.7–4.4 s, `nostr` 19.2 s on the
+production relay — `benchmark/README.md`). None of it is visible from inside the
+library today.
+
+## 2. What is actually scarce
+
+`IngestStats` measures wall time, and only wall time. But the performance
+arguments already written down in this repo are conducted in three different
+currencies, and conflating them is why the flat stage map has to be read so
+carefully:
+
+| resource | why it is the binding constraint | measured today |
+| --- | --- | --- |
+| **serialized time** in a critical section | every write queues behind one mutex; a slow holder stalls all ingest | yes — this is all `IngestStats` does |
+| **round trips** to the engine | `batchInsert` exists *because* of this ("~47× fewer round trips"; "never ingest in a loop over `insert()`") | **no** |
+| **engine work** — docs matched, coverage, rank profile | the ranked-search cost that dominates a relay's CPU | **no** |
+
+Round trips are this codebase's native unit of cost. The bulk-insert design is
+justified in them, `benchmark/README.md` reports them per event, and CLAUDE.md
+states a rule in them. There is no counter for them anywhere in the library.
+That absence says more about the shape of the current model than any complaint
+about its data structures: the model measures what was easy to time from inside
+the write path, not what the store is known to be short of.
+
+## 3. Measure at the seams that already exist
+
+### 3.1 The port decorator
+
+`TrustProjection` is a decorator on `EventIndex`, and its KDoc states exactly
+why that placement was chosen: it observes `put`/`remove` at the seam, so
+**every** deletion style — supersession, kind-5, NIP-62 vanish, the orphan sweep
+— updates trust tensors *with zero deletion-specific code*.
+
+That argument transfers verbatim to metering. A `MeteredEventIndex` at the same
+seam sees every `get`, `put`, `search`, `count` and `visit`, by whatever route
+reached it, with **no instrumentation at any call site**. The stage list stops
+being a hand-maintained artifact that drifts from the code and becomes a
+consequence of the architecture: a new read path is counted the day it is
+written, because it must go through the port to reach the engine at all.
+
+This is the whole design. Everything below is detail.
+
+### 3.2 The caller's intent, carried ambiently
+
+A decorator at the port sees `search(query)`; it does not see that this
+particular search is the dedup probe inside a `batchInsert`. That second
+dimension has to come from the caller, and it must not be threaded through
+twenty signatures to get there.
+
+Quartz's `StoreQueryContext` already rides `coroutineContext` through
+`NostrSemanticsStore` to carry the observer into `query()`, `count()` and
+`rawQuery()`. The same mechanism carries the same kind of thing — the caller's
+intent, ambient, set once. An `Activity` element names the operation in the
+store's own vocabulary, as a closed set:
+
+```
+Insert  BatchInsert  Query  Count  Delete  Snapshot
+Drain   Reconcile    Sweep  GuardRefresh   Backfill
+```
+
+Set at each public entry point, read by the decorator. Nothing in between has to
+know it exists.
+
+### 3.3 Composition
+
+```kotlin
+// today
+NostrSemanticsStore(TrustProjection(VespaEventIndex, VespaReputationIndex))
+
+// metered at two depths: the outer counts what the STORE asked for, the
+// inner what actually reached the engine. Their difference is the trust
+// projection's own traffic — a number nothing can show today.
+NostrSemanticsStore(
+    Metered(STORE, TrustProjection(Metered(ENGINE, VespaEventIndex), reputations)),
+)
+```
+
+The two-depth placement is not a trick to be clever with. It answers a question
+that has come up twice already in this repo's history — how much of the engine's
+load the projection adds — and no restructuring of a flat stage map can produce
+it, because the flat map has no notion of *which layer asked*.
+
+### 3.4 Critical sections nest; the model must too
+
+The locks stay explicitly instrumented, because contention is not a port call.
+But they become **scopes that stack**, not flat counters. Today they do not, and
+the work runs inside them:
+
+```
+lock.ingest.hold  ⊃  lock.ingest.trust.{wait,hold}  ⊃  dedup, guards, versions, supersede, write
+lock.gate.hold    ⊃  proj.fetch.derive, proj.write
+```
+
+Three consequences of getting this right:
+
+- **Totals stop double-counting.** `dump()` currently sorts container and
+  contents into one list, so `lock.*.hold` sorts to the top and reads as the
+  biggest "stage" when it is the thing the others happen inside.
+- **Unaccounted time becomes computable**: `hold` minus the sum of its timed
+  children — the gate held doing something nobody instrumented. That is the
+  signal that finds the *next* `proj.fetch`, instead of discovering after 24
+  minutes of held gate that two call sites shared a name.
+- **`heldNow()` becomes correct.** See §7.2 — it currently is not.
+
+### 3.5 The honest limit
+
+A port decorator sees `EventQuery`, not the rank profile: the profile is chosen
+when `EventYql` compiles the query, and `totalCount` and coverage live in the
+response. Engine-level detail must therefore be published from *inside*
+`VespaEventIndex`.
+
+That is the correct split rather than a compromise. Port-level metering is
+engine-agnostic and works for `InMemoryEventIndex`, which has no rank profiles
+at all; engine-level detail is Vespa's and belongs with the client that speaks
+to it.
+
+## 4. The model
+
+Two dimensions and a containment relation:
+
+- **what** — the port call (`get`, `put`, `search`, `count`, `visit`)
+- **who** — the `Activity` it happened under
+- **containment** — which lock scope it ran inside
+
+Everything the current dotted-string convention encodes falls out as a
+dimension. `proj.fetch.derive` is `search` under `Drain`; `dedup` is
+`existingIds` under `BatchInsert`. The name-splitting treadmill — one `timed()`
+label per distinguishable caller — stops, because the distinction is now a
+dimension instead of a substring.
+
+**Cardinality is closed, and must stay closed.** Activities and port calls are
+both fixed sets; their product is ~11 × 6 = 66 slots, plus the lock scopes.
+Every memory figure in §6 depends on that. Keying a counter by search term,
+observer pubkey, filter shape or document id turns a fixed 60 KiB into an
+unbounded leak. This is the one invariant of the design that a reviewer should
+enforce without negotiation.
+
+## 5. What it costs — CPU
+
+**Measured 2026-09-04**, 4 cores, OpenJDK 21.0.10, `tsc` clocksource, 20M
+ops/round, median of 7 rounds after 3 warm-ups. Harness in §5.3.
+
+| primitive | uncontended | 2 threads | 4 threads | 8 threads |
+| --- | ---: | ---: | ---: | ---: |
+| `System.nanoTime()` ×1 | 22.4 ns | | | |
+| **nanoTime pair** (timing one interval) | **47–54 ns** | | | |
+| `System.currentTimeMillis()` ×1 | 24.1 ns | | | |
+| `AtomicLong.addAndGet` | 5.7–7.7 ns | 31–35 | **29–37** | 31–43 |
+| `LongAdder.add` | 9.8–10.0 ns | 5.3 | **2.4** | 2.5–2.6 |
+| `AtomicLongArray` histogram record | 5.9 ns | | 2.5 | |
+| `ConcurrentHashMap.get` (interned key) | 3.1–5.8 ns | | | |
+| **full per-request instrumentation** | **96–97 ns** | | 24–26 | |
+
+Ranges are two runs on the same box — one fuller harness and the condensed §5.3
+one, which covers a subset of the rows. Where they differ, both ends are given:
+this is the ±8–15 % run-to-run noise the rest of the repo's benchmarks report on
+this class of machine, and none of it moves a conclusion. Treat the **ratios**
+as the result, not the absolute figures; re-run §5.3 on your own hardware before
+using any of these as a planning number.
+
+The full case is the realistic budget for one `/search/`: a nanoTime pair, one
+map lookup, three counters, one histogram record. Two thirds of it is the clock,
+not the counters.
+
+Read the 4-thread figure correctly: it is wall time per op divided across four
+threads, so it means ~26 ns of *one core's* time per request. The latency added
+to each individual request stays ~100 ns.
+
+**Against what it measures:**
+
+- **Reads.** A Vespa round trip is milliseconds. 97 ns is ~0.01 % of a 1 ms
+  admission probe and ~0.002 % of a 4 s ranked search. At staging's ~500 req/s
+  of the store's own reads that is 0.005 % of one core; at 30k req/s, 0.3 %.
+- **Writes.** `SearchExtractors.extract` alone costs **9,527 ns/event**
+  (measured 2026-09-01, `benchmark/README.md`). Metering is per port call, not
+  per event, so it disappears — and even charged once per event it is ~1 % of
+  the derivation the write path already pays.
+
+### 5.1 `LongAdder`, not `AtomicLong`, on the read path
+
+This is the one measurement that changes a decision. `AtomicLong` is *faster
+uncontended* (~6–8 ns vs ~10) and **stays flat-to-worse as threads are added**
+(~30–37 ns at four, up to 43 at eight) because every thread CASes one cache
+line. `LongAdder` goes the other way — 2.4 ns at four threads, a ~12× gap —
+because it stripes. That ordering held across both runs; only the absolute
+figures moved.
+
+For the write path this is irrelevant and `IngestStats`'s existing `AtomicLong`
+is the right call: two volatile writes against critical sections measured in
+seconds. For the read path, where many container threads book concurrently at
+500–30,000 req/s, it is the difference between free and a contended cache line
+on the hot path. **Read-side counters are `LongAdder`; the write path keeps what
+it has.**
+
+### 5.2 The clock is host-dependent
+
+22 ns here because this box's clocksource is `tsc`, where `nanoTime` is a vDSO
+read. On a VM fallen back to `xen` or `hpet` it becomes a syscall in the
+0.5–1.5 µs range, so a timing pair costs ~2–3 µs — a ~30× swing. Still under 1 %
+of a millisecond round trip, so it does not change the verdict, but an operator
+diagnosing unexpected overhead should check it first:
+
+```bash
+cat /sys/devices/system/clocksource/clocksource0/current_clocksource
+```
+
+### 5.3 Reproducing §5
+
+Single-file source launch, no build wiring, JDK 11+:
+
+```bash
+java MetricCost.java     # the harness below, saved under that name
+```
+
+```java
+// MetricCost.java — median ns/op over 7 rounds of 20M ops, after 3 warm-ups.
+// Sinks are accumulated and printed so C2 cannot delete the work.
+import java.util.concurrent.*; import java.util.concurrent.atomic.*; import java.util.*;
+public class MetricCost {
+    static final int OPS = 20_000_000, ROUNDS = 7, WARMUP = 3;
+    static long sink; static final AtomicLong ATOMIC = new AtomicLong();
+    static final LongAdder ADDER = new LongAdder();
+    static final LongAdder[] HIST = new LongAdder[24];
+    static final ConcurrentHashMap<String, long[]> MAP = new ConcurrentHashMap<>();
+    static final String[] KEYS = {"search","recency_gated","recency","unranked",
+                                  "spliced_member","sort_followers","text","text2"};
+    static { for (int i=0;i<24;i++) HIST[i]=new LongAdder();
+             for (String k: KEYS) MAP.put(k, new long[8]); }
+    static int bucket(long n){ return Math.min(63-Long.numberOfLeadingZeros(Math.max(n,1)),23); }
+    interface Op { void run(int i); }
+    static void bench(String name, Op op) {
+        double[] t = new double[ROUNDS];
+        for (int r=0;r<WARMUP+ROUNDS;r++){ long t0=System.nanoTime();
+            for (int i=0;i<OPS;i++) op.run(i);
+            if (r>=WARMUP) t[r-WARMUP]=(double)(System.nanoTime()-t0)/OPS; }
+        Arrays.sort(t); System.out.printf("  %-44s %7.2f ns/op%n", name, t[t.length/2]);
+    }
+    static void threaded(String name, int threads, Op op) throws Exception {
+        int per = OPS/threads; double[] t = new double[ROUNDS];
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        for (int r=0;r<WARMUP+ROUNDS;r++){
+            CountDownLatch go=new CountDownLatch(1), done=new CountDownLatch(threads);
+            for (int i=0;i<threads;i++) pool.submit(() -> { try { go.await();
+                for (int j=0;j<per;j++) op.run(j); } catch (InterruptedException e) {
+                Thread.currentThread().interrupt(); } finally { done.countDown(); } });
+            long t0=System.nanoTime(); go.countDown(); done.await();
+            if (r>=WARMUP) t[r-WARMUP]=(double)(System.nanoTime()-t0)/(per*(long)threads); }
+        pool.shutdown(); Arrays.sort(t);
+        System.out.printf("  %-44s %7.2f ns/op  (%d threads)%n", name, t[t.length/2], threads);
+    }
+    public static void main(String[] a) throws Exception {
+        bench("nanoTime pair", i -> { long t0=System.nanoTime(); sink+=System.nanoTime()-t0; });
+        bench("AtomicLong.addAndGet", i -> ATOMIC.addAndGet(1));
+        bench("LongAdder.add", i -> ADDER.add(1));
+        bench("ConcurrentHashMap.get", i -> { sink += MAP.get(KEYS[i&7])[0]; });
+        for (int t : new int[]{2,4,8}) {
+            threaded("AtomicLong.addAndGet", t, i -> ATOMIC.addAndGet(1));
+            threaded("LongAdder.add", t, i -> ADDER.add(1));
+        }
+        Op full = i -> { long t0=System.nanoTime(); long[] s=MAP.get(KEYS[i&7]);
+            long e=System.nanoTime()-t0; ADDER.add(1); ADDER.add(e); ADDER.add(s[0]+1);
+            HIST[bucket(e)].add(1); };
+        bench("full per-request instrumentation", full);
+        threaded("full per-request instrumentation", 4, full);
+        System.out.println("sink=" + sink + " " + ADDER.sum());
+    }
+}
+```
+
+## 6. What it costs — memory
+
+**Measured 2026-09-04**, same box. Cardinality as §4: 28 keyed slots (11 rank
+profiles + 7 activity classes + 10 ingest stages), each with 6 scalar counters
+and a 24-bucket latency histogram. Figures are **per whole store**, measured as
+a heap delta over 400 replicas to keep GC noise off the number, before and after
+forcing contention.
+
+| design | fresh | after contention |
+| --- | ---: | ---: |
+| A — `LongAdder` everywhere | 31.4 KiB | 31.5 KiB |
+| **B — `LongAdder` scalars + `AtomicLongArray` histograms** | **13.3 KiB** | **13.4 KiB** |
+| C — `AtomicLongArray` everywhere | 9.1 KiB | 9.1 KiB |
+| slow-query ring, 256 distinct records | 45.6 KiB | |
+
+**Ship design B.** It buys `LongAdder`'s contention behaviour where the counters
+are hot and scalar, and pays `AtomicLongArray`'s smaller footprint for the
+histograms, whose 24 buckets already spread contention across three cache lines
+without striping.
+
+Total steady state is **~60 KiB**, and it does not grow with traffic: counters
+are fixed-width and the ring is bounded. Against a 1536m default container heap
+and proton's 75 GiB resident at 176.7M documents
+(`docs/attribute-memory.md`), it is noise.
+
+### 6.1 `LongAdder` inflation scales with the host, not the traffic
+
+A `LongAdder` is one word until threads collide, then it allocates a padded cell
+array. Measured on this 4-core box:
+
+| state | bytes each |
+| --- | ---: |
+| never contended | 36.1 |
+| after heavy contention | 92.8 |
+
+The ceiling is a function of **core count**, not request rate: the cell array
+grows toward the next power of two ≥ `ncpu`, at ~128 B per padded cell. On a
+64-core relay host a genuinely hot adder can reach several KiB. Two consequences
+for the design:
+
+- It is why the histograms are `AtomicLongArray` in design B. 24 `LongAdder`s
+  per slot on a big host is the one way this budget stops being noise.
+- Only *contended* adders inflate, so the realistic figure stays near the
+  measured one. But size the budget from core count when planning for a large
+  container, not from the 4-core number above.
+
+### 6.2 What is bounded, and by what
+
+| structure | bound | enforced by |
+| --- | --- | --- |
+| counters | activities × port calls, fixed at compile time | the closed `Activity` set (§4) |
+| histograms | 24 buckets, log-spaced | fixed array |
+| slow-query ring | 256 entries, overwriting | ring buffer, not a list |
+| live lock holder | one per lock scope, popped on release | scope stack (§7.2) |
+
+## 7. What this replaces
+
+### 7.1 `IngestStats` decomposes rather than dies
+
+Every stage name it books re-expresses as either a lock scope or a port call
+under an activity:
+
+| today | becomes |
+| --- | --- |
+| `dedup` | `existingIds` under `BatchInsert` |
+| `guards` | the NIP-09/62 guard probes under `BatchInsert` — a `GuardOwners` bloom check plus whatever queries it does not eliminate, so metering it at the port also shows how many probes the cache actually saved |
+| `write` | `putAll` under `BatchInsert` |
+| `proj.fetch.derive` | `search` under `Drain` |
+| `proj.fetch.maxrank` | `search` under `Backfill` |
+| `proj.write` | `updateCells` under `Drain` |
+| `lock.*.wait` / `lock.*.hold` | lock scopes, stacked, with unaccounted time |
+
+Its structural debts go with it. Four `ConcurrentHashMap`s keyed by the same
+string (`stages`, `calls`, `maxima`, `lastSeen`) become one map to one record —
+three `computeIfAbsent` lookups per `timed()` call collapse to one, and
+`snapshot()` stops reading three maps at three instants and reporting a
+`meanNanos` whose numerator and denominator may not correspond. `statusLine()`
+is destructive (it consumes the per-stage delta via `lastSeen.put`, so two
+callers corrupt each other — `WriterLockStatsTest` documents working around it)
+and is superseded by callers diffing two snapshots.
+
+The name also stops lying. `IngestStats` books `lock.gate.hold` and
+`proj.fetch.*` and holds the live lock holder; none of that is ingest.
+
+### 7.2 A defect this fixes
+
+`IngestStats.held` is a single `@Volatile` field with non-stacking begin/end,
+justified in its KDoc as *"One field because the store serialises every write
+behind ONE mutex, so there is never more than one holder."*
+
+That was true when it was written (`77bed35`). The trust-gate split (`1a0ddec`)
+lands **after** it in the history and makes it false — `lockedForWrite` now
+nests two mutexes:
+
+```kotlin
+locked(LOCK_INGEST) {
+    if (touchesTrust(event)) lockedOn(trustGate, LOCK_INGEST_TRUST) { body() } else body()
+}
+```
+
+The inner `beginHold` overwrites the outer's `Held`, and the inner `endHold`
+sets the field to `null` — so the outer lock reports as *not held* while it is
+still held, and any later `annotateHold` no-ops on the null. In today's call
+shapes the inner block is the tail of the outer body, so the window is narrow
+and nothing has been observed to mislead. It is still a field that no longer
+models the system it describes, and it will report wrongly the moment work is
+added after the inner block. A scope stack removes the failure mode rather than
+the symptom.
+
+### 7.3 A performance contract that becomes executable
+
+`InMemoryEventIndex` is described in CLAUDE.md as the **executable
+specification** of `EventQuery` semantics. Metering it makes it the executable
+specification of *cost* as well: with round trips counted at the port,
+CLAUDE.md's rule — "Never ingest in a loop over `insert()`" — becomes a unit test
+asserting round-trips-per-event for `batchInsert`, with no Vespa and no Docker.
+
+Today that rule is a comment, and the ~47× claim behind it is a benchmark
+memory. It should be a gate.
+
+## 8. Studied and rejected
+
+- **A tracing library (OpenTelemetry, Micrometer).** Gives containment and
+  attribution for free and is the textbook answer. Rejected for the reason
+  `BackgroundFailures` already states about logging: *a library has no business
+  picking a framework for its embedder*. This store is published to Maven
+  Central and embedded in a relay; a transitive tracing dependency is the
+  embedder's decision. The snapshot type is a plain value — an embedder who
+  wants OpenTelemetry can bridge it in ten lines.
+- **Keeping per-call-site timers (the status quo, extended to reads).** Requires
+  a hand-placed `timed()` at every read path, which drifts the moment someone
+  adds one, and pays the name-splitting treadmill forever: every new
+  distinguishable caller is a new string. The decorator gets both properties
+  structurally.
+- **Sampling (time 1 in N requests).** The standard way to make instrumentation
+  free. Rejected because the thing being hunted here is *the pathological call*
+  — one 24-minute hold among ordinary ones — and sampling is precisely the
+  technique that loses it. At 97 ns there is nothing to buy.
+- **A Prometheus client dependency.** Same argument as tracing. A text-format
+  renderer over the snapshot is ~100 lines with no dependency, and an embedder
+  wanting the real client can feed it the snapshot.
+- **Per-store instances instead of process-wide statics.** Correct in principle,
+  and it would fix the test-isolation problem `IngestStats.reset()` exists for.
+  Deferred, not rejected: the ambient `Activity` element and the port decorators
+  are already per-store, so only the lock scopes remain global, and moving them
+  is a smaller change once the rest is in place.
+
+## 9. What this does not measure
+
+- **Vespa's own resource use** — memory and disk against the feed-block limits,
+  per-field attribute memory, transaction-log size, per-rank-profile latency
+  from proton. That comes from each node's metrics proxy on `:19092`, is a
+  separate reader, and needs an integration test because the metric names only
+  exist on a real Vespa. `benchmark/attribute_memory.py` already consumes that
+  endpoint and is the model for it.
+- **The size of that metrics payload.** Not measured here; it is one
+  `curl … | wc -c` against a live deployment, and it decides whether the scrape
+  interval can be 15 s or must be longer.
+- **Anything per-observer or per-term.** Deliberately — see the cardinality
+  invariant in §4.
