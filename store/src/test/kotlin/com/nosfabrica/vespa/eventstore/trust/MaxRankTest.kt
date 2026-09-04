@@ -89,6 +89,38 @@ class MaxRankTest {
             assertEquals(0, backfill.run(), "…and the walk is a no-op while it does")
         }
 
+    /**
+     * THE SCHEMA FLIP: a revert deploys a schema without `max_rank`, dropping
+     * every value; the redeploy brings the field back at 0 under a marker that
+     * still stands. Staging, 2026-09-04 — every rung matched nobody and every
+     * ranked search answered empty. The marker is checked against the data.
+     */
+    @Test
+    fun `a marker the data contradicts is not trusted, and the walk runs again`() =
+        runBlocking {
+            reputations.put(ReputationDoc(s, mapOf(o1 to 40, o2 to 65)))
+            reputations.put(ReputationDoc("c1".repeat(32), mapOf(o1 to 3)))
+            val backfill = MaxRankBackfill(reputations)
+            assertEquals(2, backfill.run())
+            assertEquals(0, backfill.run(), "the marker stands and the data agrees with it")
+            // The flip: the field is gone and back at 0, the cells and the marker untouched.
+            reputations.storedMaxRanks.keys.forEach { reputations.storedMaxRanks[it] = 0 }
+            assertEquals(0, reputations.storedMaxRank(s), "what a rung would cut on")
+            assertEquals(2, backfill.run(), "the marker is contradicted by the first page, so the walk runs again")
+            assertEquals(65, reputations.storedMaxRank(s), "…and the scalar is back")
+            assertEquals(0, backfill.run(), "…under a marker the data now agrees with")
+        }
+
+    /** The cache's first read must be the STORED scalar: after the flip the cells still say 40 while the rung cuts on 0. */
+    @Test
+    fun `the cache reads what is stored, not what the cells imply`() =
+        runBlocking {
+            reputations.put(ReputationDoc(s, mapOf(o1 to 40)))
+            reputations.storedMaxRanks[s] = 0 // the flip
+            val raised = cache.raise(listOf(ReputationCells(s, o2, 30, null)))
+            assertEquals(30, raised.single().maxRank, "30 overtakes a STORED 0 — a cache reading the cells' 40 would have skipped the assign")
+        }
+
     @Test
     fun `a walk the engine refuses is counted and started again, and the marker waits for the one that finished`() =
         runBlocking {

@@ -55,6 +55,20 @@ interface ReputationIndex : AutoCloseable {
     suspend fun remove(pubkey: String)
 
     /**
+     * The `max_rank` the document STORES — the scalar the trust descent cuts
+     * on — as distinct from [ReputationDoc.maxRank], the maximum of its cells.
+     * The two are meant to agree (that is the invariant MaxRankCache keeps),
+     * and this exists for the two readers that must not assume they do: the
+     * cache's first read of a subject, and the backfill's check of its own
+     * marker. They came apart on staging (2026-09-04): a revert deployed a
+     * schema without the field, which dropped every value, and the redeploy
+     * brought the field back at 0 with the marker still standing — every rung
+     * then matched nobody, and every ranked search answered empty. Null when
+     * there is no document; 0 when there is one without the field.
+     */
+    suspend fun storedMaxRank(pubkey: String): Int? = get(pubkey)?.maxRank
+
+    /**
      * Stream every stored reputation pubkey, paged — the orphan sweep's walk:
      * a parent whose subject has no cards left is only findable from the
      * REPUTATION corpus. [onPage] returns whether to continue; order is

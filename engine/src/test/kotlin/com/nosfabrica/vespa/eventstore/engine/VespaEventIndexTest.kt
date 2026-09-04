@@ -654,6 +654,48 @@ class VespaEventIndexTest {
         }
 
     /**
+     * THE RUNG WITH NOTHING UNDER IT. `max_rank` read 0 on every document on
+     * staging (2026-09-04: a schema flip dropped the field and the redeploy
+     * brought it back empty), so every rung — the floor rung included, which
+     * is exact only while the scalar is true — matched nobody, and every
+     * ranked search answered EMPTY. A floor page that comes up short is the
+     * one shape that cannot tell "few trusted hits" from "the scalar is
+     * wrong", so it is not served: the exact query runs, and the page is the
+     * page whatever the field says.
+     */
+    @Test
+    fun `a floor rung that comes up short is not served, the exact page is`() =
+        runBlocking {
+            val top = "f1".repeat(32)
+            val low = "f3".repeat(32)
+            // No entry in authorMaxRank: every author reads 0, as on staging.
+            seed(
+                doc(kind = 1, pubkey = top, search = SearchFields(text = "beta one")),
+                doc(kind = 1, pubkey = top, search = SearchFields(text = "beta two")),
+                doc(kind = 1, pubkey = low, search = SearchFields(text = "beta three")),
+            )
+            val q = EventQuery(kinds = listOf(1), search = "beta", observer = "ab".repeat(32), minRank = 2.0, limit = 2)
+            try {
+                val exact = index.search(q).map { it.id }
+                assertEquals(2, exact.size, "the page, off")
+                index.trustDescent = true
+                val at = mock.searchRequests.size
+                assertEquals(exact, index.search(q).map { it.id }, "the page, on, with nothing to descend on")
+                val rungs =
+                    mock.searchRequests.drop(at).map { r ->
+                        Regex("author_max_rank >= (\\d+)")
+                            .find(r.getValue("yql"))
+                            ?.groupValues
+                            ?.get(1)
+                            ?.toInt()
+                    }
+                assertEquals(listOf<Int?>(TrustDescent.FIRST_RUNG, 2, null), rungs, "the first rung, the floor rung (short), then the exact query")
+            } finally {
+                index.trustDescent = false
+            }
+        }
+
+    /**
      * A serving schema that predates the observer gate answers 400 to both
      * gated profiles — the client must demote the query to plain ranking-free
      * recall (FAIL-OPEN, the pre-gate behavior, recency profile and planner
