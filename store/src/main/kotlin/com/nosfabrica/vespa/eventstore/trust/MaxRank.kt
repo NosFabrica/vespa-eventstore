@@ -60,7 +60,10 @@ internal class MaxRankCache(
     suspend fun stored(subjects: Collection<String>): Map<String, Int> {
         val missing = subjects.filter { it !in known }.distinct()
         if (missing.isNotEmpty()) {
-            val read = missing.mapBounded(QUERY_FANOUT) { s -> s to (reputations.get(s)?.maxRank ?: 0) }
+            // The STORED scalar, not the cells' maximum: the two came apart on
+            // staging when a schema flip dropped the field, and a cache that
+            // read the cells would have believed every raise already made.
+            val read = missing.mapBounded(QUERY_FANOUT) { s -> s to (reputations.storedMaxRank(s) ?: 0) }
             synchronized(known) {
                 if (known.size + read.size > CAPACITY) known.clear()
                 read.forEach { (s, m) -> known[s] = m }
@@ -126,9 +129,23 @@ internal class MaxRankCache(
 internal class MaxRankBackfill(
     private val reputations: ReputationIndex,
 ) {
-    /** Walk and write unless already done; returns how many documents were written (0 when the marker stood). */
+    /**
+     * Walk and write unless already done; returns how many documents were
+     * written (0 when the marker stood AND the data agreed with it).
+     *
+     * The marker is checked, not trusted: one page of documents is read and
+     * any one whose stored `max_rank` is below the maximum of its cells
+     * proves the walk's work gone — staging, 2026-09-04, where a revert
+     * deployed a schema without the field (dropping every value) and the
+     * redeploy brought it back at 0 under a marker that still stood, so every
+     * rung matched nobody and every ranked search answered EMPTY. A stale
+     * marker is removed and the walk runs again.
+     */
     suspend fun run(onProgress: ((Int) -> Unit)? = null): Int {
-        if (reputations.get(MARKER_KEY) != null) return 0
+        if (reputations.get(MARKER_KEY) != null) {
+            if (!markerIsStale()) return 0
+            reputations.remove(MARKER_KEY)
+        }
         var written = 0
         reputations.visitDocs { page ->
             val cells = page.filter { it.pubkey != MARKER_KEY && it.pubkey != DirtLedger.MARKER_KEY }.map { ReputationCells(it.pubkey, SELF, null, null, maxRank = it.maxRank) }
@@ -162,6 +179,18 @@ internal class MaxRankBackfill(
                 delay(retryMillis)
             }
         }
+    }
+
+    /** One page of the corpus, checked: a document with cells whose stored scalar sits below their maximum. */
+    private suspend fun markerIsStale(): Boolean {
+        var stale = false
+        reputations.visitDocs { page ->
+            val subjects = page.filter { it.pubkey != MARKER_KEY && it.pubkey != DirtLedger.MARKER_KEY && it.maxRank > 0 }
+            val stored = subjects.mapBounded(QUERY_FANOUT) { doc -> doc to (reputations.storedMaxRank(doc.pubkey) ?: 0) }
+            stale = stored.any { (doc, storedMax) -> storedMax < doc.maxRank }
+            false // one page decides
+        }
+        return stale
     }
 
     companion object {

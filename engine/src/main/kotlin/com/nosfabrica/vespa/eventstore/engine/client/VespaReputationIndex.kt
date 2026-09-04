@@ -26,7 +26,9 @@ import com.nosfabrica.vespa.eventstore.engine.doc.ReputationCells
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import kotlinx.coroutines.future.await
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -46,12 +48,16 @@ class VespaReputationIndex(
 
     private val http = VespaHttp()
 
-    override suspend fun get(pubkey: String): ReputationDoc? {
+    override suspend fun get(pubkey: String): ReputationDoc? = fields(pubkey)?.let(ReputationDoc::fromSummary)
+
+    /** The field as stored — absent on a document fed before the field existed, or on one the schema lost and regained, which reads 0 here as it does in the rung. */
+    override suspend fun storedMaxRank(pubkey: String): Int? = fields(pubkey)?.let { f -> f["max_rank"]?.jsonPrimitive?.intOrNull ?: 0 }
+
+    private suspend fun fields(pubkey: String): JsonObject? {
         val resp = http.get("$baseUrl/document/v1/$NAMESPACE/$DOCTYPE/docid/$pubkey")
         if (resp.statusCode() == 404) return null
         require(resp.statusCode() < 400) { "vespa reputation get ${resp.statusCode()}: ${resp.body().take(300)}" }
-        val fields = Json.parseToJsonElement(resp.body()).jsonObject["fields"]?.jsonObject ?: return null
-        return ReputationDoc.fromSummary(fields)
+        return Json.parseToJsonElement(resp.body()).jsonObject["fields"]?.jsonObject
     }
 
     private fun putOp(reputation: ReputationDoc) =

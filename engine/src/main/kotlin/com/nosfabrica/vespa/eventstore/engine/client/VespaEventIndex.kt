@@ -572,7 +572,17 @@ class VespaEventIndex(
                 }
             }
         }
-        return rung(floorRung)
+        // The floor rung is exact BY THE GATE — what it excludes, the gate
+        // deletes — but only while `max_rank` tells the truth. It did not on
+        // staging (2026-09-04: a schema flip zeroed the field and every
+        // ranked search answered empty), and a page this rung serves SHORT is
+        // the one shape that cannot tell "few trusted hits" from "the scalar
+        // is wrong". So a short floor page is not served: null here runs the
+        // exact query, which costs what it always cost and is right either
+        // way. A full page is served as before — a wrong scalar cannot fill a
+        // page with documents the gate would not also admit.
+        val floorPage = rung(floorRung) ?: return null
+        return floorPage.takeIf { it.children.size >= k }
     }
 
     /**

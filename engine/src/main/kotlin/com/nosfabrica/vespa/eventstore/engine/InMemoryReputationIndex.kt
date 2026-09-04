@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore.engine
 
+import com.nosfabrica.vespa.eventstore.engine.doc.ReputationCells
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import java.util.concurrent.ConcurrentHashMap
 
@@ -37,14 +38,41 @@ import java.util.concurrent.ConcurrentHashMap
 class InMemoryReputationIndex : ReputationIndex {
     val docs = ConcurrentHashMap<String, ReputationDoc>()
 
+    /**
+     * The stored `max_rank` per document, kept BESIDE the cells the way the
+     * engine keeps it: a whole-document put sets it from the cells, a cell
+     * update moves it only when it carries a value, and nothing else touches
+     * it — so a test can put the two apart (write a 0 here) the way a schema
+     * flip did on staging, and prove the readers that must not assume they
+     * agree. See [ReputationIndex.storedMaxRank].
+     */
+    val storedMaxRanks = ConcurrentHashMap<String, Int>()
+
     override suspend fun get(pubkey: String): ReputationDoc? = docs[pubkey]
+
+    override suspend fun storedMaxRank(pubkey: String): Int? = if (docs.containsKey(pubkey)) storedMaxRanks[pubkey] ?: 0 else null
 
     override suspend fun put(reputation: ReputationDoc) {
         docs[reputation.pubkey] = reputation
+        storedMaxRanks[reputation.pubkey] = reputation.maxRank
+    }
+
+    override suspend fun updateCells(updates: List<ReputationCells>) {
+        updates.forEach { u ->
+            val cur = docs[u.subject] ?: ReputationDoc(u.subject)
+            docs[u.subject] =
+                cur.copy(
+                    influenceScores = u.influence?.let { cur.influenceScores + (u.observer to it) } ?: cur.influenceScores,
+                    followerCounts = u.followers?.let { cur.followerCounts + (u.observer to it) } ?: cur.followerCounts,
+                )
+            u.maxRank?.let { storedMaxRanks[u.subject] = it }
+            storedMaxRanks.putIfAbsent(u.subject, 0)
+        }
     }
 
     override suspend fun remove(pubkey: String) {
         docs.remove(pubkey)
+        storedMaxRanks.remove(pubkey)
     }
 
     override suspend fun visitPubkeys(onPage: suspend (List<String>) -> Boolean) {
