@@ -214,6 +214,23 @@ data class EventQuery(
      * together would strip name/title prefix reach from a schema that has it.
      */
     val bodyGramMatching: Boolean = true,
+    /**
+     * THE ANSWER MUST BE PROVABLY EVERYTHING THAT MATCHES, or it is refused:
+     * the engine's own `full` (documents searched == documents active) AND
+     * every match served (`totalCount` == hits returned). For a reader that
+     * WRITES from what it reads — the trust projection derives a subject's
+     * parent document from a fetch of its cards and DELETES the parent when
+     * the fetch comes back empty — a shorter answer is not a small one, it is
+     * a wrong write. Two shapes of shorter answer pass every other guard: a
+     * node still opening buckets after a restart answers `full: false` at a
+     * percentage that rounds to 100 with no degradation named (which the read
+     * path rightly serves, see SearchCoverage.undegraded), and a deployment
+     * that caps hits serves the cap with `totalCount` still telling the truth.
+     * Staging, 2026-09-04: a boot-time recompute beside a restarting engine
+     * removed 17k reputation documents and stripped cells from thousands
+     * more. Meaningful with no [limit]; a limited query is short by design.
+     */
+    val complete: Boolean = false,
 )
 
 /** A ready-to-send Vespa query: the YQL, its query parameters, and the rank profile. */
@@ -221,4 +238,6 @@ data class VespaQuery(
     val yql: String,
     val params: Map<String, String>,
     val ranking: String,
+    /** [EventQuery.complete], carried to the response check: refuse anything short of the whole match set. */
+    val complete: Boolean = false,
 )

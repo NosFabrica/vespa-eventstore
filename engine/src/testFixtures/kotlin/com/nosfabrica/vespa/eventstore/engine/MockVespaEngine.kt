@@ -114,6 +114,15 @@ class MockVespaEngine {
     @Volatile var nonIdealStateCoverage: Boolean = false
 
     /**
+     * An operator-capped query profile (`maxHits` below the match set, the
+     * multi-node survival move): serve at most this many hits with the
+     * coverage complete and `totalCount` still the whole match set — real
+     * Vespa trims a `hits` inside its cap silently. Null (the default) serves
+     * whatever was asked.
+     */
+    @Volatile var hitsCap: Int? = null
+
+    /**
      * Serve streamed visits (`stream=true`) the paged JSON shape instead of
      * JSON Lines — an older Vespa that doesn't speak the streamed protocol.
      * The client must detect the content type and fall back to the paged walk.
@@ -421,7 +430,7 @@ class MockVespaEngine {
         // Simulated match-phase under-delivery: fewer hits than the limit, with
         // ONLY the match-phase degradation flag set (see [matchPhaseUnderdeliver]).
         val underdeliver = matchPhaseUnderdeliver > 0 && !grouped && (params["ranking"] == "recency" || params["ranking"] == "recency_gated")
-        val served = if (underdeliver) minOf(matchPhaseUnderdeliver, hits) else hits
+        val served = if (underdeliver) minOf(matchPhaseUnderdeliver, hits) else hitsCap?.let { minOf(it, hits) } ?: hits
         val children =
             when {
                 isAuthorHistogram -> {

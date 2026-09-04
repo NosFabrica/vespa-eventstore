@@ -283,6 +283,7 @@ object EventYql {
             yql = "select ${if (withDTag) "id, created_at, tag_index" else "id, created_at"} from event where ${whereOf(clauses)} order by created_at desc$limit",
             params = params,
             ranking = RANK_UNRANKED,
+            complete = q.complete,
         )
     }
 
@@ -492,6 +493,7 @@ object EventYql {
             yql = "select $SUMMARY_FIELDS from event where $where$order$limit",
             params = params,
             ranking = ranking,
+            complete = q.complete,
         )
     }
 

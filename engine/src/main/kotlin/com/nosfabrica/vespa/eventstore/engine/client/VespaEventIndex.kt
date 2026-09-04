@@ -1099,7 +1099,10 @@ class VespaEventIndex(
         VESPA_JSON
             .decodeFromString<SearchEnvelope>(queryBody(vq, hits))
             .root
-            .also { it.coverage.requireComplete(allowMatchPhase = vq.ranking == EventYql.RANK_RECENCY || vq.ranking == EventYql.RANK_RECENCY_GATED) }
+            .also {
+                it.coverage.requireComplete(allowMatchPhase = vq.ranking == EventYql.RANK_RECENCY || vq.ranking == EventYql.RANK_RECENCY_GATED)
+                if (vq.complete) it.requireEverything()
+            }
 
     /** The grouping/count paths need the full tree; [searchRoot] does not (it decodes hits directly). */
     private suspend fun queryRoot(
