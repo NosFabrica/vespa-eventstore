@@ -11,8 +11,17 @@
 # decision to revisit before multi-node.
 #
 # Tensor shapes follow Brainstorm (brainstorm_server app/core/vespa.py):
-#   influence_scores{observer}  = rank (influence*100, 0..100), int8
-#   follower_counts{observer} = verified-follower count, float
+#   influence_scores{service}  = rank (influence*100, 0..100), int8
+#   follower_counts{service}   = verified-follower count, float
+# KEYED BY THE SERVICE KEY THAT SIGNED THE 30382, never by the observer: an
+# observer's kind 10040 is a POINTER to a service, and the store resolves it
+# at query time (query(user_q) = {<service>: 1.0}). So a card is one cell,
+# a 10040 change is no write at all, and a document's size is the number of
+# services that scored the subject, never the number of users who trust them.
+# The mapped dimension is still spelled `user{}`: the label is invisible to
+# every caller (cells are fed in the short `{key: value}` form; only a tensor
+# `remove` names it), and renaming it is a field TYPE change that needs a
+# validation override on a global document type — not worth a label.
 schema reputation {
 
     document reputation {

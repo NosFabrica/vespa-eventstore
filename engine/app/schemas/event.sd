@@ -548,7 +548,12 @@ schema event {
     rank-profile text_relevance {
 
         inputs {
+            # THE LENS, RESOLVED: the tensors on the reputation parent are keyed
+            # by SERVICE key (the 30382's signer), and the store resolves the
+            # observer's kind 10040 to one service per dimension before the
+            # query — `30382:rank` here, `30382:followers` in followers_q.
             query(user_q) tensor<float>(user{})
+            query(followers_q) tensor<float>(user{})
             query(w_gram) double: 5.0
             query(w_display_name) double: 0.2
             query(w_about) double: 0.1
@@ -1000,7 +1005,7 @@ schema event {
         }
 
         function verified_followers() {
-            expression: sum(query(user_q) * attribute(author_follower_counts))
+            expression: sum(query(followers_q) * attribute(author_follower_counts))
         }
 
         # Text relevance for the name field — the primary signal.

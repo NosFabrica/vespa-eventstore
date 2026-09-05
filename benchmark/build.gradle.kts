@@ -212,3 +212,13 @@ tasks.register<JavaExec>("searchTrace") {
     mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.SearchTrace")
     maxHeapSize = System.getenv("BENCH_HEAP") ?: "1g"
 }
+
+// The trust write path under a real lens, timed — see TrustProbe.kt.
+tasks.register<JavaExec>("trustProbe") {
+    group = "verification"
+    description = "Time bulk card ingest, single card inserts, a 10040 re-sign and a provider swap against a live store"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.TrustProbe")
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "4g"
+    workingDir = rootDir
+}

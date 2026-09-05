@@ -208,7 +208,7 @@ class FieldCoverageRankIT {
     /** The same page with NO lens: no observer means `EventYql.profileOf` picks the pure-text profile. */
     private suspend fun VespaEventIndex.scoredText(text: String): List<ScoredHit> = searchScored(EventQuery(search = text, nowSecs = NOW, limit = 50))
 
-    private suspend fun VespaEventIndex.scored(text: String): List<ScoredHit> = searchScored(EventQuery(search = text, observer = OBSERVER, minRank = 2.0, nowSecs = NOW, limit = 50))
+    private suspend fun VespaEventIndex.scored(text: String): List<ScoredHit> = searchScored(EventQuery(search = text, observer = OBSERVER, rankKey = OBSERVER, followersKey = OBSERVER, minRank = 2.0, nowSecs = NOW, limit = 50))
 
     private fun label(hit: ScoredHit): String =
         SHAPES

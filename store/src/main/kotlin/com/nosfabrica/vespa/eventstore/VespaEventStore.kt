@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.eventstore.engine.client.VespaEventIndex
 import com.nosfabrica.vespa.eventstore.engine.client.VespaReputationIndex
 import com.nosfabrica.vespa.eventstore.search.SearchExpansionLimits
 import com.nosfabrica.vespa.eventstore.trust.MaxRankBackfill
+import com.nosfabrica.vespa.eventstore.trust.TrustKeyingMigration
 import com.nosfabrica.vespa.eventstore.trust.TrustProjection
 import com.nosfabrica.vespa.eventstore.trust.TrustReconciler
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
@@ -67,6 +68,8 @@ class VespaEventStore internal constructor(
     private val backfill: kotlinx.coroutines.Deferred<Int>? = null,
     /** Whether the descent is switched on for this store — [open]'s `trustDescent`; the walk runs either way. */
     val trustDescent: Boolean = true,
+    /** The one-time re-keying of a store fed under the observer-keyed model — see [awaitTrustKeying]. */
+    private val keying: kotlinx.coroutines.Deferred<TrustKeyingMigration.Migration>? = null,
 ) : IEventStore by store {
     /** The engine's feed-health status line (bulk-ingest backpressure), for progress/status output. */
     fun feedStatus(): String = eventIndex.feedStatus()
@@ -84,6 +87,17 @@ class VespaEventStore internal constructor(
      * Until then, [backgroundStatus] names each refused attempt.
      */
     suspend fun awaitTrustDescent(): Int = backfill?.await() ?: 0
+
+    /**
+     * Wait until the reputation documents are keyed by service: a store fed
+     * before the service-keyed model holds cells under observer keys that no
+     * lens reads, and [TrustKeyingMigration] re-projects every named service
+     * and sweeps the old cells once, in the background, at [open]. Until it
+     * returns, a ranked search under an observer whose provider is not yet
+     * walked serves an EMPTY page (the gate fails closed); a boot line should
+     * say so. A store that was never fed the old way returns at once.
+     */
+    suspend fun awaitTrustKeying(): TrustKeyingMigration.Migration = keying?.await() ?: TrustKeyingMigration.Migration(0, 0, refused = false)
 
     /**
      * The background workers' failure line — EMPTY while they are healthy, so a
@@ -284,7 +298,14 @@ class VespaEventStore internal constructor(
                     if (trustDescent) eventIndex.trustDescent = true
                     written
                 }
-            return VespaEventStore(store, eventIndex, reconciler, trust, drainScope, backfill, trustDescent)
+            // Once, for a store written under the observer-keyed model: every
+            // named service walked into cells, the old cells swept, a marker
+            // left. A store born on this model reads the marker and returns.
+            val keying =
+                CoroutineScope(SupervisorJob() + Dispatchers.Default).async {
+                    TrustKeyingMigration(reputations, reconciler, trust.recompute).runUntilDone(BACKFILL_RETRY_MILLIS)
+                }
+            return VespaEventStore(store, eventIndex, reconciler, trust, drainScope, backfill, trustDescent, keying)
         }
 
         /**

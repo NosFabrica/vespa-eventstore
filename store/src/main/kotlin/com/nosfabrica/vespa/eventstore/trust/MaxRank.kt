@@ -26,6 +26,7 @@ import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationCells
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import com.nosfabrica.vespa.eventstore.engine.mapBounded
+import com.vitorpamplona.quartz.utils.Hex
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import java.util.concurrent.ConcurrentHashMap
@@ -74,7 +75,11 @@ internal class MaxRankCache(
             // The STORED scalar, not the cells' maximum: the two came apart on
             // staging when a schema flip dropped the field, and a cache that
             // read the cells would have believed every raise already made.
-            val read = missing.mapBounded(QUERY_FANOUT) { s -> s to (reputations.storedMaxRank(s) ?: 0) }
+            // Document-API GETs, not queries: no summary stage to time out, so
+            // they fan out far wider than QUERY_FANOUT. Measured on the landed
+            // code's ingest of 412k cards: at 4 the misses were 28% of the wall
+            // clock (155 s of 558 s), one GET per never-seen subject.
+            val read = missing.mapBounded(READ_FANOUT) { s -> s to (reputations.storedMaxRank(s) ?: 0) }
             if (known.size + read.size > CAPACITY) known.clear()
             read.forEach { (s, m) -> known.putIfAbsent(s, m) }
         }
@@ -111,6 +116,9 @@ internal class MaxRankCache(
 
     private companion object {
         const val CAPACITY = 2_000_000
+
+        /** Concurrent document GETs a cache fill keeps in flight; `VESPA_MAX_RANK_READ_FANOUT` overrides. */
+        val READ_FANOUT: Int = System.getenv("VESPA_MAX_RANK_READ_FANOUT")?.toIntOrNull()?.coerceAtLeast(1) ?: 32
     }
 }
 
@@ -161,7 +169,7 @@ internal class MaxRankBackfill(
             // An assign would put the scalar back below that cell — and the
             // projection's cache, which saw its own raise, would then never
             // raise it again. The engine decides at write time instead.
-            val floors = page.filter { it.pubkey != MARKER_KEY && it.pubkey != DirtLedger.MARKER_KEY }.associate { it.pubkey to it.maxRank }
+            val floors = page.filter { Hex.isHex64(it.pubkey) }.associate { it.pubkey to it.maxRank }
             if (floors.isNotEmpty()) reputations.raiseMaxRank(floors)
             written += floors.size
             onProgress?.invoke(written)
@@ -198,7 +206,7 @@ internal class MaxRankBackfill(
     private suspend fun markerIsStale(): Boolean {
         var stale = false
         reputations.visitDocs { page ->
-            val subjects = page.filter { it.pubkey != MARKER_KEY && it.pubkey != DirtLedger.MARKER_KEY && it.maxRank > 0 }
+            val subjects = page.filter { Hex.isHex64(it.pubkey) && it.maxRank > 0 }
             val stored = subjects.mapBounded(QUERY_FANOUT) { doc -> doc to (reputations.storedMaxRank(doc.pubkey) ?: 0) }
             stale = stored.any { (doc, storedMax) -> storedMax < doc.maxRank }
             false // one page decides

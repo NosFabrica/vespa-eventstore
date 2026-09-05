@@ -95,8 +95,8 @@ class MemberTrustIT {
                         VespaReputationIndex(queryUrl).use { reputation ->
                             reputation.putAll(
                                 listOf(
-                                    ReputationDoc(SURE, influenceScores = mapOf(OBSERVER to 3)),
-                                    ReputationDoc(DOUBTED, influenceScores = mapOf(OBSERVER to 99)),
+                                    ReputationDoc(SURE, influenceScores = mapOf(SERVICE to 3)),
+                                    ReputationDoc(DOUBTED, influenceScores = mapOf(SERVICE to 99)),
                                     // UNRANKED gets no reputation document at all.
                                 ),
                             )
@@ -280,6 +280,8 @@ class MemberTrustIT {
         kinds = listOf(0),
         authorWeights = if (scored) mapOf(SURE to 87, DOUBTED to 12, UNRANKED to 50) else mapOf(SURE to 0, DOUBTED to 0, UNRANKED to 0),
         observer = OBSERVER,
+        rankKey = SERVICE,
+        followersKey = SERVICE,
         // The floor the read carries. 0, not the store's default 2: these
         // fixtures include an author with no reputation row at all, and the
         // gate would drop it before the placement under test could be read.
