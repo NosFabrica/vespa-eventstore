@@ -190,6 +190,29 @@ class DirtLedgerTest {
             assertNull(d.marker(), "everything drained in the end")
         }
 
+    /**
+     * INSURANCE THAT PRODUCED NO WORK must not leave the marker standing. A
+     * batch of cards by a signer no 10040 maps insures every subject (one
+     * marker put past DELTA_ADD_MAX) and then writes no cells; with nothing
+     * pending no drain ever rewrote the marker, so the next boot inherited
+     * every one of those subjects as drift to re-derive to nothing.
+     */
+    @Test
+    fun `a batch that insures subjects but leaves no work clears its marker`() =
+        runBlocking {
+            val d = Deferred()
+            // No 10040 at all: every card is by an unmapped signer.
+            d.projection.putAll((1..100).map { i -> ContactCardEvent(id(), service, next(), arrayOf(arrayOf("d", i.toString(16).padStart(64, 'a')), arrayOf("rank", "1")), "", "").toDoc() })
+            assertNull(d.marker(), "no work was left, so no marker stands")
+            // The per-event path queues its subject as WORK (the bulk path is
+            // the one that applies cells inline), so its marker stands until
+            // the drain re-derives it — and is then gone.
+            d.projection.put(card(40).toDoc())
+            assertNotNull(d.marker(), "a single card's subject is queued work, and the marker names it")
+            d.projection.dirt.drain { it() }
+            assertNull(d.marker())
+        }
+
     /** A failed round leaves the snapshot pending in memory as well as on disk, so the retry re-derives it. */
     @Test
     fun `a failed drain puts its snapshot back`() =

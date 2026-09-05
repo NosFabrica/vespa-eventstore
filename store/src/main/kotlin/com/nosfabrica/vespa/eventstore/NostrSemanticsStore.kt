@@ -1234,7 +1234,14 @@ class NostrSemanticsStore(
         queries.forEachBounded(
             QUERY_FANOUT,
             produce = { q ->
-                if (!q.isRanked() && q.limit == null) {
+                // Every PLAIN filter streams ids, limited or not — the engine
+                // honours a limit on the id walk itself, so the relay's
+                // `limit: 100000` no longer turns a count into a full-summary
+                // recall (measured: 40 s for two window filters over 51k
+                // events, against 0.2 s counted singly). Only a ranked filter
+                // has to recall through the search path, where its ids ARE
+                // the ranking.
+                if (!q.isRanked()) {
                     val seen = ArrayList<String>()
                     index.visitIds(q) { page ->
                         page.forEach { seen += it.id }

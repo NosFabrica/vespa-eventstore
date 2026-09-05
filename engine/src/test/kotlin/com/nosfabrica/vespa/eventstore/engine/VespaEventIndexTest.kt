@@ -893,6 +893,36 @@ class VespaEventIndexTest {
         }
 
     /**
+     * A LIMITED plain walk is the newest N ids, paged on the cursor with a
+     * budget — never handed to search(), which fetched a full summary per id
+     * to answer an id question (a relay stamps `limit: 100000` on every COUNT
+     * filter, and a two-filter COUNT over 51k events took 40 s that way).
+     */
+    @Test
+    fun `visitIds with a limit pages the cursor for the newest N and stops`() =
+        runBlocking {
+            val bob = "b3".repeat(32)
+            seed(*(1..100).map { doc(kind = 30382, pubkey = bob) }.toTypedArray())
+            val paged = VespaEventIndex(mock.url, idPageSize = 10)
+            try {
+                val q = EventQuery(kinds = listOf(30382), authors = listOf(bob), limit = 25)
+                val got = ArrayList<DocRef>()
+                var pages = 0
+                paged.visitIds(q) {
+                    got += it
+                    pages++
+                    true
+                }
+                val expected = reference.search(q).map { DocRef(it.id, it.createdAt) }
+                assertEquals(25, got.size, "exactly the limit")
+                assertEquals(expected.sortedBy { it.id }, got.sortedBy { it.id }, "the newest 25, as search() would page them")
+                assertEquals(true, pages <= 3, "a 25-id budget on 10-id pages stops after three pages, not the whole corpus: $pages")
+            } finally {
+                paged.close()
+            }
+        }
+
+    /**
      * A tie group WIDER than the page is the case that silently loses data.
      *
      * Every doc shares one created_at, so a `created_at <= T` cursor re-reads

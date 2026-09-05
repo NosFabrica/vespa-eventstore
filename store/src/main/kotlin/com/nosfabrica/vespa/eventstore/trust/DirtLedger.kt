@@ -221,6 +221,15 @@ internal class DirtLedger(
         // ADDED, never assigned: `before + work` written back would resurrect
         // whatever a concurrent drain removed between the read above and here.
         val queued = add(work)
+        // Insurance persisted, no work left, nothing pending: the marker names
+        // subjects nobody will ever drain — a batch of cards by a signer no
+        // 10040 maps (a mirror's by-kind card ingest is mostly this) insured
+        // every subject and then found no cells to write. No drain rewrites
+        // the marker for work that does not exist, so it stood, and the next
+        // boot inherited hundreds of subjects to re-derive to nothing and
+        // dropped the provider cache for it. One remove here keeps the marker
+        // honest: a surviving marker IS drift, named.
+        if (!delta.isEmpty() && queued.isEmpty()) persist(Dirt.NONE)
         val deferred = signal
         if (deferred == null) {
             drain { it() } // settle inline: the caller holds the writer lock

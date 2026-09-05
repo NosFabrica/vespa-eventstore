@@ -854,9 +854,24 @@ class VespaEventIndex(
         withDTag: Boolean,
         onPage: suspend (List<DocRef>) -> Boolean,
     ) {
-        // A limit'd walk is the caller asking for a bounded page, not a full
-        // snapshot: hand it straight through, no cursor.
-        if (query.limit != null) return super.visitIds(query, withDTag, onPage)
+        // A limit'd walk is the caller asking for the newest N — a relay
+        // stamps `limit: 100000` on every COUNT and NIP-77 filter — and a
+        // ranked one has to be served by the search path (the ids are ranked
+        // there). A PLAIN limited walk pages the cursor with a budget instead:
+        // it used to hand the query to search(), which fetched a full document
+        // summary per id to produce an id list — measured on a staging slice,
+        // a two-filter COUNT over 51k events took 40 s against 0.2 s for the
+        // same filters counted one at a time.
+        if (query.limit != null) {
+            if (query.limit <= 0) return
+            if (query.isRankedShape()) return super.visitIds(query, withDTag, onPage)
+            var budget: Int = query.limit
+            return visitIds(query.copy(limit = null), withDTag) { page ->
+                val take = page.take(budget)
+                budget -= take.size
+                (take.isEmpty() || onPage(take)) && budget > 0
+            }
+        }
         // TIE DENSITY decides, measured on this walk rather than guessed from
         // the query's shape. What costs the cursor is a boundary group so wide
         // it needs an unbounded [T,T] window query: unkeyed 30382 walks hit
@@ -903,6 +918,9 @@ class VespaEventIndex(
             until = boundary - 1
         }
     }
+
+    /** Whether the ids are the ENGINE's ordering to give — terms, phrases or an explicit profile — rather than plain recency. */
+    private fun EventQuery.isRankedShape(): Boolean = !search.isNullOrBlank() || phrases.isNotEmpty() || ranking != null
 
     /**
      * The document-API visit: a streaming scan with a selection expression,
