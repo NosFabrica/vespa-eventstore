@@ -166,9 +166,6 @@ class NostrSemanticsStore(
      * and the absence of a write, which is not the same statement. The port
      * calls themselves are counted by `MeteredEventIndex` wrapped around
      * [index], which `VespaEventStore.open` installs.
-     *
-     * Its own, not process-wide: two stores in one JVM keep separate books, and
-     * one test cannot leak into the next.
      */
     val metrics: CostLedger = CostLedger(),
 ) : IEventStore {
@@ -192,7 +189,15 @@ class NostrSemanticsStore(
      * [writes]. Reputation-document work moves here.
      *
      * LOCK ORDER, where both are needed (a card insert does inline projection):
-     * [writes] then [trustGate], never the reverse.
+     * [trustGate] FIRST, then [writes] — never the reverse. The order was
+     * writes-then-gate when the split shipped, and that leaked the drain's
+     * stall back onto every plain writer: a card took [writes] and then waited
+     * for the gate WHILE HOLDING IT, so for the length of a drain slice every
+     * kind-1 in the process queued behind the card. Gate first means a card
+     * waits for the drain holding nothing, and once it has the gate it takes
+     * [writes] for one short hold. The drain and the reconciler only ever
+     * hold the gate, so the pair cannot deadlock as long as every two-lock
+     * path here goes through [gated].
      */
     private val trustGate = Mutex()
 
@@ -227,11 +232,12 @@ class NostrSemanticsStore(
     private class LockStage(
         name: String,
         /**
-         * WHICH MUTEX this label takes. Several labels share one: `lock.gate`
-         * and `lock.ingest.trust` are both [trustGate]; `lock.ingest`,
-         * `lock.sweep` and `lock.reindex` are all [writes]. The wait
-         * attribution matches waiter to holder by THIS, because matching by
-         * label misses every cross-label contention — which is most of it.
+         * WHICH MUTEX this label takes. Several share one: `lock.gate`,
+         * `lock.ingest.trust`, `lock.sweep.trust` and `lock.reindex.trust` are
+         * all [trustGate]; `lock.ingest`, `lock.sweep` and `lock.reindex` are
+         * all [writes]. The wait attribution matches waiter to holder by THIS,
+         * because matching by label misses every cross-label contention — which
+         * is most of it (docs/telemetry.md §15.1).
          */
         val lock: String,
     ) {
@@ -264,12 +270,10 @@ class NostrSemanticsStore(
     ): T {
         val requested = System.nanoTime()
         // WHAT THIS WRITER IS ABOUT TO QUEUE BEHIND, sampled before we block —
-        // the one causal edge in this design. `lock.*.wait` alone says "ingest
-        // waited 41 s", which only prompts a question; attributed, it says "38
-        // of those were behind proj.fetch.derive", which names a fix. One set
-        // scan (never more than a couple of entries) against a wait measured in
-        // seconds. First-holder attribution: see IngestStats.holderOf.
-        val blockedBy = IngestStats.holderOf(stage.lock)?.label
+        // the one causal edge in this design. Keyed by the MUTEX, not the stage
+        // label, because several labels share each mutex and a label match
+        // silently attributes nothing (docs/telemetry.md §15.1).
+        val blockedBy = IngestStats.holderOf(stage.lock)?.let { IngestStats.labelOf(it) }
         var acquired = 0L
         try {
             return mutex.withLock {
@@ -277,9 +281,14 @@ class NostrSemanticsStore(
                 // Live holder, for the question the cumulative stages cannot
                 // answer: not "the gate was held for 24 minutes since boot"
                 // but "the gate is held RIGHT NOW, by this, for this long".
-                // A scope rather than a begin/end pair, so nesting two mutexes
-                // cannot leave the outer one reporting as unheld.
-                IngestStats.holding(stage.lock, stage.hold) { body() }
+                // Two volatile writes per critical section, against a section
+                // that is measured in seconds.
+                IngestStats.beginHold(stage.hold, lock = stage.lock)
+                try {
+                    body()
+                } finally {
+                    IngestStats.endHold(stage.hold)
+                }
             }
         } finally {
             // Booked AFTER release: recording inside would put two map lookups
@@ -293,8 +302,8 @@ class NostrSemanticsStore(
                 IngestStats.add(stage.wait, waited)
                 IngestStats.add(stage.hold, released - acquired)
                 // Only when something was actually holding: an uncontended
-                // acquire waited on nobody, and charging it to a phantom
-                // holder would make the split lie about where contention is.
+                // acquire waited on nobody, and charging it to a phantom holder
+                // would make the split lie about where contention is.
                 if (blockedBy != null) IngestStats.addBlocked(stage.wait, blockedBy, waited)
             }
         }
@@ -320,36 +329,32 @@ class NostrSemanticsStore(
             event is RequestToVanishEvent
 
     /**
-     * LOCK ORDER: [writes] first, [trustGate] second — the single order every
-     * two-lock path in this file takes, so the pair cannot deadlock.
+     * THE ONE TWO-LOCK SHAPE: [trustGate] when [trust], then [writes] under
+     * [stage]. Every path that needs both goes through here, which is what
+     * makes the order (see [trustGate]) a property of the file rather than of
+     * each call site.
+     *
+     * The gate wait is charged to its OWN stage, not to LOCK_GATE: `lock.gate.*`
+     * is the drain's, and folding an insert's wait for the drain into the same
+     * name would make "the drain is slow" and "a card is waiting for the
+     * drain" one number. They have different remedies.
      */
+    private suspend fun <T> gated(
+        trust: Boolean,
+        stage: LockStage,
+        /** The stage the GATE wait is booked under — ingest's by default; a sweep or a reindex names its own, so a sweep waiting on the drain does not read as "a card is waiting". */
+        gateStage: LockStage = LOCK_INGEST_TRUST,
+        body: suspend () -> T,
+    ): T = if (trust) lockedOn(trustGate, gateStage) { locked(stage) { body() } } else locked(stage) { body() }
+
     private suspend fun <T> lockedForWrite(
         event: Event,
         body: suspend () -> T,
-    ): T =
-        locked(LOCK_INGEST) {
-            // Charged to its OWN stage, not to LOCK_GATE: `lock.gate.*` is the
-            // drain's, and folding an insert's wait for the drain into the same
-            // name would make "the drain is slow" and "a card is waiting for
-            // the drain" one number. They have different remedies.
-            if (touchesTrust(event)) lockedOn(trustGate, LOCK_INGEST_TRUST) { body() } else body()
-        }
+    ): T = gated(touchesTrust(event), LOCK_INGEST, body = body)
 
-    override suspend fun insert(event: Event) =
-        withActivity(Activity.Insert) {
-            try {
-                lockedForWrite(event) { insertLocked(event) }
-                metrics.outcome(Activity.Insert, CostLedger.ADMITTED)
-            } catch (e: RejectedException) {
-                // The OUTCOMES altitude: booked here because this is where the
-                // decision is, and a refused event never reaches the port for
-                // anything below to count. The reason is Quartz's closed
-                // RejectionReason set (see Rejections), which is what keeps
-                // this inside the cardinality rule.
-                metrics.outcome(Activity.Insert, Rejections.reasonOf(e.message))
-                throw e
-            }
-        }
+    override suspend fun insert(event: Event) = withActivity(Activity.Insert) { insertOne(event) }
+
+    private suspend fun insertOne(event: Event) = lockedForWrite(event) { insertLocked(event) }
 
     /**
      * Run [body] under this store's TRUST writer lock. For the trust
@@ -370,8 +375,8 @@ class NostrSemanticsStore(
     internal suspend fun <T> withWriteLock(body: suspend () -> T): T = lockedOn(trustGate, LOCK_GATE) { body() }
 
     /**
-     * [lockedForWrite] for a BATCH: the trust gate is taken when ANY event in
-     * it touches reputation.
+     * [lockedForWrite] for a BATCH that must stay whole: the trust gate is
+     * taken when ANY event in it touches reputation.
      *
      * The bulk path writes reputation state inline — `TrustProjection.putAll`
      * ends in `reputations.updateCells` for the cards in the batch — so a batch
@@ -380,15 +385,12 @@ class NostrSemanticsStore(
      * both locks and `batchInsert` took neither, which left the mirror's bulk
      * card ingest racing the drain with no mutual exclusion at all. The
      * single-lock design could not have this bug; the split has to earn its
-     * exclusion at every write entry point, and there are two.
+     * exclusion at every write entry point, and there are several.
      */
     private suspend fun <T> lockedForBatch(
         events: List<Event>,
         body: suspend () -> T,
-    ): T =
-        locked(LOCK_INGEST) {
-            if (events.any { touchesTrust(it) }) lockedOn(trustGate, LOCK_INGEST_TRUST) { body() } else body()
-        }
+    ): T = gated(events.any { touchesTrust(it) }, LOCK_INGEST, body = body)
 
     /**
      * Batches take a BULK path — the per-event path costs 3–5 index round
@@ -404,26 +406,65 @@ class NostrSemanticsStore(
      *    the diff.
      *
      * Sub-[BULK_MIN] batches aren't worth the setup and just loop [insertLocked].
+     *
+     * A PURE-RECORD BATCH IS SPLIT BY TRUST. The events that touch reputation
+     * (cards, provider lists — see [touchesTrust]) commit under the trust gate;
+     * everything else commits under [writes] alone, first. The two halves
+     * cannot interact: a card's or a list's supersession address is
+     * `(kind, pubkey, d)`, which no other kind in the batch can share; dedup is
+     * per id; the guard probes are per owner and read-only. So the split
+     * changes no outcome (they are merged back by position) and it takes the
+     * mirror's 999 notes out from behind the drain slice their one card has to
+     * wait for — and holds the gate for one small commit instead of the whole
+     * write stage. A MIXED batch (any kind 5/62) stays whole: [BulkMixedInsert]
+     * replays it in order because a deletion may target an event earlier in
+     * the same batch, and a kind 5 by id may be pointing at a card.
      */
     override suspend fun batchInsert(events: List<Event>): List<IEventStore.InsertOutcome> =
         withActivity(Activity.BatchInsert) {
-            val outcomes =
-                if (events.size < BULK_MIN) {
-                    lockedForBatch(events) { events.map { tryInsertLocked(it) } }
-                } else if (events.any { it is DeletionEvent || it is RequestToVanishEvent }) {
-                    lockedForBatch(events) { bulkMixed.run(events) }
-                } else {
-                    // PLANNED OUTSIDE THE LOCKS, as before: the plan is reads only.
-                    val plan = bulkRecords.plan(events)
-                    lockedForBatch(events) { bulkRecords.commit(plan) }
-                }
+            val outcomes = batchInsertUnder(events)
             // Every write path already reports a typed outcome per event; this
             // just keeps the tally. "81% of what this node is offered is
-            // already stored" is the number that tells an operator to narrow a
-            // sync, and nothing else in the store can say it.
+            // already stored" is what tells an operator to narrow a sync.
             bookOutcomes(Activity.BatchInsert, outcomes)
             outcomes
         }
+
+    /** [batchInsert]'s body; split because `withActivity` cannot express a non-local return. */
+    private suspend fun batchInsertUnder(events: List<Event>): List<IEventStore.InsertOutcome> {
+        if (events.any { it is DeletionEvent || it is RequestToVanishEvent }) {
+            return lockedForBatch(events) { if (events.size < BULK_MIN) events.map { tryInsertLocked(it) } else bulkMixed.run(events) }
+        }
+        // Bulk-or-loop is decided on the batch the CALLER sent, not on a
+        // half: a 30-event batch split 15/15 must not fall to the per-event
+        // loop on both sides for having been split.
+        val bulk = events.size >= BULK_MIN
+        val trustAt = BooleanArray(events.size) { touchesTrust(events[it]) }
+        val trustCount = trustAt.count { it }
+        if (trustCount == 0) return insertRecords(events, trust = false, bulk = bulk)
+        if (trustCount == events.size) return insertRecords(events, trust = true, bulk = bulk)
+        val plainOut = insertRecords(events.filterIndexed { i, _ -> !trustAt[i] }, trust = false, bulk = bulk)
+        val trustOut = insertRecords(events.filterIndexed { i, _ -> trustAt[i] }, trust = true, bulk = bulk)
+        var p = 0
+        var t = 0
+        return events.indices.map { i -> if (trustAt[i]) trustOut[t++] else plainOut[p++] }
+    }
+
+    /**
+     * One run of plain records (no kind 5/62) — the bulk path when [bulk], a
+     * loop otherwise — under [writes], and under the trust gate first when
+     * [trust] (every event in the run touches reputation, or none does).
+     */
+    private suspend fun insertRecords(
+        events: List<Event>,
+        trust: Boolean,
+        bulk: Boolean,
+    ): List<IEventStore.InsertOutcome> {
+        if (!bulk) return gated(trust, LOCK_INGEST) { events.map { tryInsertLocked(it) } }
+        // PLANNED OUTSIDE THE LOCKS, as before: the plan is reads only.
+        val plan = bulkRecords.plan(events)
+        return gated(trust, LOCK_INGEST) { bulkRecords.commit(plan) }
+    }
 
     /**
      * Tally a batch's typed outcomes onto the outcomes altitude.
@@ -431,11 +472,8 @@ class NostrSemanticsStore(
      * TALLIED LOCALLY FIRST, then booked once per distinct reason. A batch is
      * overwhelmingly one reason — a mirroring relay's is ~99% duplicates — so
      * per-event booking paid two `computeIfAbsent` lookups 20,000 times to
-     * reach a handful of counters (measured 2026-09-04: 63.2 ns/event against
-     * 33.3 ns batched, 1.9x). Small beside the 9,527 ns/event the write path
-     * already spends deriving search fields, which is why this is a tidy-up
-     * rather than a rescue — but it is free, and it keeps a per-event cost off
-     * the ingest path on principle.
+     * reach a handful of counters (measured: 63.2 ns/event against 33.3 ns
+     * batched).
      */
     private fun bookOutcomes(
         activity: Activity,
@@ -480,18 +518,17 @@ class NostrSemanticsStore(
                     buffered += event
                 }
             }.body()
-            lockedForBatch(buffered) {
-                buffered.forEach {
-                    insertLocked(it)
-                    // Booked per event, because a transaction has no outcome
-                    // list to tally: the first rejection PROPAGATES and aborts
-                    // the rest, so everything reaching here was admitted.
-                    metrics.outcome(Activity.BatchInsert, CostLedger.ADMITTED)
-                }
-            }
+            lockedForBatch(buffered) { buffered.forEach { insertLocked(it) } }
         }
 
-    private suspend fun insertLocked(event: Event) {
+    /**
+     * The per-event rules with NO lock and NO lock accounting: the caller
+     * holds whatever it needs. Internal for [BulkMixedInsert]'s replay, which
+     * runs these rules against an in-memory snapshot under the real store's
+     * locks — going through [insert] there booked a phantom `lock.ingest`
+     * sample per replayed event into the process-wide [IngestStats].
+     */
+    internal suspend fun insertLocked(event: Event) {
         if (event.kind.isEphemeral()) return
         if (event.isExpired()) throw RejectedException(Rejections.EXPIRED)
         // Text the engine refuses is a property of the event, so it is settled
@@ -633,13 +670,10 @@ class NostrSemanticsStore(
      * admits everything by definition, and there a mixed page is what was
      * asked for.
      */
+    @Suppress("UNCHECKED_CAST")
     override suspend fun <T : Event> query(filters: List<Filter>): List<T> = withActivity(Activity.Query) { queryUnder(filters) }
 
-    /**
-     * [query]'s body. Split out only because `withActivity` is a real suspend
-     * call rather than an inline one, so a `return` inside its lambda would be
-     * a non-local return it cannot express.
-     */
+    /** [query]'s body; split for the reason [batchInsertUnder] is. */
     @Suppress("UNCHECKED_CAST")
     private suspend fun <T : Event> queryUnder(filters: List<Filter>): List<T> {
         val observer = coroutineContext[StoreQueryContext]?.observer
@@ -655,18 +689,19 @@ class NostrSemanticsStore(
                 { index.searchRanked(it) },
                 expansion != null,
             )
-        val page =
-            spliced(expansion, recalled, DOC_KEYS, { if (it.kind in SearchReferences.KINDS) it.toEvent() else null }, { index.searchRanked(it) })
-                .diverse(queries.all { it.keepsEngineOrder() }, EventDoc::pubkey)
+        val page = spliced(expansion, recalled, DOC_KEYS, { if (it.kind in SearchReferences.KINDS) it.toEvent() else null }, { index.searchRanked(it) })
         // Reconstruct via Quartz's by-kind factory straight from the stored
         // fields, skipping the serialize+parse round trip; see [toEvent].
-        return page.asked(servedKinds(expansion, queries), EventDoc::kind).map { it.toEvent() } as List<T>
+        // Narrowed to what the caller's own filters admit BEFORE the diversity
+        // cap, so a row about to be dropped cannot spend an author's slots.
+        return page.asked(expansion, filters, EventDoc::kind, EventDoc::id, EventDoc::pubkey).diverse(queries.all { it.keepsEngineOrder() }, EventDoc::pubkey).map { it.toEvent() } as List<T>
     }
 
     /**
-     * THE KINDS THE CALLER ASKED FOR, or null where the page needs no
-     * narrowing at all — nothing expanded, or some filter left its kinds open
-     * and so admits every kind by definition.
+     * The page narrowed to what the caller's filters ADMIT — the same list,
+     * not a copy, whenever nothing expanded or every row passes, which is
+     * every plain recall and every search whose expansion added only rows the
+     * REQ's filters match.
      *
      * A kind-restricted search recalls MORE than its own kinds on purpose: the
      * pointer families that convert into them are fetched as companion queries
@@ -679,26 +714,36 @@ class NostrSemanticsStore(
      * than a bonus. So the pointer does its job (it names subjects, and those
      * subjects ARE of an asked-for kind) and is then dropped from the answer.
      *
-     * The union across filters, not per filter: a REQ ORs its filters and
-     * answers with one page, so a pointer kind ANY filter named is a kind the
-     * client asked for — `kinds:[0]` beside `kinds:[30392]` serves both, and
-     * the 30392 arrives as the plain NIP-01 hit it is.
-     *
-     * KINDS ONLY, not the whole filter. The rest of what a filter says is
-     * already applied by the engine — a subject is looked up under the finding
-     * query with its terms stripped, so it passed the same authors, tags,
-     * window and trust floor the hits did (see [SearchReferenceExpansion]) —
-     * and re-deciding admission here would be a second answer to a question the
-     * index already answered. The kind is the one constraint the companion
-     * queries deliberately step outside of, so it is the one this restores.
+     * JUDGED ON KINDS, IDS AND AUTHORS — the three exact keys — each row
+     * against ANY filter, since a REQ ORs its filters and answers with one
+     * page. This used to be a kinds-only check that treated a filter with no
+     * `kinds` as admitting every kind, which served a companion pointer to a
+     * REQ like `[{kinds:[0], search:…}, {ids:[e1]}]` — the second filter has
+     * no kinds but admits exactly one event, and the 30392 matched neither.
+     * Not tags or the time window, deliberately: the engine matches tag values
+     * uncased and a client-side matcher would not, so re-judging those here
+     * could drop a hit the engine rightly served; the exact keys have one
+     * answer on both sides. Everything else the expansion nominates was looked
+     * up under the finding query with its terms stripped, so it passed the
+     * same keys the hits did and passes here too; the pointer kinds are the
+     * one constraint the companions deliberately step outside of.
      */
-    private fun servedKinds(
+    private fun <R> List<R>.asked(
         expansion: SearchReferenceExpansion?,
-        queries: List<EventQuery>,
-    ): Set<Int>? {
-        if (expansion == null) return null
-        if (queries.any { it.kinds.isEmpty() }) return null
-        return queries.flatMapTo(HashSet()) { it.kinds }
+        filters: List<Filter>,
+        kindOf: (R) -> Int,
+        idOf: (R) -> String,
+        authorOf: (R) -> String,
+    ): List<R> {
+        if (expansion == null) return this
+        val keys = filters.map { Triple(it.kinds?.toSet(), it.ids?.mapTo(HashSet()) { id -> id.lowercase() }, it.authors?.mapTo(HashSet()) { a -> a.lowercase() }) }
+
+        fun admitted(row: R): Boolean =
+            keys.any { (kinds, ids, authors) ->
+                (kinds == null || kindOf(row) in kinds) && (ids == null || idOf(row) in ids) && (authors == null || authorOf(row) in authors)
+            }
+        if (all(::admitted)) return this
+        return filter(::admitted)
     }
 
     /**
@@ -1101,8 +1146,8 @@ class NostrSemanticsStore(
                 expansion != null,
             )
         spliced(expansion, ordered, RAW_KEYS, { if (it.kind in SearchReferences.KINDS) it.toEvent() else null }, { index.rawSearchRanked(it) })
+            .asked(expansion, filters, RawEvent::kind, RawEvent::id, RawEvent::pubKey)
             .diverse(queries.all { it.keepsEngineOrder() }, RawEvent::pubKey)
-            .asked(servedKinds(expansion, queries), RawEvent::kind)
             .forEach(onEach)
     }
 
@@ -1139,7 +1184,7 @@ class NostrSemanticsStore(
 
     override suspend fun count(filters: List<Filter>): Int = withActivity(Activity.Count) { countUnder(filters) }
 
-    /** [count]'s body; split for the reason [queryUnder] is. */
+    /** [count]'s body; split for the reason [batchInsertUnder] is. */
     private suspend fun countUnder(filters: List<Filter>): Int {
         val observer = coroutineContext[StoreQueryContext]?.observer
         val cutoff = nowSecs()
@@ -1210,11 +1255,18 @@ class NostrSemanticsStore(
      * WHOLE tag, so a positional condition on another element is expressible
      * (NIP-65's write marker, NIP-85's relay position).
      *
-     * It rides the tags-only visit projection ([EventIndex.visitTags]), NOT a
-     * grouping over `tag_index`: that field is a derived, lossy view
-     * (single-letter names, first values only), so a grouping never sees a
+     * It rides the tags-only visit projection ([EventIndex.visitTags]) BY
+     * DEFAULT, not a grouping over `tag_index`: that field is a derived, lossy
+     * view (single-letter names, first values only), so a grouping never sees a
      * multi-character name and cannot apply a positional condition — it would
      * return a SUPERSET.
+     *
+     * WHERE THE SUPERSET IS THE ANSWER, though, the grouping is exactly right,
+     * and [unconditional] is how a caller says so: a one-letter tag read at
+     * position 1 with no condition on the rest of it. Then the engine
+     * aggregates and the corpus is never walked — measured at ~1s against
+     * ~157s for every relay url in 3.27M NIP-65 lists. Any other shape takes
+     * the walk and gets the exact set.
      *
      * Empty values are skipped, and expiry is honored like [count].
      */
@@ -1222,17 +1274,38 @@ class NostrSemanticsStore(
         filter: Filter,
         tagName: String,
         valueIndex: Int = 1,
+        /**
+         * Whether the caller's [where] actually looks at the tag. It cannot be
+         * inferred — a lambda is opaque — and guessing wrong would answer a
+         * SUPERSET silently, so the default is the safe one and only a caller
+         * that knows it has no positional condition opts in.
+         *
+         * BEFORE [where], not after: `where` is function-typed, so a parameter
+         * added past it captures every trailing-lambda call site as this
+         * Boolean instead. The compiler caught it; the ordering keeps it caught
+         * for good.
+         */
+        unconditional: Boolean = false,
         where: (List<String>) -> Boolean = { true },
-    ): Set<String> = withActivity(Activity.Query) { distinctTagValuesUnder(filter, tagName, valueIndex, where) }
+    ): Set<String> = withActivity(Activity.Query) { distinctTagValuesUnder(filter, tagName, valueIndex, unconditional, where) }
 
-    /** [distinctTagValues]'s body; split for the reason [queryUnder] is. */
+    /** [distinctTagValues]'s body; split for the reason [batchInsertUnder] is. */
     private suspend fun distinctTagValuesUnder(
         filter: Filter,
         tagName: String,
         valueIndex: Int,
+        unconditional: Boolean,
         where: (List<String>) -> Boolean,
     ): Set<String> {
         val q = filter.toExpiryQuery(nowSecs()) ?: return emptySet()
+        // THE FAST PATH, and every one of these conditions is load-bearing.
+        // `tag_index` is lossy in three ways at once — single-letter names,
+        // first values only, nothing of the rest of the tag — so a grouping
+        // over it answers this question and no other. Drop any condition and
+        // the answer silently widens.
+        if (unconditional && valueIndex == 1 && tagName.length == 1) {
+            index.distinctTagIndexValues(q, tagName)?.let { return it }
+        }
         val out = HashSet<String>()
         index.visitTags(q) { page ->
             for (tags in page) {
@@ -1273,7 +1346,7 @@ class NostrSemanticsStore(
         onProgress: ((collected: Int) -> Unit)?,
     ): List<IdAndTime> = withActivity(Activity.Snapshot) { snapshotUnder(filters, maxEntries, onProgress) }
 
-    /** [snapshotIdsForNegentropy]'s body; split for the reason [queryUnder] is. */
+    /** [snapshotIdsForNegentropy]'s body; split for the reason [batchInsertUnder] is. */
     private suspend fun snapshotUnder(
         filters: List<Filter>,
         maxEntries: Int?,
@@ -1329,23 +1402,27 @@ class NostrSemanticsStore(
      * Cheap where it matters: a sweep is periodic, not the client write path
      * the gate split exists to keep clear.
      */
-    override suspend fun delete(filters: List<Filter>) =
-        withActivity(Activity.Delete) {
-            locked(LOCK_SWEEP) {
-                lockedOn(trustGate, LOCK_INGEST_TRUST) {
-                    filters.mapNotNull { it.toEventQuery() }.forEach { deletions.sweep(it) }
-                }
-            }
+    override suspend fun delete(filters: List<Filter>) = withActivity(Activity.Delete) { deleteUnder(filters) }
+
+    /** [delete]'s body; split for the reason [batchInsertUnder] is. */
+    private suspend fun deleteUnder(filters: List<Filter>) {
+        // An EMPTY filter deletes NOTHING (STORE-F10, the reference's deliberate
+        // asymmetry with query): as a query it means "everything", and a stray
+        // one here would sweep the corpus 10k at a time until the round cap
+        // threw, half-wiped.
+        val queries = filters.filterNot { it.isEmpty() }.mapNotNull { it.toEventQuery() }
+        if (queries.isEmpty()) return
+        gated(trust = true, LOCK_SWEEP, LOCK_SWEEP_TRUST) {
+            queries.forEach { deletions.sweep(it) }
         }
+    }
 
     override suspend fun deleteExpiredEvents() =
         withActivity(Activity.Delete) {
             // expiresBefore is strict (<): +1 makes "expires exactly now" due, per NIP-40.
-            locked(LOCK_SWEEP) {
-                // Both locks, for the reason on [delete]: NIP-40 expiry does not
-                // ask what kind it is reaping, so it can reap cards.
-                lockedOn(trustGate, LOCK_INGEST_TRUST) { deletions.sweep(EventQuery(expiresBefore = nowSecs() + 1)) }
-            }
+            // Both locks, for the reason on [delete]: NIP-40 expiry does not ask
+            // what kind it is reaping, so it can reap cards.
+            gated(trust = true, LOCK_SWEEP, LOCK_SWEEP_TRUST) { deletions.sweep(EventQuery(expiresBefore = nowSecs() + 1)) }
         }
 
     // ---- full-text reindex --------------------------------------------------
@@ -1388,16 +1465,12 @@ class NostrSemanticsStore(
      */
     override suspend fun reindexFullTextSearch() =
         withActivity(Activity.Reconcile) {
-            reindexAll()
+            var cursor: String? = null
+            do {
+                val progress = reindexFullTextSearch(cursor)
+                cursor = progress.cursor
+            } while (!progress.done)
         }
-
-    private suspend fun reindexAll() {
-        var cursor: String? = null
-        do {
-            val progress = reindexFullTextSearch(cursor)
-            cursor = progress.cursor
-        } while (!progress.done)
-    }
 
     /**
      * Resumable batch: one page of the engine's document walk, with the walk's
@@ -1407,8 +1480,8 @@ class NostrSemanticsStore(
     override suspend fun reindexFullTextSearch(
         resumeFrom: String?,
         batchSize: Int,
-    ): FtsReindexProgress =
-        withActivity(Activity.Reconcile) {
+    ): FtsReindexProgress {
+        val (progress, trustDocs) =
             locked(LOCK_REINDEX) {
                 val page = index.visitDocsPage(EventQuery(), resumeFrom, batchSize)
                 // ONE pipelined write per page: serial awaited puts pay per-op ack
@@ -1426,10 +1499,35 @@ class NostrSemanticsStore(
                     val nearStale = !columnsChanged && doc.storedNearFields?.let { it != fields.nearFieldsWritten() } == true
                     if (columnsChanged || nearStale) changed += doc.copy(search = fields)
                 }
-                if (changed.isNotEmpty()) index.putAll(changed)
-                FtsReindexProgress(cursor = page.continuation, processedThisBatch = page.docs.size, done = page.continuation == null)
+                // A page can carry cards, and the projection applies their
+                // cells INLINE on putAll — the same documents the drain
+                // re-derives — so those queue for the trust gate like every
+                // other write that touches reputation. The gate comes BEFORE
+                // [writes] (see [trustGate]), and this page was read under
+                // [writes] alone, so they are handed out and re-taken in order
+                // below rather than stalling the page (and every writer behind
+                // it) on a drain slice. Values agree either way — the card is
+                // the newest for its address — so this is the split's rule
+                // kept at its fifth entry point, not a repair.
+                val (trust, plain) = changed.partition { it.kind in TrustProjection.TRUST_KINDS }
+                if (plain.isNotEmpty()) index.putAll(plain)
+                FtsReindexProgress(cursor = page.continuation, processedThisBatch = page.docs.size, done = page.continuation == null) to trust
+            }
+        if (trustDocs.isNotEmpty()) {
+            gated(trust = true, LOCK_REINDEX, LOCK_REINDEX_TRUST) {
+                // [writes] was released to take the gate in order, so a
+                // supersession may have landed since the page was read, and
+                // re-putting the page's copy of a replaced card would roll the
+                // newer version back. Events are immutable, so an id that is
+                // STILL stored is exactly the doc the page holds — near-tier
+                // evidence included, which a re-read would not carry.
+                val alive = index.existingIds(trustDocs.map { it.id })
+                val still = trustDocs.filter { it.id in alive }
+                if (still.isNotEmpty()) index.putAll(still)
             }
         }
+        return progress
+    }
 
     /**
      * Rebuild the guard-owner cache from the corpus NOW — the explicit barrier
@@ -1448,6 +1546,15 @@ class NostrSemanticsStore(
     }
 
     private companion object {
+        /** The [writes] mutex, as the wait attribution names it. */
+        const val WRITE_LOCK = "writes"
+
+        /** The [trustGate] mutex, as the wait attribution names it. */
+        const val TRUST_GATE = "trustGate"
+
+        /** The outcome key for an insert that failed on the ENGINE rather than on a rule. */
+        const val OUTCOME_FAILED = "failed"
+
         /**
          * Writer-lock stage labels, named for the CALLER rather than the
          * operation: these exist to say which side of the contention a stall is
@@ -1463,14 +1570,9 @@ class NostrSemanticsStore(
         val LOCK_SWEEP = LockStage("lock.sweep", WRITE_LOCK)
         val LOCK_REINDEX = LockStage("lock.reindex", WRITE_LOCK)
 
-        /** The [writes] mutex, as the wait attribution names it. */
-        const val WRITE_LOCK = "writes"
-
-        /** The [trustGate] mutex, as the wait attribution names it. */
-        const val TRUST_GATE = "trustGate"
-
-        /** The outcome key for an insert that failed on the ENGINE rather than on a rule. */
-        const val OUTCOME_FAILED = "failed"
+        /** A sweep's / a reindex page's wait for the trust gate, apart from ingest's — different holders, different remedies. */
+        val LOCK_SWEEP_TRUST = LockStage("lock.sweep.trust", TRUST_GATE)
+        val LOCK_REINDEX_TRUST = LockStage("lock.reindex.trust", TRUST_GATE)
 
         /** Batches this size or larger take the bulk path; smaller ones aren't worth its setup. */
         const val BULK_MIN = 16

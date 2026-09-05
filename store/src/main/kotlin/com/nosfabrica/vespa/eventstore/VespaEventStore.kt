@@ -308,7 +308,7 @@ class VespaEventStore internal constructor(
             ledger.gauge("trust.pending.subjects") { trust.dirt.pendingSubjects() }
             ledger.gauge("trust.pending.services") { trust.dirt.pendingServices() }
             ledger.gauge("feed.inflight") { eventIndex.feedInflight() }
-            ledger.gauge("lock.held") { IngestStats.allHeld().size.toLong() }
+            ledger.gauge("lock.held") { IngestStats.heldAll().size.toLong() }
             // The reconciler's and drainer's mutating batches take the store's
             // writer lock (the gate): repairs must not race live inserts'
             // recomputes.

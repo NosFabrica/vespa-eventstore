@@ -231,9 +231,17 @@ class VespaEventIndex(
         awaitPuts(listOf(doc), listOf(putOp(doc)))
     }
 
-    /** All puts stay in flight together — the feed client multiplexes them over HTTP/2. */
+    /**
+     * Puts stay in flight together — the feed client multiplexes them over
+     * HTTP/2 — in chunks of [FEED_CHUNK]: the per-operation deadline
+     * ([feedParams]) is measured from ENQUEUE, not from dispatch, and the
+     * throttler admits about `connections x streams` at a time, so a single
+     * call that enqueued far more than that had its tail expire in the queue
+     * before its first dispatch — most of the batch landed and the call still
+     * threw. A chunk the size of the admission window loses no pipelining.
+     */
     override suspend fun putAll(docs: List<EventDoc>) {
-        awaitPuts(docs, docs.map { putOp(it) })
+        docs.chunked(FEED_CHUNK).forEach { chunk -> awaitPuts(chunk, chunk.map { putOp(it) }) }
     }
 
     /**
@@ -298,12 +306,14 @@ class VespaEventIndex(
             ids.mapBounded(ID_GET_FANOUT) { remove(it) }
             return
         }
-        ids.map { removeOp(it) }.forEach { it.await() }
+        ids.chunked(FEED_CHUNK).forEach { chunk -> chunk.map { removeOp(it) }.forEach { it.await() } }
     }
 
-    /** Bulk remove with the docs in hand: the docid comes straight from each doc, so no address-keyed resolve-by-get per id. */
+    /** Bulk remove with the docs in hand: the docid comes straight from each doc, so no address-keyed resolve-by-get per id. Chunked like [putAll]. */
     override suspend fun removeDocs(docs: List<EventDoc>) {
-        docs.map { feed.client.remove(DocumentId.of(EVENT_NAMESPACE, EVENT_DOCTYPE, docIdOf(it)), feedParams()) }.forEach { it.await() }
+        docs.chunked(FEED_CHUNK).forEach { chunk ->
+            chunk.map { feed.client.remove(DocumentId.of(EVENT_NAMESPACE, EVENT_DOCTYPE, docIdOf(it)), feedParams()) }.forEach { it.await() }
+        }
     }
 
     // ---- recall -------------------------------------------------------------
@@ -439,10 +449,17 @@ class VespaEventIndex(
      * above it on the engine's own headroom, which is an order of magnitude.
      */
     private fun EventQuery.keepingProfileOf(caller: EventQuery): EventQuery =
-        if (ranking == null && EventYql.usesRecencyProfile(caller) && !EventYql.usesRecencyProfile(this)) {
-            copy(ranking = EventYql.RANK_RECENCY)
-        } else {
-            this
+        when {
+            ranking == null && EventYql.usesRecencyProfile(caller) && !EventYql.usesRecencyProfile(this) -> copy(ranking = EventYql.RANK_RECENCY)
+
+            // The gated twin has the same cliff: a caller's limit inside the
+            // band plus the slack demoted the overfetch to the full-scan
+            // variant (14.5 s against 1.4 s, per EventYql) for the last
+            // TIE_SLACK units of the band, invisibly — recallRoot reads the
+            // ranking field, which still said "gated".
+            ranking == EventYql.RANK_RECENCY_GATED && EventYql.usesGatedMatchPhase(caller) && !EventYql.usesGatedMatchPhase(this) -> copy(keepMatchPhase = true)
+
+            else -> this
         }
 
     /**
@@ -901,7 +918,13 @@ class VespaEventIndex(
         val selection = EventSelection.build(query) ?: return super.visitIds(query, withDTag, onPage)
         // Vespa fieldSet syntax is "<doctype>:<field>,<field>,…" — the doctype
         // prefixes the list ONCE (else: ILLEGAL_PARAMETERS).
-        val fieldSet = "$EVENT_DOCTYPE:created_at" + if (withDTag) ",tag_index" else ""
+        // `id` is PROJECTED, not parsed off the docid: under address-keying a
+        // replaceable's docid is its address (`<kind>:<pubkey>[:<d>]`), and the
+        // tail of that is the d-tag or the author — every NIP-77 snapshot of a
+        // provider's cards, which all sit on one timestamp and so take this
+        // walk, offered a peer ids that exist nowhere. The cursor walk reads
+        // the attribute; this one now does too.
+        val fieldSet = "$EVENT_DOCTYPE:id,created_at" + if (withDTag) ",tag_index" else ""
         visits.pages(selection, fieldSet) { documents ->
             val page =
                 documents.mapNotNull { d ->
@@ -913,7 +936,7 @@ class VespaEventIndex(
                         } else {
                             null
                         }
-                    DocRef(d.id.substringAfterLast(":"), at, dTag)
+                    DocRef(d.fields.id ?: d.id.substringAfterLast(":"), at, dTag)
                 }
             page.isEmpty() || onPage(page)
         }
@@ -1072,6 +1095,33 @@ class VespaEventIndex(
     }
 
     /**
+     * [EventIndex.distinctTagIndexValues] against the engine: ONE grouping over
+     * `tag_index`, then the `"<letter>:"` prefix stripped off each group.
+     *
+     * The groups come back for EVERY tag letter the match set carries, not just
+     * the asked-for one — `tag_index` is one attribute — so the prefix filter
+     * here is what makes the answer the caller's question rather than a
+     * superset of it. Cheap: it runs over distinct values, of which a relay
+     * corpus has tens of thousands, not over the documents.
+     */
+    override suspend fun distinctTagIndexValues(
+        query: EventQuery,
+        tagName: String,
+    ): Set<String>? {
+        val vq = EventYql.buildDistinctTagValues(query, tagName) ?: return emptySet()
+        val root = queryRoot(vq, hits = 0) ?: return emptySet()
+        val prefix = "$tagName:"
+        return GroupingResults
+            .groupCounts(root)
+            .keys
+            .asSequence()
+            .filter { it.startsWith(prefix) }
+            .map { it.removePrefix(prefix) }
+            .filter { it.isNotEmpty() }
+            .toSet()
+    }
+
+    /**
      * `all(group(pubkey) each(output(count())))` — one leaf group per distinct
      * author, each carrying its doc count. So the author set AND the per-author
      * counts cost exactly one query.
@@ -1195,7 +1245,7 @@ class VespaEventIndex(
     /** Graceful: waits for in-flight feed operations before closing the connections. */
     override fun close() = feed.close()
 
-    private companion object {
+    internal companion object {
         /** Concurrent document-API gets for a pure-id lookup. Gets are light (no summary stage to overrun), so this floats above QUERY_FANOUT. */
         const val ID_GET_FANOUT = 32
 
@@ -1223,5 +1273,14 @@ class VespaEventIndex(
          * that hang into a retryable failure.
          */
         fun feedParams(): OperationParameters = OperationParameters.empty().timeout(Duration.ofSeconds(30))
+
+        /**
+         * Operations enqueued per awaited chunk on every pipelined feed call.
+         * At or above the throttler's admission window (the default 32
+         * connections x 128 streams), so nothing is serialised that would have
+         * overlapped — and no operation waits in the client's queue past the
+         * deadline that starts when it is enqueued (see [putAll]).
+         */
+        const val FEED_CHUNK = 4_096
     }
 }

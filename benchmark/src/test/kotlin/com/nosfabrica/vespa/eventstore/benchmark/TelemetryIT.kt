@@ -159,8 +159,8 @@ class TelemetryIT {
                         // of this, and its holds balanced out.
                         assertTrue(IngestStats.snapshot().isNotEmpty(), "the ingest stage split went missing")
                         assertTrue(
-                            IngestStats.allHeld().isEmpty(),
-                            "a lock is still held after every operation finished: ${IngestStats.allHeld().map { it.label }}",
+                            IngestStats.heldAll().isEmpty(),
+                            "a lock is still held after every operation finished: ${IngestStats.heldAll().map { IngestStats.labelOf(it) }}",
                         )
 
                         report(snap)

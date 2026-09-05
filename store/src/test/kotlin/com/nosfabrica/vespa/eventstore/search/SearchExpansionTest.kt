@@ -312,6 +312,25 @@ class SearchExpansionTest {
             assertEquals(setOf(list.id, profile.id), out.toSet())
         }
 
+    /**
+     * A sibling with NO kinds is not a sibling that admits every kind: this
+     * one admits exactly one id. The narrowing used to read "no kinds" as
+     * "everything", and served the list to a REQ neither of whose filters
+     * could match it — a relay sending an event that matches no filter of
+     * the subscription.
+     */
+    @Test
+    fun `a sibling filter constrained by ids does not admit the pointer kind`() =
+        runBlocking {
+            store.insert(profile)
+            store.insert(treasureMap(arrayOf("30392", curator, "wss://lists.example")))
+            val list = userList("Podcaster Trust List")
+            store.insert(list)
+
+            val out = page(search("podcaster", listOf(0)), Filter(ids = listOf(profile.id)))
+            assertEquals(listOf(profile.id), out, "the list matches neither filter: not kind 0, not the named id")
+        }
+
     @Test
     fun `an unrestricted read narrows nothing`() =
         runBlocking {

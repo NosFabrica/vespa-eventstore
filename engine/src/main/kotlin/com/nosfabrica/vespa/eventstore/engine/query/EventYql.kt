@@ -385,7 +385,7 @@ object EventYql {
         // The match-phase cut is only sound for shapes [usesGatedMatchPhase]
         // admits — others would silently lose every hit older than the newest
         // ~max-hits candidates, so they demote to the full-scan variant.
-        return if (requested == RANK_RECENCY_GATED && !usesGatedMatchPhase(q)) RANK_RECENCY_GATED_EXACT else requested
+        return if (requested == RANK_RECENCY_GATED && !q.keepMatchPhase && !usesGatedMatchPhase(q)) RANK_RECENCY_GATED_EXACT else requested
     }
 
     /**
@@ -512,6 +512,26 @@ object EventYql {
      * silently under-delete.
      */
     fun buildDistinctAuthors(q: EventQuery): VespaQuery? = grouping(q, "all(group(pubkey) each(output(count())))")
+
+    /**
+     * DISTINCT values of a single-letter tag across the match set, aggregated
+     * server-side off `tag_index`, each leaf group carrying its doc count.
+     *
+     * `tag_index` holds derived `"<letter>:<value>"` pairs, so the groups come
+     * back prefixed and the caller strips [tagName] plus the colon. It is a
+     * LOSSY projection — single-letter names, first values only, and nothing of
+     * the tag beyond the value — which is exactly why this is only sound for a
+     * one-letter tag read at position 1 with no condition on the rest of the
+     * tag. [EventIndex.distinctTagIndexValues] owns those preconditions;
+     * anything else must take the tags projection instead and read whole tags.
+     *
+     * No `max()`, as with [buildDistinctAuthors]: a truncated url set would
+     * silently narrow whatever asked for it.
+     */
+    fun buildDistinctTagValues(
+        q: EventQuery,
+        tagName: String,
+    ): VespaQuery? = grouping(q, """all(group(tag_index) each(output(count())))""")
 
     /**
      * The shared shape of every aggregation query: the filter WHERE clause,

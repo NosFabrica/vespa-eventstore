@@ -141,7 +141,7 @@ class StagingCorpusIT {
                                     ?.values
                                     ?.sum() ?: 0L
                             assertTrue(dupes > 0, "re-offering the corpus should have produced rejections")
-                            assertTrue(IngestStats.allHeld().isEmpty(), "a lock leaked past the end of the run")
+                            assertTrue(IngestStats.heldAll().isEmpty(), "a lock leaked past the end of the run")
                         }
                     }
             }

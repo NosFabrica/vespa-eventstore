@@ -206,7 +206,15 @@ class TrustProjection(
             // not of the corpus.
             IngestStats.annotateHold("max_rank raise over ${updates.size} cell update(s)")
             val raised = IngestStats.timed("proj.fetch.maxrank") { maxRanks.raise(updates) }
-            IngestStats.timed("proj.write") { reputations.updateCells(raised) }
+            try {
+                IngestStats.timed("proj.write") { reputations.updateCells(raised) }
+            } catch (t: Throwable) {
+                // The cache moved to the raised values BEFORE this write; a write
+                // that failed leaves it reading high, and a stale-high entry skips
+                // a raise the store needs. Forget them: the next cell reads again.
+                maxRanks.forget(raised.mapNotNull { u -> u.subject.takeIf { u.maxRank != null } })
+                throw t
+            }
             Unit to DirtLedger.Dirt(retracted, listServices)
         }
     }
@@ -233,7 +241,10 @@ class TrustProjection(
         val docs =
             ids
                 .chunked(REMOVE_CHUNK)
-                .mapBounded(QUERY_FANOUT) { chunk -> inner.search(EventQuery(ids = chunk, kinds = TRUST_KINDS)) }
+                // `complete`, like every read that feeds a write: a short answer
+                // here is a removed card whose subject is never dirtied, so its
+                // cells linger after a kind-5 — refusing beats silent drift.
+                .mapBounded(QUERY_FANOUT) { chunk -> inner.search(EventQuery(ids = chunk, kinds = TRUST_KINDS, complete = true)) }
                 .flatten()
         val work = removeDirt(docs)
         dirt.guarded(work) {
@@ -301,8 +312,8 @@ class TrustProjection(
         return DirtLedger.Dirt(subjects, services)
     }
 
-    private companion object {
-        /** The only kinds whose removal can invalidate the projection. */
+    internal companion object {
+        /** The only kinds whose write or removal can touch the projection — what the store's trust gate is taken for. */
         val TRUST_KINDS = listOf(ContactCardEvent.KIND, TrustProviderListEvent.KIND)
 
         /** Ids per removeAll read-back query — round-trip width, not a result cap. */

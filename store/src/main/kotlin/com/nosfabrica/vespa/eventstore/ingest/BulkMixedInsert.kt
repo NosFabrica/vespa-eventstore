@@ -62,12 +62,15 @@ internal class BulkMixedInsert(
         preloadWorkingSet(snapshot, events)
         val beforeDocs = snapshot.search(EventQuery())
         val before = beforeDocs.mapTo(HashSet()) { it.id }
-        // A throwaway store over the snapshot replays the exact per-event rules.
+        // A throwaway store over the snapshot replays the exact per-event rules
+        // — through insertLocked, not insert: the real store's locks are held
+        // by the caller, and the replay's own would only book a phantom
+        // lock sample per event into the process-wide stats.
         val replay = NostrSemanticsStore(snapshot, relay, nowSecs)
         val outcomes =
             events.map { e ->
                 try {
-                    replay.insert(e)
+                    replay.insertLocked(e)
                     IEventStore.InsertOutcome.Accepted
                 } catch (ex: RejectedException) {
                     IEventStore.InsertOutcome.Rejected(ex.message ?: Rejections.INSERT_FAILED)
@@ -145,18 +148,46 @@ internal class BulkMixedInsert(
                     if (evs.any { it.tags.dTag().isNullOrEmpty() }) add(EventQuery(kinds = listOf(ka.first), authors = listOf(ka.second)))
                 }
 
-                // Deletion a-tag targets: grouped by kind and chunked by author
-                // like the other preload shapes — never one query per
-                // (kind, author) pair, which was thousands of round trips under
-                // the writer lock on a 10k mixed batch.
-                deletions
-                    .flatMap { it.deleteAddresses() }
-                    .filter { it.kind.isAddressable() || it.kind.isReplaceable() }
-                    .map { it.kind to it.pubKeyHex }
-                    .distinct()
-                    .groupBy({ it.first }, { it.second })
-                    .forEach { (kind, authors) ->
-                        authors.distinct().chunked(PRELOAD_CHUNK).forEach { add(EventQuery(kinds = listOf(kind), authors = it)) }
+                // Deletion a-tag targets, exactly the set the replay can touch
+                // (Deletions.applyDeletion): SAME-OWNER addresses only — a
+                // cross-author kind 5 is stored but inert, and preloading the
+                // addresses it names pulled a whole foreign (kind, author)
+                // corpus into the snapshot under both locks (a kind 5 naming
+                // one provider's 30382 address fetched that provider's 242k
+                // cards, then deleted none of them); narrowed by non-empty d,
+                // the same pushdown the per-event path and putIfNewer apply;
+                // and no newer than the deletion itself, which is the replay's
+                // own `until`. Grouped by kind and chunked by author like the
+                // other preload shapes — never one query per (kind, author).
+                val ownAddresses =
+                    deletions.flatMap { del ->
+                        del
+                            .deleteAddresses()
+                            .filter { it.pubKeyHex == del.pubKey && (it.kind.isAddressable() || it.kind.isReplaceable()) }
+                            .map { it to del.createdAt }
+                    }
+                // Replaceable kinds, and addressable ones with an empty d (no
+                // "d:" pair to match on): by (kind, author), up to the newest
+                // deletion naming that pair.
+                ownAddresses
+                    .filter { (a, _) -> !a.kind.isAddressable() || a.dTag.isEmpty() }
+                    .groupBy({ (a, _) -> a.kind to a.pubKeyHex }, { (_, at) -> at })
+                    .entries
+                    .groupBy({ it.key.first }, { it.key.second to it.value.max() })
+                    .forEach { (kind, authorsAt) ->
+                        authorsAt.chunked(PRELOAD_CHUNK).forEach { chunk ->
+                            add(EventQuery(kinds = listOf(kind), authors = chunk.map { it.first }, until = chunk.maxOf { it.second }))
+                        }
+                    }
+                // Addressable with a d: by (kind, author, d-tags).
+                ownAddresses
+                    .filter { (a, _) -> a.kind.isAddressable() && a.dTag.isNotEmpty() }
+                    .groupBy({ (a, _) -> a.kind to a.pubKeyHex }, { (a, at) -> a.dTag to at })
+                    .forEach { (ka, dsAt) ->
+                        val until = dsAt.maxOf { it.second }
+                        dsAt.map { it.first }.distinct().chunked(PRELOAD_CHUNK).forEach { ds ->
+                            add(EventQuery(kinds = listOf(ka.first), authors = listOf(ka.second), tags = mapOf("d" to ds), until = until))
+                        }
                     }
 
                 // Vanish sweep: the owner's history UP TO the vanish's own

@@ -27,7 +27,6 @@ import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import com.nosfabrica.vespa.eventstore.engine.forEachBounded
-import com.nosfabrica.vespa.eventstore.engine.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.mapping.toEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
@@ -105,12 +104,15 @@ internal class TrustRecompute(
      */
     suspend fun recomputeBatchGated(
         subjects: List<String>,
-        serviceProviders: TrustProviders,
         removeEmpties: Boolean,
         gate: suspend (suspend () -> Unit) -> Unit,
     ) {
         subjects.chunked(GATE_SLICE).forEach { slice ->
-            gate { recomputeBatch(slice, serviceProviders, removeEmpties) }
+            // The provider map is read INSIDE the gate, per slice — cached, so
+            // free when unchanged. Read once outside as an argument (as this
+            // was), a 10040 committed mid-batch left every remaining slice
+            // deriving under the pre-write map.
+            gate { recomputeBatch(slice, providers.get(), removeEmpties) }
         }
     }
 
@@ -129,8 +131,11 @@ internal class TrustRecompute(
             reputations.putAll(derived.values.toList())
             maxRanks?.remember(derived.values)
             if (removeEmpties) {
+                // Pipelined like the puts above: this used to be one feed round
+                // trip per subject at QUERY_FANOUT, under the gate — an orphan
+                // sweep that emptied 17k parents held it for ~17k/4 of them.
                 val gone = subjects.filter { it !in derived }
-                gone.mapBounded(QUERY_FANOUT) { reputations.remove(it) }
+                if (gone.isNotEmpty()) reputations.removeAll(gone)
                 maxRanks?.forget(gone)
             }
         }
@@ -214,7 +219,7 @@ internal class TrustRecompute(
 
         suspend fun flush() {
             if (buffer.isNotEmpty()) {
-                recomputeBatchGated(buffer.toList(), providers.get(), removeEmpties = true, gate = gate)
+                recomputeBatchGated(buffer.toList(), removeEmpties = true, gate = gate)
                 derived += buffer.size
                 buffer.clear()
                 // Reported after the batch is written, not per page — the page
