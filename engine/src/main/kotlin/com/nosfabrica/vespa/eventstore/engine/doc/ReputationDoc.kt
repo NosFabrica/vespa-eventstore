@@ -35,9 +35,11 @@ import kotlinx.serialization.json.putJsonObject
  * One pubkey's ranking state: the `reputation` GLOBAL parent doc every event
  * imports for trust-weighted ranking (`author_ref`). NOT an event — the trust
  * projection derives it from stored kind-30382s and rewrites it whole on
- * change, so it is rebuildable from the event corpus at any time. Tensor cells
- * key by OBSERVER pubkey: [influenceScores] = rank (influence*100, 0..100),
- * [followerCounts] = verified-follower count.
+ * any time. Tensor cells
+ * key by SERVICE pubkey — the signer of the 30382: [influenceScores] = rank
+ * (influence*100, 0..100), [followerCounts] = verified-follower count. An
+ * observer reaches a cell by resolving their kind 10040 to the service key at
+ * query time (EventQuery.rankKey / followersKey).
  */
 data class ReputationDoc(
     val pubkey: HexKey,
@@ -87,13 +89,14 @@ data class ReputationDoc(
 }
 
 /**
- * One score card's contribution to [subject]'s parent: the [observer]'s cells,
- * applied as a partial UPDATE — no read, no full-doc rewrite. Null fields
- * leave the corresponding tensor untouched.
+ * One score card's contribution to [subject]'s parent: the cells under [key]
+ * — the SERVICE KEY that signed the card — applied as a partial UPDATE: no
+ * read, no full-doc rewrite. Null fields leave the corresponding tensor
+ * untouched.
  */
 data class ReputationCells(
     val subject: String,
-    val observer: String,
+    val key: String,
     val influence: Int?,
     val followers: Double?,
     /**
@@ -105,4 +108,23 @@ data class ReputationCells(
      * carries the answer.
      */
     val maxRank: Int? = null,
+    /**
+     * Retraction, in the same update: the card no longer carries the tag, so
+     * the cell it used to back is removed (a tensor `remove`) as the other
+     * dimension's cell is written. One document update per card, atomic.
+     */
+    val dropInfluence: Boolean = false,
+    val dropFollowers: Boolean = false,
+)
+
+/**
+ * The cells a removed or retracted card leaves behind: [subject]'s cells under
+ * [key] (the signing service), per dimension. Applied as a tensor `remove`, no
+ * read; a cell that is not there is nothing to do.
+ */
+data class CellRemoval(
+    val subject: String,
+    val key: String,
+    val influence: Boolean,
+    val followers: Boolean,
 )

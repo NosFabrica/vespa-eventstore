@@ -191,7 +191,7 @@ class SplicedMemberWeightsIT {
                             reputation.putAll(listOf(ReputationDoc(FULL, influenceScores = mapOf(OBSERVER to 90))))
                             awaitInfluence(index, weighted)
 
-                            val lensed = index.searchRanked(weighted.copy(observer = OBSERVER, minRank = 0.0))
+                            val lensed = index.searchRanked(weighted.copy(observer = OBSERVER, rankKey = OBSERVER, followersKey = OBSERVER, minRank = 0.0))
                             val lensedScores = lensed.associate { it.hit.pubkey to (it.score ?: 0.0) }
                             assertEquals(
                                 4_000.0,
@@ -219,7 +219,7 @@ class SplicedMemberWeightsIT {
                             // FULL is the only member with a reputation the
                             // observer can see (90, set just above); every other
                             // one reads 0.
-                            val gated = index.searchRanked(weighted.copy(observer = OBSERVER, minRank = 0.0, memberFloor = 20.0))
+                            val gated = index.searchRanked(weighted.copy(observer = OBSERVER, rankKey = OBSERVER, followersKey = OBSERVER, minRank = 0.0, memberFloor = 20.0))
                             assertEquals(
                                 listOf(FULL),
                                 gated.map { it.hit.pubkey },
@@ -233,7 +233,7 @@ class SplicedMemberWeightsIT {
                             )
                             assertEquals(
                                 MEMBERS.size,
-                                index.searchRanked(weighted.copy(observer = OBSERVER, minRank = 0.0)).size,
+                                index.searchRanked(weighted.copy(observer = OBSERVER, rankKey = OBSERVER, followersKey = OBSERVER, minRank = 0.0)).size,
                                 "no explicit floor, no gate: the default read is untouched",
                             )
                         }
@@ -260,7 +260,7 @@ class SplicedMemberWeightsIT {
         weighted: EventQuery,
     ) {
         repeat(120) {
-            val seen = index.searchRanked(weighted.copy(observer = OBSERVER, minRank = 0.0))
+            val seen = index.searchRanked(weighted.copy(observer = OBSERVER, rankKey = OBSERVER, followersKey = OBSERVER, minRank = 0.0))
             if (seen.size == MEMBERS.size) return
             delay(500)
         }

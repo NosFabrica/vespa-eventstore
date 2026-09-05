@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore.engine
 
+import com.nosfabrica.vespa.eventstore.engine.doc.CellRemoval
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationCells
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import java.util.concurrent.ConcurrentHashMap
@@ -59,14 +60,26 @@ class InMemoryReputationIndex : ReputationIndex {
 
     override suspend fun updateCells(updates: List<ReputationCells>) {
         updates.forEach { u ->
-            val cur = docs[u.subject] ?: ReputationDoc(u.subject)
+            // A retraction alone never creates a document (the engine's update carries no create).
+            val cur = docs[u.subject] ?: if (u.influence == null && u.followers == null) return@forEach else ReputationDoc(u.subject)
             docs[u.subject] =
                 cur.copy(
-                    influenceScores = u.influence?.let { cur.influenceScores + (u.observer to it) } ?: cur.influenceScores,
-                    followerCounts = u.followers?.let { cur.followerCounts + (u.observer to it) } ?: cur.followerCounts,
+                    influenceScores = u.influence?.let { cur.influenceScores + (u.key to it) } ?: if (u.dropInfluence) cur.influenceScores - u.key else cur.influenceScores,
+                    followerCounts = u.followers?.let { cur.followerCounts + (u.key to it) } ?: if (u.dropFollowers) cur.followerCounts - u.key else cur.followerCounts,
                 )
             u.maxRank?.let { storedMaxRanks[u.subject] = it }
             storedMaxRanks.putIfAbsent(u.subject, 0)
+        }
+    }
+
+    override suspend fun removeCells(removals: List<CellRemoval>) {
+        removals.forEach { r ->
+            val cur = docs[r.subject] ?: return@forEach
+            docs[r.subject] =
+                cur.copy(
+                    influenceScores = if (r.influence) cur.influenceScores - r.key else cur.influenceScores,
+                    followerCounts = if (r.followers) cur.followerCounts - r.key else cur.followerCounts,
+                )
         }
     }
 

@@ -427,7 +427,12 @@ object EventYql {
         val observer = q.observer?.lowercase()?.takeIf(Hex::isHex64)
         val ranking = profileOf(q)
         if (ranking != RANK_UNRANKED && ranking != RANK_RECENCY && observer != null) {
-            params["ranking.features.query(user_q)"] = "{$observer:1.0}"
+            // The tensors are keyed by SERVICE: the lens is the observer's
+            // resolved provider per dimension, and an unresolved one is the
+            // empty tensor — "trusts nobody", score 0 — never the observer's
+            // own key, which no card is keyed under.
+            params["ranking.features.query(user_q)"] = q.rankKey?.takeIf(Hex::isHex64)?.let { "{$it:1.0}" } ?: "{}"
+            params["ranking.features.query(followers_q)"] = q.followersKey?.takeIf(Hex::isHex64)?.let { "{$it:1.0}" } ?: "{}"
             q.minRank?.let { params["ranking.features.query(min_rank)"] = it.toString() }
         }
         // A MEMBER PROFILE WITHOUT AN OBSERVER WOULD SATURATE, not degrade.

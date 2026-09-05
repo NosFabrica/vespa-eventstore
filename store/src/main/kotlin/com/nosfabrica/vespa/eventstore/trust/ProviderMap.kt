@@ -29,56 +29,79 @@ import com.vitorpamplona.quartz.nip85TrustedAssertions.list.tags.ProviderTypes
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * The NIP-85 attribution maps, PER DIMENSION: which observers named a service
- * for which tensor (`30382:rank` vs `30382:followers`). A user may pick
- * DIFFERENT services for the two, so a card's tag only counts for observers
- * who named its signer for THAT dimension — a rank provider's followers tag
- * must not overwrite the chosen follower provider's value.
+ * WHAT THE STORED 10040s SAY, in the two shapes the trust code reads. The
+ * write side asks which SERVICES are named at all — a card by a named service
+ * becomes a cell keyed by that service, a card by anyone else is dead storage
+ * — and per dimension, so the reconciler can judge a service's projection by
+ * the tag it was named for. The read side asks for one observer's LENS: the
+ * service their list resolves to per dimension, which is what a query's
+ * `user_q` / `followers_q` carry. A user may name DIFFERENT services for the
+ * two, which is why the lens is per dimension.
  */
 internal data class TrustProviders(
-    /** rank service key -> observers whose 10040 names it under `30382:rank`. */
-    val rank: Map<String, Set<String>>,
-    /** followers service key -> observers whose 10040 names it under `30382:followers`. */
-    val followers: Map<String, Set<String>>,
+    /** The service keys some 10040 names under `30382:rank`. */
+    val rankServices: Set<String>,
+    /** The service keys some 10040 names under `30382:followers`. */
+    val followerServices: Set<String>,
+    /**
+     * observer -> the ONE service key per dimension their 10040 resolves to.
+     * NIP-85 prescribes no merge across several providers for one metric, and
+     * Amethyst models one slot per metric, so the FIRST entry per dimension
+     * wins; the rest are still mapped (their cards project) but not read for
+     * this observer.
+     */
+    val lenses: Map<String, Lens> = emptyMap(),
 ) {
-    fun isEmpty() = rank.isEmpty() && followers.isEmpty()
+    /** One observer's resolved providers; null on a dimension their 10040 does not name. */
+    data class Lens(
+        val rank: String?,
+        val followers: String?,
+    )
 
-    /** Whether [service] is mapped for either dimension — its cards can project. */
-    fun maps(service: String) = rank.containsKey(service) || followers.containsKey(service)
+    fun isEmpty() = rankServices.isEmpty() && followerServices.isEmpty()
 
-    /** Every mapped service key, either dimension. */
-    val services: Set<String> get() = rank.keys + followers.keys
+    /** [observer]'s lens, or an empty one for an observer with no stored 10040. */
+    fun lensOf(observer: String): Lens = lenses[observer] ?: NO_LENS
+
+    companion object {
+        val NO_LENS = Lens(null, null)
+    }
+
+    /** Whether [service] is named for either dimension — its cards can project. */
+    fun maps(service: String) = service in rankServices || service in followerServices
+
+    /** Every named service key, either dimension. */
+    val services: Set<String> get() = rankServices + followerServices
 }
 
 /**
  * Derives [TrustProviders] from every stored kind-10040 — the one place the
- * signer->observer link is resolved: a 30382 is SIGNED by a service key but
- * credited to the observers who named that service. Each map's value is a SET:
- * popular providers are the NIP-85 norm, and each naming user must see the
- * scores under their own key (a `toMap()` here once kept one arbitrary winner
- * per service, silently unranking everyone else trusting it).
+ * observer->service link is read: a 30382 is SIGNED by a service key and
+ * stored under it; the 10040 is the pointer an observer's query follows to
+ * it. A popular provider named by many lists is one set entry and one lens
+ * per list, never a copy per observer.
  *
  * [get] is CACHED across a pass — the maps only change on a 10040
  * write/removal, each of which [invalidate]s. The rebuild runs UNLOCKED (an
  * observer-carrying search asks for the read-side gate with no lock at all),
  * so a 10040 write can land while a pass is reading the corpus; a pass that
  * then stored its result would cache a map missing that write, and nothing
- * would drop it until the next 10040 — the drain's walk of the new service
- * would derive every subject without the new observer's cells. So every
- * [invalidate] bumps a generation, and a pass is stored only if the
- * generation it started under is still current.
+ * would drop it until the next 10040 — a query under the new list would
+ * resolve to no lens, and the write side would judge its services already
+ * named. So every [invalidate] bumps a generation, and a pass is stored only
+ * if the generation it started under is still current.
  */
 internal class ProviderMap(
     private val inner: EventIndex,
     private val nowSecs: () -> Long,
 ) {
     /**
-     * Both projections of one pass. The write side wants service -> observers
-     * per tensor; the READ side wants observer -> signers per kind, to gate
-     * which declarations a search may unpack ([Delegations]). Same query, same
-     * parse, same invalidation — deriving them separately would be a second
-     * place the signer/observer link is resolved, and the two would drift the
-     * first time a Map shape changed.
+     * Both projections of one pass. The trust side wants the named services
+     * per tensor and each observer's lens; the search gate wants observer ->
+     * signers per kind, to decide which declarations a search may unpack
+     * ([Delegations]). Same query, same parse, same invalidation — deriving
+     * them separately would be a second place the observer/signer link is
+     * resolved, and the two would drift the first time a Map shape changed.
      */
     private class Pass(
         val trust: TrustProviders,
@@ -115,10 +138,10 @@ internal class ProviderMap(
     private suspend fun pass(): Pass {
         cached?.let { return it }
         val startedUnder = generation.get()
-        // `complete`: a map built from SOME of the 10040s attributes every
-        // service the missing lists name to nobody, and a derivation under it
-        // drops those observers' cells from every subject it touches — the
-        // same wrong write as a short card fetch, one level up.
+        // `complete`: a map built from SOME of the 10040s names none of the
+        // services the missing lists name, so their cards would not project
+        // and their observers would resolve to no lens — the same wrong
+        // answer as a short card fetch, one level up.
         val docs = inner.search(EventQuery(kinds = listOf(TrustProviderListEvent.KIND), notExpiredAt = nowSecs(), complete = true))
         // ONE parse for both projections. Each doc costs a tags parse and an
         // `EventFactory` dispatch, and this rebuilds on every 10040 write, so
@@ -143,23 +166,33 @@ internal class ProviderMap(
     }
 
     companion object {
-        /** Both dimensions' `service key -> observers` maps from [listDocs]' typed entries. */
+        /** The named services per dimension, and every lens, from [listDocs]' typed entries. */
         fun providersOf(listDocs: List<EventDoc>): TrustProviders = providersIn(listDocs.mapNotNull { it.toEvent() as? TrustProviderListEvent })
 
         /** The same, off Maps already decoded — see [pass] for why that matters. */
         fun providersIn(maps: List<TrustProviderListEvent>): TrustProviders {
-            val rank = LinkedHashMap<String, MutableSet<String>>()
-            val followers = LinkedHashMap<String, MutableSet<String>>()
+            val rank = LinkedHashSet<String>()
+            val followers = LinkedHashSet<String>()
+            val lenses = LinkedHashMap<String, TrustProviders.Lens>()
             maps
                 .forEach { list ->
+                    var lens = lenses[list.pubKey] ?: TrustProviders.NO_LENS
                     list.serviceProviders().forEach { entry ->
                         when (entry.service) {
-                            ProviderTypes.rank -> rank.getOrPut(entry.pubkey) { LinkedHashSet() }.add(list.pubKey)
-                            ProviderTypes.followerCount -> followers.getOrPut(entry.pubkey) { LinkedHashSet() }.add(list.pubKey)
+                            ProviderTypes.rank -> {
+                                rank += entry.pubkey
+                                if (lens.rank == null) lens = lens.copy(rank = entry.pubkey)
+                            }
+
+                            ProviderTypes.followerCount -> {
+                                followers += entry.pubkey
+                                if (lens.followers == null) lens = lens.copy(followers = entry.pubkey)
+                            }
                         }
                     }
+                    if (lens != TrustProviders.NO_LENS) lenses[list.pubKey] = lens
                 }
-            return TrustProviders(rank, followers)
+            return TrustProviders(rank, followers, lenses)
         }
 
         /** The distinct service keys (either dimension) named across a batch of 10040 lists. */

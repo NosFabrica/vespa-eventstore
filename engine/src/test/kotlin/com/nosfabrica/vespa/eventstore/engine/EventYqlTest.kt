@@ -34,6 +34,7 @@ import kotlin.test.assertTrue
 class EventYqlTest {
     private val hexA = "a".repeat(64)
     private val hexB = "b".repeat(64)
+    private val hexC = "c".repeat(64)
 
     @Test
     fun `no constraints is a match-all ordered by recency`() {
@@ -293,9 +294,27 @@ class EventYqlTest {
         assertEquals(EventYql.RANK_TEXT, text.ranking, "no observer: pure text")
         assertFalse("query(user_q)" in text.params.keys.joinToString(), "no observer: no trust feature")
 
-        val trust = EventYql.build(EventQuery(search = "vitor", observer = hexA))!!
+        val trust = EventYql.build(EventQuery(search = "vitor", observer = hexA, rankKey = hexA))!!
         assertEquals(EventYql.RANK_SEARCH, trust.ranking, "observer present: blended trust profile")
         assertEquals("{$hexA:1.0}", trust.params["ranking.features.query(user_q)"])
+    }
+
+    /**
+     * The tensors are keyed by SERVICE: the lens the query carries is the
+     * observer's resolved provider per dimension, never the observer's own
+     * key. An observer whose list resolves to nothing ranks through an EMPTY
+     * tensor — every trust score 0, the gate closed — not through their pubkey.
+     */
+    @Test
+    fun `the trust tensors carry the resolved service keys, not the observer`() {
+        val resolved = EventYql.build(EventQuery(search = "vitor", observer = hexA, rankKey = hexB, followersKey = hexC))!!
+        assertEquals("{$hexB:1.0}", resolved.params["ranking.features.query(user_q)"])
+        assertEquals("{$hexC:1.0}", resolved.params["ranking.features.query(followers_q)"])
+
+        val unresolved = EventYql.build(EventQuery(search = "vitor", observer = hexA))!!
+        assertEquals(EventYql.RANK_SEARCH, unresolved.ranking, "still the trust profile: the gate must stay closed for an unranked lens")
+        assertEquals("{}", unresolved.params["ranking.features.query(user_q)"])
+        assertEquals("{}", unresolved.params["ranking.features.query(followers_q)"])
     }
 
     @Test
@@ -649,7 +668,7 @@ class EventYqlTest {
 
     @Test
     fun `ranking override without a term is a trust-ordered match-all`() {
-        val q = EventYql.build(EventQuery(ranking = EventYql.RANK_DESC, minRank = 2.0, observer = hexA))!!
+        val q = EventYql.build(EventQuery(ranking = EventYql.RANK_DESC, minRank = 2.0, observer = hexA, rankKey = hexA))!!
         assertEquals("select ${EventYql.SUMMARY_FIELDS} from event where true", q.yql)
         assertEquals(EventYql.RANK_DESC, q.ranking)
         assertEquals("{$hexA:1.0}", q.params["ranking.features.query(user_q)"])
@@ -659,7 +678,7 @@ class EventYqlTest {
 
     @Test
     fun `the observer gate profile carries the lens and floor, and owns the order`() {
-        val q = EventYql.build(EventQuery(kinds = listOf(1), limit = 50, ranking = EventYql.RANK_RECENCY_GATED, minRank = 2.0, observer = hexA))!!
+        val q = EventYql.build(EventQuery(kinds = listOf(1), limit = 50, ranking = EventYql.RANK_RECENCY_GATED, minRank = 2.0, observer = hexA, rankKey = hexA))!!
         assertEquals(EventYql.RANK_RECENCY_GATED, q.ranking, "small recent limit: the match-phase variant")
         assertEquals("{$hexA:1.0}", q.params["ranking.features.query(user_q)"])
         assertEquals("2.0", q.params["ranking.features.query(min_rank)"])
@@ -674,7 +693,7 @@ class EventYqlTest {
      */
     @Test
     fun `the gate profile takes search terms — the sort recent shape`() {
-        val q = EventYql.build(EventQuery(kinds = listOf(1), limit = 50, search = "vitor", ranking = EventYql.RANK_RECENCY_GATED, minRank = 2.0, observer = hexA))!!
+        val q = EventYql.build(EventQuery(kinds = listOf(1), limit = 50, search = "vitor", ranking = EventYql.RANK_RECENCY_GATED, minRank = 2.0, observer = hexA, rankKey = hexA))!!
         assertEquals(EventYql.RANK_RECENCY_GATED, q.ranking)
         assertEquals("vitor", q.params["w0"], "the term recalls like any search")
         assertEquals("{$hexA:1.0}", q.params["ranking.features.query(user_q)"])
@@ -689,7 +708,7 @@ class EventYqlTest {
         fun gated(
             limit: Int? = null,
             until: Long? = null,
-        ) = EventYql.build(EventQuery(kinds = listOf(1), limit = limit, until = until, ranking = EventYql.RANK_RECENCY_GATED, minRank = 2.0, observer = hexA))!!
+        ) = EventYql.build(EventQuery(kinds = listOf(1), limit = limit, until = until, ranking = EventYql.RANK_RECENCY_GATED, minRank = 2.0, observer = hexA, rankKey = hexA))!!
 
         assertEquals(EventYql.RANK_RECENCY_GATED, gated(limit = 50).ranking, "the hot feed shape rides the cut")
         assertEquals(EventYql.RANK_RECENCY_GATED_EXACT, gated(limit = null).ranking, "unlimited: the cut would lose old hits")
@@ -712,7 +731,7 @@ class EventYqlTest {
         )
         assertEquals(EventYql.RANK_UNRANKED, unranked.ranking)
 
-        val ranked = EventYql.build(EventQuery(search = "vitor", observer = hexA))!!
+        val ranked = EventYql.build(EventQuery(search = "vitor", observer = hexA, rankKey = hexA))!!
         assertEquals("{$hexA:1.0}", ranked.params["ranking.features.query(user_q)"])
     }
 

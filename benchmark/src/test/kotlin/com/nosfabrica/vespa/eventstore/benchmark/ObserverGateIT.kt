@@ -186,7 +186,7 @@ class ObserverGateIT {
     private fun gated(
         limit: Int?,
         minRank: Double = 2.0,
-    ) = EventQuery(kinds = listOf(1), limit = limit, ranking = EventYql.RANK_RECENCY_GATED, minRank = minRank, observer = OBSERVER)
+    ) = EventQuery(kinds = listOf(1), limit = limit, ranking = EventYql.RANK_RECENCY_GATED, minRank = minRank, observer = OBSERVER, rankKey = OBSERVER, followersKey = OBSERVER)
 
     /** A note; [text] (when given) also feeds the search index, making it recallable by term. */
     private fun note(
@@ -242,7 +242,7 @@ class ObserverGateIT {
         /** Notes fed for the timing comparison (on top of the 40 correctness notes). */
         const val BENCH_DOCS = 10_000
 
-        /** The ranking lens; reputation tensor cells are keyed by observer. */
+        /** The ranking lens: the fixture keys the cells under this key and hands it to the query as the resolved provider (see RankRegressionIT.OBSERVER). */
         val OBSERVER = "c".repeat(64)
 
         val TRUSTED = "1".padStart(64, 'b')

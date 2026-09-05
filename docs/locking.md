@@ -164,16 +164,17 @@ counter and no lock; the rare kind-5 pays a wait bounded by one insert. This
 is an extension of design 1, not an alternative to it, and it only pays off
 once design 1 has shown the stripe itself to be contended.
 
-### The trust gate stays a lock
+### The trust gate stays a lock, and holds much less
 
-A derive reads every card about a subject and writes one document; a live
-card write updates a cell of the same document. No engine condition covers
-"the cards I read are still the cards there are", so the derive+write must be
-atomic against card writes for that subject. What is NOT necessary is one gate
-for all subjects: the same striping (by subject) applies, and the drain's
-slices are already per subject. That is the follow-up if `lock.ingest.trust`
-ever shows cards queueing behind the drain the way kind-1s used to; today the
-split has taken the client-facing path out from behind it entirely.
+With cells keyed by the signing service (`docs/service-keyed-trust.md`) a
+card's write is one atomic tensor update, and nothing reads other cards to
+make it: the derive is a repair path (a crash marker, a verify), no longer a
+write path. What the gate still orders is the service walk — a newly named
+service's stored cards fetched by id and applied as cells, one page of 1000
+per hold — against a live card for the same address, and the marker rewrite
+against a write-ahead. The 500-subject derive slice measured at 19 s on
+staging is gone from every write; `lock.ingest.trust.wait` should now read a
+page's worth. Striping by subject remains the follow-up if it ever does not.
 
 ### `GuardOwners.swapLock`, for the record
 

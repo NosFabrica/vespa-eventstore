@@ -108,6 +108,18 @@ data class EventQuery(
      */
     val observer: String? = null,
     /**
+     * THE OBSERVER'S LENS, RESOLVED: the service key the observer's kind 10040
+     * names under `30382:rank` ([rankKey]) and `30382:followers`
+     * ([followersKey]). The reputation tensors are keyed by service, so these
+     * — not [observer] — are what `user_q`/`followers_q` carry. The store
+     * resolves them off its cached provider map per query; an observer with
+     * no stored 10040 resolves to null and ranks as trusting nobody (an empty
+     * query tensor, every trust score 0), exactly as an unmapped observer did
+     * when the tensors were keyed by observer.
+     */
+    val rankKey: String? = null,
+    val followersKey: String? = null,
+    /**
      * Rank-profile override (the NIP-50 `sort:` extension): one of the
      * schema's profiles (e.g. [EventYql.RANK_DESC], [EventYql.RANK_TEXT]).
      * Null = the default ([EventYql.RANK_SEARCH] with a term, unranked recency

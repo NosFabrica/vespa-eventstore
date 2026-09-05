@@ -23,8 +23,6 @@ package com.nosfabrica.vespa.eventstore.trust
 import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationCells
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
-import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
-import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
@@ -275,7 +273,9 @@ internal class DirtLedger(
                 recompute.recomputeBatchGated(chunk, removeEmpties = true, gate = gate)
             }
             if (dirt.services.isNotEmpty()) {
-                recompute.recomputeWalk(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = dirt.services.toList()), gate = gate)
+                // A service's cards become cells page by page — no derive: the
+                // cell is a function of the newest card at its address alone.
+                recompute.projectServices(dirt.services, gate = gate)
             }
             // Done: drop what this round derived, unless it was re-added since
             // (a fresh stamp), then narrow the marker to what is STILL pending
