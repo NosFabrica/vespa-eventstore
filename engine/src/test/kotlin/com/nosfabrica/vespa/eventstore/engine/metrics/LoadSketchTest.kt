@@ -58,7 +58,12 @@ class LoadSketchTest {
             index.search(EventQuery(kinds = listOf(1), search = "bitcoin lightning", observer = lens))
 
             val snap = ledger.snapshot()
-            assertEquals(listOf(lens), snap.topObservers.map { it.key }, "the lens that asked for the work is charged for it")
+            // TRUNCATED, which HeavyHitters asks its callers for and this did not
+            // do until an audit: a top-K by observer is a ranked list of who
+            // searched the most, and a full pubkey in it is one that can be
+            // lifted out of a screenshot.
+            assertEquals(listOf(lens.take(16)), snap.topObservers.map { it.key }, "the lens that asked for the work is charged for it, by prefix")
+            assertTrue(snap.topObservers.none { it.key.length > 16 }, "no full pubkey may reach the sketch")
             assertEquals(setOf("bitcoin", "lightning"), snap.topTerms.map { it.key }.toSet(), "every term in the query, not just the first")
             assertTrue(snap.topTerms.all { it.weight >= 1 }, "a sub-millisecond read still registers rather than vanishing")
         }
@@ -92,7 +97,7 @@ class LoadSketchTest {
             // the REQ side would under-report the observer driving it.
             index.count(EventQuery(kinds = listOf(1), search = "bitcoin", observer = lens))
 
-            assertEquals(listOf(lens), ledger.snapshot().topObservers.map { it.key })
+            assertEquals(listOf(lens.take(16)), ledger.snapshot().topObservers.map { it.key })
         }
 
     @Test
@@ -105,7 +110,7 @@ class LoadSketchTest {
             index.search(EventQuery(kinds = listOf(1), search = "zap zap zap", observer = lens))
 
             val zap = assertNotNull(ledger.snapshot().topTerms.firstOrNull { it.key == "zap" })
-            val once = assertNotNull(ledger.snapshot().topObservers.firstOrNull { it.key == lens })
+            val once = assertNotNull(ledger.snapshot().topObservers.firstOrNull { it.key == lens.take(16) })
             // One call's worth of work, however many times the word appears in it.
             assertEquals(once.weight, zap.weight, "a repeated term must not multiply one call's cost")
         }
@@ -117,6 +122,7 @@ class LoadSketchTest {
             val index = index(ledger)
             repeat(200) { index.put(doc(it.toString().padStart(64, '0'))) }
             val busy = "b".repeat(64)
+            val busyKey = busy.take(16)
 
             // WEIGHTED BY TIME, NOT BY CALLS, which is the whole point: a cheap
             // query run often and one four-second query are different problems,
@@ -127,7 +133,7 @@ class LoadSketchTest {
 
             val hits = ledger.snapshot().topObservers.associate { it.key to it.weight }
             assertEquals(2, hits.size, "both lenses are in the sketch")
-            assertTrue(hits.getValue(busy) >= 20, "each call contributes at least its rounded-up millisecond")
+            assertTrue(hits.getValue(busyKey) >= 20, "each call contributes at least its rounded-up millisecond")
         }
 
     @Test

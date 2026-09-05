@@ -1199,3 +1199,43 @@ A snapshot field is a contract with two ends. The tests here now pin both:
 the lens and the terms that asked for it, and `TelemetryIT` asserts against a
 real Vespa that both sketches and the ring are non-empty after two ordinary
 searches.
+
+---
+
+## 17. A second audit, after the page existed
+
+§14 audited the library against its own design; §16 recorded what building a
+page on top of it found. This is what a third pass found once the page was
+serving real data to a real reader — the class of defect that only appears when
+somebody looks at the output rather than at the code.
+
+**The load sketch was handed whole pubkeys.** `HeavyHitters` says in its own
+KDoc that callers are expected to hand it TRUNCATED keys, and §11.2 says the
+same: *"a top-K by observer is a ranked list of who searched the most —
+truncate the key to a prefix"*. The producer §16 added did not. Every row of
+the live page carried a full 64-hex observer key, copy-pasteable out of a
+screenshot.
+
+The fix is one `take(16)` at the producer, and the interesting part is why it
+took a running page to notice. The contract was written in the consumer
+(`HeavyHitters`) and in the design doc, and the producer was written months
+later against neither — it was written against the *snapshot type*, which is
+just a `String`. A privacy rule that lives only in prose and in a parameter
+name is a rule the next writer will miss. It is now also a test: `LoadSketchTest`
+asserts no key longer than the prefix ever reaches the sketch, and `TelemetryIT`
+asserts the same against a real engine.
+
+Truncation is not what makes the list safe — the client-detail switch and the
+page's admin gate are. It stops the list being *more* identifying than it has
+to be, which is the whole of what a prefix can buy.
+
+**Precision died at the document boundary.** `engineMs` was published as an
+integer, and the page divides it by the query count to show mean engine time.
+A store answering in under a millisecond publishes every rank profile as a flat
+zero — the identical defect to the `%.2fs` rounding that §16's parser retirement
+removed from the ingest stage split, one boundary further along. Nanoseconds are
+what the ledger holds; the document now publishes decimal milliseconds.
+
+The general shape, three times over now: **a number is most likely to be lost
+where one component hands it to another**, and each of these three was invisible
+in every unit test on both sides of the handoff.

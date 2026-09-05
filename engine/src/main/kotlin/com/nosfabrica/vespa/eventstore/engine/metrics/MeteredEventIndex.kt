@@ -149,19 +149,39 @@ class MeteredEventIndex(
      * search string: the extensions (`observer:`, `sort:`, `include:spam`)
      * have already been taken out of it, so a lens does not also land in the
      * term list under its own name.
+     *
+     * THE LENS IS TRUNCATED TO A PREFIX, which [HeavyHitters] asks its callers
+     * for and this did not do. A top-K by observer is a ranked list of who
+     * searched the most; a prefix is enough for an operator who knows their own
+     * lenses to recognise one, and short of a key that can be copied out of a
+     * screenshot or a log and used. It does not make the list safe on its own —
+     * that is what the client-detail switch and the admin gate are for — it
+     * stops the list being MORE identifying than it has to be.
      */
     private fun bookLoad(
         query: EventQuery,
         nanos: Long,
     ) {
         val weight = maxOf(1L, nanos / 1_000_000)
-        query.observer?.let { ledger.byObserver.add(it, weight) }
+        query.observer?.let { ledger.byObserver.add(it.take(OBSERVER_KEY_CHARS), weight) }
         val terms = query.search ?: return
         // Distinct, so a term repeated inside one query is not charged twice
         // for one call's worth of work.
         for (term in terms.split(' ', '\t', '\n').filter { it.isNotEmpty() }.distinct()) {
             ledger.byTerm.add(term, weight)
         }
+    }
+
+    private companion object {
+        /**
+         * How much of an observer's 64-hex pubkey the load sketch keeps.
+         *
+         * Long enough that an operator recognises their own lenses and that two
+         * real pubkeys will not collide into one row; short enough that the row
+         * is not a key somebody can lift out of the page and use. See
+         * [HeavyHitters] and docs/telemetry.md §11.2.
+         */
+        const val OBSERVER_KEY_CHARS = 16
     }
 
     override suspend fun get(id: String): EventDoc? = meterResult(PortCall.Get, { inner.get(id) }, { if (it == null) 0L else 1L })

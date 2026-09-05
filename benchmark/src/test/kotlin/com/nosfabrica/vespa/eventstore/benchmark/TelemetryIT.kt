@@ -181,9 +181,12 @@ class TelemetryIT {
                         val snap = store.metrics()
 
                         assertTrue(
-                            snap.topObservers.any { it.key == observer },
+                            // By PREFIX: a top-K by observer is a ranked list of who
+                            // searched the most, so no full pubkey reaches it.
+                            snap.topObservers.any { it.key == observer.take(16) },
                             "the lens that asked for the work is not in the sketch: ${snap.topObservers.map { it.key }}",
                         )
+                        assertTrue(snap.topObservers.none { it.key.length > 16 }, "a full pubkey reached the load sketch")
                         assertTrue(
                             snap.topTerms.map { it.key }.containsAll(listOf("pamplona", "nostr")),
                             "the terms that drove the reads are not in the sketch: ${snap.topTerms.map { it.key }}",
