@@ -144,6 +144,22 @@ class TelemetryIT {
                         val writes = snap.ports.filter { it.activity == Activity.BatchInsert }
                         assertTrue(writes.isNotEmpty(), "no port calls booked under BatchInsert")
 
+                        // THE RECONCILER READS THROUGH THE PORT TOO. It was handed
+                        // the raw index, so its corpus walks — the heaviest read
+                        // this store makes — landed in no activity at all, and the
+                        // page showed an idle store while Vespa was working.
+                        store.reconcileTrust()
+                        val reconcile = store.metrics().ports.filter { it.activity == Activity.Reconcile }
+                        assertTrue(
+                            reconcile.isNotEmpty(),
+                            "a reconcile booked no port calls — it is reading around the meter. Activities seen: " +
+                                store
+                                    .metrics()
+                                    .ports
+                                    .map { it.activity }
+                                    .distinct(),
+                        )
+
                         // Outcomes altitude: what the store admitted.
                         assertEquals(
                             CORPUS_SIZE.toLong(),

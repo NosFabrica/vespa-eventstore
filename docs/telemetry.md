@@ -1239,3 +1239,24 @@ what the ledger holds; the document now publishes decimal milliseconds.
 The general shape, three times over now: **a number is most likely to be lost
 where one component hands it to another**, and each of these three was invisible
 in every unit test on both sides of the handoff.
+
+### 17.1 A subsystem reading around the meter
+
+The reconciler was handed the RAW engine index while everything else got the
+metered decorator. Its corpus walks — the heaviest read this store makes,
+hundreds of thousands of cards on a real deployment — were booked under no
+activity at all, so an operator watching the page during a reconcile saw a
+store doing nothing while Vespa was working. That is the precise reading this
+page exists to rule out, produced by the page itself.
+
+One word at the wiring (`MeteredEventIndex` instead of `VespaEventIndex`), and
+an assertion in `TelemetryIT` that a reconcile books port calls at all. The
+lesson is the same one §16 and §17 record from the other direction: the meter
+is a decorator, so **anything constructed with the undecorated index is
+invisible by construction**, and nothing about that is visible at the call
+site. `VespaEventStore.eventIndex` — the public handle, deliberately raw for
+`feedStatus` and counts — now says so in its own KDoc.
+
+`ReputationIndex` remains unmetered, and that is a scope boundary rather than
+an oversight: it is a second port, its reads are the trust projection's, and
+those are already accounted in the `proj.*` ingest stages.

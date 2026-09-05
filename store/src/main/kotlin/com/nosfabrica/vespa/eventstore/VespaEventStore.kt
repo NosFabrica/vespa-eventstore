@@ -61,6 +61,12 @@ class VespaEventStore internal constructor(
     /**
      * The raw engine index, NOT trust-projected — for status/health metrics
      * that only count and never mutate trust data.
+     *
+     * ALSO NOT METERED. Reads made through this handle appear in no activity on
+     * `metrics()`, because the meter is a decorator one layer up. That is right
+     * for what this is for — `feedStatus`, a document count — and wrong for
+     * anything that walks the corpus, which will make the store look idle while
+     * Vespa is busy. Prefer the `IEventStore` surface for real reads.
      */
     val eventIndex: VespaEventIndex,
     /** Repair tool for the trust view over [eventIndex]; see [reconcileTrust]. */
@@ -305,7 +311,8 @@ class VespaEventStore internal constructor(
             // actually reached Vespa, whichever route asked for it — the
             // store's own reads, the projection's, a sweep's. Nothing above
             // needs a call-site timer.
-            val trust = TrustProjection(MeteredEventIndex(ledger, eventIndex), reputations)
+            val metered = MeteredEventIndex(ledger, eventIndex)
+            val trust = TrustProjection(metered, reputations)
             val store =
                 NostrSemanticsStore(
                     trust,
@@ -327,7 +334,14 @@ class VespaEventStore internal constructor(
             // writer lock (the gate): repairs must not race live inserts'
             // recomputes.
             val gate: suspend (suspend () -> Unit) -> Unit = { store.withWriteLock(it) }
-            val reconciler = TrustReconciler(eventIndex, reputations, trust.recompute, trust.dirt, gate = gate)
+            // THE METERED INDEX, like everything else that reads through the
+            // port. The reconciler was handed the raw one, so its corpus walks
+            // — the heaviest read this store makes, hundreds of thousands of
+            // cards on a real deployment — landed in no activity at all. An
+            // operator watching the page during a reconcile saw a store doing
+            // nothing while Vespa was busy, which is the exact reading the page
+            // exists to prevent.
+            val reconciler = TrustReconciler(metered, reputations, trust.recompute, trust.dirt, gate = gate)
             val drainScope = if (deferTrustProjection) startDrainer(trust, gate) else null
             // The descent is off until every reputation document carries the
             // scalar it cuts on. One walk, once, in the background — and the
