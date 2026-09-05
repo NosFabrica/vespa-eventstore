@@ -210,6 +210,26 @@ class NostrSemanticsStore(
      */
     private suspend fun delegations(): Delegations = (index as? TrustProjection)?.recompute?.delegations() ?: Delegations.NONE
 
+    /**
+     * THE LENS, RESOLVED: the reputation tensors are keyed by SERVICE key, so
+     * a query carrying an observer is handed the service their kind 10040
+     * names per dimension ([EventQuery.rankKey], [EventQuery.followersKey])
+     * off the projection's cached provider map — the same pass the write
+     * side and the search gate read, invalidated by every 10040 write. An
+     * observer with no stored list resolves to no key and ranks as trusting
+     * nobody, which is what an observer with no cells ranked as before. A
+     * store assembled without the projection has no map and resolves nothing.
+     */
+    private suspend fun lensed(queries: List<EventQuery>): List<EventQuery> {
+        if (queries.none { it.observer != null }) return queries
+        val recompute = (index as? TrustProjection)?.recompute ?: return queries
+        val providers = recompute.providerMap()
+        return queries.map { q ->
+            val lens = providers.lensOf(q.observer ?: return@map q)
+            q.copy(rankKey = lens.rank, followersKey = lens.followers)
+        }
+    }
+
     private val bulkRecords = BulkRecordInsert(index, relay, guards)
 
     private val bulkMixed = BulkMixedInsert(index, relay, nowSecs, guards)
@@ -595,7 +615,7 @@ class NostrSemanticsStore(
     override suspend fun <T : Event> query(filters: List<Filter>): List<T> {
         val observer = coroutineContext[StoreQueryContext]?.observer
         val cutoff = nowSecs()
-        val queries = filters.mapNotNull { it.toExpiryQuery(cutoff, observer) }
+        val queries = lensed(filters.mapNotNull { it.toExpiryQuery(cutoff, observer) })
         val expansion = expansionOf(queries)
         val recalled =
             recallOrdered(
@@ -1051,7 +1071,7 @@ class NostrSemanticsStore(
     ) {
         val observer = coroutineContext[StoreQueryContext]?.observer
         val cutoff = nowSecs()
-        val queries = filters.mapNotNull { it.toExpiryQuery(cutoff, observer) }
+        val queries = lensed(filters.mapNotNull { it.toExpiryQuery(cutoff, observer) })
         val expansion = expansionOf(queries)
         val ordered =
             recallOrdered(
@@ -1103,8 +1123,7 @@ class NostrSemanticsStore(
         val observer = coroutineContext[StoreQueryContext]?.observer
         val cutoff = nowSecs()
         val queries =
-            filters
-                .mapNotNull { it.toExpiryQuery(cutoff, observer) }
+            lensed(filters.mapNotNull { it.toExpiryQuery(cutoff, observer) })
                 // A present limit <= 0 is the "matches nothing" sentinel on the
                 // feed, so it contributes nothing to the count either.
                 .filterNot { (it.limit ?: 1) <= 0 }

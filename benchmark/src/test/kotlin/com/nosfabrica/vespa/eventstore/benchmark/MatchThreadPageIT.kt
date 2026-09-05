@@ -108,6 +108,8 @@ class MatchThreadPageIT {
                                         limit = limit,
                                         search = term,
                                         observer = OBSERVER,
+                                        rankKey = OBSERVER,
+                                        followersKey = OBSERVER,
                                         minRank = 0.0,
                                         nowSecs = NOW,
                                     )

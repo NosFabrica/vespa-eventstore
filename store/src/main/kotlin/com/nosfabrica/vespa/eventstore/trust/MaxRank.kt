@@ -26,6 +26,7 @@ import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationCells
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import com.nosfabrica.vespa.eventstore.engine.mapBounded
+import com.vitorpamplona.quartz.utils.Hex
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import java.util.concurrent.ConcurrentHashMap
@@ -161,7 +162,7 @@ internal class MaxRankBackfill(
             // An assign would put the scalar back below that cell — and the
             // projection's cache, which saw its own raise, would then never
             // raise it again. The engine decides at write time instead.
-            val floors = page.filter { it.pubkey != MARKER_KEY && it.pubkey != DirtLedger.MARKER_KEY }.associate { it.pubkey to it.maxRank }
+            val floors = page.filter { Hex.isHex64(it.pubkey) }.associate { it.pubkey to it.maxRank }
             if (floors.isNotEmpty()) reputations.raiseMaxRank(floors)
             written += floors.size
             onProgress?.invoke(written)
@@ -198,7 +199,7 @@ internal class MaxRankBackfill(
     private suspend fun markerIsStale(): Boolean {
         var stale = false
         reputations.visitDocs { page ->
-            val subjects = page.filter { it.pubkey != MARKER_KEY && it.pubkey != DirtLedger.MARKER_KEY && it.maxRank > 0 }
+            val subjects = page.filter { Hex.isHex64(it.pubkey) && it.maxRank > 0 }
             val stored = subjects.mapBounded(QUERY_FANOUT) { doc -> doc to (reputations.storedMaxRank(doc.pubkey) ?: 0) }
             stale = stored.any { (doc, storedMax) -> storedMax < doc.maxRank }
             false // one page decides

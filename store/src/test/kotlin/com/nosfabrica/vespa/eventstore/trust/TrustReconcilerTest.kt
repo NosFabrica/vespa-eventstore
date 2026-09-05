@@ -95,7 +95,7 @@ class TrustReconcilerTest {
             reputations.docs.clear()
 
             reconciler.rebuildAll()
-            assertEquals(mapOf(observer to 87), reputations.get(subject)?.influenceScores)
+            assertEquals(mapOf(service to 87), reputations.get(subject)?.influenceScores)
         }
 
     @Test
@@ -142,7 +142,7 @@ class TrustReconcilerTest {
 
             val report = reconciler.reconcile()
             assertEquals(listOf(service), report.rebuilt, "the unprojected service is re-derived")
-            assertEquals(mapOf(observer to 87), reputations.get(subject)?.influenceScores)
+            assertEquals(mapOf(service to 87), reputations.get(subject)?.influenceScores)
         }
 
     @Test
@@ -154,25 +154,25 @@ class TrustReconcilerTest {
             val report = reconciler.reconcile()
             assertEquals(emptyList(), report.rebuilt, "nothing to fix")
             assertEquals(1, report.services, "but the service was examined")
-            assertEquals(mapOf(observer to 87), reputations.get(subject)?.influenceScores)
+            assertEquals(mapOf(service to 87), reputations.get(subject)?.influenceScores)
         }
 
     @Test
-    fun `reconcile catches a service remapped to a different observer`() =
+    fun `reconcile catches a service whose cells sit under another key`() =
         runBlocking {
-            // Cells exist, so "has a doc" would call this clean — but they belong
-            // to the previous observer. Checking the CURRENT observer's cell is
+            // Cells exist, so "has a doc" would call this clean — but they are
+            // keyed under a different service. Checking THIS service's cell is
             // what makes the difference.
             store.insert(list10040())
             store.insert(card())
-            assertEquals(mapOf(observer to 87), reputations.get(subject)?.influenceScores)
+            assertEquals(mapOf(service to 87), reputations.get(subject)?.influenceScores)
 
             reputations.docs.clear()
-            reputations.updateCells(listOf(ReputationCells(subject, observer2, 87, 1.0)))
+            reputations.updateCells(listOf(ReputationCells(subject, service2, 87, 1.0)))
 
             val report = reconciler.reconcile()
             assertEquals(listOf(service), report.rebuilt)
-            assertEquals(87, reputations.get(subject)?.influenceScores?.get(observer))
+            assertEquals(87, reputations.get(subject)?.influenceScores?.get(service))
         }
 
     @Test
@@ -214,30 +214,27 @@ class TrustReconcilerTest {
             // repair the lost subject.
             val restarted = TrustProjection(index, reputations)
             val report = TrustReconciler(index, reputations, restarted.recompute, restarted.dirt).reconcile()
-            assertEquals(mapOf(observer to 87), reputations.get(lost)?.influenceScores, "the marker-named subject is re-derived")
+            assertEquals(mapOf(service to 87), reputations.get(lost)?.influenceScores, "the marker-named subject is re-derived")
             assertNull(reputations.get(DirtLedger.MARKER_KEY), "marker cleared")
             assertTrue(report.isClean(), "nothing left for sampling to find")
         }
 
     /**
-     * A provider shared by two observers where only ONE observer's cells exist —
-     * the drift a single-winner map used to create. The per-observer check must
-     * flag and repair it.
+     * A provider shared by two observers holds ONE cell, its own: there is no
+     * per-observer copy to go missing any more, and the reconcile calls the
+     * shared service clean on that one cell.
      */
     @Test
-    fun `reconcile catches a shared provider missing one observer's cells`() =
+    fun `reconcile calls a shared provider clean on its one cell`() =
         runBlocking {
             store.insert(list10040(author = observer, serviceKey = service))
             store.insert(list10040(author = observer2, serviceKey = service))
             store.insert(card())
-            assertEquals(mapOf(observer to 87, observer2 to 87), reputations.get(subject)?.influenceScores)
-
-            // Strip observer2's cell, as the old single-winner projection left it.
-            reputations.put(ReputationDoc(subject, mapOf(observer to 87), mapOf(observer to 120.0)))
+            assertEquals(mapOf(service to 87), reputations.get(subject)?.influenceScores)
 
             val report = reconciler.reconcile()
-            assertEquals(listOf(service), report.rebuilt, "one observer unprojected = the service is dirty")
-            assertEquals(mapOf(observer to 87, observer2 to 87), reputations.get(subject)?.influenceScores)
+            assertTrue(report.isClean(), "one cell serves every observer naming the service")
+            assertEquals(mapOf(service to 87), reputations.get(subject)?.influenceScores)
         }
 
     /** A followers-only corpus IS projected (through the followers mapping) — no rebuild loop on every startup. */
@@ -246,26 +243,27 @@ class TrustReconcilerTest {
         runBlocking {
             store.insert(list10040())
             store.insert(card(rank = null, followers = 42))
-            assertEquals(mapOf(observer to 42.0), reputations.get(subject)?.followerCounts)
+            assertEquals(mapOf(service to 42.0), reputations.get(subject)?.followerCounts)
 
             val report = reconciler.reconcile()
             assertTrue(report.isClean(), "follower cells are projection too")
         }
 
     /**
-     * A service mapped for a dimension its cards never assert derives nothing —
-     * the sampling must not call that drift, or every startup re-walks the
-     * service for a projection that can never exist.
+     * A service's card lands whole whatever dimension it was named for (the
+     * lens picks the dimension at read time), so a rank-mapped service whose
+     * cards assert only followers projects follower cells — and the sampling
+     * must call that clean, or every startup re-walks the service.
      */
     @Test
-    fun `reconcile does not rebuild a service whose cards never assert the mapped dimension`() =
+    fun `reconcile accepts a rank-mapped service whose cards assert only followers`() =
         runBlocking {
             store.insert(list10040(types = listOf("30382:rank")))
             store.insert(card(rank = null, followers = 42)) // signer is rank-mapped only; the card asserts only followers
-            assertNull(reputations.get(subject), "nothing attributable to derive")
+            assertEquals(ReputationDoc(subject, emptyMap(), mapOf(service to 42.0)), reputations.get(subject), "the card lands whole")
 
             val report = reconciler.reconcile()
-            assertTrue(report.isClean(), "no sampled card asserts the mapped dimension — nothing to rebuild")
+            assertTrue(report.isClean(), "no sampled card asserts rank; the followers it asserts are projected — nothing to rebuild")
         }
 
     /** The never-triggered mirror order, follower-provider edition: reconcile must repair through the followers map. */
@@ -278,7 +276,7 @@ class TrustReconcilerTest {
 
             val report = reconciler.reconcile()
             assertEquals(listOf(service2), report.rebuilt, "the unprojected follower service is re-derived")
-            assertEquals(mapOf(observer to 42.0), reputations.get(subject)?.followerCounts)
+            assertEquals(mapOf(service2 to 42.0), reputations.get(subject)?.followerCounts)
         }
 
     /**
@@ -292,14 +290,14 @@ class TrustReconcilerTest {
             store.insert(list10040())
             store.insert(card())
             val orphan = "e2".repeat(32)
-            reputations.put(ReputationDoc(orphan, mapOf(observer to 50), emptyMap()))
+            reputations.put(ReputationDoc(orphan, mapOf(service to 50), emptyMap()))
             // The projection's own bookkeeping must survive the sweep untouched.
             val marker = ReputationDoc(DirtLedger.MARKER_KEY, emptyMap(), mapOf(service to 1.0))
             reputations.put(marker)
 
             reconciler.rebuildAll()
             assertNull(reputations.get(orphan), "no cards -> no parent")
-            assertEquals(mapOf(observer to 87), reputations.get(subject)?.influenceScores, "real subjects survive the sweep")
+            assertEquals(mapOf(service to 87), reputations.get(subject)?.influenceScores, "real subjects survive the sweep")
             assertEquals(marker, reputations.get(DirtLedger.MARKER_KEY), "the dirt marker is not a subject")
         }
 
@@ -325,9 +323,9 @@ class TrustReconcilerTest {
             store.insert(card(about = gone, rank = 60)) // will lose its doc entirely
             val orphan = "e4".repeat(32) // a doc with no records behind it
 
-            reputations.put(ReputationDoc(subject, mapOf(observer to 1), mapOf(observer to 1.0))) // stale
+            reputations.put(ReputationDoc(subject, mapOf(service to 1), mapOf(service to 1.0))) // stale
             reputations.docs.remove(gone) // missing
-            reputations.put(ReputationDoc(orphan, mapOf(observer to 99), emptyMap())) // orphan
+            reputations.put(ReputationDoc(orphan, mapOf(service to 99), emptyMap())) // orphan
 
             val audit = reconciler.verify()
             assertEquals(3, audit.driftCount)
@@ -339,7 +337,7 @@ class TrustReconcilerTest {
                     .getValue(subject)
                     .expected
                     ?.influenceScores
-                    ?.get(observer),
+                    ?.get(service),
                 "stale: records say 87",
             )
             assertEquals(
@@ -348,7 +346,7 @@ class TrustReconcilerTest {
                     .getValue(subject)
                     .actual
                     ?.influenceScores
-                    ?.get(observer),
+                    ?.get(service),
                 "stale: doc says 1",
             )
             assertNull(bySubject.getValue(gone).actual, "missing: records score it, no doc")
@@ -357,8 +355,8 @@ class TrustReconcilerTest {
             val repaired = reconciler.verify(repair = true)
             assertEquals(3, repaired.driftCount, "the same drift, now repaired in place")
             assertTrue(reconciler.verify().isClean(), "repair converged")
-            assertEquals(mapOf(observer to 87), reputations.get(subject)?.influenceScores)
-            assertEquals(mapOf(observer to 60), reputations.get(gone)?.influenceScores)
+            assertEquals(mapOf(service to 87), reputations.get(subject)?.influenceScores)
+            assertEquals(mapOf(service to 60), reputations.get(gone)?.influenceScores)
             assertNull(reputations.get(orphan))
         }
 
@@ -369,9 +367,9 @@ class TrustReconcilerTest {
             store.insert(list10040())
             store.insert(card(rank = 87, at = 100))
             store.insert(card(rank = null, followers = null, at = 200))
-            assertNull(reputations.get(subject))
+            assertTrue(reputations.get(subject)?.isEmpty() != false, "no cells left")
             val audit = reconciler.verify()
-            assertTrue(audit.isClean(), "empty derivation == no doc")
+            assertTrue(audit.isClean(), "empty derivation == no doc, and an emptied parent is not drift")
             assertEquals(1, audit.subjectsChecked, "the retracted subject was still checked")
         }
 
@@ -384,13 +382,15 @@ class TrustReconcilerTest {
             val proj = TrustProjection(idx, reps)
             proj.dirt.deferTo { }
             val st = NostrSemanticsStore(proj, relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
-            st.insert(list10040())
+            // The card first (by a service nobody names yet), then the list:
+            // the walk that projects the card is the queued work.
             st.insert(card())
+            st.insert(list10040())
             assertNull(reps.get(subject), "still queued")
 
             val audit = TrustReconciler(idx, reps, proj.recompute, proj.dirt).verify()
             assertTrue(audit.isClean(), "the queue was settled, not reported")
-            assertEquals(mapOf(observer to 87), reps.get(subject)?.influenceScores)
+            assertEquals(mapOf(service to 87), reps.get(subject)?.influenceScores)
         }
 
     // ---- sweepOrphanScores: the scores nobody's 10040 can ever attribute ------
@@ -409,7 +409,7 @@ class TrustReconcilerTest {
             assertEquals(2, report.servicesSeen, "both signers were examined")
             assertEquals(0, index.count(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service2))), "the orphan corpus is gone")
             assertEquals(1, index.count(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service))), "the mapped service is untouched")
-            assertEquals(mapOf(observer to 87), reputations.get(subject)?.influenceScores, "an orphan carried no cell, so none was lost")
+            assertEquals(mapOf(service to 87), reputations.get(subject)?.influenceScores, "an orphan carried no cell, so none was lost")
             assertTrue(reconciler.verify().isClean(), "the sweep leaves the projection consistent")
             assertTrue(reconciler.sweepOrphanScores().isClean(), "second run finds nothing")
         }
@@ -536,6 +536,6 @@ class TrustReconcilerTest {
             gatedReconciler.reconcile()
             gatedReconciler.rebuildAll()
             assertTrue(gated > 0, "the gate was exercised")
-            assertEquals(mapOf(observer to 87), reputations.get(subject)?.influenceScores)
+            assertEquals(mapOf(service to 87), reputations.get(subject)?.influenceScores)
         }
 }

@@ -22,11 +22,14 @@ package com.nosfabrica.vespa.eventstore.engine.client
 import ai.vespa.feed.client.DocumentId
 import ai.vespa.feed.client.OperationParameters
 import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
+import com.nosfabrica.vespa.eventstore.engine.doc.CellRemoval
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationCells
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import kotlinx.coroutines.future.await
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.add
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
@@ -93,21 +96,49 @@ class VespaReputationIndex(
                     buildJsonObject {
                         put("pubkey", buildJsonObject { put("assign", u.subject) })
                         u.influence?.let { q ->
-                            put("influence_scores", buildJsonObject { put("add", buildJsonObject { put("cells", buildJsonObject { put(u.observer, q) }) }) })
+                            put("influence_scores", buildJsonObject { put("add", buildJsonObject { put("cells", buildJsonObject { put(u.key, q) }) }) })
                         }
                         u.followers?.let { f ->
-                            put("follower_counts", buildJsonObject { put("add", buildJsonObject { put("cells", buildJsonObject { put(u.observer, f) }) }) })
+                            put("follower_counts", buildJsonObject { put("add", buildJsonObject { put("cells", buildJsonObject { put(u.key, f) }) }) })
                         }
+                        // A retracted dimension leaves in the same atomic update.
+                        if (u.influence == null && u.dropInfluence) put("influence_scores", buildJsonObject { put("remove", buildJsonObject { put("addresses", buildJsonArray { add(buildJsonObject { put("user", u.key) }) }) }) })
+                        if (u.followers == null && u.dropFollowers) put("follower_counts", buildJsonObject { put("remove", buildJsonObject { put("addresses", buildJsonArray { add(buildJsonObject { put("user", u.key) }) }) }) })
                         // In the SAME update as the cell: a document update is atomic, so
                         // the bound the descent relies on never lags the cell it covers.
                         u.maxRank?.let { m -> put("max_rank", buildJsonObject { put("assign", m) }) }
                     }
-                feed.client.update(
-                    DocumentId.of(NAMESPACE, DOCTYPE, u.subject),
-                    buildJsonObject { put("fields", fields) }.toString(),
-                    feedParams().createIfNonExistent(true),
-                )
-            }.forEach { it.await() }
+                // A retraction alone (both values null) must not conjure a
+                // document: no create, and a missing document is a no-op.
+                val creates = u.influence != null || u.followers != null
+                creates to
+                    feed.client.update(
+                        DocumentId.of(NAMESPACE, DOCTYPE, u.subject),
+                        buildJsonObject { put("fields", fields) }.toString(),
+                        feedParams().createIfNonExistent(creates),
+                    )
+            }.forEach { (creates, op) ->
+                if (creates) op.await() else runCatching { op.await() }.onFailure { if (!it.isMissingDocument()) throw it }
+            }
+    }
+
+    /** Pipelined tensor-cell removes (Vespa `remove` by address); a missing document is left missing. */
+    override suspend fun removeCells(removals: List<CellRemoval>) {
+        removals.chunked(VespaEventIndex.FEED_CHUNK).forEach { chunk ->
+            chunk
+                .map { r ->
+                    val fields =
+                        buildJsonObject {
+                            if (r.influence) put("influence_scores", buildJsonObject { put("remove", buildJsonObject { put("addresses", buildJsonArray { add(buildJsonObject { put("user", r.key) }) }) }) })
+                            if (r.followers) put("follower_counts", buildJsonObject { put("remove", buildJsonObject { put("addresses", buildJsonArray { add(buildJsonObject { put("user", r.key) }) }) }) })
+                        }
+                    feed.client.update(DocumentId.of(NAMESPACE, DOCTYPE, r.subject), buildJsonObject { put("fields", fields) }.toString(), feedParams())
+                }.forEach { op ->
+                    // A document that never existed answers 404 through the feed
+                    // client as a failure; nothing to remove is the intended outcome.
+                    runCatching { op.await() }.onFailure { if (!it.isMissingDocument()) throw it }
+                }
+        }
     }
 
     override suspend fun remove(pubkey: String) {
@@ -194,6 +225,9 @@ class VespaReputationIndex(
     }
 
     override fun close() = feed.close()
+
+    /** Whether a feed failure is Vespa saying the document is not there (an update without create-if-missing). */
+    private fun Throwable.isMissingDocument(): Boolean = (message ?: "").let { it.contains("404") || it.contains("not found", ignoreCase = true) || it.contains("Document does not exist", ignoreCase = true) }
 
     private companion object {
         const val NAMESPACE = "reputation"

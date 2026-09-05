@@ -116,7 +116,7 @@ class TrustReconciler internal constructor(
      *
      *  1. COMPLETENESS: every subject with stored 30382s is re-derived
      *     ([TrustRecompute.deriveBatch]) and compared against the stored parent
-     *     — catches missing docs, stale cells, wrong observers, leftovers.
+     *     — catches missing docs, stale cells, cells under the wrong key, leftovers.
      *  2. ORPHANS: every stored parent's pubkey is checked against a
      *     [GuardBloom] of the subjects phase 1 saw. No false negatives, so
      *     "not seen" proves the doc had no records; a false positive (1e-6)
@@ -200,29 +200,28 @@ class TrustReconciler internal constructor(
     }
 
     /**
-     * Re-derive the services whose scores are not projected under every
-     * observer currently mapped to them. Drains the [DirtLedger] first: a
-     * marker left by a crashed process names drift EXACTLY, so a restart heals
-     * before ranked search serves stale cells.
+     * Project the named services whose stored cards are not cells yet. Drains
+     * the [DirtLedger] first: a marker left by a crashed process names drift
+     * EXACTLY, so a restart heals before ranked search serves stale cells.
      *
-     * Needed because derivation happens on WRITE and a trigger only fires once:
+     * Needed because projection happens on WRITE and a trigger only fires once:
      * dedup rejects an already-held event before the projection sees it, so a
      * card skipped because its service had no 10040 yet stays unprojected as
      * long as both events remain stored. Mirrors hit this as a matter of course
-     * (scores outnumber lists by ~4 orders of magnitude and arrive first).
+     * (scores outnumber lists by ~4 orders of magnitude and arrive first). It
+     * is also what re-projects a store fed under the old observer-keyed model,
+     * whose documents hold no cell under any service key.
      *
-     * Check: per mapped service, sample a few cards and ask, per observer PER
-     * DIMENSION ([TrustProviders]), whether a sampled subject carries that
-     * observer's cell in the tensor the mapping owns. Only cards that ASSERT a
-     * dimension can prove it unprojected, else a corpus that never carries the
-     * mapped tag would re-walk on every startup; checking observers rather than
-     * mere existence also catches a RE-MAPPED service. Sampling settles it
-     * because the never-triggered failure is all-or-nothing per (service,
-     * observer) — PARTIAL drift is [DirtLedger.drain]'s job.
+     * Check: per named service, sample a few cards and ask whether a sampled
+     * subject carries THAT service's cell in the tensor the card's tag feeds.
+     * Only cards that ASSERT a dimension can prove it unprojected, else a
+     * corpus that never carries the tag would re-walk on every startup.
+     * Sampling settles it because the never-triggered failure is all-or-nothing
+     * per service — PARTIAL drift is [DirtLedger.drain]'s job.
      *
      * [onProgress] reports before and after the fanned-out sampling; the serial
-     * rebuild walks report `(total, total, rebuilt, derivedInService)` so a
-     * caller can show a real fraction through exactly the slow part.
+     * walks report `(total, total, rebuilt, cardsInService)` so a caller can
+     * show a real fraction through exactly the slow part.
      */
     suspend fun reconcile(onProgress: ((inspected: Int, total: Int, rebuilt: Int, derivedInService: Int) -> Unit)? = null): Reconciliation {
         dirt.drain(gate)
@@ -248,12 +247,10 @@ class TrustReconciler internal constructor(
                 val rankSubjects = cards.filter { it.second.boundedRank() != null }.map { it.first }.distinct()
                 val followerSubjects = cards.filter { it.second.followerCount() != null }.map { it.first }.distinct()
                 val parents = (rankSubjects + followerSubjects).distinct().mapNotNull { s -> reputations.get(s)?.let { s to it } }.toMap()
-                val rankProjected =
-                    rankSubjects.isEmpty() ||
-                        providers.rank[service].orEmpty().all { o -> rankSubjects.any { parents[it]?.influenceScores?.containsKey(o) == true } }
-                val followersProjected =
-                    followerSubjects.isEmpty() ||
-                        providers.followers[service].orEmpty().all { o -> followerSubjects.any { parents[it]?.followerCounts?.containsKey(o) == true } }
+                // Keyed by the service itself now: projected means a sampled
+                // subject carries THIS service's cell in the tensor the tag feeds.
+                val rankProjected = rankSubjects.isEmpty() || rankSubjects.any { parents[it]?.influenceScores?.containsKey(service) == true }
+                val followersProjected = followerSubjects.isEmpty() || followerSubjects.any { parents[it]?.followerCounts?.containsKey(service) == true }
                 service to (rankProjected && followersProjected)
             }
         val examined = verdicts.count { it != null }
@@ -263,9 +260,9 @@ class TrustReconciler internal constructor(
         // writer lock through the gate.
         val rebuilt = mutableListOf<String>()
         for (service in verdicts.mapNotNull { v -> v?.takeIf { !it.second }?.first }) {
-            recompute.recomputeWalk(
-                EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service)),
-                onSubjects = { derived -> onProgress?.invoke(total, total, rebuilt.size, derived) },
+            recompute.projectServices(
+                listOf(service),
+                onCards = { applied -> onProgress?.invoke(total, total, rebuilt.size, applied) },
                 gate = gate,
             )
             rebuilt += service
@@ -409,7 +406,7 @@ class TrustReconciler internal constructor(
 
     private companion object {
         // Cards sampled per service by [reconcile]: the never-triggered failure
-        // is all-or-nothing per (service, observer), so a handful settles it.
+        // is all-or-nothing per service, so a handful settles it.
         const val RECONCILE_SAMPLES = 3
 
         // Subjects per orphan-sweep re-derive round (memory-bounded, like
@@ -440,10 +437,15 @@ class TrustReconciler internal constructor(
             expected: ReputationDoc?,
             actual: ReputationDoc?,
         ): Boolean {
-            if (expected == null || actual == null) return (expected == null) && (actual == null)
+            // A parent whose last cell was removed by the hook-free cell path
+            // stands empty until a derive drops it: no cells IS the derived
+            // answer for it, not drift.
+            val stored = actual?.takeUnless { it.isEmpty() }
+            if (expected == null || stored == null) return (expected == null) && (stored == null)
+            val actual = stored
             return expected.influenceScores == actual.influenceScores &&
                 expected.followerCounts.keys == actual.followerCounts.keys &&
-                expected.followerCounts.all { (observer, count) -> actual.followerCounts[observer]?.toFloat() == count.toFloat() }
+                expected.followerCounts.all { (key, count) -> actual.followerCounts[key]?.toFloat() == count.toFloat() }
         }
     }
 }

@@ -111,7 +111,7 @@ class SearchCountIT {
                         // must equal the page, and shrink as the floor rises.
                         var previous = Int.MAX_VALUE
                         for (floor in listOf(0.0, 2.0, 20.0)) {
-                            val q = EventQuery(kinds = listOf(1), search = "pizza", observer = OBSERVER, minRank = floor)
+                            val q = EventQuery(kinds = listOf(1), search = "pizza", observer = OBSERVER, rankKey = OBSERVER, followersKey = OBSERVER, minRank = floor)
                             val served = index.search(q).size
                             assertEquals(served, index.count(q), "search profile, floor $floor: count == served page")
                             assertTrue(served < previous || floor == 0.0, "floor $floor should not serve more than a lower one")
@@ -120,7 +120,7 @@ class SearchCountIT {
 
                         // The floor BITES — without this the pair above would be
                         // satisfied by an ungated grouping count.
-                        val gated = EventQuery(kinds = listOf(1), search = "pizza", observer = OBSERVER, minRank = 20.0)
+                        val gated = EventQuery(kinds = listOf(1), search = "pizza", observer = OBSERVER, rankKey = OBSERVER, followersKey = OBSERVER, minRank = 20.0)
                         val gatedCount = index.count(gated)
                         assertEquals(10, gatedCount, "only the trusted(50) author's notes clear a floor of 20")
                         assertTrue(gatedCount < matched, "a gated count is strictly smaller than the match set")
@@ -134,6 +134,8 @@ class SearchCountIT {
                                 kinds = listOf(1),
                                 search = "pizza",
                                 observer = OBSERVER,
+                                rankKey = OBSERVER,
+                                followersKey = OBSERVER,
                                 minRank = 20.0,
                                 ranking = EventYql.RANK_RECENCY_GATED,
                                 limit = 50,

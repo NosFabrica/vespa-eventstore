@@ -103,8 +103,9 @@ class BadgeTermIT {
         val store = VespaEventStore.open(url = queryUrl, autoDeploy = true, configUrl = configUrl)
         store.use {
             runBlocking {
-                store.batchInsert(CORPUS + fillers())
-                // Every fixture author ranked by the observer, equally: the
+                store.batchInsert(CORPUS + fillers() + selfLens(OBSERVER))
+                // Every fixture author ranked under the key the observer's list
+                // (selfLens) resolves to, equally: the
                 // lens has to be ON (it selects the trust-multiplied `search`
                 // profile — EventYql.profileOf), and equal scores keep the
                 // trust factor out of every comparison below.
@@ -187,6 +188,18 @@ class BadgeTermIT {
         store: VespaEventStore,
         terms: String,
     ): List<String> = store.query<Event>(Filter(search = "$terms observer:$OBSERVER", limit = 40)).map { it.id }
+
+    /**
+     * The observer's kind 10040 naming THEIR OWN key as provider, so the store
+     * resolves `observer:<key>` to a lens over cells stored under that key —
+     * the store's cells are keyed by the service a list names, never by the
+     * observer (docs/service-keyed-trust.md).
+     */
+    private fun selfLens(observer: String): Event =
+        Event.fromJson(
+            """{"id":"${"f".repeat(64)}","pubkey":"$observer","created_at":1700000000,"kind":10040,""" +
+                """"tags":[["30382:rank","$observer","wss://scores.test/"],["30382:followers","$observer","wss://scores.test/"]],"content":"","sig":"${"f".repeat(128)}"}""",
+        )
 
     /**
      * Unrelated profiles so bm25's corpus statistics resemble a relay rather

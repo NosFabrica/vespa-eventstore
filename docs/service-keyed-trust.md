@@ -138,6 +138,17 @@ ingest and doubled its settle time (568 s). The walk now streams ids off the
 search index (`visitIds`, the cursor the old `recomputeWalk` used) and fetches
 each page by id under the gate: `proj.fetch.page` 0.1 s over the whole run.
 
+**Status (2026-09-05): landed on this branch.** Everything in §4 is done —
+the engine, the store, the tests in §5 (`ProviderMapTest`, `TrustLensTest`,
+`TrustKeyingMigrationTest`, `ServiceKeyedTrustIT` are the new ones) and the
+docs — with two deliberate departures from the plan below: the tensor
+dimension keeps its `user{}` spelling (a rename is a field type change that
+needs a validation override on a global document type; the label is
+invisible to every caller), and the migration is automatic rather than an
+operator step (`TrustKeyingMigration`, §6). The probe's numbers in §3 are the
+prototype's; the landed code is the prototype plus the renames, the
+migration and the test coverage.
+
 ## 4. Build plan
 
 One PR for the store, in this order, each step green on its own:
@@ -214,14 +225,24 @@ corpora, before and after; the re-sign and swap rows must read 0 walks.
 ## 6. Migration and rollout
 
 - The schema change is additive on `event.sd` (a query input) and semantic on
-  `reputation.sd` (same shape); deploy as usual. Existing reputation documents
-  carry observer keys and are WRONG under the new lens, so the rollout is:
-  deploy → `rebuildTrust()` (or, cheaper, `projectServices` over every mapped
-  service: cell writes, no per-subject fetch) → serve. Until the rebuild lands,
-  every lens resolves to a service key no document holds, so ranked search
-  fails CLOSED (empty pages), not open. Run it before pointing traffic at it.
-- The `max_rank` backfill marker survives (documents are rewritten by the
-  rebuild with the max of their cells).
+  `reputation.sd` (same shape); deploy as usual, no validation override.
+- Existing reputation documents carry observer keys and are WRONG under the
+  new lens, and `VespaEventStore.open()` repairs that itself:
+  `TrustKeyingMigration` runs once in the background — a reconcile (every
+  named service samples as unprojected and is walked into cells; a relay that
+  reconciles at boot has already done this half), then a sweep that removes
+  every cell whose key no 10040 names (the old observer keys, and services no
+  list names any more), then a marker document so the next boot reads one
+  document and returns. `awaitTrustKeying()` is the barrier; a run that finds
+  reputation documents but no readable 10040 refuses and retries, since that
+  is an engine still serving its corpus. Until the walk of a given service
+  lands, a lens resolving to it serves an EMPTY page (the gate fails closed),
+  and `backgroundStatus()` names a migration that keeps failing.
+- Cost on staging's shape: one cell write per card of every named service
+  (28 M) plus one page per reputation document for the sweep — the same order
+  as the relay's existing boot reconcile, once.
+- The `max_rank` backfill marker survives; a sweep can leave `max_rank` high
+  on a document, which is an upper bound still.
 - `DirtLedger` markers from the old process name subjects: the new derive
   re-derives them keyed by service — safe.
 - `sweepOrphanScores()` is unchanged.
@@ -299,11 +320,10 @@ Read against the relay's `router.conf.example`, `SyncEngine`, `VisitPool`,
    (the comment says the store owns that), so nothing there needs to change;
    the store's bulk planner already keys 30382 winners by address.
 
-## 8. Open questions for the real PR
+## 8. Open questions
 
-- Rename the tensor dimension (`user{}` → `service{}`) and
-  `ReputationCells.observer` → `key` — cosmetic, done in the PR not the
-  prototype.
+- The tensor dimension's `user{}` spelling — see the status note above; a
+  rename needs a validation override and buys a label.
 - Whether to project every card regardless of a 10040 naming its signer, which
   deletes the service walk at a global-document memory cost; measure on
   staging's numbers before deciding.

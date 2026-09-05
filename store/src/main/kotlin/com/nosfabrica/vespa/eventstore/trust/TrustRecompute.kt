@@ -25,6 +25,7 @@ import com.nosfabrica.vespa.eventstore.engine.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.QUERY_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
+import com.nosfabrica.vespa.eventstore.engine.doc.ReputationCells
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import com.nosfabrica.vespa.eventstore.engine.forEachBounded
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
@@ -33,21 +34,21 @@ import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import com.vitorpamplona.quartz.utils.Hex
 
 /**
- * HOW a reputation parent doc is (re)derived — driven by [TrustProjection]'s
- * write triggers and [TrustReconciler]'s repairs. Owns the service->observers
- * attribution map ([ProviderMap]) and three recompute shapes: one subject, a
- * batch, and a streaming walk over a whole score corpus.
+ * HOW the reputation parents are written — the cell path every card takes
+ * ([applyCards]), the walk that brings a newly named service's stored cards
+ * in ([projectServices]), and the exact derive [TrustReconciler]'s repairs and
+ * the crash marker fall back on. Owns the named-service map ([ProviderMap]).
  *
- * Recompute, never cell surgery: a change re-derives the SUBJECT's whole
- * [ReputationDoc] from the stored 30382s about them. The signer is a SERVICE
- * key; PER DIMENSION ([TrustProviders]) the `rank` tag credits the observers
- * naming that service under `30382:rank`, the `followers` tag those under
- * `30382:followers` — cells are keyed by the OBSERVER, never the signer, and a
- * popular provider scores every observer naming it. A version missing a tag
- * contributes nothing to that dimension (retraction); already-expired cards
- * (NIP-40) contribute nothing — the derive queries carry the same expiry
- * cutoff every read path applies. Idempotent and self-healing; when no cells
- * are left the parent doc is removed.
+ * The REPAIR path, not the hot path: a derive rebuilds the SUBJECT's whole
+ * [ReputationDoc] from the stored 30382s about them, and the write path only
+ * asks for one when it cannot apply a change as a cell (a crash marker, a
+ * reconcile, a removal by id it cannot resolve). Cells are keyed by the
+ * SIGNING SERVICE: the newest card by each mapped service about the subject
+ * holds that service's cell, both tags. A version missing a tag contributes
+ * nothing to that dimension (retraction); already-expired cards (NIP-40)
+ * contribute nothing — the derive queries carry the same expiry cutoff every
+ * read path applies. Idempotent and self-healing; when no cells are left the
+ * parent doc is removed.
  */
 internal class TrustRecompute(
     private val inner: EventIndex,
@@ -56,7 +57,7 @@ internal class TrustRecompute(
     /** Told what every whole-document write stored, so the cell path never reads a stale-high value — see [MaxRankCache]. */
     private val maxRanks: MaxRankCache? = null,
 ) {
-    /** Per-dimension `service key -> observers` (NIP-85 attribution), cached across a pass; see [ProviderMap]. */
+    /** The named services and every observer's lens, cached across a pass; see [ProviderMap]. */
     private val providers = ProviderMap(inner, nowSecs)
 
     /** The current attribution maps, rebuilding them once per pass (see [ProviderMap.get]). */
@@ -235,6 +236,92 @@ internal class TrustRecompute(
         flush()
     }
 
+    /**
+     * THE HOT PATH: [cards] applied as tensor-cell writes, ONE update per card
+     * and no read of any other card. A card's cell is keyed by its signing
+     * service, and the store holds one version per (service, subject)
+     * address, so the newest version IS the cell: `add` overwrites the key, a
+     * tag the version lost is a `remove` in the same atomic update. Folded
+     * oldest-first so that a same-address pair inside one batch lands the
+     * newest, as a derive would. Only services some 10040 names are written
+     * (the reputation type is global and memory-resident); a card by anyone
+     * else is dead storage until a list names them, when the drain's service
+     * walk ([projectServices]) applies it through this same path.
+     *
+     * Returns the subjects whose card could NOT be applied — a card that
+     * fails to reconstruct — which the caller declares as derive work.
+     */
+    suspend fun applyCards(
+        cards: List<EventDoc>,
+        serviceProviders: TrustProviders,
+    ): Set<String> {
+        val updates = ArrayList<ReputationCells>(cards.size)
+        val unapplied = LinkedHashSet<String>()
+        for (doc in cards.sortedWith(DERIVE_ORDER)) {
+            val subject = subjectOf(doc) ?: continue
+            if (!serviceProviders.maps(doc.pubkey)) continue
+            val card = doc.toEvent() as? ContactCardEvent
+            if (card == null) {
+                unapplied += subject
+                continue
+            }
+            val influence = card.boundedRank()
+            val followers = card.followerCount()?.toDouble()
+            updates += ReputationCells(subject, doc.pubkey, influence, followers, dropInfluence = influence == null, dropFollowers = followers == null)
+        }
+        if (updates.isEmpty()) return unapplied
+        // Each cell that overtakes its document's `max_rank` carries the new
+        // value in the same update — the invariant the trust descent proves
+        // pages with (TrustDescent). Its cost is a function of cache misses.
+        IngestStats.annotateHold("cell update over ${updates.size} card(s)")
+        val raised = IngestStats.timed("proj.fetch.maxrank") { maxRanks?.raise(updates) ?: updates }
+        try {
+            IngestStats.timed("proj.write") { reputations.updateCells(raised) }
+        } catch (t: Throwable) {
+            // The cache moved to the raised values BEFORE this write; a write
+            // that failed leaves it reading high, and a stale-high entry skips
+            // a raise the store needs. Forget them: the next cell reads again.
+            maxRanks?.forget(raised.mapNotNull { u -> u.subject.takeIf { u.maxRank != null } })
+            throw t
+        }
+        return unapplied
+    }
+
+    /**
+     * A NEWLY NAMED service's stored cards become cells: its ids stream off
+     * the search index ([EventIndex.visitIds] — cursor-paged, so a service
+     * that bulk-published thousands of cards on one second costs one window
+     * query, and never a document-API scan of the whole corpus, which is
+     * O(corpus) per service), and each page's documents are fetched BY ID and
+     * applied through [applyCards] inside one [gate] hold. By id, inside the
+     * gate: a card superseded between the id listing and the fetch is simply
+     * gone (its winner's own write applied the cell), so no page can land an
+     * older cell after a newer one. The one O(cards) operation left in the
+     * projection, and it runs once per service, the first time any 10040
+     * names it — never on a re-signed or re-pointed list.
+     */
+    suspend fun projectServices(
+        services: Collection<String>,
+        onCards: ((Int) -> Unit)? = null,
+        gate: suspend (suspend () -> Unit) -> Unit = { it() },
+    ) {
+        for (service in services) {
+            var applied = 0
+            inner.visitIds(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service)), withDTag = false) { page ->
+                page.map { it.id }.chunked(PROJECT_PAGE).forEach { ids ->
+                    gate {
+                        IngestStats.annotateHold("project service ${service.take(8)}: ${ids.size} card(s)")
+                        val docs = IngestStats.timed("proj.fetch.page") { inner.search(EventQuery(ids = ids, kinds = listOf(ContactCardEvent.KIND), complete = true)) }
+                        applyCards(docs, providers.get())
+                        applied += docs.size
+                    }
+                }
+                onCards?.invoke(applied)
+                true
+            }
+        }
+    }
+
     /** [subject]'s parent doc from its score docs — pure derivation, no I/O. */
     private fun derive(
         subject: String,
@@ -251,15 +338,13 @@ internal class TrustRecompute(
             // Direct by-kind reconstruction — no JSON round trip; runs once per
             // fetched card across every recompute walk.
             val card = doc.toEvent() as? ContactCardEvent ?: continue
-            // Per-dimension attribution: a rank provider's followers tag must
-            // not shadow the chosen follower provider's value. EVERY observer
-            // naming the service gets the cell — not one winner.
-            serviceProviders.rank[card.pubKey]?.let { observers ->
-                card.boundedRank()?.let { rank -> observers.forEach { influence[it] = rank } }
-            }
-            serviceProviders.followers[card.pubKey]?.let { observers ->
-                card.followerCount()?.toDouble()?.let { count -> observers.forEach { followers[it] = count } }
-            }
+            // Keyed by the SIGNING SERVICE. Only services some stored 10040
+            // names are projected (memory: the reputation type is global), and
+            // both tags land whatever dimension the service was named for — a
+            // query reads the dimension it resolved the observer's lens to.
+            if (!serviceProviders.maps(card.pubKey)) continue
+            card.boundedRank()?.let { rank -> influence[card.pubKey] = rank }
+            card.followerCount()?.toDouble()?.let { count -> followers[card.pubKey] = count }
         }
         return ReputationDoc(subject, influence, followers)
     }
@@ -273,6 +358,9 @@ internal class TrustRecompute(
 
         // Subjects per recompute round in a full walk (memory-bounded batches).
         const val RECOMPUTE_BATCH = 20_000
+
+        /** Cards per gate hold in a service walk — one by-id fetch, applied as pipelined cell updates. */
+        const val PROJECT_PAGE = 1_000
 
         /**
          * Subjects per WRITE-GATE hold, which is a different question from

@@ -607,7 +607,7 @@ class RankRegressionIT {
                     // orders the namesakes, nothing is dropped.
                     val spamOk =
                         indexRef.searchScored(
-                            EventQuery(search = "vitor", observer = OBSERVER, minRank = 0.0),
+                            EventQuery(search = "vitor", observer = OBSERVER, rankKey = OBSERVER, followersKey = OBSERVER, minRank = 0.0),
                         )
                     val vnames = spamOk.map { nameOf(it.doc) }
                     assertEquals(
@@ -634,7 +634,7 @@ class RankRegressionIT {
                     // everything (97-vs-93 is nowhere near a crossing).
                     val lensed =
                         indexRef.searchScored(
-                            EventQuery(search = "odell", observer = OBSERVER, minRank = 2.0),
+                            EventQuery(search = "odell", observer = OBSERVER, rankKey = OBSERVER, followersKey = OBSERVER, minRank = 2.0),
                         )
                     val lnames = lensed.map { nameOf(it.doc) }
                     assertEquals(
@@ -672,7 +672,7 @@ class RankRegressionIT {
                     // this also pins EventYql's choice of `search`.
                     val amethyst =
                         indexRef.searchScored(
-                            EventQuery(search = "amethyst", observer = OBSERVER, minRank = 2.0),
+                            EventQuery(search = "amethyst", observer = OBSERVER, rankKey = OBSERVER, followersKey = OBSERVER, minRank = 2.0),
                         )
                     val anames = amethyst.map { nameOf(it.doc) }
                     val aorder = amethyst.map { it.doc.id }
@@ -720,7 +720,7 @@ class RankRegressionIT {
                         Triple("jack", id(32), id(35)),
                     )
                     ) {
-                        val hits = indexRef.searchScored(EventQuery(search = query, observer = OBSERVER, minRank = 2.0))
+                        val hits = indexRef.searchScored(EventQuery(search = query, observer = OBSERVER, rankKey = OBSERVER, followersKey = OBSERVER, minRank = 2.0))
                         val labels = hits.map { nameOf(it.doc) }
                         val ids = hits.map { it.doc.id }
                         assertEquals(
@@ -744,7 +744,7 @@ class RankRegressionIT {
                     // is effectively unbeatable by a fragment while a
                     // trust-20 one is not). The bound BELOW is the same
                     // ladder the odell case pins, from the other side.
-                    val jack = indexRef.searchScored(EventQuery(search = "jack", observer = OBSERVER, minRank = 2.0))
+                    val jack = indexRef.searchScored(EventQuery(search = "jack", observer = OBSERVER, rankKey = OBSERVER, followersKey = OBSERVER, minRank = 2.0))
                     val jorder = jack.map { it.doc.id }
                     val jlabels = jack.map { nameOf(it.doc) }
                     assertTrue(
@@ -768,7 +768,7 @@ class RankRegressionIT {
                     // KNOWN 0.5 — it matches only the joined synthetic term,
                     // indistinguishable from a doc named "Jon" inside a rank
                     // expression.
-                    val jg = indexRef.searchScored(EventQuery(search = "Jon Gordon", observer = OBSERVER, minRank = 2.0))
+                    val jg = indexRef.searchScored(EventQuery(search = "Jon Gordon", observer = OBSERVER, rankKey = OBSERVER, followersKey = OBSERVER, minRank = 2.0))
                     val jgOrder = jg.map { it.doc.id }
                     assertTrue(
                         jgOrder.indexOf(id(40)) < jgOrder.indexOf(id(42)),
@@ -790,7 +790,7 @@ class RankRegressionIT {
                     // matchCount/fieldLength and no n_words this read 0.5 on
                     // a field the phrase covers completely — the most
                     // explicit exactness a user can ask for, paid half.
-                    val phrase = indexRef.searchScored(EventQuery(phrases = listOf("Jon Gordon"), observer = OBSERVER, minRank = 2.0))
+                    val phrase = indexRef.searchScored(EventQuery(phrases = listOf("Jon Gordon"), observer = OBSERVER, rankKey = OBSERVER, followersKey = OBSERVER, minRank = 2.0))
                     val phraseOrder = phrase.map { it.doc.id }
                     // 27 and 40 are BOTH whole-field phrase matches; 27 wins on
                     // trust (96 vs 50), which is the ladder working as designed.
@@ -1041,12 +1041,12 @@ class RankRegressionIT {
         docId: String,
     ): String =
         indexRef
-            .searchScored(EventQuery(search = query, observer = OBSERVER, minRank = DEFAULT_IT_MIN_RANK))
+            .searchScored(EventQuery(search = query, observer = OBSERVER, rankKey = OBSERVER, followersKey = OBSERVER, minRank = DEFAULT_IT_MIN_RANK))
             .firstOrNull { it.doc.id == docId }
             ?.tier ?: "MISSING"
 
     /** The default profile at [IT_NOW] with NO rank-feature overrides: whatever event.sd ships. */
-    private suspend fun searchDefaults(text: String) = indexRef.searchScored(EventQuery(search = text, observer = OBSERVER, minRank = DEFAULT_IT_MIN_RANK, nowSecs = IT_NOW))
+    private suspend fun searchDefaults(text: String) = indexRef.searchScored(EventQuery(search = text, observer = OBSERVER, rankKey = OBSERVER, followersKey = OBSERVER, minRank = DEFAULT_IT_MIN_RANK, nowSecs = IT_NOW))
 
     /**
      * The DEFAULT profile with the recency weight forced to [weight], measured
@@ -1062,6 +1062,8 @@ class RankRegressionIT {
         EventQuery(
             search = text,
             observer = OBSERVER,
+            rankKey = OBSERVER,
+            followersKey = OBSERVER,
             minRank = DEFAULT_IT_MIN_RANK,
             nowSecs = IT_NOW,
             rankFeatures = mapOf("w_recency" to weight, "recency_halflife" to halflife),
@@ -1074,7 +1076,7 @@ class RankRegressionIT {
         text: String,
         ranking: String,
         observer: String? = null,
-    ) = indexRef.searchScored(EventQuery(search = text, ranking = ranking, observer = observer))
+    ) = indexRef.searchScored(EventQuery(search = text, ranking = ranking, observer = observer, rankKey = observer, followersKey = observer))
 
     private suspend fun expect(
         query: String,
@@ -1218,7 +1220,13 @@ class RankRegressionIT {
                 FloorCase(69, 1, "delvarion", "body", SearchFields(location = "delvarion")),
             )
 
-        /** The ranking lens for the sort:followers case — cells are keyed by observer. */
+        /**
+         * The ranking lens. Cells are keyed by the SERVICE a 10040 names, and
+         * this engine-level fixture writes them under the observer's own key
+         * and hands the query that key as its resolved lens — the shape of a
+         * user whose list names themselves as provider, which the store
+         * resolves the same way.
+         */
         val OBSERVER = "c".repeat(64)
 
         /** A doc-n author pubkey, distinct from ids (b-padded vs 0-padded). */

@@ -449,6 +449,6 @@ class TrustedListIndexingTest {
             trustStore.insert(
                 ContactCardEvent(id(), service, next(), arrayOf(arrayOf("d", subject), arrayOf("rank", "80")), "", ""),
             )
-            assertEquals(mapOf(observer to 80), assertNotNull(reputations.get(subject)).influenceScores)
+            assertEquals(mapOf(service to 80), assertNotNull(reputations.get(subject)).influenceScores)
         }
 }

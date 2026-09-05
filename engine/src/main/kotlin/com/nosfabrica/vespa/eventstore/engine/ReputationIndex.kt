@@ -19,6 +19,7 @@
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 package com.nosfabrica.vespa.eventstore.engine
+import com.nosfabrica.vespa.eventstore.engine.doc.CellRemoval
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationCells
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 
@@ -43,11 +44,29 @@ interface ReputationIndex : AutoCloseable {
      */
     suspend fun updateCells(updates: List<ReputationCells>) =
         updates.forEach { u ->
-            val cur = get(u.subject) ?: ReputationDoc(u.subject)
+            val cur = get(u.subject) ?: if (u.influence == null && u.followers == null) return@forEach else ReputationDoc(u.subject)
             put(
                 cur.copy(
-                    influenceScores = u.influence?.let { cur.influenceScores + (u.observer to it) } ?: cur.influenceScores,
-                    followerCounts = u.followers?.let { cur.followerCounts + (u.observer to it) } ?: cur.followerCounts,
+                    influenceScores = u.influence?.let { cur.influenceScores + (u.key to it) } ?: if (u.dropInfluence) cur.influenceScores - u.key else cur.influenceScores,
+                    followerCounts = u.followers?.let { cur.followerCounts + (u.key to it) } ?: if (u.dropFollowers) cur.followerCounts - u.key else cur.followerCounts,
+                ),
+            )
+        }
+
+    /**
+     * Drop single tensor cells from the subjects' parents — a retracted or
+     * removed card's cells, keyed by the service that signed it. A missing
+     * document or cell is a no-op, never an error. The default is
+     * read-modify-write (the in-memory spec); the real client sends Vespa's
+     * tensor `remove` in one update.
+     */
+    suspend fun removeCells(removals: List<CellRemoval>) =
+        removals.forEach { r ->
+            val cur = get(r.subject) ?: return@forEach
+            put(
+                cur.copy(
+                    influenceScores = if (r.influence) cur.influenceScores - r.key else cur.influenceScores,
+                    followerCounts = if (r.followers) cur.followerCounts - r.key else cur.followerCounts,
                 ),
             )
         }

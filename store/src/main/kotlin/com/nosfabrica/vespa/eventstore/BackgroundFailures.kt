@@ -52,6 +52,9 @@ internal object BackgroundFailures {
     /** The one-time `max_rank` walk the trust descent waits on (MaxRankBackfill). */
     const val MAX_RANK_BACKFILL = "trust.maxRankBackfill"
 
+    /** The one-time re-keying of a store fed under the observer-keyed model (TrustKeyingMigration). */
+    const val TRUST_KEYING = "trust.keying"
+
     /** Longest failure message kept — enough to name the cause, not to hold a stack trace. */
     private const val MAX_MESSAGE = 200
 

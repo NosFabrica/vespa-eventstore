@@ -109,9 +109,10 @@ class SearchPrefixLadderIT {
         store.use {
             runBlocking {
                 val export = loadExport()
-                store.batchInsert(export + fillers())
-                // The report's AUTHOR SCORES, verbatim (npub -> hex),
-                // keyed by the observer: Vitor ranking as himself.
+                store.batchInsert(export + fillers() + selfLens(OBSERVER))
+                // The report's AUTHOR SCORES, verbatim (npub -> hex), under
+                // the key the observer's list (selfLens) resolves to: Vitor
+                // ranking as himself, as his own provider.
                 VespaReputationIndex(queryUrl).use { reputation ->
                     reputation.putAll(
                         SCORES.map { (pubkey, score) ->
@@ -164,6 +165,18 @@ class SearchPrefixLadderIT {
             .parseToJsonElement(javaClass.getResource("/search_vitor_pamplona_export.json")!!.readText())
             .jsonArray
             .map { Event.fromJson(it.toString()) }
+
+    /**
+     * The observer's kind 10040 naming THEIR OWN key as provider, so the store
+     * resolves `observer:<key>` to a lens over cells stored under that key —
+     * the store's cells are keyed by the service a list names, never by the
+     * observer (docs/service-keyed-trust.md).
+     */
+    private fun selfLens(observer: String): Event =
+        Event.fromJson(
+            """{"id":"${"f".repeat(64)}","pubkey":"$observer","created_at":1700000000,"kind":10040,""" +
+                """"tags":[["30382:rank","$observer","wss://scores.test/"],["30382:followers","$observer","wss://scores.test/"]],"content":"","sig":"${"f".repeat(128)}"}""",
+        )
 
     /**
      * Unrelated kind-0 profiles so bm25's corpus statistics behave like a real
