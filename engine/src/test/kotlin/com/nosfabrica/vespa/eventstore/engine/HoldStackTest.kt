@@ -48,6 +48,10 @@ import kotlin.test.assertTrue
  * its pop can land on two different stacks.
  */
 class HoldStackTest {
+    /** The two mutex names the store uses; several stage labels share each. */
+    private val writeLock = "writes"
+    private val trustGate = "trustGate"
+
     @BeforeTest
     fun clean() = IngestStats.reset()
 
@@ -57,8 +61,8 @@ class HoldStackTest {
     @Test
     fun `an inner hold's release does not free the outer one`() =
         runBlocking {
-            IngestStats.holding("lock.ingest.hold") {
-                IngestStats.holding("lock.ingest.trust.hold") {
+            IngestStats.holding(writeLock, "lock.ingest.hold") {
+                IngestStats.holding(trustGate, "lock.ingest.trust.hold") {
                     assertEquals(2, IngestStats.allHeld().size, "both locks are held here")
                 }
                 // THE REGRESSION. With a single field, the inner release left
@@ -74,7 +78,7 @@ class HoldStackTest {
     @Test
     fun `a hold survives the coroutine moving between threads`() =
         runBlocking {
-            IngestStats.holding("lock.gate.hold") {
+            IngestStats.holding(trustGate, "lock.gate.hold") {
                 val before = Thread.currentThread().threadId()
                 // Force real dispatch and a suspension; on Dispatchers.Default
                 // the continuation is free to resume on another worker.
@@ -98,7 +102,7 @@ class HoldStackTest {
     @Test
     fun `annotateHold names the work, keeps the start time, and reaches across suspension`() =
         runBlocking {
-            IngestStats.holding("lock.gate.hold") {
+            IngestStats.holding(trustGate, "lock.gate.hold") {
                 val started = assertNotNull(IngestStats.heldNow()).sinceNanos
                 withContext(Dispatchers.Default) {
                     delay(5)
@@ -123,17 +127,37 @@ class HoldStackTest {
     @Test
     fun `holderOf identifies the holder of a SPECIFIC lock`() =
         runBlocking {
-            IngestStats.holding("lock.ingest.hold") {
+            IngestStats.holding(writeLock, "lock.ingest.hold") {
                 IngestStats.annotateHold("bulk commit")
-                IngestStats.holding("lock.gate.hold") {
+                IngestStats.holding(trustGate, "lock.gate.hold") {
                     IngestStats.annotateHold("max_rank raise")
                     // The causal edge is only useful if it names the holder of
                     // the lock the waiter actually wants, not whatever is
                     // running.
-                    assertEquals("bulk commit", IngestStats.holderOf("lock.ingest.hold")?.label)
-                    assertEquals("max_rank raise", IngestStats.holderOf("lock.gate.hold")?.label)
-                    assertNull(IngestStats.holderOf("lock.nobody.hold"))
+                    assertEquals("bulk commit", IngestStats.holderOf(writeLock)?.label)
+                    assertEquals("max_rank raise", IngestStats.holderOf(trustGate)?.label)
+                    assertNull(IngestStats.holderOf("nobody"))
                 }
+            }
+        }
+
+    @Test
+    fun `a waiter finds the holder even when they took the same mutex under different labels`() =
+        runBlocking {
+            // THE BUG REAL DATA FOUND. `lock.gate` and `lock.ingest.trust` are
+            // two labels for ONE mutex, so a waiter arriving under one label
+            // must still see a holder registered under the other. Matching by
+            // label instead of by mutex returned null every time and silently
+            // dropped every attribution — 7.4 s of measured gate wait on a real
+            // corpus recorded as "behind nobody".
+            IngestStats.holding(trustGate, "lock.ingest.trust.hold") {
+                IngestStats.annotateHold("bulk commit holding the trust gate")
+                assertEquals(
+                    "bulk commit holding the trust gate",
+                    IngestStats.holderOf(trustGate)?.label,
+                    "a lock.gate waiter must see the lock.ingest.trust holder — same mutex",
+                )
+                assertNull(IngestStats.holderOf(writeLock), "and must NOT see a holder of a different mutex")
             }
         }
 
@@ -141,7 +165,7 @@ class HoldStackTest {
     fun `a hold is released even when the body throws`() =
         runBlocking {
             runCatching {
-                IngestStats.holding("lock.ingest.hold") {
+                IngestStats.holding(writeLock, "lock.ingest.hold") {
                     throw IllegalStateException("engine died mid-section")
                 }
             }
@@ -151,9 +175,9 @@ class HoldStackTest {
     @Test
     fun `heldNow reports the longest-running hold`() =
         runBlocking {
-            IngestStats.holding("lock.ingest.hold") {
+            IngestStats.holding(writeLock, "lock.ingest.hold") {
                 delay(10)
-                IngestStats.holding("lock.gate.hold") {
+                IngestStats.holding(trustGate, "lock.gate.hold") {
                     // The oldest hold is the one a stalled pipeline is waiting
                     // out, so that is the one a single-answer status shows.
                     assertEquals("lock.ingest.hold", assertNotNull(IngestStats.heldNow()).stage)
@@ -170,7 +194,7 @@ class HoldStackTest {
                 val jobs =
                     (1..3).map { n ->
                         launch(Dispatchers.Default) {
-                            IngestStats.holding("lock.worker$n.hold") {
+                            IngestStats.holding("worker$n", "lock.worker$n.hold") {
                                 started.countDown()
                                 withContext(Dispatchers.IO) { release.await() }
                             }

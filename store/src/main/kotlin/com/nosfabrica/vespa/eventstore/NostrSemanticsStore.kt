@@ -226,6 +226,14 @@ class NostrSemanticsStore(
     /** A writer-lock label's two [IngestStats] stage names, interned at construction. */
     private class LockStage(
         name: String,
+        /**
+         * WHICH MUTEX this label takes. Several labels share one: `lock.gate`
+         * and `lock.ingest.trust` are both [trustGate]; `lock.ingest`,
+         * `lock.sweep` and `lock.reindex` are all [writes]. The wait
+         * attribution matches waiter to holder by THIS, because matching by
+         * label misses every cross-label contention — which is most of it.
+         */
+        val lock: String,
     ) {
         val wait = "$name.wait"
         val hold = "$name.hold"
@@ -261,7 +269,7 @@ class NostrSemanticsStore(
         // of those were behind proj.fetch.derive", which names a fix. One set
         // scan (never more than a couple of entries) against a wait measured in
         // seconds. First-holder attribution: see IngestStats.holderOf.
-        val blockedBy = IngestStats.holderOf(stage.hold)?.label
+        val blockedBy = IngestStats.holderOf(stage.lock)?.label
         var acquired = 0L
         try {
             return mutex.withLock {
@@ -271,7 +279,7 @@ class NostrSemanticsStore(
                 // but "the gate is held RIGHT NOW, by this, for this long".
                 // A scope rather than a begin/end pair, so nesting two mutexes
                 // cannot leave the outer one reporting as unheld.
-                IngestStats.holding(stage.hold) { body() }
+                IngestStats.holding(stage.lock, stage.hold) { body() }
             }
         } finally {
             // Booked AFTER release: recording inside would put two map lookups
@@ -1447,13 +1455,19 @@ class NostrSemanticsStore(
          * label, since `insert()` takes this lock per event and a String
          * allocation is not what a measurement should cost.
          */
-        val LOCK_INGEST = LockStage("lock.ingest")
-        val LOCK_GATE = LockStage("lock.gate")
+        val LOCK_INGEST = LockStage("lock.ingest", WRITE_LOCK)
+        val LOCK_GATE = LockStage("lock.gate", TRUST_GATE)
 
         /** A trust-relevant insert queueing for [trustGate] — see [touchesTrust]. */
-        val LOCK_INGEST_TRUST = LockStage("lock.ingest.trust")
-        val LOCK_SWEEP = LockStage("lock.sweep")
-        val LOCK_REINDEX = LockStage("lock.reindex")
+        val LOCK_INGEST_TRUST = LockStage("lock.ingest.trust", TRUST_GATE)
+        val LOCK_SWEEP = LockStage("lock.sweep", WRITE_LOCK)
+        val LOCK_REINDEX = LockStage("lock.reindex", WRITE_LOCK)
+
+        /** The [writes] mutex, as the wait attribution names it. */
+        const val WRITE_LOCK = "writes"
+
+        /** The [trustGate] mutex, as the wait attribution names it. */
+        const val TRUST_GATE = "trustGate"
 
         /** The outcome key for an insert that failed on the ENGINE rather than on a rule. */
         const val OUTCOME_FAILED = "failed"

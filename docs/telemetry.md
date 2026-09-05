@@ -1039,3 +1039,83 @@ above the p99.
   not counted twice.
 - **`Rejections.reasonOf`.** A linear scan over seven prefixes, 13.7 ns —
   left alone.
+
+## 15. Against a real corpus, under a real lens
+
+`TelemetryIT` proves the wiring on forty synthetic events. `StagingCorpusIT`
+answers the operator's actual question on **5,137 events pulled from the live
+staging relay** (`benchmark/capture_staging.py`) and fed to a local Vespa — a
+corpus with 1,013 authors, real text, notes dated in the year 2100, and the
+observer's kind 10040 plus 2,000 of its provider's kind-30382 score cards, so
+`TrustProjection` builds real reputation tensors and a ranked search is really
+gated. Staging is a data source only; nothing here writes to it.
+
+**Measured 2026-09-05**, single-node Vespa in Docker, corpus fed twice:
+
+```
+--- engine time by rank profile (total 3.12 s) ---
+  unranked        72 q  1.58 s  50.8%  match/q    294   hits 11457
+  search          35 q  0.82 s  26.3%  match/q      4   hits   166
+  recency_gated   15 q  0.27 s   8.6%  match/q      4   hits    74
+  recency          8 q  0.24 s   7.8%  match/q   2757   hits  3612
+  text            10 q  0.21 s   6.6%  match/q    381   hits   250
+
+--- port calls by activity ---
+  BatchInsert Put     11 calls  11.56 s   5137 docs  calls/doc  0.002
+  Query       Search  48 calls   2.52 s   3498 docs  p50 38.9 ms  p99 254.0 ms
+  Drain       Search  11 calls   1.03 s    500 docs  p50 86.0 ms  p99 188.4 ms
+  BatchInsert Exists  22 calls   0.87 s  10274 docs  calls/doc  0.002
+
+--- admission outcomes (offered 10274, admitted 5137) ---
+  already stored: 50.0% of what this node was offered
+```
+
+Four things this says that the synthetic run could not:
+
+- **Half the engine's time is the store checking itself.** `unranked` — dedup
+  probes, guard checks, version reads — takes **50.8 %**, more than every user
+  query combined. That is §2's claim about the write path being read-heavy,
+  measured, and it is the single most useful number here: a mirroring node's
+  biggest engine cost is not what anyone searched for.
+- **The trust gate is visible as a ~95× cut in recall.** The same terms match
+  **381 docs/query** unlensed (`text`) and **4** through the observer's web of
+  trust (`search`). The gate is not a scoring tweak; it is most of the work not
+  done.
+- **`calls/doc 0.002`** — eleven port calls carried 5,137 documents. The
+  amortization rule as a live figure rather than a benchmark memory.
+- **`BatchInsert Search` at `calls/doc 31.0`** is the outlier worth a second
+  look: 31 calls returning one document between them. Those are the
+  addressable-supersession version reads for the 2,000 kind-30382 cards — the
+  shape the ratio exists to make visible.
+
+### 15.1 The bug only real contention could find
+
+The first run printed **no wait attribution at all**, next to 7.4 s of measured
+`lock.gate.wait`. Every waiter was recorded as blocked behind nobody.
+
+`holderOf` matched a waiter to a holder by **stage label**, and several labels
+share one mutex: `lock.gate` and `lock.ingest.trust` are both the trust gate;
+`lock.ingest`, `lock.sweep` and `lock.reindex` are all the write lock. So a
+waiter arriving under one label never saw a holder registered under the other —
+which is the *common* case, not an edge case. Holds now carry their mutex and
+the lookup keys on that.
+
+The synthetic IT could not have caught it: it has no concurrent writer, so no
+lock is ever contended. `HoldStackTest` now pins the cross-label case directly.
+
+With the fix, the same run says:
+
+```
+lock.gate.wait          5.15 s total
+      5.15 s (100.0%) behind lock.ingest.trust.hold
+lock.ingest.trust.wait  1.78 s total
+      1.77 s ( 99.4%) behind derive 499 subject(s) in 10 chunk(s), fanout 4
+      0.01 s (  0.6%) behind lock.gate.hold
+```
+
+That second line is the design's whole purpose in one row. Not "ingest waited
+1.78 s", which only raises a question, but *ingest waited 1.77 s behind the
+trust projection deriving 499 contact cards in 10 chunks* — the annotation the
+holder wrote about itself from inside its own critical section. It is the
+24-minute `proj.fetch` mystery of §7, reproduced on real data and attributed
+without anyone having to guess.

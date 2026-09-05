@@ -140,6 +140,18 @@ object IngestStats {
     class Held(
         val stage: String,
         val sinceNanos: Long,
+        /**
+         * WHICH MUTEX this hold is on, which is not the same as [stage].
+         *
+         * Several stage labels share one mutex — `lock.gate` and
+         * `lock.ingest.trust` are both the trust gate; `lock.ingest`,
+         * `lock.sweep` and `lock.reindex` are all the write lock. Matching a
+         * waiter to a holder by LABEL therefore misses whenever the two took
+         * the same mutex under different names, which is the common case and
+         * was silently losing every attribution (found on a real corpus: 7.4 s
+         * of measured gate wait attributed to nobody).
+         */
+        val lock: String,
     ) {
         /**
          * What the holder is DOING, set from inside the critical section. The
@@ -186,10 +198,11 @@ object IngestStats {
      * the mutex is actually acquired.
      */
     suspend fun <T> holding(
+        lock: String,
         stage: String,
         body: suspend () -> T,
     ): T {
-        val held = Held(stage, System.nanoTime())
+        val held = Held(stage, System.nanoTime(), lock)
         live.add(held)
         try {
             return kotlinx.coroutines.withContext(HoldContext(held)) { body() }
@@ -221,8 +234,8 @@ object IngestStats {
     fun allHeld(): List<Held> = live.sortedBy { it.sinceNanos }
 
     /**
-     * WHO HOLDS [holdStage] RIGHT NOW — the causal edge, for the price of
-     * scanning a set that never has more than a couple of entries.
+     * WHO HOLDS THE MUTEX NAMED [lock] RIGHT NOW — the causal edge, for the
+     * price of scanning a set that never has more than a couple of entries.
      *
      * A waiter can read this BEFORE it blocks, because the lock helper captures
      * its request timestamp before entering the mutex. That turns `lock.*.wait`
@@ -236,8 +249,10 @@ object IngestStats {
      * to whoever held it when the waiter arrived. For the case this exists to
      * catch — one pathological holder stalling everyone — that is exactly
      * right; for a uniformly busy queue it over-attributes to the head.
+     *
+     * KEYED BY THE MUTEX, not by the stage label: see [Held.lock].
      */
-    fun holderOf(holdStage: String): Held? = live.filter { it.stage == holdStage }.minByOrNull { it.sinceNanos }
+    fun holderOf(lock: String): Held? = live.filter { it.lock == lock }.minByOrNull { it.sinceNanos }
 
     /** Book [nanos] of [waitStage] as time spent behind [holder]. */
     fun addBlocked(
