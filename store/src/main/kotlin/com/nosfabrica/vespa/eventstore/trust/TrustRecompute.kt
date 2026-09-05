@@ -359,8 +359,15 @@ internal class TrustRecompute(
         // Subjects per recompute round in a full walk (memory-bounded batches).
         const val RECOMPUTE_BATCH = 20_000
 
-        /** Cards per gate hold in a service walk — one by-id fetch, applied as pipelined cell updates. */
-        const val PROJECT_PAGE = 1_000
+        /**
+         * Cards per gate hold in a service walk — one by-id fetch, applied as
+         * pipelined cell updates. The walk's total time barely moves with the
+         * page (the updates pipeline either way); what the page decides is how
+         * long a live trust write waits: measured at 1000 on a loaded single
+         * node, a card insert during a 234k-card walk waited 762 ms median,
+         * 1.1 s max — one page hold. `VESPA_TRUST_WALK_PAGE` overrides.
+         */
+        val PROJECT_PAGE: Int = System.getenv("VESPA_TRUST_WALK_PAGE")?.toIntOrNull()?.coerceAtLeast(1) ?: 250
 
         /**
          * Subjects per WRITE-GATE hold, which is a different question from

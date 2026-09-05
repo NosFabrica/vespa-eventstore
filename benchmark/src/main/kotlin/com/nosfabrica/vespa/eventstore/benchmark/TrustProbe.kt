@@ -22,6 +22,8 @@ package com.nosfabrica.vespa.eventstore.benchmark
 
 import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.eventstore.engine.IngestStats
+import com.nosfabrica.vespa.eventstore.engine.client.VespaReputationIndex
+import com.nosfabrica.vespa.eventstore.trust.TrustKeyingMigration
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
@@ -278,7 +280,88 @@ object TrustProbe {
                     store.insert(resigned(myList, at++, rankKey = providerB, followersKey = providerB))
                 }
                 lensedQuery(store, observer, cardsA, cardsB)
+
+                // ---- 6. a swap to a provider NOBODY has named: the one walk left.
+                // The second corpus re-signed under a fresh key, stored while unnamed.
+                val providerC = "7".repeat(64)
+                val cardsC = cardsB.filterIsInstance<ContactCardEvent>().map { c -> ContactCardEvent(hexId(), providerC, c.createdAt, c.tags, "", "") }
+                feed(store, cardsC, batch, "cards C (${providerC.take(8)}, named by nobody)")
+                val page0 = stage("proj.fetch.page")
+                watchWalk(store, "6. observer SWAPS to a NEVER-named provider (${providerB.take(8)} -> ${providerC.take(8)}): the service walk", walkSeconds, templates.drop(200)) {
+                    store.insert(resigned(myList, at++, rankKey = providerC, followersKey = providerC))
+                }
+                val page1 = stage("proj.fetch.page")
+                println("  walk pages: %d (%.1fs); cells: %s".format(page1.calls - page0.calls, (page1.totalNanos - page0.totalNanos) / 1e9, statsLine("proj.write")))
+                val sampleC = cardsC.take(5).map { it.aboutUser()!! }
+                val cellsC =
+                    VespaReputationIndex(url).use { reps ->
+                        sampleC.map { s ->
+                            s.take(8) + "->" + (
+                                reps
+                                    .get(s)
+                                    ?.influenceScores
+                                    ?.get(providerC)
+                                    ?.toString() ?: "none"
+                            )
+                        }
+                    }
+                println("  cells under the new key: " + cellsC.joinToString())
+
+                if (System.getenv("PROBE_STOP_AFTER") == "6") {
+                    println(IngestStats.dump())
+                    return@use
+                }
+                // ---- 7. the other lensed reads: followers, the gated feed, count.
+                println("== 7. the other lensed reads")
+                val followers: List<Event> = store.query(Filter(kinds = listOf(1), limit = 10, search = "observer:$observer sort:followers"))
+                println("  sort:followers: ${followers.size} hits")
+                val feedT0 = System.nanoTime()
+                val gated: List<Event> = store.query(Filter(kinds = listOf(1), limit = 10, search = "observer:$observer filter:rank:gte:50"))
+                println("  filter:rank:gte:50 feed: ${gated.size} hits in %d ms".format((System.nanoTime() - feedT0) / 1_000_000))
+                val countT0 = System.nanoTime()
+                val counted = store.count(Filter(kinds = listOf(1), search = "observer:$observer"))
+                println("  COUNT under the observer: $counted in %d ms".format((System.nanoTime() - countT0) / 1_000_000))
+
+                // ---- 8. deletions: the assertions stream's deleteMissing shape (by id, 500 a call).
+                println("== 8. kind-5 style deletions: 2,000 of the current provider's cards, 500 per call")
+                val doomed = cardsC.drop(10).take(2_000)
+                val delT0 = System.nanoTime()
+                doomed.chunked(500).forEach { chunk -> store.delete(Filter(ids = chunk.map { it.id })) }
+                store.awaitTrustProjection()
+                println("  deleted and settled in %.1fs; derive calls total now %d".format((System.nanoTime() - delT0) / 1e9, stage("proj.fetch.derive").calls))
+                val gone = doomed.first().aboutUser()!!
+                println("  a deleted card's cell: ${VespaReputationIndex(url).use { it.get(gone) }?.influenceScores?.get(providerC) ?: "gone"}")
+
+                // ---- 9. reconcile (the relay's boot repair) on a loaded, healthy store.
+                println("== 9. reconcileTrust() on the loaded store")
+                val recT0 = System.nanoTime()
+                val rec = store.reconcileTrust()
+                println("  services=${rec.services} rebuilt=${rec.rebuilt.size} in %.1fs".format((System.nanoTime() - recT0) / 1e9))
+
+                // ---- 10. the keying migration at scale: marker down, reopen, wait.
+                println("== 10. the keying migration on the loaded store (marker removed, store reopened)")
+                VespaReputationIndex(url).use { it.remove(TrustKeyingMigration.MARKER_KEY) }
                 println(IngestStats.dump())
+                store.close()
+                val migT0 = System.nanoTime()
+                VespaEventStore.open(url).use { reopened ->
+                    val done = reopened.awaitTrustKeying()
+                    println("  migration: $done in %.1fs".format((System.nanoTime() - migT0) / 1e9))
+
+                    // ---- 11. verify: every parent against the exact derive — the correctness net.
+                    println("== 11. verifyTrust(): every stored parent against the exact derive")
+                    val verT0 = System.nanoTime()
+                    var last = 0
+                    val audit =
+                        reopened.verifyTrust { n ->
+                            if (n - last >= 100_000) {
+                                last = n
+                                println("    checked $n subjects, %.0fs".format((System.nanoTime() - verT0) / 1e9))
+                            }
+                        }
+                    println("  subjects=${audit.subjectsChecked} parents=${audit.parentsChecked} drift=${audit.driftCount} in %.1fs".format((System.nanoTime() - verT0) / 1e9))
+                    audit.drift.take(5).forEach { d -> println("    drift ${d.subject.take(8)}: expected=${d.expected?.influenceScores} actual=${d.actual?.influenceScores}") }
+                }
             }
         }
 

@@ -75,7 +75,11 @@ internal class MaxRankCache(
             // The STORED scalar, not the cells' maximum: the two came apart on
             // staging when a schema flip dropped the field, and a cache that
             // read the cells would have believed every raise already made.
-            val read = missing.mapBounded(QUERY_FANOUT) { s -> s to (reputations.storedMaxRank(s) ?: 0) }
+            // Document-API GETs, not queries: no summary stage to time out, so
+            // they fan out far wider than QUERY_FANOUT. Measured on the landed
+            // code's ingest of 412k cards: at 4 the misses were 28% of the wall
+            // clock (155 s of 558 s), one GET per never-seen subject.
+            val read = missing.mapBounded(READ_FANOUT) { s -> s to (reputations.storedMaxRank(s) ?: 0) }
             if (known.size + read.size > CAPACITY) known.clear()
             read.forEach { (s, m) -> known.putIfAbsent(s, m) }
         }
@@ -112,6 +116,9 @@ internal class MaxRankCache(
 
     private companion object {
         const val CAPACITY = 2_000_000
+
+        /** Concurrent document GETs a cache fill keeps in flight; `VESPA_MAX_RANK_READ_FANOUT` overrides. */
+        val READ_FANOUT: Int = System.getenv("VESPA_MAX_RANK_READ_FANOUT")?.toIntOrNull()?.coerceAtLeast(1) ?: 32
     }
 }
 

@@ -149,6 +149,31 @@ operator step (`TrustKeyingMigration`, §6). The probe's numbers in §3 are the
 prototype's; the landed code is the prototype plus the renames, the
 migration and the test coverage.
 
+### 3.1 The landed code, every path, on the production capture (2026-09-05)
+
+The same harness, extended (`trustProbe` phases 6–11), against the LANDED
+code on a fresh single-node Vespa, with the box saturated by the run itself
+(load average 16–25 on 4 cores: the Vespa container at ~200 % CPU beside the
+probe), so absolute numbers sit ~1.7× above the prototype's quieter runs and
+only the ratios and the zeros carry across.
+
+| path | result |
+|---|---|
+| bulk ingest, 412k cards + 371 lists | 558 s to settled; `proj.fetch.maxrank` 155 s of it (one document GET per never-seen subject at fan-out 4). Fan-out raised to 32 (`MaxRankCache.READ_FANOUT`, `VESPA_MAX_RANK_READ_FANOUT`): **486 s, the reads 79 s** |
+| single card insert, drain idle | median 51–56 ms |
+| observer re-signs an unchanged 10040 | 0 s, nothing walked |
+| observer swaps to a provider some list names | 0 s |
+| observer swaps to a provider NOBODY named, 234,272 cards stored | the walk: 474 pages of 1000, settled in 234 s; card inserts during it median 762 ms, max 1.1 s (one page hold). Page lowered to 250 (`TrustRecompute.PROJECT_PAGE`, `VESPA_TRUST_WALK_PAGE`): settled in 269 s, inserts **median 236 ms, max 325 ms** |
+| `sort:followers`, `filter:rank:gte:50` feed, COUNT under the observer | all answer through the lens; the feed 6 ms, the count 5 ms |
+| 2,000 kind-5-style deletions by id, 500 per call | 2.5 s to settled, **0 derives**, the deleted card's cell gone |
+| `reconcileTrust()` on the loaded store | 0.5 s (samples per service with cards, nothing to rebuild) |
+| the keying migration on the loaded store (marker removed, store reopened) | 91 s: reconcile clean, 177,848 keys swept (the provider the observer had left, now named by nobody) |
+| `verifyTrust()`: every stored parent against the exact derive | **280,603 subjects, 0 drift**, 259 s |
+
+The verify row is the correctness result: the cell path, the walk, the
+deletions and the migration together produced exactly the tensors the exact
+derive says, over every scored subject of the capture.
+
 ## 4. Build plan
 
 One PR for the store, in this order, each step green on its own:
