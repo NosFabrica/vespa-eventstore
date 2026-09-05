@@ -20,8 +20,13 @@
  */
 package com.nosfabrica.vespa.eventstore
 
+import com.nosfabrica.vespa.eventstore.engine.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.client.VespaEventIndex
 import com.nosfabrica.vespa.eventstore.engine.client.VespaReputationIndex
+import com.nosfabrica.vespa.eventstore.engine.metrics.Activity
+import com.nosfabrica.vespa.eventstore.engine.metrics.CostLedger
+import com.nosfabrica.vespa.eventstore.engine.metrics.MeteredEventIndex
+import com.nosfabrica.vespa.eventstore.engine.metrics.withActivity
 import com.nosfabrica.vespa.eventstore.search.SearchExpansionLimits
 import com.nosfabrica.vespa.eventstore.trust.MaxRankBackfill
 import com.nosfabrica.vespa.eventstore.trust.TrustKeyingMigration
@@ -56,6 +61,12 @@ class VespaEventStore internal constructor(
     /**
      * The raw engine index, NOT trust-projected — for status/health metrics
      * that only count and never mutate trust data.
+     *
+     * ALSO NOT METERED. Reads made through this handle appear in no activity on
+     * `metrics()`, because the meter is a decorator one layer up. That is right
+     * for what this is for — `feedStatus`, a document count — and wrong for
+     * anything that walks the corpus, which will make the store look idle while
+     * Vespa is busy. Prefer the `IEventStore` surface for real reads.
      */
     val eventIndex: VespaEventIndex,
     /** Repair tool for the trust view over [eventIndex]; see [reconcileTrust]. */
@@ -73,6 +84,18 @@ class VespaEventStore internal constructor(
 ) : IEventStore by store {
     /** The engine's feed-health status line (bulk-ingest backpressure), for progress/status output. */
     fun feedStatus(): String = eventIndex.feedStatus()
+
+    /**
+     * WHERE THIS STORE'S RESOURCES GO — the structured, cumulative record
+     * behind an operator dashboard. See docs/telemetry.md.
+     *
+     * Counters and gauges, never ratios: a window is the difference between two
+     * snapshots, so a caller may sample this as often as it likes and nothing
+     * is consumed by being read. Pair it with [IngestStats.snapshot] for the
+     * write-path stage split and [IngestStats.blockedSplit] for what ingest was
+     * waiting behind.
+     */
+    fun metrics(): CostLedger.Snapshot = store.metrics.snapshot()
 
     /**
      * Wait until the trust descent may serve pages: the one-time walk that
@@ -118,14 +141,14 @@ class VespaEventStore internal constructor(
      * means a corpus mirrored before its provider lists arrived stays silently
      * unprojected, and every ranked search comes back empty.
      */
-    suspend fun reconcileTrust(onProgress: ((inspected: Int, total: Int, rebuilt: Int, derivedInService: Int) -> Unit)? = null): TrustReconciler.Reconciliation = reconciler.reconcile(onProgress = onProgress)
+    suspend fun reconcileTrust(onProgress: ((inspected: Int, total: Int, rebuilt: Int, derivedInService: Int) -> Unit)? = null): TrustReconciler.Reconciliation = withActivity(Activity.Reconcile) { reconciler.reconcile(onProgress = onProgress) }
 
     /**
      * Re-derive the WHOLE trust view from the stored scores — the operator's
      * hammer, bounded only by the corpus. [reconcileTrust] does the same repair
      * per affected service and normally finds nothing to do.
      */
-    suspend fun rebuildTrust() = reconciler.rebuildAll()
+    suspend fun rebuildTrust() = withActivity(Activity.Reconcile) { reconciler.rebuildAll() }
 
     /**
      * Full audit: does every reputation doc match its 10040+30382 records?
@@ -138,7 +161,7 @@ class VespaEventStore internal constructor(
     suspend fun verifyTrust(
         repair: Boolean = false,
         onProgress: ((subjectsChecked: Int) -> Unit)? = null,
-    ): TrustReconciler.TrustAudit = reconciler.verify(repair, onProgress)
+    ): TrustReconciler.TrustAudit = withActivity(Activity.Reconcile) { reconciler.verify(repair, onProgress) }
 
     /**
      * DELETE the orphan scores: every stored kind-30382 signed by a service no
@@ -157,7 +180,7 @@ class VespaEventStore internal constructor(
     suspend fun sweepOrphanScores(
         dryRun: Boolean = false,
         onProgress: ((servicesDone: Int, totalServices: Int, scoresSwept: Int, totalScores: Int) -> Unit)? = null,
-    ): TrustReconciler.OrphanSweep = reconciler.sweepOrphanScores(dryRun, onProgress)
+    ): TrustReconciler.OrphanSweep = withActivity(Activity.Sweep) { reconciler.sweepOrphanScores(dryRun, onProgress) }
 
     /**
      * The deferred-projection barrier: drain every queued trust reaction so
@@ -263,11 +286,33 @@ class VespaEventStore internal constructor(
              * or `0` disable; unset is on) — see [trustDescentFromEnv].
              */
             trustDescent: Boolean = trustDescentFromEnv(),
+            /**
+             * Capture reads slower than this many milliseconds in the
+             * slow-query ring, or null (the default) to capture none.
+             *
+             * OFF BY DEFAULT because the ring is the one place this store
+             * retains a QUERY STRING, and a query string is user data. An
+             * operator choosing to keep a record of what people searched for
+             * should have to say so rather than discover it. Bounded by the
+             * ring rather than by how many distinct queries exist, so turning
+             * it on cannot grow without limit; observer keys are truncated
+             * where they are captured.
+             */
+            slowQueryThresholdMillis: Long? = null,
         ): VespaEventStore {
             if (autoDeploy) SchemaDeployer(configUrl).deployIfAbsent(url)
-            val eventIndex = VespaEventIndex(url, endpoints = endpoints)
+            val ledger = CostLedger(slowQueryThresholdNanos = slowQueryThresholdMillis?.let { it * 1_000_000 })
+            // The ledger reaches the engine client too: rank profile, docs
+            // matched and Vespa's own timing are only knowable from inside the
+            // thing that speaks to Vespa (docs/telemetry.md §3.5).
+            val eventIndex = VespaEventIndex(url, endpoints = endpoints, ledger = ledger)
             val reputations = VespaReputationIndex(url)
-            val trust = TrustProjection(eventIndex, reputations)
+            // METERED AT THE ENGINE SEAM: everything below this line is what
+            // actually reached Vespa, whichever route asked for it — the
+            // store's own reads, the projection's, a sweep's. Nothing above
+            // needs a call-site timer.
+            val metered = MeteredEventIndex(ledger, eventIndex)
+            val trust = TrustProjection(metered, reputations)
             val store =
                 NostrSemanticsStore(
                     trust,
@@ -276,12 +321,27 @@ class VespaEventStore internal constructor(
                     guardRefreshMillis = guardRefreshSeconds * 1000,
                     searchExpansion = searchExpansion,
                     maxHitsPerAuthor = maxHitsPerAuthor,
+                    metrics = ledger,
                 )
+            // GAUGES: instantaneous, pulled at snapshot time, and read from
+            // their owners rather than mirrored — a queue depth has no
+            // cumulative form and must never be diffed like a counter.
+            ledger.gauge("trust.pending.subjects") { trust.dirt.pendingSubjects() }
+            ledger.gauge("trust.pending.services") { trust.dirt.pendingServices() }
+            ledger.gauge("feed.inflight") { eventIndex.feedInflight() }
+            ledger.gauge("lock.held") { IngestStats.heldAll().size.toLong() }
             // The reconciler's and drainer's mutating batches take the store's
             // writer lock (the gate): repairs must not race live inserts'
             // recomputes.
             val gate: suspend (suspend () -> Unit) -> Unit = { store.withWriteLock(it) }
-            val reconciler = TrustReconciler(eventIndex, reputations, trust.recompute, trust.dirt, gate = gate)
+            // THE METERED INDEX, like everything else that reads through the
+            // port. The reconciler was handed the raw one, so its corpus walks
+            // — the heaviest read this store makes, hundreds of thousands of
+            // cards on a real deployment — landed in no activity at all. An
+            // operator watching the page during a reconcile saw a store doing
+            // nothing while Vespa was busy, which is the exact reading the page
+            // exists to prevent.
+            val reconciler = TrustReconciler(metered, reputations, trust.recompute, trust.dirt, gate = gate)
             val drainScope = if (deferTrustProjection) startDrainer(trust, gate) else null
             // The descent is off until every reputation document carries the
             // scalar it cuts on. One walk, once, in the background — and the
@@ -294,7 +354,7 @@ class VespaEventStore internal constructor(
                     // The walk runs even with the descent switched off: it keeps
                     // the invariant the descent needs, so switching on later is
                     // a restart and not a migration.
-                    val written = MaxRankBackfill(reputations).runUntilDone(BACKFILL_RETRY_MILLIS)
+                    val written = withActivity(Activity.Backfill) { MaxRankBackfill(reputations).runUntilDone(BACKFILL_RETRY_MILLIS) }
                     if (trustDescent) eventIndex.trustDescent = true
                     written
                 }
@@ -325,7 +385,7 @@ class VespaEventStore internal constructor(
             scope.launch {
                 for (wake in signal) {
                     try {
-                        trust.dirt.drain(gate)
+                        withActivity(Activity.Drain) { trust.dirt.drain(gate) }
                         BackgroundFailures.succeeded(BackgroundFailures.TRUST_DRAIN)
                     } catch (e: CancellationException) {
                         throw e

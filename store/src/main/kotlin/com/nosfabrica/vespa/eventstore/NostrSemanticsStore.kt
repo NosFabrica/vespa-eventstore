@@ -27,6 +27,9 @@ import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.forEachBounded
 import com.nosfabrica.vespa.eventstore.engine.mapBounded
+import com.nosfabrica.vespa.eventstore.engine.metrics.Activity
+import com.nosfabrica.vespa.eventstore.engine.metrics.CostLedger
+import com.nosfabrica.vespa.eventstore.engine.metrics.withActivity
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.nosfabrica.vespa.eventstore.ingest.BulkMixedInsert
@@ -154,6 +157,17 @@ class NostrSemanticsStore(
      * making a judgement that a cap can participate in.
      */
     private val maxHitsPerAuthor: Int? = null,
+    /**
+     * WHERE THIS STORE'S RESOURCES GO — see docs/telemetry.md.
+     *
+     * The store owns the ledger rather than receiving one, because it books the
+     * altitude nothing below it can see: ADMISSION OUTCOMES. A duplicate never
+     * reaches [EventIndex], so a decorator down there observes a dedup probe
+     * and the absence of a write, which is not the same statement. The port
+     * calls themselves are counted by `MeteredEventIndex` wrapped around
+     * [index], which `VespaEventStore.open` installs.
+     */
+    val metrics: CostLedger = CostLedger(),
 ) : IEventStore {
     private val writes = Mutex()
 
@@ -237,6 +251,15 @@ class NostrSemanticsStore(
     /** A writer-lock label's two [IngestStats] stage names, interned at construction. */
     private class LockStage(
         name: String,
+        /**
+         * WHICH MUTEX this label takes. Several share one: `lock.gate`,
+         * `lock.ingest.trust`, `lock.sweep.trust` and `lock.reindex.trust` are
+         * all [trustGate]; `lock.ingest`, `lock.sweep` and `lock.reindex` are
+         * all [writes]. The wait attribution matches waiter to holder by THIS,
+         * because matching by label misses every cross-label contention — which
+         * is most of it (docs/telemetry.md §15.1).
+         */
+        val lock: String,
     ) {
         val wait = "$name.wait"
         val hold = "$name.hold"
@@ -266,6 +289,11 @@ class NostrSemanticsStore(
         body: suspend () -> T,
     ): T {
         val requested = System.nanoTime()
+        // WHAT THIS WRITER IS ABOUT TO QUEUE BEHIND, sampled before we block —
+        // the one causal edge in this design. Keyed by the MUTEX, not the stage
+        // label, because several labels share each mutex and a label match
+        // silently attributes nothing (docs/telemetry.md §15.1).
+        val blockedBy = IngestStats.holderOf(stage.lock)?.let { IngestStats.labelOf(it) }
         var acquired = 0L
         try {
             return mutex.withLock {
@@ -275,7 +303,7 @@ class NostrSemanticsStore(
                 // but "the gate is held RIGHT NOW, by this, for this long".
                 // Two volatile writes per critical section, against a section
                 // that is measured in seconds.
-                IngestStats.beginHold(stage.hold)
+                IngestStats.beginHold(stage.hold, lock = stage.lock)
                 try {
                     body()
                 } finally {
@@ -290,8 +318,13 @@ class NostrSemanticsStore(
             // waiting) — nothing to attribute.
             if (acquired != 0L) {
                 val released = System.nanoTime()
-                IngestStats.add(stage.wait, acquired - requested)
+                val waited = acquired - requested
+                IngestStats.add(stage.wait, waited)
                 IngestStats.add(stage.hold, released - acquired)
+                // Only when something was actually holding: an uncontended
+                // acquire waited on nobody, and charging it to a phantom holder
+                // would make the split lie about where contention is.
+                if (blockedBy != null) IngestStats.addBlocked(stage.wait, blockedBy, waited)
             }
         }
     }
@@ -339,7 +372,9 @@ class NostrSemanticsStore(
         body: suspend () -> T,
     ): T = gated(touchesTrust(event), LOCK_INGEST, body = body)
 
-    override suspend fun insert(event: Event) = lockedForWrite(event) { insertLocked(event) }
+    override suspend fun insert(event: Event) = withActivity(Activity.Insert) { insertOne(event) }
+
+    private suspend fun insertOne(event: Event) = lockedForWrite(event) { insertLocked(event) }
 
     /**
      * Run [body] under this store's TRUST writer lock. For the trust
@@ -405,7 +440,18 @@ class NostrSemanticsStore(
      * replays it in order because a deletion may target an event earlier in
      * the same batch, and a kind 5 by id may be pointing at a card.
      */
-    override suspend fun batchInsert(events: List<Event>): List<IEventStore.InsertOutcome> {
+    override suspend fun batchInsert(events: List<Event>): List<IEventStore.InsertOutcome> =
+        withActivity(Activity.BatchInsert) {
+            val outcomes = batchInsertUnder(events)
+            // Every write path already reports a typed outcome per event; this
+            // just keeps the tally. "81% of what this node is offered is
+            // already stored" is what tells an operator to narrow a sync.
+            bookOutcomes(Activity.BatchInsert, outcomes)
+            outcomes
+        }
+
+    /** [batchInsert]'s body; split because `withActivity` cannot express a non-local return. */
+    private suspend fun batchInsertUnder(events: List<Event>): List<IEventStore.InsertOutcome> {
         if (events.any { it is DeletionEvent || it is RequestToVanishEvent }) {
             return lockedForBatch(events) { if (events.size < BULK_MIN) events.map { tryInsertLocked(it) } else bulkMixed.run(events) }
         }
@@ -440,6 +486,38 @@ class NostrSemanticsStore(
         return gated(trust, LOCK_INGEST) { bulkRecords.commit(plan) }
     }
 
+    /**
+     * Tally a batch's typed outcomes onto the outcomes altitude.
+     *
+     * TALLIED LOCALLY FIRST, then booked once per distinct reason. A batch is
+     * overwhelmingly one reason — a mirroring relay's is ~99% duplicates — so
+     * per-event booking paid two `computeIfAbsent` lookups 20,000 times to
+     * reach a handful of counters (measured: 63.2 ns/event against 33.3 ns
+     * batched).
+     */
+    private fun bookOutcomes(
+        activity: Activity,
+        outcomes: List<IEventStore.InsertOutcome>,
+    ) {
+        if (outcomes.isEmpty()) return
+        val tally = HashMap<String, Long>(4)
+        for (o in outcomes) {
+            val reason =
+                when (o) {
+                    is IEventStore.InsertOutcome.Accepted -> CostLedger.ADMITTED
+
+                    is IEventStore.InsertOutcome.Rejected -> Rejections.reasonOf(o.reason)
+
+                    // A transient engine failure, not a semantic verdict. Kept
+                    // separate from the rejection reasons so a broken engine can
+                    // never read as a corpus full of duplicates.
+                    else -> OUTCOME_FAILED
+                }
+            tally[reason] = (tally[reason] ?: 0L) + 1L
+        }
+        tally.forEach { (reason, n) -> metrics.outcome(activity, reason, n) }
+    }
+
     private suspend fun tryInsertLocked(event: Event): IEventStore.InsertOutcome =
         try {
             insertLocked(event)
@@ -452,15 +530,16 @@ class NostrSemanticsStore(
         }
 
     /** No rollback: buffered inserts apply in order; the first rejection propagates and aborts the rest. */
-    override suspend fun transaction(body: IEventStore.ITransaction.() -> Unit) {
-        val buffered = ArrayList<Event>()
-        object : IEventStore.ITransaction {
-            override fun insert(event: Event) {
-                buffered += event
-            }
-        }.body()
-        lockedForBatch(buffered) { buffered.forEach { insertLocked(it) } }
-    }
+    override suspend fun transaction(body: IEventStore.ITransaction.() -> Unit) =
+        withActivity(Activity.BatchInsert) {
+            val buffered = ArrayList<Event>()
+            object : IEventStore.ITransaction {
+                override fun insert(event: Event) {
+                    buffered += event
+                }
+            }.body()
+            lockedForBatch(buffered) { buffered.forEach { insertLocked(it) } }
+        }
 
     /**
      * The per-event rules with NO lock and NO lock accounting: the caller
@@ -612,7 +691,11 @@ class NostrSemanticsStore(
      * asked for.
      */
     @Suppress("UNCHECKED_CAST")
-    override suspend fun <T : Event> query(filters: List<Filter>): List<T> {
+    override suspend fun <T : Event> query(filters: List<Filter>): List<T> = withActivity(Activity.Query) { queryUnder(filters) }
+
+    /** [query]'s body; split for the reason [batchInsertUnder] is. */
+    @Suppress("UNCHECKED_CAST")
+    private suspend fun <T : Event> queryUnder(filters: List<Filter>): List<T> {
         val observer = coroutineContext[StoreQueryContext]?.observer
         val cutoff = nowSecs()
         val queries = lensed(filters.mapNotNull { it.toExpiryQuery(cutoff, observer) })
@@ -1068,7 +1151,7 @@ class NostrSemanticsStore(
     override suspend fun rawQuery(
         filters: List<Filter>,
         onEach: (RawEvent) -> Unit,
-    ) {
+    ) = withActivity(Activity.Query) {
         val observer = coroutineContext[StoreQueryContext]?.observer
         val cutoff = nowSecs()
         val queries = lensed(filters.mapNotNull { it.toExpiryQuery(cutoff, observer) })
@@ -1119,7 +1202,10 @@ class NostrSemanticsStore(
      */
     override suspend fun count(filter: Filter): Int = count(listOf(filter))
 
-    override suspend fun count(filters: List<Filter>): Int {
+    override suspend fun count(filters: List<Filter>): Int = withActivity(Activity.Count) { countUnder(filters) }
+
+    /** [count]'s body; split for the reason [batchInsertUnder] is. */
+    private suspend fun countUnder(filters: List<Filter>): Int {
         val observer = coroutineContext[StoreQueryContext]?.observer
         val cutoff = nowSecs()
         val queries =
@@ -1227,6 +1313,15 @@ class NostrSemanticsStore(
          */
         unconditional: Boolean = false,
         where: (List<String>) -> Boolean = { true },
+    ): Set<String> = withActivity(Activity.Query) { distinctTagValuesUnder(filter, tagName, valueIndex, unconditional, where) }
+
+    /** [distinctTagValues]'s body; split for the reason [batchInsertUnder] is. */
+    private suspend fun distinctTagValuesUnder(
+        filter: Filter,
+        tagName: String,
+        valueIndex: Int,
+        unconditional: Boolean,
+        where: (List<String>) -> Boolean,
     ): Set<String> {
         val q = filter.toExpiryQuery(nowSecs()) ?: return emptySet()
         // THE FAST PATH, and every one of these conditions is load-bearing.
@@ -1272,6 +1367,13 @@ class NostrSemanticsStore(
      * a mirror has.
      */
     override suspend fun snapshotIdsForNegentropy(
+        filters: List<Filter>,
+        maxEntries: Int?,
+        onProgress: ((collected: Int) -> Unit)?,
+    ): List<IdAndTime> = withActivity(Activity.Snapshot) { snapshotUnder(filters, maxEntries, onProgress) }
+
+    /** [snapshotIdsForNegentropy]'s body; split for the reason [batchInsertUnder] is. */
+    private suspend fun snapshotUnder(
         filters: List<Filter>,
         maxEntries: Int?,
         onProgress: ((collected: Int) -> Unit)?,
@@ -1326,7 +1428,10 @@ class NostrSemanticsStore(
      * Cheap where it matters: a sweep is periodic, not the client write path
      * the gate split exists to keep clear.
      */
-    override suspend fun delete(filters: List<Filter>) {
+    override suspend fun delete(filters: List<Filter>) = withActivity(Activity.Delete) { deleteUnder(filters) }
+
+    /** [delete]'s body; split for the reason [batchInsertUnder] is. */
+    private suspend fun deleteUnder(filters: List<Filter>) {
         // An EMPTY filter deletes NOTHING (STORE-F10, the reference's deliberate
         // asymmetry with query): as a query it means "everything", and a stray
         // one here would sweep the corpus 10k at a time until the round cap
@@ -1338,12 +1443,13 @@ class NostrSemanticsStore(
         }
     }
 
-    override suspend fun deleteExpiredEvents() {
-        // expiresBefore is strict (<): +1 makes "expires exactly now" due, per NIP-40.
-        // Both locks, for the reason on [delete]: NIP-40 expiry does not ask
-        // what kind it is reaping, so it can reap cards.
-        gated(trust = true, LOCK_SWEEP, LOCK_SWEEP_TRUST) { deletions.sweep(EventQuery(expiresBefore = nowSecs() + 1)) }
-    }
+    override suspend fun deleteExpiredEvents() =
+        withActivity(Activity.Delete) {
+            // expiresBefore is strict (<): +1 makes "expires exactly now" due, per NIP-40.
+            // Both locks, for the reason on [delete]: NIP-40 expiry does not ask
+            // what kind it is reaping, so it can reap cards.
+            gated(trust = true, LOCK_SWEEP, LOCK_SWEEP_TRUST) { deletions.sweep(EventQuery(expiresBefore = nowSecs() + 1)) }
+        }
 
     // ---- full-text reindex --------------------------------------------------
 
@@ -1383,13 +1489,14 @@ class NostrSemanticsStore(
      *     with byte-identical content (verified). This method cannot be that
      *     re-feed, by the drift check above.
      */
-    override suspend fun reindexFullTextSearch() {
-        var cursor: String? = null
-        do {
-            val progress = reindexFullTextSearch(cursor)
-            cursor = progress.cursor
-        } while (!progress.done)
-    }
+    override suspend fun reindexFullTextSearch() =
+        withActivity(Activity.Reconcile) {
+            var cursor: String? = null
+            do {
+                val progress = reindexFullTextSearch(cursor)
+                cursor = progress.cursor
+            } while (!progress.done)
+        }
 
     /**
      * Resumable batch: one page of the engine's document walk, with the walk's
@@ -1456,7 +1563,7 @@ class NostrSemanticsStore(
      * instead of interval-bound. Costs one distinct-author scan per guard kind;
      * union-only, so it can never unflag an owner.
      */
-    suspend fun refreshGuardOwners() = guards.refresh()
+    suspend fun refreshGuardOwners() = withActivity(Activity.GuardRefresh) { guards.refresh() }
 
     override fun close() {
         // Before the index its background walks read through goes away.
@@ -1465,6 +1572,15 @@ class NostrSemanticsStore(
     }
 
     private companion object {
+        /** The [writes] mutex, as the wait attribution names it. */
+        const val WRITE_LOCK = "writes"
+
+        /** The [trustGate] mutex, as the wait attribution names it. */
+        const val TRUST_GATE = "trustGate"
+
+        /** The outcome key for an insert that failed on the ENGINE rather than on a rule. */
+        const val OUTCOME_FAILED = "failed"
+
         /**
          * Writer-lock stage labels, named for the CALLER rather than the
          * operation: these exist to say which side of the contention a stall is
@@ -1472,17 +1588,17 @@ class NostrSemanticsStore(
          * label, since `insert()` takes this lock per event and a String
          * allocation is not what a measurement should cost.
          */
-        val LOCK_INGEST = LockStage("lock.ingest")
-        val LOCK_GATE = LockStage("lock.gate")
+        val LOCK_INGEST = LockStage("lock.ingest", WRITE_LOCK)
+        val LOCK_GATE = LockStage("lock.gate", TRUST_GATE)
 
         /** A trust-relevant insert queueing for [trustGate] — see [touchesTrust]. */
-        val LOCK_INGEST_TRUST = LockStage("lock.ingest.trust")
-        val LOCK_SWEEP = LockStage("lock.sweep")
-        val LOCK_REINDEX = LockStage("lock.reindex")
+        val LOCK_INGEST_TRUST = LockStage("lock.ingest.trust", TRUST_GATE)
+        val LOCK_SWEEP = LockStage("lock.sweep", WRITE_LOCK)
+        val LOCK_REINDEX = LockStage("lock.reindex", WRITE_LOCK)
 
         /** A sweep's / a reindex page's wait for the trust gate, apart from ingest's — different holders, different remedies. */
-        val LOCK_SWEEP_TRUST = LockStage("lock.sweep.trust")
-        val LOCK_REINDEX_TRUST = LockStage("lock.reindex.trust")
+        val LOCK_SWEEP_TRUST = LockStage("lock.sweep.trust", TRUST_GATE)
+        val LOCK_REINDEX_TRUST = LockStage("lock.reindex.trust", TRUST_GATE)
 
         /** Batches this size or larger take the bulk path; smaller ones aren't worth its setup. */
         const val BULK_MIN = 16

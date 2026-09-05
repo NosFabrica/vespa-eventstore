@@ -29,6 +29,8 @@ import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.ScoredHit
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.mapBounded
+import com.nosfabrica.vespa.eventstore.engine.metrics.CostLedger
+import com.nosfabrica.vespa.eventstore.engine.metrics.currentActivity
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventSelection
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
@@ -108,6 +110,17 @@ class VespaEventIndex(
     /** Window-plan bare recency scans via count probes; `VESPA_QUERY_PLANNER=0` disables. See [RecencyPlanner]. */
     private val queryPlanning: Boolean =
         System.getenv("VESPA_QUERY_PLANNER")?.let { it != "0" && !it.equals("false", ignoreCase = true) } ?: true,
+    /**
+     * WHERE ENGINE-LEVEL COST IS PUBLISHED, or null to publish none.
+     *
+     * The rank profile, the documents matched and Vespa's own timing split are
+     * knowable only here: a port decorator sees an `EventQuery`, not the
+     * profile `EventYql` compiled it into, and `totalCount` and coverage live
+     * in the response. That is the correct split rather than a compromise —
+     * port-level metering stays engine-agnostic and works for
+     * `InMemoryEventIndex`, which has no rank profiles at all.
+     */
+    private val ledger: CostLedger? = null,
 ) : EventIndex {
     private val urls: List<String> = endpoints.ifEmpty { listOf(baseUrl) }.map { it.trimEnd('/') }
 
@@ -1154,6 +1167,10 @@ class VespaEventIndex(
                 put("yql", vq.yql)
                 put("hits", hits.toString())
                 put("ranking", vq.ranking)
+                // Vespa's own split of the time it spent. Asked for only when
+                // somebody is listening, so a store with no ledger sends the
+                // byte-identical request it always did.
+                if (ledger != null) put("presentation.timing", "true")
                 vq.params.forEach { (k, v) -> put(k, v) }
             }.toString()
         // A busy engine sheds load transiently (504 under heavy concurrent
@@ -1173,28 +1190,138 @@ class VespaEventIndex(
     private suspend fun searchRoot(
         vq: VespaQuery,
         hits: Int,
-    ): SearchRoot =
-        VESPA_JSON
-            .decodeFromString<SearchEnvelope>(queryBody(vq, hits))
-            .root
-            .also {
-                it.coverage.requireComplete(allowMatchPhase = vq.ranking == EventYql.RANK_RECENCY || vq.ranking == EventYql.RANK_RECENCY_GATED)
-                if (vq.complete) it.requireEverything()
-            }
+    ): SearchRoot {
+        val t0 = if (ledger?.slowQueryThresholdNanos != null) System.nanoTime() else 0L
+        val envelope = VESPA_JSON.decodeFromString<SearchEnvelope>(queryBody(vq, hits))
+        val root = envelope.root
+        // Published BEFORE the coverage check, deliberately: a degraded answer
+        // is the one an operator most wants to see in the numbers, and
+        // requireComplete throws.
+        publish(vq, root, envelope.timing)
+        captureSlow(vq, t0, envelope.timing, root.children.size.toLong(), root.fields.totalCount.toLong())
+        root.coverage.requireComplete(allowMatchPhase = vq.ranking == EventYql.RANK_RECENCY || vq.ranking == EventYql.RANK_RECENCY_GATED)
+        if (vq.complete) root.requireEverything()
+        return root
+    }
+
+    /** Book one engine query against the ledger, keyed by the rank profile that priced it. */
+    private fun publish(
+        vq: VespaQuery,
+        root: SearchRoot,
+        timing: VespaTiming?,
+    ) {
+        val l = ledger ?: return
+        l.engineQuery(
+            profile = vq.ranking,
+            engineNanos = timing?.totalNanos() ?: 0L,
+            summaryNanos = timing?.summaryNanos() ?: 0L,
+            docsMatched = root.fields.totalCount.toLong(),
+            hitsServed = root.children.size.toLong(),
+            degraded = !root.coverage.undegraded,
+        )
+    }
 
     /** The grouping/count paths need the full tree; [searchRoot] does not (it decodes hits directly). */
     private suspend fun queryRoot(
         vq: VespaQuery,
         hits: Int,
-    ): JsonObject? =
-        Json
-            .parseToJsonElement(queryBody(vq, hits))
-            .jsonObject["root"]
+    ): JsonObject? {
+        val t0 = if (ledger?.slowQueryThresholdNanos != null) System.nanoTime() else 0L
+        val text = queryBody(vq, hits)
+        val envelope = Json.parseToJsonElement(text).jsonObject
+        // Published here too, not just in [searchRoot]. COUNT and the
+        // distinct-author grouping come through this path, so without it a
+        // NIP-45 count was invisible in the engine altitude while still paying
+        // for the `presentation.timing` it asked for and threw away.
+        publishGrouping(vq, envelope)
+        captureSlow(
+            vq,
+            t0,
+            envelope["timing"]?.let { runCatching { VESPA_JSON.decodeFromJsonElement(VespaTiming.serializer(), it) }.getOrNull() },
+            hitsServed = 0L,
+            docsMatched =
+                (
+                    envelope["root"]
+                        ?.jsonObject
+                        ?.get("fields")
+                        ?.jsonObject
+                        ?.get("totalCount") as? JsonPrimitive
+                )?.content?.toLongOrNull() ?: 0L,
+        )
+        return envelope["root"]
             ?.jsonObject
             ?.also { root -> root["coverage"]?.let { VESPA_JSON.decodeFromJsonElement(SearchCoverage.serializer(), it) }?.requireComplete() }
+    }
+
+    /** [publish] for the grouping/count shape, whose tree is walked generically rather than decoded into [SearchRoot]. */
+    private fun publishGrouping(
+        vq: VespaQuery,
+        envelope: JsonObject,
+    ) {
+        val l = ledger ?: return
+        val timing = envelope["timing"]?.let { runCatching { VESPA_JSON.decodeFromJsonElement(VespaTiming.serializer(), it) }.getOrNull() }
+        val fields = envelope["root"]?.jsonObject?.get("fields")?.jsonObject
+        val matched = (fields?.get("totalCount") as? JsonPrimitive)?.content?.toLongOrNull() ?: 0L
+        l.engineQuery(
+            profile = vq.ranking,
+            engineNanos = timing?.totalNanos() ?: 0L,
+            summaryNanos = timing?.summaryNanos() ?: 0L,
+            docsMatched = matched,
+            hitsServed = 0L,
+            degraded = false,
+        )
+    }
+
+    /**
+     * Capture this engine call in the slow-read ring, if it beat the store's
+     * threshold.
+     *
+     * AT THIS ALTITUDE because this is where the fields exist: the rank profile
+     * that priced the query, Vespa's own split of its time, and how much it
+     * matched against how much it served. The store above knows the wall clock
+     * of the whole read and nothing about which of its engine calls was the
+     * slow one; the histograms already carry that whole-read distribution.
+     *
+     * A SLOW READ IS THEREFORE A SLOW ENGINE CALL, not a slow `query()` — the
+     * page says so, and it is the more actionable of the two: one REQ fans out
+     * into companion queries and admission probes, and "which one" is the
+     * question a 4-second search leaves you with.
+     *
+     * [t0] of 0 means the store keeps no ring; this then costs one comparison.
+     */
+    private suspend fun captureSlow(
+        vq: VespaQuery,
+        t0: Long,
+        timing: VespaTiming?,
+        hitsServed: Long,
+        docsMatched: Long,
+    ) {
+        if (t0 == 0L) return
+        val l = ledger ?: return
+        val wall = System.nanoTime() - t0
+        // Checked here as well as inside `slowRead`, so a fast query does not
+        // pay the coroutine-context read that names the activity.
+        if (wall < (l.slowQueryThresholdNanos ?: return)) return
+        l.slowRead(
+            activity = currentActivity(),
+            profile = vq.ranking,
+            wallNanos = wall,
+            engineNanos = timing?.totalNanos() ?: 0L,
+            summaryNanos = timing?.summaryNanos() ?: 0L,
+            hits = hitsServed,
+            docsMatched = docsMatched,
+            // The YQL, bounded. It is the query, which is what makes this row
+            // worth keeping and also what makes the whole ring client data —
+            // the store keeps none of it unless an operator sets a threshold.
+            detail = vq.yql.take(SLOW_DETAIL_CHARS),
+        )
+    }
 
     /** One-line feed-client health for status lines; see [VespaFeed.statusLine]. */
     fun feedStatus(): String = feed.statusLine()
+
+    /** Feed operations in flight right now — the gauge behind a backpressure tile. */
+    fun feedInflight(): Long = feed.inflight()
 
     /** Graceful: waits for in-flight feed operations before closing the connections. */
     override fun close() = feed.close()
@@ -1202,6 +1329,13 @@ class VespaEventIndex(
     internal companion object {
         /** Concurrent document-API gets for a pure-id lookup. Gets are light (no summary stage to overrun), so this floats above QUERY_FANOUT. */
         const val ID_GET_FANOUT = 32
+
+        /**
+         * How much of a slow read's YQL is kept. Bounded because the ring is
+         * bounded in ROWS and a YQL with a thousand ids in it would make the
+         * ring's memory a function of the query rather than of the ring.
+         */
+        const val SLOW_DETAIL_CHARS = 400
 
         /**
          * Extra hits a limit'd recency recall asks for beyond its limit, so

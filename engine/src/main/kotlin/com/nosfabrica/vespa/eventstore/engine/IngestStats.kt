@@ -125,6 +125,22 @@ object IngestStats {
         val stage: String,
         val sinceNanos: Long,
         val detail: String?,
+        /**
+         * WHICH MUTEX this hold is on, which is not the same as [stage].
+         *
+         * Several stage labels share one mutex: `lock.gate`,
+         * `lock.ingest.trust`, `lock.sweep.trust` and `lock.reindex.trust` are
+         * all the trust gate; `lock.ingest`, `lock.sweep` and `lock.reindex`
+         * are all the write lock. Keying the HOLD by stage is right — a mutex
+         * has one holder, so the labels never collide — but matching a WAITER
+         * to its holder by label misses whenever the two took the same mutex
+         * under different names, which is the common case.
+         *
+         * Found on a real corpus (docs/telemetry.md §15.1): 7.4 s of measured
+         * gate wait attributed to nobody, because every waiter arrived under a
+         * different label than the holder. Empty when a caller does not say.
+         */
+        val lock: String = "",
     ) {
         fun heldForMillis(): Long = (System.nanoTime() - sinceNanos) / 1_000_000
     }
@@ -135,8 +151,9 @@ object IngestStats {
     fun beginHold(
         stage: String,
         detail: String? = null,
+        lock: String = "",
     ) {
-        held[stage] = Held(stage, System.nanoTime(), detail)
+        held[stage] = Held(stage, System.nanoTime(), detail, lock)
     }
 
     /**
@@ -148,7 +165,7 @@ object IngestStats {
      * is what all of them are held for.
      */
     fun annotateHold(detail: String) {
-        held.replaceAll { _, h -> Held(h.stage, h.sinceNanos, detail) }
+        held.replaceAll { _, h -> Held(h.stage, h.sinceNanos, detail, h.lock) }
     }
 
     /** Called on release of the lock booked under [stage]. Tolerates a missing begin — an unmatched end is a no-op, never a wrong holder. */
@@ -161,6 +178,56 @@ object IngestStats {
 
     /** Every lock held right now, longest first. */
     fun heldAll(): List<Held> = held.values.sortedBy { it.sinceNanos }
+
+    /** The most specific label a hold can offer: what it is doing, else which lock it is. */
+    fun labelOf(h: Held): String = h.detail ?: h.stage
+
+    /**
+     * WHO HOLDS THE MUTEX NAMED [lock] RIGHT NOW — the causal edge, for the
+     * price of scanning a map that never has more than a couple of entries.
+     *
+     * A waiter can read this BEFORE it blocks, because the lock helper captures
+     * its request timestamp before entering the mutex. That turns `lock.*.wait`
+     * from a scalar ("ingest waited 41 s", which only prompts a question) into
+     * an attribution ("1.77 s of it behind `derive 499 subject(s) in 10
+     * chunk(s)`", which names a fix).
+     *
+     * KEYED BY THE MUTEX, not the stage label — see [Held.lock].
+     *
+     * FIRST-HOLDER ATTRIBUTION, and a reader should know it: over a long wait
+     * the lock may change hands several times, and all of that wait is charged
+     * to whoever held it when the waiter arrived. For the case this exists to
+     * catch — one pathological holder stalling everyone — that is exactly
+     * right; for a uniformly busy queue it over-attributes to the head.
+     */
+    fun holderOf(lock: String): Held? = held.values.filter { it.lock == lock }.minByOrNull { it.sinceNanos }
+
+    private val blocked = ConcurrentHashMap<String, ConcurrentHashMap<String, AtomicLong>>()
+
+    /** Book [nanos] of [waitStage] as time spent behind [holder]. */
+    fun addBlocked(
+        waitStage: String,
+        holder: String,
+        nanos: Long,
+    ) {
+        blocked
+            .computeIfAbsent(waitStage) { ConcurrentHashMap() }
+            .computeIfAbsent(holder) { AtomicLong() }
+            .addAndGet(nanos)
+    }
+
+    /** Wait time per lock stage, split by what was holding when the waiter arrived. */
+    fun blockedSplit(): Map<String, Map<String, Long>> = blocked.mapValues { (_, row) -> row.mapValues { it.value.get() } }
+
+    /** Test seam: forget every stage, hold and attribution. */
+    fun reset() {
+        stages.clear()
+        calls.clear()
+        maxima.clear()
+        lastSeen.clear()
+        held.clear()
+        blocked.clear()
+    }
 
     /**
      * The structured read the formatted ones should have been. Cumulative and
