@@ -39,4 +39,21 @@ internal object Rejections {
     // One constant string, not one per field/code point: callers tally
     // rejections by reason, and a per-event reason fragments that tally.
     const val UNSTORABLE_TEXT = "blocked: text carries a code point the engine cannot store"
+
+    /** Every reason this store can produce — the CLOSED set the outcome tally is keyed by. */
+    val ALL: List<String> = listOf(EXPIRED, DUPLICATE, DELETED, VANISHED, REPLACED, INSERT_FAILED, UNSTORABLE_TEXT)
+
+    /**
+     * The closed-set reason a rejection [message] belongs to.
+     *
+     * Reasons are PREFIXES with per-event detail after them ("duplicate: <id>"),
+     * so the raw message is unbounded and tallying by it would key a counter by
+     * event id — exactly the cardinality leak docs/telemetry.md §4 forbids.
+     * This folds each message back onto the constant it started as; anything
+     * unrecognised becomes [INSERT_FAILED] rather than a new key.
+     */
+    fun reasonOf(message: String?): String {
+        if (message == null) return INSERT_FAILED
+        return ALL.firstOrNull { message.startsWith(it) } ?: INSERT_FAILED
+    }
 }

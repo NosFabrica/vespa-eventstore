@@ -137,6 +137,22 @@ internal class DirtLedger(
      */
     private val pending = AtomicReference<Stamped?>(null)
 
+    /**
+     * Subjects queued for re-derivation, right now — the backlog GAUGE behind
+     * an operator page. Instantaneous: never diffed between snapshots the way a
+     * counter is, because a queue depth has no cumulative form.
+     *
+     * Reads [pending] directly, which is safe precisely because the ledger went
+     * lock-free: an `AtomicReference` is publication enough for a snapshot
+     * thread that holds none of this ledger's locks. Back when this was a plain
+     * `var` the gauge had to be mirrored into a volatile field by the owner;
+     * that mirror is gone, and this is the better shape.
+     */
+    fun pendingSubjects(): Long = (pending.get()?.subjects?.size ?: 0).toLong()
+
+    /** Services queued for a re-walk, right now — a gauge, like [pendingSubjects]. */
+    fun pendingServices(): Long = (pending.get()?.services?.size ?: 0).toLong()
+
     /** The stamp source; every add takes the next one. */
     private val stamps = AtomicLong()
 

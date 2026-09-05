@@ -111,8 +111,12 @@ object EventStoreBenchmark {
             val band = System.getenv("BENCH_ID_BAND")?.toLongOrNull(16) ?: 0xE0L
             val events = NostrCorpus.generate(NostrCorpus.Config(size = n, seed = seed + 31, idBand = band))
             Backends.openVespa(vespaUrl).use { store ->
+                // The one legitimate use of the destructive reader: this
+                // process is its ONLY consumer, and it wants exactly the
+                // consume-and-reset behaviour to zero the deltas before timing.
+                @Suppress("DEPRECATION")
                 com.nosfabrica.vespa.eventstore.engine.IngestStats
-                    .statusLine() // reset the deltas
+                    .statusLine()
                 val nanos =
                     kotlin.system.measureNanoTime {
                         runBlocking { events.chunked(batch).forEach { store.batchInsert(it) } }

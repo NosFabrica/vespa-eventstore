@@ -24,6 +24,8 @@ import com.nosfabrica.vespa.eventstore.BackgroundFailures
 import com.nosfabrica.vespa.eventstore.DEFAULT_GUARD_REFRESH_MILLIS
 import com.nosfabrica.vespa.eventstore.WriterTopology
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
+import com.nosfabrica.vespa.eventstore.engine.metrics.Activity
+import com.nosfabrica.vespa.eventstore.engine.metrics.withActivity
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
@@ -251,7 +253,13 @@ internal class GuardOwners(
             while (isActive) {
                 delay(refreshMillis)
                 try {
-                    refresh()
+                    // Declared HERE and not only on the public
+                    // `refreshGuardOwners()`: this loop calls `refresh()`
+                    // directly, so without it a full-corpus distinct-author
+                    // scan per guard kind books to Activity.Other — the
+                    // "nobody declared" bucket — which is exactly the kind of
+                    // background cost the attribution exists to name.
+                    withActivity(Activity.GuardRefresh) { refresh() }
                     BackgroundFailures.succeeded(BackgroundFailures.GUARD_REFRESH)
                 } catch (e: CancellationException) {
                     throw e
