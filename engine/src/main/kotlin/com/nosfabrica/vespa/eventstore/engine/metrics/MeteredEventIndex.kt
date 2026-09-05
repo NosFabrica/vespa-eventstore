@@ -101,6 +101,69 @@ class MeteredEventIndex(
         }
     }
 
+    /**
+     * [meterResult], plus WHO AND WHAT this call was for.
+     *
+     * The read shapes are the only ones that carry a lens and terms, and this
+     * is the altitude that has both the query and its cost — which is what
+     * makes the weight meaningful: the sketches answer "what is driving the
+     * load", and load is time, not popularity. A cheap query that ran a
+     * thousand times and one that took four seconds are different problems,
+     * and weighting by calls would rank them the same way.
+     *
+     * Rounded up to a millisecond so a sub-millisecond call still registers as
+     * one unit rather than vanishing from a list of what the store is spending
+     * its time on.
+     */
+    private suspend inline fun <T> meterQuery(
+        call: PortCall,
+        query: EventQuery,
+        body: () -> T,
+        size: (T) -> Long,
+    ): T {
+        val activity = currentActivity()
+        val t0 = System.nanoTime()
+        var docs = 0L
+        try {
+            val out = body()
+            docs = size(out)
+            return out
+        } finally {
+            val took = System.nanoTime() - t0
+            ledger.port(activity, call, took, docs)
+            bookLoad(query, took)
+        }
+    }
+
+    /**
+     * Charge this call's time to the lens and the terms that asked for it.
+     *
+     * THE FORBIDDEN DIMENSION, BOUNDED. An observer pubkey and a search term
+     * are both unbounded key spaces, which is exactly what a metric label may
+     * never be; a weighted Space-Saving sketch keeps the heavy hitters in a
+     * fixed number of slots and forgets the tail, so the memory is the sketch's
+     * and not the traffic's. Both sketches are read out only where an operator
+     * has asked for client-derived sections.
+     *
+     * The terms are the SANITIZED ones the query carries, not the client's raw
+     * search string: the extensions (`observer:`, `sort:`, `include:spam`)
+     * have already been taken out of it, so a lens does not also land in the
+     * term list under its own name.
+     */
+    private fun bookLoad(
+        query: EventQuery,
+        nanos: Long,
+    ) {
+        val weight = maxOf(1L, nanos / 1_000_000)
+        query.observer?.let { ledger.byObserver.add(it, weight) }
+        val terms = query.search ?: return
+        // Distinct, so a term repeated inside one query is not charged twice
+        // for one call's worth of work.
+        for (term in terms.split(' ', '\t', '\n').filter { it.isNotEmpty() }.distinct()) {
+            ledger.byTerm.add(term, weight)
+        }
+    }
+
     override suspend fun get(id: String): EventDoc? = meterResult(PortCall.Get, { inner.get(id) }, { if (it == null) 0L else 1L })
 
     override suspend fun put(doc: EventDoc) = meter(PortCall.Put, 1) { inner.put(doc) }
@@ -113,17 +176,17 @@ class MeteredEventIndex(
 
     override suspend fun removeDocs(docs: List<EventDoc>) = meter(PortCall.Remove, docs.size.toLong()) { inner.removeDocs(docs) }
 
-    override suspend fun search(query: EventQuery): List<EventDoc> = meterResult(PortCall.Search, { inner.search(query) }, { it.size.toLong() })
+    override suspend fun search(query: EventQuery): List<EventDoc> = meterQuery(PortCall.Search, query, { inner.search(query) }, { it.size.toLong() })
 
-    override suspend fun rawSearch(query: EventQuery): List<RawEvent> = meterResult(PortCall.Search, { inner.rawSearch(query) }, { it.size.toLong() })
+    override suspend fun rawSearch(query: EventQuery): List<RawEvent> = meterQuery(PortCall.Search, query, { inner.rawSearch(query) }, { it.size.toLong() })
 
-    override suspend fun searchRanked(query: EventQuery): List<Ranked<EventDoc>> = meterResult(PortCall.Search, { inner.searchRanked(query) }, { it.size.toLong() })
+    override suspend fun searchRanked(query: EventQuery): List<Ranked<EventDoc>> = meterQuery(PortCall.Search, query, { inner.searchRanked(query) }, { it.size.toLong() })
 
-    override suspend fun rawSearchRanked(query: EventQuery): List<Ranked<RawEvent>> = meterResult(PortCall.Search, { inner.rawSearchRanked(query) }, { it.size.toLong() })
+    override suspend fun rawSearchRanked(query: EventQuery): List<Ranked<RawEvent>> = meterQuery(PortCall.Search, query, { inner.rawSearchRanked(query) }, { it.size.toLong() })
 
     override suspend fun existingIds(ids: List<String>): Set<String> = meter(PortCall.Exists, ids.size.toLong()) { inner.existingIds(ids) }
 
-    override suspend fun count(query: EventQuery): Int = meter(PortCall.Count, 1) { inner.count(query) }
+    override suspend fun count(query: EventQuery): Int = meterQuery(PortCall.Count, query, { inner.count(query) }, { 1L })
 
     override suspend fun countByAuthor(query: EventQuery): Map<String, Int> = meterResult(PortCall.Group, { inner.countByAuthor(query) }, { it.size.toLong() })
 

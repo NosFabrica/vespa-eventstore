@@ -1119,3 +1119,83 @@ trust projection deriving 499 contact cards in 10 chunks* — the annotation the
 holder wrote about itself from inside its own critical section. It is the
 24-minute `proj.fetch` mystery of §7, reproduced on real data and attributed
 without anyone having to guess.
+
+---
+
+## 16. Two sections nothing produced
+
+Everything above was written, tested and audited before a single byte of it was
+ever *served to a page*. Wiring it into the relay's own operator page
+(`vespa-relay`, `/pulse.html`) — feeding a real staging corpus through a real
+relay into a real Vespa and then reading the document back — found a defect no
+test here could have.
+
+**`topObservers`, `topTerms` and `slowReads` were always empty.** The sketches
+were built (§11.2), bounded, unit-tested against their own formal guarantee, and
+published in the snapshot. The slow-read ring was built (§10.5), bounded,
+threshold-gated, and published in the snapshot. **Nothing called
+`byObserver.add`, `byTerm.add` or `slowRead(…)`.** Every piece passed on its own
+and the join between them did not exist.
+
+The §14 audit missed it because it asked the right question about the wrong
+half: it checked that every *entry point* declared an activity — and found four
+that did not — but never asked whether every *published member* had a producer.
+Those are different questions, and only the second one catches a section that is
+correct, cheap, well-tested and permanently empty. The tell was available and
+unread, exactly as it was in §14.1: a `grep` for the writer of each snapshot
+field would have returned nothing for three of them.
+
+### 16.1 Where each one belongs
+
+Both producers were placed at the altitude that already holds the data, not at
+the one that happened to be convenient.
+
+**The sketches go in the port decorator.** `MeteredEventIndex` already times
+every call and already receives the `EventQuery`, which carries the resolved
+`observer` and the *sanitized* search terms — the extensions are already out of
+it, so a lens cannot also land in the term list under its own name. Charging
+there means one seam covers `search`, `rawSearch`, `searchRanked`,
+`rawSearchRanked` and `count`, including the companion queries and admission
+probes a single REQ fans out into, which is right: those are load the lens
+caused.
+
+The weight is **time, not calls** — milliseconds, rounded up so a sub-millisecond
+read still registers as one unit. This matters more than it looks. A cheap query
+run a thousand times and one four-second query are different problems, and
+weighting by call count ranks them identically; the sketch exists to say where
+the *resources* went.
+
+**The slow-read ring goes in the Vespa client.** `SlowRead` wants the rank
+profile, Vespa's own split of its time, and docs matched against hits served —
+every one of which exists in `searchRoot`/`queryRoot` and none of which exists
+in the store above. The consequence is a definition worth stating plainly on the
+page: **a slow read is a slow engine call, not a slow `query()`**. That is the
+more actionable of the two. One REQ fans out into companions and probes, and
+"which of them was the slow one" is precisely the question a four-second search
+leaves an operator with; the whole-read distribution is already in the port
+histograms.
+
+The threshold is checked twice — once in `captureSlow` before the coroutine
+context is read to name the activity, once inside `slowRead` — so a fast query
+pays one comparison and nothing else.
+
+### 16.2 What it costs
+
+Nothing new on a store that has not opted in. `slowQueryThresholdNanos` is null
+by default, so `captureSlow` returns on a null check and never reads the clock.
+The sketches always run: two `HeavyHitters.add` calls per read shape, which
+§11.2 measured at tens of nanoseconds against reads whose floor is a network
+round trip.
+
+### 16.3 The general lesson
+
+§14.7 listed what the audit "checked and found sound". This is the category it
+did not have: **a member that is published but never written**. It renders as an
+empty panel, an empty panel reads as an idle relay, and an idle relay is exactly
+what a telemetry page is supposed to be able to rule out.
+
+A snapshot field is a contract with two ends. The tests here now pin both:
+`LoadSketchTest` (engine) asserts that a read through the metered port lands on
+the lens and the terms that asked for it, and `TelemetryIT` asserts against a
+real Vespa that both sketches and the ring are non-empty after two ordinary
+searches.

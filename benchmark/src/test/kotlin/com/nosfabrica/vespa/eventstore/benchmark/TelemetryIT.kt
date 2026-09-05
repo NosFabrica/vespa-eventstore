@@ -166,8 +166,61 @@ class TelemetryIT {
                         report(snap)
                     }
                 }
+
+                // ---------------------------------------------------------------
+                // 3. The two sections an operator opts into, which have their own
+                //    producers and had NONE until a full run against a real relay
+                //    found them empty. A second store on the same engine, because
+                //    the slow-read ring is a constructor setting.
+                // ---------------------------------------------------------------
+                VespaEventStore.open(queryUrl, configUrl = configUrl, autoDeploy = false, slowQueryThresholdMillis = 1).use { store ->
+                    runBlocking {
+                        store.query<Event>(Filter(kinds = listOf(0), search = "pamplona observer:$observer", limit = 10))
+                        store.query<Event>(Filter(kinds = listOf(1), search = "nostr observer:$observer", limit = 10))
+
+                        val snap = store.metrics()
+
+                        assertTrue(
+                            snap.topObservers.any { it.key == observer },
+                            "the lens that asked for the work is not in the sketch: ${snap.topObservers.map { it.key }}",
+                        )
+                        assertTrue(
+                            snap.topTerms.map { it.key }.containsAll(listOf("pamplona", "nostr")),
+                            "the terms that drove the reads are not in the sketch: ${snap.topTerms.map { it.key }}",
+                        )
+                        // A network round trip against a container is never under a
+                        // millisecond, so the ring must have caught something. The
+                        // ring is the one place a query string is retained, and
+                        // only because this store was opened with a threshold.
+                        assertTrue(snap.slowReads.isNotEmpty(), "nothing reached the slow-read ring at a 1ms threshold")
+                        val slow = snap.slowReads.first()
+                        assertTrue(slow.wallNanos > 0 && slow.detail.isNotEmpty(), "a captured slow read must carry its wall time and its query")
+                        assertTrue(slow.profile.isNotEmpty(), "and the rank profile that priced it")
+
+                        println("=== what drove the load ===")
+                        snap.topObservers.forEach { println("  observer %-8s weight %5d ±%d".format(it.key.take(8), it.weight, it.error)) }
+                        snap.topTerms.forEach { println("  term     %-8s weight %5d ±%d".format(it.key, it.weight, it.error)) }
+                        println("=== slow reads (%d) ===".format(snap.slowReads.size))
+                        snap.slowReads.take(5).forEach {
+                            println(
+                                "  %-8s %-16s wall %7.2f ms  engine %7.2f ms  matched %5d  hits %3d".format(
+                                    it.activity,
+                                    it.profile,
+                                    it.wallNanos / 1e6,
+                                    it.engineNanos / 1e6,
+                                    it.docsMatched,
+                                    it.hits,
+                                ),
+                            )
+                        }
+                        println()
+                    }
+                }
             }
     }
+
+    /** The canonical observer of this repo's fixtures; a PUBLIC key, no secret ships with it. */
+    private val observer = "460c25e682fda7832b52d1f22d3d22b3176d972f60dcdc3212ed8c92ef85065c"
 
     private fun writesOf(snap: com.nosfabrica.vespa.eventstore.engine.metrics.CostLedger.Snapshot) = snap.ports.filter { it.call == com.nosfabrica.vespa.eventstore.engine.metrics.PortCall.Put }
 
