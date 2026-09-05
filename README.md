@@ -371,6 +371,44 @@ For a commit snapshot, JitPack works:
   (own the topology, keep the schemas verbatim, name every container endpoint in
   `open(endpoints = …)`).
 
+## Where the resources go
+
+`metrics()` is the structured, cumulative record behind an operator dashboard —
+counters and gauges, never ratios, so a window is the difference between two
+snapshots and sampling it consumes nothing.
+
+```kotlin
+val m = store.metrics()
+
+// Which activity spent the engine time, and how many port calls it took per
+// document it actually needed. A high calls/doc is the store talking to Vespa
+// more than the work justifies.
+m.ports.sortedByDescending { it.nanos }.forEach {
+    println("${it.activity} ${it.call}  ${it.calls} calls  ${it.nanos / 1e9}s  ${it.callsPerDoc} calls/doc")
+}
+
+// Why writes were rejected, per the closed set of reasons (duplicate/replaced/blocked/…),
+// over the denominator that makes them a rate.
+println("${m.admitted} admitted of ${m.offered} offered")
+
+// What the engine itself did: matched vs served, per rank profile, plus coverage.
+m.engine.forEach { println("${it.profile}: ${it.docsMatched} matched → ${it.hitsServed} served") }
+
+// Who and what is driving the load (bounded-memory sketches), and the slowest reads.
+m.topObservers; m.topTerms; m.slowReads
+```
+
+Pair it with `IngestStats.snapshot()` for the write path's per-stage split, and
+`IngestStats.blockedSplit()` for what a stalled writer was queued *behind* —
+lock wait attributed to the work that was holding, which is the difference
+between "ingest waited 41 s" and a fix. `open(slowQueryThresholdMillis = …)`
+sets the slow-read ring's cut-off.
+
+The instrumentation is designed to be cheap enough to leave on: see
+[`docs/telemetry.md`](docs/telemetry.md) for the model, the measured CPU and
+memory cost of every counter, and what is deliberately *not* measured here
+(Vespa's own resource use, which the metrics proxy already reports).
+
 ## Developer Setup
 
 Make sure to have the following pre-requisites installed:
