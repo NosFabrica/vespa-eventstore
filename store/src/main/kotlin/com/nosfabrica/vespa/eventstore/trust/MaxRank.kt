@@ -215,7 +215,7 @@ internal class MaxRankBackfill(
     }
 
     companion object {
-        /** A key no author can have (not hex), the same way DirtLedger's marker is. */
+        /** A key no author can have (not hex), the same way ProjectionLedger's marker is. */
         const val MARKER_KEY = "max-rank-backfilled"
 
         private const val DONE = "done"

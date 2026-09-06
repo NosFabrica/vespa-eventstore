@@ -28,7 +28,7 @@ import java.util.concurrent.atomic.AtomicLong
  * drain and the guard-owner refresh.
  *
  * Both retry forever by design, and that is right: their state is safe under
- * failure (the dirt marker still names the work; the previous guard sets stay
+ * failure (the backlog marker still names the work; the previous guard sets stay
  * in place), so a transient engine outage must not kill the worker. What it
  * costs is VISIBILITY. A worker failing every cycle is indistinguishable from
  * one with nothing to do, and a drain that never succeeds means ranking has

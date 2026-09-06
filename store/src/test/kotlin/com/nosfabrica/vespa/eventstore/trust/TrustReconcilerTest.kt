@@ -51,7 +51,7 @@ class TrustReconcilerTest {
     private val index = InMemoryEventIndex()
     private val reputations = InMemoryReputationIndex()
     private val projection = TrustProjection(index, reputations)
-    private val reconciler = TrustReconciler(index, reputations, projection.recompute, projection.dirt)
+    private val reconciler = TrustReconciler(index, reputations, projection.recompute, projection.backlog)
     private val store = NostrSemanticsStore(projection, relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
 
     private var t = 1_000_000L
@@ -111,7 +111,7 @@ class TrustReconcilerTest {
             val coldIndex = InMemoryEventIndex()
             val coldReputations = InMemoryReputationIndex()
             val cold = TrustProjection(coldIndex, coldReputations)
-            val coldReconciler = TrustReconciler(coldIndex, coldReputations, cold.recompute, cold.dirt)
+            val coldReconciler = TrustReconciler(coldIndex, coldReputations, cold.recompute, cold.backlog)
             val coldStore = NostrSemanticsStore(cold, relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
 
             assertEquals(0, coldReconciler.reconcile().services, "nothing there yet")
@@ -194,7 +194,7 @@ class TrustReconcilerTest {
         }
 
     /**
-     * A crashed trust write leaves the persisted dirt marker. A RESTARTED
+     * A crashed trust write leaves the persisted backlog marker. A RESTARTED
      * process's reconcile must repair exactly what it names — including drift
      * the sampling can never see (subjects mid-corpus while the newest cards
      * are healthy).
@@ -206,16 +206,16 @@ class TrustReconcilerTest {
             store.insert(card()) // healthy, and the newest card the sample will hit
             val lost = "e1".repeat(32)
             index.put(card(about = lost, at = 100).toDoc()) // stored BEHIND the projection: the crash shape
-            reputations.put(ReputationDoc(DirtLedger.MARKER_KEY, mapOf(lost to 1), emptyMap()))
+            reputations.put(ReputationDoc(ProjectionLedger.MARKER_KEY, mapOf(lost to 1), emptyMap()))
             assertNull(reputations.get(lost))
 
             // A fresh projection + reconciler — the restart. The service samples
             // clean (its newest card is projected), so ONLY the marker heal can
             // repair the lost subject.
             val restarted = TrustProjection(index, reputations)
-            val report = TrustReconciler(index, reputations, restarted.recompute, restarted.dirt).reconcile()
+            val report = TrustReconciler(index, reputations, restarted.recompute, restarted.backlog).reconcile()
             assertEquals(mapOf(service to 87), reputations.get(lost)?.influenceScores, "the marker-named subject is re-derived")
-            assertNull(reputations.get(DirtLedger.MARKER_KEY), "marker cleared")
+            assertNull(reputations.get(ProjectionLedger.MARKER_KEY), "marker cleared")
             assertTrue(report.isClean(), "nothing left for sampling to find")
         }
 
@@ -292,13 +292,13 @@ class TrustReconcilerTest {
             val orphan = "e2".repeat(32)
             reputations.put(ReputationDoc(orphan, mapOf(service to 50), emptyMap()))
             // The projection's own bookkeeping must survive the sweep untouched.
-            val marker = ReputationDoc(DirtLedger.MARKER_KEY, emptyMap(), mapOf(service to 1.0))
+            val marker = ReputationDoc(ProjectionLedger.MARKER_KEY, emptyMap(), mapOf(service to 1.0))
             reputations.put(marker)
 
             reconciler.rebuildAll()
             assertNull(reputations.get(orphan), "no cards -> no parent")
             assertEquals(mapOf(service to 87), reputations.get(subject)?.influenceScores, "real subjects survive the sweep")
-            assertEquals(marker, reputations.get(DirtLedger.MARKER_KEY), "the dirt marker is not a subject")
+            assertEquals(marker, reputations.get(ProjectionLedger.MARKER_KEY), "the backlog marker is not a subject")
         }
 
     // ---- verify: the full derive-vs-stored audit ------------------------------
@@ -380,7 +380,7 @@ class TrustReconcilerTest {
             val reps = InMemoryReputationIndex()
             val idx = InMemoryEventIndex()
             val proj = TrustProjection(idx, reps)
-            proj.dirt.deferTo { }
+            proj.backlog.drainInBackground { }
             val st = NostrSemanticsStore(proj, relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
             // The card first (by a service nobody names yet), then the list:
             // the walk that projects the card is the queued work.
@@ -388,7 +388,7 @@ class TrustReconcilerTest {
             st.insert(list10040())
             assertNull(reps.get(subject), "still queued")
 
-            val audit = TrustReconciler(idx, reps, proj.recompute, proj.dirt).verify()
+            val audit = TrustReconciler(idx, reps, proj.recompute, proj.backlog).verify()
             assertTrue(audit.isClean(), "the queue was settled, not reported")
             assertEquals(mapOf(service to 87), reps.get(subject)?.influenceScores)
         }
@@ -482,7 +482,7 @@ class TrustReconcilerTest {
                     }
                 }
             val racing =
-                TrustReconciler(guarded, reputations, projection.recompute, projection.dirt, gate = { body ->
+                TrustReconciler(guarded, reputations, projection.recompute, projection.backlog, gate = { body ->
                     // A concurrent writer commits the 10040 just before the first
                     // page takes the lock — through the store, so the attribution
                     // cache is invalidated exactly as it would be live.
@@ -523,7 +523,7 @@ class TrustReconcilerTest {
                 }
             val proj = TrustProjection(index, guarded)
             val gatedReconciler =
-                TrustReconciler(index, guarded, proj.recompute, proj.dirt, gate = { body ->
+                TrustReconciler(index, guarded, proj.recompute, proj.backlog, gate = { body ->
                     inGate = true
                     gated++
                     try {

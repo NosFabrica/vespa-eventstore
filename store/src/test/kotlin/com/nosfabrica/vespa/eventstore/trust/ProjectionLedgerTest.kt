@@ -39,11 +39,11 @@ import kotlin.test.assertTrue
 /**
  * The ledger's bookkeeping under a drain that runs BESIDE writes — the
  * deferred mode of production, where the drain holds only the trust gate and
- * the writes it interleaves with hold their own locks or none. The [DirtLedger.drain]
+ * the writes it interleaves with hold their own locks or none. The [ProjectionLedger.drain]
  * gate is injectable, so a test can put a write exactly where a live one would
  * land: after a subject's slice has been derived, before the round is over.
  */
-class DirtLedgerTest {
+class ProjectionLedgerTest {
     private val observer = "0b".repeat(32)
     private val service = "5e".repeat(32)
     private val service2 = "6e".repeat(32)
@@ -76,7 +76,7 @@ class DirtLedgerTest {
         val projection = TrustProjection(InMemoryEventIndex(), reputations)
 
         init {
-            projection.dirt.deferTo { }
+            projection.backlog.drainInBackground { }
         }
 
         suspend fun rankOf(subject: String) =
@@ -86,7 +86,7 @@ class DirtLedgerTest {
                 ?.values
                 ?.singleOrNull()
 
-        suspend fun marker() = reputations.get(DirtLedger.MARKER_KEY)
+        suspend fun marker() = reputations.get(ProjectionLedger.MARKER_KEY)
     }
 
     /**
@@ -105,7 +105,7 @@ class DirtLedgerTest {
             assertNull(d.rankOf(subject), "deferred: nothing projected yet")
 
             var landed = false
-            d.projection.dirt.drain { body ->
+            d.projection.backlog.drain { body ->
                 body()
                 // Once, after the FIRST page: the walk just wrote rank 40 from
                 // the cards it read; this card post-dates that read.
@@ -123,15 +123,15 @@ class DirtLedgerTest {
         }
 
     /**
-     * THE KIND-1 BESIDE THE DRAIN. A plain note's [DirtLedger.guarded] adds no
-     * work; it must also not WRITE BACK the dirt it read, or a drain that took
-     * that dirt out in between is undone in memory — after which the next card
+     * THE KIND-1 BESIDE THE DRAIN. A plain note's [ProjectionLedger.insuring] adds no
+     * work; it must also not WRITE BACK the backlog it read, or a drain that took
+     * that backlog out in between is undone in memory — after which the next card
      * for that subject finds its subject "already pending", persists no
      * write-ahead, and a crash before the drain loses it. Reproduced by
      * pinning the note's read before the drain and its write after.
      */
     @Test
-    fun `a plain write interleaved with a drain does not resurrect drained dirt`() =
+    fun `a plain write interleaved with a drain does not resurrect drained backlog`() =
         runBlocking {
             val d = Deferred()
             d.projection.put(list10040().toDoc())
@@ -140,12 +140,12 @@ class DirtLedgerTest {
             // The note's guarded() runs to completion on its own; the
             // interleaving is created by draining INSIDE its block, between
             // the ledger read (before the block) and the write (after it).
-            d.projection.dirt.guarded(DirtLedger.Dirt.NONE) {
-                d.projection.dirt.drain { it() }
+            d.projection.backlog.insuring(ProjectionWork.NONE) {
+                d.projection.backlog.drain { it() }
                 assertEquals(40, d.rankOf(subject))
                 assertNull(d.marker(), "the drain rewrote the marker clean")
                 d.projection.put(note().toDoc()) // the plain write itself
-                Unit to DirtLedger.Dirt.NONE
+                Outcome(Unit, ProjectionWork.NONE)
             }
 
             // A clean ledger: the next trust write that leaves work — a list
@@ -156,7 +156,7 @@ class DirtLedgerTest {
             val marker = d.marker()
             assertNotNull(marker, "the list's write-ahead was persisted")
             assertTrue(service2 in marker.followerCounts)
-            d.projection.dirt.drain { it() }
+            d.projection.backlog.drain { it() }
             assertNull(d.marker())
         }
 
@@ -176,7 +176,7 @@ class DirtLedgerTest {
             d.projection.put(list10040().toDoc()) // the walk is the round's work
 
             var landed = false
-            d.projection.dirt.drain { body ->
+            d.projection.backlog.drain { body ->
                 body()
                 if (!landed && d.rankOf(subject) == 40) {
                     landed = true
@@ -212,7 +212,7 @@ class DirtLedgerTest {
             assertNull(d.marker(), "a single card leaves no work behind")
             d.projection.put(list10040().toDoc())
             assertNotNull(d.marker(), "the list's service walk is queued work, and the marker names it")
-            d.projection.dirt.drain { it() }
+            d.projection.backlog.drain { it() }
             assertNull(d.marker())
             assertEquals(40, d.rankOf(subject))
         }
@@ -225,10 +225,10 @@ class DirtLedgerTest {
             d.projection.put(list10040().toDoc())
             d.projection.put(card(40).toDoc())
             assertFailsWith<IllegalStateException> {
-                d.projection.dirt.drain { error("engine down") }
+                d.projection.backlog.drain { error("engine down") }
             }
             assertNotNull(d.marker(), "the marker survived the failure")
-            d.projection.dirt.drain { it() }
+            d.projection.backlog.drain { it() }
             assertEquals(40, d.rankOf(subject), "the retry derived the snapshot")
             assertNull(d.marker())
         }
@@ -244,13 +244,13 @@ class DirtLedgerTest {
             first.put(card(40).toDoc())
             // The crashed process: its marker names the subject, its projection never ran.
             reputations.remove(subject)
-            reputations.put(ReputationDoc(DirtLedger.MARKER_KEY, mapOf(subject to 1), emptyMap()))
+            reputations.put(ReputationDoc(ProjectionLedger.MARKER_KEY, mapOf(subject to 1), emptyMap()))
 
             val restarted = TrustProjection(index, reputations)
-            restarted.dirt.deferTo { }
-            restarted.dirt.drain { it() }
+            restarted.backlog.drainInBackground { }
+            restarted.backlog.drain { it() }
             assertEquals(mapOf(service to 40), reputations.get(subject)?.influenceScores)
-            assertNull(reputations.get(DirtLedger.MARKER_KEY))
+            assertNull(reputations.get(ProjectionLedger.MARKER_KEY))
         }
 
     /**
@@ -266,9 +266,9 @@ class DirtLedgerTest {
         subjects.forEach { first.put(cardFor(it, 50).toDoc()) }
         // The process died with the projection unwritten and the marker naming all of it.
         subjects.forEach { reputations.remove(it) }
-        reputations.put(ReputationDoc(DirtLedger.MARKER_KEY, subjects.associateWith { 1 }, emptyMap()))
+        reputations.put(ReputationDoc(ProjectionLedger.MARKER_KEY, subjects.associateWith { 1 }, emptyMap()))
         val restarted = TrustProjection(index, reputations)
-        restarted.dirt.deferTo { }
+        restarted.backlog.drainInBackground { }
         return restarted to subjects
     }
 
@@ -288,13 +288,13 @@ class DirtLedgerTest {
 
             // The marker's size at every point the drain handed the gate back.
             val sizes = mutableListOf<Int>()
-            store.dirt.drain { body ->
+            store.backlog.drain { body ->
                 body()
-                sizes += reputations.get(DirtLedger.MARKER_KEY)?.influenceScores?.size ?: 0
+                sizes += reputations.get(ProjectionLedger.MARKER_KEY)?.influenceScores?.size ?: 0
             }
 
-            assertNull(reputations.get(DirtLedger.MARKER_KEY), "marker gone once the ledger is clean")
-            assertEquals(0L, store.dirt.pendingSubjects())
+            assertNull(reputations.get(ProjectionLedger.MARKER_KEY), "marker gone once the ledger is clean")
+            assertEquals(0L, store.backlog.pendingSubjects())
             assertEquals(subjects.size, subjects.count { reputations.get(it)?.influenceScores == mapOf(service to 50) }, "every subject healed")
             assertTrue(
                 sizes.any { it in 1 until subjects.size },
@@ -321,7 +321,7 @@ class DirtLedgerTest {
             // Die once the first slice has been derived, written and retired.
             var gateCalls = 0
             assertFailsWith<IllegalStateException> {
-                store.dirt.drain { body ->
+                store.backlog.drain { body ->
                     // Call 1 derives the first slice, call 2 retires it; the
                     // process dies reaching for the second slice's work.
                     if (++gateCalls > 2) error("the process dies mid-round")
@@ -329,11 +329,11 @@ class DirtLedgerTest {
                 }
             }
 
-            val left = store.dirt.pendingSubjects()
+            val left = store.backlog.pendingSubjects()
             assertTrue(left in 1 until subjects.size.toLong(), "a slice was retired before the failure, not the whole round: $left")
             assertEquals(
                 left.toInt(),
-                assertNotNull(reputations.get(DirtLedger.MARKER_KEY)).influenceScores.size,
+                assertNotNull(reputations.get(ProjectionLedger.MARKER_KEY)).influenceScores.size,
                 "the marker names exactly the unhealed remainder — the crash-safety contract",
             )
             assertEquals(
@@ -342,8 +342,8 @@ class DirtLedgerTest {
                 "and the retired subjects are the ones already written",
             )
 
-            store.dirt.drain { it() }
-            assertNull(reputations.get(DirtLedger.MARKER_KEY), "the remainder healed")
+            store.backlog.drain { it() }
+            assertNull(reputations.get(ProjectionLedger.MARKER_KEY), "the remainder healed")
             assertEquals(subjects.size, subjects.count { reputations.get(it)?.influenceScores == mapOf(service to 50) })
         }
 }
