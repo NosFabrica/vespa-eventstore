@@ -169,7 +169,14 @@ class TelemetryIT {
 
                         // Gauges: pulled live from their owners.
                         assertTrue("feed.inflight" in snap.gauges, "the feed gauge was not registered")
-                        assertTrue("trust.pending.subjects" in snap.gauges, "the trust backlog gauge was not registered")
+                        // NAMED, not merely present: the gauge this asserted was
+                        // renamed `trust.pending.*` -> `trust.queued.*` in the
+                        // code and nowhere else, and because this suite needs a
+                        // Docker daemon nothing noticed for as long as nobody
+                        // ran it. An operator dashboard keys on these strings,
+                        // so the whole registered set is the assertion now.
+                        assertTrue("trust.queued.subjects" in snap.gauges, "the trust backlog gauge was not registered: ${snap.gauges.keys.sorted()}")
+                        assertTrue("trust.queued.services" in snap.gauges, "the service backlog gauge was not registered: ${snap.gauges.keys.sorted()}")
 
                         // The write path's stage split still works alongside all
                         // of this, and its holds balanced out.
