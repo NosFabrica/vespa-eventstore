@@ -68,13 +68,14 @@ class ModuleBoundariesTest {
     private val facades = setOf("NostrSemanticsStore", "VespaEventStore")
 
     /**
-     * The one live exception, and the reason it is one: the bulk mixed path
-     * REPLAYS the store's own insert rules against an in-memory snapshot, so
-     * it builds a `NostrSemanticsStore` over that snapshot. Extracting those
-     * rules into something both sides use is what closes it; until then the
-     * cycle is declared here rather than tolerated silently.
+     * NO EXEMPTIONS — and that is the assertion, not an omission. The one that
+     * used to be here was the bulk mixed path building a whole
+     * `NostrSemanticsStore` over its replay snapshot; it now shares
+     * `EventAdmission` with the per-event path instead, so the cycle is gone
+     * rather than declared. Anything added here should come with the same
+     * plan for removing it.
      */
-    private val facadeExemptions = setOf("ingest/BulkMixedInsert.kt")
+    private val facadeExemptions = emptySet<String>()
 
     /**
      * The module graph makes this unbuildable today — `:engine` has no

@@ -20,8 +20,6 @@
  */
 package com.nosfabrica.vespa.eventstore.ingest
 
-import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
-import com.nosfabrica.vespa.eventstore.RejectedException
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.async.QUERY_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
@@ -45,7 +43,7 @@ import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
  * batches take [BulkRecordInsert]). Run-splitting on every kind 5/62 would
  * collapse ingest to per-event speed (an outbox stream is ~98% kind 5), so
  * instead: batch-read the working set, REPLAY the sequential
- * [NostrSemanticsStore.insert] rules against an in-memory snapshot (preserving
+ * [EventAdmission] rules against an in-memory snapshot (preserving
  * intra-batch ordering for free), then write the net diff in bulk. Correct by
  * construction — the replay runs the same code the per-event path does. Runs
  * under the writer lock, so query-then-write stays atomic.
@@ -55,6 +53,8 @@ internal class BulkMixedInsert(
     private val relay: NormalizedRelayUrl?,
     private val nowSecs: () -> Long,
     private val guards: GuardOwners,
+    /** The store's own sweep page size: a vanish in the batch sweeps the snapshot through it. */
+    private val sweepPage: Int,
 ) {
     /** Preload, replay, write the diff. Callers hold the store's writer lock across the whole run. */
     suspend fun run(events: List<Event>): List<IEventStore.InsertOutcome> {
@@ -62,20 +62,13 @@ internal class BulkMixedInsert(
         preloadWorkingSet(snapshot, events)
         val beforeDocs = snapshot.search(EventQuery())
         val before = beforeDocs.mapTo(HashSet()) { it.id }
-        // A throwaway store over the snapshot replays the exact per-event rules
-        // — through insertLocked, not insert: the real store's locks are held
-        // by the caller, and the replay's own would only book a phantom
-        // lock sample per event into the process-wide stats.
-        val replay = NostrSemanticsStore(snapshot, relay, nowSecs)
-        val outcomes =
-            events.map { e ->
-                try {
-                    replay.insertLocked(e)
-                    IEventStore.InsertOutcome.Accepted
-                } catch (ex: RejectedException) {
-                    IEventStore.InsertOutcome.Rejected(ex.message ?: Rejections.INSERT_FAILED)
-                }
-            }
+        // The exact per-event rules, over the snapshot — the SAME class the
+        // per-event path runs, so the two cannot drift. Its guards are the
+        // snapshot's own (default SHARED_STRICT: no cache, probe every time),
+        // which is what a replay wants — the real store's cache answers for
+        // the real index.
+        val replay = EventAdmission(snapshot, Deletions(snapshot, relay, sweepPage), GuardOwners(snapshot))
+        val outcomes = events.map { replay.tryAdmit(it) }
         val after = snapshot.search(EventQuery())
         val afterIds = after.mapTo(HashSet()) { it.id }
         // The removed DOCS (not just ids) were preloaded into the snapshot, so

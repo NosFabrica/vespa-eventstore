@@ -28,22 +28,21 @@ import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.metrics.Activity
 import com.nosfabrica.vespa.eventstore.engine.metrics.CostLedger
-import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.metrics.withActivity
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.nosfabrica.vespa.eventstore.ingest.BulkMixedInsert
 import com.nosfabrica.vespa.eventstore.ingest.BulkRecordInsert
 import com.nosfabrica.vespa.eventstore.ingest.Deletions
+import com.nosfabrica.vespa.eventstore.ingest.EventAdmission
 import com.nosfabrica.vespa.eventstore.ingest.GuardOwners
 import com.nosfabrica.vespa.eventstore.ingest.Rejections
 import com.nosfabrica.vespa.eventstore.mapping.DEFAULT_MIN_RANK
 import com.nosfabrica.vespa.eventstore.mapping.SearchExtractors
-import com.nosfabrica.vespa.eventstore.mapping.VespaText
-import com.nosfabrica.vespa.eventstore.mapping.toDoc
 import com.nosfabrica.vespa.eventstore.mapping.toEvent
 import com.nosfabrica.vespa.eventstore.mapping.toEventQuery
 import com.nosfabrica.vespa.eventstore.runtime.DEFAULT_GUARD_REFRESH_MILLIS
+import com.nosfabrica.vespa.eventstore.runtime.WriteLocks
 import com.nosfabrica.vespa.eventstore.runtime.WriterTopology
 import com.nosfabrica.vespa.eventstore.search.SearchExpansionLimits
 import com.nosfabrica.vespa.eventstore.search.SearchReferenceExpansion
@@ -53,9 +52,6 @@ import com.nosfabrica.vespa.eventstore.trust.Delegations
 import com.nosfabrica.vespa.eventstore.trust.Enrolment
 import com.nosfabrica.vespa.eventstore.trust.TrustProjection
 import com.vitorpamplona.quartz.nip01Core.core.Event
-import com.vitorpamplona.quartz.nip01Core.core.isAddressable
-import com.vitorpamplona.quartz.nip01Core.core.isEphemeral
-import com.vitorpamplona.quartz.nip01Core.core.isReplaceable
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.FtsReindexProgress
@@ -63,17 +59,12 @@ import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import com.vitorpamplona.quartz.nip01Core.store.StoreQueryContext
-import com.vitorpamplona.quartz.nip01Core.store.owner
 import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
 import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
-import com.vitorpamplona.quartz.nip40Expiration.isExpired
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlin.coroutines.coroutineContext
 
 /**
@@ -82,7 +73,7 @@ import kotlin.coroutines.coroutineContext
  * plus NIP-50 search. It is engine-agnostic (any [EventIndex] works, including
  * the in-memory one); [VespaEventStore.open] assembles it over Vespa.
  *
- * [insertLocked] enforces the Nostr write rules: dedup ("duplicate:"),
+ * [EventAdmission] enforces the Nostr write rules: dedup ("duplicate:"),
  * replaceable/addressable supersession with the NIP-01 tiebreak — same
  * created_at, LOWEST id wins — ("replaced:"), NIP-09 deletions and NIP-62
  * vanishes ("blocked:", enforcement in [Deletions], keyed on the event's
@@ -173,43 +164,17 @@ class NostrSemanticsStore(
      */
     val metrics: CostLedger = CostLedger(),
 ) : IEventStore {
-    private val writes = Mutex()
-
-    /**
-     * THE TRUST GATE, separate from [writes] since 2026-09-04.
-     *
-     * One mutex used to serialise every write in this store, and the hazard it
-     * was documented against is recompute-versus-recompute: "repairs must not
-     * race live inserts' recomputes". A plain kind-1 note has NO recompute —
-     * [TrustProjection.insuranceFor] returns `ProjectionWork.NONE` for every kind but 30382 and
-     * 10040 — so it was excluded against work it cannot conflict with. Measured
-     * on staging: an ephemeral event, which takes the lock and returns without
-     * storing anything, took 35-41 SECONDS to answer OK while the trust drain
-     * held the lock re-deriving reputation documents.
-     *
-     * What a plain insert genuinely needs exclusion for is the DELETION race —
-     * check `isDeleted`, then put, with a kind-5 landing in between would
-     * resurrect a deleted event. That is event-document work and stays on
-     * [writes]. Reputation-document work moves here.
-     *
-     * LOCK ORDER, where both are needed (a card insert does inline projection):
-     * [trustGate] FIRST, then [writes] — never the reverse. The order was
-     * writes-then-gate when the split shipped, and that leaked the drain's
-     * stall back onto every plain writer: a card took [writes] and then waited
-     * for the gate WHILE HOLDING IT, so for the length of a drain slice every
-     * kind-1 in the process queued behind the card. Gate first means a card
-     * waits for the drain holding nothing, and once it has the gate it takes
-     * [writes] for one short hold. The drain and the reconciler only ever
-     * hold the gate, so the pair cannot deadlock as long as every two-lock
-     * path here goes through [gated].
-     */
-    private val trustGate = Mutex()
+    /** The two writer mutexes and their wait/hold accounting — see [WriteLocks]. */
+    private val locks = WriteLocks()
 
     // Owners with any stored tombstone/vanish; everyone else's inserts skip the
     // NIP-09/62 guard probes entirely (see GuardOwners for the safety argument).
     private val guards = GuardOwners(index, writers, guardRefreshMillis)
 
     private val deletions = Deletions(index, relay, sweepPage)
+
+    /** The per-event write rules — shared verbatim with [BulkMixedInsert]'s replay. */
+    private val admission = EventAdmission(index, deletions, guards)
 
     /**
      * WHO THIS READER ASKED TO COMPUTE WHAT — the gate the search expansion
@@ -250,88 +215,7 @@ class NostrSemanticsStore(
 
     private val bulkRecords = BulkRecordInsert(index, relay, guards)
 
-    private val bulkMixed = BulkMixedInsert(index, relay, nowSecs, guards)
-
-    /** A writer-lock label's two [IngestStats] stage names, interned at construction. */
-    private class LockStage(
-        name: String,
-        /**
-         * WHICH MUTEX this label takes. Several share one: `lock.gate`,
-         * `lock.ingest.trust`, `lock.sweep.trust` and `lock.reindex.trust` are
-         * all [trustGate]; `lock.ingest`, `lock.sweep` and `lock.reindex` are
-         * all [writes]. The wait attribution matches waiter to holder by THIS,
-         * because matching by label misses every cross-label contention — which
-         * is most of it (docs/telemetry.md §15.1).
-         */
-        val lock: String,
-    ) {
-        val wait = "$name.wait"
-        val hold = "$name.hold"
-    }
-
-    /**
-     * Take [writes], booking the WAIT and the HOLD under separate [IngestStats]
-     * stages named for [stage].
-     *
-     * Every other stage timer starts once the lock is already held, so a writer
-     * starved by another holder would otherwise show up as fast stages and a
-     * stalled pipeline with nothing naming the reason. The deferred trust
-     * projection makes that real: it re-derives off the ingest path but INSIDE
-     * this lock (ProjectionLedger.drain's gate), so `proj.fetch` and an ingest commit
-     * contend for one mutex while both look cheap individually. `lock.*.wait`
-     * makes that visible; `lock.*.hold` attributes it.
-     */
-    private suspend fun <T> locked(
-        stage: LockStage,
-        body: suspend () -> T,
-    ): T = lockedOn(writes, stage, body)
-
-    /** [locked], on a named mutex — see [trustGate] for why there are two. */
-    private suspend fun <T> lockedOn(
-        mutex: Mutex,
-        stage: LockStage,
-        body: suspend () -> T,
-    ): T {
-        val requested = System.nanoTime()
-        // WHAT THIS WRITER IS ABOUT TO QUEUE BEHIND, sampled before we block —
-        // the one causal edge in this design. Keyed by the MUTEX, not the stage
-        // label, because several labels share each mutex and a label match
-        // silently attributes nothing (docs/telemetry.md §15.1).
-        val blockedBy = IngestStats.holderOf(stage.lock)?.let { IngestStats.labelOf(it) }
-        var acquired = 0L
-        try {
-            return mutex.withLock {
-                acquired = System.nanoTime()
-                // Live holder, for the question the cumulative stages cannot
-                // answer: not "the gate was held for 24 minutes since boot"
-                // but "the gate is held RIGHT NOW, by this, for this long".
-                // Two volatile writes per critical section, against a section
-                // that is measured in seconds.
-                IngestStats.beginHold(stage.hold, lock = stage.lock)
-                try {
-                    body()
-                } finally {
-                    IngestStats.endHold(stage.hold)
-                }
-            }
-        } finally {
-            // Booked AFTER release: recording inside would put two map lookups
-            // and two atomic adds in the critical section this exists to
-            // measure, and `hold` would stop short of the actual release.
-            // acquired == 0 means the lock was never taken (cancelled while
-            // waiting) — nothing to attribute.
-            if (acquired != 0L) {
-                val released = System.nanoTime()
-                val waited = acquired - requested
-                IngestStats.add(stage.wait, waited)
-                IngestStats.add(stage.hold, released - acquired)
-                // Only when something was actually holding: an uncontended
-                // acquire waited on nobody, and charging it to a phantom holder
-                // would make the split lie about where contention is.
-                if (blockedBy != null) IngestStats.addBlocked(stage.wait, blockedBy, waited)
-            }
-        }
-    }
+    private val bulkMixed = BulkMixedInsert(index, relay, nowSecs, guards, sweepPage)
 
     /**
      * Trust-relevant writes take BOTH gates; everything else takes only
@@ -352,33 +236,14 @@ class NostrSemanticsStore(
             event is DeletionEvent ||
             event is RequestToVanishEvent
 
-    /**
-     * THE ONE TWO-LOCK SHAPE: [trustGate] when [trust], then [writes] under
-     * [stage]. Every path that needs both goes through here, which is what
-     * makes the order (see [trustGate]) a property of the file rather than of
-     * each call site.
-     *
-     * The gate wait is charged to its OWN stage, not to LOCK_GATE: `lock.gate.*`
-     * is the drain's, and folding an insert's wait for the drain into the same
-     * name would make "the drain is slow" and "a card is waiting for the
-     * drain" one number. They have different remedies.
-     */
-    private suspend fun <T> gated(
-        trust: Boolean,
-        stage: LockStage,
-        /** The stage the GATE wait is booked under — ingest's by default; a sweep or a reindex names its own, so a sweep waiting on the drain does not read as "a card is waiting". */
-        gateStage: LockStage = LOCK_INGEST_TRUST,
-        body: suspend () -> T,
-    ): T = if (trust) lockedOn(trustGate, gateStage) { locked(stage) { body() } } else locked(stage) { body() }
-
     private suspend fun <T> lockedForWrite(
         event: Event,
         body: suspend () -> T,
-    ): T = gated(touchesTrust(event), LOCK_INGEST, body = body)
+    ): T = locks.gated(touchesTrust(event), WriteLocks.INGEST, body = body)
 
     override suspend fun insert(event: Event) = withActivity(Activity.Insert) { insertOne(event) }
 
-    private suspend fun insertOne(event: Event) = lockedForWrite(event) { insertLocked(event) }
+    private suspend fun insertOne(event: Event) = lockedForWrite(event) { admission.admit(event) }
 
     /**
      * Run [body] under this store's TRUST writer lock. For the trust
@@ -396,7 +261,7 @@ class NostrSemanticsStore(
      * that has no reputation work to do. Writes that DO touch reputation still
      * queue for it — see [touchesTrust].
      */
-    internal suspend fun <T> withWriteLock(body: suspend () -> T): T = lockedOn(trustGate, LOCK_GATE) { body() }
+    internal suspend fun <T> withWriteLock(body: suspend () -> T): T = locks.underGate(WriteLocks.GATE) { body() }
 
     /**
      * [lockedForWrite] for a BATCH that must stay whole: the trust gate is
@@ -414,7 +279,7 @@ class NostrSemanticsStore(
     private suspend fun <T> lockedForBatch(
         events: List<Event>,
         body: suspend () -> T,
-    ): T = gated(events.any { touchesTrust(it) }, LOCK_INGEST, body = body)
+    ): T = locks.gated(events.any { touchesTrust(it) }, WriteLocks.INGEST, body = body)
 
     /**
      * Batches take a BULK path — the per-event path costs 3–5 index round
@@ -429,7 +294,7 @@ class NostrSemanticsStore(
      *    replays the per-event rules in memory, order preserved, then writes
      *    the diff.
      *
-     * Sub-[BULK_MIN] batches aren't worth the setup and just loop [insertLocked].
+     * Sub-[BULK_MIN] batches aren't worth the setup and just loop [EventAdmission.admit].
      *
      * A PURE-RECORD BATCH IS SPLIT BY TRUST. The events that touch reputation
      * (cards, provider lists — see [touchesTrust]) commit under the trust gate;
@@ -457,7 +322,7 @@ class NostrSemanticsStore(
     /** [batchInsert]'s body; split because `withActivity` cannot express a non-local return. */
     private suspend fun batchInsertUnder(events: List<Event>): List<IEventStore.InsertOutcome> {
         if (events.any { it is DeletionEvent || it is RequestToVanishEvent }) {
-            return lockedForBatch(events) { if (events.size < BULK_MIN) events.map { tryInsertLocked(it) } else bulkMixed.run(events) }
+            return lockedForBatch(events) { if (events.size < BULK_MIN) events.map { admission.tryAdmit(it) } else bulkMixed.run(events) }
         }
         // Bulk-or-loop is decided on the batch the CALLER sent, not on a
         // half: a 30-event batch split 15/15 must not fall to the per-event
@@ -484,10 +349,10 @@ class NostrSemanticsStore(
         trust: Boolean,
         bulk: Boolean,
     ): List<IEventStore.InsertOutcome> {
-        if (!bulk) return gated(trust, LOCK_INGEST) { events.map { tryInsertLocked(it) } }
+        if (!bulk) return locks.gated(trust, WriteLocks.INGEST) { events.map { admission.tryAdmit(it) } }
         // PLANNED OUTSIDE THE LOCKS, as before: the plan is reads only.
         val plan = bulkRecords.plan(events)
-        return gated(trust, LOCK_INGEST) { bulkRecords.commit(plan) }
+        return locks.gated(trust, WriteLocks.INGEST) { bulkRecords.commit(plan) }
     }
 
     /**
@@ -522,17 +387,6 @@ class NostrSemanticsStore(
         tally.forEach { (reason, n) -> metrics.outcome(activity, reason, n) }
     }
 
-    private suspend fun tryInsertLocked(event: Event): IEventStore.InsertOutcome =
-        try {
-            insertLocked(event)
-            IEventStore.InsertOutcome.Accepted
-        } catch (e: RejectedException) {
-            // Only a SEMANTIC rejection becomes a Rejected outcome. A transient
-            // engine failure must PROPAGATE — swallowing it would silently DROP
-            // a valid event and let the sync cursor advance past it.
-            IEventStore.InsertOutcome.Rejected(e.message ?: Rejections.INSERT_FAILED)
-        }
-
     /** No rollback: buffered inserts apply in order; the first rejection propagates and aborts the rest. */
     override suspend fun transaction(body: IEventStore.ITransaction.() -> Unit) =
         withActivity(Activity.BatchInsert) {
@@ -542,71 +396,8 @@ class NostrSemanticsStore(
                     buffered += event
                 }
             }.body()
-            lockedForBatch(buffered) { buffered.forEach { insertLocked(it) } }
+            lockedForBatch(buffered) { buffered.forEach { admission.admit(it) } }
         }
-
-    /**
-     * The per-event rules with NO lock and NO lock accounting: the caller
-     * holds whatever it needs. Internal for [BulkMixedInsert]'s replay, which
-     * runs these rules against an in-memory snapshot under the real store's
-     * locks — going through [insert] there booked a phantom `lock.ingest`
-     * sample per replayed event into the process-wide [IngestStats].
-     */
-    internal suspend fun insertLocked(event: Event) {
-        if (event.kind.isEphemeral()) return
-        if (event.isExpired()) throw RejectedException(Rejections.EXPIRED)
-        // Text the engine refuses is a property of the event, so it is settled
-        // here with the other no-I/O checks rather than surfacing as a feed
-        // exception three round trips later. See [VespaText].
-        if (VespaText.firstIllegalField(event) != null) throw RejectedException(Rejections.UNSTORABLE_TEXT)
-        // The admission reads — dedup, NIP-09 tombstone, NIP-62 vanish — are
-        // independent, so fire them together and check in the original
-        // precedence (duplicate > deleted > vanished). The dup GET deliberately
-        // stays a read: folding it into a conditional put was A/B-measured
-        // 15-35% slower (see docs/server-side-constraints.md). Guard probes run
-        // only when this owner HAS a stored tombstone/vanish (GuardOwners).
-        val owner = event.owner()
-        val probeDeleted = guards.mightBeDeleted(owner)
-        val probeVanished = guards.mightHaveVanished(owner)
-        if (!probeDeleted && !probeVanished) {
-            // The common case reads just the dup get — skip the fan-out
-            // machinery, which allocates per call.
-            if (index.get(event.id) != null) throw RejectedException(Rejections.DUPLICATE)
-        } else {
-            coroutineScope {
-                val existing = async { index.get(event.id) }
-                val deleted = if (probeDeleted) async { deletions.isDeleted(event) } else null
-                val vanished = if (probeVanished) async { deletions.isVanished(event) } else null
-                if (existing.await() != null) throw RejectedException(Rejections.DUPLICATE)
-                if (deleted?.await() == true) throw RejectedException(Rejections.DELETED)
-                if (vanished?.await() == true) throw RejectedException(Rejections.VANISHED)
-            }
-        }
-        when {
-            event is DeletionEvent -> {
-                deletions.applyDeletion(event)
-                index.put(event.toDoc())
-                guards.noteDeletionStored(event.pubKey)
-            }
-
-            event is RequestToVanishEvent -> {
-                deletions.applyVanish(event)
-                index.put(event.toDoc())
-                guards.noteVanishStored(event.pubKey)
-            }
-
-            // Replaceable/addressable newest-wins in ONE call: false == a
-            // same-or-newer version holds the address, so this insert is
-            // REPLACED (see EventIndex.putIfNewer).
-            event.kind.isReplaceable() || event.kind.isAddressable() -> {
-                if (!index.putIfNewer(event.toDoc())) throw RejectedException(Rejections.REPLACED)
-            }
-
-            else -> {
-                index.put(event.toDoc())
-            }
-        }
-    }
 
     // ---- queries ------------------------------------------------------------
 
@@ -1442,7 +1233,7 @@ class NostrSemanticsStore(
         // threw, half-wiped.
         val queries = filters.filterNot { it.isEmpty() }.mapNotNull { it.toEventQuery() }
         if (queries.isEmpty()) return
-        gated(trust = true, LOCK_SWEEP, LOCK_SWEEP_TRUST) {
+        locks.gated(trust = true, WriteLocks.SWEEP, WriteLocks.SWEEP_TRUST) {
             queries.forEach { deletions.sweep(it) }
         }
     }
@@ -1452,7 +1243,7 @@ class NostrSemanticsStore(
             // expiresBefore is strict (<): +1 makes "expires exactly now" due, per NIP-40.
             // Both locks, for the reason on [delete]: NIP-40 expiry does not ask
             // what kind it is reaping, so it can reap cards.
-            gated(trust = true, LOCK_SWEEP, LOCK_SWEEP_TRUST) { deletions.sweep(EventQuery(expiresBefore = nowSecs() + 1)) }
+            locks.gated(trust = true, WriteLocks.SWEEP, WriteLocks.SWEEP_TRUST) { deletions.sweep(EventQuery(expiresBefore = nowSecs() + 1)) }
         }
 
     // ---- full-text reindex --------------------------------------------------
@@ -1512,7 +1303,7 @@ class NostrSemanticsStore(
         batchSize: Int,
     ): FtsReindexProgress {
         val (progress, trustDocs) =
-            locked(LOCK_REINDEX) {
+            locks.underWrites(WriteLocks.REINDEX) {
                 val page = index.visitDocsPage(EventQuery(), resumeFrom, batchSize)
                 // ONE pipelined write per page: serial awaited puts pay per-op ack
                 // latency — hours of it on a churny reindex.
@@ -1544,7 +1335,7 @@ class NostrSemanticsStore(
                 FtsReindexProgress(cursor = page.continuation, processedThisBatch = page.docs.size, done = page.continuation == null) to trust
             }
         if (trustDocs.isNotEmpty()) {
-            gated(trust = true, LOCK_REINDEX, LOCK_REINDEX_TRUST) {
+            locks.gated(trust = true, WriteLocks.REINDEX, WriteLocks.REINDEX_TRUST) {
                 // [writes] was released to take the gate in order, so a
                 // supersession may have landed since the page was read, and
                 // re-putting the page's copy of a replaced card would roll the
@@ -1576,33 +1367,8 @@ class NostrSemanticsStore(
     }
 
     private companion object {
-        /** The [writes] mutex, as the wait attribution names it. */
-        const val WRITE_LOCK = "writes"
-
-        /** The [trustGate] mutex, as the wait attribution names it. */
-        const val TRUST_GATE = "trustGate"
-
         /** The outcome key for an insert that failed on the ENGINE rather than on a rule. */
         const val OUTCOME_FAILED = "failed"
-
-        /**
-         * Writer-lock stage labels, named for the CALLER rather than the
-         * operation: these exist to say which side of the contention a stall is
-         * on ("ingest waited 40s while the gate held 40s"). Built once per
-         * label, since `insert()` takes this lock per event and a String
-         * allocation is not what a measurement should cost.
-         */
-        val LOCK_INGEST = LockStage("lock.ingest", WRITE_LOCK)
-        val LOCK_GATE = LockStage("lock.gate", TRUST_GATE)
-
-        /** A trust-relevant insert queueing for [trustGate] — see [touchesTrust]. */
-        val LOCK_INGEST_TRUST = LockStage("lock.ingest.trust", TRUST_GATE)
-        val LOCK_SWEEP = LockStage("lock.sweep", WRITE_LOCK)
-        val LOCK_REINDEX = LockStage("lock.reindex", WRITE_LOCK)
-
-        /** A sweep's / a reindex page's wait for the trust gate, apart from ingest's — different holders, different remedies. */
-        val LOCK_SWEEP_TRUST = LockStage("lock.sweep.trust", TRUST_GATE)
-        val LOCK_REINDEX_TRUST = LockStage("lock.reindex.trust", TRUST_GATE)
 
         /** Batches this size or larger take the bulk path; smaller ones aren't worth its setup. */
         const val BULK_MIN = 16
