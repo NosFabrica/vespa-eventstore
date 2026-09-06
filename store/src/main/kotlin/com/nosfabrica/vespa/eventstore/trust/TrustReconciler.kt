@@ -237,10 +237,41 @@ class TrustReconciler internal constructor(
         val cutoff = nowSecs()
         val verdicts =
             providers.services.toList().mapBounded(QUERY_FANOUT) { service ->
-                val sample =
+                // SAMPLED FROM THE OLD END OF THE SERVICE'S HISTORY, not its
+                // newest cards. `limit` serves NEWEST_FIRST, and the live write
+                // path projects a card inline as it arrives, so the newest
+                // cards carry a cell whether or not the service was ever
+                // walked: sampling them asks a question whose answer is
+                // always yes. Staging had a service with 279,594 cards and a
+                // cell on ~1% of parents pass this check every time, so an
+                // observer whose 10040 named it could not find their own
+                // profile — while every health signal read clean.
+                //
+                // Created-at is a proxy for ingest order, and an imperfect one:
+                // a bulk mirror ingests old events late. It holds for the case
+                // this check exists to catch — cards that arrived BEFORE any
+                // 10040 named their service, which is precisely the corpus a
+                // relay mirrors first and projects never.
+                //
+                // A service with nothing older than the horizon falls back to
+                // the newest sample: the same answer as before, for a service
+                // too young for the bias to have bitten.
+                val older =
                     index.search(
-                        EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service), limit = RECONCILE_SAMPLES, notExpiredAt = cutoff),
+                        EventQuery(
+                            kinds = listOf(ContactCardEvent.KIND),
+                            authors = listOf(service),
+                            until = cutoff - SAMPLE_HORIZON_SECONDS,
+                            limit = RECONCILE_SAMPLES,
+                            notExpiredAt = cutoff,
+                        ),
                     )
+                val sample =
+                    older.ifEmpty {
+                        index.search(
+                            EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service), limit = RECONCILE_SAMPLES, notExpiredAt = cutoff),
+                        )
+                    }
                 if (sample.isEmpty()) return@mapBounded null
                 // Only sampled cards that CARRY a tag can prove that dimension
                 // unprojected — else every startup would re-walk the service.
@@ -385,14 +416,32 @@ class TrustReconciler internal constructor(
      * and re-derived to empty, which removes it — the card walk by construction
      * only visits subjects that still have cards. Bounded only by the corpus.
      */
-    suspend fun rebuildAll() {
-        recompute.recomputeWalk(EventQuery(kinds = listOf(ContactCardEvent.KIND)), gate = gate)
+    suspend fun rebuildAll(onProgress: ((derived: Int, sweptParents: Int) -> Unit)? = null) {
+        // TWO PHASES, and the caller is told which. The card walk derives every
+        // subject that still has a card; the parent sweep then reaches the ones
+        // the card walk cannot see. Both are bounded only by the corpus, and
+        // this was the one repair in the store that reported nothing at all —
+        // `recomputeWalk` has taken an `onSubjects` the whole time and this
+        // passed none, so the heaviest operation available was also the only
+        // blind one.
+        var derived = 0
+        recompute.recomputeWalk(
+            EventQuery(kinds = listOf(ContactCardEvent.KIND)),
+            onSubjects = { n ->
+                derived = n
+                onProgress?.invoke(n, 0)
+            },
+            gate = gate,
+        )
         val buffer = ArrayList<String>(ORPHAN_BATCH)
+        var swept = 0
 
         suspend fun flush() {
             if (buffer.isNotEmpty()) {
                 recompute.recomputeBatchGated(buffer.toList(), removeEmpties = true, gate = gate)
+                swept += buffer.size
                 buffer.clear()
+                onProgress?.invoke(derived, swept)
             }
         }
         reputations.visitPubkeys { page ->
@@ -405,10 +454,17 @@ class TrustReconciler internal constructor(
         flush()
     }
 
-    private companion object {
+    internal companion object {
         // Cards sampled per service by [reconcile]: the never-triggered failure
         // is all-or-nothing per service, so a handful settles it.
         const val RECONCILE_SAMPLES = 3
+
+        /**
+         * How far back the projected-check samples. Far enough that a card
+         * this old cannot owe its cell to the live write path having just
+         * projected it, which is what made the newest-first sample useless.
+         */
+        const val SAMPLE_HORIZON_SECONDS = 30L * 24 * 60 * 60
 
         // Subjects per orphan-sweep re-derive round (memory-bounded, like
         // TrustRecompute's walk batches).

@@ -39,6 +39,7 @@ import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -539,5 +540,48 @@ class TrustReconcilerTest {
             gatedReconciler.rebuildAll()
             assertTrue(gated > 0, "the gate was exercised")
             assertEquals(serviceCells(service to 87), reputations.get(subject)?.influenceScores)
+        }
+
+    /**
+     * THE SAMPLE MUST NOT BE DRAWN FROM THE PROJECTED END. `limit` serves
+     * NEWEST_FIRST and the live write path projects a card inline as it
+     * arrives, so a service whose recent cards are projected and whose history
+     * is not used to pass the check every time — `.any` over three newest
+     * cards asking a question whose answer is always yes.
+     *
+     * Staging: a service with 279,594 cards, a cell on ~1% of parents, judged
+     * projected on every pass. An observer whose 10040 named it could not find
+     * their own profile, and no health signal said anything was wrong.
+     */
+    @Test
+    fun `a service projected only on its newest cards is found unprojected`() =
+        runBlocking {
+            val old = 1_000_000L
+            val recent = old + TrustReconciler.SAMPLE_HORIZON_SECONDS + 10_000
+            index.put(list10040().toDoc())
+            // The history: cards nobody ever walked into cells.
+            val stale = (1..6).map { "c$it".padStart(64, '0') }
+            stale.forEach { index.put(card(about = it, at = old + it.hashCode().toLong() % 100).toDoc()) }
+            // The recent card, projected inline the way a live write does.
+            val fresh = "fe".repeat(32)
+            index.put(card(about = fresh, at = recent).toDoc())
+            reputations.put(ReputationDoc(fresh, serviceCells(service to 87), serviceCells(service to 120.0)))
+
+            val r = TrustReconciler(index, reputations, projection.recompute, projection.backlog, nowSecs = { recent + 1 }).reconcile()
+            assertTrue(service in r.rebuilt, "the service's history is unprojected; the newest card must not vouch for it")
+            stale.forEach { assertNotNull(reputations.get(it), "every historical subject is projected by the rebuild: $it") }
+        }
+
+    /** A service too young to have history falls back to the newest sample — the old answer, for the case the bias never touched. */
+    @Test
+    fun `a young service with no old cards still reads as projected when it is`() =
+        runBlocking {
+            val at = 1_000_000L
+            index.put(list10040().toDoc())
+            index.put(card(about = subject, at = at).toDoc())
+            reputations.put(ReputationDoc(subject, serviceCells(service to 87), serviceCells(service to 120.0)))
+
+            val r = TrustReconciler(index, reputations, projection.recompute, projection.backlog, nowSecs = { at + 60 }).reconcile()
+            assertTrue(r.rebuilt.isEmpty(), "nothing to rebuild: its only card is projected")
         }
 }
