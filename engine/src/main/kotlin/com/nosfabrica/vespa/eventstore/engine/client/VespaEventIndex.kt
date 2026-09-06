@@ -866,9 +866,19 @@ class VespaEventIndex(
         // same filters counted one at a time.
         if (query.limit != null) {
             if (query.limit <= 0) return
-            if (query.isRankedShape()) return super.visitIds(query, withDTag, onPage)
+            val unlimited = query.copy(limit = null)
+            // A LIMIT IS AN ORDER, not just a count: "the newest N". Only two
+            // walks can honour that — the search path (ranked ids ARE its
+            // order) and the cursor, which pages `created_at desc`. The scan
+            // cannot: it is a document-API visit in BUCKET order, so budgeting
+            // it returned an arbitrary N that looked like a page. A COUNT is
+            // where that showed: `countUnder` unions each filter's served ids,
+            // and two arbitrary samples of overlapping filters overlap less
+            // than two newest-N pages do, so the count came back ABOVE what
+            // the REQ it describes would serve.
+            if (query.isRankedShape() || !cursorSuitsThisWalk(unlimited, withDTag)) return super.visitIds(query, withDTag, onPage)
             var budget: Int = query.limit
-            return visitIds(query.copy(limit = null), withDTag) { page ->
+            return visitIdsByCursor(unlimited, withDTag) { page ->
                 val take = page.take(budget)
                 budget -= take.size
                 (take.isEmpty() || onPage(take)) && budget > 0
@@ -887,6 +897,23 @@ class VespaEventIndex(
         if (!cursorSuitsThisWalk(query, withDTag)) {
             return visitIdsByScan(query, withDTag, onPage)
         }
+        visitIdsByCursor(query, withDTag, onPage)
+    }
+
+    /**
+     * The cursor walk: `created_at desc` a page at a time, resolving the tie
+     * group at each boundary. Its ORDER is why a limited walk is allowed to
+     * budget-truncate it and not the scan (see [visitIds]).
+     *
+     * Split out so the limited branch can take it directly: routing back
+     * through [visitIds] would re-run [cursorSuitsThisWalk]'s probe query for
+     * a decision already made.
+     */
+    private suspend fun visitIdsByCursor(
+        query: EventQuery,
+        withDTag: Boolean,
+        onPage: suspend (List<DocRef>) -> Boolean,
+    ) {
         var until: Long? = query.until
         while (true) {
             val fetchLimit = idPageSize + TIE_SLACK
@@ -1128,8 +1155,11 @@ class VespaEventIndex(
         query: EventQuery,
         tagName: String,
     ): Set<String>? {
-        val vq = EventYql.buildDistinctTagValues(query, tagName) ?: return emptySet()
+        val vq = EventYql.buildDistinctTagValues(query) ?: return emptySet()
         val root = queryRoot(vq, hits = 0) ?: return emptySet()
+        // The grouping is over EVERY letter (see the builder): narrowing to the
+        // asked-for one is this side's job, and dropping this filter would
+        // silently widen the answer.
         val prefix = "$tagName:"
         return GroupingResults
             .groupCounts(root)

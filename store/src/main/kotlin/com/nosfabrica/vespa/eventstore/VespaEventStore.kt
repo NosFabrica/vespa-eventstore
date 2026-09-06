@@ -239,6 +239,15 @@ class VespaEventStore internal constructor(
         // next open — shutdown must not block on a six-figure walk.
         drainScope?.cancel()
         backfill?.cancel()
+        // The keying migration too, and for a sharper reason than tidiness:
+        // `runUntilDone` RETRIES FOREVER by design (a store with reputation
+        // documents but no readable 10040 is a legitimate state — a corpus
+        // mirrored ahead of its provider lists — so it waits rather than
+        // failing). Left running past close() it wakes every few seconds
+        // against a closed index, fails, and books another
+        // BackgroundFailures.TRUST_KEYING — one such loop per opened-and-closed
+        // store, for the life of the process.
+        keying?.cancel()
         store.close()
     }
 

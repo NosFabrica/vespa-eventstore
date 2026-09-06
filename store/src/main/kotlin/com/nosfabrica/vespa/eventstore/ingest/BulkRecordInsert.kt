@@ -366,17 +366,29 @@ internal class BulkRecordInsert(
      * batch carrying one of their events pull all 100k under the writer lock.
      * Two tag-narrowed queries per chunk instead, the shape the mixed path's
      * preload already takes; a doc named by both arrives once.
+     *
+     * BOTH SIDES ARE CHUNKED, owners AND the tag values they are narrowed by.
+     * The owners were chunked from the start and the batch's ids were not, so
+     * every query carried the WHOLE batch's ids: a 20,000-event batch — the
+     * size a mirror feeds, and the size this path exists for — compiled one
+     * YQL holding 20,000 `tag_index contains "e:<64-hex>"` terms, about 1.4 MB
+     * of query text, evaluated under the writer lock, once per owner chunk.
+     * Chunking both keeps every round trip the same bounded shape as its
+     * siblings ([guardDocs], the mixed path's preload); the queries multiply,
+     * but they fan out and each one is small.
      */
     private suspend fun tombstoneDocs(
         owners: Collection<String>,
         ids: List<String>,
         addresses: List<String>,
     ): Map<String, List<EventDoc>> {
+        val idChunks = ids.chunked(CHECK_CHUNK)
+        val addressChunks = addresses.chunked(CHECK_CHUNK)
         val queries =
             owners.toList().chunked(CHECK_CHUNK).flatMap { chunk ->
                 buildList {
-                    if (ids.isNotEmpty()) add(EventQuery(kinds = listOf(DeletionEvent.KIND), authors = chunk, tags = mapOf("e" to ids)))
-                    if (addresses.isNotEmpty()) add(EventQuery(kinds = listOf(DeletionEvent.KIND), authors = chunk, tags = mapOf("a" to addresses)))
+                    idChunks.forEach { add(EventQuery(kinds = listOf(DeletionEvent.KIND), authors = chunk, tags = mapOf("e" to it))) }
+                    addressChunks.forEach { add(EventQuery(kinds = listOf(DeletionEvent.KIND), authors = chunk, tags = mapOf("a" to it))) }
                 }
             }
         return queries

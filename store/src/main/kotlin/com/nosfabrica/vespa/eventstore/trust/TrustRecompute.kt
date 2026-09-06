@@ -31,6 +31,7 @@ import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
 import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.mapping.toEvent
+import com.nosfabrica.vespa.eventstore.runtime.WriteLocks
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import com.vitorpamplona.quartz.utils.Hex
 
@@ -165,7 +166,7 @@ internal class TrustRecompute(
         // gate held for 24 minutes could not be attributed to either. The
         // annotation names the shape of THIS call — the chunk count is the
         // loop, the subject count is the work.
-        IngestStats.annotateHold("derive ${subjects.size} subject(s) in ${(subjects.size + FETCH_CHUNK - 1) / FETCH_CHUNK} chunk(s), fanout $QUERY_FANOUT")
+        IngestStats.annotateHold("derive ${subjects.size} subject(s) in ${(subjects.size + FETCH_CHUNK - 1) / FETCH_CHUNK} chunk(s), fanout $QUERY_FANOUT", WriteLocks.TRUST_GATE)
         IngestStats.timed("proj.fetch.derive") {
             subjects.chunked(FETCH_CHUNK).forEachBounded(
                 QUERY_FANOUT,
@@ -274,7 +275,7 @@ internal class TrustRecompute(
         // Each cell that overtakes its document's `max_rank` carries the new
         // value in the same update — the invariant the trust descent proves
         // pages with (TrustDescent). Its cost is a function of cache misses.
-        IngestStats.annotateHold("cell update over ${updates.size} card(s)")
+        IngestStats.annotateHold("cell update over ${updates.size} card(s)", WriteLocks.TRUST_GATE)
         val raised = IngestStats.timed("proj.fetch.maxrank") { maxRanks?.raise(updates) ?: updates }
         try {
             IngestStats.timed("proj.write") { reputations.updateCells(raised) }
@@ -311,7 +312,7 @@ internal class TrustRecompute(
             inner.visitIds(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service)), withDTag = false) { page ->
                 page.map { it.id }.chunked(PROJECT_PAGE).forEach { ids ->
                     gate.holding {
-                        IngestStats.annotateHold("project service ${service.take(8)}: ${ids.size} card(s)")
+                        IngestStats.annotateHold("project service ${service.take(8)}: ${ids.size} card(s)", WriteLocks.TRUST_GATE)
                         val docs = IngestStats.timed("proj.fetch.page") { inner.search(EventQuery(ids = ids, kinds = listOf(ContactCardEvent.KIND), complete = true)) }
                         applyCards(docs, providers.get())
                         applied += docs.size

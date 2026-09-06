@@ -522,9 +522,13 @@ object EventYql {
      * DISTINCT values of a single-letter tag across the match set, aggregated
      * server-side off `tag_index`, each leaf group carrying its doc count.
      *
-     * `tag_index` holds derived `"<letter>:<value>"` pairs, so the groups come
-     * back prefixed and the caller strips [tagName] plus the colon. It is a
-     * LOSSY projection — single-letter names, first values only, and nothing of
+     * GROUPS EVERY LETTER, and takes no tag name for that reason: `tag_index`
+     * holds derived `"<letter>:<value>"` pairs and Vespa groups the attribute
+     * whole, so the one-letter narrowing is the CALLER's, done on the prefixed
+     * keys that come back. It used to take a `tagName` it never read, which
+     * read as a server-side constraint that was never there — and a caller
+     * that believed the signature and dropped its own prefix filter would have
+     * served every letter's values. It is a LOSSY projection — single-letter names, first values only, and nothing of
      * the tag beyond the value — which is exactly why this is only sound for a
      * one-letter tag read at position 1 with no condition on the rest of the
      * tag. [EventIndex.distinctTagIndexValues] owns those preconditions;
@@ -533,10 +537,7 @@ object EventYql {
      * No `max()`, as with [buildDistinctAuthors]: a truncated url set would
      * silently narrow whatever asked for it.
      */
-    fun buildDistinctTagValues(
-        q: EventQuery,
-        tagName: String,
-    ): VespaQuery? = grouping(q, """all(group(tag_index) each(output(count())))""")
+    fun buildDistinctTagValues(q: EventQuery): VespaQuery? = grouping(q, """all(group(tag_index) each(output(count())))""")
 
     /**
      * The shared shape of every aggregation query: the filter WHERE clause,

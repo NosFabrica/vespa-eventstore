@@ -95,7 +95,7 @@ class HoldStackTest {
         // every time and silently dropped every attribution — 7.4 s of measured
         // gate wait on a real corpus recorded as "behind nobody".
         holding(trustGate, "lock.ingest.trust.hold") {
-            IngestStats.annotateHold("bulk commit holding the trust gate")
+            IngestStats.annotateHold("bulk commit holding the trust gate", trustGate)
             val holder = assertNotNull(IngestStats.holderOf(trustGate))
             assertEquals(
                 "bulk commit holding the trust gate",
@@ -147,7 +147,7 @@ class HoldStackTest {
     fun `annotateHold names the work and keeps the start time`() {
         holding(trustGate, "lock.gate.hold") {
             val started = assertNotNull(IngestStats.heldNow()).sinceNanos
-            IngestStats.annotateHold("derive 20000 subject(s) in 40 chunk(s)")
+            IngestStats.annotateHold("derive 20000 subject(s) in 40 chunk(s)", trustGate)
             val held = assertNotNull(IngestStats.heldNow())
             assertEquals("derive 20000 subject(s) in 40 chunk(s)", held.detail)
             assertEquals("lock.gate.hold", held.stage, "annotating must not rename the lock")
@@ -157,9 +157,29 @@ class HoldStackTest {
     }
 
     @Test
+    fun `annotateHold names only the mutex it was given`() {
+        // THE TRUST-GATE SPLIT MADE TWO HOLDERS NORMAL: the projection drain
+        // holds the gate while a plain insert holds the write lock. Annotating
+        // every live hold put the drain's detail on the insert's, and the next
+        // writer's attribution then read "blocked by the drain" for time it
+        // spent behind another insert.
+        holding(writeLock, "lock.ingest.hold") {
+            holding(trustGate, "lock.gate.hold") {
+                IngestStats.annotateHold("derive 20000 subject(s)", trustGate)
+                assertEquals("derive 20000 subject(s)", IngestStats.labelOf(assertNotNull(IngestStats.holderOf(trustGate))))
+                assertEquals(
+                    "lock.ingest.hold",
+                    IngestStats.labelOf(assertNotNull(IngestStats.holderOf(writeLock))),
+                    "the write lock's holder keeps its own name — it is not doing the gate's work",
+                )
+            }
+        }
+    }
+
+    @Test
     fun `annotateHold outside a hold is a no-op rather than a crash`() {
         // Accounting must never break the work it reports on.
-        IngestStats.annotateHold("nobody is holding anything")
+        IngestStats.annotateHold("nobody is holding anything", trustGate)
         assertNull(IngestStats.heldNow())
     }
 

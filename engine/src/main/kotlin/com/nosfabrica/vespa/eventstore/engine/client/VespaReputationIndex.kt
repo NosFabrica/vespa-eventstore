@@ -199,7 +199,19 @@ class VespaReputationIndex(
                     buildJsonObject { put("fields", fields) }.toString(),
                     feedParams().testAndSetCondition("$DOCTYPE.max_rank < $floor"),
                 )
-            }.forEach { it.await() }
+            }.forEach { op ->
+                // A parent removed since the caller read it answers 404 through
+                // the feed client as a FAILURE. Tolerated here for the same
+                // reason [updateCells] and [removeCells] tolerate it — this
+                // update never creates, so "the document is gone" is an
+                // outcome and not an error — and for one more: the caller is
+                // the max_rank backfill, which walks the whole corpus a page at
+                // a time. Letting one concurrently-emptied parent (a live
+                // `recomputeBatch(removeEmpties = true)` does exactly that)
+                // propagate aborted the page, and `runUntilDone` restarts the
+                // WALK, so on a busy store the descent could never switch on.
+                runCatching { op.await() }.onFailure { if (!it.isMissingDocument()) throw it }
+            }
     }
 
     /**

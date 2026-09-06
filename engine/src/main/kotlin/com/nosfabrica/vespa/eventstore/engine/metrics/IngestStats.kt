@@ -157,15 +157,29 @@ object IngestStats {
     }
 
     /**
-     * Say what the holder is DOING, from inside the critical section — the
-     * stage name alone is `lock.gate.hold`, which names the lock and not the
-     * work. Keeps the original start time: this annotates a hold, it does not
-     * restart one. Annotates every current hold: the caller is inside the
-     * critical section of whichever lock(s) it holds, and the work it names
-     * is what all of them are held for.
+     * Say what the holder of [lock] is DOING, from inside its critical section
+     * — the stage name alone is `lock.gate.hold`, which names the lock and not
+     * the work. Keeps the original start time: this annotates a hold, it does
+     * not restart one.
+     *
+     * SCOPED TO ONE MUTEX, and that is the whole correctness of it. This used
+     * to rewrite EVERY live hold, justified by "the caller is inside the
+     * critical section of whichever lock(s) it holds" — true while one mutex
+     * served every write, and false since the trust gate was split off it. Two
+     * unrelated holders are now live at once routinely: the projection drain
+     * holds `trustGate` while a kind-1 insert holds `writes`. Annotating both
+     * put the drain's detail on the insert's hold, so the next plain writer's
+     * `holderOf(WRITE_LOCK)` -> [labelOf] booked ingest-behind-ingest wait as
+     * "blocked by the drain" — the mis-attribution [Held.lock] and
+     * docs/telemetry.md §15.1 exist to prevent, re-introduced one layer up.
+     *
+     * A mutex has one holder, so at most one entry matches.
      */
-    fun annotateHold(detail: String) {
-        held.replaceAll { _, h -> Held(h.stage, h.sinceNanos, detail, h.lock) }
+    fun annotateHold(
+        detail: String,
+        lock: String,
+    ) {
+        held.replaceAll { _, h -> if (h.lock == lock) Held(h.stage, h.sinceNanos, detail, h.lock) else h }
     }
 
     /** Called on release of the lock booked under [stage]. Tolerates a missing begin — an unmatched end is a no-op, never a wrong holder. */

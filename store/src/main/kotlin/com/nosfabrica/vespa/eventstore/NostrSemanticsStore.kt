@@ -64,6 +64,7 @@ import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import com.vitorpamplona.quartz.utils.Hex
 import kotlinx.coroutines.sync.Mutex
 import kotlin.coroutines.coroutineContext
 
@@ -192,6 +193,25 @@ class NostrSemanticsStore(
      * ungated by design, and this gate never applied to them.
      */
     private suspend fun delegations(): Delegations = (index as? TrustProjection)?.recompute?.delegations() ?: Delegations.NONE
+
+    /**
+     * THE CONNECTION'S OBSERVER, NORMALIZED — lower-cased hex or nothing.
+     *
+     * The `observer:` search token is normalized where it is parsed
+     * ([FilterMapping]), and this is the other way in: a NIP-42 identity off
+     * [StoreQueryContext]. It has to agree with the token, because since the
+     * lens became SERVICE-keyed the resolution is an exact map lookup
+     * (`ProviderMap.lensOf`) keyed by the 10040's own canonical pubkey — a
+     * mixed-case observer misses it, resolves to NO_LENS, and the query goes
+     * out with `user_q = {}` ("trusts nobody"). Under the observer gate, which
+     * stamps a floor on the very same query, every document then scores below
+     * it and the read comes back EMPTY rather than un-lensed — a silent wrong
+     * answer, not a degraded one.
+     *
+     * Non-hex is dropped rather than passed through: `EventYql` would drop it
+     * anyway, and a value that cannot key a lens must not switch on the gate.
+     */
+    private suspend fun connectionObserver(): String? = coroutineContext[StoreQueryContext]?.observer?.lowercase()?.takeIf(Hex::isHex64)
 
     /**
      * THE LENS, RESOLVED: the reputation tensors are keyed by SERVICE key, so
@@ -512,7 +532,7 @@ class NostrSemanticsStore(
     /** [query]'s body; split for the reason [batchInsertUnder] is. */
     @Suppress("UNCHECKED_CAST")
     private suspend fun <T : Event> queryUnder(filters: List<Filter>): List<T> {
-        val observer = coroutineContext[StoreQueryContext]?.observer
+        val observer = connectionObserver()
         val cutoff = nowSecs()
         val queries = lensed(filters.mapNotNull { it.toExpiryQuery(cutoff, observer) })
         // Reconstruct via Quartz's by-kind factory straight from the stored
@@ -531,7 +551,7 @@ class NostrSemanticsStore(
         filters: List<Filter>,
         onEach: (RawEvent) -> Unit,
     ) = withActivity(Activity.Query) {
-        val observer = coroutineContext[StoreQueryContext]?.observer
+        val observer = connectionObserver()
         val cutoff = nowSecs()
         val queries = lensed(filters.mapNotNull { it.toExpiryQuery(cutoff, observer) })
         pages.serve(queries, filters, rawPage).forEach(onEach)
@@ -572,7 +592,7 @@ class NostrSemanticsStore(
 
     /** [count]'s body; split for the reason [batchInsertUnder] is. */
     private suspend fun countUnder(filters: List<Filter>): Int {
-        val observer = coroutineContext[StoreQueryContext]?.observer
+        val observer = connectionObserver()
         val cutoff = nowSecs()
         val queries =
             lensed(filters.mapNotNull { it.toExpiryQuery(cutoff, observer) })
@@ -760,6 +780,14 @@ class NostrSemanticsStore(
         // Exclude already-expired events (NIP-40), exactly as query/count do —
         // otherwise a peer keeps trying to reconcile events we refuse to serve.
         val cutoff = nowSecs()
+        // SERIAL, where `query` and `count` fan out at QUERY_FANOUT — and it is
+        // a choice, not an oversight. The fold below is unsynchronized (`all`,
+        // `seen`), so a fan-out would have to hand each walk its own list and
+        // merge after, which on the one read that materializes a whole corpus
+        // slice adds a partial copy per in-flight filter to the peak. What that
+        // buys is bounded by the cap: its early exit — the filters left can
+        // only add to the union — is work a fan-out has already done. Worth
+        // revisiting for the uncapped NIP-77 catch-up, with the heap measured.
         for (q in filters.mapNotNull { it.toExpiryQuery(cutoff) }) {
             // Already over budget: the filters left can only add to the union.
             if (cap != null && all.size >= cap) break
