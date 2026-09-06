@@ -29,6 +29,7 @@ import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.CellRemoval
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
+import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
 import com.nosfabrica.vespa.eventstore.engine.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.vitorpamplona.quartz.nip01Core.core.isAddressable
@@ -296,7 +297,7 @@ class TrustProjection(
         val removals =
             docs
                 .filter { it.kind == ContactCardEvent.KIND }
-                .mapNotNull { doc -> subjectOf(doc)?.let { CellRemoval(it, doc.pubkey, influence = true, followers = true) } }
+                .mapNotNull { doc -> subjectOf(doc)?.let { CellRemoval(it, ServiceKey(doc.pubkey), influence = true, followers = true) } }
         if (removals.isNotEmpty()) IngestStats.timed("proj.write") { reputations.removeCells(removals) }
         return ProjectionWork.NONE
     }

@@ -29,6 +29,8 @@ import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationCells
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
+import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
+import com.nosfabrica.vespa.eventstore.engine.doc.serviceCells
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
@@ -114,7 +116,7 @@ class TrustProjectionTest {
             store.insert(list10040())
             store.insert(card())
             assertEquals(
-                ReputationDoc(subject, mapOf(service to 87), mapOf(service to 120.0)),
+                ReputationDoc(subject, serviceCells(service to 87), serviceCells(service to 120.0)),
                 reputations.get(subject),
             )
             assertEquals(TrustProviders.Lens(service, service), lensOf(observer), "the 10040 resolves to the service the query tensors carry")
@@ -146,7 +148,7 @@ class TrustProjectionTest {
             // The derive — the repair path a crash marker or a verify takes.
             val proj = TrustProjection(recording, reps)
             val derived = proj.recompute.deriveBatch(listOf(subject), proj.recompute.providerMap())
-            assertEquals(mapOf(service to 87), derived[subject]?.influenceScores, "derived through the fetch")
+            assertEquals(serviceCells(service to 87), derived[subject]?.influenceScores, "derived through the fetch")
             // The derivation's shape: cards BY SUBJECT (`d`), any signer, live at
             // the cutoff — not the store's own by-author dedup read of the card.
             val cardFetches = seen.filter { it.kinds == listOf(ContactCardEvent.KIND) && it.authors.isEmpty() && it.notExpiredAt != null }
@@ -162,7 +164,7 @@ class TrustProjectionTest {
             store.insert(card())
             assertNull(reputations.get(subject), "no provider mapping yet")
             store.insert(list10040())
-            assertEquals(mapOf(service to 87), reputations.get(subject)?.influenceScores)
+            assertEquals(serviceCells(service to 87), reputations.get(subject)?.influenceScores)
         }
 
     @Test
@@ -173,13 +175,13 @@ class TrustProjectionTest {
             // include:spam floor (min_rank=0 is the "keep everything" opt-out —
             // a negative cell would silently drop the author from it).
             store.insert(card(rank = -5, followers = null, at = 100))
-            assertEquals(mapOf(service to 0), reputations.get(subject)?.influenceScores, "negative clamps to 0")
+            assertEquals(serviceCells(service to 0), reputations.get(subject)?.influenceScores, "negative clamps to 0")
             // Bulk path, over-scale: capped at 100 so wot_mult() stays on the
             // 0..100 span its calibrated tier-crossing thresholds are derived
             // against. Both paths must clamp identically or the reconciler
             // reads drift.
             store.batchInsert(listOf(card(rank = 250, followers = null, at = 200)))
-            assertEquals(mapOf(service to 100), reputations.get(subject)?.influenceScores, "over-scale caps at 100")
+            assertEquals(serviceCells(service to 100), reputations.get(subject)?.influenceScores, "over-scale caps at 100")
         }
 
     @Test
@@ -217,8 +219,8 @@ class TrustProjectionTest {
             store.insert(list10040(author = observer2, serviceKey = service2))
             store.insert(card(signer = service, rank = 87))
             store.insert(card(signer = service2, rank = 15, followers = 3))
-            assertEquals(mapOf(service to 87, service2 to 15), reputations.get(subject)?.influenceScores)
-            assertEquals(mapOf(service to 120.0, service2 to 3.0), reputations.get(subject)?.followerCounts)
+            assertEquals(serviceCells(service to 87, service2 to 15), reputations.get(subject)?.influenceScores)
+            assertEquals(serviceCells(service to 120.0, service2 to 3.0), reputations.get(subject)?.followerCounts)
             assertEquals(service, lensOf(observer).rank)
             assertEquals(service2, lensOf(observer2).rank)
         }
@@ -229,7 +231,7 @@ class TrustProjectionTest {
             store.insert(list10040(serviceKey = service, at = 100))
             store.insert(card(signer = service, rank = 87))
             store.insert(card(signer = service2, rank = 42))
-            assertEquals(mapOf(service to 87), reputations.get(subject)?.influenceScores, "service2 is named by nobody: its card is dead storage")
+            assertEquals(serviceCells(service to 87), reputations.get(subject)?.influenceScores, "service2 is named by nobody: its card is dead storage")
             assertEquals(service, lensOf(observer).rank)
 
             // The observer's NEW 10040 picks service2: the LENS moves — no cell
@@ -237,7 +239,7 @@ class TrustProjectionTest {
             // first time, is projected by the walk the list queued.
             store.insert(list10040(serviceKey = service2, at = 200))
             assertEquals(service2, lensOf(observer).rank, "the swap is a query-time resolution")
-            assertEquals(mapOf(service to 87, service2 to 42), reputations.get(subject)?.influenceScores, "the newly named service's card became a cell")
+            assertEquals(serviceCells(service to 87, service2 to 42), reputations.get(subject)?.influenceScores, "the newly named service's card became a cell")
         }
 
     // ---- per-dimension provider attribution (NIP-85 typed entries) -----------
@@ -270,7 +272,7 @@ class TrustProjectionTest {
             // Every mapped service's card lands whole; the LENS picks the
             // dimension: rank through service (87), followers through service2 (300).
             assertEquals(
-                ReputationDoc(subject, mapOf(service to 87, service2 to 50), mapOf(service to 999.0, service2 to 300.0)),
+                ReputationDoc(subject, serviceCells(service to 87, service2 to 50), serviceCells(service to 999.0, service2 to 300.0)),
                 reputations.get(subject),
             )
             assertEquals(TrustProviders.Lens(rank = service, followers = service2), lensOf(observer))
@@ -288,13 +290,13 @@ class TrustProjectionTest {
             val outcomes = store.batchInsert(fillers + card(signer = service, rank = 87, followers = 999) + card(signer = service2, rank = 50, followers = 300))
             assertEquals(17, outcomes.count { it is IEventStore.InsertOutcome.Accepted })
             assertEquals(
-                ReputationDoc(subject, mapOf(service to 87, service2 to 50), mapOf(service to 999.0, service2 to 300.0)),
+                ReputationDoc(subject, serviceCells(service to 87, service2 to 50), serviceCells(service to 999.0, service2 to 300.0)),
                 reputations.get(subject),
             )
             assertEquals(TrustProviders.Lens(rank = service, followers = service2), lensOf(observer))
             fillers.forEach { f ->
                 val about = f.tags.first { it[0] == "d" }[1]
-                assertEquals(ReputationDoc(about, mapOf(service to 10), emptyMap()), reputations.get(about), "rank-only filler $about")
+                assertEquals(ReputationDoc(about, serviceCells(service to 10), emptyMap()), reputations.get(about), "rank-only filler $about")
             }
         }
 
@@ -305,7 +307,7 @@ class TrustProjectionTest {
             store.insert(list10040()) // the default names service under rank AND followers
             store.insert(card(rank = 87, followers = 120))
             assertEquals(
-                ReputationDoc(subject, mapOf(service to 87), mapOf(service to 120.0)),
+                ReputationDoc(subject, serviceCells(service to 87), serviceCells(service to 120.0)),
                 reputations.get(subject),
             )
         }
@@ -338,7 +340,7 @@ class TrustProjectionTest {
             store.insert(card())
 
             // The service tag beside it still maps, and the score still derives.
-            assertEquals(mapOf(service to 87), reputations.get(subject)?.influenceScores)
+            assertEquals(serviceCells(service to 87), reputations.get(subject)?.influenceScores)
         }
     }
 
@@ -381,8 +383,8 @@ class TrustProjectionTest {
             // so its scores must reach no tensor at all.
             store.insert(card(signer = listPublisher, rank = 99, followers = 999))
 
-            assertEquals(mapOf(service to 87), reputations.get(subject)?.influenceScores)
-            assertEquals(mapOf(service to 120.0), reputations.get(subject)?.followerCounts)
+            assertEquals(serviceCells(service to 87), reputations.get(subject)?.influenceScores)
+            assertEquals(serviceCells(service to 120.0), reputations.get(subject)?.followerCounts)
         }
     }
 
@@ -401,7 +403,7 @@ class TrustProjectionTest {
             val outcomes = store.batchInsert(batch)
             assertEquals(40, outcomes.count { it is IEventStore.InsertOutcome.Accepted })
             subjects.forEach { s ->
-                assertEquals(mapOf(service to 10), reputations.docs.getValue(s).influenceScores, "subject ${'$'}s")
+                assertEquals(serviceCells(service to 10), reputations.docs.getValue(s).influenceScores, "subject ${'$'}s")
             }
         }
 
@@ -421,7 +423,7 @@ class TrustProjectionTest {
             assertEquals(2, outcomes.count { it is IEventStore.InsertOutcome.Accepted })
             // The observer's NEWEST 10040 replaced the one naming `service`, so
             // only service2 is mapped: its card is the one cell, and the lens.
-            assertEquals(mapOf(service2 to 71), reputations.get(subject)?.influenceScores)
+            assertEquals(serviceCells(service2 to 71), reputations.get(subject)?.influenceScores)
             assertEquals(service2, lensOf(observer).rank)
         }
 
@@ -448,12 +450,12 @@ class TrustProjectionTest {
         runBlocking {
             store.insert(list10040())
             store.insert(card(rank = 87, followers = 120, at = 100))
-            assertEquals(mapOf(service to 87), reputations.get(subject)?.influenceScores)
+            assertEquals(serviceCells(service to 87), reputations.get(subject)?.influenceScores)
             // Newer card keeps followers but drops rank — via the bulk path.
             store.batchInsert(listOf(card(rank = null, followers = 200, at = 200)))
             val doc = reputations.get(subject)
             assertEquals(emptyMap(), doc?.influenceScores, "the dropped rank must not linger")
-            assertEquals(mapOf(service to 200.0), doc?.followerCounts, "followers updated")
+            assertEquals(serviceCells(service to 200.0), doc?.followerCounts, "followers updated")
         }
 
     /**
@@ -493,7 +495,7 @@ class TrustProjectionTest {
                 "bulk cell-updates must match sequential",
             )
             // And the values are what we expect, not coincidentally-equal empties.
-            assertEquals(mapOf(service to 55, service2 to 9), bulkReputations.docs.getValue(subject).influenceScores)
+            assertEquals(serviceCells(service to 55, service2 to 9), bulkReputations.docs.getValue(subject).influenceScores)
             assertNoCells(bulkReputations, subjectB, "subjectB was retracted")
         }
 
@@ -510,7 +512,7 @@ class TrustProjectionTest {
             store.insert(list10040(author = observer, serviceKey = service))
             store.insert(list10040(author = observer2, serviceKey = service))
             store.insert(card())
-            assertEquals(mapOf(service to 87), reputations.get(subject)?.influenceScores, "ONE cell however many users name the provider")
+            assertEquals(serviceCells(service to 87), reputations.get(subject)?.influenceScores, "ONE cell however many users name the provider")
             assertEquals(service, lensOf(observer).rank, "both users trusting the provider resolve to its cell")
             assertEquals(service, lensOf(observer2).rank)
         }
@@ -525,7 +527,7 @@ class TrustProjectionTest {
             val outcomes = store.batchInsert(subjects.map { s -> card(about = s) })
             assertEquals(20, outcomes.count { it is IEventStore.InsertOutcome.Accepted })
             subjects.forEach { s ->
-                assertEquals(mapOf(service to 87), reputations.docs.getValue(s).influenceScores, "subject $s")
+                assertEquals(serviceCells(service to 87), reputations.docs.getValue(s).influenceScores, "subject $s")
             }
         }
 
@@ -536,12 +538,12 @@ class TrustProjectionTest {
             store.insert(list10040(author = observer, serviceKey = service))
             store.insert(list10040(author = observer2, serviceKey = service))
             store.insert(card())
-            assertEquals(mapOf(service to 87), reputations.get(subject)?.influenceScores)
+            assertEquals(serviceCells(service to 87), reputations.get(subject)?.influenceScores)
 
             // observer2's NEW 10040 picks service2 instead: their LENS moves off
             // the shared provider; the cell, and observer's lens, stay.
             store.insert(list10040(author = observer2, serviceKey = service2))
-            assertEquals(mapOf(service to 87), reputations.get(subject)?.influenceScores)
+            assertEquals(serviceCells(service to 87), reputations.get(subject)?.influenceScores)
             assertEquals(service, lensOf(observer).rank)
             assertEquals(service2, lensOf(observer2).rank)
         }
@@ -572,14 +574,14 @@ class TrustProjectionTest {
             // Events landed, cells did not — the exact drift, named by the marker.
             assertEquals(20, inner.search(EventQuery(kinds = listOf(ContactCardEvent.KIND))).count { subjectOf(it) in subjects })
             subjects.forEach { assertNull(reps.get(it), "cells must be missing after the failure") }
-            assertEquals(subjects.toSet(), reps.get(ProjectionLedger.MARKER_KEY)?.influenceScores?.keys, "the marker names the dirty subjects")
+            assertEquals(subjects.map(::ServiceKey).toSet(), reps.get(ProjectionLedger.MARKER_KEY)?.influenceScores?.keys, "the marker names the dirty subjects")
 
             // A retry is all duplicates and never reaches the projection; the
             // next NEW trust write heals first.
             st.batchInsert(batch)
             subjects.forEach { assertNull(reps.get(it), "duplicates alone cannot repair") }
             st.insert(card(about = "9a".repeat(32)))
-            subjects.forEach { s -> assertEquals(mapOf(service to 87), reps.get(s)?.influenceScores, "healed subject $s") }
+            subjects.forEach { s -> assertEquals(serviceCells(service to 87), reps.get(s)?.influenceScores, "healed subject $s") }
             assertNull(reps.get(ProjectionLedger.MARKER_KEY), "marker cleared after the heal")
         }
 
@@ -592,7 +594,7 @@ class TrustProjectionTest {
             assertNull(reputations.get(ProjectionLedger.MARKER_KEY))
             // And ordinary projection still works beside it.
             store.insert(card())
-            assertEquals(mapOf(service to 87), reputations.get(subject)?.influenceScores)
+            assertEquals(serviceCells(service to 87), reputations.get(subject)?.influenceScores)
         }
 
     // ---- expiry (NIP-40) ------------------------------------------------------
@@ -609,13 +611,13 @@ class TrustProjectionTest {
             st.insert(list10040(author = observer, serviceKey = service))
             st.insert(list10040(author = observer2, serviceKey = service2))
             st.insert(card(signer = service, rank = 87, expires = now + 500))
-            assertEquals(mapOf(service to 87), reps.get(subject)?.influenceScores)
+            assertEquals(serviceCells(service to 87), reps.get(subject)?.influenceScores)
 
             now += 1_000 // the card is now past its NIP-40 expiration
             st.insert(card(signer = service2, rank = 15, followers = 3))
             proj.recompute.recomputeBatch(listOf(subject), proj.recompute.providerMap(), removeEmpties = true)
             assertEquals(
-                mapOf(service2 to 15),
+                serviceCells(service2 to 15),
                 reps.get(subject)?.influenceScores,
                 "the expired card's cell must drop with the re-derive",
             )
@@ -651,7 +653,7 @@ class TrustProjectionTest {
                 // Both cells stand; the observer's lens is the FIRST-listed
                 // service (one slot per metric, as Amethyst models it), so the
                 // arrival order of the cards cannot change what is served.
-                assertEquals(mapOf(service to 30, service2 to 71), reps.get(subject)?.influenceScores, "one cell per service for order $order")
+                assertEquals(serviceCells(service to 30, service2 to 71), reps.get(subject)?.influenceScores, "one cell per service for order $order")
                 assertEquals(
                     service,
                     projection.recompute
@@ -688,7 +690,7 @@ class TrustProjectionTest {
             assertNotNull(reps.get(ProjectionLedger.MARKER_KEY), "the queue is persisted — a crash loses nothing")
 
             proj.backlog.drain { it() }
-            assertEquals(mapOf(service to 87), reps.get(subject)?.influenceScores, "drained")
+            assertEquals(serviceCells(service to 87), reps.get(subject)?.influenceScores, "drained")
             assertNull(reps.get(ProjectionLedger.MARKER_KEY), "queue empty, marker gone")
         }
 
@@ -706,7 +708,7 @@ class TrustProjectionTest {
             val subjects = (1..20).map { it.toString(16).padStart(64, 'f') }
             st.batchInsert(subjects.map { s -> card(about = s) })
             subjects.forEach { s ->
-                assertEquals(mapOf(service to 87), reps.docs.getValue(s).influenceScores, "bulk cells land without a drain")
+                assertEquals(serviceCells(service to 87), reps.docs.getValue(s).influenceScores, "bulk cells land without a drain")
             }
         }
 
@@ -745,7 +747,7 @@ class TrustProjectionTest {
 
             assertEquals(syncReps.docs.filterValues { !it.isEmpty() }, defReps.docs.filterValues { !it.isEmpty() }, "any drain schedule must converge to the inline tensors")
             // And they are the values we expect, not coincidentally-equal emptiness.
-            assertEquals(mapOf(service to 55), syncReps.docs.getValue(subject).influenceScores)
+            assertEquals(serviceCells(service to 55), syncReps.docs.getValue(subject).influenceScores)
         }
 
     /**
@@ -777,7 +779,7 @@ class TrustProjectionTest {
                 st.insert(card(rank = 80, at = 200))
                 if (schedule[1]) proj.backlog.drain { it() }
                 proj.backlog.drain { it() }
-                assertEquals(mapOf(service to 80), reps.get(subject)?.influenceScores, "newest version wins for drains at $schedule")
+                assertEquals(serviceCells(service to 80), reps.get(subject)?.influenceScores, "newest version wins for drains at $schedule")
             }
         }
 
@@ -792,12 +794,12 @@ class TrustProjectionTest {
             st.insert(list10040())
             st.insert(card(rank = 80, at = 200))
             proj.backlog.drain { it() }
-            assertEquals(mapOf(service to 80), reps.get(subject)?.influenceScores)
+            assertEquals(serviceCells(service to 80), reps.get(subject)?.influenceScores)
 
             val outcome = st.batchInsert(listOf(card(rank = 50, at = 100))).single()
             assertTrue(outcome is IEventStore.InsertOutcome.Rejected, "the older version is replaced, not stored")
             proj.backlog.drain { it() }
-            assertEquals(mapOf(service to 80), reps.get(subject)?.influenceScores, "nothing left to derive the stale value from")
+            assertEquals(serviceCells(service to 80), reps.get(subject)?.influenceScores, "nothing left to derive the stale value from")
         }
 
     /**
@@ -817,12 +819,12 @@ class TrustProjectionTest {
             // A real bulk batch (>= the bulk threshold), so v1's cell lands INLINE.
             val fillers = (1..15).map { card(about = it.toString(16).padStart(64, 'b'), rank = 10) }
             st.batchInsert(fillers + card(rank = 50, at = 100))
-            assertEquals(mapOf(service to 50), reps.get(subject)?.influenceScores, "bulk cell is immediate")
+            assertEquals(serviceCells(service to 50), reps.get(subject)?.influenceScores, "bulk cell is immediate")
 
             st.insert(card(rank = 80, at = 200))
-            assertEquals(mapOf(service to 80), reps.get(subject)?.influenceScores, "the single insert's cell is immediate too")
+            assertEquals(serviceCells(service to 80), reps.get(subject)?.influenceScores, "the single insert's cell is immediate too")
             proj.backlog.drain { it() }
-            assertEquals(mapOf(service to 80), reps.get(subject)?.influenceScores, "and a drain changes nothing")
+            assertEquals(serviceCells(service to 80), reps.get(subject)?.influenceScores, "and a drain changes nothing")
         }
 
     /** Create then delete in one session: the cells die with the event, under every drain timing. */
@@ -839,7 +841,7 @@ class TrustProjectionTest {
                 st.insert(scored)
                 if (drainBetween) {
                     proj.backlog.drain { it() }
-                    assertEquals(mapOf(service to 87), reps.get(subject)?.influenceScores, "projected while the event lives")
+                    assertEquals(serviceCells(service to 87), reps.get(subject)?.influenceScores, "projected while the event lives")
                 }
                 st.insert(DeletionEvent(id(), service, next(), arrayOf(arrayOf("e", scored.id)), "", ""))
                 proj.backlog.drain { it() }

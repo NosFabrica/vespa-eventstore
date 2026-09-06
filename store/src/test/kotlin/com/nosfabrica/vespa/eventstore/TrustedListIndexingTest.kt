@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.eventstore
 import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.InMemoryReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.SearchFields
+import com.nosfabrica.vespa.eventstore.engine.doc.serviceCells
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.mapping.SearchExtractors
 import com.nosfabrica.vespa.eventstore.trust.TrustProjection
@@ -449,6 +450,6 @@ class TrustedListIndexingTest {
             trustStore.insert(
                 ContactCardEvent(id(), service, next(), arrayOf(arrayOf("d", subject), arrayOf("rank", "80")), "", ""),
             )
-            assertEquals(mapOf(service to 80), assertNotNull(reputations.get(subject)).influenceScores)
+            assertEquals(serviceCells(service to 80), assertNotNull(reputations.get(subject)).influenceScores)
         }
 }

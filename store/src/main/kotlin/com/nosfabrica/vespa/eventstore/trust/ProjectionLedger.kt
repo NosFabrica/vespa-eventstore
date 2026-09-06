@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.CellRemoval
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationCells
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
+import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
@@ -332,7 +333,7 @@ internal class ProjectionLedger(
      */
     private suspend fun adoptStoredMarkerOnce(): ProjectionWork {
         unfinished.get()?.let { return it.toWork() }
-        val stored = reputations.get(MARKER_KEY)?.let { ProjectionWork(it.influenceScores.keys, it.followerCounts.keys) } ?: ProjectionWork.NONE
+        val stored = reputations.get(MARKER_KEY)?.let { ProjectionWork(it.influenceScores.keys.unwrap(), it.followerCounts.keys.unwrap()) } ?: ProjectionWork.NONE
         // Two first readers race harmlessly: both read the same marker, and the
         // loser's copy is dropped rather than overwriting work the winner has
         // since added. Inherited entries carry stamp 0, below every add.
@@ -344,8 +345,8 @@ internal class ProjectionLedger(
     private suspend fun addMarkerCells(work: ProjectionWork) {
         if (work.isEmpty()) return
         val cells = ArrayList<ReputationCells>(work.toRederive.size + work.toRewalk.size)
-        work.toRederive.forEach { cells += ReputationCells(MARKER_KEY, it, 1, null) }
-        work.toRewalk.forEach { cells += ReputationCells(MARKER_KEY, it, null, 1.0) }
+        work.toRederive.forEach { cells += ReputationCells(MARKER_KEY, ServiceKey(it), 1, null) }
+        work.toRewalk.forEach { cells += ReputationCells(MARKER_KEY, ServiceKey(it), null, 1.0) }
         reputations.updateCells(cells)
     }
 
@@ -353,8 +354,8 @@ internal class ProjectionLedger(
     private suspend fun clearMarkerCells(work: ProjectionWork) {
         if (work.isEmpty()) return
         val cells = ArrayList<CellRemoval>(work.toRederive.size + work.toRewalk.size)
-        work.toRederive.forEach { cells += CellRemoval(MARKER_KEY, it, influence = true, followers = false) }
-        work.toRewalk.forEach { cells += CellRemoval(MARKER_KEY, it, influence = false, followers = true) }
+        work.toRederive.forEach { cells += CellRemoval(MARKER_KEY, ServiceKey(it), influence = true, followers = false) }
+        work.toRewalk.forEach { cells += CellRemoval(MARKER_KEY, ServiceKey(it), influence = false, followers = true) }
         reputations.removeCells(cells)
     }
 
@@ -383,6 +384,17 @@ internal class ProjectionLedger(
         private const val MAX_CELL_ADDS = 64
 
         /** The persisted form: subjects ride the influence cells, services the follower cells (values are ignored). */
-        private fun marker(work: ProjectionWork): ReputationDoc = ReputationDoc(MARKER_KEY, work.toRederive.associateWith { 1 }, work.toRewalk.associateWith { 1.0 })
+        private fun marker(work: ProjectionWork): ReputationDoc = ReputationDoc(MARKER_KEY, work.toRederive.associate { ServiceKey(it) to 1 }, work.toRewalk.associate { ServiceKey(it) to 1.0 })
+
+        /**
+         * THE MARKER IS NOT A REPUTATION DOCUMENT, and this is where that shows.
+         * It borrows the reputation tensors as a plain string SET — subjects ride
+         * the influence cells, services the follower cells, and both values are
+         * ignored — so its cell keys are not [ServiceKey]s in the sense every
+         * other cell in this doctype is. The wrapping at these four call sites is
+         * that borrowing made explicit. While every key was a bare `String` the
+         * type system had no way to say it, and nothing did.
+         */
+        private fun Set<ServiceKey>.unwrap(): Set<String> = mapTo(LinkedHashSet()) { it.hex }
     }
 }

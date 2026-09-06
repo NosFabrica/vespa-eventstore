@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.eventstore.trust
 import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.InMemoryReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
+import com.nosfabrica.vespa.eventstore.engine.doc.serviceCells
 import com.nosfabrica.vespa.eventstore.mapping.toDoc
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
@@ -68,10 +69,10 @@ class TrustKeyingMigrationTest {
         index.put(list10040().toDoc())
         index.put(card(subject, 87).toDoc())
         index.put(card(subject2, 40).toDoc())
-        reputations.put(ReputationDoc(subject, mapOf(observer to 87), mapOf(observer to 12.0)))
-        reputations.put(ReputationDoc(subject2, mapOf(observer to 40), mapOf(observer to 12.0)))
+        reputations.put(ReputationDoc(subject, serviceCells(observer to 87), serviceCells(observer to 12.0)))
+        reputations.put(ReputationDoc(subject2, serviceCells(observer to 40), serviceCells(observer to 12.0)))
         // The projection's own bookkeeping must survive untouched.
-        reputations.put(ReputationDoc(MaxRankBackfill.MARKER_KEY, mapOf("done" to 1)))
+        reputations.put(ReputationDoc(MaxRankBackfill.MARKER_KEY, serviceCells("done" to 1)))
     }
 
     @Test
@@ -83,8 +84,8 @@ class TrustKeyingMigrationTest {
             assertFalse(done.refused)
             assertEquals(1, done.servicesProjected, "the one named service was walked into cells")
             assertEquals(2, done.keysRemoved, "the observer's key swept off each subject (both tensors at once)")
-            assertEquals(ReputationDoc(subject, mapOf(service to 87), mapOf(service to 12.0)), reputations.get(subject))
-            assertEquals(ReputationDoc(subject2, mapOf(service to 40), mapOf(service to 12.0)), reputations.get(subject2))
+            assertEquals(ReputationDoc(subject, serviceCells(service to 87), serviceCells(service to 12.0)), reputations.get(subject))
+            assertEquals(ReputationDoc(subject2, serviceCells(service to 40), serviceCells(service to 12.0)), reputations.get(subject2))
             assertNotNull(reputations.get(TrustKeyingMigration.MARKER_KEY), "the marker stands")
             assertNotNull(reputations.get(MaxRankBackfill.MARKER_KEY), "other markers are not subjects")
             assertTrue(reconciler.verify().isClean(), "what the migration wrote is exactly what a derive says")
@@ -95,10 +96,10 @@ class TrustKeyingMigrationTest {
         runBlocking {
             seedObserverKeyedStore()
             migration.run()
-            reputations.put(ReputationDoc(subject, mapOf("ff".repeat(32) to 1))) // a stray cell after the marker: not this walk's business
+            reputations.put(ReputationDoc(subject, serviceCells("ff".repeat(32) to 1))) // a stray cell after the marker: not this walk's business
             val again = migration.run()
             assertEquals(TrustKeyingMigration.Migration(0, 0, refused = false), again)
-            assertEquals(mapOf("ff".repeat(32) to 1), reputations.get(subject)?.influenceScores, "nothing swept under a standing marker")
+            assertEquals(serviceCells("ff".repeat(32) to 1), reputations.get(subject)?.influenceScores, "nothing swept under a standing marker")
         }
 
     @Test
@@ -113,10 +114,10 @@ class TrustKeyingMigrationTest {
     @Test
     fun `no readable 10040 beside reputation documents refuses rather than sweeping everything`() =
         runBlocking {
-            reputations.put(ReputationDoc(subject, mapOf(observer to 87)))
+            reputations.put(ReputationDoc(subject, serviceCells(observer to 87)))
             val done = migration.run()
             assertTrue(done.refused)
-            assertEquals(mapOf(observer to 87), reputations.get(subject)?.influenceScores, "nothing removed")
+            assertEquals(serviceCells(observer to 87), reputations.get(subject)?.influenceScores, "nothing removed")
             assertNull(reputations.get(TrustKeyingMigration.MARKER_KEY), "no marker until a run finishes")
         }
 
@@ -126,9 +127,9 @@ class TrustKeyingMigrationTest {
         runBlocking {
             seedObserverKeyedStore()
             val gone = "6e".repeat(32)
-            reputations.put(ReputationDoc(subject, mapOf(observer to 87, gone to 50), mapOf(observer to 12.0)))
+            reputations.put(ReputationDoc(subject, serviceCells(observer to 87, gone to 50), serviceCells(observer to 12.0)))
             val done = migration.run()
-            assertEquals(mapOf(service to 87), reputations.get(subject)?.influenceScores)
+            assertEquals(serviceCells(service to 87), reputations.get(subject)?.influenceScores)
             assertEquals(3, done.keysRemoved)
         }
 }

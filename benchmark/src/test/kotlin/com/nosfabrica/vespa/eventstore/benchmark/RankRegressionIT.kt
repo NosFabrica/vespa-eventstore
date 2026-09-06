@@ -26,6 +26,7 @@ import com.nosfabrica.vespa.eventstore.engine.client.VespaReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.SearchFields
+import com.nosfabrica.vespa.eventstore.engine.doc.serviceCells
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import kotlinx.coroutines.delay
@@ -524,62 +525,62 @@ class RankRegressionIT {
                     VespaReputationIndex(queryUrl).use { reputation ->
                         reputation.putAll(
                             listOf(
-                                ReputationDoc(pk(1), followerCounts = mapOf(OBSERVER to 10.0)),
+                                ReputationDoc(pk(1), followerCounts = serviceCells(OBSERVER to 10.0)),
                                 // ODELL also carries an influence score for the
                                 // trust-crossing case below (sort_followers ignores it:
                                 // its within-tier key is the follower count).
                                 ReputationDoc(
                                     pk(2),
-                                    followerCounts = mapOf(OBSERVER to 250_000.0),
-                                    influenceScores = mapOf(OBSERVER to 93),
+                                    followerCounts = serviceCells(OBSERVER to 250_000.0),
+                                    influenceScores = serviceCells(OBSERVER to 93),
                                 ),
-                                ReputationDoc(pk(14), followerCounts = mapOf(OBSERVER to 5_000.0)),
+                                ReputationDoc(pk(14), followerCounts = serviceCells(OBSERVER to 5_000.0)),
                                 // The include:spam case: the observer's provider ranks
                                 // ONE of the three Vitor namesakes; the other two stay
                                 // unranked (user_score 0).
-                                ReputationDoc(pk(7), influenceScores = mapOf(OBSERVER to 60)),
+                                ReputationDoc(pk(7), influenceScores = serviceCells(OBSERVER to 60)),
                                 // The trust-crossing case: a near-top-trust bio mention
                                 // and a well-trusted one vs a barely-trusted name squatter.
-                                ReputationDoc(pk(15), influenceScores = mapOf(OBSERVER to 97)),
-                                ReputationDoc(pk(19), influenceScores = mapOf(OBSERVER to 13)),
-                                ReputationDoc(pk(20), influenceScores = mapOf(OBSERVER to 77)),
+                                ReputationDoc(pk(15), influenceScores = serviceCells(OBSERVER to 97)),
+                                ReputationDoc(pk(19), influenceScores = serviceCells(OBSERVER to 13)),
+                                ReputationDoc(pk(20), influenceScores = serviceCells(OBSERVER to 77)),
                                 // The "amethyst" case: ONE author for all four
                                 // docs, at the top of the scale — wot_mult()
                                 // ≈ 237000, the worst case for a boost that
                                 // rides the second phase un-multiplied.
-                                ReputationDoc(pk(21), influenceScores = mapOf(OBSERVER to 100)),
+                                ReputationDoc(pk(21), influenceScores = serviceCells(OBSERVER to 100)),
                                 // The "Avi Burra" / "Jon Gordon" cases: the
                                 // reported trust pairs, verbatim. Both put the
                                 // partial match ONE or TWO points ahead — the
                                 // margin wot_mult() turns into +5.7% / +2.9%.
-                                ReputationDoc(pk(25), influenceScores = mapOf(OBSERVER to 98)),
-                                ReputationDoc(pk(26), influenceScores = mapOf(OBSERVER to 100)),
-                                ReputationDoc(pk(27), influenceScores = mapOf(OBSERVER to 96)),
-                                ReputationDoc(pk(28), influenceScores = mapOf(OBSERVER to 97)),
+                                ReputationDoc(pk(25), influenceScores = serviceCells(OBSERVER to 98)),
+                                ReputationDoc(pk(26), influenceScores = serviceCells(OBSERVER to 100)),
+                                ReputationDoc(pk(27), influenceScores = serviceCells(OBSERVER to 96)),
+                                ReputationDoc(pk(28), influenceScores = serviceCells(OBSERVER to 97)),
                                 // The "Primal" case: the reported pair, two points apart.
-                                ReputationDoc(pk(29), influenceScores = mapOf(OBSERVER to 97)),
-                                ReputationDoc(pk(30), influenceScores = mapOf(OBSERVER to 99)),
+                                ReputationDoc(pk(29), influenceScores = serviceCells(OBSERVER to 97)),
+                                ReputationDoc(pk(30), influenceScores = serviceCells(OBSERVER to 99)),
                                 // The "Jack" case: 34 must overturn 33 on
                                 // exactness despite giving up 3 points.
-                                ReputationDoc(pk(32), influenceScores = mapOf(OBSERVER to 100)),
-                                ReputationDoc(pk(33), influenceScores = mapOf(OBSERVER to 100)),
-                                ReputationDoc(pk(34), influenceScores = mapOf(OBSERVER to 97)),
-                                ReputationDoc(pk(35), influenceScores = mapOf(OBSERVER to 98)),
-                                ReputationDoc(pk(40), influenceScores = mapOf(OBSERVER to 50)),
+                                ReputationDoc(pk(32), influenceScores = serviceCells(OBSERVER to 100)),
+                                ReputationDoc(pk(33), influenceScores = serviceCells(OBSERVER to 100)),
+                                ReputationDoc(pk(34), influenceScores = serviceCells(OBSERVER to 97)),
+                                ReputationDoc(pk(35), influenceScores = serviceCells(OBSERVER to 98)),
+                                ReputationDoc(pk(40), influenceScores = serviceCells(OBSERVER to 50)),
                                 // The body-match case: the reported author's score, 8 —
                                 // low enough that only a real rung can lift the hit over
                                 // text_score_cutoff, and it must clear the store's own
                                 // min_rank (2) as it did in the report.
-                                ReputationDoc(pk(44), influenceScores = mapOf(OBSERVER to 8)),
+                                ReputationDoc(pk(44), influenceScores = serviceCells(OBSERVER to 8)),
                                 // The secondary-rung case: same low score, same reason.
-                                ReputationDoc(pk(45), influenceScores = mapOf(OBSERVER to 8)),
+                                ReputationDoc(pk(45), influenceScores = serviceCells(OBSERVER to 8)),
                                 // The recall-floor matrix: ONE author for all ten rows, so
                                 // the matrix measures the ladder and never trust.
-                                ReputationDoc(pk(60), influenceScores = mapOf(OBSERVER to 50)),
+                                ReputationDoc(pk(60), influenceScores = serviceCells(OBSERVER to 50)),
                                 // The recency fixture: ONE author for all of it,
                                 // mid-scale, so age is the only variable and the
                                 // hits still clear the store's min_rank (2).
-                                ReputationDoc(pk(50), influenceScores = mapOf(OBSERVER to 50)),
+                                ReputationDoc(pk(50), influenceScores = serviceCells(OBSERVER to 50)),
                             ),
                         )
                     }

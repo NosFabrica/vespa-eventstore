@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.eventstore.trust
 
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
+import com.nosfabrica.vespa.eventstore.engine.doc.ObserverKey
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.mapping.toEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
@@ -50,7 +51,7 @@ internal data class TrustProviders(
      * wins; the rest are still mapped (their cards project) but not read for
      * this observer.
      */
-    val lenses: Map<String, Lens> = emptyMap(),
+    val lenses: Map<ObserverKey, Lens> = emptyMap(),
 ) {
     /** One observer's resolved providers; null on a dimension their 10040 does not name. */
     data class Lens(
@@ -61,7 +62,7 @@ internal data class TrustProviders(
     fun isEmpty() = rankServices.isEmpty() && followerServices.isEmpty()
 
     /** [observer]'s lens, or an empty one for an observer with no stored 10040. */
-    fun lensOf(observer: String): Lens = lenses[observer] ?: NO_LENS
+    fun lensOf(observer: String): Lens = lenses[ObserverKey(observer)] ?: NO_LENS
 
     companion object {
         val NO_LENS = Lens(null, null)
@@ -173,10 +174,10 @@ internal class ProviderMap(
         fun providersIn(maps: List<TrustProviderListEvent>): TrustProviders {
             val rank = LinkedHashSet<String>()
             val followers = LinkedHashSet<String>()
-            val lenses = LinkedHashMap<String, TrustProviders.Lens>()
+            val lenses = LinkedHashMap<ObserverKey, TrustProviders.Lens>()
             maps
                 .forEach { list ->
-                    var lens = lenses[list.pubKey] ?: TrustProviders.NO_LENS
+                    var lens = lenses[ObserverKey(list.pubKey)] ?: TrustProviders.NO_LENS
                     list.serviceProviders().forEach { entry ->
                         when (entry.service) {
                             ProviderTypes.rank -> {
@@ -190,7 +191,7 @@ internal class ProviderMap(
                             }
                         }
                     }
-                    if (lens != TrustProviders.NO_LENS) lenses[list.pubKey] = lens
+                    if (lens != TrustProviders.NO_LENS) lenses[ObserverKey(list.pubKey)] = lens
                 }
             return TrustProviders(rank, followers, lenses)
         }

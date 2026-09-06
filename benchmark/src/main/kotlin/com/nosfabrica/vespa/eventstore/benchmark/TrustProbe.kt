@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.eventstore.benchmark
 import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.eventstore.engine.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.client.VespaReputationIndex
+import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
 import com.nosfabrica.vespa.eventstore.trust.TrustKeyingMigration
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -300,7 +301,7 @@ object TrustProbe {
                                 reps
                                     .get(s)
                                     ?.influenceScores
-                                    ?.get(providerC)
+                                    ?.get(ServiceKey(providerC))
                                     ?.toString() ?: "none"
                             )
                         }
@@ -330,7 +331,7 @@ object TrustProbe {
                 store.awaitTrustProjection()
                 println("  deleted and settled in %.1fs; derive calls total now %d".format((System.nanoTime() - delT0) / 1e9, stage("proj.fetch.derive").calls))
                 val gone = doomed.first().aboutUser()!!
-                println("  a deleted card's cell: ${VespaReputationIndex(url).use { it.get(gone) }?.influenceScores?.get(providerC) ?: "gone"}")
+                println("  a deleted card's cell: ${VespaReputationIndex(url).use { it.get(gone) }?.influenceScores?.get(ServiceKey(providerC)) ?: "gone"}")
 
                 // ---- 9. reconcile (the relay's boot repair) on a loaded, healthy store.
                 println("== 9. reconcileTrust() on the loaded store")

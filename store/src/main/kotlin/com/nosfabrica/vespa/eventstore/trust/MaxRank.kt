@@ -25,6 +25,7 @@ import com.nosfabrica.vespa.eventstore.engine.QUERY_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationCells
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
+import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
 import com.nosfabrica.vespa.eventstore.engine.mapBounded
 import com.vitorpamplona.quartz.utils.Hex
 import kotlinx.coroutines.CancellationException
@@ -175,7 +176,7 @@ internal class MaxRankBackfill(
             onProgress?.invoke(written)
             true
         }
-        reputations.put(ReputationDoc(MARKER_KEY, mapOf(DONE to 1)))
+        reputations.put(ReputationDoc(MARKER_KEY, mapOf(ServiceKey(DONE) to 1)))
         return written
     }
 

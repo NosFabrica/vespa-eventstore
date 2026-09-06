@@ -43,8 +43,8 @@ import kotlinx.serialization.json.putJsonObject
  */
 data class ReputationDoc(
     val pubkey: HexKey,
-    val influenceScores: Map<HexKey, Int> = emptyMap(),
-    val followerCounts: Map<HexKey, Double> = emptyMap(),
+    val influenceScores: Map<ServiceKey, Int> = emptyMap(),
+    val followerCounts: Map<ServiceKey, Double> = emptyMap(),
 ) {
     /** No cells at all — the projection removes the doc instead of storing it. */
     fun isEmpty(): Boolean = influenceScores.isEmpty() && followerCounts.isEmpty()
@@ -66,8 +66,8 @@ data class ReputationDoc(
     fun indexFields(): JsonObject =
         buildJsonObject {
             put("pubkey", JsonPrimitive(pubkey))
-            putJsonObject("influence_scores") { influenceScores.forEach { (observer, rank) -> put(observer, JsonPrimitive(rank)) } }
-            putJsonObject("follower_counts") { followerCounts.forEach { (observer, count) -> put(observer, JsonPrimitive(count)) } }
+            putJsonObject("influence_scores") { influenceScores.forEach { (service, rank) -> put(service.hex, JsonPrimitive(rank)) } }
+            putJsonObject("follower_counts") { followerCounts.forEach { (service, count) -> put(service.hex, JsonPrimitive(count)) } }
             put("max_rank", JsonPrimitive(maxRank))
         }
 
@@ -80,8 +80,8 @@ data class ReputationDoc(
         fun fromSummary(fields: JsonObject): ReputationDoc =
             ReputationDoc(
                 pubkey = fields.getValue("pubkey").jsonPrimitive.content,
-                influenceScores = cells(fields["influence_scores"])?.mapValues { it.value.jsonPrimitive.int } ?: emptyMap(),
-                followerCounts = cells(fields["follower_counts"])?.mapValues { it.value.jsonPrimitive.double } ?: emptyMap(),
+                influenceScores = cells(fields["influence_scores"])?.map { ServiceKey(it.key) to it.value.jsonPrimitive.int }?.toMap() ?: emptyMap(),
+                followerCounts = cells(fields["follower_counts"])?.map { ServiceKey(it.key) to it.value.jsonPrimitive.double }?.toMap() ?: emptyMap(),
             )
 
         private fun cells(field: JsonElement?): Map<String, JsonElement>? = field?.jsonObject?.let { it["cells"]?.jsonObject ?: it }
@@ -95,8 +95,8 @@ data class ReputationDoc(
  * untouched.
  */
 data class ReputationCells(
-    val subject: String,
-    val key: String,
+    val subject: HexKey,
+    val key: ServiceKey,
     val influence: Int?,
     val followers: Double?,
     /**
@@ -123,8 +123,8 @@ data class ReputationCells(
  * read; a cell that is not there is nothing to do.
  */
 data class CellRemoval(
-    val subject: String,
-    val key: String,
+    val subject: HexKey,
+    val key: ServiceKey,
     val influence: Boolean,
     val followers: Boolean,
 )

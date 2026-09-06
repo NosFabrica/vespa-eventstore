@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.eventstore.benchmark
 import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.eventstore.engine.client.VespaReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
+import com.nosfabrica.vespa.eventstore.engine.doc.serviceCells
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import kotlinx.coroutines.delay
@@ -116,7 +117,7 @@ class SearchPrefixLadderIT {
                 VespaReputationIndex(queryUrl).use { reputation ->
                     reputation.putAll(
                         SCORES.map { (pubkey, score) ->
-                            ReputationDoc(pubkey, influenceScores = mapOf(OBSERVER to score))
+                            ReputationDoc(pubkey, influenceScores = serviceCells(OBSERVER to score))
                         },
                     )
                 }

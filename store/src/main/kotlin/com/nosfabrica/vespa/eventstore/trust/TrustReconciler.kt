@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.QUERY_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
+import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
 import com.nosfabrica.vespa.eventstore.engine.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
@@ -249,8 +250,8 @@ class TrustReconciler internal constructor(
                 val parents = (rankSubjects + followerSubjects).distinct().mapNotNull { s -> reputations.get(s)?.let { s to it } }.toMap()
                 // Keyed by the service itself now: projected means a sampled
                 // subject carries THIS service's cell in the tensor the tag feeds.
-                val rankProjected = rankSubjects.isEmpty() || rankSubjects.any { parents[it]?.influenceScores?.containsKey(service) == true }
-                val followersProjected = followerSubjects.isEmpty() || followerSubjects.any { parents[it]?.followerCounts?.containsKey(service) == true }
+                val rankProjected = rankSubjects.isEmpty() || rankSubjects.any { parents[it]?.influenceScores?.containsKey(ServiceKey(service)) == true }
+                val followersProjected = followerSubjects.isEmpty() || followerSubjects.any { parents[it]?.followerCounts?.containsKey(ServiceKey(service)) == true }
                 service to (rankProjected && followersProjected)
             }
         val examined = verdicts.count { it != null }

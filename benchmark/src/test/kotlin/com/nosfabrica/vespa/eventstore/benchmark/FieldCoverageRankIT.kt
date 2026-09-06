@@ -27,6 +27,7 @@ import com.nosfabrica.vespa.eventstore.engine.client.VespaReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.SearchFields
+import com.nosfabrica.vespa.eventstore.engine.doc.serviceCells
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
@@ -96,7 +97,7 @@ class FieldCoverageRankIT {
                         index.putAll(SHAPES.mapIndexed { i, s -> s.doc(i + 1) })
                         VespaReputationIndex(queryUrl).use { reputation ->
                             reputation.putAll(
-                                SHAPES.mapIndexed { i, s -> ReputationDoc(author(i + 1), influenceScores = mapOf(OBSERVER to s.trust)) },
+                                SHAPES.mapIndexed { i, s -> ReputationDoc(author(i + 1), influenceScores = serviceCells(OBSERVER to s.trust)) },
                             )
                         }
                         awaitCorpus(index, SHAPES.size)

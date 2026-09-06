@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.eventstore.engine
 import com.nosfabrica.vespa.eventstore.engine.doc.CellRemoval
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationCells
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
+import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
 
 /**
  * The engine port for the reputation parent documents — the trust twin of
@@ -88,7 +89,7 @@ interface ReputationIndex : AutoCloseable {
     suspend fun raiseMaxRank(floors: Map<String, Int>) =
         floors.forEach { (subject, floor) ->
             val stored = storedMaxRank(subject) ?: return@forEach
-            if (stored < floor) updateCells(listOf(ReputationCells(subject, "", null, null, maxRank = floor)))
+            if (stored < floor) updateCells(listOf(ReputationCells(subject, ServiceKey.NONE, null, null, maxRank = floor)))
         }
 
     /**
