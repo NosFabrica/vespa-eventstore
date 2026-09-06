@@ -50,8 +50,21 @@ internal object TrustProgress {
     ) {
         val finished: Boolean get() = phase == DONE
 
-        /** Elapsed seconds, never 0, so a rate can divide by it. */
+        /** Elapsed seconds SINCE THE LAST ADVANCE, never 0, so a rate can divide by it. */
         val elapsedSec: Long get() = ((updatedMs - startedMs) / 1000).coerceAtLeast(1)
+
+        /**
+         * Wall seconds since this step last MOVED — 0 while it is advancing,
+         * and growing without bound while it is not.
+         *
+         * [elapsedSec] cannot say this and reading it as if it could cost an
+         * afternoon: `updatedMs` only moves on an advance, so a step that
+         * begins and never advances has `updatedMs == startedMs`, an elapsed
+         * of 0, and a `coerceAtLeast(1)` that renders it as a confident "1s"
+         * forever. A walk blocked on a read looked identical to one restarting
+         * constantly, and I read it as the latter.
+         */
+        val stalledForSec: Long get() = (System.currentTimeMillis() - updatedMs) / 1000
     }
 
     const val DONE = "done"
@@ -94,6 +107,9 @@ internal object TrustProgress {
 
     fun snapshot(): List<Step> = steps.values.sortedBy { it.op }
 
+    /** After this long without an advance, a step is reported as STALLED rather than merely slow. */
+    const val STALLED_AFTER_SEC = 120L
+
     /** Test seam: one test's walk must not leak into the next. */
     fun reset() = steps.clear()
 
@@ -106,13 +122,14 @@ internal object TrustProgress {
         snapshot()
             .filterNot { it.finished }
             .joinToString("; ") { s ->
+                val stalled = if (s.stalledForSec >= STALLED_AFTER_SEC) " STALLED ${s.stalledForSec}s" else ""
                 if (s.total <= 0 || s.done <= 0) {
-                    "${s.op} ${s.phase}: ${s.done}, total unknown (${s.elapsedSec}s)"
+                    "${s.op} ${s.phase}: ${s.done}, total unknown (${s.elapsedSec}s)$stalled"
                 } else {
                     val pct = (s.done * 100 / s.total).coerceAtMost(100)
                     val rate = s.done.toDouble() / s.elapsedSec
                     val eta = if (rate > 0) "${((s.total - s.done) / rate).toLong()}s" else "unknown"
-                    "${s.op} ${s.phase}: ${s.done}/${s.total} ($pct%), eta $eta"
+                    "${s.op} ${s.phase}: ${s.done}/${s.total} ($pct%), eta $eta$stalled"
                 }
             }
 }
