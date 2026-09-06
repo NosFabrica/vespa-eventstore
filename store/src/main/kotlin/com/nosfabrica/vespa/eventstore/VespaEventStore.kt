@@ -156,7 +156,7 @@ class VespaEventStore internal constructor(
      * hammer, bounded only by the corpus. [reconcileTrust] does the same repair
      * per affected service and normally finds nothing to do.
      */
-    suspend fun rebuildTrust() = withActivity(Activity.Reconcile) { reconciler.rebuildAll() }
+    suspend fun rebuildTrust(onProgress: ((derived: Int, sweptParents: Int) -> Unit)? = null) = withActivity(Activity.Reconcile) { reconciler.rebuildAll(onProgress) }
 
     /**
      * Full audit: does every reputation doc match its 10040+30382 records?
