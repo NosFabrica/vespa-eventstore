@@ -123,6 +123,44 @@ class ModuleBoundariesTest {
         }
     }
 
+    /**
+     * A TEST NAMED AFTER A CLASS LIVES WITH THAT CLASS.
+     *
+     * The packages are the map, and a test filed away from its subject makes
+     * the map lie in the direction that matters: open `query/` and it looks
+     * untested. This is how `:engine`'s suite drifted flat in the first place,
+     * and how a `PartialAnswerTest` for `client/PartialAnswer` landed in the
+     * root package afterwards.
+     *
+     * NAME-BASED on purpose, and it skips what it cannot resolve: plenty of
+     * tests here are named for a BEHAVIOUR rather than a type — `PutIfNewer`,
+     * `HoldStack`, `SearchCoverageGuard` — and where they belong is a judgement
+     * this cannot make. It checks the mechanical half, which is the half that
+     * drifts.
+     */
+    @Test
+    fun `a test named after a class lives in that class's package`() {
+        val home = HashMap<String, String>()
+        for (module in listOf("engine", "store")) {
+            for ((_, file) in sources(module)) {
+                val pkg = packageOf(file)
+                DECLARATION.findAll(file.readText()).forEach { home.putIfAbsent(it.groupValues[1], pkg) }
+            }
+        }
+        val misplaced =
+            testSources().mapNotNull { file ->
+                val subject =
+                    file.name
+                        .removeSuffix(".kt")
+                        .removeSuffix("IT")
+                        .removeSuffix("Test")
+                val declaredIn = home[subject] ?: return@mapNotNull null
+                val own = packageOf(file)
+                if (declaredIn == own) null else "${file.name} is in ${own.substringAfterLast('.')}, but $subject lives in ${declaredIn.substringAfterLast('.')}"
+            }
+        assertTrue(misplaced.isEmpty(), "tests belong beside what they test: $misplaced")
+    }
+
     @Test
     fun `every engine package is named by the layer table`() {
         val unnamed = sources("engine").map { packageOf(it.second).removePrefix("$OWN.") }.toSet() - engineLayer.keys
@@ -138,6 +176,13 @@ class ModuleBoundariesTest {
             .map { it.relativeTo(root).path to it }
             .toList()
     }
+
+    /** Every test source of both published modules — where a test is filed is the thing being asserted. */
+    private fun testSources(): List<File> =
+        listOf("engine", "store").flatMap { module ->
+            val root = File(module, "src/test/kotlin").let { if (it.isDirectory) it else File("..", it.path) }
+            root.walkTopDown().filter { it.extension == "kt" }.toList()
+        }
 
     private fun packageOf(file: File): String = file.useLines { lines -> lines.first { it.startsWith("package ") } }.removePrefix("package ").trim()
 
@@ -160,5 +205,8 @@ class ModuleBoundariesTest {
 
     private companion object {
         const val OWN = "com.nosfabrica.vespa.eventstore"
+
+        /** Top-level type declarations, which is what a `<Name>Test` names. */
+        val DECLARATION = Regex("""^(?:internal |public )?(?:open |abstract |sealed |data |value |enum )*(?:class|object|interface)\s+(\w+)""", RegexOption.MULTILINE)
     }
 }

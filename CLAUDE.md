@@ -81,15 +81,28 @@ deliberate decision (it fails until the layer table names it) rather than a drif
   `EventQuery` mapping, per-kind search extraction, Vespa text rules) → `ingest/` (the write
   path: bulk inserts, the guard caches, NIP-09/62 enforcement, the rejection vocabulary),
   `trust/` (the NIP-85 projection), `search/` (reference expansion) → the package root, which is
-  the FACADE only: `VespaEventStore.open()` (the public front door), `NostrSemanticsStore` (the
-  `IEventStore` implementation) and `RejectedException`. Nothing below the root imports the
-  facade, with one declared exception the test names.
+  the FACADE: exactly the types a CONSUMER names, and nothing else. Today that is
+  `VespaEventStore.open()` (the front door), `NostrSemanticsStore` (the `IEventStore`
+  implementation), and the values it hands back or throws — `RejectedException`, `EngineReads`,
+  `TrustHealth`. A new type here has to earn it by being named from outside; the machinery
+  behind one goes in a leaf (`TrustHealth` is a DTO, while the registries it reads stay
+  `internal` in `trust/`). Nothing below the root imports the facade.
 - **`:benchmark`** — not published. `harness/` (backends, corpora, result plumbing, the parity
   and rank-quality batteries), `bench/` (the timed suites), `probe/` (targeted A/Bs), `load/`
   (corpus loaders and dumps), plus the parity/rank-regression integration tests — the CI
   correctness gates.
 
 The stack `open()` assembles: `NostrSemanticsStore( TrustProjection( VespaEventIndex + VespaReputationIndex ) )`.
+
+Two rules the compiler cannot hold, so tests do (`:store`, and they read the SOURCE — the test
+task declares both source trees as inputs so a violation added in `:engine` cannot leave them
+cached): `ModuleBoundariesTest` — the layer order above, no package unnamed by it, no facade
+import from below, and a test named after a class lives in that class's package.
+`PortDecoratorsTest` — every `EventIndex` decorator overrides every port member. That second one
+matters more than it sounds: several port members have DEFAULT bodies that are correct-but-slow
+answers for an engine that cannot do better, so a decorator that inherits one does not fail to
+decorate it, it ANSWERS with it. Adding a member to `EventIndex` means adding it to
+`TrustProjection` and `MeteredEventIndex` in the same commit.
 
 Consumers get the Quartz `IEventStore` surface (`VespaEventStore` delegates it), plus two deliberate
 escape hatches for ops and benchmarks: `store` (the concrete `NostrSemanticsStore`, for capabilities

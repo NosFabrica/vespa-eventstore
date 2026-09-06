@@ -428,11 +428,15 @@ engine/   the index port and its Vespa binding
 store/    relay policy on top
           runtime/ mapping/   leaves: writer topology + worker failures; Filter -> EventQuery, search extraction
           ingest/ trust/ search/   the write path, the NIP-85 projection, reference expansion
-          .                    the FACADE: VespaEventStore.open(), NostrSemanticsStore, RejectedException
+          .                    the FACADE: only what a consumer names — VespaEventStore.open(),
+                               NostrSemanticsStore, RejectedException, EngineReads, TrustHealth
 benchmark/  not published — harness/ bench/ probe/ load/, plus the integration gates
 ```
 
-Read a module bottom-up: nothing in a lower row imports a higher one.
+Read a module bottom-up: nothing in a lower row imports a higher one. Two tests in `:store` keep
+it that way — `ModuleBoundariesTest` (the layer order, and tests filed beside their subjects) and
+`PortDecoratorsTest` (every `EventIndex` decorator forwards every port member, since several have
+default bodies a decorator would otherwise silently answer with).
 
 ## Developer Setup
 
