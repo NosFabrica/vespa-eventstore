@@ -397,10 +397,10 @@ internal class TrustRecompute(
          * Lower is fairer and costs only the mutex round trip (microseconds
          * against seconds of work); higher approaches the old behaviour.
          */
+        val GATE_SLICE: Int = System.getenv("VESPA_TRUST_GATE_SLICE")?.toIntOrNull()?.coerceAtLeast(1) ?: 500
+
         /** Registry key for the per-service card walk — the store's longest single operation. */
         const val WALK = "trust-service-walk"
-
-        val GATE_SLICE: Int = System.getenv("VESPA_TRUST_GATE_SLICE")?.toIntOrNull()?.coerceAtLeast(1) ?: 500
 
         /**
          * The serving order REVERSED — oldest first, ties iterated highest-id
