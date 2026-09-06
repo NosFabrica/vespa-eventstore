@@ -71,8 +71,8 @@ internal class TrustRecompute(
 
     /**
      * Drop the cached attribution map after ANY 10040 write or removal — the
-     * write paths do it inline (even with the walk deferred); [DirtLedger.drain]
-     * repeats it for dirt inherited from a crashed process that may have died first.
+     * write paths do it inline (even with the walk deferred); [ProjectionLedger.drain]
+     * repeats it for backlog inherited from a crashed process that may have died first.
      */
     fun invalidateProviders() = providers.invalidate()
 
@@ -80,10 +80,10 @@ internal class TrustRecompute(
      * [recomputeBatch] under a gate, taken PER SLICE rather than once for the
      * whole batch.
      *
-     * The batch sizes upstream ([DirtLedger.DRAIN_BATCH], [RECOMPUTE_BATCH],
-     * [TrustReconciler.ORPHAN_BATCH], all 20,000) were chosen to bound MEMORY,
-     * and every caller wrapped the whole of one in `gate { }` — so the store's
-     * single write mutex was held for as long as 20,000 subjects took to
+     * The batch sizes upstream ([RECOMPUTE_BATCH], [TrustReconciler.ORPHAN_BATCH],
+     * both 20,000) were chosen to bound MEMORY, and every caller wrapped the
+     * whole of one in `gate.holding { }` — so the store's single write mutex
+     * was held for as long as 20,000 subjects took to
      * derive. Measured on staging 2026-09-04, one such call:
      *
      *     lockHeldBy  lock.gate.hold  656s and counting
@@ -99,26 +99,26 @@ internal class TrustRecompute(
      *
      * The reads are NOT hoisted out of the gate instead, deliberately: a
      * derive that read before a live insert and wrote after it would clobber
-     * that insert's own recompute, with the dirt marker already cleared —
+     * that insert's own recompute, with the backlog marker already cleared —
      * permanent drift, which is exactly what the gate exists to prevent.
      * Slicing keeps every subject's derive and write atomic against writers.
      */
     suspend fun recomputeBatchGated(
         subjects: List<String>,
         removeEmpties: Boolean,
-        gate: suspend (suspend () -> Unit) -> Unit,
+        gate: WriteGate,
     ) {
         subjects.chunked(GATE_SLICE).forEach { slice ->
             // The provider map is read INSIDE the gate, per slice — cached, so
             // free when unchanged. Read once outside as an argument (as this
             // was), a 10040 committed mid-batch left every remaining slice
             // deriving under the pre-write map.
-            gate { recomputeBatch(slice, providers.get(), removeEmpties) }
+            gate.holding { recomputeBatch(slice, providers.get(), removeEmpties) }
         }
     }
 
     /**
-     * The batched recompute behind every [DirtLedger] drain and the walks:
+     * The batched recompute behind every [ProjectionLedger] drain and the walks:
      * chunked, concurrency-bounded fetches (unbounded fan-out measurably times
      * the engine out), local derivation, one pipelined [ReputationIndex.putAll].
      */
@@ -172,7 +172,7 @@ internal class TrustRecompute(
                 // carries no limit — and `complete`, so an engine that would
                 // answer short (still opening buckets after a restart, or
                 // capping hits) refuses instead: the batch aborts with its
-                // dirt marker intact, and nothing is written or removed from
+                // backlog marker intact, and nothing is written or removed from
                 // a fetch that missed cards. That is the write-side counterpart
                 // of the read path's rounded-100 carve-out, and the failure
                 // that removed 17k parents on staging (2026-09-04).
@@ -213,7 +213,7 @@ internal class TrustRecompute(
     suspend fun recomputeWalk(
         query: EventQuery,
         onSubjects: ((Int) -> Unit)? = null,
-        gate: suspend (suspend () -> Unit) -> Unit = { it() },
+        gate: WriteGate = WriteGate.DIRECT,
     ) {
         val buffer = LinkedHashSet<String>()
         var derived = 0
@@ -303,13 +303,13 @@ internal class TrustRecompute(
     suspend fun projectServices(
         services: Collection<String>,
         onCards: ((Int) -> Unit)? = null,
-        gate: suspend (suspend () -> Unit) -> Unit = { it() },
+        gate: WriteGate = WriteGate.DIRECT,
     ) {
         for (service in services) {
             var applied = 0
             inner.visitIds(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service)), withDTag = false) { page ->
                 page.map { it.id }.chunked(PROJECT_PAGE).forEach { ids ->
-                    gate {
+                    gate.holding {
                         IngestStats.annotateHold("project service ${service.take(8)}: ${ids.size} card(s)")
                         val docs = IngestStats.timed("proj.fetch.page") { inner.search(EventQuery(ids = ids, kinds = listOf(ContactCardEvent.KIND), complete = true)) }
                         applyCards(docs, providers.get())
@@ -394,7 +394,7 @@ internal class TrustRecompute(
  * The 30382's d tag is the SUBJECT — a pubkey, so only 64-hex counts. Anything
  * else can never join ranking (the reputation import matches hex author keys),
  * and admitting arbitrary strings would let a crafted card collide with the
- * projection's bookkeeping ids ([DirtLedger]).
+ * projection's bookkeeping ids ([ProjectionLedger]).
  */
 internal fun subjectOf(doc: EventDoc): String? = doc.dTagOrEmpty().takeIf(Hex::isHex64)
 

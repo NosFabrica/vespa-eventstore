@@ -47,9 +47,9 @@ import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
  * ([TrustRecompute.applyCards]); a removed card is one cell remove. The only
  * deferred reaction is a 10040 naming a service nobody named before, whose
  * stored cards become cells through a walk ([TrustRecompute.projectServices])
- * — declared as [DirtLedger.Dirt] and settled inline (read-your-writes; what
- * the unit tests assert) or by the background drain ([DirtLedger.deferTo]).
- * Every trust-mutating op runs [DirtLedger.guarded]: the event and projection
+ * — declared as [ProjectionWork] and settled inline (read-your-writes; what
+ * the unit tests assert) or by the background drain ([ProjectionLedger.drainInBackground]).
+ * Every trust-mutating op runs [ProjectionLedger.insuring]: the event and projection
  * writes are separate acks and dedup fires a trigger only once, so a crash
  * between them would be PERMANENT drift (the retry comes back all-duplicates)
  * — the ledger persists what the op could leave stale before it starts, and
@@ -72,7 +72,7 @@ class TrustProjection(
     internal val recompute = TrustRecompute(inner, reputations, nowSecs, maxRanks)
 
     /** The work ledger: crash marker + (optionally deferred) projection queue; [TrustReconciler] drains it at startup. */
-    internal val dirt = DirtLedger(reputations, recompute)
+    internal val backlog = ProjectionLedger(reputations, recompute)
 
     override suspend fun get(id: String): EventDoc? = inner.get(id)
 
@@ -148,10 +148,10 @@ class TrustProjection(
         // list and the walk that projects its service would never run.
         val fresh = if (doc.kind == TrustProviderListEvent.KIND) freshServicesOf(listOf(doc)) else emptySet()
         var stored = false
-        dirt.guarded(opDirt(doc) + DirtLedger.Dirt(emptySet(), fresh)) {
+        backlog.insuring(insuranceFor(doc) + ProjectionWork(emptySet(), fresh)) {
             stored = if (inner.supersedesViaPut) inner.putIfNewer(doc) else supersedeReading(doc)
-            if (!stored) return@guarded Unit to DirtLedger.Dirt.NONE
-            Unit to react(listOf(doc), fresh)
+            if (!stored) return@insuring Outcome(Unit, ProjectionWork.NONE)
+            Outcome(Unit, react(listOf(doc), fresh))
         }
         return stored
     }
@@ -180,9 +180,9 @@ class TrustProjection(
 
     override suspend fun put(doc: EventDoc) {
         val fresh = if (doc.kind == TrustProviderListEvent.KIND) freshServicesOf(listOf(doc)) else emptySet()
-        dirt.guarded(opDirt(doc) + DirtLedger.Dirt(emptySet(), fresh)) {
+        backlog.insuring(insuranceFor(doc) + ProjectionWork(emptySet(), fresh)) {
             inner.put(doc)
-            Unit to react(listOf(doc), fresh)
+            Outcome(Unit, react(listOf(doc), fresh))
         }
     }
 
@@ -199,9 +199,9 @@ class TrustProjection(
     override suspend fun putAll(docs: List<EventDoc>) {
         val lists = docs.filter { it.kind == TrustProviderListEvent.KIND }
         val fresh = if (lists.isEmpty()) emptySet() else freshServicesOf(lists)
-        dirt.guarded(putDirt(docs) + DirtLedger.Dirt(emptySet(), fresh)) {
+        backlog.insuring(insuranceForPuts(docs) + ProjectionWork(emptySet(), fresh)) {
             IngestStats.timed("write") { inner.putAll(docs) }
-            Unit to react(docs, fresh)
+            Outcome(Unit, react(docs, fresh))
         }
     }
 
@@ -215,12 +215,12 @@ class TrustProjection(
     private suspend fun react(
         docs: List<EventDoc>,
         fresh: Set<String>,
-    ): DirtLedger.Dirt {
+    ): ProjectionWork {
         if (docs.any { it.kind == TrustProviderListEvent.KIND }) recompute.invalidateProviders()
         val cards = docs.filter { it.kind == ContactCardEvent.KIND }
-        if (cards.isEmpty()) return DirtLedger.Dirt(emptySet(), fresh)
+        if (cards.isEmpty()) return ProjectionWork(emptySet(), fresh)
         val retracted = recompute.applyCards(cards, recompute.providerMap())
-        return DirtLedger.Dirt(retracted, fresh)
+        return ProjectionWork(retracted, fresh)
     }
 
     /** The services [lists] name that the CURRENT map does not — the ones whose stored cards have no cells yet. Read before the lists are written. */
@@ -247,17 +247,17 @@ class TrustProjection(
             ids
                 .chunked(REMOVE_CHUNK)
                 // `complete`, like every read that feeds a write: a short answer
-                // here is a removed card whose subject is never dirtied, so its
+                // here is a removed card whose subject is never re-derived, so its
                 // cells linger after a kind-5 — refusing beats silent drift.
                 .mapBounded(QUERY_FANOUT) { chunk -> inner.search(EventQuery(ids = chunk, kinds = TRUST_KINDS, complete = true)) }
                 .flatten()
         if (docs.isEmpty()) return inner.removeAll(ids)
         val byId = docs.associateBy { it.id }
         val plain = ids.filter { it !in byId }
-        dirt.guarded(removeDirt(docs)) {
+        backlog.insuring(insuranceForRemovals(docs)) {
             if (plain.isNotEmpty()) inner.removeAll(plain)
             inner.removeDocs(docs)
-            Unit to unreact(docs)
+            Outcome(Unit, unreact(docs))
         }
     }
 
@@ -267,13 +267,13 @@ class TrustProjection(
      */
     override suspend fun removeDocs(docs: List<EventDoc>) {
         if (docs.none { it.kind in TRUST_KINDS }) return inner.removeDocs(docs)
-        dirt.guarded(removeDirt(docs)) {
+        backlog.insuring(insuranceForRemovals(docs)) {
             // Timed for symmetry with putAll's `write`: this is a supersession's
             // other half — the sweep of the versions the winner replaced — on
             // the same bulk path inside the same writer lock, so leaving it
             // untimed reads as "the write is all there is".
             IngestStats.timed("remove") { inner.removeDocs(docs) }
-            Unit to unreact(docs)
+            Outcome(Unit, unreact(docs))
         }
     }
 
@@ -291,21 +291,21 @@ class TrustProjection(
      * provider map; the cells its services own stay — no lens resolves to an
      * unnamed service, so they are dead weight for the orphan sweep.
      */
-    private suspend fun unreact(docs: List<EventDoc>): DirtLedger.Dirt {
+    private suspend fun unreact(docs: List<EventDoc>): ProjectionWork {
         if (docs.any { it.kind == TrustProviderListEvent.KIND }) recompute.invalidateProviders()
         val removals =
             docs
                 .filter { it.kind == ContactCardEvent.KIND }
                 .mapNotNull { doc -> subjectOf(doc)?.let { CellRemoval(it, doc.pubkey, influence = true, followers = true) } }
         if (removals.isNotEmpty()) IngestStats.timed("proj.write") { reputations.removeCells(removals) }
-        return DirtLedger.Dirt.NONE
+        return ProjectionWork.NONE
     }
 
     /** Crash insurance for ONE doc's write: a card its subject (re-derived exactly if the cell write is lost), a 10040 nothing — its walk is declared as work, not insured. */
-    private fun opDirt(doc: EventDoc): DirtLedger.Dirt =
+    private fun insuranceFor(doc: EventDoc): ProjectionWork =
         when (doc.kind) {
-            ContactCardEvent.KIND -> DirtLedger.Dirt(setOfNotNull(subjectOf(doc)), emptySet())
-            else -> DirtLedger.Dirt.NONE
+            ContactCardEvent.KIND -> ProjectionWork(setOfNotNull(subjectOf(doc)), emptySet())
+            else -> ProjectionWork.NONE
         }
 
     /**
@@ -315,7 +315,7 @@ class TrustProjection(
      * re-walking each service (safe for puts: the stored cards make the walk
      * reach every touched subject).
      */
-    private fun putDirt(docs: List<EventDoc>): DirtLedger.Dirt {
+    private fun insuranceForPuts(docs: List<EventDoc>): ProjectionWork {
         val subjects = LinkedHashSet<String>()
         for (doc in docs) if (doc.kind == ContactCardEvent.KIND) subjectOf(doc)?.let(subjects::add)
         val services = LinkedHashSet<String>()
@@ -323,14 +323,14 @@ class TrustProjection(
             docs.forEach { if (it.kind == ContactCardEvent.KIND) services += it.pubkey }
             subjects.clear()
         }
-        return DirtLedger.Dirt(subjects, services)
+        return ProjectionWork(subjects, services)
     }
 
     /** What a REMOVE of [docs] insures: card subjects exactly — a lost cell remove is repaired by the exact derive, which also drops an emptied parent. */
-    private fun removeDirt(docs: List<EventDoc>): DirtLedger.Dirt {
+    private fun insuranceForRemovals(docs: List<EventDoc>): ProjectionWork {
         val subjects = LinkedHashSet<String>()
         for (doc in docs) if (doc.kind == ContactCardEvent.KIND) subjectOf(doc)?.let(subjects::add)
-        return DirtLedger.Dirt(subjects, emptySet())
+        return ProjectionWork(subjects, emptySet())
     }
 
     internal companion object {

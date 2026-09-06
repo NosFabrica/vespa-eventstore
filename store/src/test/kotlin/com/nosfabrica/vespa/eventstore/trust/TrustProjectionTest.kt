@@ -551,7 +551,7 @@ class TrustProjectionTest {
     /**
      * The event write and the projection write are separate acks. A failure
      * between them stores the events, and the retry comes back all-duplicates —
-     * which never reaches the projection. The persisted dirt marker must repair
+     * which never reaches the projection. The persisted backlog marker must repair
      * that at the NEXT trust write.
      */
     @Test
@@ -572,7 +572,7 @@ class TrustProjectionTest {
             // Events landed, cells did not — the exact drift, named by the marker.
             assertEquals(20, inner.search(EventQuery(kinds = listOf(ContactCardEvent.KIND))).count { subjectOf(it) in subjects })
             subjects.forEach { assertNull(reps.get(it), "cells must be missing after the failure") }
-            assertEquals(subjects.toSet(), reps.get(DirtLedger.MARKER_KEY)?.influenceScores?.keys, "the marker names the dirty subjects")
+            assertEquals(subjects.toSet(), reps.get(ProjectionLedger.MARKER_KEY)?.influenceScores?.keys, "the marker names the dirty subjects")
 
             // A retry is all duplicates and never reaches the projection; the
             // next NEW trust write heals first.
@@ -580,7 +580,7 @@ class TrustProjectionTest {
             subjects.forEach { assertNull(reps.get(it), "duplicates alone cannot repair") }
             st.insert(card(about = "9a".repeat(32)))
             subjects.forEach { s -> assertEquals(mapOf(service to 87), reps.get(s)?.influenceScores, "healed subject $s") }
-            assertNull(reps.get(DirtLedger.MARKER_KEY), "marker cleared after the heal")
+            assertNull(reps.get(ProjectionLedger.MARKER_KEY), "marker cleared after the heal")
         }
 
     /** A crafted card cannot collide with the marker: subjects must be 64-hex. */
@@ -588,8 +588,8 @@ class TrustProjectionTest {
     fun `a card whose d tag is the marker id projects nothing and breaks nothing`() =
         runBlocking {
             store.insert(list10040())
-            store.insert(ContactCardEvent(id(), service, next(), arrayOf(arrayOf("d", DirtLedger.MARKER_KEY), arrayOf("rank", "87")), "", ""))
-            assertNull(reputations.get(DirtLedger.MARKER_KEY))
+            store.insert(ContactCardEvent(id(), service, next(), arrayOf(arrayOf("d", ProjectionLedger.MARKER_KEY), arrayOf("rank", "87")), "", ""))
+            assertNull(reputations.get(ProjectionLedger.MARKER_KEY))
             // And ordinary projection still works beside it.
             store.insert(card())
             assertEquals(mapOf(service to 87), reputations.get(subject)?.influenceScores)
@@ -676,7 +676,7 @@ class TrustProjectionTest {
             val reps = InMemoryReputationIndex()
             val proj = TrustProjection(InMemoryEventIndex(), reps)
             var signals = 0
-            proj.dirt.deferTo { signals++ }
+            proj.backlog.drainInBackground { signals++ }
             val st = NostrSemanticsStore(proj, relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
 
             // A card by a service nobody names yet: nothing to apply. Then the
@@ -685,11 +685,11 @@ class TrustProjectionTest {
             st.insert(list10040())
             assertNull(reps.get(subject), "the walk is queued, not run")
             assertTrue(signals >= 1, "the trust write signals the drainer")
-            assertNotNull(reps.get(DirtLedger.MARKER_KEY), "the queue is persisted — a crash loses nothing")
+            assertNotNull(reps.get(ProjectionLedger.MARKER_KEY), "the queue is persisted — a crash loses nothing")
 
-            proj.dirt.drain { it() }
+            proj.backlog.drain { it() }
             assertEquals(mapOf(service to 87), reps.get(subject)?.influenceScores, "drained")
-            assertNull(reps.get(DirtLedger.MARKER_KEY), "queue empty, marker gone")
+            assertNull(reps.get(ProjectionLedger.MARKER_KEY), "queue empty, marker gone")
         }
 
     /** The bulk zero-read cell path stays INLINE in deferred mode — mirror ingest keeps immediate ranking. */
@@ -698,11 +698,11 @@ class TrustProjectionTest {
         runBlocking {
             val reps = InMemoryReputationIndex()
             val proj = TrustProjection(InMemoryEventIndex(), reps)
-            proj.dirt.deferTo { }
+            proj.backlog.drainInBackground { }
             val st = NostrSemanticsStore(proj, relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
 
             st.insert(list10040())
-            proj.dirt.drain { it() } // attribute the 10040 so the map is live
+            proj.backlog.drain { it() } // attribute the 10040 so the map is live
             val subjects = (1..20).map { it.toString(16).padStart(64, 'f') }
             st.batchInsert(subjects.map { s -> card(about = s) })
             subjects.forEach { s ->
@@ -739,9 +739,9 @@ class TrustProjectionTest {
 
             val defReps = InMemoryReputationIndex()
             val defProj = TrustProjection(InMemoryEventIndex(), defReps)
-            defProj.dirt.deferTo { }
+            defProj.backlog.drainInBackground { }
             script(NostrSemanticsStore(defProj, relay = RelayUrlNormalizer.normalize("ws://localhost:7777")))
-            defProj.dirt.drain { it() }
+            defProj.backlog.drain { it() }
 
             assertEquals(syncReps.docs.filterValues { !it.isEmpty() }, defReps.docs.filterValues { !it.isEmpty() }, "any drain schedule must converge to the inline tensors")
             // And they are the values we expect, not coincidentally-equal emptiness.
@@ -769,14 +769,14 @@ class TrustProjectionTest {
             )) {
                 val reps = InMemoryReputationIndex()
                 val proj = TrustProjection(InMemoryEventIndex(), reps)
-                proj.dirt.deferTo { }
+                proj.backlog.drainInBackground { }
                 val st = NostrSemanticsStore(proj, relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
                 st.insert(list10040())
                 st.insert(card(rank = 50, at = 100))
-                if (schedule[0]) proj.dirt.drain { it() }
+                if (schedule[0]) proj.backlog.drain { it() }
                 st.insert(card(rank = 80, at = 200))
-                if (schedule[1]) proj.dirt.drain { it() }
-                proj.dirt.drain { it() }
+                if (schedule[1]) proj.backlog.drain { it() }
+                proj.backlog.drain { it() }
                 assertEquals(mapOf(service to 80), reps.get(subject)?.influenceScores, "newest version wins for drains at $schedule")
             }
         }
@@ -787,16 +787,16 @@ class TrustProjectionTest {
         runBlocking {
             val reps = InMemoryReputationIndex()
             val proj = TrustProjection(InMemoryEventIndex(), reps)
-            proj.dirt.deferTo { }
+            proj.backlog.drainInBackground { }
             val st = NostrSemanticsStore(proj, relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
             st.insert(list10040())
             st.insert(card(rank = 80, at = 200))
-            proj.dirt.drain { it() }
+            proj.backlog.drain { it() }
             assertEquals(mapOf(service to 80), reps.get(subject)?.influenceScores)
 
             val outcome = st.batchInsert(listOf(card(rank = 50, at = 100))).single()
             assertTrue(outcome is IEventStore.InsertOutcome.Rejected, "the older version is replaced, not stored")
-            proj.dirt.drain { it() }
+            proj.backlog.drain { it() }
             assertEquals(mapOf(service to 80), reps.get(subject)?.influenceScores, "nothing left to derive the stale value from")
         }
 
@@ -810,10 +810,10 @@ class TrustProjectionTest {
         runBlocking {
             val reps = InMemoryReputationIndex()
             val proj = TrustProjection(InMemoryEventIndex(), reps)
-            proj.dirt.deferTo { }
+            proj.backlog.drainInBackground { }
             val st = NostrSemanticsStore(proj, relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
             st.insert(list10040())
-            proj.dirt.drain { it() }
+            proj.backlog.drain { it() }
             // A real bulk batch (>= the bulk threshold), so v1's cell lands INLINE.
             val fillers = (1..15).map { card(about = it.toString(16).padStart(64, 'b'), rank = 10) }
             st.batchInsert(fillers + card(rank = 50, at = 100))
@@ -821,7 +821,7 @@ class TrustProjectionTest {
 
             st.insert(card(rank = 80, at = 200))
             assertEquals(mapOf(service to 80), reps.get(subject)?.influenceScores, "the single insert's cell is immediate too")
-            proj.dirt.drain { it() }
+            proj.backlog.drain { it() }
             assertEquals(mapOf(service to 80), reps.get(subject)?.influenceScores, "and a drain changes nothing")
         }
 
@@ -832,17 +832,17 @@ class TrustProjectionTest {
             for (drainBetween in listOf(false, true)) {
                 val reps = InMemoryReputationIndex()
                 val proj = TrustProjection(InMemoryEventIndex(), reps)
-                proj.dirt.deferTo { }
+                proj.backlog.drainInBackground { }
                 val st = NostrSemanticsStore(proj, relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
                 st.insert(list10040())
                 val scored = card()
                 st.insert(scored)
                 if (drainBetween) {
-                    proj.dirt.drain { it() }
+                    proj.backlog.drain { it() }
                     assertEquals(mapOf(service to 87), reps.get(subject)?.influenceScores, "projected while the event lives")
                 }
                 st.insert(DeletionEvent(id(), service, next(), arrayOf(arrayOf("e", scored.id)), "", ""))
-                proj.dirt.drain { it() }
+                proj.backlog.drain { it() }
                 assertNoCells(reps, subject, "deleted event derives nothing (drainBetween=$drainBetween)")
             }
         }
@@ -875,7 +875,7 @@ class TrustProjectionTest {
 
     /**
      * The write-ahead marker must be priced to the op: per-cell adds for the
-     * small dirt of live traffic, ONE doc put for a bulk batch — per-subject
+     * small backlog of live traffic, ONE doc put for a bulk batch — per-subject
      * feed ops at batch size would rival the event writes they insure.
      */
     @Test
@@ -884,7 +884,7 @@ class TrustProjectionTest {
             val counting = MarkerCountingReputationIndex(InMemoryReputationIndex())
             val st = NostrSemanticsStore(TrustProjection(InMemoryEventIndex(), counting), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
             st.insert(list10040())
-            assertEquals(1, counting.markerCellAdds, "a single's dirt (here: the list's fresh service) is one pipelined cell add")
+            assertEquals(1, counting.markerCellAdds, "a single's backlog (here: the list's fresh service) is one pipelined cell add")
             assertEquals(0, counting.markerPuts)
 
             val subjects = (1..100).map { it.toString(16).padStart(64, 'c') }
@@ -906,19 +906,19 @@ private class MarkerCountingReputationIndex(
     var markerPuts = 0
 
     override suspend fun updateCells(updates: List<ReputationCells>) {
-        markerCellAdds += updates.count { it.subject == DirtLedger.MARKER_KEY }
+        markerCellAdds += updates.count { it.subject == ProjectionLedger.MARKER_KEY }
         inner.updateCells(updates)
     }
 
     override suspend fun put(reputation: ReputationDoc) {
-        if (reputation.pubkey == DirtLedger.MARKER_KEY) markerPuts++
+        if (reputation.pubkey == ProjectionLedger.MARKER_KEY) markerPuts++
         inner.put(reputation)
     }
 }
 
 /**
  * Fails ONE projection cell write on demand — the "engine hiccup after the
- * event write" the dirt marker exists for. The ledger's write-ahead marker
+ * event write" the backlog marker exists for. The ledger's write-ahead marker
  * persist ALSO rides updateCells (and runs before the event write), so the
  * failure targets only updates that touch real subjects.
  */
@@ -928,7 +928,7 @@ private class FailingCellsReputationIndex(
     var failNext = false
 
     override suspend fun updateCells(updates: List<ReputationCells>) {
-        if (failNext && updates.any { it.subject != DirtLedger.MARKER_KEY }) {
+        if (failNext && updates.any { it.subject != ProjectionLedger.MARKER_KEY }) {
             failNext = false
             throw RuntimeException("simulated projection failure")
         }

@@ -53,7 +53,7 @@ class TrustKeyingMigrationTest {
     private val index = InMemoryEventIndex()
     private val reputations = InMemoryReputationIndex()
     private val projection = TrustProjection(index, reputations)
-    private val reconciler = TrustReconciler(index, reputations, projection.recompute, projection.dirt)
+    private val reconciler = TrustReconciler(index, reputations, projection.recompute, projection.backlog)
     private val migration = TrustKeyingMigration(reputations, reconciler, projection.recompute)
 
     private fun list10040() = TrustProviderListEvent(id(), observer, 1_000L + seq, arrayOf(arrayOf("30382:rank", service, "wss://scores.example.com/"), arrayOf("30382:followers", service, "wss://scores.example.com/")), "", "")

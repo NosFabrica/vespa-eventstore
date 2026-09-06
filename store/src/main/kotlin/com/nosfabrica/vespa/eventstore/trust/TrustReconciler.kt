@@ -49,8 +49,8 @@ class TrustReconciler internal constructor(
     private val index: EventIndex,
     private val reputations: ReputationIndex,
     private val recompute: TrustRecompute,
-    private val dirt: DirtLedger,
-    private val gate: suspend (suspend () -> Unit) -> Unit = { it() },
+    private val backlog: ProjectionLedger,
+    private val gate: WriteGate = WriteGate.DIRECT,
     private val nowSecs: () -> Long = { System.currentTimeMillis() / 1000 },
 ) {
     /** What [reconcile] found: services examined, and the ones it had to re-derive. */
@@ -134,7 +134,7 @@ class TrustReconciler internal constructor(
         repair: Boolean = false,
         onProgress: ((subjectsChecked: Int) -> Unit)? = null,
     ): TrustAudit {
-        dirt.drain(gate)
+        backlog.drain(gate)
         val seen = GuardBloom(expectedInsertions = index.count(EventQuery(kinds = listOf(ContactCardEvent.KIND))).coerceAtLeast(1024), fpp = 1e-6)
         val samples = ArrayList<TrustDrift>()
         var driftCount = 0
@@ -143,8 +143,8 @@ class TrustReconciler internal constructor(
         // The gated re-judgement of screened suspects; also repairs, when asked.
         suspend fun confirm(suspects: List<String>) {
             if (suspects.isEmpty()) return
-            dirt.drain(gate) // settle work queued since the last drain before judging it
-            gate {
+            backlog.drain(gate) // settle work queued since the last drain before judging it
+            gate.holding {
                 val expected = recompute.deriveBatch(suspects, recompute.providerMap())
                 val drifted = ArrayList<String>()
                 suspects
@@ -187,7 +187,7 @@ class TrustReconciler internal constructor(
         screenBatch()
 
         // Phase 2 — orphans: stored parents phase 1 never derived. The non-hex
-        // filter keeps the ledger's dirt marker out. Candidates go through the
+        // filter keeps the ledger's backlog marker out. Candidates go through the
         // same gated confirm — a subject whose first records landed mid-audit
         // is judged there, not miscalled an orphan.
         var parentsChecked = 0
@@ -201,7 +201,7 @@ class TrustReconciler internal constructor(
 
     /**
      * Project the named services whose stored cards are not cells yet. Drains
-     * the [DirtLedger] first: a marker left by a crashed process names drift
+     * the [ProjectionLedger] first: a marker left by a crashed process names drift
      * EXACTLY, so a restart heals before ranked search serves stale cells.
      *
      * Needed because projection happens on WRITE and a trigger only fires once:
@@ -217,14 +217,14 @@ class TrustReconciler internal constructor(
      * Only cards that ASSERT a dimension can prove it unprojected, else a
      * corpus that never carries the tag would re-walk on every startup.
      * Sampling settles it because the never-triggered failure is all-or-nothing
-     * per service — PARTIAL drift is [DirtLedger.drain]'s job.
+     * per service — PARTIAL drift is [ProjectionLedger.drain]'s job.
      *
      * [onProgress] reports before and after the fanned-out sampling; the serial
      * walks report `(total, total, rebuilt, cardsInService)` so a caller can
      * show a real fraction through exactly the slow part.
      */
     suspend fun reconcile(onProgress: ((inspected: Int, total: Int, rebuilt: Int, derivedInService: Int) -> Unit)? = null): Reconciliation {
-        dirt.drain(gate)
+        backlog.drain(gate)
         val providers = recompute.providerMap()
         if (providers.isEmpty()) return Reconciliation(0, emptyList())
         val total = providers.services.size
@@ -343,19 +343,19 @@ class TrustReconciler internal constructor(
             var drained = false
             var lastPage: Set<String>? = null
             while (!drained && rounds++ < MAX_SWEEP_ROUNDS) {
-                gate {
+                gate.holding {
                     // Re-read INSIDE the lock, per page: a 10040 committed since
                     // the snapshot must stop the deletion at the first page
                     // boundary, not at the end.
                     if (recompute.providerMap().maps(service)) {
                         stillOrphan = false
                         drained = true
-                        return@gate
+                        return@holding
                     }
                     val docs = index.search(page)
                     if (docs.isEmpty()) {
                         drained = true
-                        return@gate
+                        return@holding
                     }
                     val ids = docs.mapTo(HashSet()) { it.id }
                     // An acked remove is visible to search (EventIndex contract),
@@ -396,7 +396,7 @@ class TrustReconciler internal constructor(
         }
         reputations.visitPubkeys { page ->
             // Only real subjects (64-hex): the projection's own bookkeeping doc
-            // (DirtLedger's marker) must not be "repaired" away mid-crash.
+            // (ProjectionLedger's marker) must not be "repaired" away mid-crash.
             page.filterTo(buffer) { Hex.isHex64(it) }
             if (buffer.size >= ORPHAN_BATCH) flush()
             true

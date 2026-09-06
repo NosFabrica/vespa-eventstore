@@ -32,6 +32,7 @@ import com.nosfabrica.vespa.eventstore.trust.MaxRankBackfill
 import com.nosfabrica.vespa.eventstore.trust.TrustKeyingMigration
 import com.nosfabrica.vespa.eventstore.trust.TrustProjection
 import com.nosfabrica.vespa.eventstore.trust.TrustReconciler
+import com.nosfabrica.vespa.eventstore.trust.WriteGate
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import kotlinx.coroutines.CancellationException
@@ -136,7 +137,7 @@ class VespaEventStore internal constructor(
 
     /**
      * Repair the trust view: drain queued projection work a crashed process left
-     * behind (see DirtLedger), then re-derive any service whose scores are not
+     * behind (see ProjectionLedger), then re-derive any service whose scores are not
      * projected under every observer naming it. Worth running at startup — dedup
      * means a corpus mirrored before its provider lists arrived stays silently
      * unprojected, and every ranked search comes back empty.
@@ -189,7 +190,7 @@ class VespaEventStore internal constructor(
      * alongside the background drainer (draining is idempotent; both take the
      * writer lock per batch); a no-op with deferral off.
      */
-    suspend fun awaitTrustProjection() = trust.dirt.drain { store.withWriteLock(it) }
+    suspend fun awaitTrustProjection() = trust.backlog.drain { store.withWriteLock(it) }
 
     /**
      * The guard-cache barrier, the counterpart to [awaitTrustProjection] for
@@ -326,14 +327,14 @@ class VespaEventStore internal constructor(
             // GAUGES: instantaneous, pulled at snapshot time, and read from
             // their owners rather than mirrored — a queue depth has no
             // cumulative form and must never be diffed like a counter.
-            ledger.gauge("trust.pending.subjects") { trust.dirt.pendingSubjects() }
-            ledger.gauge("trust.pending.services") { trust.dirt.pendingServices() }
+            ledger.gauge("trust.pending.subjects") { trust.backlog.pendingSubjects() }
+            ledger.gauge("trust.pending.services") { trust.backlog.pendingServices() }
             ledger.gauge("feed.inflight") { eventIndex.feedInflight() }
             ledger.gauge("lock.held") { IngestStats.heldAll().size.toLong() }
             // The reconciler's and drainer's mutating batches take the store's
             // writer lock (the gate): repairs must not race live inserts'
             // recomputes.
-            val gate: suspend (suspend () -> Unit) -> Unit = { store.withWriteLock(it) }
+            val gate = WriteGate { store.withWriteLock(it) }
             // THE METERED INDEX, like everything else that reads through the
             // port. The reconciler was handed the raw one, so its corpus walks
             // — the heaviest read this store makes, hundreds of thousands of
@@ -341,7 +342,7 @@ class VespaEventStore internal constructor(
             // operator watching the page during a reconcile saw a store doing
             // nothing while Vespa was busy, which is the exact reading the page
             // exists to prevent.
-            val reconciler = TrustReconciler(metered, reputations, trust.recompute, trust.dirt, gate = gate)
+            val reconciler = TrustReconciler(metered, reputations, trust.recompute, trust.backlog, gate = gate)
             val drainScope = if (deferTrustProjection) startDrainer(trust, gate) else null
             // The descent is off until every reputation document carries the
             // scalar it cuts on. One walk, once, in the background — and the
@@ -377,15 +378,15 @@ class VespaEventStore internal constructor(
          */
         private fun startDrainer(
             trust: TrustProjection,
-            gate: suspend (suspend () -> Unit) -> Unit,
+            gate: WriteGate,
         ): CoroutineScope {
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
             val signal = Channel<Unit>(Channel.CONFLATED)
-            trust.dirt.deferTo { signal.trySend(Unit) }
+            trust.backlog.drainInBackground { signal.trySend(Unit) }
             scope.launch {
                 for (wake in signal) {
                     try {
-                        withActivity(Activity.Drain) { trust.dirt.drain(gate) }
+                        withActivity(Activity.Drain) { trust.backlog.drain(gate) }
                         BackgroundFailures.succeeded(BackgroundFailures.TRUST_DRAIN)
                     } catch (e: CancellationException) {
                         throw e

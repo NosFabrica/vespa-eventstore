@@ -177,7 +177,7 @@ class NostrSemanticsStore(
      * One mutex used to serialise every write in this store, and the hazard it
      * was documented against is recompute-versus-recompute: "repairs must not
      * race live inserts' recomputes". A plain kind-1 note has NO recompute —
-     * [TrustProjection.opDirt] returns `Dirt.NONE` for every kind but 30382 and
+     * [TrustProjection.insuranceFor] returns `ProjectionWork.NONE` for every kind but 30382 and
      * 10040 — so it was excluded against work it cannot conflict with. Measured
      * on staging: an ephemeral event, which takes the lock and returns without
      * storing anything, took 35-41 SECONDS to answer OK while the trust drain
@@ -273,7 +273,7 @@ class NostrSemanticsStore(
      * starved by another holder would otherwise show up as fast stages and a
      * stalled pipeline with nothing naming the reason. The deferred trust
      * projection makes that real: it re-derives off the ingest path but INSIDE
-     * this lock (DirtLedger.drain's gate), so `proj.fetch` and an ingest commit
+     * this lock (ProjectionLedger.drain's gate), so `proj.fetch` and an ingest commit
      * contend for one mutex while both look cheap individually. `lock.*.wait`
      * makes that visible; `lock.*.hold` attributes it.
      */
@@ -336,7 +336,7 @@ class NostrSemanticsStore(
      * CONSERVATIVE BY CONSTRUCTION — the question asked is "could this write
      * change a reputation document?", and anything that might answers yes:
      * a contact card (30382) and a provider list (10040) are the two kinds
-     * [TrustProjection.opDirt] books work for, and a deletion or a
+     * [TrustProjection.insuranceFor] books work for, and a deletion or a
      * request-to-vanish can REMOVE one, which is trust work through
      * `TrustProjection.remove`. A kind-1 note, a reaction, a repost and a zap
      * are none of those, and they are the overwhelming majority of what a
@@ -1420,8 +1420,8 @@ class NostrSemanticsStore(
     /**
      * BOTH LOCKS, unconditionally — a sweep is defined by a filter, so what it
      * will delete is not known until it runs, and it may well be cards. A
-     * removal does not write reputation inline (it marks dirt and the drain
-     * re-derives), but `DirtLedger.guarded` PERSISTS that mark as a reputation
+     * removal does not write reputation inline (it queues projection work and the drain
+     * re-derives), but `ProjectionLedger.insuring` PERSISTS that mark as a reputation
      * document, and the drain loads and rewrites the same marker under the
      * trust gate. Racing it would drop work the drain had already snapshotted.
      *

@@ -81,7 +81,7 @@ class MaxRankTest {
         runBlocking {
             reputations.put(ReputationDoc(s, mapOf(o1 to 40, o2 to 65)))
             reputations.put(ReputationDoc("c1".repeat(32), mapOf(o1 to 3)))
-            reputations.put(ReputationDoc(DirtLedger.MARKER_KEY, mapOf(s to 1)))
+            reputations.put(ReputationDoc(ProjectionLedger.MARKER_KEY, mapOf(s to 1)))
             val backfill = MaxRankBackfill(reputations)
             assertEquals(2, backfill.run(), "two authors written; the ledger's marker is not an author")
             assertEquals(65, reputations.get(s)!!.maxRank)
