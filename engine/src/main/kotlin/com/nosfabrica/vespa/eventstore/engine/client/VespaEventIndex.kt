@@ -980,7 +980,26 @@ class VespaEventIndex(
         query: EventQuery,
         withDTag: Boolean,
     ): Boolean {
-        val probe = idTimeHits(query.copy(limit = idPageSize), withDTag)
+        // THE ENGINE CUTTING THE PROBE IS AN ANSWER, NOT AN ERROR. The cursor
+        // reads through search with `order by created_at desc`, and attribute
+        // sorting trips proton's match-phase limiter on a large match set: the
+        // response comes back partial, the coverage guard refuses it, and the
+        // walk dies — with the document-API scan sitting right there, which has
+        // no match phase because it is not a search at all.
+        //
+        // Measured on staging: `kinds=[30382], authors=[service]` over a
+        // 148,130-card service came back at 54% coverage with
+        // `match-phase: true`, and every service walk large enough to matter
+        // failed this way. Small services walked fine, which is why the
+        // projection filled in for 236 of 342 services and then stopped —
+        // exactly the ones an observer's lens most often names were the ones
+        // too big to read this way.
+        val probe =
+            try {
+                idTimeHits(query.copy(limit = idPageSize), withDTag)
+            } catch (cut: PartialAnswer) {
+                return false
+            }
         // Short of a page: the whole match set is tiny, so the cursor's single
         // round trip beats spinning up a visit.
         if (probe.size < idPageSize) return true
