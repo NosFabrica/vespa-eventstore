@@ -63,7 +63,7 @@ import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
  */
 class TrustProjection(
     private val inner: EventIndex,
-    private val reputations: ReputationIndex,
+    internal val reputations: ReputationIndex,
     nowSecs: () -> Long = { System.currentTimeMillis() / 1000 },
 ) : EventIndex {
     /** The stored `max_rank` per subject, so a cell can raise it in the same write — see [MaxRankCache]. */
