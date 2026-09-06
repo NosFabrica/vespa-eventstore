@@ -191,7 +191,7 @@ data class SearchExpansionLimits(
  * subjects a place on the page; it does not earn itself one. A read that named
  * `kinds:[0]` gets the profiles the 30392 vouches for and not the 30392, which
  * is a kind it said it did not want — the store drops what the caller's kinds
- * exclude on the way out (`NostrSemanticsStore.servedKinds`). Where a filter
+ * exclude on the way out (`PageAssembly.asked`). Where a filter
  * of the same read DID name the pointer kind, it stays: it is an ordinary
  * NIP-01 hit for that filter. And a read that named no kinds narrows nothing,
  * because it excluded nothing.
@@ -368,7 +368,7 @@ internal class SearchReferenceExpansion(
      * client ever learns there was anything to unpack — but a REQ that asked
      * for `kinds:[0]` asked a NIP-01 question, and answering it with a 30392
      * hands back a kind the client has no parser for and did not budget a slot
-     * for. `NostrSemanticsStore.servedKinds` is where that narrowing happens,
+     * for. `PageAssembly.asked` is where that narrowing happens,
      * after the splice, so the pointer still places its subjects (they rise
      * with it, and sit under it in its own order) before it steps out of the
      * answer.
