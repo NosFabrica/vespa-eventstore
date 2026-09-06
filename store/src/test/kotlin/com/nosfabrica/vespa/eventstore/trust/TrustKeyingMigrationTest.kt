@@ -132,4 +132,64 @@ class TrustKeyingMigrationTest {
             assertEquals(serviceCells(service to 87), reputations.get(subject)?.influenceScores)
             assertEquals(3, done.keysRemoved)
         }
+
+    /**
+     * THE SISYPHEAN MARKER. A boolean marker meant a crash anywhere threw the
+     * whole attempt away, and step one is a corpus-scale reconcile: on a store
+     * where the migration takes longer than the process stays up, it can never
+     * finish, however fast each step is. `servicesProjected` is the witness —
+     * it counts what the RECONCILE rebuilt, so a resumed run reporting 0 while
+     * still sweeping is the reconcile being skipped rather than redone.
+     */
+    @Test
+    fun `a marker left mid-migration resumes at the sweep instead of reconciling again`() =
+        runBlocking {
+            seedObserverKeyedStore()
+            // What the previous process left after its reconcile landed: the
+            // cells are keyed by service already, the old observer keys are not
+            // yet swept, and the marker says so.
+            reputations.put(ReputationDoc(subject, serviceCells(service to 87, observer to 87), serviceCells(service to 12.0)))
+            reputations.put(ReputationDoc(subject2, serviceCells(service to 40, observer to 40), serviceCells(service to 12.0)))
+            reputations.put(ReputationDoc(TrustKeyingMigration.PROGRESS_KEY, serviceCells("reconciled" to 1)))
+
+            val done = migration.run()
+            assertFalse(done.refused)
+            assertEquals(0, done.servicesProjected, "the reconcile was skipped — the marker said it had landed")
+            assertEquals(2, done.keysRemoved, "the sweep still ran: the observer's stale key is gone from both subjects")
+            assertEquals(serviceCells(service to 87), reputations.get(subject)?.influenceScores)
+            assertEquals(serviceCells(service to 40), reputations.get(subject2)?.influenceScores)
+            assertEquals(TrustKeyingProgress.Phase.Done, migration.progress.phase)
+        }
+
+    /**
+     * THE MARKER MEANS FINISHED, AND ONLY THAT. Every operator check of this
+     * migration asks whether the document exists — a scratch watcher armed
+     * during this work did exactly that, and would have acted on a marker
+     * written mid-run. Phases live in their own document precisely so that
+     * check keeps its meaning.
+     */
+    @Test
+    fun `an unfinished migration writes progress but never the completion marker`() =
+        runBlocking {
+            seedObserverKeyedStore()
+            reputations.put(ReputationDoc(TrustKeyingMigration.PROGRESS_KEY, serviceCells("reconciled" to 1)))
+            assertNull(reputations.get(TrustKeyingMigration.MARKER_KEY), "a resumable attempt is not a finished one")
+
+            migration.run()
+            val marker = assertNotNull(reputations.get(TrustKeyingMigration.MARKER_KEY)).influenceScores
+            assertEquals(serviceCells("done" to 1), marker, "the marker is exactly what it always was")
+            assertNull(reputations.get(TrustKeyingMigration.PROGRESS_KEY), "and the scaffolding is cleared once it stands")
+        }
+
+    /** The question that started this: the walk reports where it is, not merely whether it broke. */
+    @Test
+    fun `progress reports a phase and a count rather than nothing at all`() =
+        runBlocking {
+            assertEquals(TrustKeyingProgress.Phase.NotStarted, migration.progress.phase)
+            assertEquals("trust-keying notstarted", migration.progress.line())
+            seedObserverKeyedStore()
+            migration.run()
+            assertEquals(TrustKeyingProgress.Phase.Done, migration.progress.phase)
+            assertEquals(2L, migration.progress.keysRemoved.get(), "the sweep's work is counted, not just its completion")
+        }
 }
