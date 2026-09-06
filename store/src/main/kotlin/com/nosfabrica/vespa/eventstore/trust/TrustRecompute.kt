@@ -328,7 +328,23 @@ internal class TrustRecompute(
                 page.map { it.id }.chunked(PROJECT_PAGE).forEach { ids ->
                     gate.holding {
                         IngestStats.annotateHold("project service ${service.take(8)}: ${ids.size} card(s)", WriteLocks.TRUST_GATE)
-                        val docs = IngestStats.timed("proj.fetch.page") { inner.search(EventQuery(ids = ids, kinds = listOf(ContactCardEvent.KIND), complete = true)) }
+                        // NOT `complete`, and the paragraph above says why: a
+                        // card superseded between the id listing and this fetch
+                        // is SIMPLY GONE, by design. Asking the engine to see
+                        // everything on a read whose whole contract expects
+                        // documents to be missing is a contradiction, and it is
+                        // the one that stopped this walk: `requireEverything`
+                        // refuses `full: false` — which a node a hair short of
+                        // its target reports at a rounded 100% with no
+                        // degradation named, permanently, on a cluster that is
+                        // feeding. The walk advanced a few hundred cards, hit a
+                        // page whose answer was a hair short, threw, and began
+                        // again from zero.
+                        //
+                        // Missing ids cost nothing here: applyCards writes a
+                        // cell per card it HAS, the absent one's winner already
+                        // wrote its own, and the next round re-lists.
+                        val docs = IngestStats.timed("proj.fetch.page") { inner.search(EventQuery(ids = ids, kinds = listOf(ContactCardEvent.KIND))) }
                         applyCards(docs, providers.get())
                         applied += docs.size
                     }

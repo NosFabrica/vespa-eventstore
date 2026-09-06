@@ -25,6 +25,7 @@ import com.nosfabrica.vespa.eventstore.engine.doc.CellRemoval
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationCells
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
+import kotlinx.coroutines.CancellationException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
@@ -253,14 +254,50 @@ internal class ProjectionLedger(
     }
 
     /**
+     * Some units failed and stay queued; the rest of the round completed.
+     *
+     * Carries the first failure as its cause and the rest as suppressed, so
+     * [BackgroundFailures]' cause-chain walk names a real engine error rather
+     * than this wrapper.
+     */
+    class DrainIncomplete(
+        val stuck: Int,
+        causes: List<Throwable>,
+    ) : IllegalStateException("$stuck queued unit(s) failed and stay queued: ${causes.first().message}", causes.first()) {
+        init {
+            causes.drop(1).forEach { addSuppressed(it) }
+        }
+    }
+
+    /**
      * Heal everything pending, in gated slices: snapshot, re-derive its
      * subjects (empties removed — which also deletes a parent whose last card
      * died with a crashed removal), re-walk its services, retiring each slice
      * as it lands. Loops until a snapshot is empty, so work queued WHILE
-     * draining is picked up. Idempotent; throws with the marker intact if a
-     * repair step fails.
+     * draining is picked up. Idempotent.
+     *
+     * A failing unit costs ONLY ITSELF: it is skipped for the rest of the
+     * call, stays queued, and every other unit still gets its turn. The
+     * failures are then raised together as [DrainIncomplete] once the round
+     * has nothing left it can do — a throw, because the caller reads that as
+     * "retry after a backoff" and a clean return as "nothing is stuck".
+     * Always with the marker intact, so a retry loses nothing.
      */
     suspend fun drain(gate: WriteGate) {
+        // ONE UNIT'S FAILURE IS ONE UNIT'S. Every read a unit makes can fail
+        // for reasons that say nothing about the other units — an engine that
+        // truncated a sorted read, a node a hair short of its target, a
+        // timeout under load. Before this set existed, the first such failure
+        // left the loop, and every unit behind it went underived: 342 services
+        // queued, one throwing, none of the other 341 walked. The queue looked
+        // busy and the projection never moved.
+        //
+        // Failed units are not retired, so they stay queued for the next call.
+        // Skipped for the REST OF THIS ONE, because a unit that just threw will
+        // throw again on the next turn of this loop, and the loop would spin on
+        // it at full speed.
+        val poisoned = HashSet<String>()
+        val failures = ArrayList<Throwable>()
         while (true) {
             adoptStoredMarkerOnce()
             // READ, not taken: the unretired remainder stays pending while it
@@ -268,7 +305,7 @@ internal class ProjectionLedger(
             val snapshot = pendingNow()
             if (snapshot.isEmpty()) {
                 TrustProgress.finish(DRAIN)
-                return
+                break
             }
             val work = snapshot.toWork()
             // THE LONG PHASE, AND IT REPORTED NOTHING. A reconcile begins by
@@ -281,17 +318,26 @@ internal class ProjectionLedger(
             // Sliced HERE rather than inside recomputeBatchGated, because the
             // ledger has to see each slice land: a slice is the unit that gets
             // skipped and the unit that gets retired.
+            var progressed = false
             work.toRederive.chunked(TrustRecompute.GATE_SLICE).forEach { slice ->
-                val todo = slice.filter { pendingNow().toRederive.containsKey(it) }
+                val todo = slice.filter { pendingNow().toRederive.containsKey(it) && it !in poisoned }
                 if (todo.isEmpty()) return@forEach
-                recompute.recomputeBatchGated(todo, removeEmpties = true, gate = gate)
-                retire(StampedWork(todo.associateWith { snapshot.toRederive.getValue(it) }, emptyMap()), gate)
+                try {
+                    recompute.recomputeBatchGated(todo, removeEmpties = true, gate = gate)
+                    retire(StampedWork(todo.associateWith { snapshot.toRederive.getValue(it) }, emptyMap()), gate)
+                    progressed = true
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (t: Throwable) {
+                    poisoned += todo
+                    failures += t
+                }
                 // Retired, not attempted: the fraction has to mean work that
                 // landed, or it runs ahead of the writes it is reporting.
                 TrustProgress.advance(DRAIN, (work.toRederive.size - pendingNow().toRederive.size).toLong(), work.toRederive.size.toLong())
             }
             snapshot.toRewalk.keys.forEach { service ->
-                if (!pendingNow().toRewalk.containsKey(service)) return@forEach
+                if (!pendingNow().toRewalk.containsKey(service) || service in poisoned) return@forEach
                 // A service's cards become cells page by page — no derive: the
                 // cell is a function of the newest card at its address alone.
                 // One service per call so each retires on its own ack.
@@ -300,11 +346,30 @@ internal class ProjectionLedger(
                 // thing this store does, and "walking 7d7ffd72's cards" is a
                 // different answer from "still draining".
                 TrustProgress.advance(DRAIN, 0, 0, phase = "walking service ${service.take(12)}'s cards into cells")
-                recompute.projectServices(listOf(service), gate = gate)
-                retire(StampedWork(emptyMap(), mapOf(service to snapshot.toRewalk.getValue(service))), gate)
+                try {
+                    recompute.projectServices(listOf(service), gate = gate)
+                    retire(StampedWork(emptyMap(), mapOf(service to snapshot.toRewalk.getValue(service))), gate)
+                    progressed = true
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (t: Throwable) {
+                    poisoned += service
+                    failures += t
+                }
             }
             crashLeftovers.set(false)
+            // NOTHING MOVED AND NOTHING CAN. Every unit this round could reach
+            // either failed or was retired by someone else, so another turn
+            // would re-snapshot the same work and fail it again at full speed.
+            if (!progressed) break
         }
+        // RAISED LAST, ON PURPOSE. The drainer treats a throw as "retry after a
+        // backoff" and a return as "clean, clear the failure count" — so
+        // swallowing these would both hide stuck units from the health page and
+        // leave them waiting for the next unrelated write to wake the drainer.
+        // Throwing HERE, rather than where the failure happened, is what buys
+        // the isolation: every other unit has already had its turn.
+        if (failures.isNotEmpty()) throw DrainIncomplete(poisoned.size, failures)
     }
 
     /**

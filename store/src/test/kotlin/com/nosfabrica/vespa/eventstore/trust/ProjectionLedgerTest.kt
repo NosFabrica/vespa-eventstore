@@ -20,6 +20,8 @@
  */
 package com.nosfabrica.vespa.eventstore.trust
 
+import com.nosfabrica.vespa.eventstore.engine.DocRef
+import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationCells
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
@@ -27,6 +29,7 @@ import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
 import com.nosfabrica.vespa.eventstore.engine.doc.serviceCells
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryReputationIndex
+import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.mapping.toDoc
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
@@ -73,6 +76,104 @@ class ProjectionLedgerTest {
     private fun card(rank: Int) = ContactCardEvent(id(), service, next(), arrayOf(arrayOf("d", subject), arrayOf("rank", rank.toString())), "", "")
 
     private fun note() = MetadataEvent(id(), "cc".repeat(32), next(), emptyArray(), """{"name":"n"}""", "")
+
+    /**
+     * An index that fails every read naming one author, and serves the rest.
+     * Stands in for what the cluster actually does: a read that fails for
+     * reasons local to the documents it touched — a truncated sorted read, a
+     * node a hair short of its target — while every other read is fine.
+     */
+    private class OneBadService(
+        private val inner: InMemoryEventIndex,
+        private val bad: String,
+    ) : EventIndex by inner {
+        var refusals = 0
+
+        // The id listing is where both real failures landed: #121's truncated
+        // sorted read and #122's `full: false`. Keyed on the author because
+        // that is what makes a walk one service's walk.
+        override suspend fun visitIds(
+            query: EventQuery,
+            withDTag: Boolean,
+            onPage: suspend (List<DocRef>) -> Boolean,
+        ) {
+            if (bad in query.authors.orEmpty()) {
+                refusals++
+                throw IllegalStateException("vespa answered full: false (100% of the corpus, degraded: unspecified)")
+            }
+            inner.visitIds(query, withDTag, onPage)
+        }
+    }
+
+    /**
+     * ONE BAD UNIT MUST NOT STOP THE OTHERS. The failure that motivated this
+     * is not hypothetical: a single service whose walk threw kept the other
+     * queued services underived for a whole day, because the throw left the
+     * drain loop. The healthy service must be walked and retired in the same
+     * call that the sick one fails.
+     */
+    @Test
+    fun `a service whose walk fails does not stop the other services from being walked`() =
+        runBlocking {
+            val inner = InMemoryEventIndex()
+            val index = OneBadService(inner, bad = service)
+            val reputations = InMemoryReputationIndex()
+            val projection = TrustProjection(index, reputations)
+            projection.backlog.drainInBackground { }
+
+            // Two services named by the observer, each with a card to project.
+            projection.put(cardFor(subject, 40).toDoc())
+            projection.put(ContactCardEvent(id(), service2, next(), arrayOf(arrayOf("d", subject), arrayOf("followers", "70")), "", "").toDoc())
+            // One provider per DIMENSION: naming two under `30382:rank` names
+            // only the last. `rank` and `followers` are the two the projection
+            // reads, so this is the smallest list that queues two walks.
+            projection.put(
+                TrustProviderListEvent(
+                    id(),
+                    observer,
+                    next(),
+                    arrayOf(arrayOf("30382:rank", service, "wss://scores.example.com/"), arrayOf("30382:followers", service2, "wss://counts.example.com/")),
+                    "",
+                    "",
+                ).toDoc(),
+            )
+
+            assertFailsWith<ProjectionLedger.DrainIncomplete> { projection.backlog.drain { it() } }
+
+            val doc = assertNotNull(reputations.get(subject), "the healthy service's walk wrote a cell")
+            assertTrue(ServiceKey(service2) in doc.followerCounts, "the healthy service was walked even though the other one threw")
+            assertTrue(ServiceKey(service) !in doc.influenceScores, "and the failed service wrote nothing")
+            val marker = assertNotNull(reputations.get(ProjectionLedger.MARKER_KEY), "the failed service stays queued")
+            assertTrue(ServiceKey(service) in marker.followerCounts, "the failed service is still named by the marker")
+            assertTrue(ServiceKey(service2) !in marker.followerCounts, "the walked service was retired")
+        }
+
+    /**
+     * AND IT MUST NOT SPIN ON IT. The ledger keeps failed work queued, so the
+     * loop's next round would name it again — at full speed, forever, without
+     * the poisoned set. One attempt per drain call, then out.
+     */
+    @Test
+    fun `a failing service is attempted once per drain call, not spun on`() =
+        runBlocking {
+            val inner = InMemoryEventIndex()
+            val index = OneBadService(inner, bad = service)
+            val reputations = InMemoryReputationIndex()
+            val projection = TrustProjection(index, reputations)
+            projection.backlog.drainInBackground { }
+
+            projection.put(cardFor(subject, 40).toDoc())
+            projection.put(list10040().toDoc())
+
+            assertFailsWith<ProjectionLedger.DrainIncomplete> { projection.backlog.drain { it() } }
+            val afterFirst = index.refusals
+            assertTrue(afterFirst in 1..4, "the walk was attempted, not retried in a loop (was $afterFirst)")
+
+            // A second call is a fresh attempt: the work is still queued, and a
+            // failure that has cleared must be retried, not written off.
+            assertFailsWith<ProjectionLedger.DrainIncomplete> { projection.backlog.drain { it() } }
+            assertTrue(index.refusals in (afterFirst + 1)..(afterFirst * 2 + 2), "the next call retries it exactly once more")
+        }
 
     private class Deferred {
         val reputations = InMemoryReputationIndex()
