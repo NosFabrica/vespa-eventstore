@@ -27,6 +27,7 @@ import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationCells
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
+import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
 import com.nosfabrica.vespa.eventstore.engine.forEachBounded
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.mapping.toEvent
@@ -267,7 +268,7 @@ internal class TrustRecompute(
             }
             val influence = card.boundedRank()
             val followers = card.followerCount()?.toDouble()
-            updates += ReputationCells(subject, doc.pubkey, influence, followers, dropInfluence = influence == null, dropFollowers = followers == null)
+            updates += ReputationCells(subject, ServiceKey(doc.pubkey), influence, followers, dropInfluence = influence == null, dropFollowers = followers == null)
         }
         if (updates.isEmpty()) return unapplied
         // Each cell that overtakes its document's `max_rank` carries the new
@@ -328,8 +329,8 @@ internal class TrustRecompute(
         docs: List<EventDoc>,
         serviceProviders: TrustProviders,
     ): ReputationDoc {
-        val influence = LinkedHashMap<String, Int>()
-        val followers = LinkedHashMap<String, Double>()
+        val influence = LinkedHashMap<ServiceKey, Int>()
+        val followers = LinkedHashMap<ServiceKey, Double>()
         // Folded OLDEST-first so the NEWEST card wins each cell — deterministic
         // (an engine-order fold let rebuilds change served scores with no event
         // changing). Ties go to the LOWEST id (sorted after, so it overwrites),
@@ -343,8 +344,8 @@ internal class TrustRecompute(
             // both tags land whatever dimension the service was named for — a
             // query reads the dimension it resolved the observer's lens to.
             if (!serviceProviders.maps(card.pubKey)) continue
-            card.boundedRank()?.let { rank -> influence[card.pubKey] = rank }
-            card.followerCount()?.toDouble()?.let { count -> followers[card.pubKey] = count }
+            card.boundedRank()?.let { rank -> influence[ServiceKey(card.pubKey)] = rank }
+            card.followerCount()?.toDouble()?.let { count -> followers[ServiceKey(card.pubKey)] = count }
         }
         return ReputationDoc(subject, influence, followers)
     }

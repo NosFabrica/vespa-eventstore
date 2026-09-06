@@ -24,6 +24,8 @@ import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.InMemoryReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
+import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
+import com.nosfabrica.vespa.eventstore.engine.doc.serviceCells
 import com.nosfabrica.vespa.eventstore.mapping.toDoc
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
@@ -114,7 +116,7 @@ class ProjectionLedgerTest {
                     d.projection.put(card(90).toDoc())
                     assertEquals(90, d.rankOf(subject), "the card's cell is applied inline")
                     // The walk is still covered on disk until its round completes.
-                    assertTrue(service in assertNotNull(d.marker()).followerCounts, "the marker still names the service being walked")
+                    assertTrue(ServiceKey(service) in assertNotNull(d.marker()).followerCounts, "the marker still names the service being walked")
                 }
             }
             assertTrue(landed, "the interleaved card was written mid-walk")
@@ -155,7 +157,7 @@ class ProjectionLedgerTest {
             d.projection.put(list10040(serviceKey = service2).toDoc())
             val marker = d.marker()
             assertNotNull(marker, "the list's write-ahead was persisted")
-            assertTrue(service2 in marker.followerCounts)
+            assertTrue(ServiceKey(service2) in marker.followerCounts)
             d.projection.backlog.drain { it() }
             assertNull(d.marker())
         }
@@ -184,7 +186,7 @@ class ProjectionLedgerTest {
                     // persisted as one marker-doc put.
                     d.projection.putAll((1..100).map { i -> ContactCardEvent(id(), service, next(), arrayOf(arrayOf("d", i.toString(16).padStart(64, 'e')), arrayOf("rank", "1")), "", "").toDoc() })
                     val marker = assertNotNull(d.marker(), "the marker still stands")
-                    assertTrue(service in marker.followerCounts, "the marker still names the service the round is walking")
+                    assertTrue(ServiceKey(service) in marker.followerCounts, "the marker still names the service the round is walking")
                 }
             }
             assertTrue(landed)
@@ -244,12 +246,12 @@ class ProjectionLedgerTest {
             first.put(card(40).toDoc())
             // The crashed process: its marker names the subject, its projection never ran.
             reputations.remove(subject)
-            reputations.put(ReputationDoc(ProjectionLedger.MARKER_KEY, mapOf(subject to 1), emptyMap()))
+            reputations.put(ReputationDoc(ProjectionLedger.MARKER_KEY, serviceCells(subject to 1), emptyMap()))
 
             val restarted = TrustProjection(index, reputations)
             restarted.backlog.drainInBackground { }
             restarted.backlog.drain { it() }
-            assertEquals(mapOf(service to 40), reputations.get(subject)?.influenceScores)
+            assertEquals(serviceCells(service to 40), reputations.get(subject)?.influenceScores)
             assertNull(reputations.get(ProjectionLedger.MARKER_KEY))
         }
 
@@ -266,7 +268,7 @@ class ProjectionLedgerTest {
         subjects.forEach { first.put(cardFor(it, 50).toDoc()) }
         // The process died with the projection unwritten and the marker naming all of it.
         subjects.forEach { reputations.remove(it) }
-        reputations.put(ReputationDoc(ProjectionLedger.MARKER_KEY, subjects.associateWith { 1 }, emptyMap()))
+        reputations.put(ReputationDoc(ProjectionLedger.MARKER_KEY, subjects.associate { ServiceKey(it) to 1 }, emptyMap()))
         val restarted = TrustProjection(index, reputations)
         restarted.backlog.drainInBackground { }
         return restarted to subjects
@@ -295,7 +297,7 @@ class ProjectionLedgerTest {
 
             assertNull(reputations.get(ProjectionLedger.MARKER_KEY), "marker gone once the ledger is clean")
             assertEquals(0L, store.backlog.pendingSubjects())
-            assertEquals(subjects.size, subjects.count { reputations.get(it)?.influenceScores == mapOf(service to 50) }, "every subject healed")
+            assertEquals(subjects.size, subjects.count { reputations.get(it)?.influenceScores == serviceCells(service to 50) }, "every subject healed")
             assertTrue(
                 sizes.any { it in 1 until subjects.size },
                 "the marker shrank WHILE the round ran; it only ever read ${sizes.distinct().sorted()}",
@@ -338,12 +340,12 @@ class ProjectionLedgerTest {
             )
             assertEquals(
                 subjects.size - left.toInt(),
-                subjects.count { reputations.get(it)?.influenceScores == mapOf(service to 50) },
+                subjects.count { reputations.get(it)?.influenceScores == serviceCells(service to 50) },
                 "and the retired subjects are the ones already written",
             )
 
             store.backlog.drain { it() }
             assertNull(reputations.get(ProjectionLedger.MARKER_KEY), "the remainder healed")
-            assertEquals(subjects.size, subjects.count { reputations.get(it)?.influenceScores == mapOf(service to 50) })
+            assertEquals(subjects.size, subjects.count { reputations.get(it)?.influenceScores == serviceCells(service to 50) })
         }
 }

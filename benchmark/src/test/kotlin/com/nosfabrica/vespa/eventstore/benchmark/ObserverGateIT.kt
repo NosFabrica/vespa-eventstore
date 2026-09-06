@@ -26,6 +26,7 @@ import com.nosfabrica.vespa.eventstore.engine.client.VespaReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.SearchFields
+import com.nosfabrica.vespa.eventstore.engine.doc.serviceCells
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import kotlinx.coroutines.delay
@@ -91,9 +92,9 @@ class ObserverGateIT {
                         VespaReputationIndex(queryUrl).use { reputation ->
                             reputation.putAll(
                                 listOf(
-                                    ReputationDoc(TRUSTED, influenceScores = mapOf(OBSERVER to 50)),
-                                    ReputationDoc(MARGINAL, influenceScores = mapOf(OBSERVER to 2)),
-                                    ReputationDoc(LOW, influenceScores = mapOf(OBSERVER to 1)),
+                                    ReputationDoc(TRUSTED, influenceScores = serviceCells(OBSERVER to 50)),
+                                    ReputationDoc(MARGINAL, influenceScores = serviceCells(OBSERVER to 2)),
+                                    ReputationDoc(LOW, influenceScores = serviceCells(OBSERVER to 1)),
                                 ),
                             )
                         }

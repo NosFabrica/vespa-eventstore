@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.eventstore.benchmark
 import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.eventstore.engine.client.VespaReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
+import com.nosfabrica.vespa.eventstore.engine.doc.serviceCells
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -110,7 +111,7 @@ class BadgeTermIT {
                 // profile — EventYql.profileOf), and equal scores keep the
                 // trust factor out of every comparison below.
                 VespaReputationIndex(queryUrl).use { reputation ->
-                    reputation.putAll(CORPUS.map { ReputationDoc(it.pubKey, influenceScores = mapOf(OBSERVER to 50)) })
+                    reputation.putAll(CORPUS.map { ReputationDoc(it.pubKey, influenceScores = serviceCells(OBSERVER to 50)) })
                 }
                 awaitCorpus(store, CORPUS.size + FILLER_COUNT)
 

@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.eventstore.BackgroundFailures
 import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.CellRemoval
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
+import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
 import com.vitorpamplona.quartz.utils.Hex
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
@@ -108,7 +109,7 @@ class TrustKeyingMigration internal constructor(
             for (doc in page) {
                 if (!Hex.isHex64(doc.pubkey)) continue
                 parents++
-                val keys = (doc.influenceScores.keys + doc.followerCounts.keys).filterNot { it in services }
+                val keys = (doc.influenceScores.keys + doc.followerCounts.keys).filterNot { it.hex in services }
                 for (key in keys) {
                     removals += CellRemoval(doc.pubkey, key, influence = key in doc.influenceScores, followers = key in doc.followerCounts)
                 }
@@ -156,6 +157,6 @@ class TrustKeyingMigration internal constructor(
 
         private const val DONE = "done"
 
-        private fun marker(): ReputationDoc = ReputationDoc(MARKER_KEY, mapOf(DONE to 1))
+        private fun marker(): ReputationDoc = ReputationDoc(MARKER_KEY, mapOf(ServiceKey(DONE) to 1))
     }
 }

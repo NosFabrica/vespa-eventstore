@@ -27,6 +27,8 @@ import com.nosfabrica.vespa.eventstore.benchmark.AccessLogIT.Companion.dockerAva
 import com.nosfabrica.vespa.eventstore.engine.client.VespaReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationCells
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
+import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
+import com.nosfabrica.vespa.eventstore.engine.doc.serviceCells
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Tag
@@ -63,13 +65,13 @@ class MaxRankRaiseIT {
                     runBlocking {
                         val a = "a".repeat(64)
                         val b = "b".repeat(64)
-                        val observer = "0b".repeat(32)
-                        reputations.put(ReputationDoc(a, mapOf(observer to 40)))
-                        reputations.put(ReputationDoc(b, mapOf(observer to 10)))
+                        val service = "0b".repeat(32)
+                        reputations.put(ReputationDoc(a, serviceCells(service to 40)))
+                        reputations.put(ReputationDoc(b, serviceCells(service to 10)))
                         assertEquals(40, reputations.storedMaxRank(a), "a whole-document put stores the cells' maximum")
 
                         // A live cell raise lands first: the document is at 70.
-                        reputations.updateCells(listOf(ReputationCells(a, observer, 70, null, maxRank = 70)))
+                        reputations.updateCells(listOf(ReputationCells(a, ServiceKey(service), 70, null, maxRank = 70)))
                         assertEquals(70, reputations.storedMaxRank(a))
 
                         // The backfill's page-old bound (40) must NOT win — the

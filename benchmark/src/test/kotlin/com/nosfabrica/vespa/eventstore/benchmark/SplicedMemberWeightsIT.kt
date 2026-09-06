@@ -26,6 +26,7 @@ import com.nosfabrica.vespa.eventstore.engine.client.VespaReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.SearchFields
+import com.nosfabrica.vespa.eventstore.engine.doc.serviceCells
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import kotlinx.coroutines.delay
@@ -188,7 +189,7 @@ class SplicedMemberWeightsIT {
                         // gate can see and read the same two numbers back: they
                         // must not budge.
                         VespaReputationIndex(queryUrl).use { reputation ->
-                            reputation.putAll(listOf(ReputationDoc(FULL, influenceScores = mapOf(OBSERVER to 90))))
+                            reputation.putAll(listOf(ReputationDoc(FULL, influenceScores = serviceCells(OBSERVER to 90))))
                             awaitInfluence(index, weighted)
 
                             val lensed = index.searchRanked(weighted.copy(observer = OBSERVER, rankKey = OBSERVER, followersKey = OBSERVER, minRank = 0.0))

@@ -25,6 +25,7 @@ import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.CellRemoval
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationCells
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
+import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
 import kotlinx.coroutines.future.await
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -96,14 +97,14 @@ class VespaReputationIndex(
                     buildJsonObject {
                         put("pubkey", buildJsonObject { put("assign", u.subject) })
                         u.influence?.let { q ->
-                            put("influence_scores", buildJsonObject { put("add", buildJsonObject { put("cells", buildJsonObject { put(u.key, q) }) }) })
+                            put("influence_scores", buildJsonObject { put("add", buildJsonObject { put("cells", buildJsonObject { put(u.key.hex, q) }) }) })
                         }
                         u.followers?.let { f ->
-                            put("follower_counts", buildJsonObject { put("add", buildJsonObject { put("cells", buildJsonObject { put(u.key, f) }) }) })
+                            put("follower_counts", buildJsonObject { put("add", buildJsonObject { put("cells", buildJsonObject { put(u.key.hex, f) }) }) })
                         }
                         // A retracted dimension leaves in the same atomic update.
-                        if (u.influence == null && u.dropInfluence) put("influence_scores", buildJsonObject { put("remove", buildJsonObject { put("addresses", buildJsonArray { add(buildJsonObject { put("user", u.key) }) }) }) })
-                        if (u.followers == null && u.dropFollowers) put("follower_counts", buildJsonObject { put("remove", buildJsonObject { put("addresses", buildJsonArray { add(buildJsonObject { put("user", u.key) }) }) }) })
+                        if (u.influence == null && u.dropInfluence) put("influence_scores", buildJsonObject { put("remove", buildJsonObject { put("addresses", buildJsonArray { add(buildJsonObject { put("user", u.key.hex) }) }) }) })
+                        if (u.followers == null && u.dropFollowers) put("follower_counts", buildJsonObject { put("remove", buildJsonObject { put("addresses", buildJsonArray { add(buildJsonObject { put("user", u.key.hex) }) }) }) })
                         // In the SAME update as the cell: a document update is atomic, so
                         // the bound the descent relies on never lags the cell it covers.
                         u.maxRank?.let { m -> put("max_rank", buildJsonObject { put("assign", m) }) }
@@ -157,12 +158,12 @@ class VespaReputationIndex(
     }
 
     /** One tensor `remove` naming every [keys] address at once. */
-    private fun removeAddresses(keys: List<String>) =
+    private fun removeAddresses(keys: List<ServiceKey>) =
         buildJsonObject {
             put(
                 "remove",
                 buildJsonObject {
-                    put("addresses", buildJsonArray { keys.forEach { add(buildJsonObject { put("user", it) }) } })
+                    put("addresses", buildJsonArray { keys.forEach { add(buildJsonObject { put("user", it.hex) }) } })
                 },
             )
         }

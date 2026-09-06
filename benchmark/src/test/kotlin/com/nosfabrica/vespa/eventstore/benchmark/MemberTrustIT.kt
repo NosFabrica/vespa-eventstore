@@ -27,6 +27,7 @@ import com.nosfabrica.vespa.eventstore.engine.client.VespaReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.SearchFields
+import com.nosfabrica.vespa.eventstore.engine.doc.serviceCells
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.vitorpamplona.quartz.nip01Core.core.Event
@@ -95,8 +96,8 @@ class MemberTrustIT {
                         VespaReputationIndex(queryUrl).use { reputation ->
                             reputation.putAll(
                                 listOf(
-                                    ReputationDoc(SURE, influenceScores = mapOf(SERVICE to 3)),
-                                    ReputationDoc(DOUBTED, influenceScores = mapOf(SERVICE to 99)),
+                                    ReputationDoc(SURE, influenceScores = serviceCells(SERVICE to 3)),
+                                    ReputationDoc(DOUBTED, influenceScores = serviceCells(SERVICE to 99)),
                                     // UNRANKED gets no reputation document at all.
                                 ),
                             )

@@ -25,6 +25,8 @@ import com.nosfabrica.vespa.eventstore.engine.InMemoryReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationCells
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
+import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
+import com.nosfabrica.vespa.eventstore.engine.doc.serviceCells
 import kotlinx.coroutines.runBlocking
 import java.io.IOException
 import kotlin.test.Test
@@ -48,40 +50,40 @@ class MaxRankTest {
     @Test
     fun `a cell that overtakes the stored max carries the new max, one that does not carries nothing`() =
         runBlocking {
-            reputations.put(ReputationDoc(s, mapOf(o1 to 40)))
-            val lower = cache.raise(listOf(ReputationCells(s, o2, 30, null)))
+            reputations.put(ReputationDoc(s, serviceCells(o1 to 40)))
+            val lower = cache.raise(listOf(ReputationCells(s, ServiceKey(o2), 30, null)))
             assertNull(lower.single().maxRank, "30 does not overtake a stored 40 — read once, no assign")
-            val higher = cache.raise(listOf(ReputationCells(s, o2, 70, null)))
+            val higher = cache.raise(listOf(ReputationCells(s, ServiceKey(o2), 70, null)))
             assertEquals(70, higher.single().maxRank, "70 does: the cell carries the new max")
-            val same = cache.raise(listOf(ReputationCells(s, o1, 70, null)))
+            val same = cache.raise(listOf(ReputationCells(s, ServiceKey(o1), 70, null)))
             assertNull(same.single().maxRank, "…and the cache moved with it, so 70 again is not a raise")
             // Two cells for one subject in one batch: every cell of the subject carries the batch's max.
-            val batch = cache.raise(listOf(ReputationCells(s, o1, 80, null), ReputationCells(s, o2, 75, null)))
+            val batch = cache.raise(listOf(ReputationCells(s, ServiceKey(o1), 80, null), ReputationCells(s, ServiceKey(o2), 75, null)))
             assertEquals(listOf(80, 80), batch.map { it.maxRank })
             // A followers-only cell moves nothing.
-            assertNull(cache.raise(listOf(ReputationCells(s, o1, null, 12.0))).single().maxRank)
+            assertNull(cache.raise(listOf(ReputationCells(s, ServiceKey(o1), null, 12.0))).single().maxRank)
         }
 
     @Test
     fun `a whole-document write can LOWER the max, and the cache follows it rather than reading high`() =
         runBlocking {
-            reputations.put(ReputationDoc(s, mapOf(o1 to 90)))
-            cache.raise(listOf(ReputationCells(s, o2, 10, null))) // reads 90
-            val rewritten = ReputationDoc(s, mapOf(o1 to 20))
+            reputations.put(ReputationDoc(s, serviceCells(o1 to 90)))
+            cache.raise(listOf(ReputationCells(s, ServiceKey(o2), 10, null))) // reads 90
+            val rewritten = ReputationDoc(s, serviceCells(o1 to 20))
             reputations.put(rewritten)
             cache.remember(listOf(rewritten))
-            assertEquals(50, cache.raise(listOf(ReputationCells(s, o2, 50, null))).single().maxRank, "50 overtakes the rewritten 20 — a stale 90 would have skipped this assign")
+            assertEquals(50, cache.raise(listOf(ReputationCells(s, ServiceKey(o2), 50, null))).single().maxRank, "50 overtakes the rewritten 20 — a stale 90 would have skipped this assign")
             cache.forget(listOf(s))
             reputations.remove(s)
-            assertEquals(5, cache.raise(listOf(ReputationCells(s, o2, 5, null))).single().maxRank, "a removed document starts from 0 again")
+            assertEquals(5, cache.raise(listOf(ReputationCells(s, ServiceKey(o2), 5, null))).single().maxRank, "a removed document starts from 0 again")
         }
 
     @Test
     fun `the backfill writes every document once and leaves its marker`() =
         runBlocking {
-            reputations.put(ReputationDoc(s, mapOf(o1 to 40, o2 to 65)))
-            reputations.put(ReputationDoc("c1".repeat(32), mapOf(o1 to 3)))
-            reputations.put(ReputationDoc(ProjectionLedger.MARKER_KEY, mapOf(s to 1)))
+            reputations.put(ReputationDoc(s, serviceCells(o1 to 40, o2 to 65)))
+            reputations.put(ReputationDoc("c1".repeat(32), serviceCells(o1 to 3)))
+            reputations.put(ReputationDoc(ProjectionLedger.MARKER_KEY, serviceCells(s to 1)))
             val backfill = MaxRankBackfill(reputations)
             assertEquals(2, backfill.run(), "two authors written; the ledger's marker is not an author")
             assertEquals(65, reputations.get(s)!!.maxRank)
@@ -98,8 +100,8 @@ class MaxRankTest {
     @Test
     fun `a marker the data contradicts is not trusted, and the walk runs again`() =
         runBlocking {
-            reputations.put(ReputationDoc(s, mapOf(o1 to 40, o2 to 65)))
-            reputations.put(ReputationDoc("c1".repeat(32), mapOf(o1 to 3)))
+            reputations.put(ReputationDoc(s, serviceCells(o1 to 40, o2 to 65)))
+            reputations.put(ReputationDoc("c1".repeat(32), serviceCells(o1 to 3)))
             val backfill = MaxRankBackfill(reputations)
             assertEquals(2, backfill.run())
             assertEquals(0, backfill.run(), "the marker stands and the data agrees with it")
@@ -115,9 +117,9 @@ class MaxRankTest {
     @Test
     fun `the cache reads what is stored, not what the cells imply`() =
         runBlocking {
-            reputations.put(ReputationDoc(s, mapOf(o1 to 40)))
+            reputations.put(ReputationDoc(s, serviceCells(o1 to 40)))
             reputations.storedMaxRanks[s] = 0 // the flip
-            val raised = cache.raise(listOf(ReputationCells(s, o2, 30, null)))
+            val raised = cache.raise(listOf(ReputationCells(s, ServiceKey(o2), 30, null)))
             assertEquals(30, raised.single().maxRank, "30 overtakes a STORED 0 — a cache reading the cells' 40 would have skipped the assign")
         }
 
@@ -125,8 +127,8 @@ class MaxRankTest {
     fun `a walk the engine refuses is counted and started again, and the marker waits for the one that finished`() =
         runBlocking {
             BackgroundFailures.reset()
-            reputations.put(ReputationDoc(s, mapOf(o1 to 40)))
-            reputations.put(ReputationDoc("c1".repeat(32), mapOf(o1 to 3)))
+            reputations.put(ReputationDoc(s, serviceCells(o1 to 40)))
+            reputations.put(ReputationDoc("c1".repeat(32), serviceCells(o1 to 3)))
             var refusals = 2
             var walks = 0
             // The staging shape: the visit itself is what a restarting engine refuses.

@@ -24,6 +24,8 @@ import com.nosfabrica.vespa.eventstore.SchemaDeployer
 import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.eventstore.engine.client.VespaReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
+import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
+import com.nosfabrica.vespa.eventstore.engine.doc.serviceCells
 import com.nosfabrica.vespa.eventstore.trust.TrustKeyingMigration
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -91,14 +93,14 @@ class ServiceKeyedTrustIT {
                             store.awaitTrustProjection()
                             assertEquals(SUBJECTS, page(store), "under P1 the page is P1's order")
                             SUBJECTS.forEach { s ->
-                                assertEquals(setOf(P1), reputations.get(s)?.influenceScores?.keys, "P2 is named by nobody: its card is dead storage")
+                                assertEquals(setOf(ServiceKey(P1)), reputations.get(s)?.influenceScores?.keys, "P2 is named by nobody: its card is dead storage")
                             }
 
                             store.insert(list10040(P2, at = 200))
                             store.awaitTrustProjection()
                             assertEquals(SUBJECTS.reversed(), page(store), "the same store, the same notes: the page follows the CURRENT list")
                             SUBJECTS.forEachIndexed { i, s ->
-                                assertEquals(mapOf(P1 to RANKS[i], P2 to RANKS[RANKS.size - 1 - i]), reputations.get(s)?.influenceScores, "both providers' cells stand, keyed by service")
+                                assertEquals(serviceCells(P1 to RANKS[i], P2 to RANKS[RANKS.size - 1 - i]), reputations.get(s)?.influenceScores, "both providers' cells stand, keyed by service")
                             }
 
                             // ---- the retraction ------------------------------------------
@@ -106,8 +108,8 @@ class ServiceKeyedTrustIT {
                             store.insert(ContactCardEvent(hexId(), P2, 5_000, arrayOf(arrayOf("d", retracted), arrayOf("followers", "7")), "", ""))
                             store.awaitTrustProjection()
                             val doc = reputations.get(retracted)
-                            assertEquals(mapOf(P1 to RANKS[0]), doc?.influenceScores, "P2's rank cell is gone in the same update its followers landed")
-                            assertEquals(7.0, doc?.followerCounts?.get(P2))
+                            assertEquals(serviceCells(P1 to RANKS[0]), doc?.influenceScores, "P2's rank cell is gone in the same update its followers landed")
+                            assertEquals(7.0, doc?.followerCounts?.get(ServiceKey(P2)))
                             assertEquals(SUBJECTS.reversed().dropLast(1), page(store), "an author the lens no longer ranks leaves the page")
 
                             val unknown = "9".repeat(64)
@@ -127,7 +129,7 @@ class ServiceKeyedTrustIT {
                     // store fed before the change, as the next boot finds it.
                     val legacy = SUBJECTS[4]
                     runBlocking {
-                        reputations.put(ReputationDoc(legacy, mapOf(OBSERVER to 55), mapOf(OBSERVER to 3.0)))
+                        reputations.put(ReputationDoc(legacy, serviceCells(OBSERVER to 55), serviceCells(OBSERVER to 3.0)))
                         reputations.remove(TrustKeyingMigration.MARKER_KEY)
                     }
                     VespaEventStore.open(url = queryUrl, autoDeploy = false, configUrl = configUrl).use { reopened ->
@@ -138,8 +140,8 @@ class ServiceKeyedTrustIT {
                             val fixed = reputations.get(legacy)
                             // P1 is named by nobody since the swap, so only P2's cell comes back:
                             // the migration projects named services and sweeps every other key.
-                            assertEquals(mapOf(P2 to RANKS[0]), fixed?.influenceScores, "re-keyed by service, the observer's cells swept")
-                            assertFalse(fixed?.followerCounts?.containsKey(OBSERVER) == true)
+                            assertEquals(serviceCells(P2 to RANKS[0]), fixed?.influenceScores, "re-keyed by service, the observer's cells swept")
+                            assertFalse(fixed?.followerCounts?.containsKey(ServiceKey(OBSERVER)) == true)
                             assertNotNull(reputations.get(TrustKeyingMigration.MARKER_KEY), "marked")
                             assertTrue(reopened.verifyTrust().isClean(), "the engine's tensors match the exact derive")
                             assertEquals(SUBJECTS.reversed().dropLast(1), page(reopened), "and the lens serves the same page")

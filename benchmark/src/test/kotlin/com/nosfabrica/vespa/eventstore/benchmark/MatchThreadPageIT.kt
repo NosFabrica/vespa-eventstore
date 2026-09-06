@@ -26,6 +26,7 @@ import com.nosfabrica.vespa.eventstore.engine.client.VespaReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.SearchFields
+import com.nosfabrica.vespa.eventstore.engine.doc.serviceCells
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import kotlinx.coroutines.delay
@@ -94,7 +95,7 @@ class MatchThreadPageIT {
                                 (0 until AUTHORS).map { a ->
                                     // A distinct trust score per author, so wot_mult
                                     // separates documents that share their text.
-                                    ReputationDoc(author(a), influenceScores = mapOf(OBSERVER to 1 + a))
+                                    ReputationDoc(author(a), influenceScores = serviceCells(OBSERVER to 1 + a))
                                 },
                             )
                         }
