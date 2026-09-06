@@ -235,6 +235,7 @@ class TrustReconciler internal constructor(
         // null = nothing stored for the service; true/false = sampled
         // projected/unprojected.
         val cutoff = nowSecs()
+        TrustProgress.begin(RECONCILE, "screening named services", providers.services.size.toLong())
         val verdicts =
             providers.services.toList().mapBounded(QUERY_FANOUT) { service ->
                 // SAMPLED FROM THE OLD END OF THE SERVICE'S HISTORY, not its
@@ -287,19 +288,41 @@ class TrustReconciler internal constructor(
             }
         val examined = verdicts.count { it != null }
         onProgress?.invoke(total, total, 0, 0)
+        // The verdicts ARE the coverage: this loop already decided, per named
+        // service, whether any subject carries its cell. It used to keep only
+        // the negatives (what to rebuild) and drop the rest, so nothing in the
+        // store could answer "how much of the trust view is usable".
+        val projectedCount = verdicts.count { it != null && it.second }.toLong()
+        val projectedServices =
+            verdicts
+                .filterNotNull()
+                .filter { it.second }
+                .map { it.first }
+                .toHashSet()
+        val resolvable =
+            providers.lenses.values
+                .count { lens -> listOfNotNull(lens.rank, lens.followers).any { it in projectedServices } }
+                .toLong()
+        TrustCoverage.record(examined.toLong(), projectedCount, providers.lenses.size.toLong(), resolvable)
 
         // Phase 2 — rebuilds: heavy walks whose mutating batches take the
         // writer lock through the gate.
         val rebuilt = mutableListOf<String>()
-        for (service in verdicts.mapNotNull { v -> v?.takeIf { !it.second }?.first }) {
+        val unprojected = verdicts.mapNotNull { v -> v?.takeIf { !it.second }?.first }
+        // The denominator an operator actually wants: how many services this
+        // run has to walk, not how many exist.
+        TrustProgress.begin(RECONCILE, "walking unprojected services", unprojected.size.toLong())
+        for (service in unprojected) {
             recompute.projectServices(
                 listOf(service),
                 onCards = { applied -> onProgress?.invoke(total, total, rebuilt.size, applied) },
                 gate = gate,
             )
             rebuilt += service
+            TrustProgress.advance(RECONCILE, rebuilt.size.toLong(), unprojected.size.toLong())
             onProgress?.invoke(total, total, rebuilt.size, 0)
         }
+        TrustProgress.finish(RECONCILE)
         return Reconciliation(examined, rebuilt)
     }
 
@@ -425,14 +448,17 @@ class TrustReconciler internal constructor(
         // passed none, so the heaviest operation available was also the only
         // blind one.
         var derived = 0
+        TrustProgress.begin(REBUILD, "deriving every card's subject")
         recompute.recomputeWalk(
             EventQuery(kinds = listOf(ContactCardEvent.KIND)),
             onSubjects = { n ->
                 derived = n
+                TrustProgress.advance(REBUILD, n.toLong())
                 onProgress?.invoke(n, 0)
             },
             gate = gate,
         )
+        TrustProgress.advance(REBUILD, derived.toLong(), phase = "sweeping parents the card walk cannot reach")
         val buffer = ArrayList<String>(ORPHAN_BATCH)
         var swept = 0
 
@@ -441,6 +467,7 @@ class TrustReconciler internal constructor(
                 recompute.recomputeBatchGated(buffer.toList(), removeEmpties = true, gate = gate)
                 swept += buffer.size
                 buffer.clear()
+                TrustProgress.advance(REBUILD, swept.toLong())
                 onProgress?.invoke(derived, swept)
             }
         }
@@ -452,9 +479,14 @@ class TrustReconciler internal constructor(
             true
         }
         flush()
+        TrustProgress.finish(REBUILD)
     }
 
     internal companion object {
+        /** Registry keys — the operator sees these strings, so they name the operation and not the method. */
+        const val RECONCILE = "trust-reconcile"
+        const val REBUILD = "trust-rebuild"
+
         // Cards sampled per service by [reconcile]: the never-triggered failure
         // is all-or-nothing per service, so a handful settles it.
         const val RECONCILE_SAMPLES = 3

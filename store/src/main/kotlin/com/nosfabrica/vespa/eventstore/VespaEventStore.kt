@@ -29,8 +29,11 @@ import com.nosfabrica.vespa.eventstore.engine.metrics.MeteredEventIndex
 import com.nosfabrica.vespa.eventstore.engine.metrics.withActivity
 import com.nosfabrica.vespa.eventstore.search.SearchExpansionLimits
 import com.nosfabrica.vespa.eventstore.trust.MaxRankBackfill
+import com.nosfabrica.vespa.eventstore.trust.TrustCoverage
+import com.nosfabrica.vespa.eventstore.trust.TrustExplain
 import com.nosfabrica.vespa.eventstore.trust.TrustKeyingMigration
 import com.nosfabrica.vespa.eventstore.trust.TrustKeyingProgress
+import com.nosfabrica.vespa.eventstore.trust.TrustProgress
 import com.nosfabrica.vespa.eventstore.trust.TrustProjection
 import com.nosfabrica.vespa.eventstore.trust.TrustReconciler
 import com.nosfabrica.vespa.eventstore.trust.WriteGate
@@ -140,7 +143,10 @@ class VespaEventStore internal constructor(
      * staleness bound quietly stops holding. This is the only place that says
      * so — see [BackgroundFailures] and [TrustKeyingProgress].
      */
-    fun backgroundStatus(): String = listOf(keyingProgress.line(), BackgroundFailures.statusLine()).filter { it.isNotBlank() }.joinToString("; ")
+    fun backgroundStatus(): String =
+        listOf(keyingProgress.line(), TrustProgress.line(), TrustCoverage.line(), BackgroundFailures.statusLine())
+            .filter { it.isNotBlank() }
+            .joinToString("; ")
 
     /**
      * Repair the trust view: drain queued projection work a crashed process left
@@ -150,6 +156,16 @@ class VespaEventStore internal constructor(
      * unprojected, and every ranked search comes back empty.
      */
     suspend fun reconcileTrust(onProgress: ((inspected: Int, total: Int, rebuilt: Int, derivedInService: Int) -> Unit)? = null): TrustReconciler.Reconciliation = withActivity(Activity.Reconcile) { reconciler.reconcile(onProgress = onProgress) }
+
+    /**
+     * WHY ONE PUBKEY SEES WHAT IT SEES: profile, lens, the service that lens
+     * resolves to, and whether this subject's parent carries that service's
+     * cell. The question "an observer cannot find their own profile" reduces to
+     * these facts, and assembling them by hand against the document API is how
+     * an afternoon goes — one query silently returning nothing, another
+     * truncated at ten groups by a ceiling this path sets and a curl does not.
+     */
+    suspend fun explainTrust(pubkey: String): String = withActivity(Activity.Query) { TrustExplain(eventIndex, trust.reputations, trust.recompute).explain(pubkey).line() }
 
     /**
      * Re-derive the WHOLE trust view from the stored scores — the operator's
@@ -334,8 +350,19 @@ class VespaEventStore internal constructor(
             // GAUGES: instantaneous, pulled at snapshot time, and read from
             // their owners rather than mirrored — a queue depth has no
             // cumulative form and must never be diffed like a counter.
-            ledger.gauge("trust.pending.subjects") { trust.backlog.pendingSubjects() }
-            ledger.gauge("trust.pending.services") { trust.backlog.pendingServices() }
+            // QUEUED, not "pending": this is the drain's QUEUE depth, and a
+            // service enters it only the first time a 10040 names it. Read as
+            // coverage — which the old name invited — an empty queue looks like
+            // a complete projection, and that misreading is what let a service
+            // with 279,594 cards sit unwalked while every signal read clean.
+            // trust.coverage.* below is the number that means what people ask.
+            ledger.gauge("trust.queued.subjects") { trust.backlog.pendingSubjects() }
+            ledger.gauge("trust.queued.services") { trust.backlog.pendingServices() }
+            // What fraction of the trust view is usable, from the last reconcile.
+            ledger.gauge("trust.coverage.services.named") { TrustCoverage.servicesNamed }
+            ledger.gauge("trust.coverage.services.projected") { TrustCoverage.servicesProjected }
+            ledger.gauge("trust.coverage.lenses.total") { TrustCoverage.lensesTotal }
+            ledger.gauge("trust.coverage.lenses.resolvable") { TrustCoverage.lensesResolvable }
             ledger.gauge("feed.inflight") { eventIndex.feedInflight() }
             ledger.gauge("lock.held") { IngestStats.heldAll().size.toLong() }
             // The reconciler's and drainer's mutating batches take the store's
