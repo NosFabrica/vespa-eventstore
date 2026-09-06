@@ -34,7 +34,11 @@ import com.nosfabrica.vespa.eventstore.mapping.toDoc
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -185,6 +189,9 @@ class ProjectionLedgerTest {
     ) : EventIndex by inner {
         var searches = 0
 
+        @Volatile
+        var delivered = 0
+
         override suspend fun visitIds(
             query: EventQuery,
             withDTag: Boolean,
@@ -193,6 +200,7 @@ class ProjectionLedgerTest {
             inner.visitIds(query, withDTag) { page ->
                 var carryOn = true
                 for (ref in page) {
+                    delivered++
                     carryOn = onPage(listOf(ref))
                     if (!carryOn) break
                 }
@@ -241,6 +249,54 @@ class ProjectionLedgerTest {
             subjects.forEach { subj ->
                 assertEquals(42, assertNotNull(reputations.get(subj), "no cell for $subj").influenceScores[ServiceKey(service)], "cell for $subj")
             }
+        }
+
+    /**
+     * THE LISTING IS A LIVE STREAM AND THE GATE IS CONTENDED. Writing inside
+     * the visit's own callback made every gate wait a gap in that stream; past
+     * the client's 120s read gap the server drops it. Staging died exactly
+     * that way at 98,000 of 116,352 cards — `SocketTimeoutException` raised
+     * from `Http2Stream$FramingSource.read`, the visit body, never the write.
+     *
+     * So: with the writer parked on the gate, the reader must keep listing.
+     */
+    @Test
+    fun `the id listing keeps reading while a write waits on the gate`() =
+        runBlocking {
+            val inner = InMemoryEventIndex()
+            val index = OneIdPages(inner)
+            val reputations = InMemoryReputationIndex()
+            val projection = TrustProjection(index, reputations)
+            projection.backlog.drainInBackground { }
+
+            val cards = TrustRecompute.PROJECT_PAGE * 4
+            (1..cards).forEach { n ->
+                val subj = n.toString(16).padStart(64, '0')
+                projection.put(ContactCardEvent(id(), service, next(), arrayOf(arrayOf("d", subj), arrayOf("rank", "7")), "", "").toDoc())
+            }
+            projection.put(list10040().toDoc())
+
+            val parked = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val drain =
+                launch {
+                    projection.backlog.drain { body ->
+                        // Park the FIRST gated write, the way a contended gate does.
+                        if (parked.complete(Unit)) release.await()
+                        body()
+                    }
+                }
+
+            parked.await()
+            // The writer is stuck. The reader must still get past the first
+            // batch — under the old shape it stopped dead at PROJECT_PAGE.
+            withTimeout(10_000) {
+                while (index.delivered <= TrustRecompute.PROJECT_PAGE) yield()
+            }
+            release.complete(Unit)
+            drain.join()
+
+            assertTrue(index.delivered >= cards, "the whole listing was read: ${index.delivered} of $cards")
         }
 
     private class Deferred {
