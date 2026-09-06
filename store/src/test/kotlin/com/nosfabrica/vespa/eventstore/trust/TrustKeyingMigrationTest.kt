@@ -23,7 +23,6 @@ package com.nosfabrica.vespa.eventstore.trust
 import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.InMemoryReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
-import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
 import com.nosfabrica.vespa.eventstore.engine.doc.serviceCells
 import com.nosfabrica.vespa.eventstore.mapping.toDoc
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
@@ -151,7 +150,7 @@ class TrustKeyingMigrationTest {
             // yet swept, and the marker says so.
             reputations.put(ReputationDoc(subject, serviceCells(service to 87, observer to 87), serviceCells(service to 12.0)))
             reputations.put(ReputationDoc(subject2, serviceCells(service to 40, observer to 40), serviceCells(service to 12.0)))
-            reputations.put(ReputationDoc(TrustKeyingMigration.MARKER_KEY, serviceCells("reconciled" to 1)))
+            reputations.put(ReputationDoc(TrustKeyingMigration.PROGRESS_KEY, serviceCells("reconciled" to 1)))
 
             val done = migration.run()
             assertFalse(done.refused)
@@ -162,27 +161,24 @@ class TrustKeyingMigrationTest {
             assertEquals(TrustKeyingProgress.Phase.Done, migration.progress.phase)
         }
 
-    /** Every marker written before phases existed carries only `done`, and must still read as complete. */
+    /**
+     * THE MARKER MEANS FINISHED, AND ONLY THAT. Every operator check of this
+     * migration asks whether the document exists — a scratch watcher armed
+     * during this work did exactly that, and would have acted on a marker
+     * written mid-run. Phases live in their own document precisely so that
+     * check keeps its meaning.
+     */
     @Test
-    fun `a legacy done-only marker still means finished`() =
+    fun `an unfinished migration writes progress but never the completion marker`() =
         runBlocking {
             seedObserverKeyedStore()
-            reputations.put(ReputationDoc(TrustKeyingMigration.MARKER_KEY, serviceCells("done" to 1)))
-            val again = migration.run()
-            assertEquals(TrustKeyingMigration.Migration(0, 0, refused = false), again)
-            assertEquals(serviceCells(observer to 87), reputations.get(subject)?.influenceScores, "nothing swept under a standing marker")
-            assertEquals(TrustKeyingProgress.Phase.Done, migration.progress.phase)
-        }
+            reputations.put(ReputationDoc(TrustKeyingMigration.PROGRESS_KEY, serviceCells("reconciled" to 1)))
+            assertNull(reputations.get(TrustKeyingMigration.MARKER_KEY), "a resumable attempt is not a finished one")
 
-    /** A finished run leaves the reconcile flag too, so a later restart never redoes it either. */
-    @Test
-    fun `a finished migration records both phases`() =
-        runBlocking {
-            seedObserverKeyedStore()
             migration.run()
             val marker = assertNotNull(reputations.get(TrustKeyingMigration.MARKER_KEY)).influenceScores
-            assertTrue(ServiceKey("done") in marker, "finished")
-            assertTrue(ServiceKey("reconciled") in marker, "and the expensive half is recorded on its own")
+            assertEquals(serviceCells("done" to 1), marker, "the marker is exactly what it always was")
+            assertNull(reputations.get(TrustKeyingMigration.PROGRESS_KEY), "and the scaffolding is cleared once it stands")
         }
 
     /** The question that started this: the walk reports where it is, not merely whether it broke. */
