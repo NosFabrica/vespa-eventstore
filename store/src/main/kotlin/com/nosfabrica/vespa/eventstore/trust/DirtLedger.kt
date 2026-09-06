@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.eventstore.trust
 
 import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
+import com.nosfabrica.vespa.eventstore.engine.doc.CellRemoval
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationCells
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import java.util.concurrent.atomic.AtomicBoolean
@@ -75,14 +76,29 @@ import java.util.concurrent.atomic.AtomicReference
  * finished, re-stamps A, so the round's removal leaves it for the next one.
  * (A first version removed the snapshot as a set, `pending - snapshot`, and
  * lost exactly that card — A's newer rank was served only after a
- * reconcile.) A round leaves its snapshot IN [pending] while it runs, on
- * purpose: a trust write's write-ahead is computed against `pending`, so
- * the marker keeps covering the in-flight snapshot however the write-ahead
- * is persisted; a second drain — the read-your-writes barrier, a verify —
- * finds the snapshot still pending and re-derives it (idempotent, and each
- * slice serialised on the gate), so it returns only once the work is
- * visible and can never wait on another round while holding the gate; and a
- * round that fails leaves nothing to restore.
+ * reconcile.)
+ *
+ * ENTRIES ARE RETIRED ONE SLICE AT A TIME, as each slice's projection write
+ * is acked ([retire]) — not once at the end of the round. Retiring per round
+ * made a large ledger look FROZEN for as long as the round took: staging
+ * inherited 139,524 subjects, a slice of 500 measured ~14s of derive, so the
+ * backlog gauge sat at its starting value and the marker at full size for
+ * over an hour per pass, and a crash anywhere in that hour re-derived every
+ * subject including the ones written in its first minute. Per-slice
+ * retirement is the same work, credited when it happens.
+ *
+ * A round still leaves its UNRETIRED snapshot in [pending] while it runs, on
+ * purpose: a trust write's write-ahead is computed against `pending`, so the
+ * marker keeps covering the in-flight remainder however the write-ahead is
+ * persisted; and a round that fails leaves nothing to restore. A second
+ * drain — the read-your-writes barrier, a verify — still returns only once
+ * the work is visible, because it SKIPS what another drain already retired
+ * (retired means written and acked) and re-derives the rest (idempotent, and
+ * each slice serialised on the gate), so it can never wait on another round
+ * while holding the gate. Skipping is what keeps two concurrent drains of
+ * one ledger — the background loop's and [TrustReconciler]'s — from each
+ * deriving the whole snapshot, which on staging split one process's derive
+ * budget between two passes doing identical work.
  */
 internal class DirtLedger(
     private val reputations: ReputationIndex,
@@ -258,32 +274,77 @@ internal class DirtLedger(
     suspend fun drain(gate: suspend (suspend () -> Unit) -> Unit) {
         while (true) {
             load() // the marker a previous process left is only discovered by reading it
-            // READ, not taken: the snapshot stays pending while it is derived,
-            // so every write-ahead computed meanwhile still covers it and a
-            // concurrent drain still sees it as work — see the class KDoc.
+            // READ, not taken: the unretired remainder stays pending while it
+            // is derived, so every write-ahead computed meanwhile still covers
+            // it and a concurrent drain still sees it as work — class KDoc.
             val snapshot = pending.get() ?: Stamped.NONE
             if (snapshot.isEmpty()) return
             val dirt = snapshot.toDirt()
             if (dirt.services.isNotEmpty() || inherited.get()) recompute.invalidateProviders()
-            dirt.subjects.chunked(DRAIN_BATCH).forEach { chunk ->
-                // The gate is taken PER SLICE inside, not once for the whole
-                // 20,000-subject chunk: that hold was measured at 13 minutes on
-                // staging with ingest queueing behind it. See
-                // [TrustRecompute.recomputeBatchGated].
-                recompute.recomputeBatchGated(chunk, removeEmpties = true, gate = gate)
+            // Sliced HERE at the gate's own slice size, rather than handing
+            // [TrustRecompute.recomputeBatchGated] one 20,000-subject chunk to
+            // slice internally, because the ledger has to see each slice land:
+            // a slice is the unit that gets skipped (already retired elsewhere)
+            // and the unit that gets retired (derived and acked).
+            dirt.subjects.chunked(TrustRecompute.GATE_SLICE).forEach { slice ->
+                // Another drain of this ledger may have retired these since the
+                // snapshot — retired means written and acked, so re-deriving
+                // them is pure duplicate work, and skipping keeps the barrier
+                // honest either way. See the class KDoc.
+                val todo = slice.filter { (pending.get() ?: Stamped.NONE).subjects.containsKey(it) }
+                if (todo.isEmpty()) return@forEach
+                // The gate is taken inside, around this slice alone: holding it
+                // for a whole 20,000-subject batch measured 13 minutes on
+                // staging with ingest queueing behind it.
+                recompute.recomputeBatchGated(todo, removeEmpties = true, gate = gate)
+                retire(Stamped(todo.associateWith { snapshot.subjects.getValue(it) }, emptyMap()), gate)
             }
-            if (dirt.services.isNotEmpty()) {
+            snapshot.services.keys.forEach { service ->
+                if (!(pending.get() ?: Stamped.NONE).services.containsKey(service)) return@forEach
                 // A service's cards become cells page by page — no derive: the
                 // cell is a function of the newest card at its address alone.
-                recompute.projectServices(dirt.services, gate = gate)
+                // One service per call so each retires on its own ack.
+                recompute.projectServices(listOf(service), gate = gate)
+                retire(Stamped(emptyMap(), mapOf(service to snapshot.services.getValue(service))), gate)
             }
-            // Done: drop what this round derived, unless it was re-added since
-            // (a fresh stamp), then narrow the marker to what is STILL pending
-            // — under the gate, because a trust write's write-ahead
-            // ([persistDelta]) and this rewrite touch the same document.
-            pending.updateAndGet { (it ?: Stamped.NONE).minusUnchanged(snapshot) }
             inherited.set(false)
-            gate { persist(pending.get()?.toDirt() ?: Dirt.NONE) }
+        }
+    }
+
+    /**
+     * Credit [done] — a slice this round has DERIVED AND WRITTEN — against the
+     * ledger: drop the entries whose stamp is still the one the round
+     * snapshotted (a re-stamped entry was re-added since and stays), then clear
+     * exactly those entries from the persisted marker.
+     *
+     * The marker shrinks by tensor-cell REMOVES of the retired cells —
+     * commutative, the mirror of [persistDelta]'s adds — never by rewriting the
+     * document to this process's whole view of the ledger. Two processes share
+     * this marker (the serving relay and the sync mirror each run a store), and
+     * [pending] is process-local, so a blind whole-doc write by either erases
+     * the other's write-ahead insurance: the marker would stop naming work that
+     * is genuinely unhealed, which is the one thing it exists to do. Removes
+     * compose; whole-doc writes do not.
+     *
+     * Runs under [gate] and re-reads [pending] there: a trust write's
+     * write-ahead ([persistDelta]) touches this same document, and the gate is
+     * the only thing ordering the two.
+     */
+    private suspend fun retire(
+        done: Stamped,
+        gate: suspend (suspend () -> Unit) -> Unit,
+    ) {
+        if (done.isEmpty()) return
+        pending.updateAndGet { (it ?: Stamped.NONE).minusUnchanged(done) }
+        gate {
+            val live = pending.get() ?: Stamped.NONE
+            // Nothing left at all: drop the document, so a SURVIVING marker is
+            // always drift and never an emptied husk.
+            if (live.isEmpty()) return@gate persist(Dirt.NONE)
+            val cells = ArrayList<CellRemoval>(done.subjects.size + done.services.size)
+            done.subjects.keys.forEach { if (!live.subjects.containsKey(it)) cells += CellRemoval(MARKER_KEY, it, influence = true, followers = false) }
+            done.services.keys.forEach { if (!live.services.containsKey(it)) cells += CellRemoval(MARKER_KEY, it, influence = false, followers = true) }
+            if (cells.isNotEmpty()) reputations.removeCells(cells)
         }
     }
 
@@ -319,9 +380,6 @@ internal class DirtLedger(
          * real subject's parent doc and never joins ranking.
          */
         const val MARKER_KEY = "projection-dirty"
-
-        /** Subjects re-derived per gated drain batch (memory- and lock-hold-bounded). */
-        private const val DRAIN_BATCH = 20_000
 
         /**
          * Largest write-ahead delta persisted as per-cell feed ADDs; bigger
