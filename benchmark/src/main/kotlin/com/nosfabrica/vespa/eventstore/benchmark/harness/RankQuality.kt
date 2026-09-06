@@ -79,7 +79,7 @@ object RankQuality {
             )
 
             VespaEventStore.open(url).use { store ->
-                val index = store.eventIndex
+                val index = store.engine
 
                 suspend fun ids(
                     term: String,

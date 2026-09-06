@@ -93,8 +93,9 @@ The stack `open()` assembles: `NostrSemanticsStore( TrustProjection( VespaEventI
 
 Consumers get the Quartz `IEventStore` surface (`VespaEventStore` delegates it), plus two deliberate
 escape hatches for ops and benchmarks: `store` (the concrete `NostrSemanticsStore`, for capabilities
-beyond the interface) and `eventIndex` (the raw client — un-metered, and NOT trust-projected). Both
-are documented at their declaration; prefer the `IEventStore` surface for real reads.
+beyond the interface) and `engine` (read-only, un-metered, NOT trust-projected — what is really
+stored, and what a rank profile does). Both are documented at their declaration; prefer the
+`IEventStore` surface for real reads.
 
 **Where the seam actually is.** It is NOT "Nostr-free engine / Nostr-aware store" — `:engine` knows
 Nostr, deliberately: `EventIndex.putIfNewer` implements the NIP-01 supersession rule *and its

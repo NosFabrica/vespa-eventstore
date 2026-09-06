@@ -69,17 +69,12 @@ class VespaEventStore internal constructor(
      */
     val store: NostrSemanticsStore,
     /**
-     * The raw engine index, NOT trust-projected — for status/health metrics
-     * that only count and never mutate trust data.
-     *
-     * ALSO NOT METERED. Reads made through this handle appear in no activity on
-     * `metrics()`, because the meter is a decorator one layer up. That is right
-     * for what this is for — `feedStatus`, a document count — and wrong for
-     * anything that walks the corpus, which will make the store look idle while
-     * Vespa is busy. Prefer the `IEventStore` surface for real reads.
+     * The engine client itself. PRIVATE: what a caller outside may do with it
+     * is [engine], which is read-only — this handle can write to the index
+     * behind every rule this store enforces.
      */
-    val eventIndex: VespaEventIndex,
-    /** Repair tool for the trust view over [eventIndex]; see [reconcileTrust]. */
+    private val eventIndex: VespaEventIndex,
+    /** Repair tool for the trust view over the engine index; see [reconcileTrust]. */
     private val reconciler: TrustReconciler,
     /** The projection, for the deferred-mode drain barrier ([awaitTrustProjection]). */
     private val trust: TrustProjection,
@@ -94,6 +89,13 @@ class VespaEventStore internal constructor(
     /** The keying migration's live view; a store built without one reports nothing rather than lying. */
     private val keyingProgress: TrustKeyingProgress = TrustKeyingProgress(),
 ) : IEventStore by store {
+    /**
+     * The engine read directly — un-lensed and un-metered; see [EngineReads]
+     * for the two jobs that want that. Everything else should read through the
+     * `IEventStore` surface this class delegates.
+     */
+    val engine: EngineReads = EngineReads(eventIndex)
+
     /** The engine's feed-health status line (bulk-ingest backpressure), for progress/status output. */
     fun feedStatus(): String = eventIndex.feedStatus()
 
