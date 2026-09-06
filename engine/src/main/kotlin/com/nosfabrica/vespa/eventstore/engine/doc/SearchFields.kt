@@ -19,8 +19,8 @@
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 package com.nosfabrica.vespa.eventstore.engine.doc
-import com.nosfabrica.vespa.eventstore.engine.NearText
-import com.nosfabrica.vespa.eventstore.engine.WHITESPACE
+import com.nosfabrica.vespa.eventstore.engine.text.NearText
+import com.nosfabrica.vespa.eventstore.engine.text.WHITESPACE
 
 /**
  * The derived, kind-specific search surface of one event; all-null = invisible

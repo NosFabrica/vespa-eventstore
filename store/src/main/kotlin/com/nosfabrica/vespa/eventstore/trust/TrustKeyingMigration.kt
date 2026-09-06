@@ -20,11 +20,11 @@
  */
 package com.nosfabrica.vespa.eventstore.trust
 
-import com.nosfabrica.vespa.eventstore.BackgroundFailures
 import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.CellRemoval
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
+import com.nosfabrica.vespa.eventstore.runtime.BackgroundFailures
 import com.vitorpamplona.quartz.utils.Hex
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay

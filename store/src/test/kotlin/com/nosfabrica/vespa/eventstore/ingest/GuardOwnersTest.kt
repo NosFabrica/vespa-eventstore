@@ -21,8 +21,8 @@
 package com.nosfabrica.vespa.eventstore.ingest
 
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
-import com.nosfabrica.vespa.eventstore.WriterTopology
-import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
+import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
+import com.nosfabrica.vespa.eventstore.runtime.WriterTopology
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.normalizeRelayUrl
 import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent

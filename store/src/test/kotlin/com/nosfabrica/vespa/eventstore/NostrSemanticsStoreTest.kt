@@ -23,8 +23,8 @@ package com.nosfabrica.vespa.eventstore
 import com.nosfabrica.vespa.eventstore.engine.DocRef
 import com.nosfabrica.vespa.eventstore.engine.DocsPage
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
-import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
+import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.mapping.SearchExtractors
 import com.nosfabrica.vespa.eventstore.mapping.addressOrNull

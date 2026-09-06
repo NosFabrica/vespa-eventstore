@@ -21,11 +21,11 @@
 package com.nosfabrica.vespa.eventstore.trust
 
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
-import com.nosfabrica.vespa.eventstore.engine.QUERY_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
+import com.nosfabrica.vespa.eventstore.engine.async.QUERY_FANOUT
+import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
-import com.nosfabrica.vespa.eventstore.engine.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.nosfabrica.vespa.eventstore.ingest.GuardBloom

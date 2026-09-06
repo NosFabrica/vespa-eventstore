@@ -20,8 +20,8 @@
  */
 package com.nosfabrica.vespa.eventstore.benchmark
 
-import com.nosfabrica.vespa.eventstore.SchemaDeployer
-import com.nosfabrica.vespa.eventstore.engine.VespaApp
+import com.nosfabrica.vespa.eventstore.engine.app.SchemaDeployer
+import com.nosfabrica.vespa.eventstore.engine.app.VespaApp
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.Test

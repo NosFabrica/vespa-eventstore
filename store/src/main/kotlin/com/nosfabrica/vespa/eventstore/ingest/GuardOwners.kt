@@ -20,13 +20,13 @@
  */
 package com.nosfabrica.vespa.eventstore.ingest
 
-import com.nosfabrica.vespa.eventstore.BackgroundFailures
-import com.nosfabrica.vespa.eventstore.DEFAULT_GUARD_REFRESH_MILLIS
-import com.nosfabrica.vespa.eventstore.WriterTopology
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.metrics.Activity
 import com.nosfabrica.vespa.eventstore.engine.metrics.withActivity
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
+import com.nosfabrica.vespa.eventstore.runtime.BackgroundFailures
+import com.nosfabrica.vespa.eventstore.runtime.DEFAULT_GUARD_REFRESH_MILLIS
+import com.nosfabrica.vespa.eventstore.runtime.WriterTopology
 import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import kotlinx.coroutines.CancellationException

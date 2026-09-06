@@ -1,0 +1,242 @@
+/*
+ * Copyright (c) 2026 NosFabrica
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of
+ * this software and associated documentation files (the "Software"), to deal in
+ * the Software without restriction, including without limitation the rights to use,
+ * copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the
+ * Software, and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+ * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+ * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+ * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+ * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+package com.nosfabrica.vespa.eventstore.engine.text
+
+import java.text.Normalizer
+
+/**
+ * Feed-side derivation of the near-match attribute fields (*_parts /
+ * *_tokens in event.sd) and the matching query-side fold. Computed in the
+ * feed, not a schema-side indexing expression: string ATTRIBUTES match raw
+ * bytes, so doc and query side must share ONE fold ([fold]: NFKD, strip
+ * combining marks, lowercase) or "jose" could never prefix-match "josé";
+ * the schema-side merge also nulls out on missing inputs, and these
+ * tokenizations don't fit the indexing language. The cost: populating an
+ * existing corpus needs a RE-FEED, not a native reindex —
+ * NostrSemanticsStore.reindexFullTextSearch re-puts exactly the drifted docs.
+ *
+ * Keep in lockstep with FuzzyWordGroup (same [fold] on query words) and
+ * event.sd's field comments. All outputs are lowercase, folded, distinct,
+ * and length-capped — attribute dictionaries index every element.
+ */
+object NearText {
+    /** Elements longer than this are dropped (a "name" that long is data noise, not a name). */
+    const val MAX_ELEMENT_LEN = 64
+
+    /** Cap on emitted elements per source string — bounds adversarial names. */
+    const val MAX_ELEMENTS = 48
+
+    /**
+     * Cap on a [mergeNear] column, which carries two [MAX_ELEMENTS]-capped
+     * granularities. Exactly their sum, so merging can never drop an element
+     * the two separate columns held, and the per-document dictionary bound is
+     * the same 96 it was before the merge.
+     */
+    const val MAX_MERGED_ELEMENTS = 2 * MAX_ELEMENTS
+
+    /** Longest CJK run that gets suffix expansion (runs are names; longer is prose). */
+    const val MAX_CJK_SUFFIX_RUN = 8
+
+    /**
+     * The shared normalization: NFKD-decompose, drop combining marks,
+     * lowercase. "José" -> "jose"; full-width forms fold to ASCII; CJK is
+     * untouched.
+     */
+    fun fold(s: String): String =
+        Normalizer
+            .normalize(s, Normalizer.Form.NFKD)
+            .filterNot { Character.getType(it) == Character.NON_SPACING_MARK.toInt() }
+            .lowercase()
+
+    /**
+     * The *_parts granularity: every word START becomes an element — split at
+     * camelCase transitions ("BitcoinMemeTreasury" -> [bitcoin, meme,
+     * treasury]) and non-letter/digit runs; CJK runs also emit their suffixes
+     * so a given-name query can reach an unsegmented CJK full name. Folded
+     * ([fold]) AFTER splitting — the camel rule needs the original case.
+     */
+    fun parts(s: String): List<String> = cap(splitCamelAndSeparators(s).asSequence().flatMap { withCjkSuffixes(it) })
+
+    /**
+     * The *_tokens granularity: whole whitespace-delimited tokens kept intact
+     * ("vitorp" -> "vitorpamplona"), plus an alnum-only variant when
+     * separators decorate a token ("vitor-pamplona"), plus the whole-name
+     * concatenation for multi-token strings — the doc-side mirror of the
+     * query builder's joined variant. CJK tokens ride the same suffix
+     * expansion as [parts].
+     */
+    fun tokens(s: String): List<String> {
+        val raw = s.split(WHITESPACE).filter { it.isNotEmpty() }
+        return cap(
+            sequence {
+                for (t in raw) {
+                    yield(t)
+                    alnumOnly(t)?.let { yield(it) }
+                    yieldAll(withCjkSuffixes(t).drop(1))
+                }
+                // Trails the tokens, so on a long field [cap] has already filled
+                // up and this is never reached — the point of building it
+                // lazily rather than joining a thousand-word description to
+                // then discard it.
+                if (raw.size >= 2) {
+                    raw
+                        .joinToString("")
+                        .filter(Char::isLetterOrDigit)
+                        .takeIf { it.isNotEmpty() }
+                        ?.let { yield(it) }
+                }
+            },
+        )
+    }
+
+    /** Merge one derived field from several source strings, preserving order, dropping duplicates and over-long elements. */
+    fun merge(vararg lists: List<String>): List<String> = cap(lists.asSequence().flatMap { it })
+
+    /**
+     * The near column of one tier: [parts] and [tokens] of the same sources,
+     * de-duplicated into ONE array.
+     *
+     * Nothing downstream ever told the two granularities apart — the query
+     * builder emits identical prefix and fuzzy clauses against each
+     * ([FuzzyWordGroup.NEAR_FIELDS]) and the schema only asks `matchCount(parts)
+     * > 0 || matchCount(tokens) > 0` — so two columns held a union that was OR'd
+     * back together at both ends. One column matches the same documents into the
+     * same tier, halves the prefix/fuzzy clause count per query word (fuzzy is
+     * the query's most expensive matcher), and drops a whole document vector per
+     * merged pair — 4.8 B/doc each, paid on EVERY document whether or not the
+     * field is filled (docs/attribute-memory.md).
+     *
+     * NO ELEMENT IS LOST, by construction: each source list is capped at
+     * [MAX_ELEMENTS] before it gets here, so their union cannot exceed
+     * [MAX_MERGED_ELEMENTS] and the cap below never bites. One document's
+     * dictionary bound is unchanged — 48+48 across two columns, 96 across one,
+     * and dedup usually leaves it far under.
+     */
+    fun mergeNear(
+        parts: List<String>,
+        tokens: List<String>,
+    ): List<String> = cap(sequenceOf(parts, tokens).flatMap { it }, MAX_MERGED_ELEMENTS)
+
+    /**
+     * ACCENT-ONLY fold — NFD, strip combining marks, lowercase — for the query
+     * side of `search_text_gram`, whose documents are folded by Vespa's
+     * `normalize` in the indexing expression.
+     *
+     * Separate from [fold] because the two normalisers must agree with what is
+     * on the OTHER end, and the other ends differ. The near ATTRIBUTES are fed
+     * AND queried by [fold] (NFKD): both sides ours, both compatibility-
+     * decomposed, self-consistent. The gram field's document side
+     * is Vespa's `normalize`, which removes accents and NOTHING else — it does
+     * not expand full-width forms or ligatures. Folding the query with NFKD
+     * there would turn "ｗｉｄｔｈ" into "width" while the document's grams stayed
+     * full-width, so the two could never meet; MEASURED on Vespa 8
+     * (2026-08-15), a full-width body was unreachable from either spelling
+     * until this split the two folds apart.
+     *
+     * Accent handling is identical between NFD and NFKD ("Lázaro" -> "lazaro"
+     * either way), which is the part that had to keep working.
+     */
+    fun foldAccents(word: String): String =
+        Normalizer
+            .normalize(word, Normalizer.Form.NFD)
+            .filterNot { Character.getType(it) == Character.NON_SPACING_MARK.toInt() }
+            .lowercase()
+
+    /**
+     * Fold, drop what no dictionary should hold, de-duplicate, and STOP at
+     * [MAX_ELEMENTS] — the output is bounded, so the work is too.
+     *
+     * A Sequence, not a List, deliberately: this runs on the feed path for every
+     * doc over sources that are not short (`search_secondary` carries summaries,
+     * descriptions and rule text, and the expansions multiply it), so
+     * materializing everything to keep 48 elements cost O(field) allocation for
+     * a result decided by the first few dozen words. Same output, byte for byte.
+     *
+     * [fold] is idempotent (NFKD of decomposed text is itself; lowercase
+     * likewise), so [merge] re-folding already-folded inputs is a no-op.
+     */
+    private fun cap(
+        elements: Sequence<String>,
+        limit: Int = MAX_ELEMENTS,
+    ): List<String> {
+        val out = LinkedHashSet<String>()
+        for (raw in elements) {
+            val e = fold(raw)
+            if (e.isEmpty() || e.length > MAX_ELEMENT_LEN) continue
+            out += e
+            if (out.size == limit) break
+        }
+        return out.toList()
+    }
+
+    /** "vitor-pamplona" -> "vitorpamplona"; null when stripping changes nothing or empties it. */
+    private fun alnumOnly(s: String): String? =
+        s
+            .filter(Char::isLetterOrDigit)
+            .takeIf { it.isNotEmpty() && it != s }
+
+    /**
+     * Split at non-letter/digit runs, lower/digit->Upper transitions, and
+     * before the last capital of an ALLCAPS->Capitalized boundary
+     * ("HTTPServer" -> [HTTP, Server]).
+     */
+    private fun splitCamelAndSeparators(s: String): List<String> {
+        val out = ArrayList<String>()
+        val cur = StringBuilder()
+        for (i in s.indices) {
+            val c = s[i]
+            if (!c.isLetterOrDigit()) {
+                if (cur.isNotEmpty()) out += cur.toString().also { cur.clear() }
+                continue
+            }
+            if (cur.isNotEmpty()) {
+                val prev = s[i - 1]
+                val camelStart = c.isUpperCase() && (prev.isLowerCase() || prev.isDigit())
+                val acronymEnd = c.isUpperCase() && prev.isUpperCase() && i + 1 < s.length && s[i + 1].isLowerCase()
+                if (camelStart || acronymEnd) out += cur.toString().also { cur.clear() }
+            }
+            cur.append(c)
+        }
+        if (cur.isNotEmpty()) out += cur.toString()
+        return out
+    }
+
+    /**
+     * A part plus, when it is a short CJK run, its proper suffixes — CJK
+     * names have no case or separators to split on, so suffixes are the only
+     * way "太郎" reaches "中村太郎". Non-CJK parts pass through alone.
+     */
+    private fun withCjkSuffixes(part: String): List<String> {
+        if (part.isEmpty() || part.length > MAX_CJK_SUFFIX_RUN || !part.all(::isCjk)) return listOf(part)
+        return (0 until part.length).map { part.substring(it) }
+    }
+
+    private fun isCjk(c: Char): Boolean =
+        when (Character.UnicodeScript.of(c.code)) {
+            Character.UnicodeScript.HAN,
+            Character.UnicodeScript.HIRAGANA,
+            Character.UnicodeScript.KATAKANA,
+            Character.UnicodeScript.HANGUL,
+            -> true
+
+            else -> false
+        }
+}

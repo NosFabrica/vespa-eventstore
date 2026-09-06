@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.eventstore.engine
 import com.nosfabrica.vespa.eventstore.engine.client.VespaEventIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
+import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventSelection
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql

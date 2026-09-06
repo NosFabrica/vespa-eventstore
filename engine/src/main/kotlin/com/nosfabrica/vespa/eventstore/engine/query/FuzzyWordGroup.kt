@@ -20,7 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore.engine.query
 
-import com.nosfabrica.vespa.eventstore.engine.NearText
+import com.nosfabrica.vespa.eventstore.engine.text.NearText
 
 /**
  * Per-word recall over the schema's search fields and match ladder — the

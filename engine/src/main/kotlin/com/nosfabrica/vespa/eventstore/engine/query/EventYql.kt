@@ -19,7 +19,7 @@
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 package com.nosfabrica.vespa.eventstore.engine.query
-import com.nosfabrica.vespa.eventstore.engine.WHITESPACE
+import com.nosfabrica.vespa.eventstore.engine.text.WHITESPACE
 import com.vitorpamplona.quartz.nip01Core.tags.isIndexableTagName
 import com.vitorpamplona.quartz.utils.Hex
 

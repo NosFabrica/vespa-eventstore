@@ -20,7 +20,8 @@
  */
 package com.nosfabrica.vespa.eventstore.benchmark
 
-import com.nosfabrica.vespa.eventstore.SchemaDeployer
+import com.nosfabrica.vespa.eventstore.benchmark.bench.SearchTrace
+import com.nosfabrica.vespa.eventstore.engine.app.SchemaDeployer
 import com.nosfabrica.vespa.eventstore.engine.client.VespaEventIndex
 import com.nosfabrica.vespa.eventstore.engine.client.VespaReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc

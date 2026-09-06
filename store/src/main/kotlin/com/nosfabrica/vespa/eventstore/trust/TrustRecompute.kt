@@ -21,14 +21,14 @@
 package com.nosfabrica.vespa.eventstore.trust
 
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
-import com.nosfabrica.vespa.eventstore.engine.IngestStats
-import com.nosfabrica.vespa.eventstore.engine.QUERY_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
+import com.nosfabrica.vespa.eventstore.engine.async.QUERY_FANOUT
+import com.nosfabrica.vespa.eventstore.engine.async.forEachBounded
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationCells
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
-import com.nosfabrica.vespa.eventstore.engine.forEachBounded
+import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.mapping.toEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent

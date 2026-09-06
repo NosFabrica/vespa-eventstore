@@ -20,13 +20,13 @@
  */
 package com.nosfabrica.vespa.eventstore.trust
 
-import com.nosfabrica.vespa.eventstore.BackgroundFailures
-import com.nosfabrica.vespa.eventstore.engine.InMemoryReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationCells
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
 import com.nosfabrica.vespa.eventstore.engine.doc.serviceCells
+import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryReputationIndex
+import com.nosfabrica.vespa.eventstore.runtime.BackgroundFailures
 import kotlinx.coroutines.runBlocking
 import java.io.IOException
 import kotlin.test.Test

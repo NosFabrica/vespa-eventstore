@@ -413,6 +413,27 @@ The instrumentation is designed to be cheap enough to leave on: see
 memory cost of every counter, and what is deliberately *not* measured here
 (Vespa's own resource use, which the metrics proxy already reports).
 
+## Repository layout
+
+Three Gradle modules, and inside each a package order that is asserted rather than assumed
+(`ModuleBoundariesTest` — a new package fails the build until the layer table names it):
+
+```
+engine/   the index port and its Vespa binding
+          text/ async/ app/   shared leaves (near-text, bounded fan-out, the bundled Vespa app + deployer)
+          doc/ query/         document shapes, then the EventQuery -> YQL compiler
+          .                    EventIndex / ReputationIndex / ScoredHit — the PORT
+          metrics/            the meter, cost ledger, ingest stats, degraded reads
+          memory/ client/     its two implementations (in-memory spec; the real Vespa client)
+store/    relay policy on top
+          runtime/ mapping/   leaves: writer topology + worker failures; Filter -> EventQuery, search extraction
+          ingest/ trust/ search/   the write path, the NIP-85 projection, reference expansion
+          .                    the FACADE: VespaEventStore.open(), NostrSemanticsStore, RejectedException
+benchmark/  not published — harness/ bench/ probe/ load/, plus the integration gates
+```
+
+Read a module bottom-up: nothing in a lower row imports a higher one.
+
 ## Developer Setup
 
 Make sure to have the following pre-requisites installed:

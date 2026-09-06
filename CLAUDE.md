@@ -64,11 +64,30 @@ stays hermetic (testcontainers). **Read only: never feed it, and never point a t
 
 ## Architecture
 
-Three modules, layered strictly bottom-up:
+Three modules, layered strictly bottom-up — and inside each, packages that are layered too.
+`ModuleBoundariesTest` (in `:store`) asserts the whole order below, so a new package is a
+deliberate decision (it fails until the layer table names it) rather than a drift:
 
-- **`:engine`** — the engine layer: the ports and shared helpers at the package root (`EventIndex`, `ReputationIndex`, `InMemoryEventIndex`, `ScoredHit`), document shapes (`doc/`), the `EventQuery` → YQL compiler (`query/`), and the Vespa client (`client/` — `VespaEventIndex` reads via OkHttp h2c, writes via Vespa's official feed client; `VespaReputationIndex`) plus the bundled Vespa application package.
-- **`:store`** — Nostr semantics on top: `NostrSemanticsStore` (the `IEventStore` implementation), the NIP-85 trust projection (`trust/`), per-kind search extraction (a thin wrapper over Quartz's `SearchFieldExtractor` in `mapping/SearchExtractors`), and `VespaEventStore.open()` — the public front door.
-- **`:benchmark`** — not published. Perf harness + the parity/rank-regression integration tests (the CI correctness gates).
+- **`:engine`** — the index port and its Vespa binding. Reading order is the layer order:
+  `text/` + `async/` + `app/` (shared leaves: near-text derivation, bounded fan-out, the bundled
+  Vespa application package and its deployer) → `doc/` (document shapes) → `query/` (the
+  `EventQuery` → YQL compiler) → the package root (`EventIndex`, `ReputationIndex`, `ScoredHit`,
+  `Ranked` — the PORT) → `metrics/` (`MeteredEventIndex`, the cost ledger, `IngestStats`,
+  `DegradedReads`) → `memory/` + `client/` (the two implementations: the in-memory executable
+  spec, and `VespaEventIndex` reading via OkHttp h2c / writing via Vespa's feed client,
+  `VespaReputationIndex`).
+- **`:store`** — relay policy on top. `runtime/` and `mapping/` are leaves that import no other
+  store package (`WriterTopology` + background-worker failure accounting; the Quartz `Filter` →
+  `EventQuery` mapping, per-kind search extraction, Vespa text rules) → `ingest/` (the write
+  path: bulk inserts, the guard caches, NIP-09/62 enforcement, the rejection vocabulary),
+  `trust/` (the NIP-85 projection), `search/` (reference expansion) → the package root, which is
+  the FACADE only: `VespaEventStore.open()` (the public front door), `NostrSemanticsStore` (the
+  `IEventStore` implementation) and `RejectedException`. Nothing below the root imports the
+  facade, with one declared exception the test names.
+- **`:benchmark`** — not published. `harness/` (backends, corpora, result plumbing, the parity
+  and rank-quality batteries), `bench/` (the timed suites), `probe/` (targeted A/Bs), `load/`
+  (corpus loaders and dumps), plus the parity/rank-regression integration tests — the CI
+  correctness gates.
 
 The stack `open()` assembles: `NostrSemanticsStore( TrustProjection( VespaEventIndex + VespaReputationIndex ) )`.
 

@@ -20,9 +20,9 @@
  */
 package com.nosfabrica.vespa.eventstore.search
 
-import com.nosfabrica.vespa.eventstore.engine.QUERY_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.Ranked
-import com.nosfabrica.vespa.eventstore.engine.mapBounded
+import com.nosfabrica.vespa.eventstore.engine.async.QUERY_FANOUT
+import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.nosfabrica.vespa.eventstore.mapping.DEFAULT_MIN_RANK

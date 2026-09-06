@@ -20,9 +20,9 @@
  */
 package com.nosfabrica.vespa.eventstore.engine.client
 
-import com.nosfabrica.vespa.eventstore.engine.WHITESPACE
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
+import com.nosfabrica.vespa.eventstore.engine.text.WHITESPACE
 import com.vitorpamplona.quartz.utils.Hex
 import kotlin.math.ceil
 import kotlin.math.floor

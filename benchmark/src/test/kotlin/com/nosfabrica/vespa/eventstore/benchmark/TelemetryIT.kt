@@ -21,8 +21,8 @@
 package com.nosfabrica.vespa.eventstore.benchmark
 
 import com.nosfabrica.vespa.eventstore.VespaEventStore
-import com.nosfabrica.vespa.eventstore.engine.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.metrics.Activity
+import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import kotlinx.coroutines.delay

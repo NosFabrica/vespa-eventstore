@@ -21,13 +21,14 @@
 package com.nosfabrica.vespa.eventstore
 
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
-import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
+import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.metrics.Activity
 import com.nosfabrica.vespa.eventstore.engine.metrics.CostLedger
 import com.nosfabrica.vespa.eventstore.engine.metrics.MeteredEventIndex
 import com.nosfabrica.vespa.eventstore.engine.metrics.PortCall
 import com.nosfabrica.vespa.eventstore.engine.metrics.currentActivity
 import com.nosfabrica.vespa.eventstore.engine.metrics.withActivity
+import com.nosfabrica.vespa.eventstore.ingest.Rejections
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import kotlinx.coroutines.runBlocking

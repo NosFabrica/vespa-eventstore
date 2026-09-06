@@ -20,10 +20,10 @@
  */
 package com.nosfabrica.vespa.eventstore.benchmark
 
-import com.nosfabrica.vespa.eventstore.SchemaDeployer
 import com.nosfabrica.vespa.eventstore.benchmark.AccessLogIT.Companion.CONFIG_PORT
 import com.nosfabrica.vespa.eventstore.benchmark.AccessLogIT.Companion.QUERY_PORT
 import com.nosfabrica.vespa.eventstore.benchmark.AccessLogIT.Companion.dockerAvailable
+import com.nosfabrica.vespa.eventstore.engine.app.SchemaDeployer
 import com.nosfabrica.vespa.eventstore.engine.client.VespaReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationCells
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc

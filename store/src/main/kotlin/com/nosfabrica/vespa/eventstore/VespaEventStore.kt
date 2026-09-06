@@ -20,14 +20,18 @@
  */
 package com.nosfabrica.vespa.eventstore
 
-import com.nosfabrica.vespa.eventstore.engine.DegradedReads
-import com.nosfabrica.vespa.eventstore.engine.IngestStats
+import com.nosfabrica.vespa.eventstore.engine.app.SchemaDeployer
 import com.nosfabrica.vespa.eventstore.engine.client.VespaEventIndex
 import com.nosfabrica.vespa.eventstore.engine.client.VespaReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.metrics.Activity
 import com.nosfabrica.vespa.eventstore.engine.metrics.CostLedger
+import com.nosfabrica.vespa.eventstore.engine.metrics.DegradedReads
+import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.metrics.MeteredEventIndex
 import com.nosfabrica.vespa.eventstore.engine.metrics.withActivity
+import com.nosfabrica.vespa.eventstore.runtime.BackgroundFailures
+import com.nosfabrica.vespa.eventstore.runtime.DEFAULT_GUARD_REFRESH_MILLIS
+import com.nosfabrica.vespa.eventstore.runtime.WriterTopology
 import com.nosfabrica.vespa.eventstore.search.SearchExpansionLimits
 import com.nosfabrica.vespa.eventstore.trust.MaxRankBackfill
 import com.nosfabrica.vespa.eventstore.trust.TrustCoverage

@@ -20,8 +20,8 @@
  */
 package com.nosfabrica.vespa.eventstore.benchmark
 
-import com.nosfabrica.vespa.eventstore.SchemaDeployer
-import com.nosfabrica.vespa.eventstore.engine.VespaApp
+import com.nosfabrica.vespa.eventstore.engine.app.SchemaDeployer
+import com.nosfabrica.vespa.eventstore.engine.app.VespaApp
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.Test
@@ -39,7 +39,7 @@ import kotlin.test.assertTrue
  * REACH the JVM serving :8080, and win over the flags Vespa derives.
  *
  * WHY THIS NEEDS A REAL VESPA: nothing else can tell the fix from a no-op.
- * [com.nosfabrica.vespa.eventstore.engine.VespaAppTest] proves the attribute is
+ * [com.nosfabrica.vespa.eventstore.engine.app.VespaAppTest] proves the attribute is
  * in services.xml and survives the access-log rewrite — but an attribute Vespa
  * ignores, or places BEFORE its own derived flags, looks identical from the unit
  * side, while the symptom it exists to prevent (issue #77: the container JVM
