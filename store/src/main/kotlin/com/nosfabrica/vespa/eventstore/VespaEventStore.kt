@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore
 
+import com.nosfabrica.vespa.eventstore.engine.DegradedReads
 import com.nosfabrica.vespa.eventstore.engine.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.client.VespaEventIndex
 import com.nosfabrica.vespa.eventstore.engine.client.VespaReputationIndex
@@ -144,7 +145,7 @@ class VespaEventStore internal constructor(
      * so — see [BackgroundFailures] and [TrustKeyingProgress].
      */
     fun backgroundStatus(): String =
-        listOf(keyingProgress.line(), TrustProgress.line(), TrustCoverage.line(), BackgroundFailures.statusLine())
+        listOf(keyingProgress.line(), TrustProgress.line(), TrustCoverage.line(), DegradedReads.line(), BackgroundFailures.statusLine())
             .filter { it.isNotBlank() }
             .joinToString("; ")
 

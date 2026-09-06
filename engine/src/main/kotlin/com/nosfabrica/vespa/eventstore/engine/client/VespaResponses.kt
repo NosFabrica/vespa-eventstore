@@ -153,7 +153,18 @@ internal class SearchCoverage(
     val coverage: Int = 100,
     val nodes: Int = 1,
     val degraded: JsonObject? = null,
+    /**
+     * Documents actually searched. Decoded so a degraded read can say how far
+     * short it fell in absolute terms: a cluster still opening buckets and one
+     * whose engine truncated the match set both report a percentage, and the
+     * document count is what separates "settling" from "cut".
+     */
+    val documents: Long = 0,
 ) {
+    /** The degradation flags Vespa actually SET — it lists the false ones too. */
+    val setFlags: Set<String>
+        get() = degraded?.filter { (_, v) -> (v as? JsonPrimitive)?.content == "true" }?.keys.orEmpty()
+
     /** The engine cut the match phase — the one degradation the recall path may act on rather than refuse. */
     val matchPhaseDegraded: Boolean
         get() = (degraded?.get("match-phase") as? JsonPrimitive)?.content == "true"
@@ -201,8 +212,10 @@ internal class SearchCoverage(
             // `full` rides along because a refused response that calls itself
             // full is the confusing one, and naming the contradiction beats
             // making the next reader rediscover the two denominators.
-            "vespa searched only $coverage% of the corpus (full: $full, degraded: ${degraded ?: "unspecified"}); " +
-                "the response is a PARTIAL answer, not a small one, so it is refused rather than returned"
+            "vespa searched only $coverage% of the corpus over $documents document(s) (full: $full, degraded: ${degraded ?: "unspecified"}); " +
+                "the response is a PARTIAL answer, not a small one, so it is refused rather than returned. " +
+                "match-phase means the ENGINE cut the match set and will not clear itself; non-ideal-state is a cluster " +
+                "still settling and will. DegradedReads carries which, per profile and query shape."
         }
     }
 }

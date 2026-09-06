@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.eventstore.engine.client
 import ai.vespa.feed.client.DocumentId
 import ai.vespa.feed.client.OperationParameters
 import ai.vespa.feed.client.Result
+import com.nosfabrica.vespa.eventstore.engine.DegradedReads
 import com.nosfabrica.vespa.eventstore.engine.DocRef
 import com.nosfabrica.vespa.eventstore.engine.DocsPage
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
@@ -1199,9 +1200,36 @@ class VespaEventIndex(
         // requireComplete throws.
         publish(vq, root, envelope.timing)
         captureSlow(vq, t0, envelope.timing, root.children.size.toLong(), root.fields.totalCount.toLong())
-        root.coverage.requireComplete(allowMatchPhase = vq.ranking == EventYql.RANK_RECENCY || vq.ranking == EventYql.RANK_RECENCY_GATED)
+        val allowMatchPhase = vq.ranking == EventYql.RANK_RECENCY || vq.ranking == EventYql.RANK_RECENCY_GATED
+        // RECORDED WHETHER OR NOT IT THROWS. A match-phase cut on a recency
+        // profile is ALLOWED and returned silently, so a cluster degrading
+        // every read shows up here before anything refuses and long before
+        // anyone notices ranked pages getting shorter.
+        if (!root.coverage.undegraded) {
+            DegradedReads.record(
+                profile = vq.ranking,
+                flags = root.coverage.setFlags,
+                shape = shapeOf(vq),
+                refused = !allowMatchPhase,
+                coverage = root.coverage.coverage,
+                documents = root.coverage.documents,
+            )
+        }
+        root.coverage.requireComplete(allowMatchPhase = allowMatchPhase)
         if (vq.complete) root.requireEverything()
         return root
+    }
+
+    /**
+     * The query's SHAPE for a degraded-read tally: which clause kinds it
+     * carried, never their values. A yql holds what somebody searched for, and
+     * this is read from places a search term must not reach.
+     */
+    private fun shapeOf(vq: VespaQuery): String {
+        val parts = mutableListOf<String>()
+        if (vq.complete) parts += "complete"
+        for ((clause, marker) in SHAPE_MARKERS) if (marker in vq.yql) parts += clause
+        return parts.joinToString(",").ifEmpty { "plain" }
     }
 
     /** Book one engine query against the ledger, keyed by the rank profile that priced it. */
@@ -1327,6 +1355,24 @@ class VespaEventIndex(
     override fun close() = feed.close()
 
     internal companion object {
+        /**
+         * Clause kinds recognised in a yql for a degraded read's SHAPE, by the
+         * operator each renders. Names only — the values beside them are user
+         * data, and this is read where a search term must not reach.
+         */
+        val SHAPE_MARKERS =
+            listOf(
+                "ids" to "id contains",
+                "kinds" to "kind in",
+                "kind" to "kind =",
+                "authors" to "pubkey in",
+                "author" to "pubkey contains",
+                "tags" to "tag_index contains",
+                "search" to "userInput",
+                "since" to "created_at >",
+                "until" to "created_at <",
+            )
+
         /** Concurrent document-API gets for a pure-id lookup. Gets are light (no summary stage to overrun), so this floats above QUERY_FANOUT. */
         const val ID_GET_FANOUT = 32
 
