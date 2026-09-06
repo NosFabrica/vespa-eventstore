@@ -49,6 +49,14 @@ class DirtLedgerTest {
     private val service2 = "6e".repeat(32)
     private val subject = "ab".repeat(32)
 
+    private fun cardFor(
+        subj: String,
+        rank: Int,
+    ) = ContactCardEvent(id(), service, next(), arrayOf(arrayOf("d", subj), arrayOf("rank", rank.toString())), "", "")
+
+    /** More dirty subjects than one gate slice holds, so a round is more than one slice. */
+    private fun manySubjects(n: Int = TrustRecompute.GATE_SLICE + 100) = (1..n).map { it.toString(16).padStart(64, '0') }
+
     private var t = 1_000_000L
 
     private fun next() = t++
@@ -243,5 +251,99 @@ class DirtLedgerTest {
             restarted.dirt.drain { it() }
             assertEquals(mapOf(service to 40), reputations.get(subject)?.influenceScores)
             assertNull(reputations.get(DirtLedger.MARKER_KEY))
+        }
+
+    /**
+     * A crashed process's ledger, at the scale the real one runs at: more
+     * subjects than one gate slice holds, so a round is several slices.
+     * Returns the restarted projection and the subjects it must heal.
+     */
+    private suspend fun inheritedBacklog(reputations: ReputationIndex): Pair<TrustProjection, List<String>> {
+        val index = InMemoryEventIndex()
+        val subjects = manySubjects()
+        val first = TrustProjection(index, reputations)
+        first.put(list10040().toDoc())
+        subjects.forEach { first.put(cardFor(it, 50).toDoc()) }
+        // The process died with the projection unwritten and the marker naming all of it.
+        subjects.forEach { reputations.remove(it) }
+        reputations.put(ReputationDoc(DirtLedger.MARKER_KEY, subjects.associateWith { 1 }, emptyMap()))
+        val restarted = TrustProjection(index, reputations)
+        restarted.dirt.deferTo { }
+        return restarted to subjects
+    }
+
+    /**
+     * THE FROZEN BACKLOG. A round used to retire its whole snapshot in one
+     * step, after the last slice: until then the marker stood at full size and
+     * the backlog gauge never moved. On staging that meant 139,524 inherited
+     * subjects showing as untouched for over an hour per pass —
+     * indistinguishable, to anyone watching, from a drain doing nothing at all.
+     * Each slice's ack is credited when it happens.
+     */
+    @Test
+    fun `a round retires each slice as it lands, not once at the end`() =
+        runBlocking {
+            val reputations: ReputationIndex = InMemoryReputationIndex()
+            val (store, subjects) = inheritedBacklog(reputations)
+
+            // The marker's size at every point the drain handed the gate back.
+            val sizes = mutableListOf<Int>()
+            store.dirt.drain { body ->
+                body()
+                sizes += reputations.get(DirtLedger.MARKER_KEY)?.influenceScores?.size ?: 0
+            }
+
+            assertNull(reputations.get(DirtLedger.MARKER_KEY), "marker gone once the ledger is clean")
+            assertEquals(0L, store.dirt.pendingSubjects())
+            assertEquals(subjects.size, subjects.count { reputations.get(it)?.influenceScores == mapOf(service to 50) }, "every subject healed")
+            assertTrue(
+                sizes.any { it in 1 until subjects.size },
+                "the marker shrank WHILE the round ran; it only ever read ${sizes.distinct().sorted()}",
+            )
+        }
+
+    /**
+     * THE LOST ROUND. Retiring per round also meant a round that died partway
+     * left nothing behind: the marker still named every subject, including the
+     * ones already derived and acked, so the next round paid for all of them
+     * again — and on a ledger that takes longer to drain than the process
+     * stays up, it never finishes. The same property is what lets two
+     * concurrent drains of one ledger (the background loop's and
+     * [TrustReconciler]'s) skip each other's finished slices instead of both
+     * deriving the whole snapshot.
+     */
+    @Test
+    fun `slices retired before a failure are not re-derived by the next round`() =
+        runBlocking {
+            val reputations: ReputationIndex = InMemoryReputationIndex()
+            val (store, subjects) = inheritedBacklog(reputations)
+
+            // Die once the first slice has been derived, written and retired.
+            var gateCalls = 0
+            assertFailsWith<IllegalStateException> {
+                store.dirt.drain { body ->
+                    // Call 1 derives the first slice, call 2 retires it; the
+                    // process dies reaching for the second slice's work.
+                    if (++gateCalls > 2) error("the process dies mid-round")
+                    body()
+                }
+            }
+
+            val left = store.dirt.pendingSubjects()
+            assertTrue(left in 1 until subjects.size.toLong(), "a slice was retired before the failure, not the whole round: $left")
+            assertEquals(
+                left.toInt(),
+                assertNotNull(reputations.get(DirtLedger.MARKER_KEY)).influenceScores.size,
+                "the marker names exactly the unhealed remainder — the crash-safety contract",
+            )
+            assertEquals(
+                subjects.size - left.toInt(),
+                subjects.count { reputations.get(it)?.influenceScores == mapOf(service to 50) },
+                "and the retired subjects are the ones already written",
+            )
+
+            store.dirt.drain { it() }
+            assertNull(reputations.get(DirtLedger.MARKER_KEY), "the remainder healed")
+            assertEquals(subjects.size, subjects.count { reputations.get(it)?.influenceScores == mapOf(service to 50) })
         }
 }

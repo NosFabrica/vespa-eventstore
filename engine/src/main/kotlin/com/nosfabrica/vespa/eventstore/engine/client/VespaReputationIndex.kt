@@ -122,17 +122,32 @@ class VespaReputationIndex(
             }
     }
 
-    /** Pipelined tensor-cell removes (Vespa `remove` by address); a missing document is left missing. */
+    /**
+     * Pipelined tensor-cell removes (Vespa `remove` by address); a missing
+     * document is left missing.
+     *
+     * GROUPED BY DOCUMENT: a tensor `remove` takes a LIST of addresses, so
+     * every cell leaving one document goes in one update. Callers do send
+     * hundreds of cells for a single document — [DirtLedger] retires a whole
+     * drain slice out of its marker in one call — and one update per cell
+     * there is not merely n round trips but n CONCURRENT updates to the same
+     * document id, which Vespa serialises behind each other.
+     */
     override suspend fun removeCells(removals: List<CellRemoval>) {
-        removals.chunked(VespaEventIndex.FEED_CHUNK).forEach { chunk ->
+        val byDocument =
+            removals
+                .groupBy { it.subject }
+                .map { (subject, cells) -> subject to (cells.filter { it.influence }.map { it.key } to cells.filter { it.followers }.map { it.key }) }
+        byDocument.chunked(VespaEventIndex.FEED_CHUNK).forEach { chunk ->
             chunk
-                .map { r ->
+                .map { (subject, dimensions) ->
+                    val (influence, followers) = dimensions
                     val fields =
                         buildJsonObject {
-                            if (r.influence) put("influence_scores", buildJsonObject { put("remove", buildJsonObject { put("addresses", buildJsonArray { add(buildJsonObject { put("user", r.key) }) }) }) })
-                            if (r.followers) put("follower_counts", buildJsonObject { put("remove", buildJsonObject { put("addresses", buildJsonArray { add(buildJsonObject { put("user", r.key) }) }) }) })
+                            if (influence.isNotEmpty()) put("influence_scores", removeAddresses(influence))
+                            if (followers.isNotEmpty()) put("follower_counts", removeAddresses(followers))
                         }
-                    feed.client.update(DocumentId.of(NAMESPACE, DOCTYPE, r.subject), buildJsonObject { put("fields", fields) }.toString(), feedParams())
+                    feed.client.update(DocumentId.of(NAMESPACE, DOCTYPE, subject), buildJsonObject { put("fields", fields) }.toString(), feedParams())
                 }.forEach { op ->
                     // A document that never existed answers 404 through the feed
                     // client as a failure; nothing to remove is the intended outcome.
@@ -140,6 +155,17 @@ class VespaReputationIndex(
                 }
         }
     }
+
+    /** One tensor `remove` naming every [keys] address at once. */
+    private fun removeAddresses(keys: List<String>) =
+        buildJsonObject {
+            put(
+                "remove",
+                buildJsonObject {
+                    put("addresses", buildJsonArray { keys.forEach { add(buildJsonObject { put("user", it) }) } })
+                },
+            )
+        }
 
     override suspend fun remove(pubkey: String) {
         feed.client.remove(DocumentId.of(NAMESPACE, DOCTYPE, pubkey), feedParams()).await()
