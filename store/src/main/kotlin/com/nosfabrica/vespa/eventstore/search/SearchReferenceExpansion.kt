@@ -19,7 +19,6 @@
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 package com.nosfabrica.vespa.eventstore.search
-
 import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.async.QUERY_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
@@ -30,132 +29,6 @@ import com.nosfabrica.vespa.eventstore.mapping.INCLUDE_SPAM_MIN_RANK
 import com.nosfabrica.vespa.eventstore.trust.Enrolment
 import com.vitorpamplona.quartz.nip01Core.core.Address
 import com.vitorpamplona.quartz.nip01Core.core.Event
-
-/**
- * How much of a subscription's feed the expansion may be, and how much index
- * work it may cost: a hit that nominates thousands of subjects — a 2,000-member
- * Trusted List is a normal one — must not turn a five-hit search page into a
- * five-thousand-frame flood, and a page of five such lists must not turn one
- * read into ten thousand key lookups.
- *
- * Both caps bound what is LOOKED UP, not what is found, and they truncate in
- * the pointer's OWN ORDER — the first N members it names. That is the
- * deterministic reading, and it is the useful one: a publisher orders a Trusted
- * List's members by the score it computed for them, so the first N are the N it
- * ranks highest. The alternative — "the first N we happen to hold" — would make
- * the answer depend on what a mirror had caught up on, and would let a run of
- * members this store does not have cost a lookup each anyway. Members past the
- * cap are not looked up at all, which is the point.
- *
- * THAT ORDERING IS A PUBLISHER CONVENTION, AND IT WAS CHECKED rather than
- * hoped: across the eleven Trusted Lists on the staging relay, all 180 members
- * carry a score, every score is inside quartz's 0..100 `SCORE_RANGE` (so none
- * reads back as unscored), and EVERY list is sorted descending. A publisher
- * that does not sort degrades to a deterministic-but-arbitrary top N, not to a
- * wrong one.
- *
- * Both are TRUNCATIONS, not refusals: the pointer is unaffected by either, so a
- * client that wants the whole membership reads the member tags and asks for
- * them by `#p` / `#e` / `#a` recall, which is what that recall is for —
- * provided the read asked for the pointer's kind, since a read that did not
- * never sees it (see [SearchReferenceExpansion]).
- */
-data class SearchExpansionLimits(
-    /** Off entirely: reads answer exactly what they matched, and nothing is spliced. */
-    val enabled: Boolean = true,
-    /** Subjects one pointer may bring. A page of lists spends [maxPerRequest] before this bites. */
-    val maxPerEvent: Int = 100,
-    /** Subjects one read may bring, across every pointer on it. */
-    val maxPerRequest: Int = 1_000,
-    /**
-     * ENGINE ROUND TRIPS one read's expansion may spend, whatever its page
-     * holds — the bound that stops a wide page turning one REQ into hundreds of
-     * queries.
-     *
-     * WHAT IT DROPS WHEN IT BITES, because it does not fail the read: lookups
-     * are planned in PAGE order, which on any page that can be sorted is
-     * relevance order, so the budget is spent on the best-ranked pointers first
-     * and a page too wide loses the subjects of its WORST-ranked ones. That is
-     * the only defensible cut — the alternative is dropping whichever family
-     * the loop reached last — and it is pinned by test rather than left to the
-     * shape of the code.
-     *
-     * The number is per read and not per lens. One batch per pointer is the
-     * shape a ranked page of Trusted Lists has (a pointer's own relevance is a
-     * query-level feature, so no two differently-ranked rows can share a
-     * query), so this is the page width past which subjects start going
-     * missing. The trips overlap ([QUERY_FANOUT] of them in flight), so it
-     * bounds cluster work rather than wall-clock.
-     */
-    val maxLookups: Int = 64,
-    /**
-     * HOW HARD A DOUBTED MEMBER SINKS — the exponent on the confidence a
-     * Trusted List expressed about each member, on quartz's 0..100 scale.
-     *
-     * It shapes BOTH halves of a member's placement, because both are
-     * confidence-driven: how far up its own rung a member sits, and where
-     * inside [subjectFloorSpan] it lands under its pointer. 1.0 is linear;
-     * above 1 punishes doubt harder; below 1 softens it, and as it approaches
-     * 0 every confidence weighs the same and the whole block sits with its
-     * pointer again.
-     *
-     * There is no corpus to tune this against yet — the honest default is the
-     * one that applies the publisher's number as given.
-     */
-    val confidenceGamma: Double = 1.0,
-    /**
-     * HOW FAR BELOW ITS POINTER A DOUBTED SUBJECT MAY FALL, as a fraction of
-     * the pointer's own relevance — or NULL for no floor at all, which is the
-     * placement that came before this: every subject on its absolute rung,
-     * wherever its pointer landed.
-     *
-     * WHY A FLOOR. `event.sd` §13's rung answers "how good is this member" and
-     * cannot answer "how good is it FOR THIS QUERY": the member matched none of
-     * the words — the lookup that fetched it carries none — so the pointer is
-     * the only row on the page that knows the query. The rung's ceiling
-     * (4,000 x wot) cannot reach a title match's (130,000 x wot) from below
-     * whatever the publisher or the reader think of the person: measured on
-     * staging, a `Verified Human` list ranked #10 on its title while the member
-     * it is 87% sure of, ranked 100 by that reader, sat at #40 under 27 mirror
-     * pages from one rank-30 bot.
-     *
-     * WHY A SPAN AND NOT A SHARE. A plain `pointer x confidence` was tried and
-     * rejected twice over: as a placement it ejected discounted members out of
-     * their band into the gap below, and even as a floor it lands them at
-     * arbitrary points across a BANDED ladder (a quarter of a title match is
-     * 32,500 — above the near rung, where nobody calibrated it). The span is a
-     * ratio of rungs instead: [DEFAULT_SUBJECT_FLOOR_SPAN] is
-     * `w_near_tier / w_name_tier`, so a member lands within ONE RUNG of its
-     * pointer however doubted, ordered inside that span by its confidence, and
-     * a member the publisher is sure of ties its pointer exactly.
-     *
-     * The arithmetic is the SCHEMA's — only it knows where the bands are, and
-     * only it sees a member's own trust. This is the number handed to it.
-     */
-    val subjectFloorSpan: Double? = DEFAULT_SUBJECT_FLOOR_SPAN,
-) {
-    init {
-        require(confidenceGamma > 0.0) { "confidenceGamma must be positive: $confidenceGamma" }
-        require(subjectFloorSpan == null || subjectFloorSpan in 0.0..1.0) {
-            "subjectFloorSpan must be a 0..1 fraction of the pointer, or null for no floor: $subjectFloorSpan"
-        }
-    }
-
-    companion object {
-        /**
-         * `w_near_tier / w_name_tier` — one rung of `event.sd`'s text ladder,
-         * and the schema's own default for `query(w_subject_floor_span)`. Kept
-         * here as a number the store can pass and a test can reason with; the
-         * two must move together.
-         */
-        const val DEFAULT_SUBJECT_FLOOR_SPAN = 0.1769
-
-        val Default = SearchExpansionLimits()
-
-        /** The expansion switched off — what a caller passes to get plain recall. */
-        val Off = SearchExpansionLimits(enabled = false)
-    }
-}
 
 /**
  * WHAT A SEARCH FOUND, PLUS WHAT IT POINTS AT: the events a NIP-32 label, a
@@ -239,6 +112,9 @@ internal class SearchReferenceExpansion(
     private val enrolmentSource: suspend (String?) -> Enrolment,
     private val limits: SearchExpansionLimits,
 ) {
+    /** How this page's references group into queries — see [SubjectBatches]. */
+    private val batches = SubjectBatches(limits)
+
     /** The lens a pointer is read through: the first that ACCEPTS it outright, else the first that merely converts into it. */
     private fun pickLens(pointer: Event): Int {
         for (converted in ACCEPT_PASSES) {
@@ -714,24 +590,7 @@ internal class SearchReferenceExpansion(
             // sorted is relevance order, so a subject two lists name is fetched
             // under the better-ranked of them — the same pointer [admit] will
             // file it under, and one fewer round trip than asking twice.
-            val idBatches = LinkedHashMap<Any, Batch>()
-            val keyBatches = LinkedHashMap<Any, Batch>()
-            val claimedIds = HashSet<String>()
-            val claimedKeys = HashSet<String>()
-            for (row in planned.indices) {
-                if (lensOfRow[row] != lens) continue
-                val refs = planned[row]
-                val rel = pointerRel(row)
-                val text = pointerText(row)
-                for ((weighted, ids) in refs.eventIds.filterNot { it in claimedIds }.splitByScored(refs)) {
-                    claimedIds += ids
-                    idBatches.batch(weighted, rel, text).take(ids, refs)
-                }
-                for ((weighted, pubKeys) in refs.pubKeys.filterNot { it in claimedKeys }.splitByScored(refs)) {
-                    claimedKeys += pubKeys
-                    keyBatches.batch(weighted, rel, text).take(pubKeys, refs)
-                }
-            }
+            val grouped = batches.group(planned, lensOfRow, lens, { pointerRel(it) }, { pointerText(it) })
             // PLANNED FIRST, SENT SECOND. Every lookup this lens needs is
             // listed before any of them goes out, for two reasons that both
             // used to be broken by sending them inline:
@@ -756,7 +615,7 @@ internal class SearchReferenceExpansion(
             // order for the same reason it is used here rather than
             // [forEachBounded], whose results arrive as they finish.
             val plan = ArrayList<Pair<Target, EventQuery>>()
-            for (b in idBatches.values) {
+            for (b in grouped.ids) {
                 val q = b.query(under, profile, limits)
                 for (chunk in b.keys.keys.chunked(LOOKUP_CHUNK)) {
                     if (spent++ >= limits.maxLookups) break
@@ -764,7 +623,7 @@ internal class SearchReferenceExpansion(
                     narrowed?.let { plan += Target.ID to it }
                 }
             }
-            for (b in keyBatches.values) {
+            for (b in grouped.pubKeys) {
                 val q = b.query(under, profile, limits)
                 for (chunk in b.keys.keys.chunked(LOOKUP_CHUNK)) {
                     if (spent++ >= limits.maxLookups) break
@@ -781,7 +640,7 @@ internal class SearchReferenceExpansion(
             // `tag_index` array (`d:<value>`, fast-search) could carry weights
             // inside one owner's group if this family ever earns the work; on
             // the staging corpus it has no instances at all.
-            for ((bucket, addresses) in bucketed(planned, lensOfRow, lens)) {
+            for ((bucket, addresses) in batches.addressBuckets(planned, lensOfRow, lens)) {
                 val conf = if (bucket == null) under else under.withMember(profile, bucket, limits.confidenceGamma)
                 for ((owner, addrs) in addresses.mapNotNull { Address.parse(it) }.groupBy { it.kind to it.pubKeyHex }) {
                     if (spent++ >= limits.maxLookups) break
@@ -804,147 +663,6 @@ internal class SearchReferenceExpansion(
         }
         return out
     }
-
-    /**
-     * ONE ROUND TRIP'S WORTH OF KEYS: everything that can be asked for in a
-     * single query, with each key's own confidence.
-     *
-     * Two rows share a batch when they would send the SAME query, which is the
-     * only thing that has to force them apart — the per-key weights never do,
-     * since each key carries its own. Unscored references send the caller's
-     * lens untouched, so they all share one; scored ones differ only in
-     * [pointerRel], and not even in that when the floor is off.
-     */
-    private class Batch(
-        val weighted: Boolean,
-        val pointerRel: Double,
-        val pointerText: Double,
-    ) {
-        /** Key -> the 0..100 confidence its pointer gave it; 0 and unread on an unscored batch. */
-        val keys = LinkedHashMap<String, Int>()
-
-        fun take(
-            batched: List<String>,
-            refs: References,
-        ) {
-            batched.forEach { keys[it] = refs.confidence[it] ?: 0 }
-        }
-
-        fun query(
-            under: EventQuery,
-            profile: String?,
-            limits: SearchExpansionLimits,
-        ): EventQuery =
-            if (weighted) {
-                under.withWeightedMember(profile, limits.confidenceGamma, pointerRel, pointerText, limits.subjectFloorSpan)
-            } else {
-                under
-            }
-    }
-
-    /**
-     * The batch this row's half belongs in — created on first use, so the map's
-     * insertion order is page order and the best-ranked pointer keeps a
-     * contested key.
-     *
-     * The identity is what the QUERY would carry: nothing at all for the
-     * unscored, and for the scored either the pointer's relevance or, with the
-     * floor off, one shared batch — [withWeightedMember] does not send the
-     * relevance then, so splitting on it would buy identical queries.
-     */
-    private fun MutableMap<Any, Batch>.batch(
-        weighted: Boolean,
-        rel: Double,
-        text: Double,
-    ): Batch {
-        val floored = weighted && limits.subjectFloorSpan != null
-        // BOTH numbers are the identity now: two pointers that happen to share
-        // a relevance may still have earned it differently (one on a title
-        // match under a trusted signer, one on a weaker match under a better
-        // one), and their members are placed by the TEXT half.
-        val identity: Any = if (floored) listOf(rel, text) else weighted
-        return getOrPut(identity) { Batch(weighted, if (floored) rel else 0.0, if (floored) text else 0.0) }
-    }
-
-    /**
-     * One row's keys split into the SCORED and the UNSCORED, in that order,
-     * dropping whichever half is empty.
-     *
-     * The two cannot share a lookup: a scored member is ranked on the member
-     * rung by the number its list gave it, while a reference that expressed no
-     * confidence "is as sure as the pointer itself" and must come back with NO
-     * member score at all, so the placement can hand it the pointer's own. That
-     * is the same split the buckets drew with a null key, and it is one query
-     * each in the overwhelmingly common case where a list scores everybody or
-     * nobody.
-     */
-    private fun List<String>.splitByScored(refs: References): List<Pair<Boolean, List<String>>> {
-        val (scored, unscored) = partition { refs.weightOf(it) != null }
-        return listOfNotNull(
-            (true to scored).takeIf { scored.isNotEmpty() },
-            (false to unscored).takeIf { unscored.isNotEmpty() },
-        )
-    }
-
-    /**
-     * This lens's COORDINATE references, grouped by quantized confidence.
-     *
-     * Ordered HIGHEST FIRST so that a member two lists disagree about is looked
-     * up under the higher one — `putIfAbsent` above then keeps that first
-     * answer. The generous reading is the right one for a disagreement between
-     * two publishers the reader delegated: they both vouched, and the reader
-     * asked for both.
-     *
-     * COORDINATES ONLY, because they are the only shape left that buckets. This
-     * used to collect all three and hand back a `Shapes` holding each, from when
-     * the buckets were how EVERY member reached its rung; the keyed shapes moved
-     * to weighted batches ([Batch]) and their two sets became write-only. They
-     * were not free: a page is walked here for every scored searching read, so a
-     * list of 1,000 members cost 1,000 boxed bucket keys, hash lookups and
-     * `LinkedHashSet` inserts that nothing ever read — and the addressable
-     * family it all fed has no instances at all on the staging corpus. Buckets
-     * that only ids or pubkeys created are gone with them, which changes
-     * nothing: they reached the loop below with no addresses and issued no
-     * query.
-     */
-    private fun bucketed(
-        planned: List<References>,
-        lensOfRow: IntArray,
-        lens: Int,
-    ): List<Pair<Double?, LinkedHashSet<String>>> {
-        val out = HashMap<Double?, LinkedHashSet<String>>()
-        planned.forEachIndexed { i, refs ->
-            if (lensOfRow[i] != lens || refs.addresses.isEmpty()) return@forEachIndexed
-            refs.addresses.forEach { out.getOrPut(bucketOf(refs.weightOf(it))) { LinkedHashSet() }.add(it) }
-        }
-        if (out.isEmpty()) return emptyList()
-        // UNSCORED FIRST, THEN DESCENDING CONFIDENCE, and the order is
-        // load-bearing: [lookUp] files each found subject with `putIfAbsent`, so
-        // whichever bucket runs first wins a member that two pointers name. An
-        // unscored reference is not a doubted one — it is a claim with no
-        // confidence attached — so it must not lose its subject to a scored
-        // duplicate; and between two publishers the reader delegated, both of
-        // whom vouched, the generous reading is the right one.
-        //
-        // `compareBy(nullsFirst())` sorted ASCENDING, which handed every
-        // contested member to the publisher that doubted it most.
-        val (unscored, scored) = out.entries.partition { it.key == null }
-        return (unscored + scored.sortedByDescending { it.key!! }).map { it.key to it.value }
-    }
-
-    /**
-     * A 0..1 weight quantized to [BUCKETS] steps, or NULL where the pointer
-     * expressed no confidence at all.
-     *
-     * Null is not zero and not one: it means the member rung does not apply.
-     * A NIP-32 label has no confidence field in the NIP and a NIP-85
-     * assertion's `d` IS its subject, so neither claim is probabilistic —
-     * there is no doubt for a rung to express, and those subjects keep the
-     * placement they have always had, their POINTER's own score, which puts
-     * them directly behind it. Only a Trusted List member is scored, and only
-     * a scored member goes on a rung.
-     */
-    private fun bucketOf(weight: Double?): Double? = weight?.let { Math.round(it * BUCKETS) / BUCKETS.toDouble() }
 
     /**
      * This row's planned subjects, as far as the index actually holds them,
@@ -1010,233 +728,4 @@ internal class SearchReferenceExpansion(
          */
         const val BUCKETS = 4
     }
-}
-
-/**
- * How to read a subject out of whichever row type the caller is serving.
- *
- * The store answers reads as [EventDoc]s and raw reads as `RawEvent`s, and the
- * expansion is identical over both — so the three keys a pointer can name a
- * record by are the only thing it needs a projection for.
- */
-internal class SubjectKeys<R>(
-    val idOf: (R) -> String,
-    val authorOf: (R) -> String,
-    /** `kind:pubkey:d`, or null for a row that is not addressable. */
-    val addressOf: (R) -> String?,
-)
-
-/**
- * Whether this query accepts [event] on everything EXCEPT its words.
- *
- * Used only to attribute a pointer to the lens that found it, so it checks the
- * structural constraints and not the trust floor: the floor already decided
- * whether the pointer was served at all, and re-applying it here would need the
- * rank this row was scored with, which the read no longer carries.
- *
- * Two modes on the KIND, and the caller runs them as two PASSES. With
- * [converted] false, the pointer must be of a kind this query asked for
- * outright — the attribution that has always held. With [converted] true, a
- * pointer whose kind merely CONVERTS into this query's kinds is accepted —
- * that is what attributes a companion-fetched pointer
- * ([SearchReferenceExpansion.companions]) to the query whose kinds it was
- * fetched for, and its subjects are then admitted under THAT query's kinds,
- * never under the companion's own. The converting pass may only run after the
- * asked-for pass found nothing: every kind-restricted lens converts from the
- * id-shaped families, so a single merged pass would let whichever lens came
- * first take a pointer another lens explicitly asked for.
- */
-private fun EventQuery.accepts(
-    event: Event,
-    converted: Boolean,
-): Boolean =
-    (ids.isEmpty() || event.id in ids) &&
-        (
-            if (converted) {
-                kinds.isNotEmpty() && SearchReferences.converts(event.kind, kinds)
-            } else {
-                admitsKind(event.kind)
-            }
-        ) &&
-        (authors.isEmpty() || event.pubKey in authors) &&
-        (since == null || event.createdAt >= since!!) &&
-        (until == null || event.createdAt <= until!!) &&
-        tags.all { (name, values) -> values.any { event.has(name, it) } } &&
-        tagsAll.all { (name, values) -> values.all { event.has(name, it) } }
-
-private fun Event.has(
-    name: String,
-    value: String,
-): Boolean = tags.any { it.size > 1 && it[0] == name && it[1] == value }
-
-/** Whether a read asking for these kinds could serve one of [kind]. */
-private fun EventQuery.admitsKind(kind: Int): Boolean = kinds.isEmpty() || kind in kinds
-
-/**
- * This query with its TERMS stripped — what a subject lookup runs under.
- *
- * Everything that decides which corpus is visible survives (observer, floor,
- * spam waiver, expiry); everything about what was being looked FOR goes,
- * including the ranking profile the terms selected, since what remains is a
- * keyed recall. The `limit` goes too: a limit is the caller's budget for HITS,
- * and the expansion's own caps already bound the subjects.
- *
- * The floor survives TWICE OVER, because on the member profile `min_rank` no
- * longer gates: it anchors the trust curve inside the member's placement, and
- * `max(member_rung(), …)` floors an untrusted member back up (event.sd §13). An
- * EXPLICIT floor therefore also travels as [EventQuery.memberFloor], which that
- * profile reads as a hard gate. "Explicit" is read the way [companions] already
- * reads it — a floor that is not the default one the store stamps on every
- * lensed read — because that is the only signal left by the time a query gets
- * here, and the two decisions must not disagree about what the reader asked for.
- * A reader who explicitly asks for exactly [DEFAULT_MIN_RANK] is indistinguishable
- * from one who asked for nothing, and gets the default's behaviour.
- */
-private fun EventQuery.forLookup(): EventQuery =
-    copy(
-        search = null,
-        phrases = emptyList(),
-        notSearch = emptyList(),
-        ranking = null,
-        limit = null,
-        memberFloor = minRank?.takeIf { it != DEFAULT_MIN_RANK },
-    )
-
-/**
- * The same lookup, asked to SCORE what it finds as a member of a list this
- * confident.
- *
- * [profile] null means the finding query ranks on no ladder — a recency read, a
- * plain recall — so there is nothing for a synthesized score to be comparable
- * with and the lookup stays unranked. The splice then falls back to the
- * pointer's own order, which is the same degradation an unscored page gets.
- */
-private fun EventQuery.withMember(
-    profile: String?,
-    confidence: Double,
-    gamma: Double,
-): EventQuery =
-    if (profile == null) {
-        this
-    } else {
-        copy(
-            ranking = profile,
-            rankFeatures = rankFeatures + mapOf(EventYql.F_MEMBER_CONF to confidence, "w_member_gamma" to gamma),
-        )
-    }
-
-/**
- * The same lookup, asked to score what it finds as a member whose confidence
- * rides WITH ITS KEY, under a pointer this relevant.
- *
- * The two numbers arrive by different routes because they are different kinds
- * of fact. The confidence is per (list, member) and travels as a weight on the
- * key — one query for a whole list, at the publisher's own resolution. The
- * pointer's relevance is per query because the lookup is per pointer, which is
- * exactly what the weights bought.
- *
- * [profile] null means the finding query ranks on no ladder — a recency read, a
- * plain recall — so there is nothing for a member score to be comparable with,
- * and the lookup stays unranked. The splice then falls back to the pointer's own
- * order, as it always has.
- */
-private fun EventQuery.withWeightedMember(
-    profile: String?,
-    gamma: Double,
-    pointerRelevance: Double,
-    pointerText: Double,
-    floorSpan: Double?,
-): EventQuery =
-    if (profile == null) {
-        this
-    } else {
-        copy(
-            ranking = profile,
-            rankFeatures =
-                rankFeatures +
-                    mapOf(EventYql.F_DOC_CONF to 1.0, "w_member_gamma" to gamma) +
-                    // No span, no floor: the pointer's relevance is simply not
-                    // sent, and the profile's own default of 0 leaves a subject
-                    // on its rung exactly as it was before the floor existed.
-                    (
-                        floorSpan?.let {
-                            mapOf(
-                                EventYql.F_POINTER_REL to pointerRelevance.coerceAtLeast(0.0),
-                                EventYql.F_POINTER_TEXT to pointerText.coerceAtLeast(0.0),
-                                EventYql.F_SUBJECT_FLOOR_SPAN to it,
-                            )
-                        } ?: emptyMap()
-                    ),
-        )
-    }
-
-/** The same lookup, narrowed to these ids — null when the read cannot serve them anyway. */
-private fun EventQuery.narrowIds(chunk: List<String>): EventQuery? {
-    val wanted = if (ids.isEmpty()) chunk else chunk.filter { it in ids }
-    return if (wanted.isEmpty()) null else copy(ids = wanted)
-}
-
-/** Narrowed to these authors' profiles — null when the read admits no kind 0, or none of these authors. */
-private fun EventQuery.narrowProfiles(chunk: List<String>): EventQuery? {
-    if (!admitsKind(0)) return null
-    val wanted = if (authors.isEmpty()) chunk else chunk.filter { it in authors }
-    // `ids` survives rather than being cleared: a read that named specific ids
-    // may only serve those, and the engine ANDs the two constraints. Clearing
-    // it would let a keyed read hand back a profile it never asked for, which
-    // is the one thing "admission is the engine's own job" promises it cannot.
-    return if (wanted.isEmpty()) null else copy(kinds = listOf(0), authors = wanted)
-}
-
-/**
- * [narrowIds] with each id's confidence attached — the same recall, scored per
- * document. The caller's own `ids` constraint still intersects, exactly as it
- * does unweighted: admission is the engine's job either way.
- */
-private fun EventQuery.narrowIdWeights(
-    chunk: List<String>,
-    weights: Map<String, Int>,
-): EventQuery? {
-    val wanted = (if (ids.isEmpty()) chunk else chunk.filter { it in ids }).weighedBy(weights)
-    return if (wanted.isEmpty()) null else copy(ids = emptyList(), idWeights = wanted)
-}
-
-/** [narrowProfiles] with each member's confidence attached. */
-private fun EventQuery.narrowProfileWeights(
-    chunk: List<String>,
-    weights: Map<String, Int>,
-): EventQuery? {
-    if (!admitsKind(0)) return null
-    val wanted = (if (authors.isEmpty()) chunk else chunk.filter { it in authors }).weighedBy(weights)
-    // `ids` survives for the reason [narrowProfiles] keeps it.
-    return if (wanted.isEmpty()) null else copy(kinds = listOf(0), authors = emptyList(), authorWeights = wanted)
-}
-
-/**
- * These keys with the 0..100 score their pointer gave them — quartz's own
- * scale, unrounded, which is also the integer scale a weighted recall takes.
- *
- * [weights] is the BATCH's map rather than one row's, because a batch pools the
- * members of every pointer that sends the same query — so a key must carry the
- * confidence ITS OWN list expressed, not the confidence of whichever list is
- * being read at the time.
- */
-private fun List<String>.weighedBy(weights: Map<String, Int>): Map<String, Int> = mapNotNull { key -> weights[key]?.let { key to it } }.toMap()
-
-/** Narrowed to one owner's events of one kind — the coarsest key an addressable has. */
-private fun EventQuery.narrowAddresses(
-    kind: Int,
-    pubkey: String,
-    dTags: List<String>,
-): EventQuery? {
-    if (!admitsKind(kind)) return null
-    if (authors.isNotEmpty() && pubkey !in authors) return null
-    // A `d` the read ALREADY constrained is intersected, never replaced: `tags`
-    // is a map, so `+` would drop the caller's own `#d` and serve coordinates it
-    // had excluded. Same reason `ids` survives in [narrowProfiles].
-    val wanted = tags["d"]?.let { asked -> dTags.filter { it in asked } } ?: dTags
-    if (wanted.isEmpty()) return null
-    // `d` is a tag the index answers on, so the filter goes to the engine rather
-    // than being applied to the answer — a publisher with 10,000 articles must
-    // not be read whole to find the three a list named.
-    return copy(kinds = listOf(kind), authors = listOf(pubkey), tags = tags + ("d" to wanted))
 }
