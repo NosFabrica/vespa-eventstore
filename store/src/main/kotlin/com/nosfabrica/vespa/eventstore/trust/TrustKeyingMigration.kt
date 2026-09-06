@@ -52,18 +52,35 @@ import kotlinx.coroutines.delay
  *     the old cells would stay resident in a global, memory-held document
  *     type and keep `max_rank` high.
  *
- * The marker [MARKER_KEY] is written only by a run that finished, so a
- * crashed migration restarts from the top; and a run that can read NO
- * 10040 while reputation documents exist stops without writing it — that
- * state is indistinguishable from an engine still serving its corpus, and
- * sweeping under it would empty every parent. A store with no reputation
- * documents at all has nothing to migrate and writes the marker at once.
+ * THE MARKER RECORDS PHASES, NOT A BOOLEAN. It used to be written only by a
+ * run that finished, so every restart began again at step 1 — and step 1 is
+ * a corpus-scale reconcile. On a store where that takes longer than the
+ * process stays up, the migration cannot finish at all: it is not slow, it
+ * is Sisyphean, and the marker's shape was the reason. [RECONCILED] is
+ * written as soon as the reconcile lands, so a restart resumes at the sweep;
+ * [DONE] still means the whole thing finished. A marker carrying only [DONE]
+ * — every marker written before this change — still reads as complete.
+ *
+ * The sweep itself restarts from the beginning of the parent walk, which is
+ * safe because it is idempotent and reads far more than it writes: a parent
+ * whose cells are already correct costs a read and no write. Resuming it
+ * mid-walk would mean persisting Vespa's opaque visit continuation, which
+ * this deliberately does not do — see [sweepUnmappedCells].
+ *
+ * A run that can read NO 10040 while reputation documents exist stops
+ * without writing anything — that state is indistinguishable from an engine
+ * still serving its corpus, and sweeping under it would empty every parent.
+ * A store with no reputation documents at all has nothing to migrate and is
+ * marked done at once.
  */
 class TrustKeyingMigration internal constructor(
     private val reputations: ReputationIndex,
     private val reconciler: TrustReconciler,
     private val recompute: TrustRecompute,
 ) {
+    /** Where this migration has got to, for gauges and [BackgroundFailures]-style status. */
+    internal val progress = TrustKeyingProgress()
+
     /** What one run did: services walked by the reconcile, cell KEYS removed by the sweep (one per unmapped key per parent, both tensors), or refused (no 10040 readable). */
     data class Migration(
         val servicesProjected: Int,
@@ -71,24 +88,49 @@ class TrustKeyingMigration internal constructor(
         val refused: Boolean,
     )
 
-    /** Run unless the marker stands. */
+    /** Run from wherever the marker says the last process got to. */
     suspend fun run(onProgress: ((parents: Int, keysRemoved: Int) -> Unit)? = null): Migration {
-        if (reputations.get(MARKER_KEY) != null) return Migration(0, 0, refused = false)
+        val stored = reputations.get(MARKER_KEY)
+        if (stored.has(DONE)) {
+            progress.enter(TrustKeyingProgress.Phase.Done)
+            return Migration(0, 0, refused = false)
+        }
+        progress.resumeFrom(stored.counter(KEYS_REMOVED), stored.counter(PARENTS_TOTAL))
         var any = false
         reputations.visitPubkeys { page ->
             any = page.any(Hex::isHex64)
             !any // one page decides; stop as soon as a real parent is seen
         }
         if (!any) {
-            reputations.put(marker())
+            reputations.put(marker(done = true))
+            progress.enter(TrustKeyingProgress.Phase.Done)
             return Migration(0, 0, refused = false)
         }
         val providers = recompute.providerMap()
-        if (providers.isEmpty()) return Migration(0, 0, refused = true)
-        val reconciled = reconciler.reconcile()
+        if (providers.isEmpty()) {
+            progress.enter(TrustKeyingProgress.Phase.AwaitingProviders)
+            return Migration(0, 0, refused = true)
+        }
+        // RESUMED, not repeated: the reconcile is the corpus-scale half, and a
+        // marker that already carries [RECONCILED] means a previous process
+        // finished it. Re-running it would be correct and ruinous.
+        var servicesProjected = 0
+        if (!stored.has(RECONCILED)) {
+            progress.enter(TrustKeyingProgress.Phase.Reconciling)
+            val reconciled =
+                reconciler.reconcile { inspected, total, _, _ ->
+                    progress.record(inspected.toLong(), total.toLong())
+                    onProgress?.invoke(inspected, progress.keysRemoved.get().toInt())
+                }
+            servicesProjected = reconciled.rebuilt.size
+            reputations.put(marker(reconciled = true, total = progress.total.get()))
+        }
+        progress.enter(TrustKeyingProgress.Phase.Sweeping)
+        progress.resumeFrom(stored.counter(KEYS_REMOVED), stored.counter(PARENTS_TOTAL))
         val removed = sweepUnmappedCells(providers.services, onProgress)
-        reputations.put(marker())
-        return Migration(reconciled.rebuilt.size, removed, refused = false)
+        reputations.put(marker(reconciled = true, done = true, total = progress.total.get()))
+        progress.enter(TrustKeyingProgress.Phase.Done)
+        return Migration(servicesProjected, removed, refused = false)
     }
 
     /**
@@ -104,6 +146,7 @@ class TrustKeyingMigration internal constructor(
     ): Int {
         var parents = 0
         var removed = 0
+        var lastPersistedAt = 0
         reputations.visitDocs { page ->
             val removals = ArrayList<CellRemoval>()
             for (doc in page) {
@@ -118,7 +161,16 @@ class TrustKeyingMigration internal constructor(
                 reputations.removeCells(removals)
                 removed += removals.size
             }
+            progress.record(parents.toLong())
+            progress.keysRemoved.set(removed.toLong())
             onProgress?.invoke(parents, removed)
+            // Counters durable every so often, so a restart reports what the
+            // last process achieved instead of starting the number at zero.
+            // Every page would be a document write per page of a corpus walk.
+            if (parents - lastPersistedAt >= PERSIST_EVERY_PARENTS) {
+                lastPersistedAt = parents
+                reputations.put(marker(reconciled = true, keysRemoved = removed.toLong(), total = progress.total.get()))
+            }
             true
         }
         return removed
@@ -155,8 +207,43 @@ class TrustKeyingMigration internal constructor(
         /** A key no author can have (not hex), like the other markers'. */
         const val MARKER_KEY = "reputation-keyed-by-service"
 
+        /** The whole migration finished. Every marker written before phases existed carries only this. */
         private const val DONE = "done"
 
-        private fun marker(): ReputationDoc = ReputationDoc(MARKER_KEY, mapOf(ServiceKey(DONE) to 1))
+        /** The reconcile — the corpus-scale half — landed; a resumed run starts at the sweep. */
+        private const val RECONCILED = "reconciled"
+
+        /** Cell keys removed so far, carried across restarts so the number never walks backwards. */
+        private const val KEYS_REMOVED = "keys-removed"
+
+        /** Parents in the corpus, learned from the reconcile, so a resumed sweep still has a denominator. */
+        private const val PARENTS_TOTAL = "parents-total"
+
+        /** Parents between durable counter writes — the walk is millions of documents; the marker is one. */
+        private const val PERSIST_EVERY_PARENTS = 25_000
+
+        private fun ReputationDoc?.has(flag: String): Boolean = this?.influenceScores?.containsKey(ServiceKey(flag)) == true
+
+        private fun ReputationDoc?.counter(name: String): Long = (this?.influenceScores?.get(ServiceKey(name)) ?: 0).toLong()
+
+        /**
+         * The marker as cells: flags present or absent, counters as their
+         * values. Like [ProjectionLedger]'s marker this borrows the reputation
+         * tensors as a small key-value store — the ids are non-hex so no card
+         * can collide, and no lens reads them.
+         */
+        private fun marker(
+            reconciled: Boolean = false,
+            done: Boolean = false,
+            keysRemoved: Long = 0,
+            total: Long = 0,
+        ): ReputationDoc {
+            val cells = LinkedHashMap<ServiceKey, Int>()
+            if (reconciled || done) cells[ServiceKey(RECONCILED)] = 1
+            if (done) cells[ServiceKey(DONE)] = 1
+            if (keysRemoved > 0) cells[ServiceKey(KEYS_REMOVED)] = keysRemoved.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+            if (total > 0) cells[ServiceKey(PARENTS_TOTAL)] = total.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+            return ReputationDoc(MARKER_KEY, cells)
+        }
     }
 }

@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.eventstore.trust
 import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.InMemoryReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
+import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
 import com.nosfabrica.vespa.eventstore.engine.doc.serviceCells
 import com.nosfabrica.vespa.eventstore.mapping.toDoc
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
@@ -131,5 +132,68 @@ class TrustKeyingMigrationTest {
             val done = migration.run()
             assertEquals(serviceCells(service to 87), reputations.get(subject)?.influenceScores)
             assertEquals(3, done.keysRemoved)
+        }
+
+    /**
+     * THE SISYPHEAN MARKER. A boolean marker meant a crash anywhere threw the
+     * whole attempt away, and step one is a corpus-scale reconcile: on a store
+     * where the migration takes longer than the process stays up, it can never
+     * finish, however fast each step is. `servicesProjected` is the witness —
+     * it counts what the RECONCILE rebuilt, so a resumed run reporting 0 while
+     * still sweeping is the reconcile being skipped rather than redone.
+     */
+    @Test
+    fun `a marker left mid-migration resumes at the sweep instead of reconciling again`() =
+        runBlocking {
+            seedObserverKeyedStore()
+            // What the previous process left after its reconcile landed: the
+            // cells are keyed by service already, the old observer keys are not
+            // yet swept, and the marker says so.
+            reputations.put(ReputationDoc(subject, serviceCells(service to 87, observer to 87), serviceCells(service to 12.0)))
+            reputations.put(ReputationDoc(subject2, serviceCells(service to 40, observer to 40), serviceCells(service to 12.0)))
+            reputations.put(ReputationDoc(TrustKeyingMigration.MARKER_KEY, serviceCells("reconciled" to 1)))
+
+            val done = migration.run()
+            assertFalse(done.refused)
+            assertEquals(0, done.servicesProjected, "the reconcile was skipped — the marker said it had landed")
+            assertEquals(2, done.keysRemoved, "the sweep still ran: the observer's stale key is gone from both subjects")
+            assertEquals(serviceCells(service to 87), reputations.get(subject)?.influenceScores)
+            assertEquals(serviceCells(service to 40), reputations.get(subject2)?.influenceScores)
+            assertEquals(TrustKeyingProgress.Phase.Done, migration.progress.phase)
+        }
+
+    /** Every marker written before phases existed carries only `done`, and must still read as complete. */
+    @Test
+    fun `a legacy done-only marker still means finished`() =
+        runBlocking {
+            seedObserverKeyedStore()
+            reputations.put(ReputationDoc(TrustKeyingMigration.MARKER_KEY, serviceCells("done" to 1)))
+            val again = migration.run()
+            assertEquals(TrustKeyingMigration.Migration(0, 0, refused = false), again)
+            assertEquals(serviceCells(observer to 87), reputations.get(subject)?.influenceScores, "nothing swept under a standing marker")
+            assertEquals(TrustKeyingProgress.Phase.Done, migration.progress.phase)
+        }
+
+    /** A finished run leaves the reconcile flag too, so a later restart never redoes it either. */
+    @Test
+    fun `a finished migration records both phases`() =
+        runBlocking {
+            seedObserverKeyedStore()
+            migration.run()
+            val marker = assertNotNull(reputations.get(TrustKeyingMigration.MARKER_KEY)).influenceScores
+            assertTrue(ServiceKey("done") in marker, "finished")
+            assertTrue(ServiceKey("reconciled") in marker, "and the expensive half is recorded on its own")
+        }
+
+    /** The question that started this: the walk reports where it is, not merely whether it broke. */
+    @Test
+    fun `progress reports a phase and a count rather than nothing at all`() =
+        runBlocking {
+            assertEquals(TrustKeyingProgress.Phase.NotStarted, migration.progress.phase)
+            assertEquals("trust-keying notstarted", migration.progress.line())
+            seedObserverKeyedStore()
+            migration.run()
+            assertEquals(TrustKeyingProgress.Phase.Done, migration.progress.phase)
+            assertEquals(2L, migration.progress.keysRemoved.get(), "the sweep's work is counted, not just its completion")
         }
 }

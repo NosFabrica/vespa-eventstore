@@ -30,6 +30,7 @@ import com.nosfabrica.vespa.eventstore.engine.metrics.withActivity
 import com.nosfabrica.vespa.eventstore.search.SearchExpansionLimits
 import com.nosfabrica.vespa.eventstore.trust.MaxRankBackfill
 import com.nosfabrica.vespa.eventstore.trust.TrustKeyingMigration
+import com.nosfabrica.vespa.eventstore.trust.TrustKeyingProgress
 import com.nosfabrica.vespa.eventstore.trust.TrustProjection
 import com.nosfabrica.vespa.eventstore.trust.TrustReconciler
 import com.nosfabrica.vespa.eventstore.trust.WriteGate
@@ -82,6 +83,8 @@ class VespaEventStore internal constructor(
     val trustDescent: Boolean = true,
     /** The one-time re-keying of a store fed under the observer-keyed model — see [awaitTrustKeying]. */
     private val keying: kotlinx.coroutines.Deferred<TrustKeyingMigration.Migration>? = null,
+    /** The keying migration's live view; a store built without one reports nothing rather than lying. */
+    private val keyingProgress: TrustKeyingProgress = TrustKeyingProgress(),
 ) : IEventStore by store {
     /** The engine's feed-health status line (bulk-ingest backpressure), for progress/status output. */
     fun feedStatus(): String = eventIndex.feedStatus()
@@ -124,16 +127,20 @@ class VespaEventStore internal constructor(
     suspend fun awaitTrustKeying(): TrustKeyingMigration.Migration = keying?.await() ?: TrustKeyingMigration.Migration(0, 0, refused = false)
 
     /**
-     * The background workers' failure line — EMPTY while they are healthy, so a
-     * status display can splice it in unconditionally.
+     * WHAT THE BACKGROUND WORK IS DOING, and what has gone wrong with it.
+     * Progress comes first: "is it moving, and when does it end" is the
+     * question actually asked of a migration, and [BackgroundFailures] can
+     * only ever answer "did it break". The failure half stays EMPTY while the
+     * workers are healthy, so a status display can splice this in
+     * unconditionally.
      *
      * The trust drain and the guard refresh retry forever and keep their state
      * safe when they fail, which makes a permanently broken one silent: ranking
      * quietly stops tracking trust writes, or [WriterTopology.SHARED]'s
-     * staleness bound quietly stops holding. This is the only place that says so
-     * — see [BackgroundFailures].
+     * staleness bound quietly stops holding. This is the only place that says
+     * so — see [BackgroundFailures] and [TrustKeyingProgress].
      */
-    fun backgroundStatus(): String = BackgroundFailures.statusLine()
+    fun backgroundStatus(): String = listOf(keyingProgress.line(), BackgroundFailures.statusLine()).filter { it.isNotBlank() }.joinToString("; ")
 
     /**
      * Repair the trust view: drain queued projection work a crashed process left
@@ -362,11 +369,25 @@ class VespaEventStore internal constructor(
             // Once, for a store written under the observer-keyed model: every
             // named service walked into cells, the old cells swept, a marker
             // left. A store born on this model reads the marker and returns.
+            // HELD, not discarded: its progress is the answer to "when will
+            // this finish", which nothing could give while the instance lived
+            // and died inside the async block.
+            val keyingMigration = TrustKeyingMigration(reputations, reconciler, trust.recompute)
             val keying =
                 CoroutineScope(SupervisorJob() + Dispatchers.Default).async {
-                    TrustKeyingMigration(reputations, reconciler, trust.recompute).runUntilDone(BACKFILL_RETRY_MILLIS)
+                    keyingMigration.runUntilDone(BACKFILL_RETRY_MILLIS)
                 }
-            return VespaEventStore(store, eventIndex, reconciler, trust, drainScope, backfill, trustDescent, keying)
+            // The gauges the migration was missing. Every layer already
+            // reported; the store called each of them with `onProgress` left
+            // out, so an hours-long walk looked identical to one not started.
+            ledger.gauge("trust.keying.phase") {
+                keyingMigration.progress.phase.ordinal
+                    .toLong()
+            }
+            ledger.gauge("trust.keying.visited") { keyingMigration.progress.visited.get() }
+            ledger.gauge("trust.keying.total") { keyingMigration.progress.total.get() }
+            ledger.gauge("trust.keying.keys.removed") { keyingMigration.progress.keysRemoved.get() }
+            return VespaEventStore(store, eventIndex, reconciler, trust, drainScope, backfill, trustDescent, keying, keyingMigration.progress)
         }
 
         /**
