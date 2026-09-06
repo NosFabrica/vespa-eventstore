@@ -308,6 +308,21 @@ internal class TrustRecompute(
     ) {
         for (service in services) {
             var applied = 0
+            // THE DENOMINATOR FOR THE LONGEST OPERATION IN THE STORE. One
+            // service's walk is O(its cards) — 279,594 for the largest here —
+            // and until now it reported no fraction at all: a page could say
+            // "walking this service" and nothing about how far through.
+            //
+            // Reported from INSIDE the walk rather than through [onCards],
+            // because a hook only reports when a caller remembers to pass one
+            // and [ProjectionLedger.drain] did not. That is the same mistake
+            // this store has now made three times, and the fix is the same
+            // each time: the operation reports itself.
+            //
+            // One count query per service, against a walk that fetches every
+            // card it names.
+            val total = runCatching { inner.count(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service))) }.getOrDefault(0)
+            TrustProgress.begin(WALK, "walking ${service.take(12)}'s cards into cells", total.toLong())
             inner.visitIds(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service)), withDTag = false) { page ->
                 page.map { it.id }.chunked(PROJECT_PAGE).forEach { ids ->
                     gate.holding {
@@ -317,9 +332,11 @@ internal class TrustRecompute(
                         applied += docs.size
                     }
                 }
+                TrustProgress.advance(WALK, applied.toLong(), total.toLong())
                 onCards?.invoke(applied)
                 true
             }
+            TrustProgress.finish(WALK)
         }
     }
 
@@ -380,6 +397,9 @@ internal class TrustRecompute(
          * Lower is fairer and costs only the mutex round trip (microseconds
          * against seconds of work); higher approaches the old behaviour.
          */
+        /** Registry key for the per-service card walk — the store's longest single operation. */
+        const val WALK = "trust-service-walk"
+
         val GATE_SLICE: Int = System.getenv("VESPA_TRUST_GATE_SLICE")?.toIntOrNull()?.coerceAtLeast(1) ?: 500
 
         /**

@@ -30,6 +30,7 @@ import kotlinx.coroutines.runBlocking
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
@@ -101,4 +102,35 @@ class TrustProgressReportedTest {
     fun `an idle store reports no steps`() {
         assertTrue(TrustProgress.snapshot().none { !it.finished }, "no repair, no rows")
     }
+
+    /**
+     * THE LONGEST OPERATION MUST CARRY A FRACTION. One service's walk is
+     * O(its cards) — 279,594 for the largest on staging — and it reported no
+     * denominator at all: a page could name what it was walking and say
+     * nothing about how far through, which is the question actually being
+     * asked. `projectServices` has always taken an `onCards`; the drain never
+     * passed one, so the walk reports itself now instead.
+     */
+    @Test
+    fun `a service walk reports cards done against that service's card count`() =
+        runBlocking {
+            index.put(list10040().toDoc())
+            val subjects = (1..25).map { "d$it".padStart(64, '0') }
+            subjects.forEach { index.put(card(it).toDoc()) }
+
+            var sawFraction = false
+            projection.recompute.projectServices(
+                listOf(service),
+                gate =
+                    WriteGate { body ->
+                        body()
+                        val step = TrustProgress.snapshot().firstOrNull { it.op == TrustRecompute.WALK }
+                        if (step != null && step.total >= subjects.size.toLong()) sawFraction = true
+                    },
+            )
+            assertTrue(sawFraction, "the walk must report a denominator taken from the service's own card count")
+            val done = TrustProgress.snapshot().firstOrNull { it.op == TrustRecompute.WALK }
+            assertTrue(done != null && done.finished, "and finish")
+            assertEquals(subjects.size.toLong(), done!!.done, "counting the cards it actually applied")
+        }
 }
