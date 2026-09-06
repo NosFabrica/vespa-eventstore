@@ -25,6 +25,7 @@ import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.InMemoryReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
+import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
 import com.nosfabrica.vespa.eventstore.engine.doc.serviceCells
@@ -172,6 +173,74 @@ class ProjectionLedgerTest {
             // failure that has cleared must be retried, not written off.
             assertFailsWith<ProjectionLedger.DrainIncomplete> { projection.backlog.drain { it() } }
             assertTrue(index.refusals in (afterFirst + 1)..(afterFirst * 2 + 2), "the next call retries it exactly once more")
+        }
+
+    /**
+     * An index whose visit delivers ONE id per page — what the document-API
+     * path actually does when the selection is a single author: a page is one
+     * bucket's matches, and a bucket rarely holds two of one service's cards.
+     */
+    private class OneIdPages(
+        private val inner: InMemoryEventIndex,
+    ) : EventIndex by inner {
+        var searches = 0
+
+        override suspend fun visitIds(
+            query: EventQuery,
+            withDTag: Boolean,
+            onPage: suspend (List<DocRef>) -> Boolean,
+        ) {
+            inner.visitIds(query, withDTag) { page ->
+                var carryOn = true
+                for (ref in page) {
+                    carryOn = onPage(listOf(ref))
+                    if (!carryOn) break
+                }
+                carryOn
+            }
+        }
+
+        override suspend fun search(query: EventQuery): List<EventDoc> {
+            if (query.ids != null) searches++
+            return inner.search(query)
+        }
+    }
+
+    /**
+     * THE WALK MUST BATCH ACROSS PAGES, not within one. Chunking inside a page
+     * can only split what already arrived; it cannot gather. Measured on
+     * staging: 29,300 by-id fetches and 29,300 cell writes for 29,300 cards,
+     * 14 cards/s — against 105/s for the same walk when the cells were already
+     * right and the writes were skipped.
+     */
+    @Test
+    fun `the walk batches one-id pages into full by-id fetches`() =
+        runBlocking {
+            val inner = InMemoryEventIndex()
+            val index = OneIdPages(inner)
+            val reputations = InMemoryReputationIndex()
+            val projection = TrustProjection(index, reputations)
+            projection.backlog.drainInBackground { }
+
+            val subjects = (1..600).map { it.toString(16).padStart(64, '0') }
+            subjects.forEach { subj ->
+                projection.put(ContactCardEvent(id(), service, next(), arrayOf(arrayOf("d", subj), arrayOf("rank", "42")), "", "").toDoc())
+            }
+            projection.put(list10040().toDoc())
+            index.searches = 0
+
+            projection.backlog.drain { it() }
+
+            // 600 cards at a 250-page: 3 fetches, not 600.
+            val ceiling = (subjects.size + TrustRecompute.PROJECT_PAGE - 1) / TrustRecompute.PROJECT_PAGE
+            assertTrue(
+                index.searches <= ceiling + 1,
+                "expected about $ceiling by-id fetches for ${subjects.size} cards, made ${index.searches}",
+            )
+            // And the batching must not lose the remainder.
+            subjects.forEach { subj ->
+                assertEquals(42, assertNotNull(reputations.get(subj), "no cell for $subj").influenceScores[ServiceKey(service)], "cell for $subj")
+            }
         }
 
     private class Deferred {

@@ -323,8 +323,28 @@ internal class TrustRecompute(
             // card it names.
             val total = runCatching { inner.count(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service))) }.getOrDefault(0)
             TrustProgress.begin(WALK, "walking ${service.take(12)}'s cards into cells", total.toLong())
-            inner.visitIds(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service)), withDTag = false) { page ->
-                page.map { it.id }.chunked(PROJECT_PAGE).forEach { ids ->
+            // BUFFERED ACROSS PAGES, not chunked within one. A page is whatever
+            // the visit happened to deliver, and on the document-API path that
+            // is ONE BUCKET's matches — with a selection as narrow as a single
+            // author, routinely a single card. Chunking inside the page can
+            // only split what already arrived; it cannot gather. So the walk
+            // was taking the gate, issuing a by-id fetch and writing a cell
+            // ONCE PER CARD: measured at 29,300 `proj.write` calls for 29,300
+            // cards, 28ms each, and a `max_rank` read on top of every one.
+            // 14 cards/s against the 105/s the same walk reaches when the
+            // cells are already right and the writes are skipped.
+            //
+            // Buffering to PROJECT_PAGE turns 250 round trips into one. It
+            // changes nothing about WHICH cells are written: a cell is keyed by
+            // (subject, service) and the newest card at an address wins, so the
+            // batch a card lands in is not observable. It also holds the gate
+            // LESS, not more — one hold per 250 cards instead of 250 holds.
+            val pending = ArrayList<String>(PROJECT_PAGE)
+
+            suspend fun flush(all: Boolean) {
+                while (pending.size >= PROJECT_PAGE || (all && pending.isNotEmpty())) {
+                    val ids = pending.take(PROJECT_PAGE)
+                    pending.subList(0, ids.size).clear()
                     gate.holding {
                         IngestStats.annotateHold("project service ${service.take(8)}: ${ids.size} card(s)")
                         // NOT `complete`, and the paragraph above says why: a
@@ -348,10 +368,21 @@ internal class TrustRecompute(
                         applied += docs.size
                     }
                 }
+            }
+
+            inner.visitIds(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service)), withDTag = false) { page ->
+                pending += page.map { it.id }
+                flush(all = false)
                 TrustProgress.advance(WALK, applied.toLong(), total.toLong())
                 onCards?.invoke(applied)
                 true
             }
+            // The remainder: a service whose card count is not a multiple of
+            // the page would otherwise leave its last cards unapplied, and the
+            // round would retire the service as though they had landed.
+            flush(all = true)
+            TrustProgress.advance(WALK, applied.toLong(), total.toLong())
+            onCards?.invoke(applied)
             TrustProgress.finish(WALK)
         }
     }
