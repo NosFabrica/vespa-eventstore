@@ -921,7 +921,7 @@ are cold-start and prove shape rather than performance:
   Query       Search   3 calls   12 docs  p50 139.26 ms  p99 172.03 ms
   Count       Count    2 calls    2 docs  p50  23.55 ms  p99 139.26 ms
 === outcomes ===  offered 40, admitted 40
-=== gauges ===   {lock.held=0, trust.pending.subjects=0, trust.pending.services=0, feed.inflight=0}
+=== gauges ===   {lock.held=0, trust.queued.subjects=0, trust.queued.services=0, feed.inflight=0}
 ```
 
 Four things this settles that no unit test could:
