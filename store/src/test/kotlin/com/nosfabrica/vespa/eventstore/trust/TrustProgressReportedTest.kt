@@ -133,4 +133,22 @@ class TrustProgressReportedTest {
             assertTrue(done != null && done.finished, "and finish")
             assertEquals(subjects.size.toLong(), done!!.done, "counting the cards it actually applied")
         }
+
+    /**
+     * A STEP THAT NEVER ADVANCES MUST READ AS STALLED. `elapsedSec` cannot say
+     * it: `updatedMs` only moves on an advance, so a step that begins and never
+     * advances has an elapsed of 0 and a `coerceAtLeast(1)` renders it as a
+     * confident "1s" — forever. A walk blocked on a read looked exactly like
+     * one restarting constantly, and I read it as the latter for an hour.
+     */
+    @Test
+    fun `a step that never advances reports as stalled, not as one second`() {
+        TrustProgress.begin("trust-test", "reading", 100)
+        Thread.sleep(1100)
+        val step = TrustProgress.snapshot().first { it.op == "trust-test" }
+        assertEquals(1L, step.elapsedSec, "elapsed cannot tell a frozen step from a fast one")
+        assertTrue(step.stalledForSec >= 1, "but stalledForSec grows while nothing advances: ${step.stalledForSec}")
+        TrustProgress.advance("trust-test", 10)
+        assertTrue(TrustProgress.snapshot().first { it.op == "trust-test" }.stalledForSec < 1, "and resets when it moves")
+    }
 }

@@ -26,6 +26,7 @@ import com.nosfabrica.vespa.eventstore.engine.DegradedReads
 import com.nosfabrica.vespa.eventstore.engine.DocRef
 import com.nosfabrica.vespa.eventstore.engine.DocsPage
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
+import com.nosfabrica.vespa.eventstore.engine.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.ScoredHit
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
@@ -884,13 +885,17 @@ class VespaEventIndex(
         // the scan for no reason — on {kinds:[0,10002]}, 988 ids/s by cursor
         // against 8 ids/s by scan during a disk-index fusion.
         // (`limit` is already known null — the bounded case returned above.)
-        if (!cursorSuitsThisWalk(query, withDTag)) {
+        // TIMED SEPARATELY, because a walk that never reaches its first page
+        // looks exactly like a walk with nothing to do. On staging a service
+        // walk sat in this read path for twenty minutes without one gate hold
+        // or one write, and nothing named which read it was in.
+        if (!IngestStats.timed("walk.cursor.decide") { cursorSuitsThisWalk(query, withDTag) }) {
             return visitIdsByScan(query, withDTag, onPage)
         }
         var until: Long? = query.until
         while (true) {
             val fetchLimit = idPageSize + TIE_SLACK
-            val hits = idTimeHits(query.copy(until = until, limit = fetchLimit), withDTag)
+            val hits = IngestStats.timed("walk.ids.page") { idTimeHits(query.copy(until = until, limit = fetchLimit), withDTag) }
             if (hits.isEmpty()) return
 
             // Fewer than asked for: the engine ran out, so this range is
@@ -912,7 +917,9 @@ class VespaEventIndex(
                     // one truncates and the walk then steps past the remainder
                     // without ever reporting a loss.
                     hits.filter { it.createdAt > boundary } +
-                        idTimeHits(query.copy(since = boundary, until = boundary, limit = null), withDTag)
+                        // The unbounded [T,T] window: sized by the engine, so
+                        // its cost is the corpus's and not this walk's choice.
+                        IngestStats.timed("walk.ids.tiegroup") { idTimeHits(query.copy(since = boundary, until = boundary, limit = null), withDTag) }
                 }
             if (!onPage(page)) return
             // Strictly past the group just emitted in full.
@@ -988,7 +995,7 @@ class VespaEventIndex(
     private suspend fun countAt(
         query: EventQuery,
         at: Long,
-    ): Int = count(query.copy(since = at, until = at, limit = null))
+    ): Int = IngestStats.timed("walk.cursor.countat") { count(query.copy(since = at, until = at, limit = null)) }
 
     /** One [EventYql.buildIdTime] recall, decoded to [DocRef] and newest-first. */
     private suspend fun idTimeHits(
