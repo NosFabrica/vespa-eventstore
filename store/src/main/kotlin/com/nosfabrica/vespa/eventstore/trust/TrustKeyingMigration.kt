@@ -128,6 +128,7 @@ class TrustKeyingMigration internal constructor(
         var servicesProjected = 0
         if (!stored.has(RECONCILED)) {
             progress.enter(TrustKeyingProgress.Phase.Reconciling)
+            TrustProgress.begin(KEYING, "reconciling before the sweep")
             val reconciled =
                 reconciler.reconcile { inspected, total, _, _ ->
                     progress.record(inspected.toLong(), total.toLong())
@@ -147,11 +148,20 @@ class TrustKeyingMigration internal constructor(
             reputations.put(progressDoc(reconciled = true))
         }
         progress.enter(TrustKeyingProgress.Phase.Sweeping)
+        // BOTH REPORTERS GET THE SAME UNKNOWN. `main` added the step reporter
+        // here reading [PARENTS_TOTAL], which is the reconcile's SERVICE count
+        // (a dozen) standing in for the sweep's PARENT count (millions) — the
+        // denominator this migration never legitimately had. The sweep cannot
+        // learn its total without a second pass over the corpus, so it reports
+        // none and both surfaces say "unknown" rather than one of them printing
+        // "100%, eta 0m0s" over a walk with hours left.
+        TrustProgress.begin(KEYING, "sweeping cells no 10040 names", UNKNOWN_TOTAL)
         progress.resumeFrom(stored.counter(KEYS_REMOVED), UNKNOWN_TOTAL)
         val removed = sweepUnmappedCells(providers.services, onProgress)
         reputations.put(marker())
         reputations.remove(PROGRESS_KEY) // the phases were scaffolding; the marker is the answer
         progress.enter(TrustKeyingProgress.Phase.Done)
+        TrustProgress.finish(KEYING)
         return Migration(servicesProjected, removed, refused = false)
     }
 
@@ -185,6 +195,7 @@ class TrustKeyingMigration internal constructor(
             }
             progress.record(parents.toLong())
             progress.keysRemoved.set(removed.toLong())
+            TrustProgress.advance(KEYING, parents.toLong())
             onProgress?.invoke(parents, removed)
             // Counters durable every so often, so a restart reports what the
             // last process achieved instead of starting the number at zero.
@@ -235,6 +246,9 @@ class TrustKeyingMigration internal constructor(
          * surviving progress document means an attempt that did not finish.
          */
         const val PROGRESS_KEY = "reputation-keying-progress"
+
+        /** Registry key, so every repair reads off ONE list on the page. */
+        const val KEYING = "trust-keying"
 
         private const val DONE = "done"
 

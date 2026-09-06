@@ -136,6 +136,20 @@ internal class SearchRootFields(
 )
 
 /**
+ * The engine served a SHORT answer where a complete one was required.
+ *
+ * Typed, because "the answer was partial" and "the query was wrong" are
+ * different facts and callers act on them differently: a caller with no other
+ * way to read must fail, while one that can walk the same set another way
+ * should take that way. Both were IllegalArgumentException, so neither could
+ * tell them apart, and a walk with a perfectly good fallback died instead of
+ * using it.
+ */
+class PartialAnswer(
+    message: String,
+) : IllegalArgumentException(message)
+
+/**
  * How much of the corpus the engine actually searched. Vespa degrades rather
  * than failing — a query it gives up on returns HTTP 200 with fewer hits and
  * `full: false` — so this is the only thing separating "everything that
@@ -208,14 +222,16 @@ internal class SearchCoverage(
         // the flags actually SET.
         val set = degraded?.mapValues { (it.value as? JsonPrimitive)?.content == "true" }.orEmpty()
         val onlyMatchPhase = set["match-phase"] == true && set.none { (flag, on) -> on && flag != "match-phase" }
-        require(allowMatchPhase && onlyMatchPhase) {
+        if (!(allowMatchPhase && onlyMatchPhase)) {
             // `full` rides along because a refused response that calls itself
             // full is the confusing one, and naming the contradiction beats
             // making the next reader rediscover the two denominators.
-            "vespa searched only $coverage% of the corpus over $documents document(s) (full: $full, degraded: ${degraded ?: "unspecified"}); " +
-                "the response is a PARTIAL answer, not a small one, so it is refused rather than returned. " +
-                "match-phase means the ENGINE cut the match set and will not clear itself; non-ideal-state is a cluster " +
-                "still settling and will. DegradedReads carries which, per profile and query shape."
+            throw PartialAnswer(
+                "vespa searched only $coverage% of the corpus over $documents document(s) (full: $full, degraded: ${degraded ?: "unspecified"}); " +
+                    "the response is a PARTIAL answer, not a small one, so it is refused rather than returned. " +
+                    "match-phase means the ENGINE cut the match set and will not clear itself; non-ideal-state is a cluster " +
+                    "still settling and will. DegradedReads carries which, per profile and query shape.",
+            )
         }
     }
 }

@@ -31,6 +31,7 @@ import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.metrics.CostLedger
 import com.nosfabrica.vespa.eventstore.engine.metrics.DegradedReads
+import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.metrics.currentActivity
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventSelection
@@ -876,7 +877,12 @@ class VespaEventIndex(
             // and two arbitrary samples of overlapping filters overlap less
             // than two newest-N pages do, so the count came back ABOVE what
             // the REQ it describes would serve.
-            if (query.isRankedShape() || !cursorSuitsThisWalk(unlimited, withDTag)) return super.visitIds(query, withDTag, onPage)
+            // The probe is timed here for the reason the unlimited path times
+            // it below: a walk stuck in the decision looks exactly like a walk
+            // with nothing to do, and a COUNT's id walk arrives on THIS branch.
+            if (query.isRankedShape() || !IngestStats.timed("walk.cursor.decide") { cursorSuitsThisWalk(unlimited, withDTag) }) {
+                return super.visitIds(query, withDTag, onPage)
+            }
             var budget: Int = query.limit
             return visitIdsByCursor(unlimited, withDTag) { page ->
                 val take = page.take(budget)
@@ -894,7 +900,11 @@ class VespaEventIndex(
         // the scan for no reason — on {kinds:[0,10002]}, 988 ids/s by cursor
         // against 8 ids/s by scan during a disk-index fusion.
         // (`limit` is already known null — the bounded case returned above.)
-        if (!cursorSuitsThisWalk(query, withDTag)) {
+        // TIMED SEPARATELY, because a walk that never reaches its first page
+        // looks exactly like a walk with nothing to do. On staging a service
+        // walk sat in this read path for twenty minutes without one gate hold
+        // or one write, and nothing named which read it was in.
+        if (!IngestStats.timed("walk.cursor.decide") { cursorSuitsThisWalk(query, withDTag) }) {
             return visitIdsByScan(query, withDTag, onPage)
         }
         visitIdsByCursor(query, withDTag, onPage)
@@ -917,7 +927,7 @@ class VespaEventIndex(
         var until: Long? = query.until
         while (true) {
             val fetchLimit = idPageSize + TIE_SLACK
-            val hits = idTimeHits(query.copy(until = until, limit = fetchLimit), withDTag)
+            val hits = IngestStats.timed("walk.ids.page") { idTimeHits(query.copy(until = until, limit = fetchLimit), withDTag) }
             if (hits.isEmpty()) return
 
             // Fewer than asked for: the engine ran out, so this range is
@@ -939,7 +949,9 @@ class VespaEventIndex(
                     // one truncates and the walk then steps past the remainder
                     // without ever reporting a loss.
                     hits.filter { it.createdAt > boundary } +
-                        idTimeHits(query.copy(since = boundary, until = boundary, limit = null), withDTag)
+                        // The unbounded [T,T] window: sized by the engine, so
+                        // its cost is the corpus's and not this walk's choice.
+                        IngestStats.timed("walk.ids.tiegroup") { idTimeHits(query.copy(since = boundary, until = boundary, limit = null), withDTag) }
                 }
             if (!onPage(page)) return
             // Strictly past the group just emitted in full.
@@ -1000,7 +1012,26 @@ class VespaEventIndex(
         query: EventQuery,
         withDTag: Boolean,
     ): Boolean {
-        val probe = idTimeHits(query.copy(limit = idPageSize), withDTag)
+        // THE ENGINE CUTTING THE PROBE IS AN ANSWER, NOT AN ERROR. The cursor
+        // reads through search with `order by created_at desc`, and attribute
+        // sorting trips proton's match-phase limiter on a large match set: the
+        // response comes back partial, the coverage guard refuses it, and the
+        // walk dies — with the document-API scan sitting right there, which has
+        // no match phase because it is not a search at all.
+        //
+        // Measured on staging: `kinds=[30382], authors=[service]` over a
+        // 148,130-card service came back at 54% coverage with
+        // `match-phase: true`, and every service walk large enough to matter
+        // failed this way. Small services walked fine, which is why the
+        // projection filled in for 236 of 342 services and then stopped —
+        // exactly the ones an observer's lens most often names were the ones
+        // too big to read this way.
+        val probe =
+            try {
+                idTimeHits(query.copy(limit = idPageSize), withDTag)
+            } catch (cut: PartialAnswer) {
+                return false
+            }
         // Short of a page: the whole match set is tiny, so the cursor's single
         // round trip beats spinning up a visit.
         if (probe.size < idPageSize) return true
@@ -1015,7 +1046,7 @@ class VespaEventIndex(
     private suspend fun countAt(
         query: EventQuery,
         at: Long,
-    ): Int = count(query.copy(since = at, until = at, limit = null))
+    ): Int = IngestStats.timed("walk.cursor.countat") { count(query.copy(since = at, until = at, limit = null)) }
 
     /** One [EventYql.buildIdTime] recall, decoded to [DocRef] and newest-first. */
     private suspend fun idTimeHits(

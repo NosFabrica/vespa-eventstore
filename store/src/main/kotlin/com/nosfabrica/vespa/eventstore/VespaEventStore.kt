@@ -165,6 +165,21 @@ class VespaEventStore internal constructor(
     suspend fun reconcileTrust(onProgress: ((inspected: Int, total: Int, rebuilt: Int, derivedInService: Int) -> Unit)? = null): TrustReconciler.Reconciliation = withActivity(Activity.Reconcile) { reconciler.reconcile(onProgress = onProgress) }
 
     /**
+     * The trust view's health for a status page: coverage, and what is being
+     * repaired. Reads the registries rather than measuring, so it is cheap
+     * enough to poll — [TrustCoverage] is whatever the last reconcile saw.
+     */
+    fun trustHealth(): TrustHealth =
+        TrustHealth(
+            servicesNamed = TrustCoverage.servicesNamed,
+            servicesProjected = TrustCoverage.servicesProjected,
+            lensesTotal = TrustCoverage.lensesTotal,
+            lensesResolvable = TrustCoverage.lensesResolvable,
+            measuredAtMs = TrustCoverage.checkedAtMs,
+            steps = TrustProgress.snapshot().map { TrustHealth.Step(it.op, it.phase, it.done, it.total, it.elapsedSec, it.finished) },
+        )
+
+    /**
      * WHY ONE PUBKEY SEES WHAT IT SEES: profile, lens, the service that lens
      * resolves to, and whether this subject's parent carries that service's
      * cell. The question "an observer cannot find their own profile" reduces to

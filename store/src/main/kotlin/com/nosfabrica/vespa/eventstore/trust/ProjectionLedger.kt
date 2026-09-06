@@ -266,8 +266,17 @@ internal class ProjectionLedger(
             // READ, not taken: the unretired remainder stays pending while it
             // is derived — see the class KDoc.
             val snapshot = pendingNow()
-            if (snapshot.isEmpty()) return
+            if (snapshot.isEmpty()) {
+                TrustProgress.finish(DRAIN)
+                return
+            }
             val work = snapshot.toWork()
+            // THE LONG PHASE, AND IT REPORTED NOTHING. A reconcile begins by
+            // draining, and on an inherited ledger that is most of its runtime.
+            // The registry only heard from the phases after it, so a page
+            // watching a reconcile drew an empty panel for as long as the drain
+            // took — which is exactly when someone is watching.
+            TrustProgress.begin(DRAIN, "re-deriving queued subjects", work.toRederive.size.toLong())
             if (work.toRewalk.isNotEmpty() || crashLeftovers.get()) recompute.invalidateProviders()
             // Sliced HERE rather than inside recomputeBatchGated, because the
             // ledger has to see each slice land: a slice is the unit that gets
@@ -277,12 +286,20 @@ internal class ProjectionLedger(
                 if (todo.isEmpty()) return@forEach
                 recompute.recomputeBatchGated(todo, removeEmpties = true, gate = gate)
                 retire(StampedWork(todo.associateWith { snapshot.toRederive.getValue(it) }, emptyMap()), gate)
+                // Retired, not attempted: the fraction has to mean work that
+                // landed, or it runs ahead of the writes it is reporting.
+                TrustProgress.advance(DRAIN, (work.toRederive.size - pendingNow().toRederive.size).toLong(), work.toRederive.size.toLong())
             }
             snapshot.toRewalk.keys.forEach { service ->
                 if (!pendingNow().toRewalk.containsKey(service)) return@forEach
                 // A service's cards become cells page by page — no derive: the
                 // cell is a function of the newest card at its address alone.
                 // One service per call so each retires on its own ack.
+                //
+                // Named on the page: one service's walk is the single longest
+                // thing this store does, and "walking 7d7ffd72's cards" is a
+                // different answer from "still draining".
+                TrustProgress.advance(DRAIN, 0, 0, phase = "walking service ${service.take(12)}'s cards into cells")
                 recompute.projectServices(listOf(service), gate = gate)
                 retire(StampedWork(emptyMap(), mapOf(service to snapshot.toRewalk.getValue(service))), gate)
             }
@@ -416,6 +433,9 @@ internal class ProjectionLedger(
          * real subject's parent doc and never joins ranking.
          */
         const val MARKER_KEY = "projection-dirty"
+
+        /** Registry key — the operator reads this string on the trust page. */
+        const val DRAIN = "trust-drain"
 
         /**
          * Largest write-ahead delta persisted as per-cell adds; bigger takes one

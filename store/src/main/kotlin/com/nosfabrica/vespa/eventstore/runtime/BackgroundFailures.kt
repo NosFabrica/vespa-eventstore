@@ -55,6 +55,12 @@ internal object BackgroundFailures {
     /** The one-time re-keying of a store fed under the observer-keyed model (TrustKeyingMigration). */
     const val TRUST_KEYING = "trust.keying"
 
+    /** Exception chain depth reported — a timeout wrapped three deep says more than the outermost class. */
+    private const val CAUSE_DEPTH = 4
+
+    /** Frames from this package name the walk underneath a timeout; the rest are engine plumbing. */
+    private const val OUR_PACKAGE = "com.nosfabrica"
+
     /** Longest failure message kept — enough to name the cause, not to hold a stack trace. */
     private const val MAX_MESSAGE = 200
 
@@ -63,6 +69,14 @@ internal object BackgroundFailures {
         val consecutive = AtomicLong()
 
         @Volatile var lastMessage: String = ""
+
+        /** Where in OUR code it threw, which the message never says. */
+        @Volatile var lastWhere: String = ""
+
+        /** One stack per task: a worker retrying forever must not flood the log. */
+        val printedStack =
+            java.util.concurrent.atomic
+                .AtomicBoolean(false)
     }
 
     private val tallies = ConcurrentHashMap<String, Tally>()
@@ -76,6 +90,31 @@ internal object BackgroundFailures {
         tally.count.incrementAndGet()
         tally.consecutive.incrementAndGet()
         tally.lastMessage = (error.message ?: error.toString()).take(MAX_MESSAGE)
+        tally.lastWhere = whereOf(error)
+        // THE FIRST ONE GETS THE STACK, ON STDERR. A message alone is not a
+        // diagnosis: this deployment spent an afternoon on `last: timeout`,
+        // which named neither the query that timed out nor the walk it was in,
+        // and every caller of this recorded the message and dropped the
+        // exception. Once per task, so a worker retrying forever does not
+        // flood the log with the same trace.
+        if (tally.printedStack.compareAndSet(false, true)) {
+            System.err.println("background $task: first failure — ${error::class.simpleName}: ${error.message?.take(MAX_MESSAGE)}")
+            error.printStackTrace()
+        }
+    }
+
+    /**
+     * The first frames that belong to THIS codebase, plus the exception chain.
+     * A timeout's own frames are all engine and HTTP plumbing; what an
+     * operator needs is which of our walks was underneath it.
+     */
+    private fun whereOf(error: Throwable): String {
+        val chain = generateSequence(error) { it.cause }.take(CAUSE_DEPTH).joinToString(" <- ") { it::class.simpleName ?: "?" }
+        val ours =
+            error.stackTrace
+                .firstOrNull { it.className.startsWith(OUR_PACKAGE) }
+                ?.let { "${it.className.substringAfterLast('.')}.${it.methodName}:${it.lineNumber}" }
+        return if (ours == null) chain else "$chain at $ours"
     }
 
     /**
@@ -99,8 +138,9 @@ internal object BackgroundFailures {
                 .sortedByDescending { it.value.count.get() }
                 .map { (task, tally) ->
                     val stuck = tally.consecutive.get()
+                    val where = tally.lastWhere.takeIf { it.isNotBlank() }?.let { " | $it" } ?: ""
                     "$task ${tally.count.get()} fail" +
-                        if (stuck > 0) " ($stuck consecutive, last: ${tally.lastMessage})" else ""
+                        if (stuck > 0) " ($stuck consecutive, last: ${tally.lastMessage}$where)" else ""
                 }
         return if (parts.isEmpty()) "" else "background " + parts.joinToString("; ")
     }
