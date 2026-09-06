@@ -128,6 +128,7 @@ class TrustKeyingMigration internal constructor(
         var servicesProjected = 0
         if (!stored.has(RECONCILED)) {
             progress.enter(TrustKeyingProgress.Phase.Reconciling)
+            TrustProgress.begin(KEYING, "reconciling before the sweep")
             val reconciled =
                 reconciler.reconcile { inspected, total, _, _ ->
                     progress.record(inspected.toLong(), total.toLong())
@@ -137,11 +138,13 @@ class TrustKeyingMigration internal constructor(
             reputations.put(progressDoc(reconciled = true, total = progress.total.get()))
         }
         progress.enter(TrustKeyingProgress.Phase.Sweeping)
+        TrustProgress.begin(KEYING, "sweeping cells no 10040 names", stored.counter(PARENTS_TOTAL))
         progress.resumeFrom(stored.counter(KEYS_REMOVED), stored.counter(PARENTS_TOTAL))
         val removed = sweepUnmappedCells(providers.services, onProgress)
         reputations.put(marker())
         reputations.remove(PROGRESS_KEY) // the phases were scaffolding; the marker is the answer
         progress.enter(TrustKeyingProgress.Phase.Done)
+        TrustProgress.finish(KEYING)
         return Migration(servicesProjected, removed, refused = false)
     }
 
@@ -175,6 +178,7 @@ class TrustKeyingMigration internal constructor(
             }
             progress.record(parents.toLong())
             progress.keysRemoved.set(removed.toLong())
+            TrustProgress.advance(KEYING, parents.toLong())
             onProgress?.invoke(parents, removed)
             // Counters durable every so often, so a restart reports what the
             // last process achieved instead of starting the number at zero.
@@ -225,6 +229,9 @@ class TrustKeyingMigration internal constructor(
          * surviving progress document means an attempt that did not finish.
          */
         const val PROGRESS_KEY = "reputation-keying-progress"
+
+        /** Registry key, so every repair reads off ONE list on the page. */
+        const val KEYING = "trust-keying"
 
         private const val DONE = "done"
 
