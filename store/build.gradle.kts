@@ -22,6 +22,22 @@ kotlin {
 
 tasks.test {
     useJUnitPlatform()
+
+    // ModuleBoundariesTest and PortDecoratorsTest assert the SHAPE of the
+    // source tree — packages, layers, which decorator overrides what — by
+    // reading `*.kt` files rather than classes. Gradle cannot see that: with
+    // only this module's classes as inputs, a violation added in `:engine`
+    // (or a test filed into the wrong package there) leaves this task
+    // UP-TO-DATE and the guard silently unrun. Naming the two trees as inputs
+    // makes them part of the task's fingerprint, so the guards run when the
+    // thing they guard changes. CI is a fresh checkout and always ran them;
+    // this is for the machine where the mistake is actually made.
+    inputs
+        .files(
+            fileTree(rootDir.resolve("engine/src")) { include("**/*.kt") },
+            fileTree(rootDir.resolve("store/src")) { include("**/*.kt") },
+        ).withPropertyName("sourceTreeUnderGuard")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
 }
 
 mavenPublishing {

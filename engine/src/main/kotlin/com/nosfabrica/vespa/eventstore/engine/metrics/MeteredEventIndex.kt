@@ -208,6 +208,16 @@ class MeteredEventIndex(
 
     override suspend fun count(query: EventQuery): Int = meterQuery(PortCall.Count, query, { inner.count(query) }, { 1L })
 
+    /**
+     * A GROUPING, and forwarded — never left to the port's `= null` default,
+     * which would tell the caller this engine cannot answer and send it down
+     * the paged walk the grouping exists to replace.
+     */
+    override suspend fun distinctTagIndexValues(
+        query: EventQuery,
+        tagName: String,
+    ): Set<String>? = meterResult(PortCall.Group, { inner.distinctTagIndexValues(query, tagName) }, { (it?.size ?: 0).toLong() })
+
     override suspend fun countByAuthor(query: EventQuery): Map<String, Int> = meterResult(PortCall.Group, { inner.countByAuthor(query) }, { it.size.toLong() })
 
     override suspend fun scanAuthors(query: EventQuery): Set<String> = meterResult(PortCall.Group, { inner.scanAuthors(query) }, { it.size.toLong() })

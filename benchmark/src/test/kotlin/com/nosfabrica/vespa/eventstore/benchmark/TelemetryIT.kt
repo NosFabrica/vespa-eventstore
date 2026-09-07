@@ -21,8 +21,8 @@
 package com.nosfabrica.vespa.eventstore.benchmark
 
 import com.nosfabrica.vespa.eventstore.VespaEventStore
-import com.nosfabrica.vespa.eventstore.engine.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.metrics.Activity
+import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import kotlinx.coroutines.delay
@@ -169,8 +169,15 @@ class TelemetryIT {
 
                         // Gauges: pulled live from their owners.
                         assertTrue("feed.inflight" in snap.gauges, "the feed gauge was not registered")
-                        assertTrue("trust.queued.subjects" in snap.gauges, "the trust drain-queue gauge was not registered")
-                        assertTrue("trust.coverage.services.named" in snap.gauges, "the trust coverage gauge was not registered")
+                        // NAMED, not merely present: an operator dashboard keys
+                        // on these exact strings, and the rename that reached
+                        // only the code (`trust.pending.*` -> `trust.queued.*`)
+                        // broke both the dashboard and this gate. The failure
+                        // message prints what IS registered, so the next rename
+                        // is one line to diagnose rather than one to rediscover.
+                        assertTrue("trust.queued.subjects" in snap.gauges, "the trust drain-queue gauge was not registered: ${snap.gauges.keys.sorted()}")
+                        assertTrue("trust.queued.services" in snap.gauges, "the service drain-queue gauge was not registered: ${snap.gauges.keys.sorted()}")
+                        assertTrue("trust.coverage.services.named" in snap.gauges, "the trust coverage gauge was not registered: ${snap.gauges.keys.sorted()}")
 
                         // The write path's stage split still works alongside all
                         // of this, and its holds balanced out.

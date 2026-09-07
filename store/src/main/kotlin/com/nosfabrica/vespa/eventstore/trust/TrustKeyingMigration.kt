@@ -20,11 +20,11 @@
  */
 package com.nosfabrica.vespa.eventstore.trust
 
-import com.nosfabrica.vespa.eventstore.BackgroundFailures
 import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.CellRemoval
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
+import com.nosfabrica.vespa.eventstore.runtime.BackgroundFailures
 import com.vitorpamplona.quartz.utils.Hex
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
@@ -106,7 +106,7 @@ class TrustKeyingMigration internal constructor(
         // of this migration is `does the document exist`, and a partial marker
         // answering 200 would tell all of them it was done.
         val stored = reputations.get(PROGRESS_KEY)
-        progress.resumeFrom(stored.counter(KEYS_REMOVED), stored.counter(PARENTS_TOTAL))
+        progress.resumeFrom(stored.counter(KEYS_REMOVED), UNKNOWN_TOTAL)
         var any = false
         reputations.visitPubkeys { page ->
             any = page.any(Hex::isHex64)
@@ -135,11 +135,28 @@ class TrustKeyingMigration internal constructor(
                     onProgress?.invoke(inspected, progress.keysRemoved.get().toInt())
                 }
             servicesProjected = reconciled.rebuilt.size
-            reputations.put(progressDoc(reconciled = true, total = progress.total.get()))
+            // NO TOTAL PERSISTED HERE. The number in `progress.total` right now
+            // is the RECONCILE's denominator — named services, a dozen or so —
+            // and this cell is read back as [PARENTS_TOTAL], the sweep's
+            // denominator, which is every parent document in the corpus. A
+            // resumed process fed the first as the second and reported
+            // "sweeping: 2400000/12 (100%), eta 0m0s". The sweep learns no
+            // total of its own (it is a walk, and counting the corpus first
+            // would cost a second pass), so it reports none: `line()` prints
+            // "total unknown", which is the honest answer and the one its own
+            // KDoc asks for.
+            reputations.put(progressDoc(reconciled = true))
         }
         progress.enter(TrustKeyingProgress.Phase.Sweeping)
-        TrustProgress.begin(KEYING, "sweeping cells no 10040 names", stored.counter(PARENTS_TOTAL))
-        progress.resumeFrom(stored.counter(KEYS_REMOVED), stored.counter(PARENTS_TOTAL))
+        // BOTH REPORTERS GET THE SAME UNKNOWN. `main` added the step reporter
+        // here reading [PARENTS_TOTAL], which is the reconcile's SERVICE count
+        // (a dozen) standing in for the sweep's PARENT count (millions) — the
+        // denominator this migration never legitimately had. The sweep cannot
+        // learn its total without a second pass over the corpus, so it reports
+        // none and both surfaces say "unknown" rather than one of them printing
+        // "100%, eta 0m0s" over a walk with hours left.
+        TrustProgress.begin(KEYING, "sweeping cells no 10040 names", UNKNOWN_TOTAL)
+        progress.resumeFrom(stored.counter(KEYS_REMOVED), UNKNOWN_TOTAL)
         val removed = sweepUnmappedCells(providers.services, onProgress)
         reputations.put(marker())
         reputations.remove(PROGRESS_KEY) // the phases were scaffolding; the marker is the answer
@@ -185,7 +202,7 @@ class TrustKeyingMigration internal constructor(
             // Every page would be a document write per page of a corpus walk.
             if (parents - lastPersistedAt >= PERSIST_EVERY_PARENTS) {
                 lastPersistedAt = parents
-                reputations.put(progressDoc(reconciled = true, keysRemoved = removed.toLong(), total = progress.total.get()))
+                reputations.put(progressDoc(reconciled = true, keysRemoved = removed.toLong()))
             }
             true
         }
@@ -241,8 +258,17 @@ class TrustKeyingMigration internal constructor(
         /** Cell keys removed so far, carried across restarts so the number never walks backwards. */
         private const val KEYS_REMOVED = "keys-removed"
 
-        /** Parents in the corpus, learned from the reconcile, so a resumed sweep still has a denominator. */
+        /**
+         * A denominator this migration never legitimately had. The cell is
+         * still named because a store mid-migration under the previous version
+         * carries one — holding the RECONCILE's service count, which the sweep
+         * then reported its parent walk against. Neither written nor read now;
+         * the sweep reports "total unknown" instead of a number that is wrong.
+         */
         private const val PARENTS_TOTAL = "parents-total"
+
+        /** What [TrustKeyingProgress.resumeFrom] is handed for a walk whose size is not knowable up front. */
+        private const val UNKNOWN_TOTAL = 0L
 
         /** Parents between durable counter writes — the walk is millions of documents; the marker is one. */
         private const val PERSIST_EVERY_PARENTS = 25_000
@@ -262,12 +288,10 @@ class TrustKeyingMigration internal constructor(
         private fun progressDoc(
             reconciled: Boolean = false,
             keysRemoved: Long = 0,
-            total: Long = 0,
         ): ReputationDoc {
             val cells = LinkedHashMap<ServiceKey, Int>()
             if (reconciled) cells[ServiceKey(RECONCILED)] = 1
             if (keysRemoved > 0) cells[ServiceKey(KEYS_REMOVED)] = keysRemoved.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
-            if (total > 0) cells[ServiceKey(PARENTS_TOTAL)] = total.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
             return ReputationDoc(PROGRESS_KEY, cells)
         }
     }

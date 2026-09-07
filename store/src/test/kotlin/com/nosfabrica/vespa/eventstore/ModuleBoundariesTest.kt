@@ -1,0 +1,231 @@
+/*
+ * Copyright (c) 2026 NosFabrica
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of
+ * this software and associated documentation files (the "Software"), to deal in
+ * the Software without restriction, including without limitation the rights to use,
+ * copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the
+ * Software, and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+ * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+ * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+ * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+ * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+package com.nosfabrica.vespa.eventstore
+
+import java.io.File
+import kotlin.test.Test
+import kotlin.test.assertTrue
+import kotlin.test.fail
+
+/**
+ * THE LAYERING, ASSERTED — the one rule set nothing else can hold.
+ *
+ * The modules and their packages are a strict order: a leaf never reaches up,
+ * `:engine` never learns about `:store`, and no internal package imports the
+ * facade its callers hold. That order is what makes the tree navigable — you
+ * can read `engine/text` without reading anything else, and `mapping` without
+ * reading the store — and it held here purely by discipline, which is to say
+ * it held until someone added an import in a hurry.
+ *
+ * This reads the SOURCE, not the classpath: package structure is the thing
+ * being asserted, and by the time it is bytecode the packages are just names.
+ * The layer table below is therefore the specification, and a package missing
+ * from it fails the last test rather than being silently unconstrained — a new
+ * package is a layering decision, and this is where it gets made.
+ */
+class ModuleBoundariesTest {
+    /**
+     * Where each `:engine` package sits. Lower may not import higher, so:
+     * shared leaves (text/async/app), then the document shapes, then the query
+     * compiler they feed, then the PORT that composes them, then the decorators
+     * and implementations of that port.
+     */
+    private val engineLayer =
+        mapOf(
+            "engine.text" to 0,
+            "engine.async" to 0,
+            "engine.app" to 0,
+            "engine.doc" to 1,
+            "engine.query" to 2,
+            "engine" to 3,
+            "engine.metrics" to 4,
+            "engine.memory" to 5,
+            "engine.client" to 5,
+        )
+
+    /** `:store` packages that must stand alone: no import of any other `:store` package. */
+    private val storeLeaves = setOf("runtime", "mapping")
+
+    /**
+     * The two COMPOSED types — the store and the front door that assembles it.
+     * Nothing the facade is built from may import one, because that is the
+     * cycle: `ingest` reaching back up for the class that owns it.
+     *
+     * The root package also holds types a consumer merely HOLDS —
+     * `RejectedException`, `EngineReads`, `TrustHealth` — and those are not
+     * cycles. `ingest/EventAdmission` throws `RejectedException` because that
+     * is the store's public vocabulary for a rejection, and a value travelling
+     * up is the opposite of a package reaching up. Naming the two composed
+     * types rather than the whole package is deliberate; CLAUDE.md says the
+     * same thing in prose.
+     */
+    private val facades = setOf("NostrSemanticsStore", "VespaEventStore")
+
+    /**
+     * NO EXEMPTIONS — and that is the assertion, not an omission. The one that
+     * used to be here was the bulk mixed path building a whole
+     * `NostrSemanticsStore` over its replay snapshot; it now shares
+     * `EventAdmission` with the per-event path instead, so the cycle is gone
+     * rather than declared. Anything added here should come with the same
+     * plan for removing it.
+     */
+    private val facadeExemptions = emptySet<String>()
+
+    /**
+     * The module graph makes this unbuildable today — `:engine` has no
+     * dependency on `:store`, so such an import would not compile. That is
+     * exactly why the rule is written down: the day someone adds the
+     * dependency to `engine/build.gradle.kts` for one convenient type, the
+     * compiler goes quiet and this does not.
+     */
+    @Test
+    fun `the engine never imports the store`() {
+        val leaks =
+            sources("engine").filter { (_, file) ->
+                imports(file).any { it.startsWith(OWN) && !it.removePrefix("$OWN.").startsWith("engine.") }
+            }
+        assertTrue(leaks.isEmpty(), "the engine layer must not know the store exists: ${leaks.map { it.first }}")
+    }
+
+    @Test
+    fun `engine packages import only their own layer or below`() {
+        for ((name, file) in sources("engine")) {
+            val from = engineLayer[packageOf(file).removePrefix("$OWN.")] ?: continue
+            for (imported in enginePackagesIn(file)) {
+                val to = engineLayer[imported] ?: fail("$name imports $imported, which the layer table does not name")
+                assertTrue(to <= from, "$name (layer $from) imports $imported (layer $to) — that is upward")
+            }
+        }
+    }
+
+    @Test
+    fun `the store's leaf packages import no other store package`() {
+        for ((name, file) in sources("store")) {
+            val own = packageOf(file).removePrefix("$OWN.")
+            if (own !in storeLeaves) continue
+            val reached = storePackagesIn(file).filter { it != own }
+            assertTrue(reached.isEmpty(), "$name is in leaf package '$own' but imports $reached")
+        }
+    }
+
+    @Test
+    fun `nothing below the facade imports the facade`() {
+        for ((name, file) in sources("store")) {
+            if (packageOf(file) == OWN || name in facadeExemptions) continue
+            val held = imports(file).map { it.substringAfterLast('.') }.filter { it in facades }
+            assertTrue(held.isEmpty(), "$name imports the facade ($held); the facade is composed OF these packages")
+        }
+    }
+
+    /**
+     * A TEST NAMED AFTER A CLASS LIVES WITH THAT CLASS.
+     *
+     * The packages are the map, and a test filed away from its subject makes
+     * the map lie in the direction that matters: open `query/` and it looks
+     * untested. This is how `:engine`'s suite drifted flat in the first place,
+     * and how a `PartialAnswerTest` for `client/PartialAnswer` landed in the
+     * root package afterwards.
+     *
+     * NAME-BASED on purpose, and it skips what it cannot resolve: plenty of
+     * tests here are named for a BEHAVIOUR rather than a type — `PutIfNewer`,
+     * `HoldStack`, `SearchCoverageGuard` — and where they belong is a judgement
+     * this cannot make. It checks the mechanical half, which is the half that
+     * drifts.
+     */
+    @Test
+    fun `a test named after a class lives in that class's package`() {
+        val home = HashMap<String, String>()
+        for (module in listOf("engine", "store")) {
+            for ((_, file) in sources(module)) {
+                val pkg = packageOf(file)
+                DECLARATION.findAll(file.readText()).forEach { home.putIfAbsent(it.groupValues[1], pkg) }
+            }
+        }
+        assertTrue(home.size > 50, "the declaration parse found only ${home.size} types — the regex, not the tree, is what changed")
+        val misplaced =
+            testSources().mapNotNull { file ->
+                val subject =
+                    file.name
+                        .removeSuffix(".kt")
+                        .removeSuffix("IT")
+                        .removeSuffix("Test")
+                val declaredIn = home[subject] ?: return@mapNotNull null
+                val own = packageOf(file)
+                if (declaredIn == own) null else "${file.name} is in ${own.substringAfterLast('.')}, but $subject lives in ${declaredIn.substringAfterLast('.')}"
+            }
+        assertTrue(misplaced.isEmpty(), "tests belong beside what they test: $misplaced")
+    }
+
+    @Test
+    fun `every engine package is named by the layer table`() {
+        val unnamed = sources("engine").map { packageOf(it.second).removePrefix("$OWN.") }.toSet() - engineLayer.keys
+        assertTrue(unnamed.isEmpty(), "new engine package(s) $unnamed — place them in the layer table, deliberately")
+    }
+
+    private fun sources(module: String): List<Pair<String, File>> {
+        val root = File(module, "src/main/kotlin/com/nosfabrica/vespa/eventstore").let { if (it.isDirectory) it else File("..", it.path) }
+        assertTrue(root.isDirectory, "cannot find $module sources at ${root.absolutePath}")
+        return root
+            .walkTopDown()
+            .filter { it.extension == "kt" }
+            .map { it.relativeTo(root).path to it }
+            .toList()
+    }
+
+    /** Every test source of both published modules — where a test is filed is the thing being asserted. */
+    private fun testSources(): List<File> =
+        listOf("engine", "store").flatMap { module ->
+            val root = File(module, "src/test/kotlin").let { if (it.isDirectory) it else File("..", it.path) }
+            // ASSERTED, not assumed: `walkTopDown` on a directory that is not
+            // there yields an empty sequence, so a wrong working directory would
+            // turn this guard off and report a pass. Every rule in this file
+            // reads the tree, and a rule that reads nothing agrees with
+            // everything.
+            assertTrue(root.isDirectory, "cannot find $module test sources at ${root.absolutePath}")
+            root.walkTopDown().filter { it.extension == "kt" }.toList()
+        }
+
+    private fun packageOf(file: File): String = file.useLines { lines -> lines.first { it.startsWith("package ") } }.removePrefix("package ").trim()
+
+    private fun imports(file: File): List<String> = file.readLines().filter { it.startsWith("import ") }.map { it.removePrefix("import ").trim() }
+
+    /** The `:engine` packages [file] imports FROM (an import names a symbol, so drop its last segment). */
+    private fun enginePackagesIn(file: File): Set<String> =
+        imports(file)
+            .filter { it.startsWith("$OWN.engine.") }
+            .map { it.removePrefix("$OWN.").substringBeforeLast('.') }
+            .toSet()
+
+    /** The `:store` packages [file] imports from — everything under the root package that is not `engine`. */
+    private fun storePackagesIn(file: File): Set<String> =
+        imports(file)
+            .filter { it.startsWith("$OWN.") && !it.removePrefix("$OWN.").startsWith("engine.") }
+            .map { it.removePrefix("$OWN.").substringBeforeLast('.', missingDelimiterValue = "") }
+            .filter { it.isNotEmpty() }
+            .toSet()
+
+    private companion object {
+        const val OWN = "com.nosfabrica.vespa.eventstore"
+
+        /** Top-level type declarations, which is what a `<Name>Test` names. */
+        val DECLARATION = Regex("""^(?:internal |public )?(?:open |abstract |sealed |data |value |enum )*(?:class|object|interface)\s+(\w+)""", RegexOption.MULTILINE)
+    }
+}

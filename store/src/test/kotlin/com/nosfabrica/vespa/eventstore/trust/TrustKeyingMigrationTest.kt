@@ -20,10 +20,10 @@
  */
 package com.nosfabrica.vespa.eventstore.trust
 
-import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
-import com.nosfabrica.vespa.eventstore.engine.InMemoryReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.serviceCells
+import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
+import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryReputationIndex
 import com.nosfabrica.vespa.eventstore.mapping.toDoc
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
@@ -198,5 +198,43 @@ class TrustKeyingMigrationTest {
             migration.run()
             assertEquals(TrustKeyingProgress.Phase.Done, migration.progress.phase)
             assertEquals(2L, migration.progress.keysRemoved.get(), "the sweep's work is counted, not just its completion")
+        }
+
+    /**
+     * A DENOMINATOR IS A PROMISE. The reconcile counts named SERVICES (a dozen)
+     * and the sweep walks PARENTS (millions), and the progress document carried
+     * one cell for both: a resumed process read the service count as its parent
+     * total and reported "sweeping: 2400000/12 (100%), eta 0m0s" — a walk with
+     * hours left, printed as finished. The sweep cannot know its total without
+     * a second pass over the corpus, so it persists none and says so.
+     */
+    @Test
+    fun `the progress document never carries a total the sweep did not count`() =
+        runBlocking {
+            seedObserverKeyedStore()
+            // Mid-migration: the reconcile is done, the sweep is what resumes.
+            reputations.put(ReputationDoc(TrustKeyingMigration.PROGRESS_KEY, serviceCells("reconciled" to 1, "parents-total" to 12)))
+
+            // Sampled DURING the sweep: every phase boundary resets the
+            // counters, so the lie is only visible while the walk is running —
+            // which is the only time an operator reads it.
+            val totalsWhileSweeping = mutableListOf<Long>()
+            val linesWhileSweeping = mutableListOf<String>()
+            migration.run { _, _ ->
+                totalsWhileSweeping += migration.progress.total.get()
+                linesWhileSweeping += migration.progress.line()
+            }
+
+            assertTrue(totalsWhileSweeping.isNotEmpty(), "the sweep must report at least once, or this asserts nothing")
+            assertEquals(
+                listOf(0L),
+                totalsWhileSweeping.distinct(),
+                "the sweep's denominator must stay unknown, never the reconcile's service count: $totalsWhileSweeping",
+            )
+            assertTrue(
+                linesWhileSweeping.all { it.contains("total unknown") },
+                "and the line must say so rather than invent a percentage: $linesWhileSweeping",
+            )
+            assertNull(reputations.get(TrustKeyingMigration.PROGRESS_KEY), "the scaffolding is cleared when the migration finishes")
         }
 }

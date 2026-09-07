@@ -20,14 +20,18 @@
  */
 package com.nosfabrica.vespa.eventstore
 
-import com.nosfabrica.vespa.eventstore.engine.DegradedReads
-import com.nosfabrica.vespa.eventstore.engine.IngestStats
+import com.nosfabrica.vespa.eventstore.engine.app.SchemaDeployer
 import com.nosfabrica.vespa.eventstore.engine.client.VespaEventIndex
 import com.nosfabrica.vespa.eventstore.engine.client.VespaReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.metrics.Activity
 import com.nosfabrica.vespa.eventstore.engine.metrics.CostLedger
+import com.nosfabrica.vespa.eventstore.engine.metrics.DegradedReads
+import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.metrics.MeteredEventIndex
 import com.nosfabrica.vespa.eventstore.engine.metrics.withActivity
+import com.nosfabrica.vespa.eventstore.runtime.BackgroundFailures
+import com.nosfabrica.vespa.eventstore.runtime.DEFAULT_GUARD_REFRESH_MILLIS
+import com.nosfabrica.vespa.eventstore.runtime.WriterTopology
 import com.nosfabrica.vespa.eventstore.search.SearchExpansionLimits
 import com.nosfabrica.vespa.eventstore.trust.TrustCoverage
 import com.nosfabrica.vespa.eventstore.trust.TrustExplain
@@ -64,17 +68,12 @@ class VespaEventStore internal constructor(
      */
     val store: NostrSemanticsStore,
     /**
-     * The raw engine index, NOT trust-projected — for status/health metrics
-     * that only count and never mutate trust data.
-     *
-     * ALSO NOT METERED. Reads made through this handle appear in no activity on
-     * `metrics()`, because the meter is a decorator one layer up. That is right
-     * for what this is for — `feedStatus`, a document count — and wrong for
-     * anything that walks the corpus, which will make the store look idle while
-     * Vespa is busy. Prefer the `IEventStore` surface for real reads.
+     * The engine client itself. PRIVATE: what a caller outside may do with it
+     * is [engine], which is read-only — this handle can write to the index
+     * behind every rule this store enforces.
      */
-    val eventIndex: VespaEventIndex,
-    /** Repair tool for the trust view over [eventIndex]; see [reconcileTrust]. */
+    private val eventIndex: VespaEventIndex,
+    /** Repair tool for the trust view over the engine index; see [reconcileTrust]. */
     private val reconciler: TrustReconciler,
     /** The projection, for the deferred-mode drain barrier ([awaitTrustProjection]). */
     private val trust: TrustProjection,
@@ -85,6 +84,13 @@ class VespaEventStore internal constructor(
     /** The keying migration's live view; a store built without one reports nothing rather than lying. */
     private val keyingProgress: TrustKeyingProgress = TrustKeyingProgress(),
 ) : IEventStore by store {
+    /**
+     * The engine read directly — un-lensed and un-metered; see [EngineReads]
+     * for the two jobs that want that. Everything else should read through the
+     * `IEventStore` surface this class delegates.
+     */
+    val engine: EngineReads = EngineReads(eventIndex)
+
     /** The engine's feed-health status line (bulk-ingest backpressure), for progress/status output. */
     fun feedStatus(): String = eventIndex.feedStatus()
 
@@ -228,6 +234,15 @@ class VespaEventStore internal constructor(
         // Drainer first: queued work survives in the persisted marker for the
         // next open — shutdown must not block on a six-figure walk.
         drainScope?.cancel()
+        // The keying migration, and for a sharper reason than tidiness:
+        // `runUntilDone` RETRIES FOREVER by design (a store with reputation
+        // documents but no readable 10040 is a legitimate state — a corpus
+        // mirrored ahead of its provider lists — so it waits rather than
+        // failing). Left running past close() it wakes every few seconds
+        // against a closed index, fails, and books another
+        // BackgroundFailures.TRUST_KEYING — one such loop per opened-and-closed
+        // store, for the life of the process.
+        keying?.cancel()
         store.close()
     }
 

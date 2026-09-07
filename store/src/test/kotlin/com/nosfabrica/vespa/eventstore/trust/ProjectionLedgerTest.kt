@@ -22,13 +22,14 @@ package com.nosfabrica.vespa.eventstore.trust
 
 import com.nosfabrica.vespa.eventstore.engine.DocRef
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
-import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
-import com.nosfabrica.vespa.eventstore.engine.InMemoryReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
+import com.nosfabrica.vespa.eventstore.engine.doc.ReputationCells
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
 import com.nosfabrica.vespa.eventstore.engine.doc.serviceCells
+import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
+import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.mapping.toDoc
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
@@ -331,6 +332,35 @@ class ProjectionLedgerTest {
 
         suspend fun marker() = reputations.get(ProjectionLedger.MARKER_KEY)
     }
+
+    /**
+     * A SECOND WRITER'S INSURANCE SURVIVES A BULK WRITE-AHEAD.
+     *
+     * The marker is ONE document and the deployment this store is built for
+     * runs two writers against it — a serving relay and a sync mirror — while
+     * each ledger's `unfinished` is process-local. A batch too big for cell
+     * adds persists its insurance as one doc PUT, and that put used to carry
+     * this process's view alone: it erased the peer's write-ahead cells, so the
+     * peer's next crash left drift that nothing named and only a full reconcile
+     * could find. The put now merges with what is stored.
+     */
+    @Test
+    fun `a bulk write-ahead keeps a peer's cells`() =
+        runBlocking {
+            val peerSubject = "fe".repeat(32)
+            val reputations = InMemoryReputationIndex()
+            val projection = TrustProjection(InMemoryEventIndex(), reputations)
+            projection.put(list10040().toDoc())
+
+            // The peer's write-ahead, already in the shared marker.
+            reputations.updateCells(listOf(ReputationCells(ProjectionLedger.MARKER_KEY, ServiceKey(peerSubject), 1, null)))
+
+            // A batch past MAX_CELL_ADDS: insurance goes in as one document put.
+            projection.putAll(manySubjects(ProjectionLedger.MAX_CELL_ADDS + 20).map { cardFor(it, 70).toDoc() })
+
+            val keys = assertNotNull(reputations.get(ProjectionLedger.MARKER_KEY), "the marker stands while work is pending").influenceScores.keys
+            assertTrue(ServiceKey(peerSubject) in keys, "the peer's insurance must survive this process's bulk put: $keys")
+        }
 
     /**
      * THE MID-WALK CARD. A service walk (the one deferred reaction left) reads

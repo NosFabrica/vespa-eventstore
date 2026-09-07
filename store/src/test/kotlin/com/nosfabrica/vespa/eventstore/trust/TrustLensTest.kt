@@ -22,9 +22,9 @@ package com.nosfabrica.vespa.eventstore.trust
 
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
-import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
-import com.nosfabrica.vespa.eventstore.engine.InMemoryReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
+import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
+import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -91,6 +91,35 @@ class TrustLensTest {
             val q = captured()
             assertEquals(observer, q.observer)
             assertEquals(rankService, q.rankKey)
+        }
+
+    /**
+     * A CONNECTION OBSERVER IS NORMALIZED, like the `observer:` token beside
+     * it. Hex has two spellings and the lens lookup has one: the provider map
+     * is keyed by the 10040's own canonical pubkey, so an upper-case identity
+     * missed it, resolved to no key, and went to the engine as "trusts nobody"
+     * — which under the observer gate (a floor stamped on the same query) is
+     * not a weaker page but an EMPTY one. The token path lower-cased in
+     * `FilterMapping` from the start; this is the other way in.
+     */
+    @Test
+    fun `an upper-case connection observer resolves to the same lens`() =
+        runBlocking {
+            store.insert(list10040())
+            withContext(StoreQueryContext(setOf(observer.uppercase()))) { store.query<Event>(Filter(kinds = listOf(1))) }
+            val q = captured()
+            assertEquals(observer, q.observer, "the observer reaches the engine canonicalized")
+            assertEquals(rankService, q.rankKey, "and resolves the lens its 10040 names")
+            assertEquals(followerService, q.followersKey)
+        }
+
+    /** Not hex at all: dropped rather than passed through — a value that cannot key a lens must not switch the gate on. */
+    @Test
+    fun `a non-hex connection observer is not an observer`() =
+        runBlocking {
+            store.insert(list10040())
+            withContext(StoreQueryContext(setOf("not-a-pubkey"))) { store.query<Event>(Filter(kinds = listOf(1))) }
+            assertNull(captured().observer)
         }
 
     /** No list: the observer stays on the query (the gate, the expansion) but the lens resolves to nothing — the engine ranks them as trusting nobody. */

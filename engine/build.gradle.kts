@@ -4,18 +4,29 @@ plugins {
     // typed objects (decodeFromString) instead of a full JsonElement tree — less
     // garbage on the query hot path.
     alias(libs.plugins.kotlin.serialization)
-    // Publishes the test doubles (MockVespaEngine, InMemoryReputationIndex) in
-    // src/testFixtures to downstream module tests.
+    // Publishes the test double (MockVespaEngine, in src/testFixtures) to
+    // downstream module tests. NOTE: Gradle folds a test-fixtures source set's
+    // dependencies into the single published POM at runtime scope, so a MAVEN
+    // consumer of this artifact sees Jetty on its runtime classpath for a
+    // double it never uses. Gradle consumers are shielded by the module
+    // metadata (the fixtures are their own variant). Fixing it properly means
+    // a separate :testkit module.
     `java-test-fixtures`
     alias(libs.plugins.vanniktech.mavenPublish)
 }
 
 dependencies {
-    // Quartz (the Nostr library) is available here — reuse its primitives
-    // (e.g. Hex) instead of re-implementing them.
-    implementation(libs.quartz)
-    // Only the JsonElement tree API is used, so no serialization plugin needed.
-    implementation(libs.kotlinx.serialization.json)
+    // Quartz (the Nostr library) is `api`, not `implementation`, because it is
+    // IN this module's public surface, not merely behind it: `EventIndex`
+    // recalls `List<RawEvent>` and `EventDoc.toRawEvent()` hands one back.
+    // Declared `implementation` it lands in the published POM at RUNTIME scope,
+    // and anyone depending on `:engine` alone then cannot compile against those
+    // signatures without re-declaring Quartz themselves. Kotlin does not flag
+    // that (Java's module path would), so the POM is the only place it shows.
+    api(libs.quartz)
+    // Same reason: the JsonElement tree API is public here — `EventDoc.indexFields()`
+    // and `ReputationDoc.indexFields()` return a `JsonObject`.
+    api(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines)
     // Writes go through Vespa's official feed client (async, HTTP/2 multiplexed,
     // retries + throttling built in). Its types stay out of our public API.

@@ -21,6 +21,9 @@
 package com.nosfabrica.vespa.eventstore.benchmark
 
 import com.nosfabrica.vespa.eventstore.VespaEventStore
+import com.nosfabrica.vespa.eventstore.benchmark.harness.Backends
+import com.nosfabrica.vespa.eventstore.benchmark.harness.NostrCorpus
+import com.nosfabrica.vespa.eventstore.benchmark.harness.ParityCheck
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Tag

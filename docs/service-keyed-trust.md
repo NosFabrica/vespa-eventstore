@@ -228,7 +228,7 @@ One PR for the store, in this order, each step green on its own:
 **Integration (`-Pintegration`, real Vespa)** — the schema executes only there:
 
 - `ObserverGateIT`, `RankRegressionIT`, `MemberTrustIT`, `SplicedMemberWeightsIT`,
-  `MaxRankRaiseIT`, `SearchCountIT`: seed reputation documents by SERVICE key
+  `SearchCountIT`: seed reputation documents by SERVICE key
   and query through a 10040 (or set `rankKey` directly at the engine level).
 - New `ProviderSwapIT`: two providers, one observer; assert the page under the
   observer follows the provider the CURRENT 10040 names, before and after a

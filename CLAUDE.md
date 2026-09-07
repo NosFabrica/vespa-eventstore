@@ -64,13 +64,65 @@ stays hermetic (testcontainers). **Read only: never feed it, and never point a t
 
 ## Architecture
 
-Three modules, layered strictly bottom-up:
+Three modules, layered strictly bottom-up — and inside each, packages that are layered too.
+`ModuleBoundariesTest` (in `:store`) asserts the whole order below, so a new package is a
+deliberate decision (it fails until the layer table names it) rather than a drift:
 
-- **`:engine`** — the engine layer: the ports and shared helpers at the package root (`EventIndex`, `ReputationIndex`, `InMemoryEventIndex`, `ScoredHit`), document shapes (`doc/`), the `EventQuery` → YQL compiler (`query/`), and the Vespa client (`client/` — `VespaEventIndex` reads via OkHttp h2c, writes via Vespa's official feed client; `VespaReputationIndex`) plus the bundled Vespa application package.
-- **`:store`** — Nostr semantics on top: `NostrSemanticsStore` (the `IEventStore` implementation), the NIP-85 trust projection (`trust/`), per-kind search extraction (a thin wrapper over Quartz's `SearchFieldExtractor` in `mapping/SearchExtractors`), and `VespaEventStore.open()` — the public front door.
-- **`:benchmark`** — not published. Perf harness + the parity/rank-regression integration tests (the CI correctness gates).
+- **`:engine`** — the index port and its Vespa binding. Reading order is the layer order:
+  `text/` + `async/` + `app/` (shared leaves: near-text derivation, bounded fan-out, the bundled
+  Vespa application package and its deployer) → `doc/` (document shapes) → `query/` (the
+  `EventQuery` → YQL compiler) → the package root (`EventIndex`, `ReputationIndex`, `ScoredHit`,
+  `Ranked` — the PORT) → `metrics/` (`MeteredEventIndex`, the cost ledger, `IngestStats`,
+  `DegradedReads`) → `memory/` + `client/` (the two implementations: the in-memory executable
+  spec, and `VespaEventIndex` reading via OkHttp h2c / writing via Vespa's feed client,
+  `VespaReputationIndex`).
+- **`:store`** — relay policy on top. `runtime/` and `mapping/` are leaves that import no other
+  store package (`WriterTopology` + background-worker failure accounting; the Quartz `Filter` →
+  `EventQuery` mapping, per-kind search extraction, Vespa text rules) → `ingest/` (the write
+  path: bulk inserts, the guard caches, NIP-09/62 enforcement, the rejection vocabulary),
+  `trust/` (the NIP-85 projection), `search/` (reference expansion) → the package root, which is
+  the FACADE: exactly the types a CONSUMER names, and nothing else. Today that is
+  `VespaEventStore.open()` (the front door), `NostrSemanticsStore` (the `IEventStore`
+  implementation), and the values it hands back or throws — `RejectedException`, `EngineReads`,
+  `TrustHealth`. A new type here has to earn it by being named from outside; the machinery
+  behind one goes in a leaf (`TrustHealth` is a DTO, while the registries it reads stay
+  `internal` in `trust/`). Nothing below the root imports the two COMPOSED types
+(`NostrSemanticsStore`, `VespaEventStore`) — that is the cycle the layering exists to prevent.
+A value the store hands back or throws is not that: `ingest/EventAdmission` throws
+`RejectedException` because it is the store's public vocabulary for a rejection, and a value
+travelling up is the opposite of a package reaching up.
+- **`:benchmark`** — not published. `harness/` (backends, corpora, result plumbing, the parity
+  and rank-quality batteries), `bench/` (the timed suites), `probe/` (targeted A/Bs), `load/`
+  (corpus loaders and dumps), plus the parity/rank-regression integration tests — the CI
+  correctness gates.
 
-The stack `open()` assembles: `NostrSemanticsStore( TrustProjection( VespaEventIndex + VespaReputationIndex ) )`. Consumers only ever see the Quartz `IEventStore` interface.
+The stack `open()` assembles: `NostrSemanticsStore( TrustProjection( VespaEventIndex + VespaReputationIndex ) )`.
+
+Two rules the compiler cannot hold, so tests do (`:store`, and they read the SOURCE — the test
+task declares both source trees as inputs so a violation added in `:engine` cannot leave them
+cached): `ModuleBoundariesTest` — the layer order above, no package unnamed by it, no facade
+import from below, and a test named after a class lives in that class's package.
+`PortDecoratorsTest` — every `EventIndex` decorator overrides every port member. That second one
+matters more than it sounds: several port members have DEFAULT bodies that are correct-but-slow
+answers for an engine that cannot do better, so a decorator that inherits one does not fail to
+decorate it, it ANSWERS with it. Adding a member to `EventIndex` means adding it to
+`TrustProjection` and `MeteredEventIndex` in the same commit.
+
+Consumers get the Quartz `IEventStore` surface (`VespaEventStore` delegates it), plus two deliberate
+escape hatches for ops and benchmarks: `store` (the concrete `NostrSemanticsStore`, for capabilities
+beyond the interface) and `engine` (read-only, un-metered, NOT trust-projected — what is really
+stored, and what a rank profile does). Both are documented at their declaration; prefer the
+`IEventStore` surface for real reads.
+
+**Where the seam actually is.** It is NOT "Nostr-free engine / Nostr-aware store" — `:engine` knows
+Nostr, deliberately: `EventIndex.putIfNewer` implements the NIP-01 supersession rule *and its
+tiebreak* (it has to, to be engine-atomic), `EventDoc` computes NIP-01 addresses and gates tags on
+`isIndexableTagName`, and `doc/TrustKeys` + `EventQuery.rankKey`/`followersKey` carry the NIP-85
+concepts the rank profiles in `event.sd` are written around. The real seam is **the index port and its Vespa binding**
+(what a document is, how a query compiles, how it travels) **versus relay policy** (write
+serialization, deletion / expiration / vanish enforcement, the trust projection, the search grammar,
+page assembly). So when hunting a rule: supersession and address computation are engine; anything a
+*relay* decides is store.
 
 ### The engine port and its executable spec
 

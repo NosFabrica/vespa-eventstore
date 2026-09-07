@@ -312,11 +312,11 @@ Vespa is a prerequisite, like a database — stand one up, then point the store 
 
 ```kotlin
 dependencies {
-    implementation("com.nosfabrica.vespa.eventstore:store:1.0.0")
+    implementation("com.nosfabrica.vespa.eventstore:store:1.0.1")
 
     // Optional: the wire-level test double (MockVespaEngine); InMemoryEventIndex ships in the engine artifact itself,
     // so your own tests run with no Vespa instance.
-    testImplementation(testFixtures("com.nosfabrica.vespa.eventstore:engine:1.0.0"))
+    testImplementation(testFixtures("com.nosfabrica.vespa.eventstore:engine:1.0.1"))
 }
 ```
 
@@ -412,6 +412,31 @@ The instrumentation is designed to be cheap enough to leave on: see
 [`docs/telemetry.md`](docs/telemetry.md) for the model, the measured CPU and
 memory cost of every counter, and what is deliberately *not* measured here
 (Vespa's own resource use, which the metrics proxy already reports).
+
+## Repository layout
+
+Three Gradle modules, and inside each a package order that is asserted rather than assumed
+(`ModuleBoundariesTest` — a new package fails the build until the layer table names it):
+
+```
+engine/   the index port and its Vespa binding
+          text/ async/ app/   shared leaves (near-text, bounded fan-out, the bundled Vespa app + deployer)
+          doc/ query/         document shapes, then the EventQuery -> YQL compiler
+          .                    EventIndex / ReputationIndex / ScoredHit — the PORT
+          metrics/            the meter, cost ledger, ingest stats, degraded reads
+          memory/ client/     its two implementations (in-memory spec; the real Vespa client)
+store/    relay policy on top
+          runtime/ mapping/   leaves: writer topology + worker failures; Filter -> EventQuery, search extraction
+          ingest/ trust/ search/   the write path, the NIP-85 projection, reference expansion
+          .                    the FACADE: only what a consumer names — VespaEventStore.open(),
+                               NostrSemanticsStore, RejectedException, EngineReads, TrustHealth
+benchmark/  not published — harness/ bench/ probe/ load/, plus the integration gates
+```
+
+Read a module bottom-up: nothing in a lower row imports a higher one. Two tests in `:store` keep
+it that way — `ModuleBoundariesTest` (the layer order, and tests filed beside their subjects) and
+`PortDecoratorsTest` (every `EventIndex` decorator forwards every port member, since several have
+default bodies a decorator would otherwise silently answer with).
 
 ## Developer Setup
 

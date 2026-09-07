@@ -20,14 +20,14 @@
  */
 package com.nosfabrica.vespa.eventstore.ingest
 
-import com.nosfabrica.vespa.eventstore.Rejections
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
-import com.nosfabrica.vespa.eventstore.engine.IngestStats
-import com.nosfabrica.vespa.eventstore.engine.PUT_FANOUT
-import com.nosfabrica.vespa.eventstore.engine.QUERY_FANOUT
+import com.nosfabrica.vespa.eventstore.engine.async.PUT_FANOUT
+import com.nosfabrica.vespa.eventstore.engine.async.QUERY_FANOUT
+import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
-import com.nosfabrica.vespa.eventstore.engine.mapBounded
+import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
+import com.nosfabrica.vespa.eventstore.ingest.Rejections
 import com.nosfabrica.vespa.eventstore.mapping.VespaText
 import com.nosfabrica.vespa.eventstore.mapping.addressOrNull
 import com.nosfabrica.vespa.eventstore.mapping.toDoc
@@ -162,7 +162,7 @@ internal class BulkRecordInsert(
                     if (flaggedDeleters.isEmpty()) {
                         emptyMap()
                     } else {
-                        tombstoneDocs(flaggedDeleters, alive.map { events[it].id }, alive.mapNotNull { events[it].addressOrNull() }.distinct())
+                        tombstoneDocs(owners.filterKeys { it in flaggedDeleters }, events)
                     }
                 val vanishes = if (flaggedVanishers.isEmpty()) emptyMap() else guardDocs(flaggedVanishers, RequestToVanishEvent.KIND)
                 owners.keys.associateWith { (tombs[it].orEmpty() to vanishes[it].orEmpty()) }
@@ -366,17 +366,40 @@ internal class BulkRecordInsert(
      * batch carrying one of their events pull all 100k under the writer lock.
      * Two tag-narrowed queries per chunk instead, the shape the mixed path's
      * preload already takes; a doc named by both arrives once.
+     *
+     * EACH OWNER CHUNK CARRIES ONLY ITS OWN EVENTS' KEYS, and both sides are
+     * chunked. Two ways to get this wrong, and this path has now had both:
+     *
+     *  - The batch's ids UNCHUNKED. A 20,000-event batch — the size a mirror
+     *    feeds, and the size this path exists for — compiled one YQL holding
+     *    20,000 `tag_index contains "e:<64-hex>"` terms, ~1.4 MB of query
+     *    text, under the writer lock, once per owner chunk.
+     *  - Chunked but CROSSED. Pairing every owner chunk with every id chunk is
+     *    the cartesian product: 6 queries became 240 for that same batch, and
+     *    8,000 for a 100k one — the overwhelming majority matching nothing,
+     *    because an owner chunk was paired with ids nobody in it authored.
+     *
+     * NIP-09 is same-owner-only ([Deletions.isDeleted]), so a tombstone by
+     * owner X can only cover X's own events: pairing X's chunk with X's keys
+     * loses nothing and makes the query count LINEAR in the batch. Each round
+     * trip keeps the bounded shape its siblings have ([guardDocs], the mixed
+     * path's preload).
      */
     private suspend fun tombstoneDocs(
-        owners: Collection<String>,
-        ids: List<String>,
-        addresses: List<String>,
+        flagged: Map<String, List<Int>>,
+        events: List<Event>,
     ): Map<String, List<EventDoc>> {
         val queries =
-            owners.toList().chunked(CHECK_CHUNK).flatMap { chunk ->
+            flagged.entries.chunked(CHECK_CHUNK).flatMap { chunk ->
+                val authors = chunk.map { it.key }
+                val rows = chunk.flatMap { it.value }
                 buildList {
-                    if (ids.isNotEmpty()) add(EventQuery(kinds = listOf(DeletionEvent.KIND), authors = chunk, tags = mapOf("e" to ids)))
-                    if (addresses.isNotEmpty()) add(EventQuery(kinds = listOf(DeletionEvent.KIND), authors = chunk, tags = mapOf("a" to addresses)))
+                    rows.map { events[it].id }.chunked(CHECK_CHUNK).forEach {
+                        add(EventQuery(kinds = listOf(DeletionEvent.KIND), authors = authors, tags = mapOf("e" to it)))
+                    }
+                    rows.mapNotNull { events[it].addressOrNull() }.distinct().chunked(CHECK_CHUNK).forEach {
+                        add(EventQuery(kinds = listOf(DeletionEvent.KIND), authors = authors, tags = mapOf("a" to it)))
+                    }
                 }
             }
         return queries

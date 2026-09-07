@@ -160,7 +160,7 @@ class BadgeTermIT {
 
                 // ---- wearing a badge costs the name nothing ----
 
-                val byName = store.eventIndex.searchRanked(EventQuery(search = "dotardted", limit = 10, minRank = 0.0))
+                val byName = store.engine.searchRanked(EventQuery(search = "dotardted", limit = 10, minRank = 0.0))
                 assertEquals(
                     setOf(BADGED, PLAIN_TWIN),
                     byName.map { it.hit.id }.toSet(),

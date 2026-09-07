@@ -23,14 +23,14 @@ package com.nosfabrica.vespa.eventstore.trust
 import com.nosfabrica.vespa.eventstore.engine.DocRef
 import com.nosfabrica.vespa.eventstore.engine.DocsPage
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
-import com.nosfabrica.vespa.eventstore.engine.IngestStats
-import com.nosfabrica.vespa.eventstore.engine.QUERY_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
+import com.nosfabrica.vespa.eventstore.engine.async.QUERY_FANOUT
+import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.doc.CellRemoval
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
-import com.nosfabrica.vespa.eventstore.engine.mapBounded
+import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.vitorpamplona.quartz.nip01Core.core.isAddressable
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
@@ -115,6 +115,21 @@ class TrustProjection(
     // materialize the whole match set via search() where the real client groups
     // or streams server-side. scanAuthors backs the guard-owner Bloom preload
     // over the ENTIRE corpus — materializing that is an OOM, not a paged walk.
+
+    /**
+     * FORWARDED, like every other read: the projection decorates WRITES, and
+     * an aggregate it does not forward silently becomes the port's `= null`
+     * default — which reads as "this engine has no such aggregate" and sends
+     * the caller down the paged walk instead (~157s against ~1s on the corpus
+     * [EventIndex.distinctTagIndexValues] measures). A decorator that does not
+     * override a defaulted port member does not merely fail to decorate it; it
+     * ANSWERS it, wrongly.
+     */
+    override suspend fun distinctTagIndexValues(
+        query: EventQuery,
+        tagName: String,
+    ): Set<String>? = inner.distinctTagIndexValues(query, tagName)
+
     override suspend fun countByAuthor(query: EventQuery): Map<String, Int> = inner.countByAuthor(query)
 
     override suspend fun scanAuthors(query: EventQuery): Set<String> = inner.scanAuthors(query)

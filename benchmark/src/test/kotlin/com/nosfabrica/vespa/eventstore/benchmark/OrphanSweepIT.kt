@@ -110,7 +110,7 @@ class OrphanSweepIT {
                             assertEquals(CARDS_PER_SERVICE, storedCards(store), "only the named service's cards remain")
                             assertEquals(
                                 CARDS_PER_SERVICE,
-                                store.eventIndex.count(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(MAPPED_SERVICE))),
+                                store.engine.count(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(MAPPED_SERVICE))),
                                 "and they are the named service's",
                             )
 
@@ -126,7 +126,7 @@ class OrphanSweepIT {
 
     // ------------------------------------------------------------------
 
-    private suspend fun storedCards(store: VespaEventStore) = store.eventIndex.count(EventQuery(kinds = listOf(ContactCardEvent.KIND)))
+    private suspend fun storedCards(store: VespaEventStore) = store.engine.count(EventQuery(kinds = listOf(ContactCardEvent.KIND)))
 
     /** Poll until every fed card is searchable — the grouping must see the whole corpus. */
     private suspend fun awaitCards(

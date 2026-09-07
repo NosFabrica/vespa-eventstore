@@ -22,11 +22,11 @@ package com.nosfabrica.vespa.eventstore.ingest
 
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.RejectedException
-import com.nosfabrica.vespa.eventstore.Rejections
-import com.nosfabrica.vespa.eventstore.WriterTopology
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
-import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
+import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
+import com.nosfabrica.vespa.eventstore.ingest.Rejections
+import com.nosfabrica.vespa.eventstore.runtime.WriterTopology
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.normalizeRelayUrl
 import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
@@ -101,9 +101,17 @@ class GuardOwnersMultiWriterTest {
 
             b.refreshGuardOwners()
 
-            val rejected = assertFailsWith<RejectedException> { b.insert(covered) }
-            assertEquals(Rejections.DELETED, rejected.message, "b admitted an event a's tombstone covers")
-            assertNull(index.get(covered.id), "the covered event reached the index")
+            try {
+                val rejected = assertFailsWith<RejectedException> { b.insert(covered) }
+                assertEquals(Rejections.DELETED, rejected.message, "b admitted an event a's tombstone covers")
+                assertNull(index.get(covered.id), "the covered event reached the index")
+            } finally {
+                // b's refresher outlives this test otherwise, and a live refresher
+                // keeps clearing the process-wide BackgroundFailures counters that
+                // BackgroundFailuresTest asserts on.
+                b.close()
+                a.close()
+            }
         }
 
     /**
@@ -127,18 +135,25 @@ class GuardOwnersMultiWriterTest {
             b.insert(note(pk("c2")))
             a.insert(tombstone(author, *covered.map { it.id }.toTypedArray()))
 
-            withTimeout(30_000) {
-                var blocked = false
-                for (event in covered) {
-                    val outcome = runCatching { b.insert(event) }
-                    if (outcome.exceptionOrNull()?.message == Rejections.DELETED) {
-                        blocked = true
-                        break
+            try {
+                withTimeout(30_000) {
+                    var blocked = false
+                    for (event in covered) {
+                        val outcome = runCatching { b.insert(event) }
+                        if (outcome.exceptionOrNull()?.message == Rejections.DELETED) {
+                            blocked = true
+                            break
+                        }
+                        outcome.getOrThrow() // anything but DELETED/accepted is a real failure
+                        delay(20)
                     }
-                    outcome.getOrThrow() // anything but DELETED/accepted is a real failure
-                    delay(20)
+                    assertTrue(blocked, "the refresher never picked up the second writer's tombstone")
                 }
-                assertTrue(blocked, "the refresher never picked up the second writer's tombstone")
+            } finally {
+                // A 20 ms refresher left running would outlive this test and keep
+                // clearing the process-wide BackgroundFailures counters.
+                b.close()
+                a.close()
             }
         }
 

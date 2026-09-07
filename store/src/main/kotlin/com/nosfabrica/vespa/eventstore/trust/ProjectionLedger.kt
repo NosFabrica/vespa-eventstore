@@ -211,7 +211,7 @@ internal class ProjectionLedger(
             // and already-pending work persists nothing. A bulk batch's is one
             // doc put: per-entry ops at batch size would rival the event writes
             // they insure.
-            if (delta.toRederive.size + delta.toRewalk.size <= MAX_CELL_ADDS) addMarkerCells(delta) else rewriteWholeMarker(before + couldInvalidate)
+            if (delta.toRederive.size + delta.toRewalk.size <= MAX_CELL_ADDS) addMarkerCells(delta) else mergeWholeMarker(before + couldInvalidate)
         }
         val outcome: Outcome<T>
         try {
@@ -233,7 +233,10 @@ internal class ProjectionLedger(
         // marker for work that does not exist, so it stood, and the next boot
         // inherited hundreds of subjects to re-derive to nothing and dropped the
         // provider cache for it. One remove here keeps the marker honest.
-        if (!delta.isEmpty() && queued.isEmpty()) rewriteWholeMarker(ProjectionWork.NONE)
+        if (!delta.isEmpty() && queued.isEmpty()) {
+            clearMarkerCells(delta)
+            dropMarkerIfEmpty()
+        }
         val deferred = onWorkQueued
         if (deferred == null) {
             drain(WriteGate.DIRECT) // settle inline: the caller holds the writer lock
@@ -392,9 +395,6 @@ internal class ProjectionLedger(
             // ([addMarkerCells]) touches this same document, and the gate is the
             // only thing ordering the two. An entry re-added since keeps its cell.
             val live = pendingNow()
-            // Nothing left at all: drop the document, so a surviving marker is
-            // always drift and never an emptied husk.
-            if (live.isEmpty()) return@holding rewriteWholeMarker(ProjectionWork.NONE)
             clearMarkerCells(
                 ProjectionWork(
                     done.toRederive.keys
@@ -405,6 +405,17 @@ internal class ProjectionLedger(
                         .toSet(),
                 ),
             )
+            // Nothing left here: drop the document, so a surviving marker is
+            // always drift and never an emptied husk. The marker legitimately
+            // OVER-covers between a bulk write-ahead and the drain that narrows
+            // it (see [insuring]), so this has to clear more than `done` — but
+            // it clears the cells it has READ, one by one, rather than deleting
+            // a document whose contents it never looked at. A peer's insurance
+            // written after that read survives, where a blind delete took it.
+            if (live.isEmpty()) {
+                clearMarkerCells(storedMarker())
+                dropMarkerIfEmpty()
+            }
         }
     }
 
@@ -415,7 +426,7 @@ internal class ProjectionLedger(
      */
     private suspend fun adoptStoredMarkerOnce(): ProjectionWork {
         unfinished.get()?.let { return it.toWork() }
-        val stored = reputations.get(MARKER_KEY)?.let { ProjectionWork(it.influenceScores.keys.unwrap(), it.followerCounts.keys.unwrap()) } ?: ProjectionWork.NONE
+        val stored = storedMarker()
         // Two first readers race harmlessly: both read the same marker, and the
         // loser's copy is dropped rather than overwriting work the winner has
         // since added. Inherited entries carry stamp 0, below every add.
@@ -442,12 +453,49 @@ internal class ProjectionLedger(
     }
 
     /**
-     * Replace the marker with exactly [work], or remove it when clean. NOT
-     * composable across processes — see [retire]. Used only where this process
-     * is the sole author of what the document should say.
+     * One doc put for a delta too big to be cells — MERGED with what is
+     * stored, never this process's view alone.
+     *
+     * The merge is the multi-writer rule this file is built on ([retire]): a
+     * whole-document write composes only if it carries every cell already
+     * there, and the peer's write-ahead insurance is exactly the cell this
+     * process has never heard of. The read costs one small get against a
+     * write this branch only takes at bulk size.
      */
-    private suspend fun rewriteWholeMarker(work: ProjectionWork) {
-        if (work.isEmpty()) reputations.remove(MARKER_KEY) else reputations.put(marker(work))
+    private suspend fun mergeWholeMarker(work: ProjectionWork) {
+        val stored = reputations.get(MARKER_KEY)
+        val merged =
+            ProjectionWork(
+                work.toRederive + (stored?.influenceScores?.keys?.unwrap() ?: emptySet()),
+                work.toRewalk + (stored?.followerCounts?.keys?.unwrap() ?: emptySet()),
+            )
+        if (merged.isEmpty()) reputations.remove(MARKER_KEY) else reputations.put(marker(merged))
+    }
+
+    /** The marker's cells as they are STORED right now — the only emptiness this class is allowed to act on. */
+    private suspend fun storedMarker(): ProjectionWork = reputations.get(MARKER_KEY)?.let { ProjectionWork(it.influenceScores.keys.unwrap(), it.followerCounts.keys.unwrap()) } ?: ProjectionWork.NONE
+
+    /**
+     * Remove the marker IF the stored document has no cells left — the
+     * emptied-husk cleanup, made safe for a second writer.
+     *
+     * A blind `remove` here was the one whole-document write left in this
+     * class, and it fired on THIS process's ledger being empty: the serving
+     * relay finishing its last slice deleted the sync mirror's freshly written
+     * insurance along with its own spent cells, so the mirror's next crash left
+     * drift that nothing named.
+     *
+     * NARROWED, NOT CLOSED, and the difference matters to anyone reading this
+     * for a guarantee. The cleanup above clears the cells it READ, so a peer
+     * cell written after that read survives where a blind delete took it — but
+     * one already in the document when this process read it is still cleared.
+     * Closing it needs an ownership model (a cell carrying who wrote it, or a
+     * conditional remove), which is a design change and not a guard. Until
+     * then this is a smaller window, not the absence of one.
+     */
+    private suspend fun dropMarkerIfEmpty() {
+        val stored = reputations.get(MARKER_KEY) ?: return
+        if (stored.influenceScores.isEmpty() && stored.followerCounts.isEmpty()) reputations.remove(MARKER_KEY)
     }
 
     companion object {
@@ -466,7 +514,7 @@ internal class ProjectionLedger(
          * doc put. Adds win for live traffic's small deltas; a put wins for
          * bulk, where per-entry ops rival the event writes they insure.
          */
-        private const val MAX_CELL_ADDS = 64
+        internal const val MAX_CELL_ADDS = 64
 
         /** The persisted form: subjects ride the influence cells, services the follower cells (values are ignored). */
         private fun marker(work: ProjectionWork): ReputationDoc = ReputationDoc(MARKER_KEY, work.toRederive.associate { ServiceKey(it) to 1 }, work.toRewalk.associate { ServiceKey(it) to 1.0 })

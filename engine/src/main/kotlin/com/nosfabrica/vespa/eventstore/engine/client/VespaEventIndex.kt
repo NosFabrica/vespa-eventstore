@@ -22,16 +22,16 @@ package com.nosfabrica.vespa.eventstore.engine.client
 import ai.vespa.feed.client.DocumentId
 import ai.vespa.feed.client.OperationParameters
 import ai.vespa.feed.client.Result
-import com.nosfabrica.vespa.eventstore.engine.DegradedReads
 import com.nosfabrica.vespa.eventstore.engine.DocRef
 import com.nosfabrica.vespa.eventstore.engine.DocsPage
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
-import com.nosfabrica.vespa.eventstore.engine.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.ScoredHit
+import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
-import com.nosfabrica.vespa.eventstore.engine.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.metrics.CostLedger
+import com.nosfabrica.vespa.eventstore.engine.metrics.DegradedReads
+import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.metrics.currentActivity
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventSelection
@@ -815,9 +815,38 @@ class VespaEventIndex(
         // same filters counted one at a time.
         if (query.limit != null) {
             if (query.limit <= 0) return
+            val unlimited = query.copy(limit = null)
+            // A LIMIT IS AN ORDER, not just a count: "the newest N". Only two
+            // walks can honour that — the search path (ranked ids ARE its
+            // order) and the cursor, which pages `created_at desc`. The scan
+            // cannot: it is a document-API visit in BUCKET order, so budgeting
+            // it returned an arbitrary N that looked like a page. A COUNT is
+            // where that showed: `countUnder` unions each filter's served ids,
+            // and two arbitrary samples of overlapping filters overlap less
+            // than two newest-N pages do, so the count came back ABOVE what
+            // the REQ it describes would serve.
+            // A ranked walk is the search path's by definition: the ids ARE its
+            // ranking, so nothing else can produce them.
             if (query.isRankedShape()) return super.visitIds(query, withDTag, onPage)
+            // The probe is timed here for the reason the unlimited path times
+            // it below: a walk stuck in the decision looks exactly like a walk
+            // with nothing to do, and a COUNT's id walk arrives on THIS branch.
+            if (!IngestStats.timed("walk.cursor.decide") { cursorSuitsThisWalk(unlimited, withDTag) }) {
+                // ONE ORDERED, UNRANKED, ID-ONLY QUERY — not `super.visitIds`,
+                // which is `search(query)`: that materializes a full document
+                // summary per id (content, sig, tags) to produce an id list, on
+                // whatever profile the recency planner picks, and a match phase
+                // may then cap the total and drop hits SILENTLY. On the shape
+                // that lands here — a relay's `limit: 100000` over a tie-dense
+                // author — that is up to 100,000 summaries fetched to count,
+                // and a count that reads UNDER. `buildIdTime` is unranked and
+                // ordered for exactly this reason, and it already honours the
+                // limit, so the newest N arrive in one round trip.
+                onPage(idTimeHits(query, withDTag))
+                return
+            }
             var budget: Int = query.limit
-            return visitIds(query.copy(limit = null), withDTag) { page ->
+            return visitIdsByCursor(unlimited, withDTag) { page ->
                 val take = page.take(budget)
                 budget -= take.size
                 (take.isEmpty() || onPage(take)) && budget > 0
@@ -840,6 +869,23 @@ class VespaEventIndex(
         if (!IngestStats.timed("walk.cursor.decide") { cursorSuitsThisWalk(query, withDTag) }) {
             return visitIdsByScan(query, withDTag, onPage)
         }
+        visitIdsByCursor(query, withDTag, onPage)
+    }
+
+    /**
+     * The cursor walk: `created_at desc` a page at a time, resolving the tie
+     * group at each boundary. Its ORDER is why a limited walk is allowed to
+     * budget-truncate it and not the scan (see [visitIds]).
+     *
+     * Split out so the limited branch can take it directly: routing back
+     * through [visitIds] would re-run [cursorSuitsThisWalk]'s probe query for
+     * a decision already made.
+     */
+    private suspend fun visitIdsByCursor(
+        query: EventQuery,
+        withDTag: Boolean,
+        onPage: suspend (List<DocRef>) -> Boolean,
+    ) {
         var until: Long? = query.until
         while (true) {
             val fetchLimit = idPageSize + TIE_SLACK
@@ -1102,8 +1148,11 @@ class VespaEventIndex(
         query: EventQuery,
         tagName: String,
     ): Set<String>? {
-        val vq = EventYql.buildDistinctTagValues(query, tagName) ?: return emptySet()
+        val vq = EventYql.buildDistinctTagValues(query) ?: return emptySet()
         val root = queryRoot(vq, hits = 0) ?: return emptySet()
+        // The grouping is over EVERY letter (see the builder): narrowing to the
+        // asked-for one is this side's job, and dropping this filter would
+        // silently widen the answer.
         val prefix = "$tagName:"
         return GroupingResults
             .groupCounts(root)

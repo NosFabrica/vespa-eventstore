@@ -20,7 +20,8 @@
  */
 package com.nosfabrica.vespa.eventstore.benchmark
 
-import com.nosfabrica.vespa.eventstore.engine.NearText
+import com.nosfabrica.vespa.eventstore.benchmark.harness.NostrCorpus
+import com.nosfabrica.vespa.eventstore.engine.text.NearText
 import com.nosfabrica.vespa.eventstore.mapping.SearchExtractors
 import kotlin.test.Test
 import kotlin.test.assertTrue

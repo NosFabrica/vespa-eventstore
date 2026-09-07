@@ -21,12 +21,9 @@
 package com.nosfabrica.vespa.eventstore
 
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
-import com.nosfabrica.vespa.eventstore.engine.IngestStats
-import com.nosfabrica.vespa.eventstore.engine.QUERY_FANOUT
-import com.nosfabrica.vespa.eventstore.engine.Ranked
+import com.nosfabrica.vespa.eventstore.engine.async.QUERY_FANOUT
+import com.nosfabrica.vespa.eventstore.engine.async.forEachBounded
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
-import com.nosfabrica.vespa.eventstore.engine.forEachBounded
-import com.nosfabrica.vespa.eventstore.engine.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.metrics.Activity
 import com.nosfabrica.vespa.eventstore.engine.metrics.CostLedger
 import com.nosfabrica.vespa.eventstore.engine.metrics.withActivity
@@ -34,24 +31,27 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.nosfabrica.vespa.eventstore.ingest.BulkMixedInsert
 import com.nosfabrica.vespa.eventstore.ingest.BulkRecordInsert
+import com.nosfabrica.vespa.eventstore.ingest.Deletions
+import com.nosfabrica.vespa.eventstore.ingest.EventAdmission
 import com.nosfabrica.vespa.eventstore.ingest.GuardOwners
+import com.nosfabrica.vespa.eventstore.ingest.Rejections
 import com.nosfabrica.vespa.eventstore.mapping.DEFAULT_MIN_RANK
 import com.nosfabrica.vespa.eventstore.mapping.SearchExtractors
-import com.nosfabrica.vespa.eventstore.mapping.VespaText
-import com.nosfabrica.vespa.eventstore.mapping.toDoc
 import com.nosfabrica.vespa.eventstore.mapping.toEvent
 import com.nosfabrica.vespa.eventstore.mapping.toEventQuery
+import com.nosfabrica.vespa.eventstore.runtime.DEFAULT_GUARD_REFRESH_MILLIS
+import com.nosfabrica.vespa.eventstore.runtime.WriteLocks
+import com.nosfabrica.vespa.eventstore.runtime.WriterTopology
+import com.nosfabrica.vespa.eventstore.search.PageAssembly
 import com.nosfabrica.vespa.eventstore.search.SearchExpansionLimits
 import com.nosfabrica.vespa.eventstore.search.SearchReferenceExpansion
 import com.nosfabrica.vespa.eventstore.search.SearchReferences
 import com.nosfabrica.vespa.eventstore.search.SubjectKeys
+import com.nosfabrica.vespa.eventstore.search.isRanked
 import com.nosfabrica.vespa.eventstore.trust.Delegations
 import com.nosfabrica.vespa.eventstore.trust.Enrolment
 import com.nosfabrica.vespa.eventstore.trust.TrustProjection
 import com.vitorpamplona.quartz.nip01Core.core.Event
-import com.vitorpamplona.quartz.nip01Core.core.isAddressable
-import com.vitorpamplona.quartz.nip01Core.core.isEphemeral
-import com.vitorpamplona.quartz.nip01Core.core.isReplaceable
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.FtsReindexProgress
@@ -59,17 +59,13 @@ import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import com.vitorpamplona.quartz.nip01Core.store.StoreQueryContext
-import com.vitorpamplona.quartz.nip01Core.store.owner
 import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
 import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
-import com.vitorpamplona.quartz.nip40Expiration.isExpired
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
+import com.vitorpamplona.quartz.utils.Hex
 import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlin.coroutines.coroutineContext
 
 /**
@@ -78,7 +74,7 @@ import kotlin.coroutines.coroutineContext
  * plus NIP-50 search. It is engine-agnostic (any [EventIndex] works, including
  * the in-memory one); [VespaEventStore.open] assembles it over Vespa.
  *
- * [insertLocked] enforces the Nostr write rules: dedup ("duplicate:"),
+ * [EventAdmission] enforces the Nostr write rules: dedup ("duplicate:"),
  * replaceable/addressable supersession with the NIP-01 tiebreak — same
  * created_at, LOWEST id wins — ("replaced:"), NIP-09 deletions and NIP-62
  * vanishes ("blocked:", enforcement in [Deletions], keyed on the event's
@@ -169,43 +165,17 @@ class NostrSemanticsStore(
      */
     val metrics: CostLedger = CostLedger(),
 ) : IEventStore {
-    private val writes = Mutex()
-
-    /**
-     * THE TRUST GATE, separate from [writes] since 2026-09-04.
-     *
-     * One mutex used to serialise every write in this store, and the hazard it
-     * was documented against is recompute-versus-recompute: "repairs must not
-     * race live inserts' recomputes". A plain kind-1 note has NO recompute —
-     * [TrustProjection.insuranceFor] returns `ProjectionWork.NONE` for every kind but 30382 and
-     * 10040 — so it was excluded against work it cannot conflict with. Measured
-     * on staging: an ephemeral event, which takes the lock and returns without
-     * storing anything, took 35-41 SECONDS to answer OK while the trust drain
-     * held the lock re-deriving reputation documents.
-     *
-     * What a plain insert genuinely needs exclusion for is the DELETION race —
-     * check `isDeleted`, then put, with a kind-5 landing in between would
-     * resurrect a deleted event. That is event-document work and stays on
-     * [writes]. Reputation-document work moves here.
-     *
-     * LOCK ORDER, where both are needed (a card insert does inline projection):
-     * [trustGate] FIRST, then [writes] — never the reverse. The order was
-     * writes-then-gate when the split shipped, and that leaked the drain's
-     * stall back onto every plain writer: a card took [writes] and then waited
-     * for the gate WHILE HOLDING IT, so for the length of a drain slice every
-     * kind-1 in the process queued behind the card. Gate first means a card
-     * waits for the drain holding nothing, and once it has the gate it takes
-     * [writes] for one short hold. The drain and the reconciler only ever
-     * hold the gate, so the pair cannot deadlock as long as every two-lock
-     * path here goes through [gated].
-     */
-    private val trustGate = Mutex()
+    /** The two writer mutexes and their wait/hold accounting — see [WriteLocks]. */
+    private val locks = WriteLocks()
 
     // Owners with any stored tombstone/vanish; everyone else's inserts skip the
     // NIP-09/62 guard probes entirely (see GuardOwners for the safety argument).
     private val guards = GuardOwners(index, writers, guardRefreshMillis)
 
     private val deletions = Deletions(index, relay, sweepPage)
+
+    /** The per-event write rules — shared verbatim with [BulkMixedInsert]'s replay. */
+    private val admission = EventAdmission(index, deletions, guards)
 
     /**
      * WHO THIS READER ASKED TO COMPUTE WHAT — the gate the search expansion
@@ -223,6 +193,25 @@ class NostrSemanticsStore(
      * ungated by design, and this gate never applied to them.
      */
     private suspend fun delegations(): Delegations = (index as? TrustProjection)?.recompute?.delegations() ?: Delegations.NONE
+
+    /**
+     * THE CONNECTION'S OBSERVER, NORMALIZED — lower-cased hex or nothing.
+     *
+     * The `observer:` search token is normalized where it is parsed
+     * ([FilterMapping]), and this is the other way in: a NIP-42 identity off
+     * [StoreQueryContext]. It has to agree with the token, because since the
+     * lens became SERVICE-keyed the resolution is an exact map lookup
+     * (`ProviderMap.lensOf`) keyed by the 10040's own canonical pubkey — a
+     * mixed-case observer misses it, resolves to NO_LENS, and the query goes
+     * out with `user_q = {}` ("trusts nobody"). Under the observer gate, which
+     * stamps a floor on the very same query, every document then scores below
+     * it and the read comes back EMPTY rather than un-lensed — a silent wrong
+     * answer, not a degraded one.
+     *
+     * Non-hex is dropped rather than passed through: `EventYql` would drop it
+     * anyway, and a value that cannot key a lens must not switch on the gate.
+     */
+    private suspend fun connectionObserver(): String? = coroutineContext[StoreQueryContext]?.observer?.lowercase()?.takeIf(Hex::isHex64)
 
     /**
      * THE LENS, RESOLVED: the reputation tensors are keyed by SERVICE key, so
@@ -244,90 +233,43 @@ class NostrSemanticsStore(
         }
     }
 
+    /**
+     * The read path's page assembly — ordering, splicing, narrowing, the cap.
+     * Handed the enrolment supplier rather than the projection: on a relay
+     * holding no 10040s that read is never cached, so it resolves at most once
+     * per observer, and only on the paths that consult the gate.
+     */
+    private val pages = PageAssembly(searchExpansion, maxHitsPerAuthor, { observer -> if (observer == null) Enrolment.NONE else delegations().of(observer) })
+
+    /** How the page assembly reads and recalls a stored document. */
+    private val docPage =
+        PageAssembly.Projection(
+            newestFirst = EventDoc.NEWEST_FIRST,
+            keys = DOC_KEYS,
+            idOf = EventDoc::id,
+            kindOf = EventDoc::kind,
+            authorOf = EventDoc::pubkey,
+            pointerOf = { if (it.kind in SearchReferences.KINDS) it.toEvent() else null },
+            search = { index.search(it) },
+            searchRanked = { index.searchRanked(it) },
+        )
+
+    /** The same, off a raw row — the projection the wire-serving path uses. */
+    private val rawPage =
+        PageAssembly.Projection(
+            newestFirst = RAW_NEWEST_FIRST,
+            keys = RAW_KEYS,
+            idOf = RawEvent::id,
+            kindOf = RawEvent::kind,
+            authorOf = RawEvent::pubKey,
+            pointerOf = { if (it.kind in SearchReferences.KINDS) it.toEvent() else null },
+            search = { index.rawSearch(it) },
+            searchRanked = { index.rawSearchRanked(it) },
+        )
+
     private val bulkRecords = BulkRecordInsert(index, relay, guards)
 
-    private val bulkMixed = BulkMixedInsert(index, relay, nowSecs, guards)
-
-    /** A writer-lock label's two [IngestStats] stage names, interned at construction. */
-    private class LockStage(
-        name: String,
-        /**
-         * WHICH MUTEX this label takes. Several share one: `lock.gate`,
-         * `lock.ingest.trust`, `lock.sweep.trust` and `lock.reindex.trust` are
-         * all [trustGate]; `lock.ingest`, `lock.sweep` and `lock.reindex` are
-         * all [writes]. The wait attribution matches waiter to holder by THIS,
-         * because matching by label misses every cross-label contention — which
-         * is most of it (docs/telemetry.md §15.1).
-         */
-        val lock: String,
-    ) {
-        val wait = "$name.wait"
-        val hold = "$name.hold"
-    }
-
-    /**
-     * Take [writes], booking the WAIT and the HOLD under separate [IngestStats]
-     * stages named for [stage].
-     *
-     * Every other stage timer starts once the lock is already held, so a writer
-     * starved by another holder would otherwise show up as fast stages and a
-     * stalled pipeline with nothing naming the reason. The deferred trust
-     * projection makes that real: it re-derives off the ingest path but INSIDE
-     * this lock (ProjectionLedger.drain's gate), so `proj.fetch` and an ingest commit
-     * contend for one mutex while both look cheap individually. `lock.*.wait`
-     * makes that visible; `lock.*.hold` attributes it.
-     */
-    private suspend fun <T> locked(
-        stage: LockStage,
-        body: suspend () -> T,
-    ): T = lockedOn(writes, stage, body)
-
-    /** [locked], on a named mutex — see [trustGate] for why there are two. */
-    private suspend fun <T> lockedOn(
-        mutex: Mutex,
-        stage: LockStage,
-        body: suspend () -> T,
-    ): T {
-        val requested = System.nanoTime()
-        // WHAT THIS WRITER IS ABOUT TO QUEUE BEHIND, sampled before we block —
-        // the one causal edge in this design. Keyed by the MUTEX, not the stage
-        // label, because several labels share each mutex and a label match
-        // silently attributes nothing (docs/telemetry.md §15.1).
-        val blockedBy = IngestStats.holderOf(stage.lock)?.let { IngestStats.labelOf(it) }
-        var acquired = 0L
-        try {
-            return mutex.withLock {
-                acquired = System.nanoTime()
-                // Live holder, for the question the cumulative stages cannot
-                // answer: not "the gate was held for 24 minutes since boot"
-                // but "the gate is held RIGHT NOW, by this, for this long".
-                // Two volatile writes per critical section, against a section
-                // that is measured in seconds.
-                IngestStats.beginHold(stage.hold, lock = stage.lock)
-                try {
-                    body()
-                } finally {
-                    IngestStats.endHold(stage.hold)
-                }
-            }
-        } finally {
-            // Booked AFTER release: recording inside would put two map lookups
-            // and two atomic adds in the critical section this exists to
-            // measure, and `hold` would stop short of the actual release.
-            // acquired == 0 means the lock was never taken (cancelled while
-            // waiting) — nothing to attribute.
-            if (acquired != 0L) {
-                val released = System.nanoTime()
-                val waited = acquired - requested
-                IngestStats.add(stage.wait, waited)
-                IngestStats.add(stage.hold, released - acquired)
-                // Only when something was actually holding: an uncontended
-                // acquire waited on nobody, and charging it to a phantom holder
-                // would make the split lie about where contention is.
-                if (blockedBy != null) IngestStats.addBlocked(stage.wait, blockedBy, waited)
-            }
-        }
-    }
+    private val bulkMixed = BulkMixedInsert(index, relay, nowSecs, guards, sweepPage)
 
     /**
      * Trust-relevant writes take BOTH gates; everything else takes only
@@ -348,33 +290,14 @@ class NostrSemanticsStore(
             event is DeletionEvent ||
             event is RequestToVanishEvent
 
-    /**
-     * THE ONE TWO-LOCK SHAPE: [trustGate] when [trust], then [writes] under
-     * [stage]. Every path that needs both goes through here, which is what
-     * makes the order (see [trustGate]) a property of the file rather than of
-     * each call site.
-     *
-     * The gate wait is charged to its OWN stage, not to LOCK_GATE: `lock.gate.*`
-     * is the drain's, and folding an insert's wait for the drain into the same
-     * name would make "the drain is slow" and "a card is waiting for the
-     * drain" one number. They have different remedies.
-     */
-    private suspend fun <T> gated(
-        trust: Boolean,
-        stage: LockStage,
-        /** The stage the GATE wait is booked under — ingest's by default; a sweep or a reindex names its own, so a sweep waiting on the drain does not read as "a card is waiting". */
-        gateStage: LockStage = LOCK_INGEST_TRUST,
-        body: suspend () -> T,
-    ): T = if (trust) lockedOn(trustGate, gateStage) { locked(stage) { body() } } else locked(stage) { body() }
-
     private suspend fun <T> lockedForWrite(
         event: Event,
         body: suspend () -> T,
-    ): T = gated(touchesTrust(event), LOCK_INGEST, body = body)
+    ): T = locks.gated(touchesTrust(event), WriteLocks.INGEST, body = body)
 
     override suspend fun insert(event: Event) = withActivity(Activity.Insert) { insertOne(event) }
 
-    private suspend fun insertOne(event: Event) = lockedForWrite(event) { insertLocked(event) }
+    private suspend fun insertOne(event: Event) = lockedForWrite(event) { admission.admit(event) }
 
     /**
      * Run [body] under this store's TRUST writer lock. For the trust
@@ -392,7 +315,7 @@ class NostrSemanticsStore(
      * that has no reputation work to do. Writes that DO touch reputation still
      * queue for it — see [touchesTrust].
      */
-    internal suspend fun <T> withWriteLock(body: suspend () -> T): T = lockedOn(trustGate, LOCK_GATE) { body() }
+    internal suspend fun <T> withWriteLock(body: suspend () -> T): T = locks.underGate(WriteLocks.GATE) { body() }
 
     /**
      * [lockedForWrite] for a BATCH that must stay whole: the trust gate is
@@ -410,7 +333,7 @@ class NostrSemanticsStore(
     private suspend fun <T> lockedForBatch(
         events: List<Event>,
         body: suspend () -> T,
-    ): T = gated(events.any { touchesTrust(it) }, LOCK_INGEST, body = body)
+    ): T = locks.gated(events.any { touchesTrust(it) }, WriteLocks.INGEST, body = body)
 
     /**
      * Batches take a BULK path — the per-event path costs 3–5 index round
@@ -425,7 +348,7 @@ class NostrSemanticsStore(
      *    replays the per-event rules in memory, order preserved, then writes
      *    the diff.
      *
-     * Sub-[BULK_MIN] batches aren't worth the setup and just loop [insertLocked].
+     * Sub-[BULK_MIN] batches aren't worth the setup and just loop [EventAdmission.admit].
      *
      * A PURE-RECORD BATCH IS SPLIT BY TRUST. The events that touch reputation
      * (cards, provider lists — see [touchesTrust]) commit under the trust gate;
@@ -453,7 +376,7 @@ class NostrSemanticsStore(
     /** [batchInsert]'s body; split because `withActivity` cannot express a non-local return. */
     private suspend fun batchInsertUnder(events: List<Event>): List<IEventStore.InsertOutcome> {
         if (events.any { it is DeletionEvent || it is RequestToVanishEvent }) {
-            return lockedForBatch(events) { if (events.size < BULK_MIN) events.map { tryInsertLocked(it) } else bulkMixed.run(events) }
+            return lockedForBatch(events) { if (events.size < BULK_MIN) events.map { admission.tryAdmit(it) } else bulkMixed.run(events) }
         }
         // Bulk-or-loop is decided on the batch the CALLER sent, not on a
         // half: a 30-event batch split 15/15 must not fall to the per-event
@@ -480,10 +403,10 @@ class NostrSemanticsStore(
         trust: Boolean,
         bulk: Boolean,
     ): List<IEventStore.InsertOutcome> {
-        if (!bulk) return gated(trust, LOCK_INGEST) { events.map { tryInsertLocked(it) } }
+        if (!bulk) return locks.gated(trust, WriteLocks.INGEST) { events.map { admission.tryAdmit(it) } }
         // PLANNED OUTSIDE THE LOCKS, as before: the plan is reads only.
         val plan = bulkRecords.plan(events)
-        return gated(trust, LOCK_INGEST) { bulkRecords.commit(plan) }
+        return locks.gated(trust, WriteLocks.INGEST) { bulkRecords.commit(plan) }
     }
 
     /**
@@ -518,17 +441,6 @@ class NostrSemanticsStore(
         tally.forEach { (reason, n) -> metrics.outcome(activity, reason, n) }
     }
 
-    private suspend fun tryInsertLocked(event: Event): IEventStore.InsertOutcome =
-        try {
-            insertLocked(event)
-            IEventStore.InsertOutcome.Accepted
-        } catch (e: RejectedException) {
-            // Only a SEMANTIC rejection becomes a Rejected outcome. A transient
-            // engine failure must PROPAGATE — swallowing it would silently DROP
-            // a valid event and let the sync cursor advance past it.
-            IEventStore.InsertOutcome.Rejected(e.message ?: Rejections.INSERT_FAILED)
-        }
-
     /** No rollback: buffered inserts apply in order; the first rejection propagates and aborts the rest. */
     override suspend fun transaction(body: IEventStore.ITransaction.() -> Unit) =
         withActivity(Activity.BatchInsert) {
@@ -538,71 +450,8 @@ class NostrSemanticsStore(
                     buffered += event
                 }
             }.body()
-            lockedForBatch(buffered) { buffered.forEach { insertLocked(it) } }
+            lockedForBatch(buffered) { buffered.forEach { admission.admit(it) } }
         }
-
-    /**
-     * The per-event rules with NO lock and NO lock accounting: the caller
-     * holds whatever it needs. Internal for [BulkMixedInsert]'s replay, which
-     * runs these rules against an in-memory snapshot under the real store's
-     * locks — going through [insert] there booked a phantom `lock.ingest`
-     * sample per replayed event into the process-wide [IngestStats].
-     */
-    internal suspend fun insertLocked(event: Event) {
-        if (event.kind.isEphemeral()) return
-        if (event.isExpired()) throw RejectedException(Rejections.EXPIRED)
-        // Text the engine refuses is a property of the event, so it is settled
-        // here with the other no-I/O checks rather than surfacing as a feed
-        // exception three round trips later. See [VespaText].
-        if (VespaText.firstIllegalField(event) != null) throw RejectedException(Rejections.UNSTORABLE_TEXT)
-        // The admission reads — dedup, NIP-09 tombstone, NIP-62 vanish — are
-        // independent, so fire them together and check in the original
-        // precedence (duplicate > deleted > vanished). The dup GET deliberately
-        // stays a read: folding it into a conditional put was A/B-measured
-        // 15-35% slower (see docs/server-side-constraints.md). Guard probes run
-        // only when this owner HAS a stored tombstone/vanish (GuardOwners).
-        val owner = event.owner()
-        val probeDeleted = guards.mightBeDeleted(owner)
-        val probeVanished = guards.mightHaveVanished(owner)
-        if (!probeDeleted && !probeVanished) {
-            // The common case reads just the dup get — skip the fan-out
-            // machinery, which allocates per call.
-            if (index.get(event.id) != null) throw RejectedException(Rejections.DUPLICATE)
-        } else {
-            coroutineScope {
-                val existing = async { index.get(event.id) }
-                val deleted = if (probeDeleted) async { deletions.isDeleted(event) } else null
-                val vanished = if (probeVanished) async { deletions.isVanished(event) } else null
-                if (existing.await() != null) throw RejectedException(Rejections.DUPLICATE)
-                if (deleted?.await() == true) throw RejectedException(Rejections.DELETED)
-                if (vanished?.await() == true) throw RejectedException(Rejections.VANISHED)
-            }
-        }
-        when {
-            event is DeletionEvent -> {
-                deletions.applyDeletion(event)
-                index.put(event.toDoc())
-                guards.noteDeletionStored(event.pubKey)
-            }
-
-            event is RequestToVanishEvent -> {
-                deletions.applyVanish(event)
-                index.put(event.toDoc())
-                guards.noteVanishStored(event.pubKey)
-            }
-
-            // Replaceable/addressable newest-wins in ONE call: false == a
-            // same-or-newer version holds the address, so this insert is
-            // REPLACED (see EventIndex.putIfNewer).
-            event.kind.isReplaceable() || event.kind.isAddressable() -> {
-                if (!index.putIfNewer(event.toDoc())) throw RejectedException(Rejections.REPLACED)
-            }
-
-            else -> {
-                index.put(event.toDoc())
-            }
-        }
-    }
 
     // ---- queries ------------------------------------------------------------
 
@@ -664,26 +513,13 @@ class NostrSemanticsStore(
             }
         }
 
-    /** Whether this query recalls through a rank profile (its trust gates apply engine-side). */
-    private fun EventQuery.isRanked(): Boolean = search != null || phrases.isNotEmpty() || ranking != null
-
-    /**
-     * Whether the ENGINE's hit order is the serving order. Ranked queries keep
-     * relevance order (NIP-50) — except the observer gate's profile, whose
-     * order is defined as NIP-01 recency: the engine's created_at score order
-     * is re-sorted client-side (engine score ties are arbitrary). That covers
-     * `sort:recent` SEARCHES too — the point of the token is that its hits
-     * come back in the same `created_at desc, id asc` order a plain filter's do.
-     */
-    private fun EventQuery.keepsEngineOrder(): Boolean = isRanked() && ranking != EventYql.RANK_RECENCY_GATED && ranking != EventYql.RANK_RECENCY_GATED_EXACT
-
     override suspend fun <T : Event> query(filter: Filter): List<T> = query(listOf(filter))
 
     /**
      * NOTE ON [T]: the reference expansion adds rows the caller's own recall
      * never returned — the subjects a matched label, assertion or Trusted List
      * nominates — so a SEARCHING read can serve more events than it matched.
-     * What it cannot do is serve a KIND the filters did not name: [servedKinds]
+     * What it cannot do is serve a KIND the filters did not name: `PageAssembly.asked`
      * holds the page to the caller's own kinds, so `query<MetadataEvent>(
      * kinds=[0], search=…)` is still all kind 0 and the unchecked cast below —
      * the interface's own idiom — stays honest. A read that named NO kinds
@@ -696,450 +532,13 @@ class NostrSemanticsStore(
     /** [query]'s body; split for the reason [batchInsertUnder] is. */
     @Suppress("UNCHECKED_CAST")
     private suspend fun <T : Event> queryUnder(filters: List<Filter>): List<T> {
-        val observer = coroutineContext[StoreQueryContext]?.observer
+        val observer = connectionObserver()
         val cutoff = nowSecs()
         val queries = lensed(filters.mapNotNull { it.toExpiryQuery(cutoff, observer) })
-        val expansion = expansionOf(queries)
-        val recalled =
-            recallOrdered(
-                queries + companionsOf(expansion, queries),
-                EventDoc.NEWEST_FIRST,
-                EventDoc::id,
-                { index.search(it) },
-                { index.searchRanked(it) },
-                expansion != null,
-            )
-        val page = spliced(expansion, recalled, DOC_KEYS, { if (it.kind in SearchReferences.KINDS) it.toEvent() else null }, { index.searchRanked(it) })
         // Reconstruct via Quartz's by-kind factory straight from the stored
         // fields, skipping the serialize+parse round trip; see [toEvent].
-        // Narrowed to what the caller's own filters admit BEFORE the diversity
-        // cap, so a row about to be dropped cannot spend an author's slots.
-        return page.asked(expansion, filters, EventDoc::kind, EventDoc::id, EventDoc::pubkey).diverse(queries.all { it.keepsEngineOrder() }, EventDoc::pubkey).map { it.toEvent() } as List<T>
+        return pages.serve(queries, filters, docPage).map { it.toEvent() } as List<T>
     }
-
-    /**
-     * The page narrowed to what the caller's filters ADMIT — the same list,
-     * not a copy, whenever nothing expanded or every row passes, which is
-     * every plain recall and every search whose expansion added only rows the
-     * REQ's filters match.
-     *
-     * A kind-restricted search recalls MORE than its own kinds on purpose: the
-     * pointer families that convert into them are fetched as companion queries
-     * ([SearchReferenceExpansion.companions]), because a label, assertion or
-     * Trusted List is the only route to the subjects it names. That is a recall
-     * device, and it stops at recall. A REQ that asked for `kinds:[0]` asked a
-     * NIP-01 question with a NIP-01 answer, and a 30382 on that page is a kind
-     * the client said it did not want — it has no parser for it, it did not
-     * budget a slot for it, and on a relay it is a protocol violation rather
-     * than a bonus. So the pointer does its job (it names subjects, and those
-     * subjects ARE of an asked-for kind) and is then dropped from the answer.
-     *
-     * JUDGED ON KINDS, IDS AND AUTHORS — the three exact keys — each row
-     * against ANY filter, since a REQ ORs its filters and answers with one
-     * page. This used to be a kinds-only check that treated a filter with no
-     * `kinds` as admitting every kind, which served a companion pointer to a
-     * REQ like `[{kinds:[0], search:…}, {ids:[e1]}]` — the second filter has
-     * no kinds but admits exactly one event, and the 30392 matched neither.
-     * Not tags or the time window, deliberately: the engine matches tag values
-     * uncased and a client-side matcher would not, so re-judging those here
-     * could drop a hit the engine rightly served; the exact keys have one
-     * answer on both sides. Everything else the expansion nominates was looked
-     * up under the finding query with its terms stripped, so it passed the
-     * same keys the hits did and passes here too; the pointer kinds are the
-     * one constraint the companions deliberately step outside of.
-     */
-    private fun <R> List<R>.asked(
-        expansion: SearchReferenceExpansion?,
-        filters: List<Filter>,
-        kindOf: (R) -> Int,
-        idOf: (R) -> String,
-        authorOf: (R) -> String,
-    ): List<R> {
-        if (expansion == null) return this
-        val keys = filters.map { Triple(it.kinds?.toSet(), it.ids?.mapTo(HashSet()) { id -> id.lowercase() }, it.authors?.mapTo(HashSet()) { a -> a.lowercase() }) }
-
-        fun admitted(row: R): Boolean =
-            keys.any { (kinds, ids, authors) ->
-                (kinds == null || kindOf(row) in kinds) && (ids == null || idOf(row) in ids) && (authors == null || authorOf(row) in authors)
-            }
-        if (all(::admitted)) return this
-        return filter(::admitted)
-    }
-
-    /**
-     * The page with no author holding more than [maxHitsPerAuthor] rows —
-     * the same list, not a copy, whenever the cap is off or nothing exceeds it,
-     * which is every read on a default store.
-     *
-     * STABLE and FIRST-WINS: the rows an author keeps are the ones the ranking
-     * put highest, and everything else stays exactly where it was. A spliced
-     * member cannot be dropped by this in practice — a person has one profile,
-     * so one row — which is the right asymmetry: the cap exists to stop one
-     * author's BULK from taking a page, not to ration the people a list names.
-     */
-    private fun <R> List<R>.diverse(
-        /**
-         * Read off the QUERIES, not off whether the page came back with scores.
-         * The two differ on an engine that does not rank — the in-memory
-         * reference reports a null score per hit — and which pages an operator
-         * capped must not depend on which engine answered them.
-         */
-        ranked: Boolean,
-        authorOf: (R) -> String,
-    ): List<R> {
-        val cap = maxHitsPerAuthor ?: return this
-        if (!ranked || size <= cap) return this
-        val seen = HashMap<String, Int>()
-        var dropped = false
-        val kept = ArrayList<R>(size)
-        for (hit in this) {
-            val n = seen.merge(authorOf(hit), 1, Int::plus)!!
-            if (n <= cap) kept.add(hit) else dropped = true
-        }
-        return if (dropped) kept else this
-    }
-
-    /**
-     * The page narrowed to [kinds] — the same list, not a copy, whenever there
-     * is nothing to narrow (see [servedKinds]) or nothing fell outside, which
-     * is every plain recall and every search whose expansion added only
-     * asked-for kinds.
-     */
-    private fun <R> List<R>.asked(
-        kinds: Set<Int>?,
-        kindOf: (R) -> Int,
-    ): List<R> {
-        if (kinds == null || all { kindOf(it) in kinds }) return this
-        return filter { kindOf(it) in kinds }
-    }
-
-    /**
-     * The reference expansion for this read, or null where nothing can ever
-     * expand: the feature switched off, or no query carrying TERMS. Terms, not
-     * "carries a search field" — every anonymous read on a lens-requiring
-     * relay stamps `include:spam`, and a mirror's paging carries it too, so
-     * gating on the field would put all of that traffic behind an expansion
-     * none of it asked for.
-     *
-     * Created BEFORE the recall, because the expansion now shapes it: a
-     * searching read also recalls the pointer kinds it would otherwise miss
-     * ([SearchReferenceExpansion.companions]) — the ones a kind-restricted
-     * query cannot return at all, and the enrolled signers' declarations an
-     * unrestricted one ranks below its own page. Without that, the lists,
-     * assertions and labels whose text matched are never returned, and neither
-     * this store nor the client ever learns there was anything to unpack.
-     *
-     * The GATE READ STAYS LAZY. [ProviderMap] never caches an empty pass, so
-     * on a relay holding no 10040s the delegations read is one small engine
-     * query every time it is asked — which is why the enrolment goes in as a
-     * supplier the expansion resolves at most once, and only on the paths
-     * that consult the gate: building a declaration companion, or meeting a
-     * declaration pointer in the page. An anonymous read resolves to
-     * [Enrolment.NONE] without ever querying, as before, and a termless one
-     * never reaches the gate at all. An UNRESTRICTED-kind read with an
-     * observer now does resolve it — it builds a declaration companion like
-     * any other searching read — which is one small query per such read on a
-     * relay with no 10040s to cache, the price of the reader's own lists
-     * reaching a page they were ranked off.
-     */
-    private fun expansionOf(queries: List<EventQuery>): SearchReferenceExpansion? {
-        if (!searchExpansion.enabled) return null
-        val searching = queries.filter { it.search != null || it.phrases.isNotEmpty() }
-        if (searching.isEmpty()) return null
-        // An ANONYMOUS read can unpack no declaration at all, and asking the
-        // gate to say so would cost a provider-list query on a relay that holds
-        // no Treasure Maps — where the answer is never cached, by design. Labels
-        // are ungated, so the expansion still runs; it just runs with nothing
-        // enrolled.
-        //
-        // PER OBSERVER, never pooled: the supplier takes the lens's own observer
-        // and the expansion memoizes per key, so one filter's `observer:` can
-        // never unpack a declaration only the filter beside it enrolled. The
-        // resolution is the same one either way — `delegations()` caches the
-        // parsed Maps, and `of()` is a pure fold over that cache — so a
-        // two-lens read costs a second fold, not a second query.
-        return SearchReferenceExpansion(
-            searching,
-            { observer -> if (observer == null) Enrolment.NONE else delegations().of(observer) },
-            searchExpansion,
-        )
-    }
-
-    /**
-     * [SearchReferenceExpansion.companions] minus any query the caller already
-     * sent: a REQ can legitimately carry the very filter a companion would
-     * duplicate (`kinds:[1]` beside `kinds:[1985]`, same terms), and running
-     * the identical query twice buys nothing the id-dedup doesn't already
-     * guarantee.
-     */
-    private suspend fun companionsOf(
-        expansion: SearchReferenceExpansion?,
-        queries: List<EventQuery>,
-    ): List<EventQuery> = expansion?.companions()?.filterNot { it in queries } ?: emptyList()
-
-    /**
-     * Recall every query concurrently (bounded), dedup across queries, and
-     * order the result — ONE order over the union, not one order per filter.
-     *
-     * NIP-50 asks for relevance order and NIP-01 for recency, and a REQ can
-     * carry both kinds of filter at once, so there are three cases:
-     *
-     *  - **No query ranked.** The union is sorted `created_at desc, id asc` —
-     *    the NIP-01 order, applied across filters.
-     *  - **Every query ranked, by the SAME profile.** The union is merged on the
-     *    engine's relevance, ties broken by recency: the filters are several
-     *    ways of asking one question, and their answers belong in one order.
-     *    It costs the scores, which is why [EventIndex.searchRanked] exists.
-     *  - **Mixed, or ranked by different profiles.** Each query's hits keep
-     *    their own order and the runs are concatenated. A relevance score and a
-     *    timestamp share no scale, and neither do two profiles' scores, so
-     *    interleaving them would be inventing a comparison. The honest floor,
-     *    not a good answer — a client that wants one order should ask one
-     *    question.
-     *
-     * Dedup is by id and keeps the BEST copy: sorting before [distinctBy] means
-     * an event that answered two filters survives at its higher score.
-     */
-    private suspend fun <R> recallOrdered(
-        queries: List<EventQuery>,
-        newestFirst: Comparator<R>,
-        idOf: (R) -> String,
-        searchOne: suspend (EventQuery) -> List<R>,
-        searchRankedOne: suspend (EventQuery) -> List<Ranked<R>>,
-        /**
-         * Whether the CALLER needs the per-hit relevance kept — the splice does,
-         * to place a subject by the confidence its pointer expressed.
-         *
-         * IT COSTS NOTHING ON A RANKED QUERY, which is the only kind it applies
-         * to: `recallSummaries` already goes through `rankedHits` there, one
-         * `recallRoot` call, and the ranked path differs only in keeping the
-         * `relevance` Vespa already returned. What the single-query fast path
-         * avoids is wrapping every hit of an ORDINARY REQ — and an ordinary REQ
-         * is recency-ordered, so `keepsEngineOrder()` sends it down the
-         * score-free branch regardless of this flag.
-         */
-        wantScores: Boolean = false,
-    ): Page<R> {
-        if (queries.isEmpty()) return Page(emptyList(), null)
-        // One filter is the ordinary REQ and never needs a score: its engine
-        // order IS the answer, and asking for scores would wrap every hit on
-        // the hottest read a relay serves.
-        if (queries.size == 1) {
-            if (wantScores && queries[0].keepsEngineOrder()) return Page.of(searchRankedOne(queries[0]))
-            val hits = searchOne(queries[0])
-            return Page(if (queries[0].keepsEngineOrder()) hits else hits.sortedWith(newestFirst), null)
-        }
-        if (queries.none { it.keepsEngineOrder() }) {
-            return Page(
-                queries
-                    .mapBounded(QUERY_FANOUT) { searchOne(it) }
-                    .flatten()
-                    .distinctBy(idOf)
-                    .sortedWith(newestFirst),
-                null,
-            )
-        }
-        // [EventYql.profileOf], not `ranking`: the field is null for every
-        // ordinary search and the profile is picked from the query's shape, so
-        // two filters where only one carries `observer:` read as "same profile"
-        // by the field while running on `search` and `text` — two scales,
-        // interleaved.
-        if (queries.all { it.keepsEngineOrder() } && queries.mapTo(HashSet()) { EventYql.profileOf(it) }.size == 1) {
-            val scored = queries.mapBounded(QUERY_FANOUT) { searchRankedOne(it) }.flatten()
-            // An engine that does not rank (the in-memory reference) reports a
-            // null rather than a fabricated constant; its hits are already
-            // newest-first, so recency is the merge that keeps them coherent.
-            if (scored.any { it.score == null }) {
-                return Page(
-                    scored
-                        .map { it.hit }
-                        .distinctBy(idOf)
-                        .sortedWith(newestFirst),
-                    null,
-                )
-            }
-            return Page.of(
-                scored
-                    .sortedWith(compareByDescending<Ranked<R>> { it.score }.thenBy(newestFirst) { it.hit })
-                    .distinctBy { idOf(it.hit) },
-            )
-        }
-        val results = queries.mapBounded(QUERY_FANOUT) { searchOne(it) }
-        val ordered = queries.zip(results).flatMap { (q, hits) -> if (q.keepsEngineOrder()) hits else hits.sortedWith(newestFirst) }
-        // Two scales already, which is why these runs are concatenated rather
-        // than merged — so there is no coherent score to carry out of here.
-        return Page(ordered.distinctBy(idOf), null)
-    }
-
-    /**
-     * ONE ORDERED PAGE, AND THE RELEVANCE BEHIND IT — [scores] index-aligned
-     * with [hits], or NULL for the pages that have none: a recency-ordered
-     * recall, two ranking profiles concatenated, an engine that does not rank.
-     *
-     * A nullable parallel list rather than a `List<Ranked<R>>` because the
-     * unscored page is the hot one. A plain NIP-01 recall, a mirror's paging and
-     * a NIP-77 catch-up all land here, and wrapping every hit of those in a
-     * score-carrying object — then unwrapping it again in [spliced] — would be
-     * two copies of the page and an allocation per event to carry a null.
-     */
-    private class Page<R>(
-        val hits: List<R>,
-        val scores: List<Double?>?,
-        /**
-         * The TEXT band behind each score — `Ranked.textScore`, index-aligned
-         * with [hits] and null wherever [scores] is. The splice places a
-         * Trusted List's member by the band the LIST earned times what the list
-         * says about that MEMBER, so it needs the pointer's text apart from the
-         * signer's trust that [scores] multiplies in.
-         */
-        val texts: List<Double?>? = null,
-    ) {
-        companion object {
-            fun <R> of(ranked: List<Ranked<R>>) = Page(ranked.map { it.hit }, ranked.map { it.score }, ranked.map { it.textScore })
-        }
-    }
-
-    /**
-     * THE ORDERED PAGE, PLUS WHAT IT POINTS AT — a label's subject behind the
-     * label, a Trusted List's members behind the list.
-     *
-     * Runs after [recallOrdered] rather than inside it, but over the [Page] it
-     * produced rather than over a bare list: a scored member is placed by the
-     * relevance the ENGINE gave it on the member rung, and its pointer rises to
-     * sit just above the best of them, so the placement needs both the finished
-     * order AND the scores that produced it. Splicing inside the recall would
-     * have to answer that question once per ordering case; here it is answered
-     * once.
-     *
-     * Returns the page's hits UNTOUCHED — the same list, not a copy — whenever
-     * [expansion] is null, which is every plain recall this store serves
-     * (see [expansionOf] for what qualifies). There is no cheaper early-out
-     * left to take here: since the conversion recall, EVERY searching read can
-     * splice — a kind-restricted one reaches its pointers through the
-     * companion queries — so "can serve no pointer kind" no longer exists as
-     * a shape.
-     */
-    private suspend fun <R> spliced(
-        expansion: SearchReferenceExpansion?,
-        page: Page<R>,
-        keys: SubjectKeys<R>,
-        pointerOf: (R) -> Event?,
-        recall: suspend (EventQuery) -> List<Ranked<R>>,
-    ): List<R> {
-        val hits = page.hits
-        if (expansion == null || hits.isEmpty()) return hits
-        val expanded = expansion.expand(hits, page.scores, page.texts, keys, pointerOf, recall)
-
-        // THE POINTER'S OWN ORDER FIRST, always — the sort below is a stable
-        // re-sort of it, so a tie between a subject and its own pointer resolves
-        // the only way it can read: the reason above the result. It is also the
-        // answer whenever there are no scores to sort by.
-        val placed = ArrayList<Placed<R>>(hits.size)
-        hits.forEachIndexed { i, hit ->
-            val pointer = page.scores?.get(i)
-            // THE POINTER RISES TO ITS BEST MEMBER — it does not hold them down.
-            //
-            // "A reason cannot rank below the thing it explains" is still the
-            // invariant, and this is the direction that satisfies it without
-            // deciding the page. The other direction — clamping each member to
-            // its pointer's score — made the SIGNER's trust the ceiling for
-            // everyone the list names, and a trust service is a key nobody
-            // follows: on the staging relay a `Verified Human` list signed by a
-            // service scored 26 pinned sixteen members scored 65..100 to one
-            // number (550 x wot(26)), so they came back in the publisher's tag
-            // order, three orders of magnitude below their own relevance,
-            // beneath organic hits from authors trusted 7. Member trust and
-            // publisher confidence — the two things `event.sd` §13 computes —
-            // could not move a member at all.
-            //
-            // Lifting instead keeps the pill row's reading exactly: the raised
-            // score is a MAX over the pointer's own members, so no subject can
-            // pass it, and a tie between the pointer and its best member
-            // resolves to the pointer because the stable sort sees it first.
-            //
-            // Only SCORED members lift, which is why a label is untouched by
-            // this: it expresses no confidence, none of its subjects is fetched
-            // under a member profile, `lifted` collapses to `pointer`, and the
-            // placement is bit-identical to before.
-            //
-            // A LOOP, not filterNotNull().maxOrNull(): this runs for every hit
-            // of every scored page, and the overwhelming majority of them carry
-            // no subjects at all — a throwaway ArrayList per row to reduce an
-            // empty list is the wrong price for a page of 500.
-            val lifted =
-                if (pointer == null) {
-                    null
-                } else {
-                    var best: Double = pointer
-                    for (score in expanded.scores[i]) {
-                        if (score != null && score > best) best = score
-                    }
-                    best
-                }
-            if (expanded.fresh[i]) placed.add(Placed(hit, lifted))
-            expanded.subjects[i].forEachIndexed { j, subject ->
-                val own = expanded.scores[i][j]
-                placed.add(
-                    Placed(
-                        subject,
-                        when {
-                            // NO RUNG, SO NO MOVE — it sits WITH its pointer.
-                            // A reference that expressed no confidence (a
-                            // NIP-32 label, a NIP-85 assertion) was never
-                            // fetched under the member profile, so it takes the
-                            // pointer's score and a stable sort puts it right
-                            // behind it. That is the placement those two
-                            // families have always had, and it is right:
-                            // neither claim is probabilistic, so there is no
-                            // doubt for a rung to express.
-                            //
-                            // The LIFTED score, not the raw one, because
-                            // adjacency is the whole point of this branch. On a
-                            // list mixing scored and unscored members the raw
-                            // pointer score would strand the unscored ones
-                            // where the block used to be — on the staging
-                            // numbers, ~340x below the siblings they were named
-                            // beside. For a label, which has no scored member
-                            // to lift anything, `lifted` IS `pointer` and this
-                            // is bit-identical to before.
-                            own == null -> lifted
-
-                            // An UNSCORED pointer on a scored member is still a
-                            // null, exactly as it was under the ceiling: it is
-                            // the signal that this page cannot be sorted at all
-                            // and must keep the pointer's own order. Answering
-                            // `own` here would let one row's missing score turn
-                            // a fallback page into a sorted one.
-                            pointer == null -> null
-
-                            // THE ENGINE'S OWN NUMBER, unclamped — see the
-                            // lift above for what used to happen here.
-                            else -> own
-                        },
-                    ),
-                )
-            }
-        }
-        // ONE SCALE, THE ENGINE'S. Hits carry the relevance their rank profile
-        // gave them; members carry the relevance a MEMBER profile gave them on
-        // the same ladder (event.sd §13), so the two sort together without this
-        // class doing arithmetic on either. Nothing to normalize, nothing to
-        // shift: a number computed here could only ever be a guess about a
-        // scale the engine owns, and the guess is what broke.
-        //
-        // A page missing any score cannot be sorted at all — the in-memory
-        // reference reports null rather than fabricating a constant, and a
-        // recency-ordered read has no relevance to give — so it keeps the
-        // pointer's own order.
-        if (placed.any { it.score == null }) return placed.map { it.row }
-        return placed.sortedByDescending { it.score }.map { it.row }
-    }
-
-    /** A row and the relevance the ENGINE placed it by — its rank profile's for a hit, the member profile's for a subject. */
-    private class Placed<R>(
-        val row: R,
-        val score: Double?,
-    )
 
     /**
      * Raw read path: recall matches as Quartz [RawEvent]s, skipping the
@@ -1152,23 +551,10 @@ class NostrSemanticsStore(
         filters: List<Filter>,
         onEach: (RawEvent) -> Unit,
     ) = withActivity(Activity.Query) {
-        val observer = coroutineContext[StoreQueryContext]?.observer
+        val observer = connectionObserver()
         val cutoff = nowSecs()
         val queries = lensed(filters.mapNotNull { it.toExpiryQuery(cutoff, observer) })
-        val expansion = expansionOf(queries)
-        val ordered =
-            recallOrdered(
-                queries + companionsOf(expansion, queries),
-                RAW_NEWEST_FIRST,
-                RawEvent::id,
-                { index.rawSearch(it) },
-                { index.rawSearchRanked(it) },
-                expansion != null,
-            )
-        spliced(expansion, ordered, RAW_KEYS, { if (it.kind in SearchReferences.KINDS) it.toEvent() else null }, { index.rawSearchRanked(it) })
-            .asked(expansion, filters, RawEvent::kind, RawEvent::id, RawEvent::pubKey)
-            .diverse(queries.all { it.keepsEngineOrder() }, RawEvent::pubKey)
-            .forEach(onEach)
+        pages.serve(queries, filters, rawPage).forEach(onEach)
     }
 
     override suspend fun <T : Event> query(
@@ -1206,7 +592,7 @@ class NostrSemanticsStore(
 
     /** [count]'s body; split for the reason [batchInsertUnder] is. */
     private suspend fun countUnder(filters: List<Filter>): Int {
-        val observer = coroutineContext[StoreQueryContext]?.observer
+        val observer = connectionObserver()
         val cutoff = nowSecs()
         val queries =
             lensed(filters.mapNotNull { it.toExpiryQuery(cutoff, observer) })
@@ -1394,6 +780,14 @@ class NostrSemanticsStore(
         // Exclude already-expired events (NIP-40), exactly as query/count do —
         // otherwise a peer keeps trying to reconcile events we refuse to serve.
         val cutoff = nowSecs()
+        // SERIAL, where `query` and `count` fan out at QUERY_FANOUT — and it is
+        // a choice, not an oversight. The fold below is unsynchronized (`all`,
+        // `seen`), so a fan-out would have to hand each walk its own list and
+        // merge after, which on the one read that materializes a whole corpus
+        // slice adds a partial copy per in-flight filter to the peak. What that
+        // buys is bounded by the cap: its early exit — the filters left can
+        // only add to the union — is work a fan-out has already done. Worth
+        // revisiting for the uncapped NIP-77 catch-up, with the heap measured.
         for (q in filters.mapNotNull { it.toExpiryQuery(cutoff) }) {
             // Already over budget: the filters left can only add to the union.
             if (cap != null && all.size >= cap) break
@@ -1438,7 +832,7 @@ class NostrSemanticsStore(
         // threw, half-wiped.
         val queries = filters.filterNot { it.isEmpty() }.mapNotNull { it.toEventQuery() }
         if (queries.isEmpty()) return
-        gated(trust = true, LOCK_SWEEP, LOCK_SWEEP_TRUST) {
+        locks.gated(trust = true, WriteLocks.SWEEP, WriteLocks.SWEEP_TRUST) {
             queries.forEach { deletions.sweep(it) }
         }
     }
@@ -1448,7 +842,7 @@ class NostrSemanticsStore(
             // expiresBefore is strict (<): +1 makes "expires exactly now" due, per NIP-40.
             // Both locks, for the reason on [delete]: NIP-40 expiry does not ask
             // what kind it is reaping, so it can reap cards.
-            gated(trust = true, LOCK_SWEEP, LOCK_SWEEP_TRUST) { deletions.sweep(EventQuery(expiresBefore = nowSecs() + 1)) }
+            locks.gated(trust = true, WriteLocks.SWEEP, WriteLocks.SWEEP_TRUST) { deletions.sweep(EventQuery(expiresBefore = nowSecs() + 1)) }
         }
 
     // ---- full-text reindex --------------------------------------------------
@@ -1508,7 +902,7 @@ class NostrSemanticsStore(
         batchSize: Int,
     ): FtsReindexProgress {
         val (progress, trustDocs) =
-            locked(LOCK_REINDEX) {
+            locks.underWrites(WriteLocks.REINDEX) {
                 val page = index.visitDocsPage(EventQuery(), resumeFrom, batchSize)
                 // ONE pipelined write per page: serial awaited puts pay per-op ack
                 // latency — hours of it on a churny reindex.
@@ -1540,7 +934,7 @@ class NostrSemanticsStore(
                 FtsReindexProgress(cursor = page.continuation, processedThisBatch = page.docs.size, done = page.continuation == null) to trust
             }
         if (trustDocs.isNotEmpty()) {
-            gated(trust = true, LOCK_REINDEX, LOCK_REINDEX_TRUST) {
+            locks.gated(trust = true, WriteLocks.REINDEX, WriteLocks.REINDEX_TRUST) {
                 // [writes] was released to take the gate in order, so a
                 // supersession may have landed since the page was read, and
                 // re-putting the page's copy of a replaced card would roll the
@@ -1572,33 +966,8 @@ class NostrSemanticsStore(
     }
 
     private companion object {
-        /** The [writes] mutex, as the wait attribution names it. */
-        const val WRITE_LOCK = "writes"
-
-        /** The [trustGate] mutex, as the wait attribution names it. */
-        const val TRUST_GATE = "trustGate"
-
         /** The outcome key for an insert that failed on the ENGINE rather than on a rule. */
         const val OUTCOME_FAILED = "failed"
-
-        /**
-         * Writer-lock stage labels, named for the CALLER rather than the
-         * operation: these exist to say which side of the contention a stall is
-         * on ("ingest waited 40s while the gate held 40s"). Built once per
-         * label, since `insert()` takes this lock per event and a String
-         * allocation is not what a measurement should cost.
-         */
-        val LOCK_INGEST = LockStage("lock.ingest", WRITE_LOCK)
-        val LOCK_GATE = LockStage("lock.gate", TRUST_GATE)
-
-        /** A trust-relevant insert queueing for [trustGate] — see [touchesTrust]. */
-        val LOCK_INGEST_TRUST = LockStage("lock.ingest.trust", TRUST_GATE)
-        val LOCK_SWEEP = LockStage("lock.sweep", WRITE_LOCK)
-        val LOCK_REINDEX = LockStage("lock.reindex", WRITE_LOCK)
-
-        /** A sweep's / a reindex page's wait for the trust gate, apart from ingest's — different holders, different remedies. */
-        val LOCK_SWEEP_TRUST = LockStage("lock.sweep.trust", TRUST_GATE)
-        val LOCK_REINDEX_TRUST = LockStage("lock.reindex.trust", TRUST_GATE)
 
         /** Batches this size or larger take the bulk path; smaller ones aren't worth its setup. */
         const val BULK_MIN = 16

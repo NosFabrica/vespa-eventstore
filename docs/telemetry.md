@@ -1252,8 +1252,9 @@ an assertion in `TelemetryIT` that a reconcile books port calls at all. The
 lesson is the same one §16 and §17 record from the other direction: the meter
 is a decorator, so **anything constructed with the undecorated index is
 invisible by construction**, and nothing about that is visible at the call
-site. `VespaEventStore.eventIndex` — the public handle, deliberately raw for
-`feedStatus` and counts — now says so in its own KDoc.
+site. `VespaEventStore.engine` — the public handle, deliberately raw for
+counts and rank-quality measurement (and read-only: the concrete client behind
+it is private) — says so in its own KDoc.
 
 `ReputationIndex` remains unmetered, and that is a scope boundary rather than
 an oversight: it is a second port, its reads are the trust projection's, and
