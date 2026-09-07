@@ -121,6 +121,35 @@ class EngineReadsTest {
         }
 
     /**
+     * MEMBERSHIP, AND THE PATH IT MUST TAKE. The set is the easy half: any
+     * implementation that answered by searching `EventQuery(ids = ...)` would
+     * return exactly these ids too. So this also pins the SUMMARY CLASS — the
+     * attribute-only `dedup` class, which answers from the id attribute in
+     * memory instead of fetching disk summaries (2.2x end to end; see
+     * benchmark/README.md). A facet that delegated to `search` would be
+     * correct and would quietly cost an ingest that rate.
+     */
+    @Test
+    fun `existingIds answers membership off the id attribute`() =
+        runBlocking {
+            val engine = EngineReads(index)
+            val held = listOf("1".repeat(64), "2".repeat(64))
+            index.putAll(held.map { doc(it) })
+
+            val at = mock.searchRequests.size
+            assertEquals(
+                held.toSet(),
+                engine.existingIds(held + "3".repeat(64)),
+                "only the ids the engine holds may come back",
+            )
+            assertEquals(
+                "dedup",
+                mock.searchRequests.drop(at).last()["presentation.summary"],
+                "membership must ride the attribute-only summary, not a document fetch",
+            )
+        }
+
+    /**
      * THE DOCUMENTED COST OF USING IT: the meter is a decorator one layer up,
      * so a read taken here is invisible to `VespaEventStore.metrics()`. That is
      * right for a health count and wrong for anything that walks the corpus —

@@ -34,13 +34,16 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
  *  - **What a rank profile does**, measured: the rank-quality harness names a
  *    profile per query and compares the orders, which is a question about the
  *    engine and not about the store's answer.
+ *  - **Whether an id is already held**, before paying to verify it: an ingest
+ *    that skips a duplicate wants membership in the corpus, which is a
+ *    different question from whether the connecting user could see it.
  *
  * READ-ONLY, and that is the point of the type. This used to be the concrete
  * [VespaEventIndex] hanging off the front door, which handed every consumer
  * `put`, `putAll`, `removeDocs` and a settable `trustDescent` — a way to write
  * to the index behind every rule the store exists to enforce (deletion guards,
  * supersession, the trust projection's reactions), reachable by autocomplete.
- * Nothing needed that; three read shapes did.
+ * Nothing needed that; the read shapes below did.
  *
  * NOT METERED: reads made here appear in no activity on
  * `VespaEventStore.metrics()`, because the meter is a decorator one layer up.
@@ -59,4 +62,16 @@ class EngineReads internal constructor(
 
     /** How many documents [query] matches — exact, and un-gated. */
     suspend fun count(query: EventQuery): Int = index.count(query)
+
+    /**
+     * Which of [ids] the engine already holds — a pure membership read, and
+     * the cheapest one the index offers (an id-only summary, no documents).
+     *
+     * UN-LENSED ON PURPOSE, which is what makes it right for a dedup gate: an
+     * event this store already holds must be skipped whether or not the trust
+     * view would serve it, and a lensed answer would re-admit everything the
+     * gate hides. It follows that a hit here is NOT a promise that a read will
+     * return the event — only that writing it again would be wasted work.
+     */
+    suspend fun existingIds(ids: List<String>): Set<String> = index.existingIds(ids)
 }
