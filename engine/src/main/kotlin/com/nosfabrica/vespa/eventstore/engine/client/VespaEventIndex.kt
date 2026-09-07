@@ -1226,7 +1226,11 @@ class VespaEventIndex(
         // requireComplete throws.
         publish(vq, root, envelope.timing)
         captureSlow(vq, t0, envelope.timing, root.children.size.toLong(), root.fields.totalCount.toLong())
-        val allowMatchPhase = vq.ranking == EventYql.RANK_RECENCY || vq.ranking == EventYql.RANK_RECENCY_GATED
+        // `sampled` joins the recency profiles here rather than bypassing the
+        // check: a truncated page is still RECORDED below, so a cluster
+        // degrading every read shows up in the numbers either way — it just
+        // stops killing the reads that a subset already answers.
+        val allowMatchPhase = vq.sampled || vq.ranking == EventYql.RANK_RECENCY || vq.ranking == EventYql.RANK_RECENCY_GATED
         // RECORDED WHETHER OR NOT IT THROWS. A match-phase cut on a recency
         // profile is ALLOWED and returned silently, so a cluster degrading
         // every read shows up here before anything refuses and long before

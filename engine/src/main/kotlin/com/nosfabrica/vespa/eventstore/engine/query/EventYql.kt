@@ -284,6 +284,7 @@ object EventYql {
             params = params,
             ranking = RANK_UNRANKED,
             complete = q.complete,
+            sampled = q.sampled,
         )
     }
 
@@ -499,6 +500,7 @@ object EventYql {
             params = params,
             ranking = ranking,
             complete = q.complete,
+            sampled = q.sampled,
         )
     }
 
