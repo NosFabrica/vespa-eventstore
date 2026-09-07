@@ -58,8 +58,6 @@ internal class TrustRecompute(
     private val inner: EventIndex,
     private val reputations: ReputationIndex,
     private val nowSecs: () -> Long = { System.currentTimeMillis() / 1000 },
-    /** Told what every whole-document write stored, so the cell path never reads a stale-high value — see [MaxRankCache]. */
-    private val maxRanks: MaxRankCache? = null,
 ) {
     /** The named services and every observer's lens, cached across a pass; see [ProviderMap]. */
     private val providers = ProviderMap(inner, nowSecs)
@@ -134,14 +132,12 @@ internal class TrustRecompute(
         val derived = deriveBatch(subjects, serviceProviders)
         IngestStats.timed("proj.write") {
             reputations.putAll(derived.values.toList())
-            maxRanks?.remember(derived.values)
             if (removeEmpties) {
                 // Pipelined like the puts above: this used to be one feed round
                 // trip per subject at QUERY_FANOUT, under the gate — an orphan
                 // sweep that emptied 17k parents held it for ~17k/4 of them.
                 val gone = subjects.filter { it !in derived }
                 if (gone.isNotEmpty()) reputations.removeAll(gone)
-                maxRanks?.forget(gone)
             }
         }
     }
@@ -164,7 +160,7 @@ internal class TrustRecompute(
         val derived = LinkedHashMap<String, ReputationDoc>(subjects.size * 2)
         val cutoff = nowSecs()
         // SPLIT from the old shared `proj.fetch` (2026-09-04): this and
-        // TrustProjection's max_rank raise both booked to that one name, so a
+        // TrustProjection's writes both booked to that one name, so a
         // gate held for 24 minutes could not be attributed to either. The
         // annotation names the shape of THIS call — the chunk count is the
         // loop, the subject count is the work.
@@ -274,20 +270,8 @@ internal class TrustRecompute(
             updates += ReputationCells(subject, ServiceKey(doc.pubkey), influence, followers, dropInfluence = influence == null, dropFollowers = followers == null)
         }
         if (updates.isEmpty()) return unapplied
-        // Each cell that overtakes its document's `max_rank` carries the new
-        // value in the same update — the invariant the trust descent proves
-        // pages with (TrustDescent). Its cost is a function of cache misses.
         IngestStats.annotateHold("cell update over ${updates.size} card(s)")
-        val raised = IngestStats.timed("proj.fetch.maxrank") { maxRanks?.raise(updates) ?: updates }
-        try {
-            IngestStats.timed("proj.write") { reputations.updateCells(raised) }
-        } catch (t: Throwable) {
-            // The cache moved to the raised values BEFORE this write; a write
-            // that failed leaves it reading high, and a stale-high entry skips
-            // a raise the store needs. Forget them: the next cell reads again.
-            maxRanks?.forget(raised.mapNotNull { u -> u.subject.takeIf { u.maxRank != null } })
-            throw t
-        }
+        IngestStats.timed("proj.write") { reputations.updateCells(updates) }
         return unapplied
     }
 
@@ -333,7 +317,7 @@ internal class TrustRecompute(
             // only split what already arrived; it cannot gather. So the walk
             // was taking the gate, issuing a by-id fetch and writing a cell
             // ONCE PER CARD: measured at 29,300 `proj.write` calls for 29,300
-            // cards, 28ms each, and a `max_rank` read on top of every one.
+            // cards, 28ms each.
             // 14 cards/s against the 105/s the same walk reaches when the
             // cells are already right and the writes are skipped.
             //

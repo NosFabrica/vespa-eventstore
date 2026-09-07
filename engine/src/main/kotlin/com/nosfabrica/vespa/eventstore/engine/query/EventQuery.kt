@@ -199,16 +199,6 @@ data class EventQuery(
      */
     val rankFeatures: Map<String, Double> = emptyMap(),
     /**
-     * ONE RUNG OF THE TRUST DESCENT: keep only documents whose author some
-     * observer ranks at least this (`author_max_rank >= trustFloor`, the
-     * scalar the reputation parent carries). Set by VespaEventIndex's descent,
-     * never by a caller: a rung is a way of finding the exact page faster,
-     * and which rung a page stops on is decided by the bound in TrustDescent,
-     * not by anything a filter can say. Null (every caller's query) is the
-     * whole corpus.
-     */
-    val trustFloor: Int? = null,
-    /**
      * Keep the gated match-phase profile even where THIS query's limit sits
      * past [EventYql.MATCH_PHASE_BAND]. Not a caller-facing knob: the client
      * stamps it on its tie-slack overfetch of a query whose OWN limit was

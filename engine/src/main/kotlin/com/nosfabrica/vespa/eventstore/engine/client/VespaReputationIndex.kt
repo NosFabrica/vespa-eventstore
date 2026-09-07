@@ -32,7 +32,6 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -53,9 +52,6 @@ class VespaReputationIndex(
     private val http = VespaHttp()
 
     override suspend fun get(pubkey: String): ReputationDoc? = fields(pubkey)?.let(ReputationDoc::fromSummary)
-
-    /** The field as stored — absent on a document fed before the field existed, or on one the schema lost and regained, which reads 0 here as it does in the rung. */
-    override suspend fun storedMaxRank(pubkey: String): Int? = fields(pubkey)?.let { f -> f["max_rank"]?.jsonPrimitive?.intOrNull ?: 0 }
 
     private suspend fun fields(pubkey: String): JsonObject? {
         val resp = http.get("$baseUrl/document/v1/$NAMESPACE/$DOCTYPE/docid/$pubkey")
@@ -105,9 +101,6 @@ class VespaReputationIndex(
                         // A retracted dimension leaves in the same atomic update.
                         if (u.influence == null && u.dropInfluence) put("influence_scores", buildJsonObject { put("remove", buildJsonObject { put("addresses", buildJsonArray { add(buildJsonObject { put("user", u.key.hex) }) }) }) })
                         if (u.followers == null && u.dropFollowers) put("follower_counts", buildJsonObject { put("remove", buildJsonObject { put("addresses", buildJsonArray { add(buildJsonObject { put("user", u.key.hex) }) }) }) })
-                        // In the SAME update as the cell: a document update is atomic, so
-                        // the bound the descent relies on never lags the cell it covers.
-                        u.maxRank?.let { m -> put("max_rank", buildJsonObject { put("assign", m) }) }
                     }
                 // A retraction alone (both values null) must not conjure a
                 // document: no create, and a missing document is a no-op.
@@ -177,29 +170,6 @@ class VespaReputationIndex(
         pubkeys.chunked(VespaEventIndex.FEED_CHUNK).forEach { chunk ->
             chunk.map { feed.client.remove(DocumentId.of(NAMESPACE, DOCTYPE, it), feedParams()) }.forEach { it.await() }
         }
-    }
-
-    /**
-     * Conditional assigns, pipelined: `max_rank` moves only where the stored
-     * value is below the floor, decided by the engine at write time, so a cell
-     * raise that landed since the caller read the document wins. A condition
-     * not met is the intended outcome, not an error; a missing document is
-     * left missing (no create).
-     */
-    override suspend fun raiseMaxRank(floors: Map<String, Int>) {
-        floors.entries.chunked(VespaEventIndex.FEED_CHUNK).forEach { chunk -> raiseChunk(chunk) }
-    }
-
-    private suspend fun raiseChunk(floors: List<Map.Entry<String, Int>>) {
-        floors
-            .map { (subject, floor) ->
-                val fields = buildJsonObject { put("max_rank", buildJsonObject { put("assign", floor) }) }
-                feed.client.update(
-                    DocumentId.of(NAMESPACE, DOCTYPE, subject),
-                    buildJsonObject { put("fields", fields) }.toString(),
-                    feedParams().testAndSetCondition("$DOCTYPE.max_rank < $floor"),
-                )
-            }.forEach { it.await() }
     }
 
     /**

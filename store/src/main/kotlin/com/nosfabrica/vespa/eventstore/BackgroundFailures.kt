@@ -49,9 +49,6 @@ internal object BackgroundFailures {
     /** The guard-owner cache refresher (`GuardOwners.startRefresher`). */
     const val GUARD_REFRESH = "guards.refresh"
 
-    /** The one-time `max_rank` walk the trust descent waits on (MaxRankBackfill). */
-    const val MAX_RANK_BACKFILL = "trust.maxRankBackfill"
-
     /** The one-time re-keying of a store fed under the observer-keyed model (TrustKeyingMigration). */
     const val TRUST_KEYING = "trust.keying"
 

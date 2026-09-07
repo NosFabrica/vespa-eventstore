@@ -37,16 +37,7 @@ import com.vitorpamplona.quartz.nip01Core.core.HexKey
 @JvmInline
 value class ServiceKey(
     val hex: HexKey,
-) {
-    companion object {
-        /**
-         * NO CELL AT ALL — what [ReputationIndex.raiseMaxRank] passes to raise
-         * `max_rank` on its own. It was a bare `""` in the argument list, which
-         * read as a missing value rather than a deliberate one.
-         */
-        val NONE = ServiceKey("")
-    }
-}
+)
 
 /**
  * THE PUBKEY WHOSE KIND-10040 SELECTS a service per dimension — the reader's

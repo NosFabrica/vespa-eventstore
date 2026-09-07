@@ -66,11 +66,8 @@ class TrustProjection(
     internal val reputations: ReputationIndex,
     nowSecs: () -> Long = { System.currentTimeMillis() / 1000 },
 ) : EventIndex {
-    /** The stored `max_rank` per subject, so a cell can raise it in the same write — see [MaxRankCache]. */
-    internal val maxRanks = MaxRankCache(reputations)
-
     /** The recompute engine the ledger's drains drive; [TrustReconciler] shares it. */
-    internal val recompute = TrustRecompute(inner, reputations, nowSecs, maxRanks)
+    internal val recompute = TrustRecompute(inner, reputations, nowSecs)
 
     /** The work ledger: crash marker + (optionally deferred) projection queue; [TrustReconciler] drains it at startup. */
     internal val backlog = ProjectionLedger(reputations, recompute)
@@ -283,7 +280,7 @@ class TrustProjection(
      * cell on its subject, no read, no derive. Exact for ranking: the store
      * holds one version per (service, subject) address, so the removed card
      * was the one backing the cell. What it leaves behind is bookkeeping, not
-     * drift: a parent with no cells left, and a `max_rank` that may now read
+     * drift: a parent with no cells left, which may now read
      * high — an upper bound still, so the descent stays sound and only pays
      * a rung; both are tightened by a derive (the crash marker, a verify with
      * repair). Removals are rare beside supersession, which never comes
