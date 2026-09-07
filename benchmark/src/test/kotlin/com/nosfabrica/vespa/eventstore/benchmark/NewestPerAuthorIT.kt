@@ -20,13 +20,17 @@
  */
 package com.nosfabrica.vespa.eventstore.benchmark
 
+import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.eventstore.engine.app.SchemaDeployer
 import com.nosfabrica.vespa.eventstore.engine.client.VespaEventIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.SearchFields
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
+import com.vitorpamplona.quartz.nip01Core.core.Event
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.Test
@@ -35,6 +39,7 @@ import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.wait.strategy.Wait
 import java.time.Duration
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 /**
  * THE `idtimeauthor` SUMMARY EXISTS AND PROJECTS WHAT IT CLAIMS.
@@ -107,6 +112,80 @@ class NewestPerAuthorIT {
                     }
                 }
             }
+    }
+
+    /**
+     * THE SAME PROJECTION, ON REAL EVENTS OF THE KIND IT ACTUALLY PROBES.
+     *
+     * The case above is synthetic and kind 1, because it needs two versions
+     * per author and a controlled tie — a replaceable kind's own supersession
+     * would remove both out from under it. The cost of that control is that it
+     * proves nothing about the documents this read exists to AVOID reading:
+     * real profiles, with real content, under a real store's write path.
+     *
+     * So this half feeds the staging export — ten kind-0 profiles from ten
+     * distinct pubkeys, captured off search-staging — through
+     * `VespaEventStore.batchInsert`, and asks the front door's own handle. It
+     * covers what the synthetic case cannot: kind 0 is a REPLACEABLE kind, so
+     * these docs are address-keyed and the id attribute is what carries the
+     * event id; `EngineReads` is exercised against a deployed schema for the
+     * first time; and the pubkeys are 64-hex keys that came off the wire, not
+     * `"11".repeat(32)`.
+     *
+     * The assertion that matters is the ROUND TRIP: every author in the export
+     * answers, and each with the id of the event that author actually
+     * published. A projection that dropped `pubkey` yields an empty map; one
+     * that returned the docid rather than the id attribute yields ids that
+     * match no event in the file.
+     */
+    @Test
+    fun `real captured profiles round-trip through the front door's handle`() {
+        assumeTrue(dockerAvailable(), "Docker not available — skipping the newest-per-author export IT")
+
+        GenericContainer("vespaengine/vespa:latest")
+            .withExposedPorts(QUERY_PORT, CONFIG_PORT)
+            .waitingFor(Wait.forHttp("/state/v1/health").forPort(CONFIG_PORT).forStatusCode(200))
+            .withStartupTimeout(Duration.ofMinutes(5))
+            .use { vespa ->
+                vespa.start()
+                val queryUrl = "http://${vespa.host}:${vespa.getMappedPort(QUERY_PORT)}"
+                val configUrl = "http://${vespa.host}:${vespa.getMappedPort(CONFIG_PORT)}"
+                VespaEventStore.open(url = queryUrl, autoDeploy = true, configUrl = configUrl).use { store ->
+                    runBlocking {
+                        val export = loadExport()
+                        assertTrue(export.all { it.kind == 0 } && export.size >= 10, "the fixture is the kind-0 capture this case is written around")
+                        store.batchInsert(export)
+
+                        val authors = export.map { it.pubKey }.distinct()
+                        val published = export.associate { it.pubKey to it.id }
+                        awaitProfiles(store, authors, export.size)
+
+                        val newest = store.engine.newestPerAuthor(EventQuery(kinds = listOf(0), authors = authors))
+
+                        assertEquals(authors.toSet(), newest.keys, "every captured author must come back, so pubkey survived the projection")
+                        assertEquals(published, newest.mapValues { (_, held) -> held.id }, "and each author's id must be the one they published")
+                    }
+                }
+            }
+    }
+
+    /** The staging capture: real kind-0 profiles, one per author. */
+    private fun loadExport(): List<Event> =
+        Json
+            .parseToJsonElement(javaClass.getResource("/search_vitor_pamplona_export.json")!!.readText())
+            .jsonArray
+            .map { Event.fromJson(it.toString()) }
+
+    private suspend fun awaitProfiles(
+        store: VespaEventStore,
+        authors: List<String>,
+        expected: Int,
+    ) {
+        repeat(120) {
+            if (store.engine.count(EventQuery(kinds = listOf(0), authors = authors)) >= expected) return
+            delay(500)
+        }
+        error("the captured profiles never became searchable ($expected docs)")
     }
 
     /** A kind-1 note by [pubkey] stamped [at]; ids ascend with [n], which is what the tiebreak turns on. */
