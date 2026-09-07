@@ -63,7 +63,7 @@ What each write becomes:
 
 | write | reaction |
 |---|---|
-| a card by a service some 10040 names | ONE tensor update on its subject: `add` the cells it carries, `remove` the dimension it dropped (retraction) — atomic, no read, `max_rank` raised in the same update as before |
+| a card by a service some 10040 names | ONE tensor update on its subject: `add` the cells it carries, `remove` the dimension it dropped (retraction) — atomic, no read |
 | a card by a service nobody names | nothing (as today: dead storage until a list names the signer) |
 | a 10040 write | drop the provider-map cache; for each service the list names that NO stored list named before, queue a **service walk**: its card ids stream off the search index (`visitIds`, cursor-paged), each page fetched by id and applied as cells under the gate — O(cards of that service), once ever per service |
 | a 10040 re-sign, or a swap to an already-named service | nothing at all |
@@ -72,7 +72,7 @@ What each write becomes:
 
 What stays: the `DirtLedger` (crash insurance and the deferred drain), the
 `TrustReconciler` (verify/repair through the exact derive, now keyed by service),
-the orphan sweep, `max_rank` and the trust descent (the max over service cells
+the orphan sweep (the max over service cells
 is still an upper bound for any lens — a removal can leave it stale-high, which
 costs a rung and never correctness).
 
@@ -266,7 +266,7 @@ corpora, before and after; the re-sign and swap rows must read 0 walks.
 - Cost on staging's shape: one cell write per card of every named service
   (28 M) plus one page per reputation document for the sweep — the same order
   as the relay's existing boot reconcile, once.
-- The `max_rank` backfill marker survives; a sweep can leave `max_rank` high
+- (Removed 2026-09-07 with the trust descent: the `max_rank` backfill marker and its staleness caveat.)
   on a document, which is an upper bound still.
 - `DirtLedger` markers from the old process name subjects: the new derive
   re-derives them keyed by service — safe.

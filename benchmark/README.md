@@ -754,76 +754,49 @@ exact —
   the query that is text ranking. Worth its own diff, its own integration gate,
   and a measurement of what share of a real match set the floor actually drops.
 
-### 6. What was taken instead: the trust descent (2026-09-03)
+### 6. The trust descent: built 2026-09-03, removed 2026-09-07
 
-Section 5 is right that nothing exact beats the posting walk — and the walk
-it means is the WORD's. There is another walk, and it is exact: the trusted
-authors' documents. The ranking is trust first (`search` scores `text ×
-wot_mult(trust) × recency`; text spans ×236 across its bands, trust ×250,000
-across ranks 0..100), so the page is, overwhelmingly, the documents of the
-most trusted authors, and the reputation parent already knows who those are.
+It was built, shipped behind `VESPA_TRUST_DESCENT`, measured on staging, and
+removed. **Section 5 above already contains the reason it could not work**, in
+its own words: *"an imported attribute has no posting list, so it filters
+rather than drives"*. The descent was built on the assumption that
+`author_max_rank >= T` would DRIVE the match — walk the trusted authors'
+documents and check the word, instead of the word's postings. It cannot,
+because the field was imported from the reputation parent, and Vespa resolves
+an imported attribute through the reference at match time.
 
-`reputation.max_rank` is the best rank ANY observer gives an author, imported
-into every event as `author_max_rank`; a relevance search under an observer
-runs with `author_max_rank >= T` (a rung, `EventQuery.trustFloor`), and Vespa
-drives the AND with that range. `TrustDescent` then PROVES the page: every
-excluded document is by an author ranked at most `T − 1` under this observer
-(a rank cannot exceed its max), so it scores at most `ceiling × wot_mult(T −
-1)`, where the ceiling is assembled from the profile's own weights
-(TrustDescentTest pins them to event.sd) plus a bound on the bm25 tails. A
-page whose K-th hit beats that is the exact page; the K-th score also says
-which rung it proves, so the descent is two queries — rank ≥ 90, then the
-rung that page proves — and a page nothing proves goes to the floor rung,
-which excludes only what the gate deletes (`max_rank < floor` ⇒ `rank <
-floor`) and is today's exact answer. T only decides how fast the page was
-found. `include:spam` reads have no gate and no rung; keyed lookups and the
-explicit sorts are not this score and do not descend.
+Measured on staging (343.8M events, 162.7M kind-1), `ranking=unranked`:
 
-Measured on 1.28M real kind-1 notes captured read-only from staging, the
-observer's provider's real cards, K = 40, 4 match threads (the relay's
-`docs/proposals/search-latency-harness/descent.mjs`):
+| query | matches | time |
+| --- | --- | --- |
+| text only | 3,624,868 | 69-95 ms |
+| text + `author_max_rank >= 90` | subset | **1.06-1.19 s** |
+| `author_max_rank >= 90` alone | 46,102,622 | 2.20 / 2.20 / 2.21 s |
 
-```
-"the"      exact 154ms, served 31,604
-  rank>=90  13ms kept  2,138   rank>=50  22ms kept  7,409   rank>=20  30ms kept 11,716
-  rank>=10  35ms kept 16,157   PROVEN — page identical to the exact page
-"nostr"    exact  86ms — rank>=20 35ms PROVEN, identical
-"bitcoin"  exact  39ms — rank>=20 25ms PROVEN, identical
-"love"     exact  32ms — rank>=10 24ms PROVEN, identical
-"zap"      exact   8ms — rank>=10  8ms PROVEN, identical (a rare word pays the rungs, ~5ms each)
-```
+Adding the rung to a real match set is **15x slower**. End to end through the
+relay, ranked NIP-50 with the descent on was 1.6-4x slower on every query it
+exists to accelerate (`bitcoin` 3.1s -> 13.3s), with identical result counts —
+correct, and slower.
 
-And through the WHOLE store — `storeDump`, the expansion's splice included,
-against the pinned build's page for the same three words: **identical, row
-for row**, with the backfill having written `max_rank` onto the slice's
-11,228 reputation documents on first open (`storeDump` now waits for it and
-says so). Two rungs cost 46ms for `the` against 154 exact. The shares are what transfer
-to staging: authors ranked ≥ 10 by the provider wrote 5.0% of the slice's
-notes, ≥ 20 wrote 3.8%, ≥ 90 wrote 0.5%. At ~0.5µs per trusted-author note
-checked, an exact `the` on staging becomes a walk of a few million notes —
-roughly 0.5-1s where it is 16s — and every common word costs the same,
-since the walk is the trusted corpus rather than the word. Rare words stay
-on the text driver and stay fast.
+Two further findings, either of which sinks it on its own:
 
-Why exact cannot be 200ms, in one line: 200ms buys a walk of ~1.5M notes,
-which is authors ranked ≥ 50; the proof at that rung needs the K-th hit to
-score 5e9, and no note can (a body hit by a rank-100 author scores 1.3e8).
-The ×236 text spread is what defeats a trust-only stop.
+- **The rung had already lost its selectivity.** The design assumed authors at
+  rank >= 90 wrote 0.5% of notes. Measured: **21.6%** (35.2M of 162.7M), 43x
+  off. `max_rank` is a MAXIMUM over all observers, so it saturates upward as
+  the graph fills in — with every author scored it approaches useless.
+- **The match set was never the bottleneck.** Matching 3.6M documents costs
+  ~80ms; bm25-scoring them costs ~820ms. `match-phase` — already in this
+  schema, on an ordinary `created_at` attribute — bounds what reaches the
+  scorer and runs in 45-52ms. That is where the win is, and it needs no
+  imported field, no backfill and no write amplification.
 
-The other half is keeping `max_rank` true: a whole-document write carries the
-max of its cells by construction; the incremental cell path raises it IN THE
-SAME UPDATE as the cell that overtakes it (`MaxRankCache` stands in for the
-stored value, read once per subject, moved with every write); and a store fed
-before the field existed is walked once at open (`MaxRankBackfill`, a marker
-document behind it) with the descent off until the walk returns — a document
-whose author has no `max_rank` yet reads 0 and would be excluded from every
-rung above the floor.
+The exactness argument the descent was built on is still good thinking and is
+preserved in the git history (`TrustDescent.kt`, its KDoc, and
+`TrustDescentTest`): a rung is exact when the page's K-th hit outscores the
+ceiling any excluded author could reach. It just needs an attribute the engine
+can seek, and a statistic that still discriminates.
 
-Checked and set aside on the way: a match phase keyed on the imported
-attribute (Vespa accepts it, and at moderate depths it was exact on every
-word tried) has an ESTIMATED threshold — kept sets held rank-2 documents while
-excluding rank-40 ones — so no bound can be proven over it. The explicit
-range clause is what makes the proof sound, and it is as cheap.
+Full record: NosFabrica/vespa-eventstore#129.
 
 ## What a NIP-45 COUNT was really doing (2026-09-01)
 
