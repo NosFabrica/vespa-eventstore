@@ -697,35 +697,5 @@ internal class SearchReferenceExpansion(
 
         /** Keys per lookup query — a bound on one YQL `in` list, not on the answer. */
         const val LOOKUP_CHUNK = 500
-
-        /**
-         * Confidence steps one page may distinguish, FOR THE ADDRESSABLE SHAPE
-         * ALONE — and, because a rank feature is a property of the QUERY, the
-         * round trips it can cost: one lookup per occupied bucket per owner.
-         *
-         * THE KEYED SHAPES NO LONGER COME THROUGH HERE. A weighted recall
-         * carries each member's confidence on its own key
-         * ([EventQuery.authorWeights]), so a whole list is ONE query at the
-         * publisher's own resolution — which is what quantizing was buying its
-         * way out of. A coordinate is (kind, author, d) and no single attribute
-         * holds it, so 30394 members have no key to hang a weight on and keep
-         * the buckets; `tag_index` (`d:<value>`, fast-search) could carry them
-         * inside one owner's group if that family ever earns the work.
-         *
-         * FOUR, not twenty, for the reason it always was: twenty gave 5%
-         * resolution and let one well-scored list cost twenty round trips.
-         * Measured against the Tapestry corpus, every confidence from 0.10 to
-         * 1.00 placed a member in the SAME position relative to the page,
-         * because the member band spans x7.3 while a page spans x367 — a page
-         * that cannot resolve two ends of the range cannot resolve twentieths
-         * of it. The floor is what undoes that argument for the keyed shapes: a
-         * member is placed against its POINTER now, and a x367 page has room
-         * for the difference between 0.10 and 1.00.
-         *
-         * Members that land in one bucket tie, and a stable sort then keeps
-         * them in the order their list named them — which for a
-         * descending-sorted list is the publisher's own ranking.
-         */
-        const val BUCKETS = 4
     }
 }

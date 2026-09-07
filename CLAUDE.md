@@ -86,7 +86,11 @@ deliberate decision (it fails until the layer table names it) rather than a drif
   implementation), and the values it hands back or throws — `RejectedException`, `EngineReads`,
   `TrustHealth`. A new type here has to earn it by being named from outside; the machinery
   behind one goes in a leaf (`TrustHealth` is a DTO, while the registries it reads stay
-  `internal` in `trust/`). Nothing below the root imports the facade.
+  `internal` in `trust/`). Nothing below the root imports the two COMPOSED types
+(`NostrSemanticsStore`, `VespaEventStore`) — that is the cycle the layering exists to prevent.
+A value the store hands back or throws is not that: `ingest/EventAdmission` throws
+`RejectedException` because it is the store's public vocabulary for a rejection, and a value
+travelling up is the opposite of a package reaching up.
 - **`:benchmark`** — not published. `harness/` (backends, corpora, result plumbing, the parity
   and rank-quality batteries), `bench/` (the timed suites), `probe/` (targeted A/Bs), `load/`
   (corpus loaders and dumps), plus the parity/rank-regression integration tests — the CI

@@ -483,8 +483,15 @@ internal class ProjectionLedger(
      * class, and it fired on THIS process's ledger being empty: the serving
      * relay finishing its last slice deleted the sync mirror's freshly written
      * insurance along with its own spent cells, so the mirror's next crash left
-     * drift that nothing named. Emptiness is now read off the document, so a
-     * cell this process never saw is a cell it cannot erase.
+     * drift that nothing named.
+     *
+     * NARROWED, NOT CLOSED, and the difference matters to anyone reading this
+     * for a guarantee. The cleanup above clears the cells it READ, so a peer
+     * cell written after that read survives where a blind delete took it — but
+     * one already in the document when this process read it is still cleared.
+     * Closing it needs an ownership model (a cell carrying who wrote it, or a
+     * conditional remove), which is a design change and not a guard. Until
+     * then this is a smaller window, not the absence of one.
      */
     private suspend fun dropMarkerIfEmpty() {
         val stored = reputations.get(MARKER_KEY) ?: return

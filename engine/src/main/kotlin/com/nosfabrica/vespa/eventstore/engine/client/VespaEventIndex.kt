@@ -825,11 +825,25 @@ class VespaEventIndex(
             // and two arbitrary samples of overlapping filters overlap less
             // than two newest-N pages do, so the count came back ABOVE what
             // the REQ it describes would serve.
+            // A ranked walk is the search path's by definition: the ids ARE its
+            // ranking, so nothing else can produce them.
+            if (query.isRankedShape()) return super.visitIds(query, withDTag, onPage)
             // The probe is timed here for the reason the unlimited path times
             // it below: a walk stuck in the decision looks exactly like a walk
             // with nothing to do, and a COUNT's id walk arrives on THIS branch.
-            if (query.isRankedShape() || !IngestStats.timed("walk.cursor.decide") { cursorSuitsThisWalk(unlimited, withDTag) }) {
-                return super.visitIds(query, withDTag, onPage)
+            if (!IngestStats.timed("walk.cursor.decide") { cursorSuitsThisWalk(unlimited, withDTag) }) {
+                // ONE ORDERED, UNRANKED, ID-ONLY QUERY — not `super.visitIds`,
+                // which is `search(query)`: that materializes a full document
+                // summary per id (content, sig, tags) to produce an id list, on
+                // whatever profile the recency planner picks, and a match phase
+                // may then cap the total and drop hits SILENTLY. On the shape
+                // that lands here — a relay's `limit: 100000` over a tie-dense
+                // author — that is up to 100,000 summaries fetched to count,
+                // and a count that reads UNDER. `buildIdTime` is unranked and
+                // ordered for exactly this reason, and it already honours the
+                // limit, so the newest N arrive in one round trip.
+                onPage(idTimeHits(query, withDTag))
+                return
             }
             var budget: Int = query.limit
             return visitIdsByCursor(unlimited, withDTag) { page ->

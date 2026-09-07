@@ -64,7 +64,19 @@ class ModuleBoundariesTest {
     /** `:store` packages that must stand alone: no import of any other `:store` package. */
     private val storeLeaves = setOf("runtime", "mapping")
 
-    /** The facade types a consumer holds. Nothing the facade is built FROM may import one. */
+    /**
+     * The two COMPOSED types — the store and the front door that assembles it.
+     * Nothing the facade is built from may import one, because that is the
+     * cycle: `ingest` reaching back up for the class that owns it.
+     *
+     * The root package also holds types a consumer merely HOLDS —
+     * `RejectedException`, `EngineReads`, `TrustHealth` — and those are not
+     * cycles. `ingest/EventAdmission` throws `RejectedException` because that
+     * is the store's public vocabulary for a rejection, and a value travelling
+     * up is the opposite of a package reaching up. Naming the two composed
+     * types rather than the whole package is deliberate; CLAUDE.md says the
+     * same thing in prose.
+     */
     private val facades = setOf("NostrSemanticsStore", "VespaEventStore")
 
     /**
@@ -147,6 +159,7 @@ class ModuleBoundariesTest {
                 DECLARATION.findAll(file.readText()).forEach { home.putIfAbsent(it.groupValues[1], pkg) }
             }
         }
+        assertTrue(home.size > 50, "the declaration parse found only ${home.size} types — the regex, not the tree, is what changed")
         val misplaced =
             testSources().mapNotNull { file ->
                 val subject =
@@ -181,6 +194,12 @@ class ModuleBoundariesTest {
     private fun testSources(): List<File> =
         listOf("engine", "store").flatMap { module ->
             val root = File(module, "src/test/kotlin").let { if (it.isDirectory) it else File("..", it.path) }
+            // ASSERTED, not assumed: `walkTopDown` on a directory that is not
+            // there yields an empty sequence, so a wrong working directory would
+            // turn this guard off and report a pass. Every rule in this file
+            // reads the tree, and a rule that reads nothing agrees with
+            // everything.
+            assertTrue(root.isDirectory, "cannot find $module test sources at ${root.absolutePath}")
             root.walkTopDown().filter { it.extension == "kt" }.toList()
         }
 

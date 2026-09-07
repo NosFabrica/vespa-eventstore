@@ -55,6 +55,11 @@ class PortDecoratorsTest {
         listOf(
             "store/src/main/kotlin/com/nosfabrica/vespa/eventstore/trust/TrustProjection.kt",
             "engine/src/main/kotlin/com/nosfabrica/vespa/eventstore/engine/metrics/MeteredEventIndex.kt",
+            // Not published, and it still counts: this one's whole job is
+            // reporting what the store asks of the engine, so a member it
+            // inherits is a measurement of the PORT's default round trips
+            // reported as the client's.
+            "benchmark/src/main/kotlin/com/nosfabrica/vespa/eventstore/benchmark/harness/CountingEventIndex.kt",
         )
 
     private val port = "engine/src/main/kotlin/com/nosfabrica/vespa/eventstore/engine/EventIndex.kt"

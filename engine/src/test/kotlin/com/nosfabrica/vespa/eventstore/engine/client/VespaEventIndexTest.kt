@@ -863,6 +863,52 @@ class VespaEventIndexTest {
         }
 
     /**
+     * THE SAME SHAPE, LIMITED: the newest N, from the id walk — not from
+     * `search`.
+     *
+     * A limit is an ORDER ("the newest N"), so the unordered scan cannot serve
+     * it and the walk has to step somewhere else. Stepping to the port's
+     * default is what it did first, and that default is `search(query)`: a
+     * full document summary per id — content, sig, tags — materialized to
+     * produce an id list, on whatever profile the recency planner picks, whose
+     * match phase may cap the total and drop hits silently. A relay stamps
+     * `limit: 100000` on exactly this shape for a COUNT.
+     *
+     * `buildIdTime` is the walk that is both ordered and unranked, and it
+     * honours the limit itself. Asserted on the WIRE, because the two are
+     * indistinguishable in the ids they return here.
+     */
+    @Test
+    fun `a limited tie-dense walk asks for ids, not for documents`() =
+        runBlocking {
+            val bob = "b8".repeat(32)
+            seed(*(1..500).map { doc(kind = 30382, pubkey = bob, at = 4_000L) }.toTypedArray())
+            val paged = VespaEventIndex(mock.url, idPageSize = 100)
+            try {
+                val at = mock.searchRequests.size
+                val got = ArrayList<DocRef>()
+                paged.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(bob), limit = 50)) {
+                    got += it
+                    true
+                }
+                assertEquals(50, got.size, "a limited walk serves exactly the budget")
+                // THE LAST REQUEST IS THE ONE THAT SERVED THE PAGE. The two
+                // earlier ones are the routing probe and its tie-group count,
+                // and the probe is itself an id-time read — so "an id-time
+                // request happened" proves nothing, and asserting it was how
+                // the first version of this test passed against both branches.
+                val after = mock.searchRequests.drop(at)
+                assertEquals(
+                    EventYql.SUMMARY_IDTIME,
+                    after.last()["presentation.summary"],
+                    "the page must come from the id-only walk, not a document search: ${after.map { it["presentation.summary"] ?: "<full>" }}",
+                )
+            } finally {
+                paged.close()
+            }
+        }
+
+    /**
      * A tie-DENSE walk falls back to the scan, and is still complete.
      *
      * 90 docs share one second against a page of 10, so every boundary would

@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.eventstore.benchmark.harness
 
 import com.nosfabrica.vespa.eventstore.engine.DocRef
+import com.nosfabrica.vespa.eventstore.engine.DocsPage
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
@@ -61,6 +62,35 @@ class CountingEventIndex(
     fun reset() {
         listOf(gets, puts, putCalls, removes, removeCalls, searches, counts).forEach { it.set(0) }
     }
+
+    // FORWARDED, all seven of them. This class exists to measure the STORE's
+    // I/O amplification against the real client, and a port member it does not
+    // override is answered by `EventIndex`'s default — which is a different
+    // implementation with different round trips. `putIfNewer` is the sharp one:
+    // its default decomposes into `search` + `put`/`removeDocs` through THIS
+    // object, so every replaceable was counted as the default's three calls
+    // rather than the client's one conditional put, and the number this harness
+    // reports for a draft-churn corpus was measuring the port, not the engine.
+    override suspend fun putIfNewer(doc: EventDoc): Boolean = inner.putIfNewer(doc)
+
+    override suspend fun removeDocs(docs: List<EventDoc>) = inner.removeDocs(docs)
+
+    override suspend fun existingIds(ids: List<String>): Set<String> = inner.existingIds(ids)
+
+    override suspend fun rawSearch(query: EventQuery): List<RawEvent> = inner.rawSearch(query)
+
+    override suspend fun scanAuthors(query: EventQuery): Set<String> = inner.scanAuthors(query)
+
+    override suspend fun visitDocsPage(
+        query: EventQuery,
+        continuation: String?,
+        pageSize: Int,
+    ): DocsPage = inner.visitDocsPage(query, continuation, pageSize)
+
+    override suspend fun distinctTagIndexValues(
+        query: EventQuery,
+        tagName: String,
+    ): Set<String>? = inner.distinctTagIndexValues(query, tagName)
 
     override suspend fun get(id: String): EventDoc? {
         gets.incrementAndGet()
