@@ -525,6 +525,18 @@ schema event {
         summary created_at {}
     }
 
+    # Same, plus the AUTHOR, for the replaceable-supersession probe: the newest
+    # (created_at, id) per author over a set of authors. `pubkey` is an
+    # attribute like the other two, so this stays attribute-only — a mirror
+    # probing 500 kind-3 authors reads three attributes instead of pulling 500
+    # contact lists' content, sig and tags across the wire to read three fields.
+    # See VespaEventIndex.newestPerAuthor.
+    document-summary idtimeauthor {
+        summary id {}
+        summary created_at {}
+        summary pubkey {}
+    }
+
     # Same, plus the tag_index an addressable-corpus walk keys its `d` tag on.
     document-summary idtimetag {
         summary id {}

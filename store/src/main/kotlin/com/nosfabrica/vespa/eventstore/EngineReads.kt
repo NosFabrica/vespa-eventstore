@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore
 
+import com.nosfabrica.vespa.eventstore.engine.DocRef
 import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.client.VespaEventIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
@@ -37,6 +38,9 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
  *  - **Whether an id is already held**, before paying to verify it: an ingest
  *    that skips a duplicate wants membership in the corpus, which is a
  *    different question from whether the connecting user could see it.
+ *  - **Which version of a replaceable event is held**, for the same reason and
+ *    the same caller: an offered event already beaten by a stored one is work
+ *    not worth doing.
  *
  * READ-ONLY, and that is the point of the type. This used to be the concrete
  * [VespaEventIndex] hanging off the front door, which handed every consumer
@@ -74,4 +78,15 @@ class EngineReads internal constructor(
      * return the event — only that writing it again would be wasted work.
      */
     suspend fun existingIds(ids: List<String>): Set<String> = index.existingIds(ids)
+
+    /**
+     * The newest held version per author matching [query], keyed by pubkey —
+     * NIP-01 supersession asked in bulk, on the engine's attribute-only
+     * projection rather than a document summary per author.
+     *
+     * Un-lensed like the rest of this type, and that is again what makes it
+     * usable as a gate: supersession is a property of what is STORED, and an
+     * event the lens hides still beats the one being offered.
+     */
+    suspend fun newestPerAuthor(query: EventQuery): Map<String, DocRef> = index.newestPerAuthor(query)
 }

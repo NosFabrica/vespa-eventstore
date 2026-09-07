@@ -256,6 +256,9 @@ object EventYql {
     const val SUMMARY_IDTIME = "idtime"
     const val SUMMARY_IDTIME_TAG = "idtimetag"
 
+    /** The (id, created_at, pubkey) projection — see [buildIdTimeAuthor]. */
+    const val SUMMARY_IDTIME_AUTHOR = "idtimeauthor"
+
     /**
      * The (id, created_at[, tag_index]) projection a snapshot walk pages on:
      * attributes only, newest first, always UNRANKED.
@@ -278,6 +281,37 @@ object EventYql {
         params[MATCH_THREADS] = SINGLE_MATCH_THREAD
         return VespaQuery(
             yql = "select ${if (withDTag) "id, created_at, tag_index" else "id, created_at"} from event where ${whereOf(clauses)} order by created_at desc$limit",
+            params = params,
+            ranking = RANK_UNRANKED,
+            complete = q.complete,
+            sampled = q.sampled,
+        )
+    }
+
+    /**
+     * [buildIdTime] plus the AUTHOR: the projection behind
+     * `EventIndex.newestPerAuthor`, the NIP-01 replaceable-supersession
+     * question asked about many authors at once.
+     *
+     * Attribute-only like its sibling — `pubkey` is an attribute — so the
+     * caller reads three attributes per match instead of a document summary.
+     * That is the whole point of it: the shape that asks this is a mirror
+     * probing a chunk of kind-3 authors, and a kind-3 summary carries the
+     * entire contact list.
+     *
+     * UNRANKED and `created_at desc` for [buildIdTime]'s reason, and the order
+     * is load-bearing here too: the caller keeps the first hit it sees per
+     * author, so the walk must arrive newest-first. It carries NO limit — a
+     * limit would silently drop authors, which is the one answer this must
+     * never give — so narrow the query by kind and authors before asking.
+     */
+    fun buildIdTimeAuthor(q: EventQuery): VespaQuery? {
+        val params = LinkedHashMap<String, String>()
+        val clauses = filterClauses(q, params) ?: return null
+        params["presentation.summary"] = SUMMARY_IDTIME_AUTHOR
+        params[MATCH_THREADS] = SINGLE_MATCH_THREAD
+        return VespaQuery(
+            yql = "select id, created_at, pubkey from event where ${whereOf(clauses)} order by created_at desc",
             params = params,
             ranking = RANK_UNRANKED,
             complete = q.complete,

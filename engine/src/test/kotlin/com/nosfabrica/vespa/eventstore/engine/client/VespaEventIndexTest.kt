@@ -863,6 +863,48 @@ class VespaEventIndexTest {
         }
 
     /**
+     * THE PROJECTION AND THE TIEBREAK, which are the two ways this can be
+     * wrong in opposite directions.
+     *
+     * The summary class is asserted because the port's default body answers
+     * this correctly off `search()` — same authors, same winners — while
+     * pulling a full document summary per match. For the caller this exists
+     * for, a mirror probing kind-3 authors, that difference is an entire
+     * contact list per author.
+     *
+     * The tie is asserted because `created_at desc` alone does not settle it:
+     * two same-second events come back in whatever order the engine likes, and
+     * NIP-01 gives it to the LOWEST id — the same rule `putIfNewer` applies on
+     * write, which is what makes this probe agree with the insert that follows.
+     * Kind 1 rather than a replaceable kind on purpose: this is about the read,
+     * and a replaceable kind's own supersession would remove the tie under it.
+     */
+    @Test
+    fun `newestPerAuthor reads attributes and breaks ties the way putIfNewer does`() =
+        runBlocking {
+            val alice = "a1".repeat(32)
+            val bob = "b8".repeat(32)
+            val aliceOld = doc(kind = 1, pubkey = alice, at = 100)
+            val aliceNew = doc(kind = 1, pubkey = alice, at = 200)
+            val bobOne = doc(kind = 1, pubkey = bob, at = 300)
+            val bobTwo = doc(kind = 1, pubkey = bob, at = 300)
+            seed(aliceOld, aliceNew, bobOne, bobTwo)
+
+            val at = mock.searchRequests.size
+            val newest = index.newestPerAuthor(EventQuery(kinds = listOf(1), authors = listOf(alice, bob)))
+
+            assertEquals(setOf(alice, bob), newest.keys, "every asked-for author that holds an event must answer")
+            assertEquals(aliceNew.id, newest[alice]?.id, "the newest created_at wins")
+            assertEquals(200L, newest[alice]?.createdAt, "and its stamp comes back with it")
+            assertEquals(minOf(bobOne.id, bobTwo.id), newest[bob]?.id, "a tie goes to the LOWEST id, as putIfNewer would")
+            assertEquals(
+                EventYql.SUMMARY_IDTIME_AUTHOR,
+                mock.searchRequests.drop(at).last()["presentation.summary"],
+                "it must read the three attributes, not a document summary per author",
+            )
+        }
+
+    /**
      * THE SAME SHAPE, LIMITED: the newest N, from the id walk — not from
      * `search`.
      *

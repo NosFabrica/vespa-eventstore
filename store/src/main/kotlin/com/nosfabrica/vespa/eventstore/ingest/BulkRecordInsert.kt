@@ -157,7 +157,6 @@ internal class BulkRecordInsert(
                 // the vanish query usually disappears even in a flagged batch.
                 val flaggedDeleters = guards.filterFlaggedDeleters(owners.keys)
                 val flaggedVanishers = guards.filterFlaggedVanishers(owners.keys)
-                val alive = alive()
                 val tombs =
                     if (flaggedDeleters.isEmpty()) {
                         emptyMap()

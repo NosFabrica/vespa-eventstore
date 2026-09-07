@@ -842,6 +842,16 @@ class VespaEventIndex(
                 // and a count that reads UNDER. `buildIdTime` is unranked and
                 // ordered for exactly this reason, and it already honours the
                 // limit, so the newest N arrive in one round trip.
+                //
+                // IT ALSO CHANGES THE FAILURE MODE, deliberately. Unranked
+                // means `allowMatchPhase` is false in searchRoot, so a
+                // match-phase cut is REFUSED (PartialAnswer) where the old
+                // recency-profile path tolerated it and returned a short page.
+                // That is the trade this branch exists to make: the caller
+                // asking is a COUNT, and a number that is quietly low is worse
+                // than an error that says so. Every other degradation flag
+                // threw on both paths. An operator seeing this throw should
+                // read DegradedReads, which records the cut either way.
                 onPage(idTimeHits(query, withDTag))
                 return
             }
@@ -1029,6 +1039,35 @@ class VespaEventIndex(
                     }
                 DocRef(f.id, f.createdAt, dTag)
             }.sortedWith(compareByDescending<DocRef> { it.createdAt }.thenBy { it.id })
+    }
+
+    /**
+     * The port's supersession probe over the `idtimeauthor` summary: three
+     * ATTRIBUTES per match, where the default body reads a whole document
+     * summary to keep the same three fields. The shape that asks is a mirror
+     * probing a chunk of authors for kind 0/3/10002, and a kind-3 summary is
+     * the author's entire contact list — so this is the difference between
+     * reading a few hundred attribute triples and pulling megabytes of `p`
+     * tags across the wire to compare a timestamp.
+     *
+     * The fold applies NIP-01's tiebreak rather than keeping the first hit per
+     * author. `created_at desc` alone would let whichever of two same-second
+     * events Vespa happened to return first win, and the rule is that the
+     * LOWEST id does — the same rule [putIfNewer] enforces on write, which is
+     * what makes this probe's answer agree with what a later insert would do.
+     */
+    override suspend fun newestPerAuthor(query: EventQuery): Map<String, DocRef> {
+        val vq = EventYql.buildIdTimeAuthor(query) ?: return emptyMap()
+        val newest = HashMap<String, DocRef>()
+        for (hit in searchRoot(vq, hits = unboundedHits).children) {
+            val f = hit.fields ?: continue
+            if (f.id.isEmpty() || f.pubkey.isEmpty()) continue
+            val held = newest[f.pubkey]
+            if (held == null || f.createdAt > held.createdAt || (f.createdAt == held.createdAt && f.id < held.id)) {
+                newest[f.pubkey] = DocRef(f.id, f.createdAt)
+            }
+        }
+        return newest
     }
 
     /**

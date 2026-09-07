@@ -206,6 +206,17 @@ class MeteredEventIndex(
 
     override suspend fun existingIds(ids: List<String>): Set<String> = meter(PortCall.Exists, ids.size.toLong()) { inner.existingIds(ids) }
 
+    /**
+     * Booked under [PortCall.Search] — it is a recall, just a narrowly
+     * projected one, and it costs the engine a match set like any other. Not
+     * [PortCall.Exists], which names the dedup probe specifically.
+     *
+     * Forwarded rather than left to the port's default, which would answer
+     * through this decorator's own `search()` — booking the call twice and
+     * losing the attribute-only projection underneath it.
+     */
+    override suspend fun newestPerAuthor(query: EventQuery): Map<String, DocRef> = meterQuery(PortCall.Search, query, { inner.newestPerAuthor(query) }, { it.size.toLong() })
+
     override suspend fun count(query: EventQuery): Int = meterQuery(PortCall.Count, query, { inner.count(query) }, { 1L })
 
     /**

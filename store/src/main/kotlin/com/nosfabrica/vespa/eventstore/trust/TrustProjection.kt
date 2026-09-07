@@ -78,6 +78,10 @@ class TrustProjection(
 
     override suspend fun existingIds(ids: List<String>): Set<String> = inner.existingIds(ids)
 
+    // MUST delegate: the interface default rides search(), which would trade
+    // the engine's three-attribute projection for a full summary per author.
+    override suspend fun newestPerAuthor(query: EventQuery): Map<String, DocRef> = inner.newestPerAuthor(query)
+
     // MUST delegate, not ride the interface default, which would route through
     // this decorator's search() and lose the raw passthrough (see EventIndex.rawSearch).
     override suspend fun rawSearch(query: EventQuery): List<RawEvent> = inner.rawSearch(query)

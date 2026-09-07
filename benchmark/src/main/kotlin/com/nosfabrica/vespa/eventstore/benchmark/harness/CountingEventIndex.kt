@@ -77,6 +77,8 @@ class CountingEventIndex(
 
     override suspend fun existingIds(ids: List<String>): Set<String> = inner.existingIds(ids)
 
+    override suspend fun newestPerAuthor(query: EventQuery): Map<String, DocRef> = inner.newestPerAuthor(query)
+
     override suspend fun rawSearch(query: EventQuery): List<RawEvent> = inner.rawSearch(query)
 
     override suspend fun scanAuthors(query: EventQuery): Set<String> = inner.scanAuthors(query)

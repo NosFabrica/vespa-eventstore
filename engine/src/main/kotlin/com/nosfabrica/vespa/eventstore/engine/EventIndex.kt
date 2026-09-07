@@ -86,6 +86,34 @@ interface EventIndex : AutoCloseable {
     }
 
     /**
+     * The newest held version PER AUTHOR matching [query], keyed by pubkey —
+     * NIP-01 replaceable supersession asked about many authors at once, which
+     * is how a mirror decides whether an offered replaceable event is already
+     * beaten before it pays to verify a signature.
+     *
+     * THE TIEBREAK IS NIP-01's, the same one [putIfNewer] applies: newest
+     * `created_at` wins, and on a tie the LOWEST id does. An implementation
+     * that returned a different winner would have the caller keep an event
+     * this index would then refuse.
+     *
+     * Semantically the default body below, and the default is a correct-but-
+     * SLOW answer: it materializes a full document summary per match to read
+     * three fields, and for kind 3 that is an entire contact list per author.
+     * The real client projects (id, created_at, pubkey) from attributes
+     * instead, so a decorator MUST delegate or it silently reinstates that
+     * cost.
+     *
+     * Narrow [query] by kind and authors before asking: this carries no limit,
+     * because a limit here drops AUTHORS rather than shortening a page.
+     */
+    suspend fun newestPerAuthor(query: EventQuery): Map<String, DocRef> =
+        search(query)
+            .groupBy { it.pubkey }
+            .mapValues { (_, docs) ->
+                docs.maxWith(compareBy<EventDoc> { it.createdAt }.thenByDescending { it.id }).let { DocRef(it.id, it.createdAt) }
+            }
+
+    /**
      * [search] with each match projected to a Quartz [RawEvent] (`tags` kept as
      * its canonical JSON string) — the read path a relay serves straight to a
      * client. The real client builds each [RawEvent] from the decoded summary,

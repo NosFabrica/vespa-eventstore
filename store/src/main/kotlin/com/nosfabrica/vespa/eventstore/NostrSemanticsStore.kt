@@ -646,6 +646,14 @@ class NostrSemanticsStore(
                 // events, against 0.2 s counted singly). Only a ranked filter
                 // has to recall through the search path, where its ids ARE
                 // the ranking.
+                //
+                // A limited walk here is EXACT OR IT THROWS: the id walk is
+                // unranked, so the engine refuses a match-phase cut instead of
+                // returning a short page (see VespaEventIndex.visitIds). A
+                // COUNT that silently under-reports is the bug this path was
+                // built to fix, so the refusal is the point — but it does mean
+                // a degrading cluster fails this read rather than low-balling
+                // it, which is what an operator will see first.
                 if (!q.isRanked()) {
                     val seen = ArrayList<String>()
                     index.visitIds(q) { page ->

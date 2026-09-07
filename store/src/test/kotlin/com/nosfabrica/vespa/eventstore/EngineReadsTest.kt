@@ -57,10 +57,12 @@ class EngineReadsTest {
         id: String,
         kind: Int = 1,
         text: String = "hello",
+        pubkey: String = "a".repeat(64),
+        createdAt: Long = 100,
     ) = EventDoc(
         id = id,
-        pubkey = "a".repeat(64),
-        createdAt = 100,
+        pubkey = pubkey,
+        createdAt = createdAt,
         kind = kind,
         tags = emptyList(),
         content = "hello",
@@ -146,6 +148,37 @@ class EngineReadsTest {
                 "dedup",
                 mock.searchRequests.drop(at).last()["presentation.summary"],
                 "membership must ride the attribute-only summary, not a document fetch",
+            )
+        }
+
+    /**
+     * The supersession probe, and the same two-sided assertion the engine's own
+     * test makes: the winners must be NIP-01's, and the read must be the
+     * attribute projection rather than the port's correct-but-slow default.
+     * The facet is a delegation, so the way for it to break is to stop
+     * delegating — which returns the same winners off full summaries and shows
+     * up only here, in the summary class.
+     */
+    @Test
+    fun `newestPerAuthor delegates to the engine's attribute projection`() =
+        runBlocking {
+            val engine = EngineReads(index)
+            val alice = "a".repeat(64)
+            val bob = "b".repeat(64)
+            val older = doc("1".repeat(64), pubkey = alice, createdAt = 100)
+            val newer = doc("2".repeat(64), pubkey = alice, createdAt = 200)
+            val bobs = doc("3".repeat(64), pubkey = bob, createdAt = 150)
+            index.putAll(listOf(older, newer, bobs))
+
+            val at = mock.searchRequests.size
+            val newest = engine.newestPerAuthor(EventQuery(kinds = listOf(1), authors = listOf(alice, bob)))
+
+            assertEquals(newer.id, newest[alice]?.id, "the newest version per author, not the first stored")
+            assertEquals(bobs.id, newest[bob]?.id, "and one entry per author asked about")
+            assertEquals(
+                "idtimeauthor",
+                mock.searchRequests.drop(at).last()["presentation.summary"],
+                "the facet must keep the engine's projection, not fall back to a document search",
             )
         }
 
