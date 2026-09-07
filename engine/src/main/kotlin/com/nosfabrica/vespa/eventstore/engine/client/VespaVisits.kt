@@ -120,11 +120,8 @@ internal class VespaVisits(
         maxDocs: Int,
     ): DocsPage {
         val base =
-            "${endpoint()}/document/v1/$EVENT_NAMESPACE/$EVENT_DOCTYPE/docid" +
-                "?selection=${URLEncoder.encode(selection, "UTF-8")}" +
+            visitUrl(endpoint(), selection, "[document]") +
                 "&wantedDocumentCount=${maxDocs.coerceIn(1, VISIT_PAGE)}" +
-                "&fieldSet=${URLEncoder.encode("[document]", "UTF-8")}" +
-                "&timeout=$SERVER_TIMEOUT_SECONDS" +
                 "&concurrency=$bucketConcurrency"
         val resp = http.getVisit(resumeFrom?.let { "$base&continuation=$it" } ?: base)
         require(resp.statusCode() < 400) { "vespa visit ${resp.statusCode()}: ${resp.body().take(300)}" }
@@ -143,17 +140,8 @@ internal class VespaVisits(
         emit: suspend (List<VisitedDoc>) -> Unit,
     ) {
         val base =
-            "${endpoint()}/document/v1/$EVENT_NAMESPACE/$EVENT_DOCTYPE/docid" +
-                "?selection=${URLEncoder.encode(selection, "UTF-8")}" +
+            visitUrl(endpoint(), selection, fieldSet) +
                 "&wantedDocumentCount=$VISIT_PAGE" +
-                "&fieldSet=${URLEncoder.encode(fieldSet, "UTF-8")}" +
-                // UNDER the client's read deadline: a sparse selection can
-                // honestly spend ages filling a page, and the server's default
-                // (180s) outlives the client's 120s read timeout — the client
-                // would kill and retry the identical request forever. With the
-                // server timing out first, it returns a partial page plus a
-                // continuation and the walk keeps moving.
-                "&timeout=$SERVER_TIMEOUT_SECONDS" +
                 "&concurrency=$bucketConcurrency"
         var continuation: String? = null
         while (true) {
@@ -192,9 +180,7 @@ internal class VespaVisits(
         emit: suspend (List<VisitedDoc>) -> Unit,
     ): Boolean {
         val base =
-            "${endpoint()}/document/v1/$EVENT_NAMESPACE/$EVENT_DOCTYPE/docid" +
-                "?selection=${URLEncoder.encode(selection, "UTF-8")}" +
-                "&fieldSet=${URLEncoder.encode(fieldSet, "UTF-8")}" +
+            visitUrl(endpoint(), selection, fieldSet) +
                 "&stream=true&concurrency=1&slices=$slices&sliceId=$sliceId"
         var token: String? = null
         var delivered = false
@@ -357,6 +343,39 @@ internal class VespaVisits(
 
         /** Server-side timeout on visit requests — strictly under the client's visit read deadline, see [pagedWalk]. */
         const val SERVER_TIMEOUT_SECONDS = 90L
+
+        /**
+         * EVERY document-API visit URL, from one place — because the bug this
+         * exists to prevent was one of three hand-assembled URLs forgetting
+         * the server deadline, and the one that forgot was the STREAMED path,
+         * which is the path that runs.
+         *
+         * `timeout` must sit UNDER the client's read deadline
+         * ([VespaHttp.VISIT_READ_TIMEOUT_SECONDS]). A sparse selection — one
+         * author's cards across a 196M-document corpus, say — can honestly go
+         * a long time without emitting a matching document. If the server
+         * outlives the client, the client kills the stream and the retry
+         * re-issues the identical request, forever.
+         *
+         * Staging, 2026-09-06: service walks died over and over with
+         * SocketTimeoutException raised from Http2Stream$FramingSource.read —
+         * the visit body. Services cycled, each restarting from zero, none
+         * finishing, so the drain never emptied and coverage was never
+         * measured. Two earlier fixes treated the client side and could not
+         * have worked: nothing the client does makes a silent server speak.
+         *
+         * With the server timing out first it returns what it has plus a
+         * continuation, and the walk keeps moving.
+         */
+        internal fun visitUrl(
+            endpoint: String,
+            selection: String,
+            fieldSet: String,
+        ): String =
+            "$endpoint/document/v1/$EVENT_NAMESPACE/$EVENT_DOCTYPE/docid" +
+                "?selection=${URLEncoder.encode(selection, "UTF-8")}" +
+                "&fieldSet=${URLEncoder.encode(fieldSet, "UTF-8")}" +
+                "&timeout=$SERVER_TIMEOUT_SECONDS"
 
         /** Consecutive stream interruptions tolerated before the walk fails loudly. */
         const val STREAM_RETRIES = 3
