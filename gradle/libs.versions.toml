@@ -1,7 +1,7 @@
 [versions]
 kotlin = "2.4.0"
 # The library version published to Maven Central (com.nosfabrica.vespa.eventstore:*).
-app = "1.0.0"
+app = "1.0.1"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"
 # Quartz from JitPack (amethyst @ commit) — NIP-11 DSL + opt-out SQLite FTS index.

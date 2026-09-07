@@ -312,11 +312,11 @@ Vespa is a prerequisite, like a database — stand one up, then point the store 
 
 ```kotlin
 dependencies {
-    implementation("com.nosfabrica.vespa.eventstore:store:1.0.0")
+    implementation("com.nosfabrica.vespa.eventstore:store:1.0.1")
 
     // Optional: the wire-level test double (MockVespaEngine); InMemoryEventIndex ships in the engine artifact itself,
     // so your own tests run with no Vespa instance.
-    testImplementation(testFixtures("com.nosfabrica.vespa.eventstore:engine:1.0.0"))
+    testImplementation(testFixtures("com.nosfabrica.vespa.eventstore:engine:1.0.1"))
 }
 ```
 
