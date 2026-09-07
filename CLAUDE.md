@@ -113,8 +113,8 @@ stored, and what a rank profile does). Both are documented at their declaration;
 **Where the seam actually is.** It is NOT "Nostr-free engine / Nostr-aware store" — `:engine` knows
 Nostr, deliberately: `EventIndex.putIfNewer` implements the NIP-01 supersession rule *and its
 tiebreak* (it has to, to be engine-atomic), `EventDoc` computes NIP-01 addresses and gates tags on
-`isIndexableTagName`, and `doc/TrustKeys` + `client/TrustDescent` carry the NIP-85 concepts the rank
-profiles in `event.sd` are written around. The real seam is **the index port and its Vespa binding**
+`isIndexableTagName`, and `doc/TrustKeys` + `EventQuery.rankKey`/`followersKey` carry the NIP-85
+concepts the rank profiles in `event.sd` are written around. The real seam is **the index port and its Vespa binding**
 (what a document is, how a query compiles, how it travels) **versus relay policy** (write
 serialization, deletion / expiration / vanish enforcement, the trust projection, the search grammar,
 page assembly). So when hunting a rule: supersession and address computation are engine; anything a
