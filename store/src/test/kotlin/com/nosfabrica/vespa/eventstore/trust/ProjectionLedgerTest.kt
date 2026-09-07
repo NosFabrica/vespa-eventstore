@@ -269,7 +269,17 @@ class ProjectionLedgerTest {
             val projection = TrustProjection(index, reputations)
             projection.backlog.drainInBackground { }
 
-            val cards = TrustRecompute.PROJECT_PAGE * 4
+            // Enough batches that a queue bound actually BITES before the
+            // listing ends. At four batches it cannot: the writer takes one,
+            // a bound of two holds the rest, and the reader blocks only on its
+            // final send — with every id already counted, so the test passes
+            // while the coupling is still there. That is precisely how the
+            // bounded first cut shipped green.
+            //
+            // Volume cannot prove the general case: a bound of 64 needs 16,500
+            // cards to catch. The guarantee is the UNBOUNDED channel; this
+            // catches a regression back to a small one.
+            val cards = TrustRecompute.PROJECT_PAGE * 10
             (1..cards).forEach { n ->
                 val subj = n.toString(16).padStart(64, '0')
                 projection.put(ContactCardEvent(id(), service, next(), arrayOf(arrayOf("d", subj), arrayOf("rank", "7")), "", "").toDoc())
@@ -288,15 +298,20 @@ class ProjectionLedgerTest {
                 }
 
             parked.await()
-            // The writer is stuck. The reader must still get past the first
-            // batch — under the old shape it stopped dead at PROJECT_PAGE.
+            // THE WHOLE LISTING, while the writer is still parked — not merely
+            // "past the first batch". Getting past one batch is what a BOUNDED
+            // queue also does, and that weaker assertion is exactly why the
+            // first cut of this passed its test and went on timing out in
+            // production: the reader ran ahead, filled the bound, and blocked
+            // on `send` with the socket idle. The invariant is that the reader
+            // never waits on the writer at all.
             withTimeout(10_000) {
-                while (index.delivered <= TrustRecompute.PROJECT_PAGE) yield()
+                while (index.delivered < cards) yield()
             }
+            assertEquals(cards, index.delivered, "the reader must finish the listing without the writer moving")
+
             release.complete(Unit)
             drain.join()
-
-            assertTrue(index.delivered >= cards, "the whole listing was read: ${index.delivered} of $cards")
         }
 
     private class Deferred {
