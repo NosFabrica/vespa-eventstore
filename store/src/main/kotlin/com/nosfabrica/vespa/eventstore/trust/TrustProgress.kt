@@ -64,7 +64,10 @@ internal object TrustProgress {
          * forever. A walk blocked on a read looked identical to one restarting
          * constantly, and I read it as the latter.
          */
-        val stalledForSec: Long get() = (System.currentTimeMillis() - updatedMs) / 1000
+        val stalledForSec: Long get() = stalledAtSec(System.currentTimeMillis())
+
+        /** [stalledForSec] against a supplied clock, so the rendering rule is testable without waiting minutes for it. */
+        fun stalledAtSec(nowMs: Long): Long = (nowMs - updatedMs) / 1000
     }
 
     const val DONE = "done"
@@ -118,18 +121,39 @@ internal object TrustProgress {
      * denominator is known — a walk without one says so rather than inventing
      * a percentage, which is the failure this exists to end.
      */
-    fun line(): String =
-        snapshot()
-            .filterNot { it.finished }
-            .joinToString("; ") { s ->
-                val stalled = if (s.stalledForSec >= STALLED_AFTER_SEC) " STALLED ${s.stalledForSec}s" else ""
-                if (s.total <= 0 || s.done <= 0) {
-                    "${s.op} ${s.phase}: ${s.done}, total unknown (${s.elapsedSec}s)$stalled"
-                } else {
-                    val pct = (s.done * 100 / s.total).coerceAtMost(100)
-                    val rate = s.done.toDouble() / s.elapsedSec
-                    val eta = if (rate > 0) "${((s.total - s.done) / rate).toLong()}s" else "unknown"
-                    "${s.op} ${s.phase}: ${s.done}/${s.total} ($pct%), eta $eta$stalled"
-                }
+    fun line(): String = render(snapshot().filterNot { it.finished }, System.currentTimeMillis())
+
+    /**
+     * [line]'s rule, over a supplied set of live steps and clock.
+     *
+     * STALLED IS ABOUT THE PIPELINE, NOT THE STEP. These steps delegate: a
+     * drain hands one service to the walk and cannot retire it until the walk
+     * returns, so the drain's own `done` is FROZEN BY DESIGN for as long as a
+     * service takes — twenty-four minutes, in one measured case. Reporting
+     * that as "STALLED 1446s" beside a walk visibly advancing through 150,666
+     * cards is the tool crying wolf, and the next person to read it wastes the
+     * time I did.
+     *
+     * So a step is stalled only when NOTHING is moving. One live step
+     * advancing means the work is progressing and the frozen ones are waiting
+     * on it, which is not the same thing as stuck.
+     */
+    internal fun render(
+        live: List<Step>,
+        nowMs: Long,
+    ): String {
+        val anythingMoving = live.any { it.stalledAtSec(nowMs) < STALLED_AFTER_SEC }
+        return live.joinToString("; ") { s ->
+            val stalledFor = s.stalledAtSec(nowMs)
+            val stalled = if (!anythingMoving && stalledFor >= STALLED_AFTER_SEC) " STALLED ${stalledFor}s" else ""
+            if (s.total <= 0 || s.done <= 0) {
+                "${s.op} ${s.phase}: ${s.done}, total unknown (${s.elapsedSec}s)$stalled"
+            } else {
+                val pct = (s.done * 100 / s.total).coerceAtMost(100)
+                val rate = s.done.toDouble() / s.elapsedSec
+                val eta = if (rate > 0) "${((s.total - s.done) / rate).toLong()}s" else "unknown"
+                "${s.op} ${s.phase}: ${s.done}/${s.total} ($pct%), eta $eta$stalled"
             }
+        }
+    }
 }

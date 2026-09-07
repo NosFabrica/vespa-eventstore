@@ -33,7 +33,6 @@ import com.nosfabrica.vespa.eventstore.runtime.BackgroundFailures
 import com.nosfabrica.vespa.eventstore.runtime.DEFAULT_GUARD_REFRESH_MILLIS
 import com.nosfabrica.vespa.eventstore.runtime.WriterTopology
 import com.nosfabrica.vespa.eventstore.search.SearchExpansionLimits
-import com.nosfabrica.vespa.eventstore.trust.MaxRankBackfill
 import com.nosfabrica.vespa.eventstore.trust.TrustCoverage
 import com.nosfabrica.vespa.eventstore.trust.TrustExplain
 import com.nosfabrica.vespa.eventstore.trust.TrustKeyingMigration
@@ -80,10 +79,6 @@ class VespaEventStore internal constructor(
     private val trust: TrustProjection,
     /** The background drain worker's scope in deferred mode; null when the projection settles inline. */
     private val drainScope: CoroutineScope? = null,
-    /** The `max_rank` backfill's job, so a test or a boot line can wait for the descent to be on — see [awaitTrustDescent]. */
-    private val backfill: kotlinx.coroutines.Deferred<Int>? = null,
-    /** Whether the descent is switched on for this store — [open]'s `trustDescent`; the walk runs either way. */
-    val trustDescent: Boolean = true,
     /** The one-time re-keying of a store fed under the observer-keyed model — see [awaitTrustKeying]. */
     private val keying: kotlinx.coroutines.Deferred<TrustKeyingMigration.Migration>? = null,
     /** The keying migration's live view; a store built without one reports nothing rather than lying. */
@@ -110,20 +105,6 @@ class VespaEventStore internal constructor(
      * waiting behind.
      */
     fun metrics(): CostLedger.Snapshot = store.metrics.snapshot()
-
-    /**
-     * Wait until the trust descent may serve pages: the one-time walk that
-     * writes `max_rank` onto every reputation document fed before the field
-     * existed (MaxRankBackfill). Returns how many documents it wrote — 0 on a
-     * store that already carried it. A walk the engine refuses is retried
-     * until it finishes ([MaxRankBackfill.runUntilDone]), so this returns only
-     * with the walk done, or throws [CancellationException] when the store
-     * closed first; nothing served in the meantime is any different from
-     * before, since [VespaEventIndex.trustDescent] is only set on success —
-     * and only when [trustDescent] is on, which a boot line should say.
-     * Until then, [backgroundStatus] names each refused attempt.
-     */
-    suspend fun awaitTrustDescent(): Int = backfill?.await() ?: 0
 
     /**
      * Wait until the reputation documents are keyed by service: a store fed
@@ -253,8 +234,7 @@ class VespaEventStore internal constructor(
         // Drainer first: queued work survives in the persisted marker for the
         // next open — shutdown must not block on a six-figure walk.
         drainScope?.cancel()
-        backfill?.cancel()
-        // The keying migration too, and for a sharper reason than tidiness:
+        // The keying migration, and for a sharper reason than tidiness:
         // `runUntilDone` RETRIES FOREVER by design (a store with reputation
         // documents but no readable 10040 is a legitimate state — a corpus
         // mirrored ahead of its provider lists — so it waits rather than
@@ -329,19 +309,6 @@ class VespaEventStore internal constructor(
              */
             maxHitsPerAuthor: Int? = null,
             /**
-             * Whether a ranked search may take the trust descent (TrustDescent)
-             * once its `max_rank` walk has run. An OPERATOR'S switch, not a
-             * knob in the answer: the descent serves the exact page at every
-             * rung, so off and on differ only in cost — and on a cluster where
-             * the engine does not drive a rung by the imported `author_max_rank`
-             * range, each rung is a full text walk and the descent costs two to
-             * three of them (staging, 2026-09-04: `bitcoin` 2.7–4.4 s → 8.4 s).
-             * Off keeps the schema, the walk and the upkeep, so turning it back
-             * on is a restart. Defaults to `VESPA_TRUST_DESCENT` (`off`, `false`
-             * or `0` disable; unset is on) — see [trustDescentFromEnv].
-             */
-            trustDescent: Boolean = trustDescentFromEnv(),
-            /**
              * Capture reads slower than this many milliseconds in the
              * slow-query ring, or null (the default) to capture none.
              *
@@ -409,21 +376,6 @@ class VespaEventStore internal constructor(
             // exists to prevent.
             val reconciler = TrustReconciler(metered, reputations, trust.recompute, trust.backlog, gate = gate)
             val drainScope = if (deferTrustProjection) startDrainer(trust, gate) else null
-            // The descent is off until every reputation document carries the
-            // scalar it cuts on. One walk, once, in the background — and the
-            // switch is thrown only when it returns, so a boot that finds the
-            // marker already there is on within one read. A boot that finds
-            // the engine still coming up retries the walk until it is there
-            // (the failure accounting is inside runUntilDone).
-            val backfill =
-                CoroutineScope(SupervisorJob() + Dispatchers.Default).async {
-                    // The walk runs even with the descent switched off: it keeps
-                    // the invariant the descent needs, so switching on later is
-                    // a restart and not a migration.
-                    val written = withActivity(Activity.Backfill) { MaxRankBackfill(reputations).runUntilDone(BACKFILL_RETRY_MILLIS) }
-                    if (trustDescent) eventIndex.trustDescent = true
-                    written
-                }
             // Once, for a store written under the observer-keyed model: every
             // named service walked into cells, the old cells swept, a marker
             // left. A store born on this model reads the marker and returns.
@@ -445,7 +397,7 @@ class VespaEventStore internal constructor(
             ledger.gauge("trust.keying.visited") { keyingMigration.progress.visited.get() }
             ledger.gauge("trust.keying.total") { keyingMigration.progress.total.get() }
             ledger.gauge("trust.keying.keys.removed") { keyingMigration.progress.keysRemoved.get() }
-            return VespaEventStore(store, eventIndex, reconciler, trust, drainScope, backfill, trustDescent, keying, keyingMigration.progress)
+            return VespaEventStore(store, eventIndex, reconciler, trust, drainScope, keying, keyingMigration.progress)
         }
 
         /**
@@ -488,14 +440,8 @@ class VespaEventStore internal constructor(
         /** Backoff between drain retries after an engine failure. */
         private const val DRAIN_RETRY_MILLIS = 5_000L
 
-        /** Backoff between `max_rank` walk attempts after an engine failure — the same cadence as the drain's, for the same reason. */
+        /** Backoff between background walk attempts after an engine failure — the same cadence as the drain's, for the same reason. */
         private const val BACKFILL_RETRY_MILLIS = 5_000L
-
-        /** The environment's name for the descent switch — see [open]'s `trustDescent`. */
-        const val TRUST_DESCENT_ENV = "VESPA_TRUST_DESCENT"
-
-        /** `VESPA_TRUST_DESCENT` read the way [open] reads it: unset is on; `off`, `false` and `0` (any case, trimmed) are off; anything else is on. */
-        fun trustDescentFromEnv(value: String? = System.getenv(TRUST_DESCENT_ENV)): Boolean = value?.trim()?.lowercase() !in setOf("off", "false", "0")
 
         /** The config server sits on :19071 by convention, on the same host as the :8080 query endpoint. */
         internal fun deriveConfigUrl(queryUrl: String): String {

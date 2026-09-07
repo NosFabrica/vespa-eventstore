@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.eventstore.trust
 import com.nosfabrica.vespa.eventstore.engine.DocRef
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
+import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationCells
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
@@ -34,7 +35,11 @@ import com.nosfabrica.vespa.eventstore.mapping.toDoc
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -173,6 +178,141 @@ class ProjectionLedgerTest {
             // failure that has cleared must be retried, not written off.
             assertFailsWith<ProjectionLedger.DrainIncomplete> { projection.backlog.drain { it() } }
             assertTrue(index.refusals in (afterFirst + 1)..(afterFirst * 2 + 2), "the next call retries it exactly once more")
+        }
+
+    /**
+     * An index whose visit delivers ONE id per page — what the document-API
+     * path actually does when the selection is a single author: a page is one
+     * bucket's matches, and a bucket rarely holds two of one service's cards.
+     */
+    private class OneIdPages(
+        private val inner: InMemoryEventIndex,
+    ) : EventIndex by inner {
+        var searches = 0
+
+        @Volatile
+        var delivered = 0
+
+        override suspend fun visitIds(
+            query: EventQuery,
+            withDTag: Boolean,
+            onPage: suspend (List<DocRef>) -> Boolean,
+        ) {
+            inner.visitIds(query, withDTag) { page ->
+                var carryOn = true
+                for (ref in page) {
+                    delivered++
+                    carryOn = onPage(listOf(ref))
+                    if (!carryOn) break
+                }
+                carryOn
+            }
+        }
+
+        override suspend fun search(query: EventQuery): List<EventDoc> {
+            if (query.ids != null) searches++
+            return inner.search(query)
+        }
+    }
+
+    /**
+     * THE WALK MUST BATCH ACROSS PAGES, not within one. Chunking inside a page
+     * can only split what already arrived; it cannot gather. Measured on
+     * staging: 29,300 by-id fetches and 29,300 cell writes for 29,300 cards,
+     * 14 cards/s — against 105/s for the same walk when the cells were already
+     * right and the writes were skipped.
+     */
+    @Test
+    fun `the walk batches one-id pages into full by-id fetches`() =
+        runBlocking {
+            val inner = InMemoryEventIndex()
+            val index = OneIdPages(inner)
+            val reputations = InMemoryReputationIndex()
+            val projection = TrustProjection(index, reputations)
+            projection.backlog.drainInBackground { }
+
+            val subjects = (1..600).map { it.toString(16).padStart(64, '0') }
+            subjects.forEach { subj ->
+                projection.put(ContactCardEvent(id(), service, next(), arrayOf(arrayOf("d", subj), arrayOf("rank", "42")), "", "").toDoc())
+            }
+            projection.put(list10040().toDoc())
+            index.searches = 0
+
+            projection.backlog.drain { it() }
+
+            // 600 cards at a 250-page: 3 fetches, not 600.
+            val ceiling = (subjects.size + TrustRecompute.PROJECT_PAGE - 1) / TrustRecompute.PROJECT_PAGE
+            assertTrue(
+                index.searches <= ceiling + 1,
+                "expected about $ceiling by-id fetches for ${subjects.size} cards, made ${index.searches}",
+            )
+            // And the batching must not lose the remainder.
+            subjects.forEach { subj ->
+                assertEquals(42, assertNotNull(reputations.get(subj), "no cell for $subj").influenceScores[ServiceKey(service)], "cell for $subj")
+            }
+        }
+
+    /**
+     * THE LISTING IS A LIVE STREAM AND THE GATE IS CONTENDED. Writing inside
+     * the visit's own callback made every gate wait a gap in that stream; past
+     * the client's 120s read gap the server drops it. Staging died exactly
+     * that way at 98,000 of 116,352 cards — `SocketTimeoutException` raised
+     * from `Http2Stream$FramingSource.read`, the visit body, never the write.
+     *
+     * So: with the writer parked on the gate, the reader must keep listing.
+     */
+    @Test
+    fun `the id listing keeps reading while a write waits on the gate`() =
+        runBlocking {
+            val inner = InMemoryEventIndex()
+            val index = OneIdPages(inner)
+            val reputations = InMemoryReputationIndex()
+            val projection = TrustProjection(index, reputations)
+            projection.backlog.drainInBackground { }
+
+            // Enough batches that a queue bound actually BITES before the
+            // listing ends. At four batches it cannot: the writer takes one,
+            // a bound of two holds the rest, and the reader blocks only on its
+            // final send — with every id already counted, so the test passes
+            // while the coupling is still there. That is precisely how the
+            // bounded first cut shipped green.
+            //
+            // Volume cannot prove the general case: a bound of 64 needs 16,500
+            // cards to catch. The guarantee is the UNBOUNDED channel; this
+            // catches a regression back to a small one.
+            val cards = TrustRecompute.PROJECT_PAGE * 10
+            (1..cards).forEach { n ->
+                val subj = n.toString(16).padStart(64, '0')
+                projection.put(ContactCardEvent(id(), service, next(), arrayOf(arrayOf("d", subj), arrayOf("rank", "7")), "", "").toDoc())
+            }
+            projection.put(list10040().toDoc())
+
+            val parked = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val drain =
+                launch {
+                    projection.backlog.drain { body ->
+                        // Park the FIRST gated write, the way a contended gate does.
+                        if (parked.complete(Unit)) release.await()
+                        body()
+                    }
+                }
+
+            parked.await()
+            // THE WHOLE LISTING, while the writer is still parked — not merely
+            // "past the first batch". Getting past one batch is what a BOUNDED
+            // queue also does, and that weaker assertion is exactly why the
+            // first cut of this passed its test and went on timing out in
+            // production: the reader ran ahead, filled the bound, and blocked
+            // on `send` with the socket idle. The invariant is that the reader
+            // never waits on the writer at all.
+            withTimeout(10_000) {
+                while (index.delivered < cards) yield()
+            }
+            assertEquals(cards, index.delivered, "the reader must finish the listing without the writer moving")
+
+            release.complete(Unit)
+            drain.join()
         }
 
     private class Deferred {

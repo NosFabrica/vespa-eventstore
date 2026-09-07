@@ -50,7 +50,7 @@ import kotlinx.coroutines.delay
  *     service some 10040 names are removed (tensor `remove`, pipelined): the
  *     old observer keys, and services no list names any more. Without this
  *     the old cells would stay resident in a global, memory-held document
- *     type and keep `max_rank` high.
+ *     type.
  *
  * PHASES ARE RECORDED, IN A SECOND DOCUMENT. Nothing used to be written
  * until a run finished, so every restart began again at step 1 — and step 1

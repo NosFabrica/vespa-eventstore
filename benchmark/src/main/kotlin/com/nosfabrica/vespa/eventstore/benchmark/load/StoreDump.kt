@@ -70,11 +70,6 @@ object StoreDump {
             val configUrl = System.getenv("VESPA_CONFIG_URL")
             val store = if (configUrl != null) VespaEventStore.open(url = url, configUrl = configUrl) else VespaEventStore.open(url)
             store.use {
-                // The descent is on only once every reputation document carries
-                // max_rank: wait for that walk, so the page printed is the page
-                // a relay serves after boot, not the one it serves during it.
-                val backfilled = store.awaitTrustDescent()
-                if (backfilled > 0) println("trust descent: on, after writing max_rank onto $backfilled reputation documents")
                 // The search string the relay would build: the terms plus the
                 // NIP-50 extensions, so what runs here is what runs there.
                 val search = terms + (observer?.let { " observer:$it" } ?: "")

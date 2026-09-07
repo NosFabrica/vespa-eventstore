@@ -26,7 +26,7 @@ The store can say a great deal about a write and nothing at all about a read.
 | --- | --- |
 | ingest stages (`dedup`, `guards`, `versions`, `supersede`, `write`) | yes — `IngestStats` |
 | writer-lock wait / hold, and who holds it now | yes — `IngestStats`, `heldNow()` |
-| trust projection (`proj.fetch.derive`, `proj.fetch.maxrank`, `proj.write`) | yes |
+| trust projection (`proj.fetch.derive`, `proj.write`) | yes |
 | **REQ / COUNT / NIP-50 search** | **no** |
 | **round trips to the engine** | **no** |
 | **engine-side cost: docs matched, coverage, rank profile** | **no** |
@@ -411,7 +411,6 @@ under an activity:
 | `guards` | the NIP-09/62 guard probes under `BatchInsert` — a `GuardOwners` bloom check plus whatever queries it does not eliminate, so metering it at the port also shows how many probes the cache actually saved |
 | `write` | `putAll` under `BatchInsert` |
 | `proj.fetch.derive` | `search` under `Drain` |
-| `proj.fetch.maxrank` | `search` under `Backfill` |
 | `proj.write` | `updateCells` under `Drain` |
 | `lock.*.wait` / `lock.*.hold` | lock scopes, stacked, with unaccounted time |
 
@@ -572,7 +571,6 @@ deferred (§9).
 | reads table | queries, rate, engine share | P + E | |
 | | p50 / p99 | P | §10.3 |
 | | docs matched per query | **E** | `SearchRootFields.totalCount`, already parsed — free |
-| | trust-descent rungs | **E** | count rungs walked per search in `TrustDescent` |
 | | degraded count | E | |
 | ingest panel | stage split, calls, mean, max | P | §7.1 |
 | | writer lock wait / hold / unaccounted | P | §3.4 |

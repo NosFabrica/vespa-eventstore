@@ -28,7 +28,7 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * Every layer under it already took an `onProgress`, and nothing passed one:
  * [TrustKeyingMigration.run], [TrustReconciler.reconcile] and
- * [MaxRankBackfill.run] all reported, and the store called each of them with
+ * the other walks all reported, and the store called each of them with
  * the argument left out, so a walk that takes hours over a real corpus was
  * indistinguishable from one that had not started. This holds what they say.
  *

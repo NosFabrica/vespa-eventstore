@@ -65,14 +65,21 @@ class TrustKeyingMigrationTest {
     ) = ContactCardEvent(id(), service, 1_000L + seq, arrayOf(arrayOf("d", about), arrayOf("rank", rank.toString()), arrayOf("followers", "12")), "", "")
 
     /** The old shape, written straight to the index and the reputation store: events without their projection, cells under the observer. */
+    // A sentinel key owned by no subsystem here — the sweep must leave it alone.
+    private val foreignMarker = "some-other-subsystems-marker"
+
     private suspend fun seedObserverKeyedStore() {
         index.put(list10040().toDoc())
         index.put(card(subject, 87).toDoc())
         index.put(card(subject2, 40).toDoc())
         reputations.put(ReputationDoc(subject, serviceCells(observer to 87), serviceCells(observer to 12.0)))
         reputations.put(ReputationDoc(subject2, serviceCells(observer to 40), serviceCells(observer to 12.0)))
-        // The projection's own bookkeeping must survive untouched.
-        reputations.put(ReputationDoc(MaxRankBackfill.MARKER_KEY, serviceCells("done" to 1)))
+        // A marker belonging to SOMEONE ELSE must survive untouched: markers
+        // are sentinel keys, not 64-hex subjects, and the sweep must not treat
+        // one as a parent to re-key. (This used to name another subsystem's
+        // marker; that subsystem is gone, so the check stands on a foreign
+        // sentinel of its own.)
+        reputations.put(ReputationDoc(foreignMarker, serviceCells("done" to 1)))
     }
 
     @Test
@@ -87,7 +94,7 @@ class TrustKeyingMigrationTest {
             assertEquals(ReputationDoc(subject, serviceCells(service to 87), serviceCells(service to 12.0)), reputations.get(subject))
             assertEquals(ReputationDoc(subject2, serviceCells(service to 40), serviceCells(service to 12.0)), reputations.get(subject2))
             assertNotNull(reputations.get(TrustKeyingMigration.MARKER_KEY), "the marker stands")
-            assertNotNull(reputations.get(MaxRankBackfill.MARKER_KEY), "other markers are not subjects")
+            assertNotNull(reputations.get(foreignMarker), "other markers are not subjects")
             assertTrue(reconciler.verify().isClean(), "what the migration wrote is exactly what a derive says")
         }
 

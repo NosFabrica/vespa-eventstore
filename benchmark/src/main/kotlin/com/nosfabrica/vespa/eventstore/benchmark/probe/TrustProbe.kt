@@ -200,7 +200,7 @@ object TrustProbe {
         if (waits.isNotEmpty()) {
             println("  card inserts during the walk: n=${waits.size} median=${waits.sorted()[waits.size / 2]}ms max=${waits.max()}ms")
         }
-        println("  " + statsLine("lock.ingest.trust.wait", "lock.gate.hold", "proj.fetch.derive", "proj.write", "proj.fetch.maxrank"))
+        println("  " + statsLine("lock.ingest.trust.wait", "lock.gate.hold", "proj.fetch.derive", "proj.write"))
     }
 
     @JvmStatic
@@ -237,7 +237,7 @@ object TrustProbe {
                         }
                     val d = stage("proj.fetch.derive")
                     println("  fed in %.1fs; projection %s; derive calls during it: %d (%.1fs)".format(fed, settled?.let { "settled at %.1fs".format(it) } ?: "NOT settled after ${walkSeconds}s", d.calls - derive0.calls, (d.totalNanos - derive0.totalNanos) / 1e9))
-                    println("  " + statsLine("write", "remove", "versions", "proj.write", "proj.fetch.maxrank", "proj.fetch.derive", "lock.gate.hold", "lock.ingest.trust.wait"))
+                    println("  " + statsLine("write", "remove", "versions", "proj.write", "proj.fetch.derive", "lock.gate.hold", "lock.ingest.trust.wait"))
                 }
                 return@runBlocking
             }
@@ -262,7 +262,7 @@ object TrustProbe {
                 feed(store, cardsB, batch, "cards B")
                 store.awaitTrustProjection()
                 println("  projection settled %.1fs after the feeds started".format((System.nanoTime() - t0) / 1e9))
-                println("  " + statsLine("write", "proj.write", "proj.fetch.maxrank", "proj.fetch.derive", "lock.ingest.hold", "lock.ingest.trust.wait", "lock.gate.hold"))
+                println("  " + statsLine("write", "proj.write", "proj.fetch.derive", "lock.ingest.hold", "lock.ingest.trust.wait", "lock.gate.hold"))
 
                 val templates = cardsA.filterIsInstance<ContactCardEvent>().shuffled(rnd).take(400)
                 println("== 2. single card inserts, drain idle (client path)")

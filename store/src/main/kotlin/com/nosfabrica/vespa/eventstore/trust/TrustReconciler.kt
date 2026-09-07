@@ -257,6 +257,14 @@ class TrustReconciler internal constructor(
                 // A service with nothing older than the horizon falls back to
                 // the newest sample: the same answer as before, for a service
                 // too young for the bias to have bitten.
+                // `sampled`: three cards, and the question is only whether ANY
+                // of them carries this service's cell. A match-phase cut hands
+                // back fewer cards, never wrong ones, so a short page still
+                // answers it — while refusing throws the whole screening away.
+                // Staging retried this exact read 42 times over 85 minutes at
+                // 57% coverage, with the drain empty and every service walked,
+                // which left coverage unmeasurable for want of a page that did
+                // not need to be complete.
                 val older =
                     index.search(
                         EventQuery(
@@ -265,12 +273,13 @@ class TrustReconciler internal constructor(
                             until = cutoff - SAMPLE_HORIZON_SECONDS,
                             limit = RECONCILE_SAMPLES,
                             notExpiredAt = cutoff,
+                            sampled = true,
                         ),
                     )
                 val sample =
                     older.ifEmpty {
                         index.search(
-                            EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service), limit = RECONCILE_SAMPLES, notExpiredAt = cutoff),
+                            EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service), limit = RECONCILE_SAMPLES, notExpiredAt = cutoff, sampled = true),
                         )
                     }
                 if (sample.isEmpty()) return@mapBounded null

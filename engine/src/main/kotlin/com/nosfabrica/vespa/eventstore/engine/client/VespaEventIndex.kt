@@ -567,57 +567,6 @@ class VespaEventIndex(
     override suspend fun rawSearchRanked(query: EventQuery): List<Ranked<RawEvent>> = if (query.isPureIdLookup()) rawSearch(query).map { Ranked(it, null) } else rankedRecall(query) { it.toRaw() }
 
     /**
-     * Whether the trust descent may serve a page — set by the store once every
-     * reputation document carries `max_rank` (the backfill's marker), never
-     * before: an author without it reads 0 and a rung above the floor would
-     * exclude them from a page they belong on. See [TrustDescent].
-     */
-    @Volatile
-    var trustDescent: Boolean = false
-
-    /**
-     * The descent: [TrustDescent.FIRST_RUNG], then the rung its page proves,
-     * then the floor — each an exact page by the bound, the last by the gate.
-     * Null when the shape does not descend, so [recallRoot] runs the query as
-     * it is.
-     */
-    private suspend fun descend(q: EventQuery): SearchRoot? {
-        if (!trustDescent || !TrustDescent.descends(q)) return null
-        val floor = q.minRank!!
-        val floorRung = TrustDescent.floorRung(floor)
-        val k = q.limit!!
-        val words = TrustDescent.words(q)
-
-        suspend fun rung(t: Int): SearchRoot? = EventYql.build(q.copy(trustFloor = t))?.let { searchRoot(it, hits = hitsFor(q)) }
-        if (TrustDescent.FIRST_RUNG > floorRung) {
-            val first = rung(TrustDescent.FIRST_RUNG) ?: return null
-            val kth = first.children.getOrNull(k - 1)?.relevance
-            if (kth != null) {
-                val proven = TrustDescent.provenRung(kth, floor, words)
-                if (proven >= TrustDescent.FIRST_RUNG) return first
-                if (proven > floorRung) {
-                    // Proven by construction — the wider rung's K-th hit scores
-                    // at least the narrower one's — but checked, never assumed.
-                    val second = rung(proven) ?: return null
-                    val kth2 = second.children.getOrNull(k - 1)?.relevance
-                    if (kth2 != null && kth2 >= TrustDescent.bound(proven, floor, words)) return second
-                }
-            }
-        }
-        // The floor rung is exact BY THE GATE — what it excludes, the gate
-        // deletes — but only while `max_rank` tells the truth. It did not on
-        // staging (2026-09-04: a schema flip zeroed the field and every
-        // ranked search answered empty), and a page this rung serves SHORT is
-        // the one shape that cannot tell "few trusted hits" from "the scalar
-        // is wrong". So a short floor page is not served: null here runs the
-        // exact query, which costs what it always cost and is right either
-        // way. A full page is served as before — a wrong scalar cannot fill a
-        // page with documents the gate would not also admit.
-        val floorPage = rung(floorRung) ?: return null
-        return floorPage.takeIf { it.children.size >= k }
-    }
-
-    /**
      * The recall query, guarded against match-phase UNDER-DELIVERY. A
      * match-phase-limited query can return fewer hits than asked and Vespa
      * does not re-run it on its own — so a degraded response short of the
@@ -627,7 +576,6 @@ class VespaEventIndex(
      * node: everything the cut excluded is older than everything returned.
      */
     private suspend fun recallRoot(q: EventQuery): SearchRoot? {
-        descend(q)?.let { return it }
         val vq = EventYql.build(q) ?: return null
         val root = searchRoot(vq, hits = hitsFor(q))
         val matchPhased = vq.ranking == EventYql.RANK_RECENCY || vq.ranking == EventYql.RANK_RECENCY_GATED
@@ -1261,7 +1209,11 @@ class VespaEventIndex(
         // requireComplete throws.
         publish(vq, root, envelope.timing)
         captureSlow(vq, t0, envelope.timing, root.children.size.toLong(), root.fields.totalCount.toLong())
-        val allowMatchPhase = vq.ranking == EventYql.RANK_RECENCY || vq.ranking == EventYql.RANK_RECENCY_GATED
+        // `sampled` joins the recency profiles here rather than bypassing the
+        // check: a truncated page is still RECORDED below, so a cluster
+        // degrading every read shows up in the numbers either way — it just
+        // stops killing the reads that a subset already answers.
+        val allowMatchPhase = vq.sampled || vq.ranking == EventYql.RANK_RECENCY || vq.ranking == EventYql.RANK_RECENCY_GATED
         // RECORDED WHETHER OR NOT IT THROWS. A match-phase cut on a recency
         // profile is ALLOWED and returned silently, so a cluster degrading
         // every read shows up here before anything refuses and long before

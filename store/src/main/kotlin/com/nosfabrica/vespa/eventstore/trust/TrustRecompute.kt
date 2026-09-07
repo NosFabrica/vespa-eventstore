@@ -34,6 +34,9 @@ import com.nosfabrica.vespa.eventstore.mapping.toEvent
 import com.nosfabrica.vespa.eventstore.runtime.WriteLocks
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import com.vitorpamplona.quartz.utils.Hex
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 
 /**
  * HOW the reputation parents are written — the cell path every card takes
@@ -56,8 +59,6 @@ internal class TrustRecompute(
     private val inner: EventIndex,
     private val reputations: ReputationIndex,
     private val nowSecs: () -> Long = { System.currentTimeMillis() / 1000 },
-    /** Told what every whole-document write stored, so the cell path never reads a stale-high value — see [MaxRankCache]. */
-    private val maxRanks: MaxRankCache? = null,
 ) {
     /** The named services and every observer's lens, cached across a pass; see [ProviderMap]. */
     private val providers = ProviderMap(inner, nowSecs)
@@ -132,14 +133,12 @@ internal class TrustRecompute(
         val derived = deriveBatch(subjects, serviceProviders)
         IngestStats.timed("proj.write") {
             reputations.putAll(derived.values.toList())
-            maxRanks?.remember(derived.values)
             if (removeEmpties) {
                 // Pipelined like the puts above: this used to be one feed round
                 // trip per subject at QUERY_FANOUT, under the gate — an orphan
                 // sweep that emptied 17k parents held it for ~17k/4 of them.
                 val gone = subjects.filter { it !in derived }
                 if (gone.isNotEmpty()) reputations.removeAll(gone)
-                maxRanks?.forget(gone)
             }
         }
     }
@@ -162,7 +161,7 @@ internal class TrustRecompute(
         val derived = LinkedHashMap<String, ReputationDoc>(subjects.size * 2)
         val cutoff = nowSecs()
         // SPLIT from the old shared `proj.fetch` (2026-09-04): this and
-        // TrustProjection's max_rank raise both booked to that one name, so a
+        // TrustProjection's writes both booked to that one name, so a
         // gate held for 24 minutes could not be attributed to either. The
         // annotation names the shape of THIS call — the chunk count is the
         // loop, the subject count is the work.
@@ -272,20 +271,8 @@ internal class TrustRecompute(
             updates += ReputationCells(subject, ServiceKey(doc.pubkey), influence, followers, dropInfluence = influence == null, dropFollowers = followers == null)
         }
         if (updates.isEmpty()) return unapplied
-        // Each cell that overtakes its document's `max_rank` carries the new
-        // value in the same update — the invariant the trust descent proves
-        // pages with (TrustDescent). Its cost is a function of cache misses.
         IngestStats.annotateHold("cell update over ${updates.size} card(s)", WriteLocks.TRUST_GATE)
-        val raised = IngestStats.timed("proj.fetch.maxrank") { maxRanks?.raise(updates) ?: updates }
-        try {
-            IngestStats.timed("proj.write") { reputations.updateCells(raised) }
-        } catch (t: Throwable) {
-            // The cache moved to the raised values BEFORE this write; a write
-            // that failed leaves it reading high, and a stale-high entry skips
-            // a raise the store needs. Forget them: the next cell reads again.
-            maxRanks?.forget(raised.mapNotNull { u -> u.subject.takeIf { u.maxRank != null } })
-            throw t
-        }
+        IngestStats.timed("proj.write") { reputations.updateCells(updates) }
         return unapplied
     }
 
@@ -324,34 +311,120 @@ internal class TrustRecompute(
             // card it names.
             val total = runCatching { inner.count(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service))) }.getOrDefault(0)
             TrustProgress.begin(WALK, "walking ${service.take(12)}'s cards into cells", total.toLong())
-            inner.visitIds(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service)), withDTag = false) { page ->
-                page.map { it.id }.chunked(PROJECT_PAGE).forEach { ids ->
-                    gate.holding {
-                        IngestStats.annotateHold("project service ${service.take(8)}: ${ids.size} card(s)", WriteLocks.TRUST_GATE)
-                        // NOT `complete`, and the paragraph above says why: a
-                        // card superseded between the id listing and this fetch
-                        // is SIMPLY GONE, by design. Asking the engine to see
-                        // everything on a read whose whole contract expects
-                        // documents to be missing is a contradiction, and it is
-                        // the one that stopped this walk: `requireEverything`
-                        // refuses `full: false` — which a node a hair short of
-                        // its target reports at a rounded 100% with no
-                        // degradation named, permanently, on a cluster that is
-                        // feeding. The walk advanced a few hundred cards, hit a
-                        // page whose answer was a hair short, threw, and began
-                        // again from zero.
-                        //
-                        // Missing ids cost nothing here: applyCards writes a
-                        // cell per card it HAS, the absent one's winner already
-                        // wrote its own, and the next round re-lists.
-                        val docs = IngestStats.timed("proj.fetch.page") { inner.search(EventQuery(ids = ids, kinds = listOf(ContactCardEvent.KIND))) }
-                        applyCards(docs, providers.get())
-                        applied += docs.size
+            // BUFFERED ACROSS PAGES, not chunked within one. A page is whatever
+            // the visit happened to deliver, and on the document-API path that
+            // is ONE BUCKET's matches — with a selection as narrow as a single
+            // author, routinely a single card. Chunking inside the page can
+            // only split what already arrived; it cannot gather. So the walk
+            // was taking the gate, issuing a by-id fetch and writing a cell
+            // ONCE PER CARD: measured at 29,300 `proj.write` calls for 29,300
+            // cards, 28ms each.
+            // 14 cards/s against the 105/s the same walk reaches when the
+            // cells are already right and the writes are skipped.
+            //
+            // Buffering to PROJECT_PAGE turns 250 round trips into one. It
+            // changes nothing about WHICH cells are written: a cell is keyed by
+            // (subject, service) and the newest card at an address wins, so the
+            // batch a card lands in is not observable. It also holds the gate
+            // LESS, not more — one hold per 250 cards instead of 250 holds.
+            // THE VISIT MUST NOT WAIT ON THE GATE. The id listing is a live
+            // HTTP stream, and its read timeout is a GAP timeout: 120s with no
+            // bytes and the server drops it. Writing inside the visit's own
+            // callback made every gate wait a gap in that stream — and this
+            // deployment's `lock.gate.wait` runs into the hundreds of seconds
+            // against live feed traffic. Measured: a walk died at 98,000 of
+            // 116,352 cards with `SocketTimeoutException` thrown from
+            // `Http2Stream$FramingSource.read`, i.e. from the visit body,
+            // never from the write.
+            //
+            // So the reader and the writer are separate coroutines with a
+            // queue between them. The reader streams ids and hands off; the
+            // writer takes the gate. A gate wait stalls the WRITER, which is
+            // not holding a socket open, and the stream keeps being read.
+            //
+            // THE QUEUE IS UNBOUNDED, and a bounded one is why the first cut of
+            // this did not work. At 64 batches the reader ran ahead, filled the
+            // queue, and blocked on `send` — holding the socket idle again, so
+            // a SINGLE gate acquisition over 120s still killed the stream. The
+            // bound delayed the coupling instead of removing it, and staging
+            // went on timing out: services cycling, each restarting from zero,
+            // none finishing.
+            //
+            // Unbounded is affordable because the walk already knows what it is
+            // buying: `total` is a count of this service's cards, and an id is
+            // ~104 bytes. The largest service seen here is 279,594 cards, so
+            // ~29 MB held transiently, for one service at a time. That is the
+            // price of a listing that cannot be starved by a contended lock.
+            //
+            // NOT for the parallelism, which is worth little: measured on the
+            // walk above, `proj.fetch.page` and `proj.write` together account
+            // for ~80s of its 872s. The reads and writes are not the wall
+            // clock — the waiting is. Overlapping them is a side effect; the
+            // point is that the visit no longer pays for the gate.
+            //
+            // Ordering is untouched. Cells are still written by id INSIDE the
+            // gate, so a card superseded between listing and fetch is still
+            // simply gone, and one writer means batches still land in order.
+            coroutineScope {
+                val batches = Channel<List<String>>(Channel.UNLIMITED)
+                val writer =
+                    launch {
+                        for (ids in batches) {
+                            gate.holding {
+                                IngestStats.annotateHold("project service ${service.take(8)}: ${ids.size} card(s)", WriteLocks.TRUST_GATE)
+                                // NOT `complete`: a card superseded between the id
+                                // listing and this fetch is SIMPLY GONE, by design.
+                                // Asking the engine to see everything on a read
+                                // whose contract expects documents to be missing is
+                                // a contradiction, and it is the one that stopped
+                                // this walk for a day (`requireEverything` refuses
+                                // `full: false`, which a node a hair short of its
+                                // target reports at a rounded 100%).
+                                //
+                                // Missing ids cost nothing: applyCards writes a
+                                // cell per card it HAS, the absent one's winner
+                                // already wrote its own, and the next round re-lists.
+                                val docs = IngestStats.timed("proj.fetch.page") { inner.search(EventQuery(ids = ids, kinds = listOf(ContactCardEvent.KIND))) }
+                                applyCards(docs, providers.get())
+                                applied += docs.size
+                            }
+                            TrustProgress.advance(WALK, applied.toLong(), total.toLong())
+                            onCards?.invoke(applied)
+                        }
                     }
+
+                val pending = ArrayList<String>(PROJECT_PAGE)
+                try {
+                    // Timed so the split this fix was reasoned from stays visible:
+                    // if the listing turns out to be the wall clock after all, this
+                    // is the number that says so.
+                    IngestStats.timed("proj.visit.ids") {
+                        inner.visitIds(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service)), withDTag = false) { page ->
+                            pending += page.map { it.id }
+                            while (pending.size >= PROJECT_PAGE) {
+                                batches.send(pending.take(PROJECT_PAGE))
+                                pending.subList(0, PROJECT_PAGE).clear()
+                            }
+                            true
+                        }
+                    }
+                    // The remainder: a service whose card count is not a multiple
+                    // of the page would otherwise leave its last cards unapplied
+                    // while the round retired it as though they had landed.
+                    if (pending.isNotEmpty()) batches.send(pending.toList())
+                } finally {
+                    // ALWAYS, including when the listing throws — otherwise the
+                    // writer suspends forever on a queue nobody will close.
+                    //
+                    // On a throw the scope then cancels the writer, so queued
+                    // batches may go unwritten. That is fine and is the whole
+                    // retry contract: cells already written KEEP (each is
+                    // complete on its own), the service is not retired, and the
+                    // next drain re-lists it. Nothing half-applied is left behind
+                    // because a cell is never half-written.
+                    batches.close()
                 }
-                TrustProgress.advance(WALK, applied.toLong(), total.toLong())
-                onCards?.invoke(applied)
-                true
+                writer.join()
             }
             TrustProgress.finish(WALK)
         }

@@ -248,7 +248,7 @@ internal class VespaHttp {
         ): Socket = on(Socket(address, port, localAddress, localPort))
     }
 
-    private companion object {
+    internal companion object {
         /** Concurrent engine requests, total and per host — one host, so the per-host limit is the one that binds. */
         const val MAX_CONCURRENT_REQUESTS = 1024
 

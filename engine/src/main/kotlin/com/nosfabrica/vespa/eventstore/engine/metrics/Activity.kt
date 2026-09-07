@@ -69,9 +69,6 @@ enum class Activity {
     /** The guard-owner cache refresh. */
     GuardRefresh,
 
-    /** The one-time `max_rank` walk. */
-    Backfill,
-
     /**
      * Work that reached the port with no activity declared. Not a bug by
      * itself — a bare index in a test has no store above it — but a busy

@@ -199,16 +199,6 @@ data class EventQuery(
      */
     val rankFeatures: Map<String, Double> = emptyMap(),
     /**
-     * ONE RUNG OF THE TRUST DESCENT: keep only documents whose author some
-     * observer ranks at least this (`author_max_rank >= trustFloor`, the
-     * scalar the reputation parent carries). Set by VespaEventIndex's descent,
-     * never by a caller: a rung is a way of finding the exact page faster,
-     * and which rung a page stops on is decided by the bound in TrustDescent,
-     * not by anything a filter can say. Null (every caller's query) is the
-     * whole corpus.
-     */
-    val trustFloor: Int? = null,
-    /**
      * Keep the gated match-phase profile even where THIS query's limit sits
      * past [EventYql.MATCH_PHASE_BAND]. Not a caller-facing knob: the client
      * stamps it on its tie-slack overfetch of a query whose OWN limit was
@@ -252,6 +242,29 @@ data class EventQuery(
      * more. Meaningful with no [limit]; a limited query is short by design.
      */
     val complete: Boolean = false,
+    /**
+     * THIS READ IS A SAMPLE, so a short answer is a fine answer.
+     *
+     * [complete]'s opposite, and for the reads that genuinely want it. A
+     * match-phase cut returns FEWER documents, never wrong ones — so a read
+     * that only needs "some of these, any of them" loses nothing by taking a
+     * truncated page, while refusing costs it the whole answer.
+     *
+     * Staging, 2026-09-06: the reconcile's projected-check samples three cards
+     * per service to ask whether any of them carries that service's cell. On a
+     * loaded cluster the engine cut that read to 57% of the corpus, the check
+     * refused it, and the reconcile retried the same read 42 times over 85
+     * minutes — with the drain empty and every service walked, so this one
+     * refusal was the only thing left standing between the store and a
+     * measured coverage number.
+     *
+     * Safe by direction, which is the whole reason it is allowed here: fewer
+     * sampled cards can only make the check MISS a projection it would
+     * otherwise have seen, and a false negative re-walks a service that did
+     * not need it. Truncation cannot invent a card, so it cannot produce the
+     * false positive — "projected" when it is not — that would matter.
+     */
+    val sampled: Boolean = false,
 )
 
 /** A ready-to-send Vespa query: the YQL, its query parameters, and the rank profile. */
@@ -261,4 +274,6 @@ data class VespaQuery(
     val ranking: String,
     /** [EventQuery.complete], carried to the response check: refuse anything short of the whole match set. */
     val complete: Boolean = false,
+    /** [EventQuery.sampled], carried to the response check: accept a match-phase cut, because a subset answers this read. */
+    val sampled: Boolean = false,
 )
