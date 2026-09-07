@@ -354,8 +354,22 @@ internal class TrustRecompute(
             //
             // So the reader and the writer are separate coroutines with a
             // queue between them. The reader streams ids and hands off; the
-            // writer takes the gate. A gate wait now stalls the WRITER, which
-            // is not holding a socket open, and the stream keeps being read.
+            // writer takes the gate. A gate wait stalls the WRITER, which is
+            // not holding a socket open, and the stream keeps being read.
+            //
+            // THE QUEUE IS UNBOUNDED, and a bounded one is why the first cut of
+            // this did not work. At 64 batches the reader ran ahead, filled the
+            // queue, and blocked on `send` — holding the socket idle again, so
+            // a SINGLE gate acquisition over 120s still killed the stream. The
+            // bound delayed the coupling instead of removing it, and staging
+            // went on timing out: services cycling, each restarting from zero,
+            // none finishing.
+            //
+            // Unbounded is affordable because the walk already knows what it is
+            // buying: `total` is a count of this service's cards, and an id is
+            // ~104 bytes. The largest service seen here is 279,594 cards, so
+            // ~29 MB held transiently, for one service at a time. That is the
+            // price of a listing that cannot be starved by a contended lock.
             //
             // NOT for the parallelism, which is worth little: measured on the
             // walk above, `proj.fetch.page` and `proj.write` together account
@@ -367,7 +381,7 @@ internal class TrustRecompute(
             // gate, so a card superseded between listing and fetch is still
             // simply gone, and one writer means batches still land in order.
             coroutineScope {
-                val batches = Channel<List<String>>(WALK_QUEUE_BATCHES)
+                val batches = Channel<List<String>>(Channel.UNLIMITED)
                 val writer =
                     launch {
                         for (ids in batches) {
@@ -467,16 +481,6 @@ internal class TrustRecompute(
 
         // Subjects per recompute round in a full walk (memory-bounded batches).
         const val RECOMPUTE_BATCH = 20_000
-
-        /**
-         * Batches the reader may run ahead of the writer.
-         *
-         * Deep enough that a gate wait does not immediately stall the visit —
-         * the whole point — and bounded so a fast listing cannot buffer a
-         * service's entire id set. 64 batches is 16,000 ids, tens of seconds
-         * of writing at the observed rate and a few MB at worst.
-         */
-        const val WALK_QUEUE_BATCHES: Int = 64
 
         /**
          * Cards per gate hold in a service walk — one by-id fetch, applied as
