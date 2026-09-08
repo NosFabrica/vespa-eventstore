@@ -29,6 +29,7 @@ import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.ScoredHit
 import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
+import com.nosfabrica.vespa.eventstore.engine.metrics.Activity
 import com.nosfabrica.vespa.eventstore.engine.metrics.CostLedger
 import com.nosfabrica.vespa.eventstore.engine.metrics.DegradedReads
 import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
@@ -1221,7 +1222,13 @@ class VespaEventIndex(
         // Published BEFORE the coverage check, deliberately: a degraded answer
         // is the one an operator most wants to see in the numbers, and
         // requireComplete throws.
-        publish(vq, root, envelope.timing)
+        // WHO ASKED. `currentActivity()` is a suspend read of the coroutine
+        // context, so it can only be taken here — `publish` is not suspend and
+        // the ambient activity is gone by the time the ledger sees the numbers.
+        // Without it the engine table says what the engine did and nothing says
+        // who made it do that, which on 2026-09-06 cost an ablation (scale the
+        // mirror to zero and watch) to answer.
+        publish(vq, root, envelope.timing, currentActivity())
         captureSlow(vq, t0, envelope.timing, root.children.size.toLong(), root.fields.totalCount.toLong())
         // `sampled` joins the recency profiles here rather than bypassing the
         // check: a truncated page is still RECORDED below, so a cluster
@@ -1264,9 +1271,13 @@ class VespaEventIndex(
         vq: VespaQuery,
         root: SearchRoot,
         timing: VespaTiming?,
+        activity: Activity? = null,
     ) {
         val l = ledger ?: return
         l.engineQuery(
+            activity = activity,
+            // The clause SHAPE, never the values — same rule as DegradedReads.
+            shape = activity?.let { shapeOf(vq) },
             profile = vq.ranking,
             engineNanos = timing?.totalNanos() ?: 0L,
             summaryNanos = timing?.summaryNanos() ?: 0L,
