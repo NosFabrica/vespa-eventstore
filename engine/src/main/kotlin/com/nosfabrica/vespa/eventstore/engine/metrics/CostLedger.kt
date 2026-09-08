@@ -178,6 +178,30 @@ class CostLedger(
     private val engine = ConcurrentHashMap<String, EngineSlot>()
 
     /**
+     * THE SAME COST, KEYED BY WHO ASKED FOR IT — activity, profile and query
+     * SHAPE.
+     *
+     * [engine] answers "what did the engine do"; this answers "who made it do
+     * that", which is the question an operator actually has when a cluster is
+     * saturated. The two were separate tables that never joined, so attributing
+     * load meant an ablation: on 2026-09-06 the only way to find what was
+     * driving ~20M docs/s here was to scale the mirror to zero and watch.
+     *
+     * SHAPE, NEVER TERMS. The key carries clause kinds (`kinds,authors,until`)
+     * the way [DegradedReads] already does — this table is not a search log,
+     * and the pulse page it feeds is read by people who should not be handed
+     * what anyone searched for.
+     */
+    private val engineByCaller = ConcurrentHashMap<CallerKey, EngineSlot>()
+
+    /** Who asked, on what profile, with what clause shape. */
+    data class CallerKey(
+        val activity: Activity,
+        val profile: String,
+        val shape: String,
+    )
+
+    /**
      * Book one engine query. [engineNanos] and [summaryNanos] come from Vespa's
      * own `timing` block, which splits "the match phase is expensive" from "we
      * asked for 2,500 summaries" — a different fix in each case, and invisible
@@ -191,8 +215,27 @@ class CostLedger(
         hitsServed: Long,
         degraded: Boolean,
         rungs: Int = 0,
+        activity: Activity? = null,
+        shape: String? = null,
     ) {
-        val s = engine.computeIfAbsent(profile) { EngineSlot() }
+        // Booked twice: once per profile (what the engine did) and once per
+        // caller (who made it do that). Same numbers, two questions.
+        if (activity != null && shape != null) {
+            bump(engineByCaller.computeIfAbsent(CallerKey(activity, profile, shape)) { EngineSlot() }, engineNanos, summaryNanos, docsMatched, hitsServed, degraded, rungs)
+        }
+        bump(engine.computeIfAbsent(profile) { EngineSlot() }, engineNanos, summaryNanos, docsMatched, hitsServed, degraded, rungs)
+    }
+
+    /** One slot's arithmetic, in one place: the per-profile and per-caller tables must not drift. */
+    private fun bump(
+        s: EngineSlot,
+        engineNanos: Long,
+        summaryNanos: Long,
+        docsMatched: Long,
+        hitsServed: Long,
+        degraded: Boolean,
+        rungs: Int,
+    ) {
         s.queries.increment()
         s.engineNanos.add(engineNanos)
         s.summaryNanos.add(summaryNanos)
@@ -322,6 +365,19 @@ class CostLedger(
         val rungs: Long,
     )
 
+    /** One caller's engine cost, read back — [EngineStat] with the asker attached. */
+    class CallerEngineStat(
+        val activity: Activity,
+        val profile: String,
+        val shape: String,
+        val queries: Long,
+        val engineNanos: Long,
+        val summaryNanos: Long,
+        val docsMatched: Long,
+        val hitsServed: Long,
+        val degraded: Long,
+    )
+
     /**
      * The whole record, cumulative and repeatable. Safe to call from any number
      * of readers as often as they like — nothing here is consumed by being
@@ -331,6 +387,8 @@ class CostLedger(
         val ports: List<PortStat>,
         val outcomes: Map<Activity, Map<String, Long>>,
         val engine: List<EngineStat>,
+        /** The same engine cost keyed by WHO asked — heaviest first. Empty on a store that never attributed one. */
+        val engineByCaller: List<CallerEngineStat>,
         val gauges: Map<String, Long>,
         val topObservers: List<HeavyHitters.Hit>,
         val topTerms: List<HeavyHitters.Hit>,
@@ -389,6 +447,23 @@ class CostLedger(
                         rungs = s.rungs.sum(),
                     )
                 },
+            // Heaviest first, because the question this table answers is
+            // "what is making the engine work" and the answer is the top row.
+            engineByCaller =
+                engineByCaller
+                    .map { (k, s) ->
+                        CallerEngineStat(
+                            activity = k.activity,
+                            profile = k.profile,
+                            shape = k.shape,
+                            queries = s.queries.sum(),
+                            engineNanos = s.engineNanos.sum(),
+                            summaryNanos = s.summaryNanos.sum(),
+                            docsMatched = s.docsMatched.sum(),
+                            hitsServed = s.hitsServed.sum(),
+                            degraded = s.degraded.sum(),
+                        )
+                    }.sortedByDescending { it.engineNanos },
             // Gauges are PULLED here, and a broken supplier must not take the
             // whole snapshot down with it: observability that can crash its
             // caller is worse than none.
