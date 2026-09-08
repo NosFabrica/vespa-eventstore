@@ -95,6 +95,14 @@ class VespaEventStore internal constructor(
     fun feedStatus(): String = eventIndex.feedStatus()
 
     /**
+     * What the ENGINE has left, per content node — the other half of a status
+     * page that until now only said what the STORE was doing. Two content
+     * nodes were lost to OOM on 2026-09-07/08 while every page looked healthy,
+     * because none of them showed this.
+     */
+    suspend fun engineHeadroom() = eventIndex.engineHeadroom()
+
+    /**
      * WHERE THIS STORE'S RESOURCES GO — the structured, cumulative record
      * behind an operator dashboard. See docs/telemetry.md.
      *

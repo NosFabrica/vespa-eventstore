@@ -138,6 +138,14 @@ class VespaEventIndex(
 
     private val http = VespaHttp()
 
+    /**
+     * The headroom probe, on the endpoint this client already uses:
+     * `/metrics/v2/values` reports EVERY content node, so one endpoint answers
+     * for the cluster. Built here because this is where `http` and the
+     * endpoint rotation live.
+     */
+    private val resources = EngineResources(http, ::endpoint)
+
     private val visits = VespaVisits(http, ::endpoint, visitSlices, visitConcurrency, visitStreaming)
 
     private val fallbacks = SchemaFallbacks()
@@ -1385,6 +1393,18 @@ class VespaEventIndex(
 
     /** One-line feed-client health for status lines; see [VespaFeed.statusLine]. */
     fun feedStatus(): String = feed.statusLine()
+
+    /**
+     * WHAT THE ENGINE HAS LEFT — proton's memory and disk against the limits
+     * that block feed, per content node. Null until the first probe succeeds.
+     *
+     * Suspend, and deliberately not folded into [CostLedger.snapshot]: the
+     * snapshot is synchronous and must stay that way, so a page that wants
+     * headroom asks for it rather than making every counter read do I/O.
+     * [EngineResources] caches, so calling this per page render is one request
+     * per [EngineResources.TTL_MILLIS] and no more.
+     */
+    suspend fun engineHeadroom(): EngineResources.Usage? = resources.usage()
 
     /** Feed operations in flight right now — the gauge behind a backpressure tile. */
     fun feedInflight(): Long = feed.inflight()
