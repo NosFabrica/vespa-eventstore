@@ -56,6 +56,18 @@ class EngineResourcesTest {
         assertTrue(!usage.anyFeedBlocked)
     }
 
+    /**
+     * THE TEST THAT WAS MISSING. The first cut of this shipped a parser and
+     * its tests, and nothing constructed the class in production — the feature
+     * was dead code and every test passed, because they all called the parser
+     * seam directly. This one walks the surface a caller actually uses.
+     */
+    @Test
+    fun `the index exposes headroom rather than orphaning the probe`() {
+        val onIndex = VespaEventIndex::class.members.map { it.name }
+        assertTrue("engineHeadroom" in onIndex, "the probe must be reachable from the index, not dead code beside it: $onIndex")
+    }
+
     /** The state the panel exists to make visible: feed blocked on ONE node blocks the cluster. */
     @Test
     fun `a single blocked node reports the cluster as blocked`() {

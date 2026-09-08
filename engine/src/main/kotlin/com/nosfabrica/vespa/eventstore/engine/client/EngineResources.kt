@@ -52,9 +52,9 @@ import java.util.concurrent.atomic.AtomicReference
  * blanking the panel — the moment this matters most is the moment the engine
  * is least able to answer.
  */
-internal class EngineResources(
-    private val http: VespaHttp,
-    private val endpoint: () -> String,
+class EngineResources internal constructor(
+    internal val http: VespaHttp,
+    internal val endpoint: () -> String,
 ) {
     /** One content node's headroom, as proton reports it: 0.0-1.0 of the limit that blocks feed. */
     class NodeUsage(
