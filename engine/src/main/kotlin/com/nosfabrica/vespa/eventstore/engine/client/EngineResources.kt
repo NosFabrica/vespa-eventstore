@@ -94,43 +94,45 @@ class EngineResources internal constructor(
         return parse(resp.body(), nowMillis)
     }
 
-    private fun parse(
-        body: String,
-        nowMillis: Long,
-    ): Usage {
-        val root = VESPA_JSON.parseToJsonElement(body).jsonObject
-        val nodes =
-            root["nodes"]?.jsonArray.orEmpty().mapNotNull { node ->
-                val o = node.jsonObject
-                val host = o["hostname"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
-                var memory = 0.0
-                var disk = 0.0
-                var blocked = false
-                for (service in o["services"]?.jsonArray.orEmpty()) {
-                    for (metric in service.jsonObject["metrics"]?.jsonArray.orEmpty()) {
-                        val values = metric.jsonObject["values"]?.jsonObject ?: continue
-                        for ((name, raw) in values) {
-                            val v = raw.jsonPrimitive.doubleOrNull ?: continue
-                            when {
-                                MEMORY in name -> memory = maxOf(memory, v)
-                                DISK in name -> disk = maxOf(disk, v)
-                                FEED_BLOCK in name && v > 0.0 -> blocked = true
+    companion object {
+        /**
+         * PURE, and on the companion so it stays that way: it reads no instance
+         * state, and a test that wants the parser should not have to build an
+         * HTTP client to reach it. The old `parseForTest` did exactly that —
+         * `EngineResources(VespaHttp(), { "" })` per call, from main source, so
+         * every assertion about the panel's shape constructed two OkHttp
+         * clients nothing ever closed.
+         */
+        internal fun parse(
+            body: String,
+            nowMillis: Long,
+        ): Usage {
+            val root = VESPA_JSON.parseToJsonElement(body).jsonObject
+            val nodes =
+                root["nodes"]?.jsonArray.orEmpty().mapNotNull { node ->
+                    val o = node.jsonObject
+                    val host = o["hostname"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                    var memory = 0.0
+                    var disk = 0.0
+                    var blocked = false
+                    for (service in o["services"]?.jsonArray.orEmpty()) {
+                        for (metric in service.jsonObject["metrics"]?.jsonArray.orEmpty()) {
+                            val values = metric.jsonObject["values"]?.jsonObject ?: continue
+                            for ((name, raw) in values) {
+                                val v = raw.jsonPrimitive.doubleOrNull ?: continue
+                                when {
+                                    MEMORY in name -> memory = maxOf(memory, v)
+                                    DISK in name -> disk = maxOf(disk, v)
+                                    FEED_BLOCK in name && v > 0.0 -> blocked = true
+                                }
                             }
                         }
                     }
+                    NodeUsage(host = host.substringBefore('.'), memory = memory, disk = disk, feedBlocked = blocked)
                 }
-                NodeUsage(host = host.substringBefore('.'), memory = memory, disk = disk, feedBlocked = blocked)
-            }
-        require(nodes.isNotEmpty()) { "vespa metrics carried no nodes" }
-        return Usage(nodes, nowMillis)
-    }
-
-    companion object {
-        /** [parse] for tests: the panel's contract is the SHAPE Vespa serves, so the test drives the real parser. */
-        internal fun parseForTest(
-            body: String,
-            atMillis: Long,
-        ): Usage = EngineResources(VespaHttp(), { "" }).parse(body, atMillis)
+            require(nodes.isNotEmpty()) { "vespa metrics carried no nodes" }
+            return Usage(nodes, nowMillis)
+        }
 
         /** The aggregate metrics endpoint — every node, on the query port the store already uses. */
         const val PATH = "/metrics/v2/values"

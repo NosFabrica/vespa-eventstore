@@ -483,8 +483,19 @@ internal class PageAssembly(
             keys.any { (kinds, ids, authors) ->
                 (kinds == null || kindOf(row) in kinds) && (ids == null || idOf(row) in ids) && (authors == null || authorOf(row) in authors)
             }
-        if (all(::admitted)) return this
-        return filter(::admitted)
+        // ONE PASS, and no copy unless something is actually dropped. `all`
+        // then `filter` judged every surviving row TWICE — and `admitted` is a
+        // scan of every filter's key sets per row — on a path that already runs
+        // per searching read.
+        var kept: ArrayList<R>? = null
+        for ((i, row) in withIndex()) {
+            if (admitted(row)) {
+                kept?.add(row)
+            } else if (kept == null) {
+                kept = ArrayList<R>(size).also { it.addAll(subList(0, i)) }
+            }
+        }
+        return kept ?: this
     }
 
     /**

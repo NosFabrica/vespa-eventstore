@@ -97,6 +97,70 @@ class TrustProgressReportedTest {
             assertTrue(done != null && done.finished, "and say when it is done")
         }
 
+    /**
+     * A DRAIN'S FRACTION IS ITS OWN ROUND'S — live ingest must not push it
+     * below zero.
+     *
+     * The numerator was `work.size - pendingNow().size`: one round's snapshot
+     * measured against the WHOLE ledger's depth. Those are different sets.
+     * Every subject a live write queues DURING the drain joins `pendingNow()`
+     * and never `work`, so under ingest the numerator drifts and then goes
+     * NEGATIVE — and `TrustProgress.render` reads a non-positive `done` as "no
+     * denominator known", printing "re-deriving queued subjects: -37, total
+     * unknown". The fraction disappeared exactly when the store was busy
+     * enough for someone to want it.
+     *
+     * SEVERAL SLICES, and a flood WIDER THAN THE ROUND: a page can only read
+     * what an advance already wrote, so the reproduction needs one slice to
+     * publish the bad number and a later one to observe it — and the flood has
+     * to outweigh the round, since that is what takes the subtraction below
+     * zero. Both are ordinary: `GATE_SLICE` is 500 and a mirror queues cards
+     * far faster than a drain retires subjects.
+     */
+    @Test
+    fun `work queued mid-drain never pushes the drain's fraction negative`() =
+        runBlocking {
+            // Past one GATE_SLICE, so the drain publishes a fraction and then
+            // takes another turn where it can be read back.
+            val subjects = (1..600).map { it.toString(16).padStart(64, '0') }
+            index.put(list10040().toDoc())
+            subjects.forEach { index.put(card(it).toDoc()) }
+            subjects.forEach { reputations.remove(it) }
+            reputations.put(
+                ReputationDoc(
+                    ProjectionLedger.MARKER_KEY,
+                    subjects.associate {
+                        com.nosfabrica.vespa.eventstore.engine.doc
+                            .ServiceKey(it) to 1
+                    },
+                ),
+            )
+
+            val restarted = TrustProjection(index, reputations)
+            restarted.backlog.drainInBackground { } // deferred: the flood stays queued
+            val reported = ArrayList<Long>()
+            var flooded = false
+            restarted.backlog.drain(
+                WriteGate { body ->
+                    body()
+                    // A burst of live writes lands mid-drain, wider than the
+                    // round it interrupts — 600 in this round's work against
+                    // 2,600 in the ledger.
+                    if (!flooded) {
+                        flooded = true
+                        // LEFT BEHIND, not merely insured: `insuring` queues
+                        // what the block reports as `workLeft`, which is what a
+                        // card write actually leaves for the drain.
+                        val burst = ProjectionWork((1..2_000).map { "f$it".padStart(64, '0') }.toSet(), emptySet())
+                        restarted.backlog.insuring(burst) { Outcome(Unit, burst) }
+                    }
+                    TrustProgress.snapshot().firstOrNull { it.op == ProjectionLedger.DRAIN }?.let { reported += it.done }
+                },
+            )
+            assertTrue(reported.isNotEmpty(), "the drain must report something while it runs, or this proves nothing")
+            assertTrue(reported.all { it >= 0 }, "a fraction can never run backwards past zero, got ${reported.filter { it < 0 }}")
+        }
+
     /** Nothing running reports nothing — the panel must not invent activity. */
     @Test
     fun `an idle store reports no steps`() {

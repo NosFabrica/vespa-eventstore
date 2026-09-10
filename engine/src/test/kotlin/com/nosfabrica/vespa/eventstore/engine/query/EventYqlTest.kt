@@ -31,6 +31,49 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class EventYqlTest {
+    /**
+     * THE SHAPE MUST NAME THE CLAUSES THE QUERY ACTUALLY CARRIED.
+     *
+     * It used to be recovered from the yql by substring search, against a table
+     * of markers that were guesses at the emitted syntax — and three of them
+     * ("id contains", "pubkey contains", "kind =") matched nothing this builder
+     * has ever written, because `hexIn` always emits `in (…)`. So an id recall,
+     * a single-author recall and a multi-value tag recall (the OR form compiles
+     * to `tag_index in (…)`, and only the AND/single form says `contains`) all
+     * recorded as shapeless — leaving the degraded-read tally silent about
+     * exactly the shapes an operator diagnoses a cut match set from.
+     *
+     * These four are the ones the markers missed. Asserted through `build`,
+     * because the property is what the BUILDER carries out, not what a helper
+     * computes.
+     */
+    @Test
+    fun `the query's shape names the clauses the old marker table could not see`() {
+        assertEquals("ids", EventYql.build(EventQuery(ids = listOf("a1".repeat(32))))!!.shape, "an id recall is id-shaped")
+        assertEquals("authors", EventYql.build(EventQuery(authors = listOf("b2".repeat(32))))!!.shape, "one author is still an author clause")
+        assertEquals(
+            "kinds,tags",
+            EventYql.build(EventQuery(kinds = listOf(1), tags = mapOf("e" to listOf("c3".repeat(32), "d4".repeat(32)))))!!.shape,
+            "a multi-value tag compiles to `in (…)` and must still read as a tag clause",
+        )
+        assertEquals("ids", EventYql.buildExistence(listOf("e5".repeat(32)))!!.shape, "the dedup probe is the id shape too")
+    }
+
+    /** Values never reach the shape — it is a counter key, and a yql holds what somebody searched for. */
+    @Test
+    fun `the shape carries clause kinds and never their values`() {
+        val q = EventYql.build(EventQuery(kinds = listOf(1), authors = listOf("f6".repeat(32)), search = "bitcoin", since = 10, until = 20))!!
+        assertEquals("kinds,authors,search,since,until", q.shape)
+        assertFalse("bitcoin" in q.shape, "a search term must never reach a counter key")
+        assertFalse("f6" in q.shape, "nor a pubkey")
+    }
+
+    /** No clause worth naming is a shape of its own, not an empty string. */
+    @Test
+    fun `an unconstrained query is plain`() {
+        assertEquals(SHAPE_PLAIN, EventYql.build(EventQuery())!!.shape)
+    }
+
     private val hexA = "a".repeat(64)
     private val hexB = "b".repeat(64)
     private val hexC = "c".repeat(64)

@@ -282,6 +282,7 @@ object EventYql {
             ranking = RANK_UNRANKED,
             complete = q.complete,
             sampled = q.sampled,
+            shape = clauseShape(q),
         )
     }
 
@@ -299,6 +300,7 @@ object EventYql {
             yql = "select id from event where $clause",
             params = mapOf("presentation.summary" to SUMMARY_DEDUP, MATCH_THREADS to SINGLE_MATCH_THREAD),
             ranking = RANK_UNRANKED,
+            shape = "ids",
         )
     }
 
@@ -498,6 +500,7 @@ object EventYql {
             ranking = ranking,
             complete = q.complete,
             sampled = q.sampled,
+            shape = clauseShape(q),
         )
     }
 
@@ -569,6 +572,7 @@ object EventYql {
             yql = "select * from event where $where limit 0 | $pipeline",
             params = params,
             ranking = RANK_UNRANKED,
+            shape = clauseShape(q),
         )
     }
 
@@ -595,6 +599,36 @@ object EventYql {
      * in [grouping]'s params. Named here for the guard that keeps it out.
      */
     const val GLOBAL_MAX_GROUPS = "grouping.globalMaxGroups"
+
+    /**
+     * WHICH CLAUSE KINDS [q] carries, for [VespaQuery.shape] — read off the
+     * QUERY, which is the only place that knows without guessing.
+     *
+     * MIRRORS [filterClauses] BRANCH FOR BRANCH, and sits beside it so the two
+     * are edited together: a clause added there wants a name here, or a
+     * degraded-read tally starts under-describing the shape that produced it.
+     *
+     * DELIBERATELY COARSER than that list, because this is a COUNTER KEY and
+     * the key space has to stay small enough to budget (see `Activity`). The
+     * weighted forms fold into their plain ones (`idWeights` is still an id
+     * recall), `tagsAll` into `tags`, `phrases` into `search`, and the two
+     * expiry stamps are dropped outright — the store puts `notExpiredAt` on
+     * nearly every read, so it separates nothing and would double the space.
+     * Eight clause kinds, so 256 shapes at most, against the 512 the substring
+     * table could produce.
+     */
+    internal fun clauseShape(q: EventQuery): String {
+        val parts = ArrayList<String>(4)
+        if (q.ids.isNotEmpty() || q.idWeights.isNotEmpty()) parts += "ids"
+        if (q.kinds.isNotEmpty()) parts += "kinds"
+        if (q.authors.isNotEmpty() || q.authorWeights.isNotEmpty()) parts += "authors"
+        if (q.owners.isNotEmpty()) parts += "owners"
+        if (q.tags.isNotEmpty() || q.tagsAll.isNotEmpty()) parts += "tags"
+        if (!q.search.isNullOrBlank() || q.phrases.isNotEmpty()) parts += "search"
+        if (q.since != null) parts += "since"
+        if (q.until != null) parts += "until"
+        return if (parts.isEmpty()) SHAPE_PLAIN else parts.joinToString(",")
+    }
 
     /** The shared WHERE clauses (filters + optional search term + exclusions); null when the filter provably matches nothing. */
     private fun filterClauses(

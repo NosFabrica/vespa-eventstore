@@ -820,6 +820,54 @@ class VespaEventIndexTest {
         }
 
     /**
+     * AN UNBOUNDED HALF STAYS UNBOUNDED — the property the bisection's own
+     * promise rests on, and the one it broke.
+     *
+     * A NIP-77 catch-up arrives with no `until` at all, and the midpoint has to
+     * be computed from SOME number. Handing that number to the newer half as
+     * its upper bound made "no bound" mean "the clock" — and this corpus holds
+     * events dated past the clock (staging carries notes stamped in the year
+     * 2100), so they matched the original query and NEITHER half. The walk
+     * returned 40 of 41 with no error, no degradation named and no scan.
+     *
+     * On the negentropy path that id set is what a peer reconciles against, so
+     * a silently dropped id is a peer that offers it forever. Seeded with the
+     * future-dated event on purpose: the tidy corpus cannot fail this.
+     */
+    @Test
+    fun `a bisected walk still delivers ids past the clock`() =
+        runBlocking {
+            IngestStats.reset()
+            val eve = "d7".repeat(32)
+            val now = System.currentTimeMillis() / 1000
+            val past = (1..40).map { doc(kind = 30382, pubkey = eve, at = now - 100_000 + it) }
+            val future = doc(kind = 30382, pubkey = eve, at = 4_102_444_800L) // 2100-01-01
+            seedBulk(past + future)
+            mock.visitRequests = 0
+            // Probe refused, retry refused, both halves clean: the split is taken.
+            mock.degradeNextSearches = 2
+
+            val idx = VespaEventIndex(mock.url, idPageSize = 10, probeIds = 10)
+            try {
+                val got = ArrayList<DocRef>()
+                // NO since and NO until — the shape `snapshotIdsForNegentropy`
+                // hands down for an uncapped catch-up.
+                idx.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(eve))) {
+                    got += it
+                    true
+                }
+
+                assertNotNull(IngestStats.snapshot()["walk.partial.bisect"], "this must actually take the split, or it proves nothing")
+                assertEquals(0, mock.visitRequests, "a split walk must not also buy the scan")
+                assertTrue(got.any { it.id == future.id }, "the event dated past the clock is in the window and must be served")
+                assertEquals(41, got.distinctBy { it.id }.size, "every id, exactly once, across both halves")
+            } finally {
+                idx.close()
+                IngestStats.reset()
+            }
+        }
+
+    /**
      * THE SCAN MUST BOOK ITS OWN TIME. It is the most expensive walk here and
      * was the only branch with no stage: a document-API visit is not a query,
      * so it books no engine time against any caller on the pulse either. A walk

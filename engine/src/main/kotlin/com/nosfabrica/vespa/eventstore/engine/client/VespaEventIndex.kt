@@ -929,6 +929,9 @@ class VespaEventIndex(
      *
      * The split is invisible above this call: the walk still delivers every id
      * in the window, so no cursor key, coverage band or sweep identity moves.
+     * That holds only because the halves carry the CALLER's bounds and not the
+     * numbers the midpoint was computed from — an unbounded half stays
+     * unbounded. Filling one in silently truncated the walk; see below.
      */
     private suspend fun walkAroundPartialAnswer(
         query: EventQuery,
@@ -941,12 +944,43 @@ class VespaEventIndex(
             WalkPlan.PARTIAL -> Unit
         }
 
-        // Absent bounds are the widest the walk could mean.
-        val until = query.until ?: query.nowSecs ?: (System.currentTimeMillis() / 1000)
-        val since = query.since ?: 0L
-        val mid = since + (until - since) / 2
-        val newer = query.copy(since = mid + 1, until = until)
-        val older = query.copy(since = since, until = mid)
+        // A MIDPOINT NEEDS A NUMBER; THE HALVES MUST NOT INHERIT ONE.
+        //
+        // Cutting a window in two requires a second to cut at, so an absent
+        // bound is filled in here with the widest the walk could mean — FOR THE
+        // ARITHMETIC ONLY. The halves then carry the CALLER's bounds, null
+        // included, because an absent bound is not a wide one: it is the
+        // absence of one.
+        //
+        // Handing the derived `until` to the newer half is how this dropped
+        // documents. An unbounded walk means "no upper bound", and this corpus
+        // holds events dated past the clock — staging carries notes stamped in
+        // the year 2100 — so `until = now` matched the original query and
+        // NEITHER half. Measured on the mock: 40 of 41 ids delivered, with no
+        // error, no degradation named and no scan. On the NIP-77 path that id
+        // set is precisely what a peer reconciles against, so a silently
+        // dropped id is a peer that offers it forever and a mirror that never
+        // converges — intermittently, only on the degraded path.
+        //
+        // `nowSecs` is a poor second choice for the same reason: it is the
+        // RANKING instant (see EventQuery.nowSecs), not a bound on created_at.
+        // It stays only because a query that carries one has already declared
+        // which instant it means.
+        val cutUntil = query.until ?: query.nowSecs ?: (System.currentTimeMillis() / 1000)
+        val cutSince = query.since ?: 0L
+        // NOTHING LEFT TO HALVE — asked BEFORE the halves are probed, so a
+        // window this narrow does not buy two engine queries on the way to the
+        // scan it was always taking. It also rules out an INVERTED derived
+        // window (a `since` past the clock on an unbounded walk), where the
+        // midpoint would land below `since` and the newer half would reach
+        // further back than the caller asked.
+        if (cutUntil - cutSince < 2) {
+            IngestStats.timed("walk.partial.unsplittable") { }
+            return visitIdsByScan(query, withDTag, onPage)
+        }
+        val mid = cutSince + (cutUntil - cutSince) / 2
+        val newer = query.copy(since = mid + 1, until = query.until)
+        val older = query.copy(since = query.since, until = mid)
 
         // BOTH HALVES ARE PROBED BEFORE EITHER IS WALKED, and the split is taken
         // only if both come back clean. Two properties depend on it.
@@ -966,7 +1000,7 @@ class VespaEventIndex(
             IngestStats.timed("walk.partial.probe.halves") {
                 listOf(planFor(newer, withDTag), planFor(older, withDTag))
             }
-        if (plans.any { it == WalkPlan.PARTIAL } || until - since < 2) {
+        if (plans.any { it == WalkPlan.PARTIAL }) {
             IngestStats.timed("walk.partial.unsplittable") { }
             return visitIdsByScan(query, withDTag, onPage)
         }
@@ -1450,13 +1484,14 @@ class VespaEventIndex(
      * The query's SHAPE for a degraded-read tally: which clause kinds it
      * carried, never their values. A yql holds what somebody searched for, and
      * this is read from places a search term must not reach.
+     *
+     * A FIELD READ now, where it used to be nine substring searches of the yql
+     * per query and eighteen on a degraded one — on a string that runs to
+     * hundreds of kilobytes when the clause is an id list. It is also finally
+     * RIGHT: see [VespaQuery.shape] for the three markers that matched nothing
+     * the builder has ever emitted.
      */
-    private fun shapeOf(vq: VespaQuery): String {
-        val parts = mutableListOf<String>()
-        if (vq.complete) parts += "complete"
-        for ((clause, marker) in SHAPE_MARKERS) if (marker in vq.yql) parts += clause
-        return parts.joinToString(",").ifEmpty { "plain" }
-    }
+    private fun shapeOf(vq: VespaQuery): String = if (vq.complete) "complete,${vq.shape}" else vq.shape
 
     /** Book one engine query against the ledger, keyed by the rank profile that priced it. */
     private fun publish(
@@ -1597,24 +1632,6 @@ class VespaEventIndex(
     override fun close() = feed.close()
 
     internal companion object {
-        /**
-         * Clause kinds recognised in a yql for a degraded read's SHAPE, by the
-         * operator each renders. Names only — the values beside them are user
-         * data, and this is read where a search term must not reach.
-         */
-        val SHAPE_MARKERS =
-            listOf(
-                "ids" to "id contains",
-                "kinds" to "kind in",
-                "kind" to "kind =",
-                "authors" to "pubkey in",
-                "author" to "pubkey contains",
-                "tags" to "tag_index contains",
-                "search" to "userInput",
-                "since" to "created_at >",
-                "until" to "created_at <",
-            )
-
         /** Concurrent document-API gets for a pure-id lookup. Gets are light (no summary stage to overrun), so this floats above QUERY_FANOUT. */
         const val ID_GET_FANOUT = 32
 

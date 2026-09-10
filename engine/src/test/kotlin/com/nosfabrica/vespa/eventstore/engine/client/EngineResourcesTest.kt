@@ -48,7 +48,7 @@ class EngineResourcesTest {
 
     @Test
     fun `both nodes are read, and the peak is what decides whether the cluster feeds`() {
-        val usage = EngineResources.parseForTest(realShape, atMillis = 1_000)
+        val usage = EngineResources.parse(realShape, nowMillis = 1_000)
         assertEquals(2, usage.nodes.size)
         assertEquals(listOf("vespa-relay-vespa-0", "vespa-relay-vespa-1"), usage.nodes.map { it.host }, "hostnames are shortened to the pod name")
         assertEquals(0.811, usage.peakMemory, 1e-9, "the WORST node, not an average — that is the one that blocks feed")
@@ -72,6 +72,6 @@ class EngineResourcesTest {
     @Test
     fun `a single blocked node reports the cluster as blocked`() {
         val blocked = realShape.replace("\"content.proton.resource_usage.feeding_blocked.last\":0.0", "\"content.proton.resource_usage.feeding_blocked.last\":1.0")
-        assertTrue(EngineResources.parseForTest(blocked, atMillis = 1).anyFeedBlocked)
+        assertTrue(EngineResources.parse(blocked, nowMillis = 1).anyFeedBlocked)
     }
 }
