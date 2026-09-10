@@ -945,7 +945,11 @@ class VespaEventIndex(
         withDTag: Boolean,
         onPage: suspend (List<DocRef>) -> Boolean,
     ) {
-        val selection = EventSelection.build(query) ?: return super.visitIds(query, withDTag, onPage)
+        // Counted apart: this walk never reaches the scan at all, and folding it
+        // into `walk.scan` would report search time as scan time.
+        val selection =
+            EventSelection.build(query)
+                ?: return IngestStats.timed("walk.scan.unselectable") { super.visitIds(query, withDTag, onPage) }
         // Vespa fieldSet syntax is "<doctype>:<field>,<field>,…" — the doctype
         // prefixes the list ONCE (else: ILLEGAL_PARAMETERS).
         // `id` is PROJECTED, not parsed off the docid: under address-keying a
@@ -955,20 +959,38 @@ class VespaEventIndex(
         // walk, offered a peer ids that exist nowhere. The cursor walk reads
         // the attribute; this one now does too.
         val fieldSet = "$EVENT_DOCTYPE:id,created_at" + if (withDTag) ",tag_index" else ""
-        visits.pages(selection, fieldSet) { documents ->
-            val page =
-                documents.mapNotNull { d ->
-                    if (d.id.isEmpty()) return@mapNotNull null
-                    val at = d.fields?.createdAt ?: return@mapNotNull null
-                    val dTag =
-                        if (withDTag) {
-                            d.fields.tagIndex?.firstNotNullOfOrNull { t -> t.takeIf { it.startsWith("d:") }?.substring(2) }
-                        } else {
-                            null
+        // THE ONE WALK NOTHING COULD SEE. Every other branch here is timed, and
+        // this — the most expensive of them — was not: a document-API visit is
+        // not a query, so it books no engine time against any caller on the
+        // pulse, and it had no stage of its own either. A walk could evaluate a
+        // selection against every document in the corpus and appear, on every
+        // instrument this process has, as a walk doing nothing.
+        //
+        // `walk.scan` calls are also the SCAN RATE: `walk.cursor.decide` counts
+        // every choice, so decide-minus-scan is how often the cursor won.
+        //
+        // It matters because the scan cannot narrow. A selection is evaluated
+        // per document, so `created_at` bounds shrink what is RETURNED and not
+        // what is READ — an age-banded walk costs a banded walk's price on the
+        // cursor and the whole corpus's price here.
+        IngestStats.timed("walk.scan") {
+            visits.pages(selection, fieldSet) { documents ->
+                IngestStats.timed("walk.scan.page") {
+                    val page =
+                        documents.mapNotNull { d ->
+                            if (d.id.isEmpty()) return@mapNotNull null
+                            val at = d.fields?.createdAt ?: return@mapNotNull null
+                            val dTag =
+                                if (withDTag) {
+                                    d.fields.tagIndex?.firstNotNullOfOrNull { t -> t.takeIf { it.startsWith("d:") }?.substring(2) }
+                                } else {
+                                    null
+                                }
+                            DocRef(d.fields.id ?: d.id.substringAfterLast(":"), at, dTag)
                         }
-                    DocRef(d.fields.id ?: d.id.substringAfterLast(":"), at, dTag)
+                    page.isEmpty() || onPage(page)
                 }
-            page.isEmpty() || onPage(page)
+            }
         }
     }
 

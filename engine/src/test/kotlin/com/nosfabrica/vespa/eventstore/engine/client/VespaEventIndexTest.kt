@@ -24,12 +24,14 @@ import com.nosfabrica.vespa.eventstore.engine.MockVespaEngine
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.SearchFields
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
+import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import kotlinx.coroutines.runBlocking
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -745,6 +747,47 @@ class VespaEventIndexTest {
             } finally {
                 mock.rejectNearFields = false
                 fresh.close()
+            }
+        }
+
+    /**
+     * THE SCAN MUST BOOK ITS OWN TIME. It is the most expensive walk here and
+     * was the only branch with no stage: a document-API visit is not a query,
+     * so it books no engine time against any caller on the pulse either. A walk
+     * could read every document in the corpus and look, on every instrument
+     * this process has, like a walk doing nothing — which is how ~7M documents
+     * matched per second went unattributed on staging while two fixes aimed at
+     * the cursor path changed no CPU at all.
+     *
+     * Pinned so the timer cannot be dropped the way it was never added.
+     */
+    @Test
+    fun `the scan walk books walk-scan, and is told apart from the cursor`() =
+        runBlocking {
+            IngestStats.reset()
+            val ida = "d4".repeat(32)
+            // One timestamp for all of them: a tie group wider than
+            // idPageSize * TIE_DENSE_FACTOR is what sends this walk to the scan.
+            seed(*(1..60).map { doc(kind = 30382, pubkey = ida, at = 1_700_000_000L) }.toTypedArray())
+            val scanning = VespaEventIndex(mock.url, idPageSize = 2)
+            try {
+                val ids = HashSet<String>()
+                scanning.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(ida))) { page ->
+                    ids += page.map { it.id }
+                    true
+                }
+                assertEquals(60, ids.size, "the scan must still deliver every match")
+
+                val stages = IngestStats.snapshot()
+                val scan = assertNotNull(stages["walk.scan"], "the scan booked no stage — it is invisible again; stages seen: ${stages.keys.sorted()}")
+                assertEquals(true, scan.calls >= 1, "walk.scan must count the scan, got ${scan.calls} call(s)")
+                assertNotNull(stages["walk.scan.page"], "the scan's pages must be counted too")
+                // decide-minus-scan is the cursor's win rate, so both have to be booked.
+                assertNotNull(stages["walk.cursor.decide"], "the decision must stay counted beside it")
+                assertEquals(null, stages["walk.ids.page"], "a scanned walk must not book cursor pages")
+            } finally {
+                scanning.close()
+                IngestStats.reset()
             }
         }
 
