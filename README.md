@@ -246,6 +246,14 @@ place column:
 | **32267** | software application | name, summary, content |
 | **30023** | long-form article | title, summary + hashtags, content |
 | **30818** | wiki article | title, summary, content |
+| **818** † | wiki merge request | content |
+| **31 / 32 / 33** † | external / hardcopy / prompt citation | title, summary, content |
+| **30040 / 30041** † | publication index / content | title + author + summary — or title, content |
+| **30045** † | bookshelf directory | title, summary, content |
+| **30142** † | learning resource | title, summary, content |
+| **32176** † | Blossom piece index | title, summary, content |
+| **31987** † | relay review | content |
+| **34259** † | entity rating | content |
 | **30402** | classified listing | title, summary, content |
 | **31924 / 31922 / 31923** | calendar & slots | title, summary, content |
 | **31925** | calendar RSVP | content |
@@ -295,6 +303,13 @@ place column:
 | **2473** | bird detection (Birdstar) | species + common name, alt |
 | **12473** | Birdex species collection | summary + species names |
 | **1315** | road event report (Roadstr) | content |
+
+† **No tier split yet.** These kinds became searchable in the current Quartz pin, and
+upstream's `SearchFieldExtractor` has no branch for them yet, so all of their text lands in
+the **body** — a title on one of them is reached by substring like prose, not by the prefix
+and typo matching a primary field carries, and it does not outweigh the rest of the event.
+Recall is complete either way; only the weighting is flat. The fix is one upstream branch per
+kind, and the rows above become tiered the moment it lands.
 
 Anything Quartz parses to a `SearchableEvent` is indexed, current or future. The
 authoritative mapping is

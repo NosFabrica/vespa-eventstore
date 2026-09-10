@@ -2,9 +2,9 @@
 
 Every concrete `SearchableEvent` implementor in Quartz, with the exact `indexableContent()`
 expression. **Update this file in the same PR as any change to the searchable set or to an
-`indexableContent()` body** (see SKILL.md). Verified against the code 2026-08-25.
+`indexableContent()` body** (see SKILL.md). Verified against the code 2026-09-10 (Quartz pin `a8e8778265`).
 
-Counts: 130 concrete classes covering 133 kind values (`GitStatusEvent` spans 4 kinds;
+Counts: 141 concrete classes covering 144 kind values (`GitStatusEvent` spans 4 kinds;
 kind 30063 has a collision — see the footnote). File paths are under
 `quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/`.
 
@@ -21,10 +21,14 @@ Separator legend: **NL** = `joinToString("\n")`, **SP** = `joinToString(" ")`.
 | 21 | VideoNormalEvent | nip71Video | inherited `RegularVideoEvent`: `listOfNotNull(title(), content)` NL |
 | 22 | VideoShortEvent | nip71Video | inherited `RegularVideoEvent`: `listOfNotNull(title(), content)` NL |
 | 24 | PublicMessageEvent | nipA4PublicMessages | `content` |
+| 31 | ExternalCitationEvent | experimental/citations | `listOfNotNull(title(), summary(), content)` NL (from `CitationEvent`) |
+| 32 | HardcopyCitationEvent | experimental/citations | `listOfNotNull(title(), summary(), content)` NL (from `CitationEvent`) |
+| 33 | PromptCitationEvent | experimental/citations | `listOfNotNull(title(), summary(), content)` NL (from `CitationEvent`) |
 | 40 | ChannelCreateEvent | nip28PublicChat/admin | `channelInfo().let { listOfNotNull(it.name, it.about, it.picture).joinToString(" ") }` (SP) |
 | 41 | ChannelMetadataEvent | nip28PublicChat/admin | same as kind 40 (SP) |
 | 42 | ChannelMessageEvent | nip28PublicChat/message | `content` |
 | 54 | PodcastEpisodeEvent | nipF4Podcasts/episode | `listOfNotNull(title(), description(), content)` NL |
+| 818 | WikiMergeRequestEvent | nip54Wiki | `content` |
 | 1010 | TextNoteModificationEvent | experimental/edits | `listOfNotNull(content, summary())` NL (content first) |
 | 1063 | FileHeaderEvent | nip94FileMetadata | `listOfNotNull(summary(), content)` NL |
 | 1065 | FileStorageHeaderEvent | experimental/nip95/header | `listOfNotNull(summary())` NL |
@@ -86,9 +90,13 @@ Separator legend: **NL** = `joinToString("\n")`, **SP** = `joinToString(" ")`.
 | 30020 | AuctionEvent | nip15Marketplace/auction | `auctionData()?.let { (listOfNotNull(it.name, it.description) + tags.hashtags()).joinToString("\n") } ?: ""` |
 | 30023 | LongTextNoteEvent | nip23LongContent | `listOfNotNull(title(), summary(), content)` NL |
 | 30030 | EmojiPackEvent | nip30CustomEmoji/pack | `listOfNotNull(titleOrName(), description(), content)` NL |
+| 30040 | PublicationIndexEvent | experimental/publications | `listOfNotNull(title(), author(), summary())` NL |
+| 30041 | PublicationContentEvent | experimental/publications | `listOfNotNull(title(), content)` NL |
+| 30045 | BookshelfDirectoryEvent | experimental/library | `listOfNotNull(title(), summary(), content)` NL |
 | 30054 | Podcasting20EpisodeEvent | nipXXPodcasting20/episode | `(listOfNotNull(title(), description(), content) + topics())` NL |
 | 30055 | Podcasting20TrailerEvent | nipXXPodcasting20/trailer | `listOfNotNull(title(), content)` NL |
 | 30063 | ReleaseArtifactSetEvent † | nip51Lists/releaseArtifactSet | `listOfNotNull(title(), description())` NL |
+| 30142 | LearningResourceEvent | experimental/library | `listOfNotNull(title(), summary(), content)` NL |
 | 30175 | PersonaEvent | buzz/apPersonas | `personaOrNull()?.let { listOfNotNull(it.displayName, it.systemPrompt).joinToString("\n") } ?: ""` |
 | 30176 | TeamEvent | buzz/teams | `teamOrNull()?.let { listOfNotNull(it.name, it.description, it.instructions).joinToString("\n") } ?: ""` |
 | 30177 | ManagedAgentEvent | buzz/managedAgents | `agentOrNull()?.let { listOfNotNull(it.name, it.systemPrompt).joinToString("\n") } ?: ""` |
@@ -118,13 +126,16 @@ Separator legend: **NL** = `joinToString("\n")`, **SP** = `joinToString(" ")`.
 | 31923 | CalendarTimeSlotEvent | nip52Calendar/appt/time | `listOfNotNull(title(), summary(), content)` NL |
 | 31924 | CalendarEvent | nip52Calendar/calendar | `listOfNotNull(title(), content)` NL |
 | 31925 | CalendarRSVPEvent | nip52Calendar/rsvp | `content` |
+| 31987 | RelayReviewEvent | experimental/ratings | `content` |
 | 31990 | AppDefinitionEvent | nip89AppHandlers/definition | `appMetaData()?.let { listOfNotNull(it.name, it.username, it.displayName, it.about, it.nip05, it.lud06, it.lud16, it.website, it.picture, it.banner, it.image).joinToString(" ") } ?: ""` (SP) |
+| 32176 | BlossomPieceIndexEvent | experimental/library | `listOfNotNull(title(), summary(), content)` NL |
 | 32267 | SoftwareApplicationEvent | experimental/nip82SoftwareApps/application | `listOfNotNull(name(), summary(), content)` NL |
 | 33401 | ExerciseTemplateEvent | experimental/fitness/workout | `listOfNotNull(title(), content)` NL |
 | 33863 | FundraiserEvent | experimental/agora | `listOfNotNull(title(), content)` NL |
 | 34139 | MusicPlaylistEvent | experimental/music/playlist | `listOfNotNull(title(), description(), content)` NL |
 | 34235 | VideoHorizontalEvent | nip71Video | inherited `AddressableVideoEvent`: `listOfNotNull(title(), content)` NL |
 | 34236 | VideoVerticalEvent | nip71Video | inherited `AddressableVideoEvent`: `listOfNotNull(title(), content)` NL |
+| 34259 | EntityRatingEvent | experimental/ratings | `content` |
 | 34550 | CommunityDefinitionEvent | nip72ModCommunities/definition | `listOfNotNull(name(), description(), rules(), content)` NL |
 | 35128 | NamedSiteEvent | nip5aStaticWebsites | `listOfNotNull(title(), description())` NL |
 | 35129 | NamedNappletEvent | nip5dNapplets | `listOfNotNull(title(), description())` NL |
@@ -155,6 +166,7 @@ declares `KIND = 30063` and implements `SearchableEvent` (`content`), but `Event
 | `AddressableVideoEvent` | `listOfNotNull(title(), content)` NL | 34235, 34236 |
 | `RegularVideoEvent` | `listOfNotNull(title(), content)` NL | 21, 22 |
 | `TrustedListEvent` | `title() ?: ""` | 30392, 30393, 30394, 30395 |
+| `CitationEvent` | `listOfNotNull(title(), summary(), content)` NL | 31, 32, 33 |
 
 ## How to regenerate / verify this table
 

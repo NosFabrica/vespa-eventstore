@@ -14,7 +14,8 @@ description: The NIP-50 indexing surface of Quartz — the `SearchableEvent` int
 > describes — we parse with `SearchQuery.parse`-compatible semantics; keep it that way.
 
 > Skill imported from `vitorpamplona/amethyst` `.claude/skills/searchable-events`
-> at commit `98f09f29c0` (the Quartz pin). Refresh this copy at every pin bump.
+> at commit `98f09f29c0`; upstream has not touched it since, so only the kind table below
+> is kept current here. Refresh this copy at every pin bump.
 
 ## The contract
 
@@ -23,12 +24,28 @@ description: The NIP-50 indexing surface of Quartz — the `SearchableEvent` int
 ```kotlin
 interface SearchableEvent {
     fun indexableContent(): String
+
+    fun forEachIndexableField(visitor: IndexableFieldVisitor) {
+        visitor.visit(indexableContent())
+    }
+
+    fun indexableSeparator(): String = "\n"
 }
 ```
 
-One method; marker and extractor in one. An event kind is searchable **iff** its event class
+Marker and extractor in one. An event kind is searchable **iff** its event class
 implements this interface **and** the class is wired into `EventFactory` (the stores probe
 searchability by kind through `EventFactory.create` — an unwired implementor is invisible).
+
+Only `indexableContent()` is the **write path**, and it is the only one any store — this one
+included — ever calls. The other two are the **read path**, added for Amethyst's per-keystroke
+scan of the whole in-memory cache, where building a joined string per event per keystroke is
+not affordable: `forEachIndexableField` hands the fields over one at a time and stops early
+(`visit` returning false ends the walk), allocating nothing, and `indexableSeparator()` exists
+only so a test can rejoin them and check the result equals `indexableContent()` exactly. Both
+are defaulted, so an override is always a re-expression of a join that already exists — an
+override that *changes* what is indexed is a bug, and upstream's `IndexableContentGoldenTest`
+(against `indexable-content.golden`) is what pins that.
 
 Rules every implementation follows (keep them when adding one):
 
@@ -47,7 +64,7 @@ Rules every implementation follows (keep them when adding one):
 
 **`references/searchable-kinds.md`** in this skill holds the authoritative table — every
 implementor with its kind number, class, and the exact `indexableContent()` expression
-(126 concrete classes / 129 kind values as of 2026-08). Diff that file at a version bump to
+(141 concrete classes / 144 kind values as of 2026-09, Quartz pin `a8e8778265`). Diff that file at a version bump to
 answer "did the searchable set or any kind's indexed text change?".
 
 Notables that surprise people:
