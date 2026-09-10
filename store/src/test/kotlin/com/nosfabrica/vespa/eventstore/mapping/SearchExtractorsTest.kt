@@ -21,7 +21,9 @@
 package com.nosfabrica.vespa.eventstore.mapping
 
 import com.nosfabrica.vespa.eventstore.engine.doc.SearchFields
+import com.vitorpamplona.quartz.experimental.library.LearningResourceEvent
 import com.vitorpamplona.quartz.experimental.nip82SoftwareApps.application.SoftwareApplicationEvent
+import com.vitorpamplona.quartz.experimental.ratings.RelayReviewEvent
 import com.vitorpamplona.quartz.experimental.trustedLists.users.UserTrustedListEvent
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
@@ -37,6 +39,7 @@ import com.vitorpamplona.quartz.nip99Classifieds.ClassifiedsEvent
 import com.vitorpamplona.quartz.nipB0WebBookmarks.WebBookmarkEvent
 import com.vitorpamplona.quartz.nipC0CodeSnippets.CodeSnippetEvent
 import com.vitorpamplona.quartz.nipXXPodcasting20.episode.Podcasting20EpisodeEvent
+import com.vitorpamplona.quartz.utils.EventFactory
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -192,6 +195,39 @@ class SearchExtractorsTest {
     fun `unmapped searchable kinds fall back to indexableContent in the tertiary tier`() {
         val fields = SearchExtractors.extract(ChatMessageEvent("4".repeat(64), alice, 1L, emptyArray(), "hello group", ""))
         assertEquals(SearchFields(text = "hello group"), fields)
+    }
+
+    /**
+     * The eleven kinds the current Quartz pin adds to the searchable set (31/32/33
+     * citations, 818, 30040/30041, 30045, 30142, 31987, 32176, 34259) have no
+     * `SearchFieldExtractor` branch, so every one of them takes the catch-all above:
+     * the whole `indexableContent()`, TITLE INCLUDED, in the body. README's kind table
+     * carries the `†` for exactly this, and these two are its witnesses.
+     *
+     * Built THROUGH THE FACTORY on purpose. Searchability on the store path is two
+     * conditions, not one — the class must implement `SearchableEvent` AND `EventFactory`
+     * must map the kind to it, because [EventDocConversion] only ever sees what the
+     * factory parsed. Constructing the class directly would assert the first and prove
+     * nothing about the second, which is the half a version bump actually moves.
+     */
+    @Test
+    fun `kinds newly searchable in this quartz pin index their whole content as body`() {
+        val titled =
+            EventFactory.create<Event>(
+                "7".repeat(64),
+                alice,
+                1L,
+                LearningResourceEvent.KIND,
+                arrayOf(arrayOf("title", "Nostr 101"), arrayOf("summary", "the basics")),
+                "read this first",
+                "",
+            )
+        // Flat, not tiered: "Nostr 101" is body text here, reached by substring like prose.
+        assertEquals(SearchFields(text = "Nostr 101\nthe basics\nread this first"), SearchExtractors.extract(titled))
+
+        val bodyOnly =
+            EventFactory.create<Event>("8".repeat(64), alice, 1L, RelayReviewEvent.KIND, emptyArray(), "fast, never drops a REQ", "")
+        assertEquals(SearchFields(text = "fast, never drops a REQ"), SearchExtractors.extract(bodyOnly))
     }
 
     @Test

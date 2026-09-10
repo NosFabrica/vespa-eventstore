@@ -246,6 +246,14 @@ place column:
 | **32267** | software application | name, summary, content |
 | **30023** | long-form article | title, summary + hashtags, content |
 | **30818** | wiki article | title, summary, content |
+| **818** † | wiki merge request | content |
+| **31 / 32 / 33** † | external / hardcopy / prompt citation | title, summary, content |
+| **30040 / 30041** † | publication index / content | title + author + summary — or title, content |
+| **30045** † | bookshelf directory | title, summary, content |
+| **30142** † | learning resource | title, summary, content |
+| **32176** † | Blossom piece index | title, summary, content |
+| **31987** † | relay review | content |
+| **34259** † | entity rating | content |
 | **30402** | classified listing | title, summary, content |
 | **31924 / 31922 / 31923** | calendar & slots | title, summary, content |
 | **31925** | calendar RSVP | content |
@@ -295,6 +303,27 @@ place column:
 | **2473** | bird detection (Birdstar) | species + common name, alt |
 | **12473** | Birdex species collection | summary + species names |
 | **1315** | road event report (Roadstr) | content |
+
+† **No tier split yet.** These kinds became searchable in the current Quartz pin, and
+upstream's `SearchFieldExtractor` has no branch for them yet, so the kind's OWN text — title,
+summary and body alike — arrives as one blob in the **body**. A title on one of them is
+therefore reached by substring like prose, without the prefix and typo matching a primary
+field carries, and it does not outweigh the rest of the event. The tag-derived roles are
+unaffected: the catch-all runs through the same funnel, so hashtags still fold into the
+secondary tier and `location` tags into the place column.
+
+Flat weighting is not the whole of it, either. Because the catch-all reads only
+`indexableContent()`, a field that kind never joins into it is not indexed at all — and on
+several of these that is the field the kind exists to be found by: a citation's `author`,
+`doi`, `published_in` and cited `u`rl; a relay review's `relay` url; a Blossom index's `url`
+and `blossom` servers; a learning resource's `author`, content url, and its schema.org
+`about` / `learningResourceType` / `educationalLevel` facets (which are not `t` tags, so the
+hashtag funnel does not see them). Both halves take the same fix — one upstream
+`SearchFieldExtractor` branch per kind, reading accessors straight into roles, which
+`IndexableFields` already allows to carry more than the flat blob does (kind 30617 does
+exactly this with its clone URLs). Kinds 818, 31987 and 34259 are `content`-only and already
+land correctly; 31987 still misses its relay url. The rows above become tiered, and complete,
+the moment those branches land.
 
 Anything Quartz parses to a `SearchableEvent` is indexed, current or future. The
 authoritative mapping is

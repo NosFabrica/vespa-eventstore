@@ -5,51 +5,54 @@ app = "1.0.1"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"
 # Quartz from JitPack (amethyst @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
-# cecc3287b2 = amethyst main @ 2026-09-01. Bumped FOR this store, again: it carries
-# the audit of every SearchFieldExtractor branch that THIS repo asked upstream for
-# (the roles are this store's ranking inputs, and no other client reads them), plus
-# the Profile-XOR-Tiered contract the schema silently depends on.
+# a8e8778265 = amethyst main @ 2026-09-10. NOT bumped for this store, for once:
+# the range is upstream's own work, and everything this store reads out of it is
+# byte-identical. IEventStore, SQLiteEventStore, Filter, SearchQuery,
+# SearchFieldExtractor and IndexableFields do not have one changed line between
+# the two pins, so filter semantics, the parity gate, and the per-kind
+# DECOMPOSITION the last two bumps were about all hold exactly as they were.
 #
-# The range is 38 commits; two of them are nip50Search sources, the rest is
-# NIP-47 wallet-connect and pool tooling no module here imports. IEventStore,
-# SQLiteEventStore, Filter, EventFactory, SearchableEvent and SearchQuery are
-# byte-identical to the previous pin, so filter semantics are unchanged and the
-# searchable SET does not move — 133 kind values, as before. What moves is the
-# DECOMPOSITION of 19 of them.
+# The range is 220 commits; two things in it reach this store.
 #
-#   SearchFieldExtractor: 17 kinds that fell through to the catch-all — which dumps
-#     the whole indexableContent() into the BODY role — now split. Their titles were
-#     unreachable by the title band, a 236x discount (the same one the Trusted List
-#     title had in the previous bump): the NIP-15 marketplace family
-#     (30017/30018/30019/30020), the Podcasting-2.0 pair (30054/30055), the group
-#     metadata EDIT (9002, whose published twin 39000 already had a branch), plus
-#     1010, 1065, 1068, 1163, 1985, 2473, 6969, 12473, 38192, 38383. Four kinds
-#     with a public URL now fill the affiliation role: a repository's clone URLs
-#     (30617), a meeting space's streaming endpoint (30312/30313) and the two nSite
-#     kinds' source. Six kinds stop indexing their `t` tags twice (1111, 1311, 9002,
-#     30018, 30020, 30054) — the funnel already carried them as hashtags.
-#     README's kind table is updated to match, row by row.
+#   SearchableEvent grows a READ path. `forEachIndexableField(visitor)` hands over
+#     the same fields `indexableContent()` joins, without building the joined
+#     string — for Amethyst's per-keystroke scan of the whole cache, where a
+#     string per event per keystroke is not affordable. It and
+#     `indexableSeparator()` are both DEFAULTED on the interface, and every
+#     override the range adds re-expresses a join that already existed: no
+#     `indexableContent()` body moved (the range removes no line mentioning one),
+#     and this store only ever calls the WRITE path, through SearchFieldExtractor.
+#     Upstream added `IndexableContentGoldenTest` and an `indexable-content.golden`
+#     resource in the same range to keep it that way. So: nothing to implement
+#     here, and NO REINDEX — every kind already stored indexes the same words on
+#     the same columns as before.
 #
-#   IndexableFields: the Profile-XOR-Tiered contract, written down. event.sd
-#     composes the two column groups with a plain SUM on that premise, so a doc
-#     filling a naming column in BOTH would claim the token band twice (~260 000
-#     against the ~130 000 a whole-field match earns). The sealed type enforced it
-#     and nothing said it was load-bearing; now a both-shapes kind is a decision
-#     with a known downstream cost rather than an accident.
+#   The searchable SET moves, for the first time in several bumps: 133 -> 144 kind
+#     values (130 -> 141 classes). SearchFieldExtractor gained no branch for any of
+#     the 11, so all of them land in its `is SearchableEvent ->` catch-all — the
+#     whole `indexableContent()` in the BODY role, titles included. That is the
+#     same 236x title discount the last two bumps fixed for 19 other kinds, and it
+#     takes the same fix (one branch each, upstream). Left as a note rather than
+#     held for, because it is a RANKING gap on kinds a relay has almost none of
+#     yet, not a recall one. The 11, with what their catch-all body carries:
+#       31 / 32 / 33   external / hardcopy / prompt citation   title, summary, content
+#       818            wiki merge request                      content
+#       30040          publication index                       title, author, summary
+#       30041          publication content                     title, content
+#       30045          bookshelf directory                     title, summary, content
+#       30142          learning resource                       title, summary, content
+#       31987          relay review                            content
+#       32176          Blossom piece index                     title, summary, content
+#       34259          entity rating                           content
+#     Recall on these is FORWARD-ONLY until `reindexFullTextSearch()` runs: events
+#     of those kinds already stored carry NO search fields, because when they were
+#     ingested nothing parsed them as searchable at all. Unlike the last two bumps'
+#     backfill, this one changes what is FINDABLE rather than how it ranks, so it
+#     is the one worth actually scheduling.
 #
-# Also upstream, and free here: extraction stopped allocating three throwaway lists
-# per event (`cleanOne`, lazy `cleanAll`, a `t`-tag scan before `hashtags()`), which
-# is the same hot path benchmark/README.md's extractBench measures at ~4.3 us/event.
-#
-# REINDEX REQUIRED, for the same reason as the previous bump and no more urgently:
-# extraction is derived data, so events of those 19 kinds keep their old tiering
-# until `reindexFullTextSearch` re-derives them. Recall is unaffected — the same
-# words are indexed, on different columns — so it is a RANKING backfill, not an
-# outage, and it can run whenever.
-#
-# Prev b10be95a6e (2026-08-30: the TrustedListEvent and ContactCardEvent branches —
-# a list title 550 -> 130 000, a card's petname into the name rung; also reindexed).
-quartz = "cecc3287b2"
+# Prev cecc3287b2 (2026-09-01: 17 catch-all kinds split into title/body roles, four
+# affiliation URLs, six doubled `t`-tag scans dropped; a ranking backfill).
+quartz = "a8e8778265"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 sqlite = "2.7.0"
