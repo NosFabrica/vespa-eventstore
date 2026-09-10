@@ -818,7 +818,8 @@ class VespaEventIndex(
         // A limit'd walk is the caller asking for the newest N — a relay
         // stamps `limit: 100000` on every COUNT and NIP-77 filter — and a
         // ranked one has to be served by the search path (the ids are ranked
-        // there). A PLAIN limited walk pages the cursor with a budget instead:
+        // there). A PLAIN limited walk takes one ordered id query when it fits
+        // in a page, and pages the cursor with a budget when it does not:
         // it used to hand the query to search(), which fetched a full document
         // summary per id to produce an id list — measured on a staging slice,
         // a two-filter COUNT over 51k events took 40 s against 0.2 s for the
@@ -838,6 +839,29 @@ class VespaEventIndex(
             // A ranked walk is the search path's by definition: the ids ARE its
             // ranking, so nothing else can produce them.
             if (query.isRankedShape()) return super.visitIds(query, withDTag, onPage)
+            // A LIMIT THAT FITS IN ONE PAGE IS ONE QUERY — no probe, no cursor.
+            // `buildIdTime` is unranked and ordered `created_at desc` and
+            // honours the limit, so the newest N arrive in a single round trip,
+            // which is the same answer both branches below produce for this
+            // shape and the cheapest way to produce it.
+            //
+            // Two costs it takes out, and #134 made the first of them ten times
+            // worse: the cursor fetches a whole `idPageSize + TIE_SLACK` page
+            // whatever the caller asked for, so a `limit: 500` walk serialized
+            // 20,064 id rows to serve 500 (0.227s against 0.122s on the page-size
+            // measurements in [PAGE_IDS]) — and paid a 2,000-row decision probe
+            // to get there. The decision cannot change the answer here: a walk
+            // that stops inside its first page never crosses a boundary, so
+            // there is no tie group to resolve and nothing for the scan to be
+            // better at.
+            //
+            // A relay's `limit: 100000` is still bigger than a page and still
+            // takes the cursor below, which is the shape the paging was measured
+            // on.
+            if (query.limit <= idPageSize) {
+                IngestStats.timed("walk.limited.onepage") { onPage(idTimeHits(query, withDTag)) }
+                return
+            }
             // The probe is timed here for the reason the unlimited path times
             // it below: a walk stuck in the decision looks exactly like a walk
             // with nothing to do, and a COUNT's id walk arrives on THIS branch.
@@ -980,8 +1004,8 @@ class VespaEventIndex(
      * budget-truncate it and not the scan (see [visitIds]).
      *
      * Split out so the limited branch can take it directly: routing back
-     * through [visitIds] would re-run [cursorSuitsThisWalk]'s probe query for
-     * a decision already made.
+     * through [visitIds] would re-run [planFor]'s probe query for a decision
+     * already made.
      */
     private suspend fun visitIdsByCursor(
         query: EventQuery,
@@ -1107,10 +1131,15 @@ class VespaEventIndex(
 
     /**
      * Which walk [query] gets, decided from the corpus rather than the query's
-     * shape: sample a page, and when its boundary second is tied, measure how
-     * wide that group is. A group past [TIE_DENSE_FACTOR] probes means every
-     * boundary on this walk risks an unbounded window query, which is the one
-     * thing the scan is genuinely better at.
+     * shape: sample the corpus, and when the sample's boundary second is tied,
+     * measure how wide that group is. A group past [TIE_DENSE_FACTOR] PAGES
+     * means every boundary on this walk risks an unbounded window query, which
+     * is the one thing the scan is genuinely better at.
+     *
+     * THE SAMPLE IS [probeIds]; THE THRESHOLD IS [idPageSize]. They are
+     * different questions and must not be read off one number: how many rows it
+     * takes to SEE a tie is a sampling choice, while how wide a group the cursor
+     * can AFFORD is a property of the page that resolves it. See [PROBE_IDS].
      *
      * Returns the REASON and not a boolean, because the caller does different
      * things with the two: a dense tie group is a fact about the data that
@@ -1153,7 +1182,17 @@ class VespaEventIndex(
         // Not tied at the boundary — no window query will ever be needed here.
         if (probe.first().createdAt != boundary && probe.count { it.createdAt == boundary } == 1) return WalkPlan.CURSOR
         val group = countAt(query, boundary)
-        if (group <= probeIds * TIE_DENSE_FACTOR) return WalkPlan.CURSOR
+        // AGAINST THE PAGE, NOT THE PROBE. What a wide group costs is paid by
+        // the CURSOR's page: a group inside one page never needs a window query
+        // at all, and a larger one is fetched by a single `[T,T]` query whose
+        // ceiling is the query profile's `maxHits` — which is what sizes this
+        // (see [PAGE_IDS]). The probe only decides how many rows it takes to
+        // notice the tie. Reading the threshold off [probeIds] made it 8,000
+        // where the page had already moved it to 80,000, and sent every group
+        // between the two to a document-API read of the whole corpus — ~17.9
+        // minutes on the staging corpus against 6 ms for the indexed query, on
+        // walks a 20,064-row page absorbs without one window query.
+        if (group <= idPageSize * TIE_DENSE_FACTOR) return WalkPlan.CURSOR
         IngestStats.timed("walk.plan.scan.ties") { }
         return WalkPlan.SCAN_DENSE_TIES
     }
@@ -1637,6 +1676,12 @@ class VespaEventIndex(
          * whole-corpus read. 2,000 is what the probe asked for before the page
          * was widened, and is measured to answer this shape completely:
          * 140 kinds over a 23h window, 943,949 matches, 100% coverage, 0.13s.
+         *
+         * THE TIE THRESHOLD IS NOT THIS, and splitting these constants once
+         * moved it here by accident. How many rows it takes to SEE a tie group
+         * is this number; how wide a group the cursor can AFFORD is
+         * [PAGE_IDS] × [TIE_DENSE_FACTOR], because the page is what pays for it.
+         * Lowering this must never make the walk scan more.
          */
         const val PROBE_IDS = 2_000
 

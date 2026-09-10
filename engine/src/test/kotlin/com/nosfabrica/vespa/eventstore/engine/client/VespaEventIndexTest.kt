@@ -1048,17 +1048,80 @@ class VespaEventIndexTest {
                     true
                 }
                 assertEquals(50, got.size, "a limited walk serves exactly the budget")
-                // THE LAST REQUEST IS THE ONE THAT SERVED THE PAGE. The two
-                // earlier ones are the routing probe and its tie-group count,
-                // and the probe is itself an id-time read — so "an id-time
-                // request happened" proves nothing, and asserting it was how
-                // the first version of this test passed against both branches.
+                // THE LAST REQUEST IS THE ONE THAT SERVED THE PAGE — which,
+                // since a limit inside one page skips the routing probe, is
+                // also the only one. The probe is itself an id-time read, so
+                // "an id-time request happened" proves nothing, and asserting
+                // that was how the first version of this test passed against
+                // both branches.
                 val after = mock.searchRequests.drop(at)
                 assertEquals(
                     EventYql.SUMMARY_IDTIME,
                     after.last()["presentation.summary"],
                     "the page must come from the id-only walk, not a document search: ${after.map { it["presentation.summary"] ?: "<full>" }}",
                 )
+            } finally {
+                paged.close()
+            }
+        }
+
+    /**
+     * A LIMIT THAT FITS IN A PAGE IS ONE QUERY, FOR THE LIMIT — not a page,
+     * and not a probe first.
+     *
+     * The cursor fetches `idPageSize + TIE_SLACK` rows whatever the caller
+     * asked for, and #134 made that ten times bigger: a `limit: 500` walk
+     * serialized 20,064 id rows to serve 500, having first paid a 2,000-row
+     * routing probe to decide it. Neither buys anything on this shape — a walk
+     * that stops inside its first page never crosses a boundary, so there is no
+     * tie group to resolve and nothing for the scan to be better at.
+     *
+     * Asserted on the WIRE, on the number of requests AND the hits each asked
+     * for: the ids returned are identical either way, which is exactly why this
+     * went unnoticed.
+     */
+    @Test
+    fun `a limit inside one page is a single request for exactly the limit`() =
+        runBlocking {
+            val hal = "c4".repeat(32)
+            seed(*(1..300).map { doc(kind = 30382, pubkey = hal) }.toTypedArray())
+            val paged = VespaEventIndex(mock.url, idPageSize = 100, probeIds = 10)
+            try {
+                val q = EventQuery(kinds = listOf(30382), authors = listOf(hal), limit = 40)
+                val at = mock.searchRequests.size
+                val got = ArrayList<DocRef>()
+                paged.visitIds(q) {
+                    got += it
+                    true
+                }
+                val after = mock.searchRequests.drop(at)
+                assertEquals(40, got.size, "still exactly the newest N")
+                assertEquals(reference.search(q).map { it.id }.sorted(), got.map { it.id }.sorted(), "and the same N search() serves")
+                assertEquals(1, after.size, "one round trip, not a probe plus a page: ${after.map { it["hits"] }}")
+                assertEquals("40", after.single()["hits"], "it must ask the engine for the LIMIT, not for a whole page")
+            } finally {
+                paged.close()
+            }
+        }
+
+    /** Past a page, the budget still pages the cursor — the shape `PAGE_IDS` was measured on. */
+    @Test
+    fun `a limit past one page still pages the cursor`() =
+        runBlocking {
+            val iris = "c5".repeat(32)
+            seed(*(1..300).map { doc(kind = 30382, pubkey = iris) }.toTypedArray())
+            val paged = VespaEventIndex(mock.url, idPageSize = 20, probeIds = 20)
+            try {
+                val q = EventQuery(kinds = listOf(30382), authors = listOf(iris), limit = 50)
+                val at = mock.searchRequests.size
+                val got = ArrayList<DocRef>()
+                paged.visitIds(q) {
+                    got += it
+                    true
+                }
+                assertEquals(50, got.size, "exactly the limit")
+                assertEquals(reference.search(q).map { it.id }.sorted(), got.map { it.id }.sorted(), "the newest 50, in any order")
+                assertTrue(mock.searchRequests.size - at > 1, "a limit over the page must still take the probe-then-page path")
             } finally {
                 paged.close()
             }
@@ -1090,6 +1153,67 @@ class VespaEventIndexTest {
                 assertTrue(mock.visitRequests > 0, "a tie-dense walk must actually fall back to the scan")
             } finally {
                 paged.close()
+            }
+        }
+
+    /**
+     * THE TIE THRESHOLD IS THE PAGE'S, NOT THE PROBE'S — and this is the test
+     * every other one here was blind to, because they all pass
+     * `idPageSize == probeIds`.
+     *
+     * What a wide boundary group costs is paid by the CURSOR's page: a group
+     * inside one page never needs a window query at all. The probe only decides
+     * how many rows it takes to NOTICE the tie. Reading the threshold off
+     * `probeIds` made it `2_000 * 4` where the page had already moved it to
+     * `20_000 * 4`, so every group between the two bought a document-API read
+     * of the whole corpus — ~17.9 minutes on the staging corpus against 6 ms
+     * for the indexed query, on walks one page absorbs outright.
+     *
+     * Driven at the production RATIO (page ten times the probe), so the
+     * constants can move without the property moving with them.
+     */
+    @Test
+    fun `a tie group inside the page stays on the cursor even when it dwarfs the probe`() =
+        runBlocking {
+            val ivy = "c3".repeat(32)
+            // 30 on one second: past `probeIds * TIE_DENSE_FACTOR` (16), well
+            // inside `idPageSize * TIE_DENSE_FACTOR` (160) — and inside one
+            // 40 + TIE_SLACK page, so not even a window query is needed.
+            seed(*(1..30).map { doc(kind = 30382, pubkey = ivy, at = 6_000L) }.toTypedArray())
+            val q = EventQuery(kinds = listOf(30382), authors = listOf(ivy))
+
+            val before = mock.visitRequests
+            val wide = VespaEventIndex(mock.url, idPageSize = 40, probeIds = 4)
+            try {
+                val got = HashSet<String>()
+                wide.visitIds(q) { page ->
+                    got += page.map { it.id }
+                    true
+                }
+                assertEquals(30, got.size, "the cursor must still deliver the whole group")
+                assertEquals(
+                    0,
+                    mock.visitRequests - before,
+                    "a group of 30 fits one 40-id page — it must not buy a document-API read of the corpus",
+                )
+            } finally {
+                wide.close()
+            }
+
+            // The threshold must still BITE: same group, same probe, a page
+            // small enough that every boundary would cost a window query.
+            val narrow = mock.visitRequests
+            val dense = VespaEventIndex(mock.url, idPageSize = 4, probeIds = 4)
+            try {
+                val got = HashSet<String>()
+                dense.visitIds(q) { page ->
+                    got += page.map { it.id }
+                    true
+                }
+                assertEquals(30, got.size, "the scan must lose nothing either")
+                assertTrue(mock.visitRequests - narrow > 0, "a group past the PAGE's bound is still the scan's")
+            } finally {
+                dense.close()
             }
         }
 
