@@ -920,37 +920,98 @@ class VespaEventIndex(
      *   1. ASK AGAIN. `non-ideal-state` and a bare coverage shortfall are the
      *      cluster settling and clear on their own; the same 140-kind, 23-hour
      *      probe that failed answers 943,949 matches at 100% coverage in 0.13s.
-     *   2. HALVE THE WINDOW and recurse. Two cheaper questions where one was
-     *      refused — which is the pager's own strategy one level up, borrowed.
-     *   3. Only at a ONE-SECOND window, where there is nothing left to halve,
-     *      take the scan. That is the case it was built for: a service that
-     *      bulk-published 148,130 cards on a single timestamp cannot be split
-     *      by time, and the visit is the only mechanism that can finish it.
+     *   2. HALVE THE WINDOW, and keep halving whatever still refuses, up to
+     *      [BISECT_DEPTH] levels — the pager's own strategy one level up,
+     *      borrowed. Only what refuses is split again, so the tree follows the
+     *      dense spine and stops everywhere else.
+     *   3. Only where nothing is left to halve — every leaf still refusing, or
+     *      a window too narrow to cut — take the scan. That is the case it was
+     *      built for: a service that bulk-published 148,130 cards on a single
+     *      timestamp cannot be split by time, and the visit is the only
+     *      mechanism that can finish it.
      *
      * The split is invisible above this call: the walk still delivers every id
      * in the window, so no cursor key, coverage band or sweep identity moves.
      * That holds only because the halves carry the CALLER's bounds and not the
      * numbers the midpoint was computed from — an unbounded half stays
-     * unbounded. Filling one in silently truncated the walk; see below.
+     * unbounded. Filling one in silently truncated the walk; see [splitAndPlan].
+     *
+     * AND IT NEVER COSTS MORE THAN ONE SCAN. The whole plan is built before one
+     * id is walked, and a single leaf that still refuses abandons all of it for
+     * one scan of the ORIGINAL window — never a scan per leaf, which would cost
+     * a corpus read each.
      */
     private suspend fun walkAroundPartialAnswer(
         query: EventQuery,
         withDTag: Boolean,
         onPage: suspend (List<DocRef>) -> Boolean,
     ) {
+        // RUNG 1: ASK AGAIN.
         when (IngestStats.timed("walk.partial.retry") { planFor(query, withDTag) }) {
             WalkPlan.CURSOR -> return visitIdsByCursor(query, withDTag, onPage)
             WalkPlan.SCAN_DENSE_TIES -> return visitIdsByScan(query, withDTag, onPage)
             WalkPlan.PARTIAL -> Unit
         }
 
+        // RUNG 2: HALVE, AND KEEP HALVING WHAT STILL REFUSES.
+        //
+        // The whole plan is built before one id is walked, and a single leaf
+        // that still refuses abandons ALL of it for one scan of the ORIGINAL
+        // window. That is the property the depth is safe under, and it is the
+        // one the first cut of this got right: a scan reads the corpus whatever
+        // its window says, so scanning four leaves costs FOUR corpus reads —
+        // the opposite of the saving. There is never more than one scan.
+        //
+        // Given that ceiling, depth is cheap and shallowness is expensive. A
+        // probe is ~0.13 s against ~17.9 minutes for the scan it is trying to
+        // avoid: five orders of magnitude, so [BISECT_DEPTH]'s worst case (126
+        // probes, ~16 s) is ~1.5% of the thing it might save. And ONE split was
+        // not enough to save it, because the midpoint of an unbounded walk is
+        // not in the middle of the data — see [BISECT_FLOOR_SECONDS].
+        val windows = IngestStats.timed("walk.partial.plan") { splitAndPlan(query, withDTag, BISECT_DEPTH) }
+        if (windows == null) {
+            IngestStats.timed("walk.partial.unsplittable") { }
+            return visitIdsByScan(query, withDTag, onPage)
+        }
+
+        IngestStats.timed("walk.partial.bisect") { }
+        // A false return from `onPage` stops the WHOLE walk, not just the
+        // window it arrived in — the caller has what it asked for and the older
+        // windows must not run on regardless.
+        var stopped = false
+        val part: suspend (List<DocRef>) -> Boolean = { page ->
+            val carryOn = onPage(page)
+            if (!carryOn) stopped = true
+            carryOn
+        }
+        // Newest first, so the walk keeps descending across every split. Each
+        // window takes the mechanism its own probe named, never this path again.
+        for ((window, plan) in windows) {
+            if (stopped) return
+            walkByPlan(plan, window, withDTag, part)
+        }
+    }
+
+    /**
+     * A window ALREADY KNOWN to refuse, split in two and planned — newest
+     * first — or null when some part of it still refuses with nothing left to
+     * try.
+     *
+     * Null is the caller's signal to abandon the whole tree for ONE scan of the
+     * original window; see [walkAroundPartialAnswer].
+     */
+    private suspend fun splitAndPlan(
+        query: EventQuery,
+        withDTag: Boolean,
+        depth: Int,
+    ): List<Pair<EventQuery, WalkPlan>>? {
+        if (depth <= 0) return null
         // A MIDPOINT NEEDS A NUMBER; THE HALVES MUST NOT INHERIT ONE.
         //
-        // Cutting a window in two requires a second to cut at, so an absent
-        // bound is filled in here with the widest the walk could mean — FOR THE
-        // ARITHMETIC ONLY. The halves then carry the CALLER's bounds, null
-        // included, because an absent bound is not a wide one: it is the
-        // absence of one.
+        // Cutting a window in two requires a second to cut at, so absent bounds
+        // are filled in here with something usable — FOR THE ARITHMETIC ONLY.
+        // The halves carry the CALLER's bounds, null included, because an
+        // absent bound is not a wide one: it is the absence of one.
         //
         // Handing the derived `until` to the newer half is how this dropped
         // documents. An unbounded walk means "no upper bound", and this corpus
@@ -959,66 +1020,50 @@ class VespaEventIndex(
         // NEITHER half. Measured on the mock: 40 of 41 ids delivered, with no
         // error, no degradation named and no scan. On the NIP-77 path that id
         // set is precisely what a peer reconciles against, so a silently
-        // dropped id is a peer that offers it forever and a mirror that never
-        // converges — intermittently, only on the degraded path.
+        // dropped id is a peer that offers it forever.
         //
         // `nowSecs` is a poor second choice for the same reason: it is the
         // RANKING instant (see EventQuery.nowSecs), not a bound on created_at.
         // It stays only because a query that carries one has already declared
         // which instant it means.
         val cutUntil = query.until ?: query.nowSecs ?: (System.currentTimeMillis() / 1000)
-        val cutSince = query.since ?: 0L
+        // The floor applies only where it IS a floor. A caller whose window
+        // ends below it (a walk bounded entirely before Nostr existed) would
+        // otherwise get an inverted range, fail the check below and go straight
+        // to the scan with no bisection ever attempted.
+        val cutSince = query.since ?: if (cutUntil > BISECT_FLOOR_SECONDS) BISECT_FLOOR_SECONDS else 0L
         // NOTHING LEFT TO HALVE — asked BEFORE the halves are probed, so a
         // window this narrow does not buy two engine queries on the way to the
         // scan it was always taking. It also rules out an INVERTED derived
-        // window (a `since` past the clock on an unbounded walk), where the
-        // midpoint would land below `since` and the newer half would reach
-        // further back than the caller asked.
-        if (cutUntil - cutSince < 2) {
-            IngestStats.timed("walk.partial.unsplittable") { }
-            return visitIdsByScan(query, withDTag, onPage)
-        }
+        // window, where a midpoint would land below `since`.
+        if (cutUntil - cutSince < 2) return null
         val mid = cutSince + (cutUntil - cutSince) / 2
-        val newer = query.copy(since = mid + 1, until = query.until)
-        val older = query.copy(since = query.since, until = mid)
+        // The newer half keeps the caller's `until` and the older half the
+        // caller's `since`, so between them they still cover exactly the window
+        // that was asked for — including, at the ends, whatever sits outside
+        // the range the midpoint was computed from.
+        val newer = planWindow(query.copy(since = mid + 1, until = query.until), withDTag, depth - 1) ?: return null
+        val older = planWindow(query.copy(since = query.since, until = mid), withDTag, depth - 1) ?: return null
+        return newer + older
+    }
 
-        // BOTH HALVES ARE PROBED BEFORE EITHER IS WALKED, and the split is taken
-        // only if both come back clean. Two properties depend on it.
-        //
-        // It can never cost more than today. A scan reads the corpus whatever
-        // its window says, so scanning two halves costs TWICE what scanning the
-        // whole once does — the opposite of the intended saving. Deciding up
-        // front means the fallback is still one scan of the original window,
-        // and the attempt has cost three probes, about half a second.
-        //
-        // And it cannot recurse away. Splitting on a partial that is a property
-        // of the SHAPE rather than the moment — `match-phase` on a match set
-        // the engine will keep cutting — would halve, fail, halve again, and
-        // fan out to billions of walks against an unbounded window. Bisection
-        // is attempted once, here, and never from inside itself.
-        val plans =
-            IngestStats.timed("walk.partial.probe.halves") {
-                listOf(planFor(newer, withDTag), planFor(older, withDTag))
-            }
-        if (plans.any { it == WalkPlan.PARTIAL }) {
-            IngestStats.timed("walk.partial.unsplittable") { }
-            return visitIdsByScan(query, withDTag, onPage)
-        }
-
-        IngestStats.timed("walk.partial.bisect") { }
-        // A false return from `onPage` stops the WHOLE walk, not just the half
-        // it arrived in — the caller has what it asked for and the older half
-        // must not run on regardless.
-        var stopped = false
-        val half: suspend (List<DocRef>) -> Boolean = { page ->
-            val carryOn = onPage(page)
-            if (!carryOn) stopped = true
-            carryOn
-        }
-        // Newest first, so the walk keeps descending across the split. Each half
-        // takes the mechanism its own probe just named, never this path again.
-        walkByPlan(plans[0], newer, withDTag, half)
-        if (!stopped) walkByPlan(plans[1], older, withDTag, half)
+    /**
+     * One window: probe it, and split it again when it refuses.
+     *
+     * RECURSES ONLY INTO WHAT REFUSES. A window the index can answer is planned
+     * where it stands, at whatever depth it was reached — so the tree descends
+     * the dense spine and stops everywhere else, and the 2^[BISECT_DEPTH] leaves
+     * of the worst case are a shape-driven refusal that narrowing cannot fix,
+     * not the shape of an ordinary walk.
+     */
+    private suspend fun planWindow(
+        query: EventQuery,
+        withDTag: Boolean,
+        depth: Int,
+    ): List<Pair<EventQuery, WalkPlan>>? {
+        val plan = IngestStats.timed("walk.partial.probe") { planFor(query, withDTag) }
+        if (plan != WalkPlan.PARTIAL) return listOf(query to plan)
+        return splitAndPlan(query, withDTag, depth)
     }
 
     /** One half, on the mechanism its probe named. Never re-enters the partial ladder. */
@@ -1701,6 +1746,52 @@ class VespaEventIndex(
          * Lowering this must never make the walk scan more.
          */
         const val PROBE_IDS = 2_000
+
+        /**
+         * How many times the partial-answer ladder may halve a window before it
+         * gives up and scans.
+         *
+         * ONE SPLIT WAS NEARLY A NO-OP on the walk that needs this most. A
+         * NIP-77 catch-up arrives with no bounds at all, so the window bisected
+         * is `[floor, now]` — and half of it is a range with no Nostr in it.
+         * Against the epoch the first midpoint landed in **May 1998**: the older
+         * half held nothing and the newer half was the entire corpus, which
+         * refused for exactly the reason the original did. Three probes, then
+         * the scan anyway. [BISECT_FLOOR_SECONDS] fixes where the halving
+         * starts; this fixes how far it goes.
+         *
+         * SIX, and the ceiling is what makes that cheap rather than reckless: a
+         * leaf that still refuses abandons the whole tree for ONE scan of the
+         * original window, so the worst case is 2^6 leaves — 126 probes, ~16 s
+         * at the 0.13 s a probe measured — in front of a scan that takes ~17.9
+         * minutes. About 1.5% of the thing it is trying not to pay, and only in
+         * the case where narrowing cannot help at all (a refusal that is a
+         * property of the SHAPE, which will refuse at every size). The ordinary
+         * case descends one dense spine and costs ~2 probes a level, because
+         * [planWindow] recurses only into what refuses.
+         *
+         * From the floor, six halvings reach a newest window of about five
+         * weeks. Raise it if that is still too wide to answer — the cost is
+         * linear in depth and the ceiling above does not move.
+         */
+        const val BISECT_DEPTH = 6
+
+        /**
+         * Where a walk with no `since` is assumed to START, for the midpoint
+         * arithmetic ONLY — 2020-01-01, comfortably before the first Nostr
+         * event and after every date a real bisection would waste a level on.
+         *
+         * Nothing is EXCLUDED by it: the older half always carries the caller's
+         * own `since` (null stays null), so the oldest window still reaches
+         * whatever sits below the floor. It moves where the cut lands, not what
+         * the walk covers.
+         *
+         * Without it the halving starts at the epoch and spends its first three
+         * levels walking down through decades that hold no events — 1998, then
+         * 2012, then 2019 — so a depth that should be resolving a busy month
+         * was still resolving the 1980s.
+         */
+        const val BISECT_FLOOR_SECONDS = 1_577_836_800L
 
         // Pages' worth of one tied second past which the scan is the cheaper
         // walk — see visitIds.

@@ -811,9 +811,76 @@ class VespaEventIndexTest {
                 assertEquals(40, got.distinctBy { it.id }.size, "the fallback must lose nothing")
                 val stages = IngestStats.snapshot()
                 assertNotNull(stages["walk.partial.unsplittable"], "the walk must record that it could not split")
-                assertEquals(null, stages["walk.partial.bisect"], "a half that still refuses must not be walked")
+                assertEquals(null, stages["walk.partial.bisect"], "a leaf that still refuses must not be walked")
+                // THE CEILING, and the only reason the depth is affordable: a
+                // scan reads the corpus whatever its window says, so scanning
+                // the leaves would cost a corpus read EACH. Whatever
+                // BISECT_DEPTH becomes, a refusal that narrowing cannot fix
+                // must still cost exactly one.
+                assertEquals(1L, stages["walk.scan"]?.calls, "a persistent refusal costs ONE scan of the original window, at any depth")
+                assertTrue(
+                    (stages["walk.partial.probe"]?.calls ?: 0L) > 2L,
+                    "and it must have kept halving before giving up — one split was nearly a no-op on an unbounded walk",
+                )
+                // THE OTHER HALF OF THE CEILING: bounded, and bounded by the
+                // constant rather than by a number someone has to remember.
+                // A full tree at depth D is 2^(D+1)-2 probes; raising the depth
+                // must stay a decision about THAT budget.
+                val ceiling = (1L shl (VespaEventIndex.BISECT_DEPTH + 1)) - 2L
+                assertTrue(
+                    (stages["walk.partial.probe"]?.calls ?: 0L) <= ceiling,
+                    "the probe budget must stay inside the depth's own ceiling ($ceiling), got ${stages["walk.partial.probe"]?.calls}",
+                )
             } finally {
                 mock.degradeCoverage = null
+                idx.close()
+                IngestStats.reset()
+            }
+        }
+
+    /**
+     * ONE SPLIT WAS NEARLY A NO-OP, so the ladder keeps halving.
+     *
+     * A NIP-77 catch-up arrives with no bounds, so the window bisected is
+     * `[floor, now]` — and against the epoch the first midpoint landed in May
+     * 1998. The older half held nothing and the newer half was the entire
+     * corpus, which refused for exactly the reason the original did: three
+     * probes, then the ~17.9-minute scan anyway.
+     *
+     * Here the refusal outlasts the first split and clears further down, which
+     * is what a match-set-size cut does. The walk must find a window the index
+     * answers instead of buying the corpus — and must still deliver every id.
+     */
+    @Test
+    fun `a refusal that outlasts the first split is halved again, not scanned`() =
+        runBlocking {
+            IngestStats.reset()
+            val gus = "e9".repeat(32)
+            val now = System.currentTimeMillis() / 1000
+            seedBulk((1..40).map { doc(kind = 30382, pubkey = gus, at = now - 100_000 + it) })
+            mock.visitRequests = 0
+            // Four refusals: the opening probe, the retry, and TWO more — one
+            // past what a single split can absorb.
+            mock.degradeNextSearches = 4
+
+            val idx = VespaEventIndex(mock.url, idPageSize = 10, probeIds = 10)
+            try {
+                val got = ArrayList<DocRef>()
+                idx.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(gus))) {
+                    got += it
+                    true
+                }
+
+                val stages = IngestStats.snapshot()
+                assertEquals(0, mock.visitRequests, "a refusal that narrowing can fix must never buy the corpus")
+                assertEquals(null, stages["walk.partial.unsplittable"], "and must not report itself unsplittable")
+                assertNotNull(stages["walk.partial.bisect"], "it must take the split")
+                assertTrue(
+                    (stages["walk.partial.probe"]?.calls ?: 0L) > 2L,
+                    "and go deeper than one split — got ${stages["walk.partial.probe"]?.calls} window probe(s)",
+                )
+                assertEquals(40, got.distinctBy { it.id }.size, "every id, exactly once, across every window")
+            } finally {
                 idx.close()
                 IngestStats.reset()
             }
