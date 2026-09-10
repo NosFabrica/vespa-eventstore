@@ -1448,8 +1448,39 @@ class VespaEventIndex(
          */
         const val TIE_SLACK = 64
 
-        // Ids per cursor page of a snapshot walk — see visitIds.
-        const val PAGE_IDS = 2_000
+        /**
+         * Ids per cursor page of a snapshot walk — see [visitIds].
+         *
+         * THE ENGINE CHARGES FOR THE RANGE, NOT THE ROWS, so this constant
+         * divides the cost of every id walk in the process. A page is `order by
+         * created_at desc` with a limit: proton matches every document in the
+         * cursor's remaining range, sorts, and returns the top N. The limit
+         * never touches the matching, which is nearly all of the cost.
+         *
+         * Measured on staging (2026-09-10), one unranked walk shape, kind 1
+         * over a week — `totalCount` 2,809,568 and `coverage.full` at every
+         * size, so these differ only in rows returned:
+         *
+         *     limit    per page   pages    total work   vs 2,000
+         *      2,000     0.122s    N/2k       1.00
+         *     20,000     0.227s    N/20k      0.186        5.4x less
+         *     50,000     0.363s    N/50k      0.119        8.4x less
+         *    100,000     0.643s    N/100k     0.105        9.5x less
+         *
+         * Ten times the rows for 1.86x the time. What that was costing: the
+         * mirror's `Snapshot` walks were 79.3% of ALL engine time on staging
+         * (10.9 of 13.7 core-hours in 14.5h) across 653,476 pages that matched
+         * 148,493,275,456 documents between them — 227,196 matched per page to
+         * return 2,000 ids. With no users on the cluster at all.
+         *
+         * 20,000 and not further: the gain past it is small and the costs are
+         * not. [TIE_DENSE_FACTOR] multiplies this into the tie-group threshold,
+         * and a group accepted there is fetched by an UNBOUNDED window query.
+         * The hard ceiling is the query profile's `maxHits` (100,000): the
+         * fetch is `PAGE_IDS + TIE_SLACK`, and a page over that cap is refused
+         * outright rather than trimmed, so 100,000 is not a value this may take.
+         */
+        const val PAGE_IDS = 20_000
 
         // Pages' worth of one tied second past which the scan is the cheaper
         // walk — see visitIds.
