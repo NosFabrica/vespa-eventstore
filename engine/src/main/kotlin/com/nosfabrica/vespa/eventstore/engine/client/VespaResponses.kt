@@ -147,6 +147,16 @@ internal class SearchRootFields(
  */
 class PartialAnswer(
     message: String,
+    /**
+     * The degradation Vespa reported, as a short label: the flags it set, or
+     * `coverage` where it set none and simply searched less than all of it.
+     *
+     * Carried because the two mean opposite things to a caller deciding what to
+     * do next — `match-phase` is the engine cutting a match set and will not
+     * clear itself, `non-ideal-state` is a cluster still settling and will —
+     * and the message string was the only place that ever said which.
+     */
+    val degradation: String? = null,
 ) : IllegalArgumentException(message)
 
 /**
@@ -227,10 +237,18 @@ internal class SearchCoverage(
             // full is the confusing one, and naming the contradiction beats
             // making the next reader rediscover the two denominators.
             throw PartialAnswer(
-                "vespa searched only $coverage% of the corpus over $documents document(s) (full: $full, degraded: ${degraded ?: "unspecified"}); " +
-                    "the response is a PARTIAL answer, not a small one, so it is refused rather than returned. " +
-                    "match-phase means the ENGINE cut the match set and will not clear itself; non-ideal-state is a cluster " +
-                    "still settling and will. DegradedReads carries which, per profile and query shape.",
+                degradation =
+                    set
+                        .filterValues { it }
+                        .keys
+                        .sorted()
+                        .joinToString("+")
+                        .ifEmpty { "coverage" },
+                message =
+                    "vespa searched only $coverage% of the corpus over $documents document(s) (full: $full, degraded: ${degraded ?: "unspecified"}); " +
+                        "the response is a PARTIAL answer, not a small one, so it is refused rather than returned. " +
+                        "match-phase means the ENGINE cut the match set and will not clear itself; non-ideal-state is a cluster " +
+                        "still settling and will. DegradedReads carries which, per profile and query shape.",
             )
         }
     }

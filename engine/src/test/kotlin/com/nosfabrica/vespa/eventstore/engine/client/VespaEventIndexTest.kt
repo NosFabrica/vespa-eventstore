@@ -751,6 +751,75 @@ class VespaEventIndexTest {
         }
 
     /**
+     * A PARTIAL ANSWER IS ABOUT THE MOMENT, NOT THE DATA, and must not buy a
+     * whole-corpus read. Measured against one predicate on staging: 7.1s of
+     * visiting found 4 of 8,765 matches that one indexed query answered
+     * completely in 6ms. Trading a fifth of a second of index work for ~18
+     * minutes of scanning is a bargain the walk should almost never take.
+     */
+    @Test
+    fun `a transient partial is retried on the index, never handed to the scan`() =
+        runBlocking {
+            IngestStats.reset()
+            val ann = "a7".repeat(32)
+            seed(*(1..40).map { doc(kind = 30382, pubkey = ann, at = 1_700_000_000L + it) }.toTypedArray())
+            mock.visitRequests = 0
+            // One refusal, then the cluster is itself again.
+            mock.degradeNextSearches = 1
+
+            val idx = VespaEventIndex(mock.url, idPageSize = 10, probeIds = 10)
+            try {
+                val got = ArrayList<DocRef>()
+                idx.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(ann))) {
+                    got += it
+                    true
+                }
+
+                assertEquals(40, got.distinctBy { it.id }.size, "a retried walk must still deliver every id")
+                assertEquals(0, mock.visitRequests, "a transient partial must NOT reach the scan")
+                assertNotNull(IngestStats.snapshot()["walk.partial.retry"], "the retry must be booked")
+            } finally {
+                idx.close()
+                IngestStats.reset()
+            }
+        }
+
+    /**
+     * The other half of the same contract: when the refusal is not transient the
+     * fallback must still be ONE scan of the original window. A scan reads the
+     * corpus whatever its window says, so bisecting first and scanning the
+     * halves would cost twice what scanning once does — the opposite of the
+     * saving the split exists for.
+     */
+    @Test
+    fun `a persistent partial falls to exactly one scan, not one per half`() =
+        runBlocking {
+            IngestStats.reset()
+            val ivy = "c8".repeat(32)
+            seed(*(1..40).map { doc(kind = 30382, pubkey = ivy, at = 1_700_000_000L + it) }.toTypedArray())
+            mock.visitRequests = 0
+            mock.degradeCoverage = "match-phase"
+
+            val idx = VespaEventIndex(mock.url, idPageSize = 10, probeIds = 10)
+            try {
+                val got = ArrayList<DocRef>()
+                idx.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(ivy))) {
+                    got += it
+                    true
+                }
+
+                assertEquals(40, got.distinctBy { it.id }.size, "the fallback must lose nothing")
+                val stages = IngestStats.snapshot()
+                assertNotNull(stages["walk.partial.unsplittable"], "the walk must record that it could not split")
+                assertEquals(null, stages["walk.partial.bisect"], "a half that still refuses must not be walked")
+            } finally {
+                mock.degradeCoverage = null
+                idx.close()
+                IngestStats.reset()
+            }
+        }
+
+    /**
      * THE SCAN MUST BOOK ITS OWN TIME. It is the most expensive walk here and
      * was the only branch with no stage: a document-API visit is not a query,
      * so it books no engine time against any caller on the pulse either. A walk
@@ -769,7 +838,7 @@ class VespaEventIndexTest {
             // One timestamp for all of them: a tie group wider than
             // idPageSize * TIE_DENSE_FACTOR is what sends this walk to the scan.
             seed(*(1..60).map { doc(kind = 30382, pubkey = ida, at = 1_700_000_000L) }.toTypedArray())
-            val scanning = VespaEventIndex(mock.url, idPageSize = 2)
+            val scanning = VespaEventIndex(mock.url, idPageSize = 2, probeIds = 2)
             try {
                 val ids = HashSet<String>()
                 scanning.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(ida))) { page ->
@@ -1008,7 +1077,9 @@ class VespaEventIndexTest {
         runBlocking {
             val bob = "b7".repeat(32)
             seed(*(1..500).map { doc(kind = 30382, pubkey = bob, at = 3_000L) }.toTypedArray())
-            val paged = VespaEventIndex(mock.url, idPageSize = 100)
+            // `probeIds` and not `idPageSize`: the DECISION samples on its own
+            // knob now, so a test that means "make the probe small" says so.
+            val paged = VespaEventIndex(mock.url, idPageSize = 100, probeIds = 100)
             try {
                 val got = ArrayList<DocRef>()
                 paged.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(bob))) {

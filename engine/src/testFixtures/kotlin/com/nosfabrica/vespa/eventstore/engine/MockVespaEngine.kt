@@ -90,6 +90,21 @@ class MockVespaEngine {
     @Volatile var degradeCoverage: String? = null
 
     /**
+     * Degrade the next [degradeNextSearches] searches with [transientReason],
+     * then answer completely — the shape a cluster settling actually has, and
+     * the one a permanent flag cannot express.
+     *
+     * A caller that treats a partial answer as a verdict about the DATA rather
+     * than about the moment cannot be told apart from a correct one without
+     * this: both refuse, and only one of them should still be refusing a second
+     * later.
+     */
+    @Volatile var degradeNextSearches: Int = 0
+
+    /** What [degradeNextSearches] degrades with. `non-ideal-state` is a cluster still settling. */
+    @Volatile var transientReason: String = NON_IDEAL_STATE
+
+    /**
      * Answer every search the way a node a hair short of its target does:
      * `full: false`, a percentage that ROUNDS to 100, and NO `degraded` block —
      * Vespa omits it whenever its own `isDegraded()` is false, which at a
@@ -496,12 +511,16 @@ class MockVespaEngine {
             // non-ideal-state one is the opposite: full, with a reason and a
             // percentage under it. `resultsFull` tracks `full` the way Vespa's
             // fullResultSets does.
-            val reason = degradeCoverage ?: NON_IDEAL_STATE.takeIf { nonIdealStateCoverage }
-            val full = degradeCoverage == null && !roundedCompleteCoverage
+            // Consumed here, where a response is actually built, so the count
+            // is searches ANSWERED and not searches parsed.
+            val transient = if (degradeNextSearches > 0) transientReason.also { degradeNextSearches-- } else null
+            val named = degradeCoverage ?: transient
+            val reason = named ?: NON_IDEAL_STATE.takeIf { nonIdealStateCoverage }
+            val full = named == null && !roundedCompleteCoverage
             put(
                 "coverage",
                 JsonPrimitive(
-                    if (degradeCoverage != null) {
+                    if (named != null) {
                         42
                     } else if (nonIdealStateCoverage) {
                         60
