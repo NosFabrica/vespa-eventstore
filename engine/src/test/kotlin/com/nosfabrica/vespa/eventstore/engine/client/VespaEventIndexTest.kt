@@ -749,6 +749,50 @@ class VespaEventIndexTest {
         }
 
     /**
+     * THE PAGE SIZE IS THE WALK'S COST, INVERTED. The engine matches every
+     * document in the cursor's remaining range per page and the limit does not
+     * touch that, so the pages a walk issues — not the ids it returns — are
+     * what it is billed for. Pinned because the relationship is the only reason
+     * `PAGE_IDS` is the number it is: on staging this walk was 79.3% of all
+     * engine time, and lowering the constant would put it back.
+     */
+    @Test
+    fun `a wider page walks the same ids in proportionally fewer requests`() =
+        runBlocking {
+            val zoe = "e5".repeat(32)
+            seed(*(1..200).map { doc(kind = 30382, pubkey = zoe) }.toTypedArray())
+            val q = EventQuery(kinds = listOf(30382), authors = listOf(zoe))
+
+            fun pagesAt(size: Int): Int =
+                runBlocking {
+                    VespaEventIndex(mock.url, idPageSize = size).use { idx ->
+                        var pages = 0
+                        val ids = HashSet<String>()
+                        idx.visitIds(q) { page ->
+                            pages++
+                            ids += page.map { it.id }
+                            true
+                        }
+                        assertEquals(200, ids.size, "every id must arrive whatever the page size")
+                        pages
+                    }
+                }
+
+            val narrow = pagesAt(20)
+            val wide = pagesAt(100)
+            // Not the exact 5x the page sizes suggest: TIE_SLACK's fixed overfetch is wide next
+            // to a 20-id page, so the walk's last page carries the whole remainder. The direction
+            // and the order of magnitude are the property; the constant is not.
+            assertEquals(true, narrow > wide, "a 20-id page must take more requests than a 100-id page, got $narrow and $wide")
+            assertEquals(
+                true,
+                narrow >= wide * 3,
+                "five times the page must be within reach of a fifth of the requests — " +
+                    "got $narrow at 20/page and $wide at 100/page",
+            )
+        }
+
+    /**
      * The snapshot walk: every match, across CURSOR pages.
      *
      * visitIds no longer rides the document-API visit — it pages the attribute
