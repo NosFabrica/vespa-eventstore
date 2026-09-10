@@ -85,6 +85,7 @@ class VespaEventIndex(
     // drive the multi-page and tie-group paths without seeding tens of
     // thousands of docs; production has no reason to change it.
     private val idPageSize: Int = PAGE_IDS,
+    private val probeIds: Int = PROBE_IDS,
     /**
      * Independent STREAMED slices a full-corpus visit is split into, each
      * walked concurrently as its own JSON-Lines stream. Each slice is roughly
@@ -840,7 +841,7 @@ class VespaEventIndex(
             // The probe is timed here for the reason the unlimited path times
             // it below: a walk stuck in the decision looks exactly like a walk
             // with nothing to do, and a COUNT's id walk arrives on THIS branch.
-            if (!IngestStats.timed("walk.cursor.decide") { cursorSuitsThisWalk(unlimited, withDTag) }) {
+            if (IngestStats.timed("walk.cursor.decide") { planFor(unlimited, withDTag) } != WalkPlan.CURSOR) {
                 // ONE ORDERED, UNRANKED, ID-ONLY QUERY — not `super.visitIds`,
                 // which is `search(query)`: that materializes a full document
                 // summary per id (content, sig, tags) to produce an id list, on
@@ -875,10 +876,102 @@ class VespaEventIndex(
         // looks exactly like a walk with nothing to do. On staging a service
         // walk sat in this read path for twenty minutes without one gate hold
         // or one write, and nothing named which read it was in.
-        if (!IngestStats.timed("walk.cursor.decide") { cursorSuitsThisWalk(query, withDTag) }) {
+        when (IngestStats.timed("walk.cursor.decide") { planFor(query, withDTag) }) {
+            WalkPlan.CURSOR -> visitIdsByCursor(query, withDTag, onPage)
+            WalkPlan.SCAN_DENSE_TIES -> visitIdsByScan(query, withDTag, onPage)
+            WalkPlan.PARTIAL -> walkAroundPartialAnswer(query, withDTag, onPage)
+        }
+    }
+
+    /**
+     * A partial probe is not a verdict about the data, so it must not buy a
+     * whole-corpus read. The scan costs the corpus WHATEVER the filter says —
+     * measured against this same predicate, 7.1s of visiting found 4 of 8,765
+     * matches that one indexed query answered completely in 6ms — so trading a
+     * fifth of a second of index work for ~18 minutes of scanning is a bargain
+     * the walk should almost never take.
+     *
+     * The ladder instead:
+     *
+     *   1. ASK AGAIN. `non-ideal-state` and a bare coverage shortfall are the
+     *      cluster settling and clear on their own; the same 140-kind, 23-hour
+     *      probe that failed answers 943,949 matches at 100% coverage in 0.13s.
+     *   2. HALVE THE WINDOW and recurse. Two cheaper questions where one was
+     *      refused — which is the pager's own strategy one level up, borrowed.
+     *   3. Only at a ONE-SECOND window, where there is nothing left to halve,
+     *      take the scan. That is the case it was built for: a service that
+     *      bulk-published 148,130 cards on a single timestamp cannot be split
+     *      by time, and the visit is the only mechanism that can finish it.
+     *
+     * The split is invisible above this call: the walk still delivers every id
+     * in the window, so no cursor key, coverage band or sweep identity moves.
+     */
+    private suspend fun walkAroundPartialAnswer(
+        query: EventQuery,
+        withDTag: Boolean,
+        onPage: suspend (List<DocRef>) -> Boolean,
+    ) {
+        when (IngestStats.timed("walk.partial.retry") { planFor(query, withDTag) }) {
+            WalkPlan.CURSOR -> return visitIdsByCursor(query, withDTag, onPage)
+            WalkPlan.SCAN_DENSE_TIES -> return visitIdsByScan(query, withDTag, onPage)
+            WalkPlan.PARTIAL -> Unit
+        }
+
+        // Absent bounds are the widest the walk could mean.
+        val until = query.until ?: query.nowSecs ?: (System.currentTimeMillis() / 1000)
+        val since = query.since ?: 0L
+        val mid = since + (until - since) / 2
+        val newer = query.copy(since = mid + 1, until = until)
+        val older = query.copy(since = since, until = mid)
+
+        // BOTH HALVES ARE PROBED BEFORE EITHER IS WALKED, and the split is taken
+        // only if both come back clean. Two properties depend on it.
+        //
+        // It can never cost more than today. A scan reads the corpus whatever
+        // its window says, so scanning two halves costs TWICE what scanning the
+        // whole once does — the opposite of the intended saving. Deciding up
+        // front means the fallback is still one scan of the original window,
+        // and the attempt has cost three probes, about half a second.
+        //
+        // And it cannot recurse away. Splitting on a partial that is a property
+        // of the SHAPE rather than the moment — `match-phase` on a match set
+        // the engine will keep cutting — would halve, fail, halve again, and
+        // fan out to billions of walks against an unbounded window. Bisection
+        // is attempted once, here, and never from inside itself.
+        val plans =
+            IngestStats.timed("walk.partial.probe.halves") {
+                listOf(planFor(newer, withDTag), planFor(older, withDTag))
+            }
+        if (plans.any { it == WalkPlan.PARTIAL } || until - since < 2) {
+            IngestStats.timed("walk.partial.unsplittable") { }
             return visitIdsByScan(query, withDTag, onPage)
         }
-        visitIdsByCursor(query, withDTag, onPage)
+
+        IngestStats.timed("walk.partial.bisect") { }
+        // A false return from `onPage` stops the WHOLE walk, not just the half
+        // it arrived in — the caller has what it asked for and the older half
+        // must not run on regardless.
+        var stopped = false
+        val half: suspend (List<DocRef>) -> Boolean = { page ->
+            val carryOn = onPage(page)
+            if (!carryOn) stopped = true
+            carryOn
+        }
+        // Newest first, so the walk keeps descending across the split. Each half
+        // takes the mechanism its own probe just named, never this path again.
+        walkByPlan(plans[0], newer, withDTag, half)
+        if (!stopped) walkByPlan(plans[1], older, withDTag, half)
+    }
+
+    /** One half, on the mechanism its probe named. Never re-enters the partial ladder. */
+    private suspend fun walkByPlan(
+        plan: WalkPlan,
+        query: EventQuery,
+        withDTag: Boolean,
+        onPage: suspend (List<DocRef>) -> Boolean,
+    ) = when (plan) {
+        WalkPlan.SCAN_DENSE_TIES -> visitIdsByScan(query, withDTag, onPage)
+        else -> visitIdsByCursor(query, withDTag, onPage)
     }
 
     /**
@@ -995,16 +1088,39 @@ class VespaEventIndex(
     }
 
     /**
-     * Whether the cursor is the cheaper walk for [query], decided from the
-     * corpus rather than the query's shape: sample one page, and when its
-     * boundary second is tied, measure how wide that group is. A group past
-     * [TIE_DENSE_FACTOR] pages means every boundary on this walk risks an
-     * unbounded window query, which is where the scan wins.
+     * Which mechanism this walk gets, and — where it is not the cursor — WHY.
+     * The two non-cursor outcomes were one boolean for a long time, and they
+     * want opposite treatment: a dense tie group is a property of the data that
+     * re-splitting cannot help, while a partial answer is usually the cluster
+     * having a moment.
      */
-    private suspend fun cursorSuitsThisWalk(
+    private enum class WalkPlan {
+        /** Page the index on a created_at cursor. */
+        CURSOR,
+
+        /** A boundary group too wide to resolve on the cursor: the scan is the honest answer. */
+        SCAN_DENSE_TIES,
+
+        /** The probe came back incomplete. Says nothing about the data — ask again, smaller. */
+        PARTIAL,
+    }
+
+    /**
+     * Which walk [query] gets, decided from the corpus rather than the query's
+     * shape: sample a page, and when its boundary second is tied, measure how
+     * wide that group is. A group past [TIE_DENSE_FACTOR] probes means every
+     * boundary on this walk risks an unbounded window query, which is the one
+     * thing the scan is genuinely better at.
+     *
+     * Returns the REASON and not a boolean, because the caller does different
+     * things with the two: a dense tie group is a fact about the data that
+     * re-asking cannot change, while a partial answer is usually the cluster
+     * having a moment and is worth asking again.
+     */
+    private suspend fun planFor(
         query: EventQuery,
         withDTag: Boolean,
-    ): Boolean {
+    ): WalkPlan {
         // THE ENGINE CUTTING THE PROBE IS AN ANSWER, NOT AN ERROR. The cursor
         // reads through search with `order by created_at desc`, and attribute
         // sorting trips proton's match-phase limiter on a large match set: the
@@ -1021,18 +1137,25 @@ class VespaEventIndex(
         // too big to read this way.
         val probe =
             try {
-                idTimeHits(query.copy(limit = idPageSize), withDTag)
+                idTimeHits(query.copy(limit = probeIds), withDTag)
             } catch (cut: PartialAnswer) {
-                return false
+                // Booked BY DEGRADATION, because the label decides whether this
+                // can be waited out: `non-ideal-state` and a bare `coverage`
+                // shortfall are a cluster settling, `match-phase` is the engine
+                // refusing this shape and will say so again.
+                IngestStats.timed("walk.plan.partial.${cut.degradation ?: "unspecified"}") { }
+                return WalkPlan.PARTIAL
             }
         // Short of a page: the whole match set is tiny, so the cursor's single
         // round trip beats spinning up a visit.
-        if (probe.size < idPageSize) return true
+        if (probe.size < probeIds) return WalkPlan.CURSOR
         val boundary = probe.last().createdAt
         // Not tied at the boundary — no window query will ever be needed here.
-        if (probe.first().createdAt != boundary && probe.count { it.createdAt == boundary } == 1) return true
+        if (probe.first().createdAt != boundary && probe.count { it.createdAt == boundary } == 1) return WalkPlan.CURSOR
         val group = countAt(query, boundary)
-        return group <= idPageSize * TIE_DENSE_FACTOR
+        if (group <= probeIds * TIE_DENSE_FACTOR) return WalkPlan.CURSOR
+        IngestStats.timed("walk.plan.scan.ties") { }
+        return WalkPlan.SCAN_DENSE_TIES
     }
 
     /** How many of [query]'s matches share exactly [at] — the boundary group's true width. */
@@ -1503,6 +1626,19 @@ class VespaEventIndex(
          * outright rather than trimmed, so 100,000 is not a value this may take.
          */
         const val PAGE_IDS = 20_000
+
+        /**
+         * Rows the walk's DECISION probe asks for — deliberately NOT [PAGE_IDS].
+         *
+         * These were one number, and raising the page raised the probe with it.
+         * That coupling is wrong in both directions: the decision needs a
+         * SAMPLE, not a page, and tying the two means tuning throughput also
+         * moves the sensitivity of a choice whose wrong branch costs a
+         * whole-corpus read. 2,000 is what the probe asked for before the page
+         * was widened, and is measured to answer this shape completely:
+         * 140 kinds over a 23h window, 943,949 matches, 100% coverage, 0.13s.
+         */
+        const val PROBE_IDS = 2_000
 
         // Pages' worth of one tied second past which the scan is the cheaper
         // walk — see visitIds.
