@@ -178,6 +178,15 @@ internal class ProjectionLedger(
      * Stamps answer it exactly: a re-queue takes a NEW stamp, a stuck entry
      * keeps its old one. Inherited work carries stamp 0, which is above the
      * -1 this starts at, so a restart still drops the map once.
+     *
+     * READS THE HIGHEST STAMP, so it depends on stamps becoming VISIBLE in the
+     * order they were taken — a queueing that published stamp 7 after one that
+     * published 8 would never invalidate. That holds because [queue] is only
+     * reached through [insuring], and every write path into it holds the
+     * store's `writes` mutex (a plain insert takes it alone, a trust write
+     * takes the gate and then it), so stamp allocation and publication are one
+     * critical section. The drain, which runs under the gate alone, never
+     * queues.
      */
     private val invalidatedThrough = AtomicLong(-1L)
 
@@ -356,8 +365,13 @@ internal class ProjectionLedger(
             // disappears exactly when the store is busy enough to want it.
             var retired = 0
             work.toRederive.chunked(TrustRecompute.GATE_SLICE).forEach { slice ->
+                // ONE read of the ledger for the whole slice, not one per
+                // subject: `pendingNow()` is an atomic read and the partition
+                // should also see ONE state, rather than letting two subjects
+                // land in different buckets because a write arrived between them.
+                val stillQueued = pendingNow().toRederive
                 val live = slice.filterNot { it in poisoned }
-                val (gone, todo) = live.partition { !pendingNow().toRederive.containsKey(it) }
+                val (gone, todo) = live.partition { !stillQueued.containsKey(it) }
                 // Retired since the snapshot by a concurrent drain: done work,
                 // and this round's denominator still counts it.
                 retired += gone.size

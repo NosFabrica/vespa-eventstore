@@ -859,7 +859,14 @@ class VespaEventIndex(
             // takes the cursor below, which is the shape the paging was measured
             // on.
             if (query.limit <= idPageSize) {
-                IngestStats.timed("walk.limited.onepage") { onPage(idTimeHits(query, withDTag)) }
+                // The STAGE times the engine call and not the caller's
+                // callback, like `walk.ids.page` beside it — wrapping `onPage`
+                // books whatever the caller does with the page as walk time.
+                // And an empty result calls nothing, which is what the cursor
+                // this replaces did: `visitIdsByCursor` returns on an empty
+                // page rather than handing one down.
+                val hits = IngestStats.timed("walk.limited.onepage") { idTimeHits(query, withDTag) }
+                if (hits.isNotEmpty()) onPage(hits)
                 return
             }
             // The probe is timed here for the reason the unlimited path times

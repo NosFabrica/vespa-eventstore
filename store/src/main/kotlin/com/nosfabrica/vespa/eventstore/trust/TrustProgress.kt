@@ -83,15 +83,23 @@ internal object TrustProgress {
         steps[op] = Step(op, phase, 0, total, now, now)
     }
 
+    /**
+     * ONE ATOMIC READ-MODIFY-WRITE, because a step can now have CONCURRENT
+     * reporters: the reconcile's screening fans out at `QUERY_FANOUT` and every
+     * worker advances the same op. `get` then `put` is a lost update — and what
+     * it loses is not the count (callers carry their own atomic) but
+     * `startedMs` and the denominator, so a racing pair could reset the step's
+     * clock and blank the total that had already been learned. `compute` keeps
+     * both whatever the interleaving.
+     */
     fun advance(
         op: String,
         done: Long,
         total: Long = 0,
         phase: String? = null,
     ) {
-        val prev = steps[op]
         val now = System.currentTimeMillis()
-        steps[op] =
+        steps.compute(op) { _, prev ->
             Step(
                 op = op,
                 phase = phase ?: prev?.phase ?: "running",
@@ -101,6 +109,7 @@ internal object TrustProgress {
                 startedMs = prev?.startedMs ?: now,
                 updatedMs = now,
             )
+        }
     }
 
     fun finish(op: String) {

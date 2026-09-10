@@ -487,13 +487,18 @@ internal class PageAssembly(
         // then `filter` judged every surviving row TWICE — and `admitted` is a
         // scan of every filter's key sets per row — on a path that already runs
         // per searching read.
+        // An index counted by hand, NOT `withIndex()`: that allocates an
+        // IndexedValue per row, which is a worse trade than the second pass it
+        // was replacing on the page that admits everything — the common one.
         var kept: ArrayList<R>? = null
-        for ((i, row) in withIndex()) {
+        var seen = 0
+        for (row in this) {
             if (admitted(row)) {
                 kept?.add(row)
             } else if (kept == null) {
-                kept = ArrayList<R>(size).also { it.addAll(subList(0, i)) }
+                kept = ArrayList<R>(size).also { it.addAll(subList(0, seen)) }
             }
+            seen++
         }
         return kept ?: this
     }
