@@ -882,7 +882,11 @@ class VespaEventIndex(
     ): List<DocRef> {
         var refusal: PartialAnswer? = null
         for (pause in RETRY_PAUSES_MILLIS) {
-            if (pause > 0) delay(pause)
+            // TIMED, because an untimed wait is the blindness `walk.scan` was
+            // added to end: 4.2 s of a walk sitting still would otherwise look
+            // exactly like a walk with nothing to do, on every instrument this
+            // process has.
+            if (pause > 0) IngestStats.timed("walk.retry.wait") { delay(pause) }
             try {
                 return IngestStats.timed(stage) { idTimeHits(q, withDTag) }
             } catch (refused: PartialAnswer) {
@@ -952,7 +956,19 @@ class VespaEventIndex(
                 // is the widest group the cursor can carry; one row past it and
                 // the answer is "not this way", which costs the same query that
                 // was going to be issued anyway.
-                val cap = budget ?: (idPageSize * TIE_DENSE_FACTOR + 1)
+                // CLAMPED TO WHAT THE DEPLOYMENT WILL SERVE. The widest group
+                // the cursor can carry is `idPageSize * TIE_DENSE_FACTOR`, so
+                // one row past it is the question — but an operator who capped
+                // the query profile's `maxHits` (the multi-node survival move,
+                // mirrored here by `VESPA_UNBOUNDED_HITS`) cannot be ASKED for
+                // that many, and an explicit limit above the cap is refused by
+                // the engine outright. Clamping turns that hard failure into
+                // the right answer: a group this client cannot read in one
+                // query is, by definition, too wide for the cursor to carry.
+                //
+                // Default `unboundedHits` is Int.MAX_VALUE, so this is the
+                // plain threshold on every uncapped deployment.
+                val cap = budget ?: minOf(idPageSize * TIE_DENSE_FACTOR + 1, unboundedHits)
                 val group = idTimeRetrying(query.copy(since = boundary, until = boundary, limit = cap), withDTag, "walk.ids.tiegroup")
                 if (budget == null && group.size >= cap) {
                     // TOO WIDE TO RESOLVE ON THE CURSOR — a service that
