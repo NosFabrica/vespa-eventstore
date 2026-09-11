@@ -20,8 +20,11 @@
  */
 package com.nosfabrica.vespa.eventstore.engine.metrics
 
+import kotlinx.coroutines.currentCoroutineContext
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.coroutines.AbstractCoroutineContextElement
+import kotlin.coroutines.CoroutineContext
 
 /**
  * Process-wide wall-time accounting for the ingest pipeline's named stages —
@@ -68,15 +71,60 @@ object IngestStats {
         stages.computeIfAbsent(stage) { AtomicLong() }.addAndGet(nanos)
     }
 
+    /**
+     * WHERE ONE CALL IS RIGHT NOW, as opposed to where all of them have been.
+     *
+     * The stage totals below are sums: they say the process spent 22 core-hours
+     * scanning, never which of the nineteen open walks is doing it. The holds
+     * cannot answer it either — [held] is keyed by stage, one slot per name, so
+     * nineteen walks in `walk.ids.page` overwrite each other by design (a mutex
+     * has one holder; a walk does not).
+     *
+     * So the stage is written HERE, into a slot the CALLER owns, and read back
+     * by whoever is rendering that call. A store call carrying one of these
+     * reports "1081s, in walk.scan" instead of "1081s, somewhere". Absent from
+     * the context, this costs a map lookup and changes nothing.
+     *
+     * Restores the previous value on the way out, so nesting reads as the
+     * innermost stage rather than the last one entered.
+     */
+    class CallStage : AbstractCoroutineContextElement(CallStage) {
+        @Volatile
+        private var stage: String? = null
+
+        @Volatile
+        private var sinceNanos: Long = 0
+
+        fun enter(name: String): String? {
+            val previous = stage
+            stage = name
+            sinceNanos = System.nanoTime()
+            return previous
+        }
+
+        fun leave(previous: String?) {
+            stage = previous
+            sinceNanos = System.nanoTime()
+        }
+
+        /** The stage this call is in, and for how long — null before it enters one. */
+        fun current(): Pair<String, Long>? = stage?.let { it to (System.nanoTime() - sinceNanos) / 1_000_000 }
+
+        companion object Key : CoroutineContext.Key<CallStage>
+    }
+
     /** Time [body], booking its wall time under [stage]. */
     suspend fun <T> timed(
         stage: String,
         body: suspend () -> T,
     ): T {
         val t0 = System.nanoTime()
+        val slot = currentCoroutineContext()[CallStage]
+        val previous = slot?.enter(stage)
         try {
             return body()
         } finally {
+            slot?.leave(previous)
             val took = System.nanoTime() - t0
             add(stage, took)
             // Booked only by [timed]: `add` is also called with a duration
