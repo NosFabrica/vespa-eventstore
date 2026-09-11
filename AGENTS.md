@@ -253,4 +253,26 @@ Only kinds Quartz parses as `SearchableEvent` are searchable. The per-kind decom
 
 - Comment culture: this codebase documents **why** (invariants, contracts, measured trade-offs) in KDoc and inline comments, densely. Match it — and update the comment when you change the behavior it explains.
 - CI (`.github/workflows/build.yml`) runs three jobs on PRs to `main`: `spotlessCheck`, `build` (unit), and `integration` (`:benchmark:test -Pintegration`). All three must pass.
+- **A green gate is not a run gate.** Locally, `:benchmark:test -Pintegration`
+  reports `BUILD SUCCESSFUL` **in 6 seconds with every IT skipped** when Docker
+  is not up — each one aborts on `Assumption failed: Docker not available`. Judge
+  it by the counts, never the exit code:
+  ```bash
+  grep -ho 'tests="[0-9]*" skipped="[0-9]*"' benchmark/build/test-results/test/*.xml
+  ```
+  A real run is ~10 minutes with 20 of 21 executing (`StagingCorpusIT` needs a
+  `STAGING_CORPUS` export). Don't run it concurrently with a unit suite — they
+  contend for the daemon and report compile failures that aren't real.
+- **A new test must be verified to fail without its fix.** Revert the change,
+  watch the test go red, restore. Tests written here have passed identically with
+  and without the behaviour they guarded — an assertion that only checks "past
+  the first batch" is satisfied by the bug too. This is also how dead code gets
+  shipped: `EngineResources` merged parsed, tested, and constructed nowhere,
+  because the tests drove the parser seam rather than the wiring.
+- **Say only what was measured, and say the sample.** A width theory was written
+  into `VespaEventIndex` as fact ("Width does"), shipped, and contradicted by its
+  own counters within twenty minutes: 90% of production cuts were on windows of a
+  day or less, not the wide ones four hand-run queries had suggested. Four
+  queries are an anecdote. When the mechanism is not understood, write that down
+  instead of inventing one.
 - Design docs in `docs/` (`scaling.md`, `multi-node-consistency.md`, `server-side-constraints.md`, `attribute-memory.md`, `embedded-vespa-study.md`, `telemetry.md`) record operator guidance and studied-but-rejected alternatives — check them before re-proposing one. `attribute-memory.md` is the per-field RAM budget of `event.sd` — read it before adding an attribute or reaching for `paged`.

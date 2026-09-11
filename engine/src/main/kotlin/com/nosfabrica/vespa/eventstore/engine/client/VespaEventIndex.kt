@@ -945,9 +945,9 @@ class VespaEventIndex(
          * the leaves at [MAX_CUT_NARROWINGS] + 1.
          *
          * It is insurance against a refusal that does NOT get better as the
-         * window shrinks — an engine cutting whatever it is asked. Width is what
-         * drives a real cut (30 days answers whole where 90 does not), so a
-         * healthy cluster spends one or two and never reaches the floor.
+         * window shrinks — an engine cutting whatever it is asked. A healthy
+         * cluster barely touches it: of the first 396 cuts counted in
+         * production, 389 cleared after a split and 7 spent the budget.
          */
         narrowings: AtomicInteger = AtomicInteger(MAX_CUT_NARROWINGS),
         onPage: suspend (List<DocRef>) -> Boolean,
@@ -960,20 +960,29 @@ class VespaEventIndex(
                     idTimeRetrying(query.copy(until = until, limit = fetchLimit), withDTag, "walk.ids.page")
                 } catch (cut: PartialAnswer) {
                     if (!cut.cutByMatchPhase) throw cut
-                    // A CUT IS ABOUT THE RANGE, NOT THE MATCH SET, so narrowing
-                    // the range is the remedy and the scan is the last resort.
+                    // HALVING CLEARS A CUT. That is measured; WHY is not, and
+                    // the first explanation here was wrong, so it is worth
+                    // saying what is actually known.
                     //
-                    // Measured on staging, `kind in (0,10002,10040)` ending at
-                    // one instant, only the window varying:
+                    // Four queries by hand said width drives it — the same
+                    // filter ending at one instant, 30d answering whole at
+                    // 189,623 matches while 90d came back at 54% and a year at
+                    // 7%, with a 23-hour window of 944,000 matches uncut. That
+                    // reads as "wide ranges get cut", and it is what this
+                    // comment used to claim.
                     //
-                    //     30d   189,623 matches  100% coverage  UNCUT
-                    //     90d   529,357 matches   54% coverage  cut
-                    //      1y 1,106,187 matches    7% coverage  cut
-                    //      3y   556,833 matches    4% coverage  cut
+                    // Production says otherwise. Of the first 396 cuts counted
+                    // by `walk.cut.width.*`, 72% were on windows of a DAY and
+                    // 18% under an HOUR — nowhere near the widths that were cut
+                    // by hand. Whatever varies, four queries did not capture it.
                     //
-                    // The count does not drive it — a 23-hour window with
-                    // 944,000 matches answers whole. Width does. So halve and
-                    // ask again, which the caller cannot do for us: it handed
+                    // What the same run also says is that halving WORKS anyway:
+                    // 389 of 396 cuts resolved after a split and only 7 spent
+                    // the budget, taking scan load from 16 concurrent to 1.7 and
+                    // the cluster from 15.4 cores to ~7. So the remedy stands on
+                    // its outcome, not on the theory that motivated it.
+                    //
+                    // So halve and ask again, which the caller cannot do for us: it handed
                     // this walk a range and expects every id in it.
                     //
                     // The floor is one second, where there is nothing left to
@@ -1615,8 +1624,10 @@ class VespaEventIndex(
          * Counted across the whole walk, so six splits bound it at seven leaves
          * and therefore seven scans — where an unbounded recursion could reach
          * 2^31 against a range open at the bottom. Six is also far more than a
-         * real cut needs: on staging a 90-day window was cut and a 30-day one
-         * was not, so even a three-year tail converges in about three.
+         * real cut needs: production spent it on 7 of 396 cuts, and resolved
+         * the other 389 by splitting — most of them windows of a day or less,
+         * which is not what the four hand-run queries behind the original
+         * "wide ranges get cut" reading would have predicted.
          */
         const val MAX_CUT_NARROWINGS = 6
 
