@@ -872,7 +872,7 @@ class VespaEventIndex(
             // The probe is timed here for the reason the unlimited path times
             // it below: a walk stuck in the decision looks exactly like a walk
             // with nothing to do, and a COUNT's id walk arrives on THIS branch.
-            if (IngestStats.timed("walk.cursor.decide") { planFor(unlimited, withDTag) } != WalkPlan.CURSOR) {
+            if (IngestStats.timed("walk.cursor.decide") { planFor(unlimited, withDTag) } !is WalkPlan.Cursor) {
                 // ONE ORDERED, UNRANKED, ID-ONLY QUERY — not `super.visitIds`,
                 // which is `search(query)`: that materializes a full document
                 // summary per id (content, sig, tags) to produce an id list, on
@@ -908,9 +908,9 @@ class VespaEventIndex(
         // walk sat in this read path for twenty minutes without one gate hold
         // or one write, and nothing named which read it was in.
         when (IngestStats.timed("walk.cursor.decide") { planFor(query, withDTag) }) {
-            WalkPlan.CURSOR -> visitIdsByCursor(query, withDTag, onPage)
-            WalkPlan.SCAN_DENSE_TIES -> visitIdsByScan(query, withDTag, onPage)
-            WalkPlan.PARTIAL -> walkAroundPartialAnswer(query, withDTag, onPage)
+            is WalkPlan.Cursor -> visitIdsByCursor(query, withDTag, onPage)
+            is WalkPlan.ScanDenseTies -> visitIdsByScan(query, withDTag, onPage)
+            is WalkPlan.Partial -> walkAroundPartialAnswer(query, withDTag, onPage)
         }
     }
 
@@ -954,10 +954,19 @@ class VespaEventIndex(
         onPage: suspend (List<DocRef>) -> Boolean,
     ) {
         // RUNG 1: ASK AGAIN.
-        when (IngestStats.timed("walk.partial.retry") { planFor(query, withDTag) }) {
-            WalkPlan.CURSOR -> return visitIdsByCursor(query, withDTag, onPage)
-            WalkPlan.SCAN_DENSE_TIES -> return visitIdsByScan(query, withDTag, onPage)
-            WalkPlan.PARTIAL -> Unit
+        val refused =
+            when (val again = IngestStats.timed("walk.partial.retry") { planFor(query, withDTag) }) {
+                is WalkPlan.Cursor -> return visitIdsByCursor(query, withDTag, onPage)
+                is WalkPlan.ScanDenseTies -> return visitIdsByScan(query, withDTag, onPage)
+                is WalkPlan.Partial -> again
+            }
+
+        // ONLY A REFUSAL NARROWING CAN FIX GOES ON. Booked BY FLAG, because
+        // which one keeps reaching this branch is the whole question the
+        // measurement in [narrowingCanFix] answers for one deployment.
+        if (!narrowingCanFix(refused.degradation)) {
+            IngestStats.timed("walk.partial.skip.${refused.degradation ?: "unspecified"}") { }
+            return visitIdsByScan(query, withDTag, onPage)
         }
 
         // RUNG 2: HALVE, AND KEEP HALVING WHAT STILL REFUSES.
@@ -1069,7 +1078,10 @@ class VespaEventIndex(
         depth: Int,
     ): List<Pair<EventQuery, WalkPlan>>? {
         val plan = IngestStats.timed("walk.partial.probe") { planFor(query, withDTag) }
-        if (plan != WalkPlan.PARTIAL) return listOf(query to plan)
+        if (plan !is WalkPlan.Partial) return listOf(query to plan)
+        // The same gate as the top of the ladder: a leaf refused for something
+        // narrowing cannot fix ends the tree here rather than splitting on.
+        if (!narrowingCanFix(plan.degradation)) return null
         return splitAndPlan(query, withDTag, depth)
     }
 
@@ -1080,7 +1092,7 @@ class VespaEventIndex(
         withDTag: Boolean,
         onPage: suspend (List<DocRef>) -> Boolean,
     ) = when (plan) {
-        WalkPlan.SCAN_DENSE_TIES -> visitIdsByScan(query, withDTag, onPage)
+        is WalkPlan.ScanDenseTies -> visitIdsByScan(query, withDTag, onPage)
         else -> visitIdsByCursor(query, withDTag, onPage)
     }
 
@@ -1204,16 +1216,48 @@ class VespaEventIndex(
      * re-splitting cannot help, while a partial answer is usually the cluster
      * having a moment.
      */
-    private enum class WalkPlan {
+    private sealed interface WalkPlan {
         /** Page the index on a created_at cursor. */
-        CURSOR,
+        data object Cursor : WalkPlan
 
         /** A boundary group too wide to resolve on the cursor: the scan is the honest answer. */
-        SCAN_DENSE_TIES,
+        data object ScanDenseTies : WalkPlan
 
-        /** The probe came back incomplete. Says nothing about the data — ask again, smaller. */
-        PARTIAL,
+        /**
+         * The probe came back incomplete, and WHICH degradation Vespa named —
+         * because that decides what to do next, and it used to be booked to a
+         * counter and then thrown away. Only a `match-phase` cut is a function
+         * of how much this query asked for; everything else is the cluster's
+         * state, which a narrower window does not change.
+         */
+        class Partial(
+            val degradation: String?,
+        ) : WalkPlan
     }
+
+    /**
+     * Whether a refusal is one a SMALLER WINDOW can clear — MEASURED, against a
+     * real Vespa on the bundled schema (120,000 docs, one per second, single
+     * node, 2026-09-11):
+     *
+     *     profile     120k matches                      60k and narrower
+     *     unranked    100% coverage, full               100% coverage
+     *     recency     19% coverage, match-phase: true   100% coverage
+     *
+     * So the match-phase cut IS the window's size, and one halving cleared it.
+     * Nothing else is. Forcing the other degradation `unranked` can take —
+     * a timeout — showed no window sensitivity at all: at a 1 ms deadline a
+     * 1,875-match window degraded 5 times out of 5, exactly as often as a
+     * 120,000-match one, and at 4 ms neither degraded at all. It is a cliff on
+     * fixed overhead, not on how much was matched.
+     *
+     * `non-ideal-state` and a bare coverage shortfall are a node redistributing
+     * or missing, which halving a window plainly cannot repair either. For all
+     * of those the ladder stops at rung 1 — ask again — and then takes the
+     * scan, instead of spending up to [BISECT_DEPTH]'s probe budget to arrive
+     * at the same scan.
+     */
+    private fun narrowingCanFix(degradation: String?): Boolean = degradation != null && MATCH_PHASE_FLAG in degradation
 
     /**
      * Which walk [query] gets, decided from the corpus rather than the query's
@@ -1259,14 +1303,14 @@ class VespaEventIndex(
                 // shortfall are a cluster settling, `match-phase` is the engine
                 // refusing this shape and will say so again.
                 IngestStats.timed("walk.plan.partial.${cut.degradation ?: "unspecified"}") { }
-                return WalkPlan.PARTIAL
+                return WalkPlan.Partial(cut.degradation)
             }
         // Short of a page: the whole match set is tiny, so the cursor's single
         // round trip beats spinning up a visit.
-        if (probe.size < probeIds) return WalkPlan.CURSOR
+        if (probe.size < probeIds) return WalkPlan.Cursor
         val boundary = probe.last().createdAt
         // Not tied at the boundary — no window query will ever be needed here.
-        if (probe.first().createdAt != boundary && probe.count { it.createdAt == boundary } == 1) return WalkPlan.CURSOR
+        if (probe.first().createdAt != boundary && probe.count { it.createdAt == boundary } == 1) return WalkPlan.Cursor
         val group = countAt(query, boundary)
         // AGAINST THE PAGE, NOT THE PROBE. What a wide group costs is paid by
         // the CURSOR's page: a group inside one page never needs a window query
@@ -1278,9 +1322,9 @@ class VespaEventIndex(
         // between the two to a document-API read of the whole corpus — ~17.9
         // minutes on the staging corpus against 6 ms for the indexed query, on
         // walks a 20,064-row page absorbs without one window query.
-        if (group <= idPageSize * TIE_DENSE_FACTOR) return WalkPlan.CURSOR
+        if (group <= idPageSize * TIE_DENSE_FACTOR) return WalkPlan.Cursor
         IngestStats.timed("walk.plan.scan.ties") { }
-        return WalkPlan.SCAN_DENSE_TIES
+        return WalkPlan.ScanDenseTies
     }
 
     /** How many of [query]'s matches share exactly [at] — the boundary group's true width. */
@@ -1753,6 +1797,9 @@ class VespaEventIndex(
          * Lowering this must never make the walk scan more.
          */
         const val PROBE_IDS = 2_000
+
+        /** Vespa's name for the one degradation that is a function of the match set's SIZE. */
+        const val MATCH_PHASE_FLAG = "match-phase"
 
         /**
          * How many times the partial-answer ladder may halve a window before it

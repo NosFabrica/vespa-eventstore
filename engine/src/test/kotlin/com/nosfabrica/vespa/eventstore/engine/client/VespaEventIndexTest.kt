@@ -838,6 +838,61 @@ class VespaEventIndexTest {
             }
         }
 
+    /** Vespa's own name for a cluster still settling — the wire value, which is what the client keys on. */
+    private val nonIdealState = "non-ideal-state"
+
+    /**
+     * ONLY A REFUSAL NARROWING CAN FIX IS WORTH HALVING FOR — measured, not
+     * assumed.
+     *
+     * Against a real Vespa on the bundled schema (120,000 docs, one per
+     * second, single node): `recency` refused a 120,000-match window at 19%
+     * coverage with `match-phase: true` and answered the halved one at 100%,
+     * so THAT cut is the window's size. Nothing else was. A forced timeout on
+     * `unranked` showed no window sensitivity at all — at a 1 ms deadline a
+     * 1,875-match window degraded 5 times out of 5, exactly as often as a
+     * 120,000-match one — and `non-ideal-state` is a node redistributing,
+     * which halving plainly cannot repair.
+     *
+     * So a non-match-phase refusal takes the scan after ONE retry, instead of
+     * spending the whole probe budget to arrive at the same scan.
+     */
+    @Test
+    fun `a refusal narrowing cannot fix skips the halving and scans`() =
+        runBlocking {
+            IngestStats.reset()
+            val ken = "f1".repeat(32)
+            seedBulk((1..40).map { doc(kind = 30382, pubkey = ken, at = 1_700_000_000L + it) })
+            mock.visitRequests = 0
+            // A cluster still settling: persistent, and NOT a function of how
+            // much this query asked for.
+            mock.degradeCoverage = nonIdealState
+
+            val idx = VespaEventIndex(mock.url, idPageSize = 10, probeIds = 10)
+            try {
+                val got = ArrayList<DocRef>()
+                idx.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(ken))) {
+                    got += it
+                    true
+                }
+
+                val stages = IngestStats.snapshot()
+                assertEquals(40, got.distinctBy { it.id }.size, "the fallback must still lose nothing")
+                assertNotNull(stages["walk.partial.retry"], "rung 1 still runs — a settling cluster is worth asking twice")
+                assertNotNull(
+                    stages["walk.partial.skip.$nonIdealState"],
+                    "and the skip is booked BY FLAG: ${stages.keys.filter { it.startsWith("walk.partial") }}",
+                )
+                assertEquals(null, stages["walk.partial.probe"], "not one window probe may be spent on it")
+                assertEquals(null, stages["walk.partial.bisect"], "and it must not split")
+                assertEquals(1L, stages["walk.scan"]?.calls, "it goes straight to one scan")
+            } finally {
+                mock.degradeCoverage = null
+                idx.close()
+                IngestStats.reset()
+            }
+        }
+
     /**
      * ONE SPLIT WAS NEARLY A NO-OP, so the ladder keeps halving.
      *
@@ -859,8 +914,11 @@ class VespaEventIndexTest {
             val now = System.currentTimeMillis() / 1000
             seedBulk((1..40).map { doc(kind = 30382, pubkey = gus, at = now - 100_000 + it) })
             mock.visitRequests = 0
-            // Four refusals: the opening probe, the retry, and TWO more — one
-            // past what a single split can absorb.
+            // MATCH-PHASE, because that is the only refusal narrowing fixes
+            // (measured — see `a refusal narrowing cannot fix skips the
+            // halving`). Four of them: the opening probe, the retry, and TWO
+            // more — one past what a single split can absorb.
+            mock.transientReason = "match-phase"
             mock.degradeNextSearches = 4
 
             val idx = VespaEventIndex(mock.url, idPageSize = 10, probeIds = 10)
@@ -880,7 +938,9 @@ class VespaEventIndexTest {
                     "and go deeper than one split — got ${stages["walk.partial.probe"]?.calls} window probe(s)",
                 )
                 assertEquals(40, got.distinctBy { it.id }.size, "every id, exactly once, across every window")
+                assertEquals(null, stages["walk.partial.skip.match-phase"], "a size cut is never skipped")
             } finally {
+                mock.transientReason = nonIdealState
                 idx.close()
                 IngestStats.reset()
             }
@@ -911,7 +971,9 @@ class VespaEventIndexTest {
             val future = doc(kind = 30382, pubkey = eve, at = 4_102_444_800L) // 2100-01-01
             seedBulk(past + future)
             mock.visitRequests = 0
-            // Probe refused, retry refused, both halves clean: the split is taken.
+            // Probe refused, retry refused, both halves clean: the split is
+            // taken. Match-phase, the one refusal the ladder is for.
+            mock.transientReason = "match-phase"
             mock.degradeNextSearches = 2
 
             val idx = VespaEventIndex(mock.url, idPageSize = 10, probeIds = 10)
@@ -929,6 +991,7 @@ class VespaEventIndexTest {
                 assertTrue(got.any { it.id == future.id }, "the event dated past the clock is in the window and must be served")
                 assertEquals(41, got.distinctBy { it.id }.size, "every id, exactly once, across both halves")
             } finally {
+                mock.transientReason = nonIdealState
                 idx.close()
                 IngestStats.reset()
             }
