@@ -989,6 +989,13 @@ class VespaEventIndex(
                         return visitIdsByScan(query.copy(until = until), withDTag, onPage)
                     }
                     IngestStats.timed("walk.cut.narrowed") { }
+                    // AND THE WIDTH THAT WAS CUT, bucketed, because "narrowing
+                    // fixes it" is a claim about width and nothing was counting
+                    // width. A run whose cuts are all `1h` says the premise is
+                    // wrong and halving will not converge; one whose cuts are
+                    // `30d+` says it will. Inference cost four passes over this
+                    // file — this is the number that ends the argument.
+                    IngestStats.timed("walk.cut.width.${widthBucket(ceiling - floor)}") { }
                     // Newest half first, so the walk keeps descending, and each
                     // half re-enters HERE — a range still too wide halves again,
                     // which is why a 3-year tail converges instead of scanning.
@@ -1065,6 +1072,21 @@ class VespaEventIndex(
             until = boundary - 1
         }
     }
+
+    /**
+     * A window width as a coarse label, for counting which widths get cut.
+     * Buckets and not seconds: a stage name per distinct width would be a
+     * cardinality bomb, and the question is only ever which order of magnitude.
+     */
+    private fun widthBucket(seconds: Long): String =
+        when {
+            seconds < 3_600 -> "1h"
+            seconds < 86_400 -> "1d"
+            seconds < 604_800 -> "1w"
+            seconds < 2_592_000 -> "30d"
+            seconds < 31_536_000 -> "1y"
+            else -> "1y+"
+        }
 
     /** Whether the ids are the ENGINE's ordering to give — terms, phrases or an explicit profile — rather than plain recency. */
     private fun EventQuery.isRankedShape(): Boolean = !search.isNullOrBlank() || phrases.isNotEmpty() || ranking != null
