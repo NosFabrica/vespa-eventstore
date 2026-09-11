@@ -998,8 +998,15 @@ class VespaEventIndex(
 
     /**
      * The document-API visit: a streaming scan with a selection expression,
-     * evaluated per document with no index behind it. Kept for UNKEYED walks,
-     * where it beats the cursor — see [visitIds] for the measurements.
+     * evaluated per document with no index behind it.
+     *
+     * ONE CALLER REACHES THIS, and it is not the one this comment used to name:
+     * the routing that sent "unkeyed" walks here is gone, along with the probe
+     * that guessed which walks were unkeyed. What is left is the boundary group
+     * too wide for the cursor to carry in one query — a service that
+     * bulk-published 148,130 cards on a single timestamp cannot be paged by
+     * time at all, and this is the only mechanism that finishes it.
+     *
      * Queries a selection can't express fall back to the search default.
      */
     private suspend fun visitIdsByScan(
@@ -1028,8 +1035,13 @@ class VespaEventIndex(
         // selection against every document in the corpus and appear, on every
         // instrument this process has, as a walk doing nothing.
         //
-        // `walk.scan` calls are also the SCAN RATE: `walk.cursor.decide` counts
-        // every choice, so decide-minus-scan is how often the cursor won.
+        // `walk.scan` calls are the SCAN RATE outright. They were once read
+        // against `walk.cursor.decide`, which counted every routing choice — but
+        // the probe that booked it is gone, and nothing books that stage now.
+        // Its pair today is [walk.ties.dense], the one thing that still sends a
+        // walk here: every scan has a dense boundary group behind it, so the two
+        // counts track each other and a gap between them is a walk that reached
+        // the scan some other way.
         //
         // It matters because the scan cannot narrow. A selection is evaluated
         // per document, so `created_at` bounds shrink what is RETURNED and not
