@@ -32,6 +32,7 @@ import com.nosfabrica.vespa.eventstore.ingest.GuardBloom
 import com.nosfabrica.vespa.eventstore.mapping.toEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import com.vitorpamplona.quartz.utils.Hex
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Repair for projection drift no write can reach — [TrustProjection] derives
@@ -236,6 +237,18 @@ class TrustReconciler internal constructor(
         // projected/unprojected.
         val cutoff = nowSecs()
         TrustProgress.begin(RECONCILE, "screening named services", providers.services.size.toLong())
+        // AND IT HAS TO ADVANCE, not just begin. This phase is one or two
+        // engine queries per NAMED SERVICE and there are hundreds of them, so
+        // a `begin` with no counter behind it draws "screening named services:
+        // 0, total unknown" for the whole of it — the shape the registry exists
+        // to end, re-introduced in the phase before the ones it fixed.
+        //
+        // ATOMIC because the screening fans out at QUERY_FANOUT; the walks
+        // below are serial and count with a plain size.
+        val screened = AtomicInteger()
+        val named = providers.services.size.toLong()
+
+        fun screenedOne() = TrustProgress.advance(RECONCILE, screened.incrementAndGet().toLong(), named)
         val verdicts =
             providers.services.toList().mapBounded(QUERY_FANOUT) { service ->
                 // SAMPLED FROM THE OLD END OF THE SERVICE'S HISTORY, not its
@@ -282,7 +295,10 @@ class TrustReconciler internal constructor(
                             EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service), limit = RECONCILE_SAMPLES, notExpiredAt = cutoff, sampled = true),
                         )
                     }
-                if (sample.isEmpty()) return@mapBounded null
+                if (sample.isEmpty()) {
+                    screenedOne()
+                    return@mapBounded null
+                }
                 // Only sampled cards that CARRY a tag can prove that dimension
                 // unprojected — else every startup would re-walk the service.
                 val cards = sample.mapNotNull { doc -> subjectOf(doc)?.let { s -> (doc.toEvent() as? ContactCardEvent)?.let { s to it } } }
@@ -293,6 +309,7 @@ class TrustReconciler internal constructor(
                 // subject carries THIS service's cell in the tensor the tag feeds.
                 val rankProjected = rankSubjects.isEmpty() || rankSubjects.any { parents[it]?.influenceScores?.containsKey(ServiceKey(service)) == true }
                 val followersProjected = followerSubjects.isEmpty() || followerSubjects.any { parents[it]?.followerCounts?.containsKey(ServiceKey(service)) == true }
+                screenedOne()
                 service to (rankProjected && followersProjected)
             }
         val examined = verdicts.count { it != null }

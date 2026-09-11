@@ -767,7 +767,7 @@ class VespaEventIndexTest {
             // One refusal, then the cluster is itself again.
             mock.degradeNextSearches = 1
 
-            val idx = VespaEventIndex(mock.url, idPageSize = 10, probeIds = 10)
+            val idx = VespaEventIndex(mock.url, idPageSize = 10)
             try {
                 val got = ArrayList<DocRef>()
                 idx.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(ann))) {
@@ -777,7 +777,7 @@ class VespaEventIndexTest {
 
                 assertEquals(40, got.distinctBy { it.id }.size, "a retried walk must still deliver every id")
                 assertEquals(0, mock.visitRequests, "a transient partial must NOT reach the scan")
-                assertNotNull(IngestStats.snapshot()["walk.partial.retry"], "the retry must be booked")
+                assertNotNull(IngestStats.snapshot()["walk.refused.$nonIdealState"], "the refusal must be booked, by flag")
             } finally {
                 idx.close()
                 IngestStats.reset()
@@ -785,37 +785,93 @@ class VespaEventIndexTest {
         }
 
     /**
-     * The other half of the same contract: when the refusal is not transient the
-     * fallback must still be ONE scan of the original window. A scan reads the
-     * corpus whatever its window says, so bisecting first and scanning the
-     * halves would cost twice what scanning once does — the opposite of the
-     * saving the split exists for.
+     * A REFUSAL THAT DOES NOT CLEAR THROWS — it must not buy the corpus.
+     *
+     * Falling back to a whole-corpus document-API read was the shape of this
+     * code for a long time, and it is backwards: ~17.9 minutes of reading every
+     * document, issued against a cluster that has just said it is unwell. What
+     * this walk can actually be refused for is a node redistributing or still
+     * opening its buckets, and every caller already owns the retry loop that
+     * belongs there — the drain leaves a failed unit queued and backs off 5 s,
+     * a NIP-77 peer re-syncs, a COUNT's client re-asks.
+     *
+     * So: ask across the backoff, then refuse in ~4.2 s and let them wait for a
+     * healthy engine.
      */
     @Test
-    fun `a persistent partial falls to exactly one scan, not one per half`() =
+    fun `a refusal that never clears throws, and never buys the corpus`() =
         runBlocking {
             IngestStats.reset()
             val ivy = "c8".repeat(32)
-            seed(*(1..40).map { doc(kind = 30382, pubkey = ivy, at = 1_700_000_000L + it) }.toTypedArray())
+            seedBulk((1..40).map { doc(kind = 30382, pubkey = ivy, at = 1_700_000_000L + it) })
             mock.visitRequests = 0
-            mock.degradeCoverage = "match-phase"
+            mock.degradeCoverage = nonIdealState
 
-            val idx = VespaEventIndex(mock.url, idPageSize = 10, probeIds = 10)
+            val idx = VespaEventIndex(mock.url, idPageSize = 10)
             try {
-                val got = ArrayList<DocRef>()
-                idx.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(ivy))) {
-                    got += it
-                    true
-                }
-
-                assertEquals(40, got.distinctBy { it.id }.size, "the fallback must lose nothing")
+                // try/catch rather than assertFailsWith: the call is suspend
+                // and the assertion helper's block is not.
+                val thrown =
+                    try {
+                        idx.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(ivy))) { true }
+                        null
+                    } catch (refused: PartialAnswer) {
+                        refused
+                    }
+                assertNotNull(thrown, "a walk that cannot be served must say so, not read the corpus")
                 val stages = IngestStats.snapshot()
-                assertNotNull(stages["walk.partial.unsplittable"], "the walk must record that it could not split")
-                assertEquals(null, stages["walk.partial.bisect"], "a half that still refuses must not be walked")
+                assertEquals(0, mock.visitRequests, "the scan is for tie-dense DATA, never for a sick cluster")
+                assertEquals(null, stages["walk.scan"], "and it must not be entered at all")
+                assertEquals(
+                    VespaEventIndex.RETRY_PAUSES_MILLIS.size.toLong(),
+                    stages["walk.refused.$nonIdealState"]?.calls,
+                    "every ask in the backoff is spent before giving up, and booked by flag: " +
+                        "${stages.keys.filter { it.startsWith("walk.") }}",
+                )
             } finally {
                 mock.degradeCoverage = null
                 idx.close()
                 IngestStats.reset()
+            }
+        }
+
+    /** Vespa's own name for a cluster still settling — the wire value, which is what the client keys on. */
+    private val nonIdealState = "non-ideal-state"
+
+    /**
+     * AN UNBOUNDED WALK MEANS UNBOUNDED, and this corpus holds events dated
+     * past the clock — staging carries notes stamped in the year 2100.
+     *
+     * The bisection that used to live here lost exactly those: it filled an
+     * absent `until` in with the wall clock to compute a midpoint and then
+     * handed that number to the newer half as a bound, so a 2100 event matched
+     * the caller's query and neither half. The bisection is gone, but the
+     * property it broke is worth a test of its own — on the NIP-77 path this id
+     * set is what a peer reconciles against, and a silently dropped id is a
+     * peer that offers it forever.
+     */
+    @Test
+    fun `an unbounded walk serves ids dated past the clock`() =
+        runBlocking {
+            val eve = "d7".repeat(32)
+            val now = System.currentTimeMillis() / 1000
+            val past = (1..40).map { doc(kind = 30382, pubkey = eve, at = now - 100_000 + it) }
+            val future = doc(kind = 30382, pubkey = eve, at = 4_102_444_800L) // 2100-01-01
+            seedBulk(past + future)
+
+            val idx = VespaEventIndex(mock.url, idPageSize = 10)
+            try {
+                val got = ArrayList<DocRef>()
+                // NO since and NO until — the shape `snapshotIdsForNegentropy`
+                // hands down for an uncapped catch-up.
+                idx.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(eve))) {
+                    got += it
+                    true
+                }
+                assertTrue(got.any { it.id == future.id }, "the event dated past the clock is in the window and must be served")
+                assertEquals(41, got.distinctBy { it.id }.size, "every id, exactly once")
+            } finally {
+                idx.close()
             }
         }
 
@@ -835,25 +891,34 @@ class VespaEventIndexTest {
         runBlocking {
             IngestStats.reset()
             val ida = "d4".repeat(32)
-            // One timestamp for all of them: a tie group wider than
-            // idPageSize * TIE_DENSE_FACTOR is what sends this walk to the scan.
-            seed(*(1..60).map { doc(kind = 30382, pubkey = ida, at = 1_700_000_000L) }.toTypedArray())
-            val scanning = VespaEventIndex(mock.url, idPageSize = 2, probeIds = 2)
+            // One timestamp for all of them, and MORE THAN ONE FULL PAGE of
+            // them (idPageSize + TIE_SLACK): the boundary only exists once the
+            // engine hands back everything that was asked for, and a group
+            // wider than idPageSize * TIE_DENSE_FACTOR is what the cursor
+            // cannot carry.
+            seedBulk((1..100).map { doc(kind = 30382, pubkey = ida, at = 1_700_000_000L) })
+            val scanning = VespaEventIndex(mock.url, idPageSize = 2)
             try {
                 val ids = HashSet<String>()
                 scanning.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(ida))) { page ->
                     ids += page.map { it.id }
                     true
                 }
-                assertEquals(60, ids.size, "the scan must still deliver every match")
+                assertEquals(100, ids.size, "the scan must still deliver every match")
 
                 val stages = IngestStats.snapshot()
                 val scan = assertNotNull(stages["walk.scan"], "the scan booked no stage — it is invisible again; stages seen: ${stages.keys.sorted()}")
                 assertEquals(true, scan.calls >= 1, "walk.scan must count the scan, got ${scan.calls} call(s)")
                 assertNotNull(stages["walk.scan.page"], "the scan's pages must be counted too")
-                // decide-minus-scan is the cursor's win rate, so both have to be booked.
-                assertNotNull(stages["walk.cursor.decide"], "the decision must stay counted beside it")
-                assertEquals(null, stages["walk.ids.page"], "a scanned walk must not book cursor pages")
+                // The routing is DISCOVERED at the boundary now, not decided by a
+                // probe, so this is what says the walk found a group it could not carry.
+                assertNotNull(stages["walk.ties.dense"], "a group too wide for the cursor must say so")
+                // ONE cursor page, and no more. The routing is discovered, not
+                // predicted, so the walk necessarily reads the page that shows
+                // it the boundary — and then hands the remainder over rather
+                // than paging on. That one page IS the cost the probe used to be.
+                assertEquals(1L, stages["walk.ids.page"]?.calls, "discovery costs exactly one cursor page")
+                assertNotNull(stages["walk.ids.tiegroup"], "and the bounded boundary read that measured the group")
             } finally {
                 scanning.close()
                 IngestStats.reset()
@@ -1048,17 +1113,80 @@ class VespaEventIndexTest {
                     true
                 }
                 assertEquals(50, got.size, "a limited walk serves exactly the budget")
-                // THE LAST REQUEST IS THE ONE THAT SERVED THE PAGE. The two
-                // earlier ones are the routing probe and its tie-group count,
-                // and the probe is itself an id-time read — so "an id-time
-                // request happened" proves nothing, and asserting it was how
-                // the first version of this test passed against both branches.
+                // THE LAST REQUEST IS THE ONE THAT SERVED THE PAGE — which,
+                // since a limit inside one page skips the routing probe, is
+                // also the only one. The probe is itself an id-time read, so
+                // "an id-time request happened" proves nothing, and asserting
+                // that was how the first version of this test passed against
+                // both branches.
                 val after = mock.searchRequests.drop(at)
                 assertEquals(
                     EventYql.SUMMARY_IDTIME,
                     after.last()["presentation.summary"],
                     "the page must come from the id-only walk, not a document search: ${after.map { it["presentation.summary"] ?: "<full>" }}",
                 )
+            } finally {
+                paged.close()
+            }
+        }
+
+    /**
+     * A LIMIT THAT FITS IN A PAGE IS ONE QUERY, FOR THE LIMIT — not a page,
+     * and not a probe first.
+     *
+     * The cursor fetches `idPageSize + TIE_SLACK` rows whatever the caller
+     * asked for, and #134 made that ten times bigger: a `limit: 500` walk
+     * serialized 20,064 id rows to serve 500, having first paid a 2,000-row
+     * routing probe to decide it. Neither buys anything on this shape — a walk
+     * that stops inside its first page never crosses a boundary, so there is no
+     * tie group to resolve and nothing for the scan to be better at.
+     *
+     * Asserted on the WIRE, on the number of requests AND the hits each asked
+     * for: the ids returned are identical either way, which is exactly why this
+     * went unnoticed.
+     */
+    @Test
+    fun `a limit inside one page is a single request for exactly the limit`() =
+        runBlocking {
+            val hal = "c4".repeat(32)
+            seed(*(1..300).map { doc(kind = 30382, pubkey = hal) }.toTypedArray())
+            val paged = VespaEventIndex(mock.url, idPageSize = 100)
+            try {
+                val q = EventQuery(kinds = listOf(30382), authors = listOf(hal), limit = 40)
+                val at = mock.searchRequests.size
+                val got = ArrayList<DocRef>()
+                paged.visitIds(q) {
+                    got += it
+                    true
+                }
+                val after = mock.searchRequests.drop(at)
+                assertEquals(40, got.size, "still exactly the newest N")
+                assertEquals(reference.search(q).map { it.id }.sorted(), got.map { it.id }.sorted(), "and the same N search() serves")
+                assertEquals(1, after.size, "one round trip, not a probe plus a page: ${after.map { it["hits"] }}")
+                assertEquals("40", after.single()["hits"], "it must ask the engine for the LIMIT, not for a whole page")
+            } finally {
+                paged.close()
+            }
+        }
+
+    /** Past a page, the budget still pages the cursor — the shape `PAGE_IDS` was measured on. */
+    @Test
+    fun `a limit past one page still pages the cursor`() =
+        runBlocking {
+            val iris = "c5".repeat(32)
+            seed(*(1..300).map { doc(kind = 30382, pubkey = iris) }.toTypedArray())
+            val paged = VespaEventIndex(mock.url, idPageSize = 20)
+            try {
+                val q = EventQuery(kinds = listOf(30382), authors = listOf(iris), limit = 50)
+                val at = mock.searchRequests.size
+                val got = ArrayList<DocRef>()
+                paged.visitIds(q) {
+                    got += it
+                    true
+                }
+                assertEquals(50, got.size, "exactly the limit")
+                assertEquals(reference.search(q).map { it.id }.sorted(), got.map { it.id }.sorted(), "the newest 50, in any order")
+                assertTrue(mock.searchRequests.size - at > 1, "a limit over the page must still take the probe-then-page path")
             } finally {
                 paged.close()
             }
@@ -1079,7 +1207,7 @@ class VespaEventIndexTest {
             seed(*(1..500).map { doc(kind = 30382, pubkey = bob, at = 3_000L) }.toTypedArray())
             // `probeIds` and not `idPageSize`: the DECISION samples on its own
             // knob now, so a test that means "make the probe small" says so.
-            val paged = VespaEventIndex(mock.url, idPageSize = 100, probeIds = 100)
+            val paged = VespaEventIndex(mock.url, idPageSize = 100)
             try {
                 val got = ArrayList<DocRef>()
                 paged.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(bob))) {
@@ -1090,6 +1218,51 @@ class VespaEventIndexTest {
                 assertTrue(mock.visitRequests > 0, "a tie-dense walk must actually fall back to the scan")
             } finally {
                 paged.close()
+            }
+        }
+
+    /**
+     * A TIE GROUP THE CURSOR CAN CARRY IS CARRIED — no scan, no probe.
+     *
+     * The other half of `a tie-dense walk falls back to the scan`: the routing
+     * is not a prediction any more, it is what the boundary read actually
+     * returns. Asking for one row past what the cursor can carry turns the
+     * guess into a measurement, and costs the same query the walk was going to
+     * issue anyway.
+     *
+     * Sized so the boundary lands INSIDE the tied second and the group is under
+     * the cap: 20-id pages overfetch to 84, so 15 newer docs put the 20th hit
+     * inside a 70-doc group — wide enough to fill the page, well under the
+     * `idPageSize * TIE_DENSE_FACTOR` the cursor can still carry.
+     */
+    @Test
+    fun `a tie group the cursor can carry is carried whole, without a scan`() =
+        runBlocking {
+            IngestStats.reset()
+            val ivy = "c3".repeat(32)
+            val tied = 6_000L
+            seedBulk(
+                (1..15).map { doc(kind = 30382, pubkey = ivy, at = tied + it) } +
+                    (1..70).map { doc(kind = 30382, pubkey = ivy, at = tied) },
+            )
+            val before = mock.visitRequests
+            val idx = VespaEventIndex(mock.url, idPageSize = 20)
+            try {
+                val got = ArrayList<DocRef>()
+                idx.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(ivy))) {
+                    got += it
+                    true
+                }
+                assertEquals(85, got.distinctBy { it.id }.size, "the whole group, and everything newer, exactly once")
+                assertNotNull(IngestStats.snapshot()["walk.ids.tiegroup"], "the boundary group must actually have been read")
+                assertEquals(
+                    0,
+                    mock.visitRequests - before,
+                    "a group the cursor can carry must not buy a document-API read of the corpus",
+                )
+            } finally {
+                idx.close()
+                IngestStats.reset()
             }
         }
 

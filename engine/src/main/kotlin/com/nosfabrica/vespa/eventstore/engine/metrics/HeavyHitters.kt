@@ -71,6 +71,14 @@ class HeavyHitters(
         @JvmField var error: Long,
     )
 
+    init {
+        // The eviction path indexes `slots[0]` unconditionally, so a zero
+        // capacity is not "track nothing" — it is an IndexOutOfBounds on the
+        // first key that misses, thrown from a telemetry sketch, on the search
+        // path. Refused where it is written instead.
+        require(capacity > 0) { "HeavyHitters capacity must be positive, got $capacity" }
+    }
+
     private val slots = arrayOfNulls<Slot>(capacity)
     private val index = HashMap<String, Slot>(capacity * 2)
     private var used = 0

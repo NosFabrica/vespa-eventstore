@@ -164,6 +164,33 @@ internal class ProjectionLedger(
     private val stamps = AtomicLong()
 
     /**
+     * The newest re-walk stamp the provider cache has already been dropped for.
+     *
+     * The drop exists for ONE event: a 10040 naming a service no list named
+     * before, whose stored cards then have to be walked. That is news the FIRST
+     * time the service is queued and never again — but the condition was "this
+     * round has services to re-walk", and a service whose walk keeps failing
+     * stays queued forever. The drainer retries every 5 s, so a single poisoned
+     * service dropped the map on a loop; `ProviderMap` never caches an empty
+     * pass, so on a relay holding no 10040s that is a fresh engine query per
+     * read in between, for as long as the failure lasts.
+     *
+     * Stamps answer it exactly: a re-queue takes a NEW stamp, a stuck entry
+     * keeps its old one. Inherited work carries stamp 0, which is above the
+     * -1 this starts at, so a restart still drops the map once.
+     *
+     * READS THE HIGHEST STAMP, so it depends on stamps becoming VISIBLE in the
+     * order they were taken — a queueing that published stamp 7 after one that
+     * published 8 would never invalidate. That holds because [queue] is only
+     * reached through [insuring], and every write path into it holds the
+     * store's `writes` mutex (a plain insert takes it alone, a trust write
+     * takes the gate and then it), so stamp allocation and publication are one
+     * critical section. The drain, which runs under the gate alone, never
+     * queues.
+     */
+    private val invalidatedThrough = AtomicLong(-1L)
+
+    /**
      * True while work inherited from a PREVIOUS process is unhealed. That
      * process may have died between writing a 10040 and invalidating the
      * provider-map cache, so the heal must drop the cache even when the
@@ -314,17 +341,47 @@ internal class ProjectionLedger(
             // watching a reconcile drew an empty panel for as long as the drain
             // took — which is exactly when someone is watching.
             TrustProgress.begin(DRAIN, "re-deriving queued subjects", work.toRederive.size.toLong())
-            if (work.toRewalk.isNotEmpty() || crashLeftovers.get()) recompute.invalidateProviders()
+            // ONCE PER NEW SERVICE, not once per turn of the retry loop — see
+            // [invalidatedThrough].
+            val newestRewalk = snapshot.toRewalk.values.maxOfOrNull { it.seq } ?: -1L
+            if (crashLeftovers.get() || newestRewalk > invalidatedThrough.get()) {
+                recompute.invalidateProviders()
+                invalidatedThrough.getAndUpdate { maxOf(it, newestRewalk) }
+            }
             // Sliced HERE rather than inside recomputeBatchGated, because the
             // ledger has to see each slice land: a slice is the unit that gets
             // skipped and the unit that gets retired.
             var progressed = false
+            // COUNTED OUT OF THIS ROUND'S OWN SNAPSHOT, which is the only set
+            // the denominator beside it describes.
+            //
+            // This used to be `work.size - pendingNow().size` — the whole
+            // ledger's depth against one round's work. Those are different
+            // sets: every subject a live write queues DURING the drain joins
+            // `pendingNow()` and not `work`, so under ingest the numerator
+            // drifts and then goes NEGATIVE. `TrustProgress.render` reads a
+            // non-positive `done` as "no denominator" and prints
+            // "re-deriving queued subjects: -37, total unknown" — the fraction
+            // disappears exactly when the store is busy enough to want it.
+            var retired = 0
             work.toRederive.chunked(TrustRecompute.GATE_SLICE).forEach { slice ->
-                val todo = slice.filter { pendingNow().toRederive.containsKey(it) && it !in poisoned }
+                // ONE read of the ledger for the whole slice, not one per
+                // subject: `pendingNow()` is an atomic read and the partition
+                // should also see ONE state, rather than letting two subjects
+                // land in different buckets because a write arrived between them.
+                val stillQueued = pendingNow().toRederive
+                val live = slice.filterNot { it in poisoned }
+                val (gone, todo) = live.partition { !stillQueued.containsKey(it) }
+                // Retired since the snapshot by a concurrent drain: done work,
+                // and this round's denominator still counts it.
+                retired += gone.size
                 if (todo.isEmpty()) return@forEach
                 try {
                     recompute.recomputeBatchGated(todo, removeEmpties = true, gate = gate)
                     retire(StampedWork(todo.associateWith { snapshot.toRederive.getValue(it) }, emptyMap()), gate)
+                    // Retired, not attempted: the fraction has to mean work that
+                    // landed, or it runs ahead of the writes it is reporting.
+                    retired += todo.size
                     progressed = true
                 } catch (e: CancellationException) {
                     throw e
@@ -332,9 +389,7 @@ internal class ProjectionLedger(
                     poisoned += todo
                     failures += t
                 }
-                // Retired, not attempted: the fraction has to mean work that
-                // landed, or it runs ahead of the writes it is reporting.
-                TrustProgress.advance(DRAIN, (work.toRederive.size - pendingNow().toRederive.size).toLong(), work.toRederive.size.toLong())
+                TrustProgress.advance(DRAIN, retired.toLong(), work.toRederive.size.toLong())
             }
             snapshot.toRewalk.keys.forEach { service ->
                 if (!pendingNow().toRewalk.containsKey(service) || service in poisoned) return@forEach

@@ -74,6 +74,14 @@ class CostLedger(
     /** How many slow reads to retain. Bounded by the ring, never by the term space. */
     slowQueryRing: Int = 256,
 ) {
+    init {
+        // `slowRead` takes `seq % slowRing.size`, so a zero ring divides by
+        // zero on the first slow read rather than capturing none of them — and
+        // it would surface as an ArithmeticException out of whatever query
+        // happened to be slow. Both sketch sizes are refused at construction.
+        require(slowQueryRing > 0) { "slowQueryRing must be positive, got $slowQueryRing" }
+    }
+
     // ---------------------------------------------------------------- ports
 
     /**

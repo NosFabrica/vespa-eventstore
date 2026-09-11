@@ -94,6 +94,18 @@ class ProjectionLedgerTest {
     ) : EventIndex by inner {
         var refusals = 0
 
+        /**
+         * 10040 reads — how a dropped provider cache shows up from outside.
+         * `ProviderMap.get()` rebuilds by querying this kind, so one read per
+         * invalidation, and it never caches an empty pass.
+         */
+        var listReads = 0
+
+        override suspend fun search(query: EventQuery): List<EventDoc> {
+            if (TrustProviderListEvent.KIND in query.kinds.orEmpty()) listReads++
+            return inner.search(query)
+        }
+
         // The id listing is where both real failures landed: #121's truncated
         // sorted read and #122's `full: false`. Keyed on the author because
         // that is what makes a walk one service's walk.
@@ -151,6 +163,72 @@ class ProjectionLedgerTest {
             val marker = assertNotNull(reputations.get(ProjectionLedger.MARKER_KEY), "the failed service stays queued")
             assertTrue(ServiceKey(service) in marker.followerCounts, "the failed service is still named by the marker")
             assertTrue(ServiceKey(service2) !in marker.followerCounts, "the walked service was retired")
+        }
+
+    /**
+     * A STUCK SERVICE MUST NOT DROP THE PROVIDER CACHE ON EVERY RETRY.
+     *
+     * The drop exists for one event: a 10040 naming a service no list named
+     * before, whose stored cards then have to be walked. That is news the FIRST
+     * time the service is queued and never again — but the condition was "this
+     * round has services to re-walk", and a service whose walk keeps failing
+     * stays queued forever. The drainer retries every 5 s, so one poisoned
+     * service dropped the map on a loop.
+     *
+     * WHO PAYS IS THE NEXT READER, which is why this asks one. The drop costs
+     * the drain nothing — the failing walk throws before it ever reads the map
+     * — and everything to whatever resolves a lens in between: `ProviderMap`
+     * never caches an empty pass, so on a relay holding no 10040s that is a
+     * fresh engine query per read, for as long as the failure lasts.
+     *
+     * Stamps answer it exactly: a re-queue takes a new one, a stuck entry keeps
+     * its old one.
+     */
+    @Test
+    fun `a service stuck in the queue drops the provider cache once, not once per drain`() =
+        runBlocking {
+            val inner = InMemoryEventIndex()
+            val index = OneBadService(inner, bad = service)
+            val reputations = InMemoryReputationIndex()
+            val projection = TrustProjection(index, reputations)
+            projection.backlog.drainInBackground { }
+
+            projection.put(cardFor(subject, 40).toDoc())
+            projection.put(list10040().toDoc())
+
+            // A reader between every pair of drains, the way a live relay has
+            // one: it rebuilds the map iff the drain dropped it.
+            suspend fun drainThenRead() {
+                assertFailsWith<ProjectionLedger.DrainIncomplete> { projection.backlog.drain { it() } }
+                projection.recompute.providerMap()
+            }
+
+            drainThenRead()
+            assertEquals(1, index.refusals, "the walk must be attempted, or this proves nothing")
+            val afterFirst = index.listReads
+
+            repeat(3) { drainThenRead() }
+            assertEquals(4, index.refusals, "one attempt per drain, so the service really is stuck")
+            assertEquals(
+                afterFirst,
+                index.listReads,
+                "re-draining the SAME stuck service must not make the next reader rebuild the provider map",
+            )
+
+            // And a genuinely new service still drops it: the point is the
+            // stamp, not switching the invalidation off.
+            projection.put(
+                TrustProviderListEvent(
+                    id(),
+                    observer,
+                    next(),
+                    arrayOf(arrayOf("30382:rank", service, "wss://scores.example.com/"), arrayOf("30382:followers", service2, "wss://counts.example.com/")),
+                    "",
+                    "",
+                ).toDoc(),
+            )
+            drainThenRead()
+            assertTrue(index.listReads > afterFirst, "a service no list named before is still news, and still drops the cache")
         }
 
     /**

@@ -31,6 +31,80 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class EventYqlTest {
+    /**
+     * THE ID WALK IS ALWAYS UNRANKED — the load-bearing fact under the whole
+     * partial-answer ladder, and nothing pinned it.
+     *
+     * `unranked` is Vespa's built-in no-scoring profile and `event.sd` declares
+     * `match-phase` on `recency` and `recency_gated` alone, so an id walk
+     * cannot take a match-phase cut — measured against a real Vespa at
+     * 120,000 matches, six times the 20,000 max-hits that cut `recency` to 19%
+     * coverage on the identical window, and it came back at 100%.
+     *
+     * That is what makes `VespaEventIndex.BISECT_DEPTH` insurance rather than
+     * the hot path. If this test ever fails, that reasoning is void and the
+     * ladder's rung 2 is live again — which is a decision to take deliberately,
+     * not to discover.
+     */
+    @Test
+    fun `the id walk ranks unranked, whatever the query asks for`() {
+        val shapes =
+            listOf(
+                EventQuery(kinds = listOf(1)),
+                EventQuery(kinds = listOf(1), limit = 100_000),
+                EventQuery(authors = listOf("a1".repeat(32)), since = 1, until = 2),
+                EventQuery(kinds = listOf(30382), authors = listOf("b2".repeat(32))),
+                EventQuery(kinds = listOf(1), minRank = 50.0),
+            )
+        shapes.forEach { q ->
+            assertEquals(EventYql.RANK_UNRANKED, EventYql.buildIdTime(q, withDTag = false)!!.ranking, "id walk of $q")
+            assertEquals(EventYql.RANK_UNRANKED, EventYql.buildIdTime(q, withDTag = true)!!.ranking, "d-tag id walk of $q")
+        }
+    }
+
+    /**
+     * THE SHAPE MUST NAME THE CLAUSES THE QUERY ACTUALLY CARRIED.
+     *
+     * It used to be recovered from the yql by substring search, against a table
+     * of markers that were guesses at the emitted syntax — and three of them
+     * ("id contains", "pubkey contains", "kind =") matched nothing this builder
+     * has ever written, because `hexIn` always emits `in (…)`. So an id recall,
+     * a single-author recall and a multi-value tag recall (the OR form compiles
+     * to `tag_index in (…)`, and only the AND/single form says `contains`) all
+     * recorded as shapeless — leaving the degraded-read tally silent about
+     * exactly the shapes an operator diagnoses a cut match set from.
+     *
+     * These four are the ones the markers missed. Asserted through `build`,
+     * because the property is what the BUILDER carries out, not what a helper
+     * computes.
+     */
+    @Test
+    fun `the query's shape names the clauses the old marker table could not see`() {
+        assertEquals("ids", EventYql.build(EventQuery(ids = listOf("a1".repeat(32))))!!.shape, "an id recall is id-shaped")
+        assertEquals("authors", EventYql.build(EventQuery(authors = listOf("b2".repeat(32))))!!.shape, "one author is still an author clause")
+        assertEquals(
+            "kinds,tags",
+            EventYql.build(EventQuery(kinds = listOf(1), tags = mapOf("e" to listOf("c3".repeat(32), "d4".repeat(32)))))!!.shape,
+            "a multi-value tag compiles to `in (…)` and must still read as a tag clause",
+        )
+        assertEquals("ids", EventYql.buildExistence(listOf("e5".repeat(32)))!!.shape, "the dedup probe is the id shape too")
+    }
+
+    /** Values never reach the shape — it is a counter key, and a yql holds what somebody searched for. */
+    @Test
+    fun `the shape carries clause kinds and never their values`() {
+        val q = EventYql.build(EventQuery(kinds = listOf(1), authors = listOf("f6".repeat(32)), search = "bitcoin", since = 10, until = 20))!!
+        assertEquals("kinds,authors,search,since,until", q.shape)
+        assertFalse("bitcoin" in q.shape, "a search term must never reach a counter key")
+        assertFalse("f6" in q.shape, "nor a pubkey")
+    }
+
+    /** No clause worth naming is a shape of its own, not an empty string. */
+    @Test
+    fun `an unconstrained query is plain`() {
+        assertEquals(SHAPE_PLAIN, EventYql.build(EventQuery())!!.shape)
+    }
+
     private val hexA = "a".repeat(64)
     private val hexB = "b".repeat(64)
     private val hexC = "c".repeat(64)

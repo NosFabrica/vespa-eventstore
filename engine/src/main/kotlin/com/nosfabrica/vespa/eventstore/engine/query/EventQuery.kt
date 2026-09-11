@@ -276,4 +276,25 @@ data class VespaQuery(
     val complete: Boolean = false,
     /** [EventQuery.sampled], carried to the response check: accept a match-phase cut, because a subset answers this read. */
     val sampled: Boolean = false,
+    /**
+     * WHICH CLAUSE KINDS this query carried — never their values. The
+     * discriminator [DegradedReads] and the cost ledger key a tally by, and the
+     * one thing they may keep about a query: a yql holds what somebody searched
+     * for, and both are read from places a search term must not reach.
+     *
+     * CARRIED, not recovered. This was read back off [yql] by substring search,
+     * which was wrong twice over. Wrong in COST — nine scans of a string that
+     * runs to hundreds of kilobytes on an id-list recall, on every query, and
+     * twice on a degraded one. And wrong in FACT: the markers were guesses at
+     * the emitted syntax, and three of them ("id contains", "pubkey contains",
+     * "kind =") matched nothing [EventYql] has ever emitted — `hexIn` always
+     * writes `in (…)` — so an id recall and a single-author recall both
+     * recorded as shapeless. A multi-value tag recall did too, since the OR
+     * form compiles to `tag_index in (…)` and only the AND/single form says
+     * `contains`. The builder knows which clauses it wrote; it says so here.
+     */
+    val shape: String = SHAPE_PLAIN,
 )
+
+/** The shape of a query carrying no clause worth naming. */
+const val SHAPE_PLAIN = "plain"
