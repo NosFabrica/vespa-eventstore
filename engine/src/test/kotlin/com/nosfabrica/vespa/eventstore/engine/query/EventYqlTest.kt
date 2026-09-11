@@ -32,6 +32,37 @@ import kotlin.test.assertTrue
 
 class EventYqlTest {
     /**
+     * THE ID WALK IS ALWAYS UNRANKED — the load-bearing fact under the whole
+     * partial-answer ladder, and nothing pinned it.
+     *
+     * `unranked` is Vespa's built-in no-scoring profile and `event.sd` declares
+     * `match-phase` on `recency` and `recency_gated` alone, so an id walk
+     * cannot take a match-phase cut — measured against a real Vespa at
+     * 120,000 matches, six times the 20,000 max-hits that cut `recency` to 19%
+     * coverage on the identical window, and it came back at 100%.
+     *
+     * That is what makes `VespaEventIndex.BISECT_DEPTH` insurance rather than
+     * the hot path. If this test ever fails, that reasoning is void and the
+     * ladder's rung 2 is live again — which is a decision to take deliberately,
+     * not to discover.
+     */
+    @Test
+    fun `the id walk ranks unranked, whatever the query asks for`() {
+        val shapes =
+            listOf(
+                EventQuery(kinds = listOf(1)),
+                EventQuery(kinds = listOf(1), limit = 100_000),
+                EventQuery(authors = listOf("a1".repeat(32)), since = 1, until = 2),
+                EventQuery(kinds = listOf(30382), authors = listOf("b2".repeat(32))),
+                EventQuery(kinds = listOf(1), minRank = 50.0),
+            )
+        shapes.forEach { q ->
+            assertEquals(EventYql.RANK_UNRANKED, EventYql.buildIdTime(q, withDTag = false)!!.ranking, "id walk of $q")
+            assertEquals(EventYql.RANK_UNRANKED, EventYql.buildIdTime(q, withDTag = true)!!.ranking, "d-tag id walk of $q")
+        }
+    }
+
+    /**
      * THE SHAPE MUST NAME THE CLAUSES THE QUERY ACTUALLY CARRIED.
      *
      * It used to be recovered from the yql by substring search, against a table

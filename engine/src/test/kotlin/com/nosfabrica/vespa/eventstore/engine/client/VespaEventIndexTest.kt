@@ -886,6 +886,14 @@ class VespaEventIndexTest {
                 assertEquals(null, stages["walk.partial.probe"], "not one window probe may be spent on it")
                 assertEquals(null, stages["walk.partial.bisect"], "and it must not split")
                 assertEquals(1L, stages["walk.scan"]?.calls, "it goes straight to one scan")
+                // AND IT ASKS MORE THAN ONCE FIRST. This is the label whose
+                // remedy IS waiting, and the only thing between it and a
+                // whole-corpus scan, so a single no-pause retry is not enough.
+                assertEquals(
+                    VespaEventIndex.RETRY_PAUSES_MILLIS.size.toLong(),
+                    stages["walk.partial.retry"]?.calls,
+                    "a settling cluster must be asked once per pause in the backoff",
+                )
             } finally {
                 mock.degradeCoverage = null
                 idx.close()
@@ -939,6 +947,10 @@ class VespaEventIndexTest {
                 )
                 assertEquals(40, got.distinctBy { it.id }.size, "every id, exactly once, across every window")
                 assertEquals(null, stages["walk.partial.skip.match-phase"], "a size cut is never skipped")
+                // AND IT NEVER WAITS. The label says the engine is refusing
+                // this shape, so the backoff would buy seconds to be told the
+                // same thing again: one ask, then straight to the halving.
+                assertEquals(1L, stages["walk.partial.retry"]?.calls, "a match-phase cut breaks out of the backoff on the first ask")
             } finally {
                 mock.transientReason = nonIdealState
                 idx.close()

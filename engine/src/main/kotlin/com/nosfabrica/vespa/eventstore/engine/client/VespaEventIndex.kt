@@ -40,6 +40,7 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.nosfabrica.vespa.eventstore.engine.query.VespaQuery
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import com.vitorpamplona.quartz.utils.Hex
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.future.await
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
@@ -953,13 +954,38 @@ class VespaEventIndex(
         withDTag: Boolean,
         onPage: suspend (List<DocRef>) -> Boolean,
     ) {
-        // RUNG 1: ASK AGAIN.
-        val refused =
+        // RUNG 1: ASK AGAIN — AND WAIT BETWEEN ASKS, for the labels that clear.
+        //
+        // This rung now carries almost the whole ladder (see [BISECT_DEPTH] for
+        // why rung 2 is insurance rather than the hot path), so how well it
+        // asks decides what this walk costs. It used to ask exactly once, with
+        // no pause — the weakest possible test of "the cluster is settling and
+        // will clear", since the retry landed microseconds after the refusal
+        // and the cluster had had no wall-clock time to settle in.
+        //
+        // And the penalty for that retry failing is the whole corpus: ~17.9
+        // minutes of scanning, against 4.2 s of total pause here. Waiting is
+        // 0.4% of the thing it is trying to avoid, so it is worth asking
+        // several times and giving the cluster a moment in between.
+        //
+        // NOT for a match-phase cut, which breaks out at once: that is the
+        // engine refusing this SHAPE, it does not clear itself, and rung 2 is
+        // the answer to it — waiting would be 4.2 s spent to learn what the
+        // label already said.
+        var last: WalkPlan.Partial? = null
+        for (pause in RETRY_PAUSES_MILLIS) {
+            if (pause > 0) delay(pause)
             when (val again = IngestStats.timed("walk.partial.retry") { planFor(query, withDTag) }) {
                 is WalkPlan.Cursor -> return visitIdsByCursor(query, withDTag, onPage)
                 is WalkPlan.ScanDenseTies -> return visitIdsByScan(query, withDTag, onPage)
-                is WalkPlan.Partial -> again
+                is WalkPlan.Partial -> last = again
             }
+            if (narrowingCanFix(last?.degradation)) break
+        }
+        // Unreachable — [RETRY_PAUSES_MILLIS] is never empty, so the loop above
+        // either returned or left a refusal behind. Written as a fallback
+        // rather than a `!!` so an empty array is a slow walk, not a crash.
+        val refused = last ?: return visitIdsByScan(query, withDTag, onPage)
 
         // ONLY A REFUSAL NARROWING CAN FIX GOES ON. Booked BY FLAG, because
         // which one keeps reaching this branch is the whole question the
@@ -1802,8 +1828,40 @@ class VespaEventIndex(
         const val MATCH_PHASE_FLAG = "match-phase"
 
         /**
+         * Pause before each rung-1 retry — the ladder's first and, on this
+         * schema, usually only remedy.
+         *
+         * Four asks over 4.2 s. `non-ideal-state` and a bare coverage shortfall
+         * are a node redistributing or still opening its buckets, which takes
+         * WALL-CLOCK TIME to finish: retrying with no pause at all asks the
+         * same question of the same unsettled cluster and learns nothing. The
+         * budget is set against what failure costs — a whole-corpus scan, ~17.9
+         * minutes on the staging corpus — so 4.2 s of waiting is 0.4% of the
+         * thing it is trying to avoid.
+         *
+         * A match-phase cut never spends this: it breaks out on the first ask,
+         * because the label already says waiting cannot help.
+         */
+        val RETRY_PAUSES_MILLIS = longArrayOf(0, 200, 1_000, 3_000)
+
+        /**
          * How many times the partial-answer ladder may halve a window before it
          * gives up and scans.
+         *
+         * INSURANCE, NOT THE HOT PATH — and a reader should know which. Rung 2
+         * runs only for a `match-phase` refusal ([narrowingCanFix]), and the id
+         * walk cannot produce one on this schema: [EventYql.buildIdTime] ranks
+         * `unranked` unconditionally, `unranked` is Vespa's built-in no-scoring
+         * profile, and `event.sd` declares `match-phase` on `recency` and
+         * `recency_gated` alone. Measured to confirm it: 120,000 matches on
+         * `unranked` came back at 100% coverage, six times the 20,000 max-hits
+         * that cut `recency` to 19% on the identical window.
+         *
+         * So everything below is reached only if that changes — a schema that
+         * puts a match phase on this profile, or a caller that routes a ranked
+         * walk here. It is kept because the ladder is correct and bounded, and
+         * because a deployment whose schema lags this repo may differ; the
+         * `walk.plan.partial.<flag>` counter says which label actually arrives.
          *
          * ONE SPLIT WAS NEARLY A NO-OP on the walk that needs this most. A
          * NIP-77 catch-up arrives with no bounds at all, so the window bisected
