@@ -53,6 +53,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * The real [EventIndex]: Vespa over HTTP. Writes go through Vespa's official
@@ -935,6 +936,20 @@ class VespaEventIndex(
          * silently on the next cursor hop.
          */
         remaining: (() -> Int)?,
+        /**
+         * Halvings the WHOLE walk may still spend on cuts, shared by every
+         * branch of the split — not a depth, which is the mistake this replaced:
+         * a depth of six allows sixty-three splits and sixty-four leaves, and a
+         * leaf that still refuses scans, so a "budget" of six bought up to
+         * sixty-four whole-corpus reads. Counting the splits themselves bounds
+         * the leaves at [MAX_CUT_NARROWINGS] + 1.
+         *
+         * It is insurance against a refusal that does NOT get better as the
+         * window shrinks — an engine cutting whatever it is asked. Width is what
+         * drives a real cut (30 days answers whole where 90 does not), so a
+         * healthy cluster spends one or two and never reaches the floor.
+         */
+        narrowings: AtomicInteger = AtomicInteger(MAX_CUT_NARROWINGS),
         onPage: suspend (List<DocRef>) -> Boolean,
     ) {
         var until: Long? = query.until
@@ -945,20 +960,53 @@ class VespaEventIndex(
                     idTimeRetrying(query.copy(until = until, limit = fetchLimit), withDTag, "walk.ids.page")
                 } catch (cut: PartialAnswer) {
                     if (!cut.cutByMatchPhase) throw cut
-                    // THE CUT IS WHY THE SCAN EXISTS. `order by created_at desc`
-                    // over a wide range trips proton's match-phase limiter, the
-                    // coverage guard refuses the page, and no amount of asking
-                    // again changes it — measured on staging, an unbounded
-                    // `unranked` id walk came back at 1% coverage over 2,251,965
-                    // of 362M documents with `match-phase: true`, at every limit.
-                    // The document-API visit has no match phase because it is not
-                    // a search, so it is the only mechanism that finishes here.
+                    // A CUT IS ABOUT THE RANGE, NOT THE MATCH SET, so narrowing
+                    // the range is the remedy and the scan is the last resort.
                     //
-                    // BOUNDED AT `until`, which is exactly the cursor's position:
-                    // everything newer has already gone out, so the scan picks up
-                    // the remainder and nothing arrives twice.
-                    IngestStats.timed("walk.cut.matchphase") { }
-                    return visitIdsByScan(query.copy(until = until), withDTag, onPage)
+                    // Measured on staging, `kind in (0,10002,10040)` ending at
+                    // one instant, only the window varying:
+                    //
+                    //     30d   189,623 matches  100% coverage  UNCUT
+                    //     90d   529,357 matches   54% coverage  cut
+                    //      1y 1,106,187 matches    7% coverage  cut
+                    //      3y   556,833 matches    4% coverage  cut
+                    //
+                    // The count does not drive it — a 23-hour window with
+                    // 944,000 matches answers whole. Width does. So halve and
+                    // ask again, which the caller cannot do for us: it handed
+                    // this walk a range and expects every id in it.
+                    //
+                    // The floor is one second, where there is nothing left to
+                    // halve. THAT is what the scan is for — a service that
+                    // bulk-published 148,130 cards on a single timestamp cannot
+                    // be split by time at all, and a visit has no match phase
+                    // because it is not a search.
+                    val ceiling = until ?: query.nowSecs ?: (System.currentTimeMillis() / 1000)
+                    val floor = query.since ?: 0L
+                    val spent = narrowings.getAndDecrement() <= 0
+                    if (ceiling - floor < 2 || spent) {
+                        IngestStats.timed(if (spent) "walk.cut.budget" else "walk.cut.unsplittable") { }
+                        return visitIdsByScan(query.copy(until = until), withDTag, onPage)
+                    }
+                    IngestStats.timed("walk.cut.narrowed") { }
+                    // Newest half first, so the walk keeps descending, and each
+                    // half re-enters HERE — a range still too wide halves again,
+                    // which is why a 3-year tail converges instead of scanning.
+                    val mid = floor + (ceiling - floor) / 2
+                    var stopped = false
+                    val half: suspend (List<DocRef>) -> Boolean = { page ->
+                        val carryOn = onPage(page)
+                        if (!carryOn) stopped = true
+                        carryOn
+                    }
+                    // `until`, NOT `ceiling`: the ceiling is a number for the
+                    // arithmetic, while `until` is null exactly when this walk
+                    // is unbounded at the top — and this corpus holds events
+                    // dated past the clock (staging carries notes stamped 2100).
+                    // Copying the ceiling in would silently drop every one.
+                    visitIdsByCursor(query.copy(since = mid + 1, until = until), withDTag, remaining, narrowings, half)
+                    if (!stopped) visitIdsByCursor(query.copy(since = floor, until = mid), withDTag, remaining, narrowings, half)
+                    return
                 }
             if (hits.isEmpty()) return
 
@@ -1538,6 +1586,17 @@ class VespaEventIndex(
          * outright rather than trimmed, so 100,000 is not a value this may take.
          */
         const val PAGE_IDS = 20_000
+
+        /**
+         * Halvings one walk may spend on a cut before it scans instead.
+         *
+         * Counted across the whole walk, so six splits bound it at seven leaves
+         * and therefore seven scans — where an unbounded recursion could reach
+         * 2^31 against a range open at the bottom. Six is also far more than a
+         * real cut needs: on staging a 90-day window was cut and a 30-day one
+         * was not, so even a three-year tail converges in about three.
+         */
+        const val MAX_CUT_NARROWINGS = 6
 
         /**
          * Pause before each rung-1 retry — the ladder's first and, on this

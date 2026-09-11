@@ -852,12 +852,14 @@ class VespaEventIndexTest {
      * Seven of 146 visits aborted in the three minutes before this was fixed.
      */
     @Test
-    fun `a cut match set takes the scan, and does not wait first`() =
+    fun `a cut that narrowing cannot clear falls to the scan, and never waits`() =
         runBlocking {
             IngestStats.reset()
             val jay = "d9".repeat(32)
             seedBulk((1..40).map { doc(kind = 30382, pubkey = jay, at = 1_700_000_000L + it) })
             mock.visitRequests = 0
+            // Cut WHATEVER is asked, however narrow — the one shape narrowing
+            // cannot fix, and the reason the halving carries a budget at all.
             mock.degradeCoverage = PartialAnswer.MATCH_PHASE
 
             val idx = VespaEventIndex(mock.url, idPageSize = 10)
@@ -868,16 +870,31 @@ class VespaEventIndexTest {
                     true
                 }
 
-                assertEquals(40, got.distinctBy { it.id }.size, "the scan must finish what the cut page could not")
+                assertEquals(40, got.distinctBy { it.id }.size, "the scan must finish what no window could")
                 val stages = IngestStats.snapshot()
-                assertEquals(true, mock.visitRequests > 0, "a cut match set is exactly what the scan is for")
-                assertNotNull(stages["walk.cut.matchphase"], "and the diversion must be counted")
+                assertEquals(true, mock.visitRequests > 0, "an unclearable cut is exactly what the scan is for")
+                assertNotNull(stages["walk.cut.budget"], "and it must arrive by spending the budget, not by recursing forever")
+                assertEquals(null, stages["walk.retry.wait"], "nothing sleeps: waiting cannot clear a cut")
+                // The BOUND, and the reason it counts splits rather than depth:
+                // a depth of six allows 63 splits and 64 leaves, and every leaf
+                // that still refuses scans. Counting splits caps the scans at
+                // MAX_CUT_NARROWINGS + 1.
+                val splits = stages["walk.cut.narrowed"]?.calls ?: 0
                 assertEquals(
-                    1L,
-                    stages["walk.refused.${PartialAnswer.MATCH_PHASE}"]?.calls,
-                    "asked ONCE: waiting cannot clear a cut, so the backoff is not spent on it",
+                    true,
+                    splits <= VespaEventIndex.MAX_CUT_NARROWINGS.toLong(),
+                    "the fan-out is bounded by splits, not depth; got $splits narrowing(s)",
                 )
-                assertEquals(null, stages["walk.retry.wait"], "and nothing sleeps before the fallback")
+                // `walk.scan`, NOT `mock.visitRequests`: one scan issues many
+                // HTTP requests — a slice each, then continuations — so the
+                // request count answers a different question than "how many
+                // scans", and answers it in the hundreds.
+                val scans = stages["walk.scan"]?.calls ?: 0
+                assertEquals(
+                    true,
+                    scans <= VespaEventIndex.MAX_CUT_NARROWINGS + 1L,
+                    "and so at most ${VespaEventIndex.MAX_CUT_NARROWINGS + 1} scans; got $scans",
+                )
             } finally {
                 mock.degradeCoverage = null
                 idx.close()
