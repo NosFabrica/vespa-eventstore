@@ -157,7 +157,15 @@ class PartialAnswer(
      * and the message string was the only place that ever said which.
      */
     val degradation: String? = null,
-) : IllegalArgumentException(message)
+) : IllegalArgumentException(message) {
+    /** Whether the ENGINE cut the match set, which is the one refusal waiting cannot clear. */
+    val cutByMatchPhase: Boolean get() = degradation == MATCH_PHASE
+
+    companion object {
+        /** Vespa's flag for a match set the engine truncated. Also the label [degradation] carries. */
+        const val MATCH_PHASE = "match-phase"
+    }
+}
 
 /**
  * How much of the corpus the engine actually searched. Vespa degrades rather

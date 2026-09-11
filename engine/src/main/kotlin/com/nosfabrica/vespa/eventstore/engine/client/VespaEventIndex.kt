@@ -895,6 +895,12 @@ class VespaEventIndex(
                 // which state keeps reaching this walk.
                 IngestStats.timed("walk.refused.${refused.degradation ?: "unspecified"}") { }
                 refusal = refused
+                // WAITING IS THE REMEDY FOR A CLUSTER, NOT FOR A CUT. A node
+                // redistributing clears on its own; `match-phase` is the engine
+                // saying it truncated this match set and it will say the same
+                // thing in four seconds. Spending the budget on it buys 4.2 s of
+                // nothing and delays the caller's real fallback by that much.
+                if (refused.cutByMatchPhase) throw refused
             }
         }
         throw refusal ?: IllegalStateException("walk retry budget is empty")
@@ -934,7 +940,26 @@ class VespaEventIndex(
         var until: Long? = query.until
         while (true) {
             val fetchLimit = idPageSize + TIE_SLACK
-            val hits = idTimeRetrying(query.copy(until = until, limit = fetchLimit), withDTag, "walk.ids.page")
+            val hits =
+                try {
+                    idTimeRetrying(query.copy(until = until, limit = fetchLimit), withDTag, "walk.ids.page")
+                } catch (cut: PartialAnswer) {
+                    if (!cut.cutByMatchPhase) throw cut
+                    // THE CUT IS WHY THE SCAN EXISTS. `order by created_at desc`
+                    // over a wide range trips proton's match-phase limiter, the
+                    // coverage guard refuses the page, and no amount of asking
+                    // again changes it — measured on staging, an unbounded
+                    // `unranked` id walk came back at 1% coverage over 2,251,965
+                    // of 362M documents with `match-phase: true`, at every limit.
+                    // The document-API visit has no match phase because it is not
+                    // a search, so it is the only mechanism that finishes here.
+                    //
+                    // BOUNDED AT `until`, which is exactly the cursor's position:
+                    // everything newer has already gone out, so the scan picks up
+                    // the remainder and nothing arrives twice.
+                    IngestStats.timed("walk.cut.matchphase") { }
+                    return visitIdsByScan(query.copy(until = until), withDTag, onPage)
+                }
             if (hits.isEmpty()) return
 
             // Fewer than asked for: the engine ran out, so this range is
