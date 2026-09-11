@@ -835,6 +835,56 @@ class VespaEventIndexTest {
             }
         }
 
+    /**
+     * THE OTHER HALF OF THAT CONTRACT, and the one staging proved was missing.
+     *
+     * `match-phase` is not a cluster having a moment — it is the ENGINE saying
+     * it truncated this match set, and it will say the same thing in four
+     * seconds. Measured on staging after the retry-and-throw shipped: an
+     * unbounded `unranked` id walk came back at 1% COVERAGE over 2,251,965 of
+     * 362M documents with `match-phase: true`, at limit 2,064 and 20,064 alike,
+     * while the same shape WINDOWED answered 943,949 matches at 100%. The
+     * assumption that this walk cannot be refused for size holds only for a
+     * bounded one.
+     *
+     * So a cut takes the scan — the document-API visit has no match phase
+     * because it is not a search — and it does not spend the backoff first.
+     * Seven of 146 visits aborted in the three minutes before this was fixed.
+     */
+    @Test
+    fun `a cut match set takes the scan, and does not wait first`() =
+        runBlocking {
+            IngestStats.reset()
+            val jay = "d9".repeat(32)
+            seedBulk((1..40).map { doc(kind = 30382, pubkey = jay, at = 1_700_000_000L + it) })
+            mock.visitRequests = 0
+            mock.degradeCoverage = PartialAnswer.MATCH_PHASE
+
+            val idx = VespaEventIndex(mock.url, idPageSize = 10)
+            try {
+                val got = ArrayList<DocRef>()
+                idx.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(jay))) {
+                    got += it
+                    true
+                }
+
+                assertEquals(40, got.distinctBy { it.id }.size, "the scan must finish what the cut page could not")
+                val stages = IngestStats.snapshot()
+                assertEquals(true, mock.visitRequests > 0, "a cut match set is exactly what the scan is for")
+                assertNotNull(stages["walk.cut.matchphase"], "and the diversion must be counted")
+                assertEquals(
+                    1L,
+                    stages["walk.refused.${PartialAnswer.MATCH_PHASE}"]?.calls,
+                    "asked ONCE: waiting cannot clear a cut, so the backoff is not spent on it",
+                )
+                assertEquals(null, stages["walk.retry.wait"], "and nothing sleeps before the fallback")
+            } finally {
+                mock.degradeCoverage = null
+                idx.close()
+                IngestStats.reset()
+            }
+        }
+
     /** Vespa's own name for a cluster still settling — the wire value, which is what the client keys on. */
     private val nonIdealState = "non-ideal-state"
 
