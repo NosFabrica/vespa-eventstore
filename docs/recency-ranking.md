@@ -689,6 +689,11 @@ one-author, time-spread fixture pinning five claims:
   Match-phase is for shapes where the cut key **is** the sort key
   (`recency`, `recency_gated`), which is why those two profiles have it and
   none of the text profiles do.
+  Note that Vespa adds a match phase of its own, at query time, to *any*
+  query sorted on `created_at` (`sorting.degrading`, default true, regardless
+  of profile); the id walk turns it off with `sorting.degrading=false`
+  (`EventYql.SORT_DEGRADING`, measured 2026-09-12), the two recency profiles
+  keep their schema cut, and unranked client recall stays on the default.
 - **A hard `since = now − 90d` window.** Changes recall, not order. NIP-01
   filters already let a client ask for that; a search should not do it behind
   their back.

@@ -36,15 +36,16 @@ class EventYqlTest {
      * partial-answer ladder, and nothing pinned it.
      *
      * `unranked` is Vespa's built-in no-scoring profile and `event.sd` declares
-     * `match-phase` on `recency` and `recency_gated` alone, so an id walk
-     * cannot take a match-phase cut — measured against a real Vespa at
-     * 120,000 matches, six times the 20,000 max-hits that cut `recency` to 19%
+     * `match-phase` on `recency` and `recency_gated` alone, so a SCHEMA cut
+     * cannot reach an id walk — measured against a real Vespa at 120,000
+     * matches, six times the 20,000 max-hits that cut `recency` to 19%
      * coverage on the identical window, and it came back at 100%.
      *
-     * That is what makes `VespaEventIndex.BISECT_DEPTH` insurance rather than
-     * the hot path. If this test ever fails, that reasoning is void and the
-     * ladder's rung 2 is live again — which is a decision to take deliberately,
-     * not to discover.
+     * That was not the only cut there is: Vespa's query-time sorting degrader
+     * reaches `unranked` through the `order by` alone, and the walk opts out
+     * of it separately (the next test). This one pins the profile; the next
+     * pins the flag; the halving budget in `VespaEventIndex` is insurance
+     * behind both.
      */
     @Test
     fun `the id walk ranks unranked, whatever the query asks for`() {
@@ -60,6 +61,55 @@ class EventYqlTest {
             assertEquals(EventYql.RANK_UNRANKED, EventYql.buildIdTime(q, withDTag = false)!!.ranking, "id walk of $q")
             assertEquals(EventYql.RANK_UNRANKED, EventYql.buildIdTime(q, withDTag = true)!!.ranking, "d-tag id walk of $q")
         }
+    }
+
+    /**
+     * THE ID WALK TURNS THE ENGINE'S OWN CUT OFF, AND NOTHING ELSE DOES.
+     *
+     * Vespa degrades any query whose primary sort key is a single-value
+     * numeric fast-search attribute, on every profile — `unranked` included —
+     * unless the request says `sorting.degrading=false`. Staging measured the
+     * walk's 30-day page at 3% coverage without it and 100% with it
+     * ([EventYql.SORT_DEGRADING] carries the table). The client refuses every
+     * cut on `unranked`, so a walk that forgot the flag would not fail here: it
+     * would refuse, halve six times and read the document store, which is
+     * what 15 to 19 scans an hour looked like.
+     *
+     * The EXACT string is asserted, on both projections, because a misspelt
+     * parameter name is silently ignored by Vespa and looks exactly like this
+     * fix on every unit test but this one.
+     *
+     * And it travels WITH the sort, nowhere else: the plain recall keeps the
+     * same `order by` on `unranked` by decision (the constant's doc says
+     * why), the recency profiles keep their schema cut, and the unsorted
+     * shapes have nothing to opt out of.
+     */
+    @Test
+    fun `the id walk opts out of the sorting degrader, and nothing else does`() {
+        val now = 1_800_000_000L
+        val walked = EventQuery(kinds = listOf(1), since = now - 2_592_000, until = now)
+        listOf(false, true).forEach { withDTag ->
+            val q = assertNotNull(EventYql.buildIdTime(walked, withDTag = withDTag))
+            assertEquals(EventYql.SORT_DEGRADING_OFF, q.params[EventYql.SORT_DEGRADING], "id walk, withDTag=$withDTag")
+            assertEquals("false", q.params["sorting.degrading"], "the wire name, spelt out: withDTag=$withDTag")
+            assertTrue(q.yql.endsWith(" order by created_at desc"), "the flag rides with the sort it disarms: ${q.yql}")
+        }
+
+        val unsent =
+            mapOf(
+                "unranked recall, unbounded" to EventYql.build(EventQuery(kinds = listOf(1))),
+                "unranked recall, deep until" to EventYql.build(EventQuery(kinds = listOf(1), limit = 50, until = now - 7_776_000, nowSecs = now)),
+                "recency recall" to EventYql.build(EventQuery(kinds = listOf(1), limit = 50, nowSecs = now)),
+                "text search" to EventYql.build(EventQuery(kinds = listOf(1), search = "bitcoin", limit = 50)),
+                "count" to EventYql.buildCount(EventQuery(kinds = listOf(1))),
+                "distinct authors" to EventYql.buildDistinctAuthors(EventQuery(kinds = listOf(1))),
+                "existence" to EventYql.buildExistence(listOf("ab".repeat(32))),
+            )
+        unsent.forEach { (name, q) ->
+            assertNull(assertNotNull(q, name).params[EventYql.SORT_DEGRADING], "$name must not carry the walk's flag")
+        }
+        assertEquals(EventYql.RANK_RECENCY, unsent.getValue("recency recall")!!.ranking, "the recency control must actually be recency")
+        assertEquals(EventYql.RANK_UNRANKED, unsent.getValue("unranked recall, deep until")!!.ranking, "the deep-until control must actually be unranked")
     }
 
     /**

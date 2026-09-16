@@ -902,6 +902,57 @@ class VespaEventIndexTest {
             }
         }
 
+    /**
+     * THE WALK CARRIES ITS OWN SORTING POLICY, so the engine has no cut to
+     * refuse and the ladder above never starts.
+     *
+     * Staging, 2026-09-11 to 09-14: every unranked page sorted by
+     * `created_at` was cut by Vespa's sorting degrader on a big enough match
+     * set, the client refused it, halving cleared most and the rest read the
+     * document store — 15 to 19 scans an hour at 17.9 minutes each, which was
+     * the proton load on both content nodes. The fix is one parameter on the
+     * walk's query (EventYql.SORT_DEGRADING); the mock's [MockVespaEngine.degradeSortedUnranked]
+     * cuts exactly the way real Vespa did unless that parameter arrives.
+     *
+     * Verified to fail with the parameter reverted: the walk then refuses,
+     * narrows, spends the budget and scans (`visitRequests` > 0, `walk.scan`
+     * booked) — the shape the previous test pins on purpose.
+     */
+    @Test
+    fun `the id walk opts out of the sorting degrader, so no page is cut, narrowed or scanned`() =
+        runBlocking {
+            IngestStats.reset()
+            val kim = "e1".repeat(32)
+            seedBulk((1..40).map { doc(kind = 30382, pubkey = kim, at = 1_700_000_000L + it) })
+            mock.visitRequests = 0
+            mock.degradeSortedUnranked = true
+
+            val idx = VespaEventIndex(mock.url, idPageSize = 10)
+            try {
+                val got = ArrayList<DocRef>()
+                idx.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(kim))) {
+                    got += it
+                    true
+                }
+
+                assertEquals(40, got.distinctBy { it.id }.size, "every id, through the cursor alone")
+                val stages = IngestStats.snapshot()
+                assertEquals(0, mock.visitRequests, "nothing read the document store")
+                assertEquals(null, stages["walk.scan"], "no scan")
+                assertEquals(null, stages["walk.cut.narrowed"], "no narrowing")
+                assertEquals(null, stages["walk.cut.budget"], "no budget spent")
+                assertEquals(null, stages["walk.refused.${PartialAnswer.MATCH_PHASE}"], "and no refusal to narrow from")
+                // ONE page: a cursor page fetches idPageSize + TIE_SLACK, and
+                // 40 ids fit inside that, so the whole walk is a single read.
+                val pages = assertNotNull(stages["walk.ids.page"], "the cursor did the work: ${stages.keys.sorted()}")
+                assertEquals(1L, pages.calls, "forty ids fit one cursor page (idPageSize + TIE_SLACK), so the walk is exactly one read")
+            } finally {
+                mock.degradeSortedUnranked = false
+                idx.close()
+                IngestStats.reset()
+            }
+        }
+
     /** Vespa's own name for a cluster still settling — the wire value, which is what the client keys on. */
     private val nonIdealState = "non-ideal-state"
 

@@ -212,6 +212,21 @@ class MockVespaEngine {
     @Volatile var matchPhaseNodes: Int = 1
 
     /**
+     * Vespa's SORTING DEGRADER: a query that orders by `created_at` is cut —
+     * one hit, match-phase degraded — unless it carries
+     * `sorting.degrading=false`, on any profile, because the sort key is a
+     * single-value numeric fast-search attribute. Measured on staging
+     * 2026-09-12 ([EventYql.SORT_DEGRADING]): the id walk's 30-day page came
+     * back at 3% coverage without the flag and 100% with it.
+     *
+     * Modelled on `unranked` only: the match-phase profiles already degrade
+     * under [matchPhaseUnderdeliver], and the flag measured as a no-op on them
+     * (their schema match-phase governs). Off by default so every other test
+     * keeps the engine it had.
+     */
+    @Volatile var degradeSortedUnranked: Boolean = false
+
+    /**
      * The relevance a hit is served with, and the order hits come back in
      * when set — the descent decides on the K-th hit's score, so a test of it
      * needs scores that mean something. Null (the default) serves 0.0 and
@@ -436,7 +451,21 @@ class MockVespaEngine {
         // Simulated match-phase under-delivery: fewer hits than the limit, with
         // ONLY the match-phase degradation flag set (see [matchPhaseUnderdeliver]).
         val underdeliver = matchPhaseUnderdeliver > 0 && !grouped && (params["ranking"] == "recency" || params["ranking"] == "recency_gated")
-        val served = if (underdeliver) minOf(matchPhaseUnderdeliver, hits) else hitsCap?.let { minOf(it, hits) } ?: hits
+        // The sorting degrader (see [degradeSortedUnranked]): keyed on the
+        // sort clause and the profile, and switched off ONLY by the exact
+        // parameter real Vespa reads — a misspelt name must cut like no name.
+        val autoCut =
+            degradeSortedUnranked && !grouped &&
+                " order by created_at desc" in yql &&
+                params["ranking"] == EventYql.RANK_UNRANKED &&
+                params[EventYql.SORT_DEGRADING] != EventYql.SORT_DEGRADING_OFF
+        val cut = underdeliver || autoCut
+        val served =
+            when {
+                underdeliver -> minOf(matchPhaseUnderdeliver, hits)
+                autoCut -> minOf(1, hits)
+                else -> hitsCap?.let { minOf(it, hits) } ?: hits
+            }
         val children =
             when {
                 isAuthorHistogram -> {
@@ -470,7 +499,7 @@ class MockVespaEngine {
                     "root",
                     buildJsonObject {
                         put("fields", buildJsonObject { put("totalCount", JsonPrimitive(matches.size)) })
-                        put("coverage", if (underdeliver) matchPhaseCoverage(matches.size) else coverage(matches.size))
+                        put("coverage", if (cut) matchPhaseCoverage(matches.size) else coverage(matches.size))
                         put("children", children)
                     },
                 )
