@@ -843,12 +843,19 @@ Three readings, and two of them correct what the last round assumed:
 
 ### 2. Reproducing it locally
 
-Captured READ-ONLY from staging and fed through the store's own write path with
+Captured READ-ONLY from staging with **`benchmark/capture_staging.py`** — which
+already exists for exactly this and already knows the odd-looking filters the
+lens-gated relay requires — and fed through the store's own write path with
 `exportLoad`: **320,001 events** (200k kind 1 — the newest ~11 hours, so real
 word frequencies — 65k kind 0, plus 30023 / 1111 / media kinds) and the
 observer's real lens (its kind 10040 and 20,000 of the provider's kind 30382
 cards, which `TrustProjection` turns into 20,001 reputation documents). Docker
 Vespa, 4 cores, single node.
+
+(This round's capture was made with an ad-hoc script before `capture_staging.py`
+was found. Same corpus either way, but use the committed one — it pairs with
+`StagingCorpusIT`, and a second capture script is a second thing to keep
+honest about which filters that relay accepts.)
 
 At that size `nostr` matches 8,410 and answers in 14ms — too small to resolve
 anything. **The corpus's own common word is what stands in for it**: `drift`
@@ -999,12 +1006,109 @@ know that at build time, which is the open problem — Vespa's own blueprint
 estimates it during planning, so the answer probably lives in a searcher or in
 `weakAnd`, and neither was measured here.
 
+### 6. Verifying a rank-profile change on the real corpus (`rank_profile_latency.py`)
+
+Everything above is a 320k-document measurement and a ratio carried onto a
+211M-document cluster by arithmetic. The arithmetic is not the verification, and
+this change is unusually cheap to verify for real, because of one property: **the
+rank profile is chosen per query.** Adding one is a live config change (every
+probe deploy in this round returned `configChangeActions: {restart:[],
+refeed:[], reindex:[]}`), `SchemaDeployer.deployIfAbsent` leaves a serving
+cluster untouched so it survives relay restarts, and nothing selects the new
+profile until `EventYql.profileOf` does. So the candidate can sit on the
+production cluster with every live query byte-for-byte unchanged.
+
+The path, cheapest first:
+
+1. **Post the candidate beside the shipped profiles.** No traffic moves. Undone
+   by re-posting the shipped package.
+2. **`searchTrace --args="…" SEARCH_PROFILES=cand_text_b,cand_search_b`** against
+   that cluster's Vespa endpoint (the port-forward `rankAb` already documents):
+   the same builder-emitted query on one 30M match set, both profiles. This is
+   what replaces the projection with a number. `hits=0`, few reps, off-peak —
+   each rep is real CPU on the content nodes.
+3. **`rankPageDiff`** with the same arms, for what it costs in answers against
+   the real 242k-card lens (the local capture holds 20k, which under-represents
+   how far `wot_mult()` spreads the floor band — and that spread is exactly why
+   7 of 9 terms came back identical on `search`).
+4. **Expose it to live traffic, still opt-in.** `rankReputationOf` in
+   `FilterMapping.kt` is an additive table that ignores tokens it does not know
+   (`else -> null`), and `"text" -> RANK_TEXT` is precedent for a token that just
+   names a profile. One line makes the candidate reachable as `sort:<token>` from
+   any Nostr client, with no effect on anything that does not send it.
+5. **Read the result per profile from proton**, which is what this script is for.
+
+```bash
+# accumulate every snapshot window for 15 minutes and A/B two profiles
+python3 benchmark/rank_profile_latency.py \
+  --metrics 'http://vespa:19092/metrics/v2/values?consumer=Vespa' \
+  --watch 900 --compare text=cand_text_b --compare search=cand_search_b
+
+# one window, or a saved dump
+python3 benchmark/rank_profile_latency.py --json m.json --compare text=cand_text_b
+```
+
+`docs/telemetry.md` §9 names per-rank-profile latency as the gap this fills: it
+comes from each node's metrics proxy rather than the store's own counters.
+What proton publishes, verified against a live node rather than read off the
+metric reference — service `vespa.searchnode`, dimensions `rankProfile` +
+`documenttype`, and `content.proton.documentdb.matching.rank_profile.{query_latency,
+query_setup_time,rerank_time}.{count,sum,average,max}`, sums in seconds.
+
+**Four properties of that endpoint that make a naive reader wrong**, each
+measured here:
+
+- **The values are a window, not a counter.** 18 queries across three profiles
+  came back as count 6/6/5 in one read, and a read 75s later with no traffic
+  returned *nothing at all*. Windows are accumulated, never subtracted.
+- **Absent is not zero.** An idle profile is missing from the payload, not
+  present with 0 — count it as a zero-latency sample and it becomes the fastest
+  thing in the cluster.
+- **A mean over a period is Σsum/Σcount**, not the mean of `.average`, which
+  weights a one-query window like a thousand-query one.
+- **Windows must be deduped.** Polling faster than the snapshot interval returns
+  the same window again; each service carries a `timestamp`, so
+  `(hostname, service, timestamp)` is the window identity. Polling slower skips
+  windows instead, so the report prints how many distinct windows it rests on.
+
+#### The reason this script is not sufficient on its own
+
+Measured on the 320k corpus, one window, 13 queries per arm, `text` against the
+candidate — four instruments on the same change:
+
+| instrument | text | candidate | delta |
+| --- | ---: | ---: | ---: |
+| proton `rank_profile.query_latency` | 56.1 ms | 50.0 ms | **−11%** |
+| container `querytime` | 84 ms | 57 ms | −32% |
+| container `summaryfetchtime`, at `hits=0` | 46 ms | 8 ms | −83% |
+| client wall p50 | 194 ms | 81 ms | **−58%** |
+
+**The only profile-dimensioned metric sees a fifth of the saving.** Most of it
+lands in phases proton does not dimension by `rankProfile` — including a
+`summaryfetchtime` that differs by 38 ms at `hits=0`, where there is no summary
+to fetch at all. The mechanism for that last one is not established here and
+should not be guessed at; what is established is the consequence: **an operator
+who watches only the per-profile metric after a deploy will conclude the change
+did almost nothing.**
+
+So use this reader for ATTRIBUTION — which profile served which live traffic,
+and in which direction it moved, which no other instrument here can tell you
+about real queries. Take the SIZE from `presentation.timing` on a sampled query,
+or from `searchTrace`'s client-side p50. The script prints that caveat in its own
+footer for the same reason it is written here.
+
+And one trap the `--compare` output names itself: the two arms are only
+comparable if they served the **same traffic mix**. A candidate reached only via
+a `sort:` token while the baseline serves everything is comparing *terms*, not
+profiles, and one term's match set dwarfs another's by two orders of magnitude.
+
 ### Reproducing
 
 ```bash
-# 1. capture (read-only) and load — see the 2026-09-01 section for the recipe
+# 1. capture (read-only) and load
+python3 benchmark/capture_staging.py /tmp/staging_corpus.json
 VESPA_URL=http://localhost:8080 ./gradlew :benchmark:exportLoad \
-  --args="events.json trust.json"
+  --args="/tmp/staging_corpus.json"
 
 # 2. the per-phase / per-family split, with candidate profiles beside the shipped ones
 VESPA_URL=http://localhost:8080 SEARCH_PROFILES=cand_text_b,probe_const \
@@ -1141,6 +1245,8 @@ timing is also a proof:
 | `dedupProbe` | the bulk-dedup existence check: full-summary vs summary-free variants at mirror hit rates, chunk × fan-out curves, REQ latency under dedup load | reuses a `corpusLoad` corpus (ids sampled off the live store) | every variant must return the identical member set |
 | `extractBench` | the write path's own derivation (`SearchExtractors`), decomposed by stage, with `--badges N` for the every-event-wears-one corpus | any captured JSON export (`--corpus`), no Vespa | — |
 | `searchTrace` | one NIP-50 term, split per clause family and per rank profile (ablations + Vespa's blueprint cost) | any loaded store — capture one with `exportLoad` | every row prints `totalCount`, so a variant that got fast by matching less shows it |
+| `rankPageDiff` | the SAME query on two rank profiles, pages diffed by position on id and on relevance — what a faster profile costs in answers | any loaded store | the arms must share a pinned query instant (`PAGE_NOW`), or the clock reorders near-ties |
+| `rank_profile_latency.py` | per-rank-profile matching latency from proton's metrics proxy — attribution on LIVE traffic, no synthetic queries | a running cluster (`:19092`) | it UNDER-REPORTS the size of a profile change by ~5x; read attribution here, size from `presentation.timing` |
 | `transportProbe` | read-transport isolation: JDK h1 / OkHttp h1 / OkHttp h2c on identical queries across body sizes | any loaded store | — |
 | `trustProbe` | the trust write path under a real lens: bulk card ingest, single card inserts, a 10040 re-sign, a provider swap (with cards inserted on a clock during each walk to read the gate wait), a provider re-publishing its corpus (`--load-then-republish`), and the lensed page after the swap (`--query-only`) — the harness behind `docs/service-keyed-trust.md` | captured 10040s and two providers' 30382 corpora (JSON arrays; the doc says how they were pulled from staging) | the lensed `sort:rank` page must follow the CURRENT 10040's provider |
 
