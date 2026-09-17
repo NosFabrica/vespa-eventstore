@@ -831,7 +831,10 @@ Three readings, and two of them correct what the last round assumed:
 
 - **Cost is linear in the match set and independent of `limit`** — 250 ns per
   match across three terms spanning 24x, and 7.6s at `limit` 10 as at 160. The
-  engine ranks all 30M to serve 40.
+  engine ranks all 30M to serve 40. (The per-match reading is first-order only:
+  a 19-term sweep in §7 finds a second term worth ~94 ms per query TRIGRAM,
+  which is what makes a long rare word slow. It does not change the conclusion
+  for `nostr`, where the match set is 97% of the cost.)
 - **The loose matchers buy almost nothing on a word this common.** The quoted
   form matches 29.0M of the same 30.2M — the whole ~20-clause fuzzy word group
   is worth **+4% recall for +65% latency** here. (On a rare or half-typed word
@@ -970,16 +973,15 @@ So this is a ranking change, and it goes through the gate this file documents:
 a case in `benchmark/rank_cases.json` for the body-band shape, `rankAb`, and
 `RankRegressionIT` green. It is not a free win and is not presented as one.
 
-The provably-free part of it is smaller and worth separating: `perfect_tier()`,
-`proximity()` and `scattered_match()`/`offname_match()` are **constants on a
-one-word query** by construction — `perfect_tier()` is gated on
-`query(n_words) > 1`, and `naming_coverage()` reads 0 or exactly 1.0 with one
-word, so `scattered_match()` is 0. Their `fieldMatch` and matchCount work is
-done on every one of the 30M hits and read by nothing. `cand_text_a` (which
-keeps them) and `cand_text_b` (which folds them to their constants) return
-**byte-identical pages on every term measured**, at −11%. Realising it needs a
-one-word twin of each profile picked by `EventYql`, since the shipped profile
-still has to serve multi-word queries.
+There looked to be a provably-free part worth separating — `perfect_tier()`,
+`proximity()` and `scattered_match()`/`offname_match()` doing `fieldMatch` and
+matchCount work on 30M hits that nothing reads. **It was measured in §8 and it
+is worth −1% to −6%, not the −11% first reported here**, which came from a
+single noisy run. `cand_text_a` (keeping them) and `cand_text_b` (folding them
+to constants) do return byte-identical pages on every term measured — the
+answers claim held — but the latency claim did not, and the lever is not worth
+a second profile per ladder. See §8 for why, and for which two of the three
+"provably constant" arguments were wrong.
 
 ### 5. The second lever, unresolved: the trigram nets cost to MATCH
 
@@ -1101,6 +1103,179 @@ And one trap the `--compare` output names itself: the two arms are only
 comparable if they served the **same traffic mix**. A candidate reached only via
 a `sort:` token while the baseline serves everything is comparing *terms*, not
 profiles, and one term's match set dwarfs another's by two orders of magnitude.
+
+### 7. The cost model, and a correction to §1 (term-shape sweep, 19 terms)
+
+§1 above read the first three terms it happened to sample — `nostr`, `bitcoin`,
+`zap`, all 3-5 characters — and concluded "cost is linear in the match set,
+~250 ns per match". That is right to first order and **incomplete**, and the
+local corpus said so within the hour: `channel` (19,699 matches, 214 ms) came
+back slower than `drift` (102,549 matches, 176 ms). Per-match cost cannot
+explain a term that matches 5x less and costs more.
+
+So: 19 terms against staging, read-only, chosen across BOTH axes — word length
+(which is what sets how many trigrams `FuzzyWordGroup` emits: a word of n
+characters yields n-2) and match-set size. Exact COUNT plus the `text`-profile
+p50 for each.
+
+| term | chars | trigrams | matches | p50 | ns/match |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `nostr` | 5 | 3 | 30,381,801 | 9,736 ms | 320 |
+| `note` | 4 | 2 | 7,106,336 | 2,730 ms | 384 |
+| `bitcoin` | 7 | 5 | 5,070,452 | 2,158 ms | 426 |
+| `love` | 4 | 2 | 3,065,819 | 874 ms | 285 |
+| `network` | 7 | 5 | 2,278,783 | 1,531 ms | 672 |
+| `music` | 5 | 3 | 2,103,208 | 1,045 ms | 497 |
+| `art` | 3 | 1 | 2,089,339 | 529 ms | 253 |
+| `water` | 5 | 3 | 1,386,227 | 1,546 ms | 1,115 |
+| `food` | 4 | 2 | 1,385,797 | 646 ms | 466 |
+| `zap` | 3 | 1 | 1,274,115 | 424 ms | 333 |
+| `relays` | 6 | 4 | 1,225,087 | 690 ms | 563 |
+| `lightning` | 9 | 7 | 1,218,694 | 1,013 ms | 831 |
+| `travel` | 6 | 4 | 1,040,186 | 888 ms | 854 |
+| `freedom` | 7 | 5 | 899,628 | 664 ms | 738 |
+| `knowledge` | 9 | 7 | 662,773 | 601 ms | 907 |
+| `dog` | 3 | 1 | 499,875 | 238 ms | 476 |
+| `decentralized` | 13 | 11 | 470,089 | 1,038 ms | 2,207 |
+| `coffee` | 6 | 4 | 443,512 | 479 ms | 1,079 |
+| `conversation` | 12 | 10 | 366,484 | 1,380 ms | 3,767 |
+
+Ordinary least squares over those 19 rows:
+
+| model | R² |
+| --- | ---: |
+| matches only | 0.924 |
+| matches + intercept | 0.968 |
+| **matches + trigram count** | **0.984** |
+| matches + trigrams + intercept | 0.984 |
+| matches + matches×trigrams + intercept | 0.976 |
+
+    p50 ms  ≈  311 x (matches in millions)  +  94 x (trigrams)  +  58
+
+**Both terms are real, and which one dominates is a property of the WORD.**
+
+- `nostr`, 3 trigrams over 30.4M matches: 9,450 ms of match-set cost against
+  282 ms of trigram cost. **97% of the reported query is the match-set term** —
+  so §3's lever (the per-match `bm25(*_gram)` reads) is the right one for it,
+  and the priority in §4 stands.
+- `conversation`, 10 trigrams over 366k matches: 940 ms of trigram cost against
+  114 ms of match-set cost. **The opposite query**, and nothing in §4 touches
+  it. This is §5's unresolved lever, now with a price: ~94 ms per trigram,
+  which is what the AND-of-trigram and body-phrase nets cost to EVALUATE
+  regardless of how few documents survive the conjunction.
+- The three-character terms (`zap`, `art`, `dog`) emit ONE trigram, which is
+  below every gram floor in `FuzzyWordGroup` (`MIN_AND_GRAMS_NAME` 2,
+  `MIN_PHRASE_GRAMS` 2), so they get no gram clause at all — and they are the
+  cheapest per match in the table. The floors are load-bearing, not tidiness.
+
+So the corrected reading of §1's first bullet: **latency is linear in the match
+set at fixed word length, and linear in trigram count at fixed match set.** The
+`limit`-independence in §1 is unaffected — that was measured directly, on one
+term, four ways.
+
+**Absolute numbers on staging drift, ratios do not.** `nostr` measured 7.6 s
+earlier in the day at 30,220,431 matches and 9.7 s here at 30,381,801 — the
+corpus grows, the cluster serves other traffic, and this sweep was itself
+load. Read the model's coefficients as the shape, not as a service level.
+
+### 8. The "provably free" one-word subset — measured, and not worth taking
+
+§4 above claimed a −11% win available at no cost in answers: `perfect_tier()`,
+`proximity()` and `scattered_match()` are inert on a one-word query, so their
+work on every one of 30M hits is read by nothing. **Two of the three claims in
+that sentence were wrong, and the win is between −1% and −6%.** Recorded here
+because it is a plausible-looking lever that a reader would otherwise spend a
+schema change on.
+
+What is actually true, checked in the schema rather than reasoned from the
+comments:
+
+- `perfect_tier()` rides `query(w_perfect_tier_text)` and `query(w_perfect_tier)`,
+  and **both default to 0.0**. The term therefore contributes exactly nothing
+  on *every* query today, one word or many — not just on one-word queries. Its
+  `fieldMatch(.fieldCompleteness)` and `.orderness` reads are paid regardless.
+- `scattered_match()` IS provably 0 at `query(n_words)` 1: `naming_coverage()`
+  is then `min(1.0, sum)` over three matchCounts, so it is either 0 or exactly
+  1.0, and the gate `<= 0 || > 0.999` drops both. Its cost is 15 matchCounts.
+- `proximity()` was asserted above to be "a constant, per its own comment" —
+  the field comment says "~1 for single-word queries (harmless)". It rides a
+  LIVE weight (`query(w_proximity)` 30.0), and 1-vs-0 across a page is not
+  harmless, so that reasoning did not hold. The measurement below settles it
+  the other way: dropping the term changes no page at all, so it is inert on a
+  one-word query rather than constant at 1. **The field comment is wrong about
+  which constant it is**, and nothing depended on it until this section.
+
+Three profiles, each removing one more thing, against `text`. `oneword_a` drops
+`perfect_tier` (score-neutral on any query at shipped weights), `oneword_b`
+also drops `scattered_match` (score-neutral on one word), `oneword_c` also
+drops `proximity` (score-neutral only by measurement).
+
+`rankPageDiff`, `limit` 160, pinned instant, six terms — **all three return the
+identical 160-hit page on every term**, `oneword_c` included:
+
+| term | `oneword_a` | `oneword_b` | `oneword_c` |
+| --- | --- | --- | --- |
+| drift, nostr, articles, channel, https, news | identical | identical | identical |
+
+And the latency, interleaved, `hits=0`, 9 reps, p50, with `cand_text_b` beside
+them for scale:
+
+| term | `text` | `oneword_a` | `oneword_b` | `oneword_c` | `cand_text_b` |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| drift | 177.6 ms | −1% | +0% | −6% | **−50%** |
+| articles | 189.9 ms | −1% | −1% | −0% | **−33%** |
+| channel | 191.7 ms | −2% | −2% | −6% | −2% |
+| https | 64.3 ms | −0% | −3% | −6% | −0% |
+
+**−1% to −6%, for a second rank profile per ladder, a branch in `EventYql` and
+an integration gate. Not worth it.** The §4 figure of −11% came from one noisy
+run of `probe_text_nofm`; interleaved, the same removal is −1%.
+
+And the reason it is nearly free to keep, which is consistent with everything
+in §3: the three `fieldMatch` executors read `name`, `display_name` and
+`search_primary` — short fields that a kind-1 note largely does not fill, so
+there is almost no positional analysis to do. The expensive unpack in this
+schema is the `bm25()` on trigram fields over note BODIES, and that is what §4
+moves. `fieldMatch` is expensive in general and cheap *here*, which is only
+knowable by measuring it on this corpus.
+
+### 9. Throughput under concurrency — the arm that made the match-threads change a trade, and does not here
+
+The 2026-09-01 match-threads change was a **trade**: −44%/−48% latency for a
+−3.8% throughput give-back at 8 concurrent clients, because a thread spent on
+parallelism is a thread another query could have had. Every number in §3–§8 is
+single-query latency, so the candidate owed the same arm before anything is
+flipped — and a second phase could plausibly have gone either way (fewer
+per-match operations, but real work on `rerank-count` hits).
+
+Same shape as that round: 8 concurrent clients over four terms, a 20s window per
+arm, `hits=50`, arms run **A/B/A/B** on an otherwise idle 4-core container so
+drift shows up as disagreement between the repeats rather than as a result.
+
+| arm | queries/sec | p50 under load | p95 under load |
+| --- | ---: | ---: | ---: |
+| `text` | 15.8 | 585.0 ms | 795.5 ms |
+| `cand_text_b` | 21.5 | 381.3 ms | 698.7 ms |
+| `text` (repeat) | 16.7 | 544.2 ms | 758.7 ms |
+| `cand_text_b` (repeat) | 22.4 | 365.3 ms | 683.4 ms |
+
+**16.2 → 22.0 q/s, +35%**, with p50 under load down 35% and p95 down 12%. The
+repeats agree to within 6%, and the two arms do not overlap.
+
+**This is not a trade, and the reason is worth stating.** Match threads bought
+latency by *spending* more cores on one query, so throughput had to pay. The
+candidate buys latency by *needing fewer cycles* — the capped gram tails come
+off the phase that scores every posting and land on 1000 hits — so under CPU
+contention it hands capacity back. A change that improves both sides of that
+curve does not need the throughput caveat the match-threads comment in
+`services.xml` carries.
+
+One thing this arm does NOT settle: it ran on a single node whose four cores are
+also the client's. A production cluster splits the match set across content
+nodes and has its own core budget, and `rerank-count` is per node, so the
+second phase's share of the work grows with node count while the first phase's
+shrinks. The direction here is strong enough to stop worrying about a throughput
+regression; the magnitude is this box's.
 
 ### Reproducing
 
