@@ -798,6 +798,253 @@ can seek, and a statistic that still discriminates.
 
 Full record: NosFabrica/vespa-eventstore#129.
 
+## What `?q=nostr` actually spends its 7.6s on (`searchTrace` + `rankPageDiff`, 2026-09-17)
+
+Reported again, against the relay's own web UI: **`https://search-staging.brainstorm.world/?q=nostr`**
+takes ~8 seconds. The page sends one filter — `{"search": "nostr include:spam", "limit": 160}`,
+signed out, so no observer resolves and `EventYql.profileOf` picks **`text`**, the
+pure-relevance profile.
+
+The 2026-09-01 investigation above ended at "the cost is the match set, and
+relevance ranking cannot stop looking at it", and took the one lever that cuts
+both halves — match threads. This round asks the next question: *within* that
+per-match cost, what is being computed, and what is it worth? The answer is
+that matching is ~12% of the query and the single most expensive thing in the
+other 88% is a **capped within-band tie-break**.
+
+### 1. The shape, read-only against staging (medians of 3, `limit` 50 unless noted)
+
+| shape | matches (exact COUNT) | p50 |
+| --- | ---: | ---: |
+| `nostr include:spam` — what the page sends | 30,220,431 | **7.6 s** |
+| same at `limit` 40 / 10 | — | 7.8 s / 7.6 s |
+| `bitcoin include:spam` | 5,069,035 | 1.87 s |
+| `zap include:spam` | 1,273,730 | 0.37 s |
+| `"nostr"` quoted — exact clauses only, no fuzzy word group | 29,034,477 | 4.6 s |
+| `nostr relay` — two words | 801,861 | 1.26 s |
+| `nostr include:spam sort:rank` (`rank_desc`) | — | 9.6 s |
+| `nostr include:spam sort:followers` (`sort_followers`) | — | 12.0 s |
+| `nostr observer:460c25…` (`search`, the lensed default) | — | 12.3 s |
+| `nostr include:spam sort:recent` (`recency`, match-phase) | — | **0.34 s** |
+
+Three readings, and two of them correct what the last round assumed:
+
+- **Cost is linear in the match set and independent of `limit`** — 250 ns per
+  match across three terms spanning 24x, and 7.6s at `limit` 10 as at 160. The
+  engine ranks all 30M to serve 40.
+- **The loose matchers buy almost nothing on a word this common.** The quoted
+  form matches 29.0M of the same 30.2M — the whole ~20-clause fuzzy word group
+  is worth **+4% recall for +65% latency** here. (On a rare or half-typed word
+  it is worth everything; that is the point of §4 below.)
+- **A simpler rank expression is not a faster one.** `rank_desc` has no bm25
+  and no fieldMatch and is *slower* (9.6s), because it reads the imported trust
+  tensor per hit. Only the match-phase shape is fast, and only because it stops
+  looking.
+
+### 2. Reproducing it locally
+
+Captured READ-ONLY from staging and fed through the store's own write path with
+`exportLoad`: **320,001 events** (200k kind 1 — the newest ~11 hours, so real
+word frequencies — 65k kind 0, plus 30023 / 1111 / media kinds) and the
+observer's real lens (its kind 10040 and 20,000 of the provider's kind 30382
+cards, which `TrustProjection` turns into 20,001 reputation documents). Docker
+Vespa, 4 cores, single node.
+
+At that size `nostr` matches 8,410 and answers in 14ms — too small to resolve
+anything. **The corpus's own common word is what stands in for it**: `drift`
+matches **102,549** of the 200k kind 1s (a bot flood in the capture window),
+which is the same *shape* as `nostr`'s 14% of staging. Per-match cost is the
+figure that carries across: **1.72 µs/match locally, 251 ns/match on staging** —
+a 6.8x machine difference on the same work.
+
+### 3. Where the 88% goes (idle cluster, `drift`, `kinds:[1]`, p50 of 9)
+
+`searchTrace` now takes `SEARCH_PROFILES`, so a candidate first phase deployed
+beside the shipped ones is one more row on the same match set:
+
+| variant | p50 | matches | vs FULL |
+| --- | ---: | ---: | ---: |
+| **FULL — the shipped `text` profile** | **197 ms** | 102,549 | — |
+| `probe_const` — same query tree, first phase `1.0` | **22 ms** | 102,549 | −89% |
+| `probe_one_bm25` — first phase `bm25(search_text)` | 21 ms | 102,549 | −89% |
+| `probe_one_bm25` **+ `matchCount(search_text_gram)`** | 23 ms | 102,549 | −88% |
+| `probe_1w` — the multi-word-only rungs folded to their one-word constants | 186 ms | 102,549 | −6% |
+| `probe_text_nofm` — every `fieldMatch` term dropped | 176 ms | 102,549 | −11% |
+| `probe_text_nomf` — `match-features` block emptied | 190 ms | 102,549 | −9% |
+| **`probe_1w_nogram` — the five `bm25(*_gram)` reads dropped** | **82 ms** | 102,549 | **−58%** |
+| `probe_text_mp20k` — a `created_at` match-phase cut | 175 ms | 33,260 | −16% |
+
+**Matching is 22ms of 197ms.** `probe_const` enumerates the identical match set
+through the identical 22-branch query tree and scores every hit with a constant.
+So the posting traversal — the thing the last round called "the cost is the
+match set" — is 12% of the query. The other 88% is the first-phase expression.
+
+**Inside it, one feature family is 58%: `bm25()` read off a `*_gram` field.**
+`matchCount` on the same trigram field is free (23ms); `bm25` needs occurrence
+counts and field length, so the trigram match data has to be unpacked per hit,
+and a trigram index over note bodies is the most expensive thing in this schema
+to unpack. Five reads do it: `name_gram`, `display_name_gram`, `about_gram`,
+`search_primary_gram`, `search_secondary_gram`, inside `name_text()`,
+`display_name_text()`, `about_text()`, `tier_primary_text()` and
+`secondary_text()`.
+
+**What those five buy is a tie-break capped at 80 points** —
+`min(query(w_gram) * bm25(x_gram), query(gram_cap))`, deliberately kept under
+the matchCount unit (100) so a trigram-only match can never outrank one exact
+token, on a ladder whose rungs are 550 / 620 / 700 / 1100 (text) and
+4 000 / 23 000 / 130 000 (trust). It orders hits *inside* a band and can never
+move one across. That is the definition of a second-phase signal, and it is the
+argument the schema already makes for `fieldMatch` two functions higher up.
+
+The match-phase row is the other correction: cutting the match set by two thirds
+saves 16%, because the match set was never the expensive part. **That kills the
+"give the relevance profiles a match-phase cut" proposal**, which is the obvious
+thing to reach for and would have changed every answer for a sixth of the time.
+
+### 4. The candidate: the gram tails in the second phase
+
+Phase 1 becomes the same expression with the five capped tails removed; phase 2
+is `relevance()` (resp. `floored_text_score() × wot_mult() × recency_mult()`)
+unchanged, `rerank-count` 1000. The `search` profile already has a second phase;
+`text` would gain one. `text2` already has this SHAPE and no benefit — its
+`relevance_cheap()` still calls `primary_text()`, `tier_primary_text()`,
+`secondary_text()` and `about_text()`, which is where every gram read lives.
+
+Interleaved A/B (arms alternate per rep, so machine drift hits both equally),
+`hits=0` to price ranking rather than summary transfer, 11 reps, p50, query
+instant pinned:
+
+| term | matches | `text` | candidate | | `search` (lensed) | candidate | |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| **drift** | **102,549** | **176.2 ms** | **72.1 ms** | **−59%** | **171.5 ms** | **87.5 ms** | **−49%** |
+| articles | 5,469 | 204.8 ms | 132.9 ms | −35% | 36.2 ms | 35.3 ms | −2% |
+| https | 34,160 | 58.2 ms | 57.6 ms | −1% | 63.0 ms | 62.6 ms | −1% |
+| channel | 19,699 | 213.7 ms | 217.4 ms | +2% | 142.1 ms | 142.5 ms | +0% |
+| nostr | 8,410 | 14.1 ms | 14.9 ms | +5% | 24.3 ms | 24.5 ms | +1% |
+| news | 9,622 | 16.3 ms | 17.4 ms | +7% | 19.9 ms | 19.6 ms | −2% |
+| bitcoin | 2,736 | 9.7 ms | 10.8 ms | +11% | 13.6 ms | 12.6 ms | −7% |
+| relay | 4,276 | 21.8 ms | 23.2 ms | +6% | 28.9 ms | 28.8 ms | −0% |
+| lightning | 406 | 9.7 ms | 10.8 ms | +12% | 12.5 ms | 12.2 ms | −2% |
+| zap | 289 | 6.7 ms | 7.0 ms | +4% | 7.1 ms | 6.8 ms | −4% |
+
+The win is concentrated on exactly the shape that is slow, and the cost where
+there is nothing to win is the second phase's own fixed few milliseconds. Per
+match on `drift`: 1.72 µs → 0.70 µs, a **2.45x** cut in the per-match term.
+Carried onto staging's `nostr` (7.6s = ~0.95s matching + ~6.6s ranking at the
+measured 12/88 split) that projects to **~3.7s** — an extrapolation across a
+660x corpus and a different cluster, not a measurement.
+
+**What it costs in answers** (`rankPageDiff`, a new probe: same query from
+`EventYql`, one page per profile, diffed by position on id and on relevance):
+
+| term | `text` vs candidate | `search` vs candidate |
+| --- | --- | --- |
+| nostr, channel, https, news, zap, relay | identical 160 hits | identical 160 hits |
+| bitcoin | prefix 44, **158/160 ids**, differences are exact ties (656.9074 → 656.9074) | identical |
+| drift | prefix 12, 135/160 ids | prefix 12, 140/160 ids |
+| articles | prefix 29, 29/160 ids | prefix 29, 29/160 ids |
+
+Every difference is **inside the 550 body/affiliation band** — hits with no rung,
+whose only ordering signal was the gram tail. No hit changes band, and the head
+of every page is untouched. Two further facts bound it:
+
+- **Window depth cannot buy the order back.** With the tails gone, phase 1
+  collapses that band to a near-exact tie, so which 1000 (or 40,000) enter the
+  window is arbitrary. Measured on `drift`: `rerank-count` 1000 → 40,000 leaves
+  the page identical at prefix 12 and costs 76 → 105 ms; a window big enough to
+  be exact (150,000, i.e. most of the match set) is 223 ms — the baseline. The
+  speed and the exactness are the same trade, priced two ways.
+- **The lens hides most of it.** On `search` the band is spread by `wot_mult()`
+  (1 → 251 000) and `recency_mult()`, so seven of nine terms come back
+  byte-identical. The local capture holds 20k of staging's 242k cards; a fuller
+  lens spreads it further.
+
+So this is a ranking change, and it goes through the gate this file documents:
+a case in `benchmark/rank_cases.json` for the body-band shape, `rankAb`, and
+`RankRegressionIT` green. It is not a free win and is not presented as one.
+
+The provably-free part of it is smaller and worth separating: `perfect_tier()`,
+`proximity()` and `scattered_match()`/`offname_match()` are **constants on a
+one-word query** by construction — `perfect_tier()` is gated on
+`query(n_words) > 1`, and `naming_coverage()` reads 0 or exactly 1.0 with one
+word, so `scattered_match()` is 0. Their `fieldMatch` and matchCount work is
+done on every one of the 30M hits and read by nothing. `cand_text_a` (which
+keeps them) and `cand_text_b` (which folds them to their constants) return
+**byte-identical pages on every term measured**, at −11%. Realising it needs a
+one-word twin of each profile picked by `EventYql`, since the shipped profile
+still has to serve multi-word queries.
+
+### 5. The second lever, unresolved: the trigram nets cost to MATCH
+
+`channel` (19,699 matches, 213.7 ms) and `articles` (5,469 matches, 204.8 ms)
+are slower than `drift` (102,549 matches, 176.2 ms). Per-match cost does not
+explain that and neither does the candidate, which leaves `channel` unchanged.
+The AND-of-trigrams and body-phrase nets are expensive to *evaluate* in
+proportion to their trigrams' posting lists, not to how many documents survive
+the conjunction: `articles` ANDs six trigrams and phrases six more against every
+body in the index. The query-side ablations price it —
+
+| ablation | drift | matches lost |
+| --- | ---: | ---: |
+| −bodygram (`search_text_gram` phrase) | 69 ms (−65%) | 13 of 102,549 |
+| −textgram (`about_gram` + `search_secondary_gram`) | 91 ms (−54%) | 80 |
+| −allgram | 66 ms (−66%) | 118 |
+| exact index columns only | 59 ms (−70%) | 119 |
+
+— and the recall they carry on a COMMON word is 0.1%. The same nets on a rare
+or half-typed word are the whole point of `FuzzyWordGroup`, so the lever is not
+"drop them" but "spend them where they pay": emit the loose families only when
+the exact clauses are not already answering in the millions. The store cannot
+know that at build time, which is the open problem — Vespa's own blueprint
+estimates it during planning, so the answer probably lives in a searcher or in
+`weakAnd`, and neither was measured here.
+
+### Reproducing
+
+```bash
+# 1. capture (read-only) and load — see the 2026-09-01 section for the recipe
+VESPA_URL=http://localhost:8080 ./gradlew :benchmark:exportLoad \
+  --args="events.json trust.json"
+
+# 2. the per-phase / per-family split, with candidate profiles beside the shipped ones
+VESPA_URL=http://localhost:8080 SEARCH_PROFILES=cand_text_b,probe_const \
+  ./gradlew :benchmark:searchTrace --args="drift nostr"
+
+# 3. what a candidate costs in answers
+VESPA_URL=http://localhost:8080 SEARCH_LIMIT=160 PAGE_NOW=1789660000 \
+  ./gradlew :benchmark:rankPageDiff --args="text=cand_text_b search=cand_search_b drift nostr"
+
+# 4. just the query the builder emits, without the ablation battery
+SEARCH_DUMP=/tmp/yqls ./gradlew :benchmark:searchTrace --args="drift nostr"
+```
+
+The candidate profiles are not in `engine/app/schemas/event.sd` — they are a
+measurement, and adding a rank profile to the shipped package costs every
+deployment. Deploy them beside the shipped ones by appending to a COPY of
+`engine/app/` and posting it to the config server; a rank-profile-only change
+needs no refeed and no reindex:
+
+```
+rank-profile cand_text_b inherits text_relevance {
+    function primary_text_ng() { ... name_text()/display_name_text() without their min(w_gram * bm25(*_gram), gram_cap) tails ... }
+    function tier_primary_text_ng() { ... tier_primary_text() without its tail ... }
+    function relevance_ng_b() { ... relevance(), with primary_text_ng()/tier_primary_text_ng()
+                                    /bm25(search_secondary)/bm25(about) in place of the four
+                                    tail-carrying helpers, and the one-word constants folded ... }
+    first-phase  { expression: relevance_ng_b() * recency_mult_text() }
+    second-phase { expression: relevance() * recency_mult_text()
+                   rerank-count: 1000 }
+}
+```
+
+**Two traps worth the ink.** A second phase declared in a profile that
+`inherits` another profile which also declares one does NOT always override its
+`rerank-count` — the first sweep here reported 1000, 5 000, 20 000 and 100 000
+as the same number because of it; write the candidate standalone. And
+`presentation.summary` matters: at `hits=50` a `channel` page is 7.3 MB of
+content, so an A/B that fetches summaries measures the network, not the
+ranking — `hits=0` is what prices a rank profile.
+
 ## What a NIP-45 COUNT was really doing (2026-09-01)
 
 Measured while pricing the search above, and it inverted the expected order: on

@@ -68,8 +68,11 @@ import java.net.http.HttpResponse
  * Env: `VESPA_URL`, `SEARCH_OBSERVER` (the trust lens; without one the query
  * ranks on `text`), `SEARCH_KINDS` (default 1 — the dominant relay shape),
  * `SEARCH_LIMIT` (50), `SEARCH_REPS` (5, medians reported), `SEARCH_YQL` (1 to
- * print every variant's YQL), `TRACE_LEVEL` (0 = off; >0 adds Vespa's
- * blueprint with per-term hit estimates to the FULL variant).
+ * print every variant's YQL and its rank-feature params), `SEARCH_PROFILES` (a
+ * comma list of EXTRA rank profiles to time on the same query — how a candidate
+ * first phase, deployed beside the shipped ones, is priced against them on one
+ * match set), `TRACE_LEVEL` (0 = off; >0 adds Vespa's blueprint with per-term
+ * hit estimates to the FULL variant).
  */
 object SearchTrace {
     private val json = Json { ignoreUnknownKeys = true }
@@ -131,6 +134,37 @@ object SearchTrace {
         val showYql = System.getenv("SEARCH_YQL") == "1"
         val traceLevel = System.getenv("TRACE_LEVEL")?.toIntOrNull() ?: 0
         val terms = if (args.isNotEmpty()) args.toList() else listOf("bitcoin", "nostr")
+        // SEARCH_DUMP writes the built query and its rank-feature params per
+        // term and stops. The ablation battery is minutes of work; a harness
+        // that only needs the query the BUILDER emits should not have to pay
+        // for it, and re-deriving that query anywhere else is exactly the
+        // drift this file exists to avoid.
+        System.getenv("SEARCH_DUMP")?.let { dir ->
+            java.nio.file.Files
+                .createDirectories(
+                    java.nio.file.Path
+                        .of(dir),
+                )
+            for (term in terms) {
+                val q = EventQuery(kinds = kinds, limit = limit, search = term, observer = observer, minRank = observer?.let { 0.0 })
+                val v = EventYql.build(q) ?: error("query for '$term' provably matches nothing")
+                java.nio.file.Files
+                    .writeString(
+                        java.nio.file.Path
+                            .of(dir, term + ".yql"),
+                        v.yql,
+                    )
+                java.nio.file.Files.writeString(
+                    java.nio.file.Path
+                        .of(dir, term + ".params"),
+                    v.params.entries.joinToString("\n") { (k, value) -> k + "=" + value },
+                )
+                println(term + " -> " + dir + "/" + term + ".yql (profile " + v.ranking + ")")
+            }
+            return
+        }
+        val extraProfiles =
+            (System.getenv("SEARCH_PROFILES") ?: "").split(",").map { it.trim() }.filter { it.isNotEmpty() }
 
         println("cluster $url, kinds=$kinds, limit=$limit, reps=$reps, observer=${observer ?: "(none)"}")
         for (term in terms) {
@@ -138,13 +172,19 @@ object SearchTrace {
             val built = EventYql.build(base) ?: error("query for '$term' provably matches nothing")
             println()
             println("=== \"$term\" — profile ${built.ranking} ===")
-            if (showYql) println("  yql: ${built.yql}")
+            if (showYql) {
+                println("  yql: ${built.yql}")
+                println("  params: ${built.params}")
+            }
 
             val rows = ArrayList<Triple<String, Long, Long>>()
             rows += run(url, "FULL (as production)", built.yql, built.params, built.ranking, reps, traceLevel, showYql)
 
-            // Rank-phase split: same match set, cheaper scoring.
-            for (profile in listOf(EventYql.RANK_TEXT, EventYql.RANK_RECENCY_GATED_EXACT)) {
+            // Rank-phase split: same match set, cheaper scoring. SEARCH_PROFILES
+            // appends profiles by name — a candidate first phase deployed
+            // beside the shipped ones is then one row in this same table,
+            // measured on the same match set and the same YQL.
+            for (profile in listOf(EventYql.RANK_TEXT, EventYql.RANK_RECENCY_GATED_EXACT) + extraProfiles) {
                 val q = base.copy(ranking = profile)
                 val v = EventYql.build(q) ?: continue
                 rows += run(url, "profile=$profile", v.yql, v.params, v.ranking, reps, traceLevel = 0, showYql)

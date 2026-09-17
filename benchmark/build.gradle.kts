@@ -222,3 +222,14 @@ tasks.register<JavaExec>("trustProbe") {
     maxHeapSize = System.getenv("BENCH_HEAP") ?: "4g"
     workingDir = rootDir
 }
+
+// Does a candidate rank profile serve the SAME page? The answers half of the
+// searchTrace split. See RankPageDiff.kt.
+tasks.register<JavaExec>("rankPageDiff") {
+    group = "verification"
+    description = "Diff the served page across rank profiles on the store's own query (baseline=candidate pairs, then terms)"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.probe.RankPageDiff")
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "1g"
+    workingDir = rootDir
+}
