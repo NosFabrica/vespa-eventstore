@@ -208,6 +208,46 @@ object EventYql {
     const val SINGLE_MATCH_THREAD = "1"
 
     /**
+     * Vespa's query-time SORTING DEGRADER. When a query's primary sort key is a
+     * single-value numeric fast-search attribute — `created_at` here — Vespa
+     * activates match-phase degradation BY DEFAULT, on EVERY rank profile
+     * (docs.vespa.ai/en/reference/sorting.html; query parameter
+     * `sorting.degrading`, default true). `unranked` is not exempt, which
+     * [buildIdTime] assumed: a profile with no schema match phase still gets
+     * one from the sort.
+     *
+     * MEASURED on staging 2026-09-12, the walk's exact shape (kind 1, unranked,
+     * summary idtime, hits 20064, one match thread), only the window varied:
+     *
+     *     1d / 7d                           coverage 100%            0.07 to 0.21 s
+     *     30d                               coverage   3%, cut       0.38 s  (refused)
+     *     30d,  sorting.degrading=false     coverage 100%, 12.8M     0.93 to 1.0 s
+     *     365d, sorting.degrading=false     coverage 100%, 104.9M    6.6 s
+     *
+     * The same flag on `recency` / `recency_gated`: identical degraded output,
+     * coverage and latency — their schema `match-phase max-hits` governs, so
+     * the parameter changes nothing there and is not sent there.
+     *
+     * What the refusal cost before this, per hour on the sync pod: 121 to 150
+     * `walk.refused.match-phase`, 131 `walk.cut.narrowed`, 15 to 19
+     * `walk.scan` at a mean of 17.9 minutes, 5 to 7 running at any moment,
+     * 140 to 245 MB/s of document-store reads and 5 to 8 proton cores per
+     * content node.
+     *
+     * SENT BY THE ID WALK ONLY. [build]'s unranked recall carries the same
+     * sort and is refused the same way (VespaEventIndex.searchRoot), and stays
+     * on the degrader by decision, not oversight: a deep-past client REQ over a
+     * huge match set fails fast today (all-time kinds 1/6/7 at limit 100:
+     * 0.03 s refused) and would instead run to completion (4.05 s, measured)
+     * with the flag. Widening the scope is one line at the `order` clause
+     * there; it wants its own measurement of what clients then pay.
+     */
+    const val SORT_DEGRADING = "sorting.degrading"
+
+    /** What [SORT_DEGRADING] carries on the id walk. */
+    const val SORT_DEGRADING_OFF = "false"
+
+    /**
      * The profiles that ask for [SINGLE_MATCH_THREAD]: unranked recall and both
      * match-phase profiles. Everything else here ranks text over a match set the
      * caller cannot bound, which is the shape parallelism exists for.
@@ -258,14 +298,21 @@ object EventYql {
 
     /**
      * The (id, created_at[, tag_index]) projection a snapshot walk pages on:
-     * attributes only, newest first, always UNRANKED.
+     * attributes only, newest first, always UNRANKED, and with the engine's
+     * sorting degrader turned OFF ([SORT_DEGRADING]).
      *
      * Unranked is load-bearing: the recency profile's match-phase caps
      * `totalCount` and can drop hits below its cut (see [buildCount]), which on
-     * a walk that must be COMPLETE would lose events silently. Unranked has no
-     * match phase, so `order by created_at desc` keeps full coverage on a large
-     * corpus (verified on a 6.0M-match filter over 42.8M docs: coverage full,
-     * totalCount exactly the grouping count).
+     * a walk that must be COMPLETE would lose events silently. Unranked
+     * declares no match phase in the schema — but the `order by created_at
+     * desc` alone activates Vespa's query-time degrader, and that is what cut
+     * this walk to 3% coverage on staging. This comment used to say the
+     * opposite ("unranked has no match phase, so the sort keeps full
+     * coverage"), on the strength of a 6.0M-match filter over 42.8M docs that
+     * answered whole. Both observations are real; what separates a 6.0M match
+     * set that answered whole from a 12.8M one that was cut was not measured,
+     * which is why the walk sends the flag rather than relying on a theory of
+     * when the degrader engages.
      */
     fun buildIdTime(
         q: EventQuery,
@@ -276,6 +323,7 @@ object EventYql {
         val limit = q.limit?.let { if (it <= 0) return null else " limit $it" } ?: ""
         params["presentation.summary"] = if (withDTag) SUMMARY_IDTIME_TAG else SUMMARY_IDTIME
         params[MATCH_THREADS] = SINGLE_MATCH_THREAD
+        params[SORT_DEGRADING] = SORT_DEGRADING_OFF
         return VespaQuery(
             yql = "select ${if (withDTag) "id, created_at, tag_index" else "id, created_at"} from event where ${whereOf(clauses)} order by created_at desc$limit",
             params = params,
@@ -492,6 +540,9 @@ object EventYql {
         // match set (measured 0.22s -> 1.3s on 2M matches). The client
         // restores the exact `created_at desc, id asc` contract from the
         // RETURNED page instead — see VespaEventIndex.recallSummaries.
+        // This sort also invites Vespa's own match-phase cut on `unranked`,
+        // which the client refuses; only the id walk opts out — see
+        // [SORT_DEGRADING] for the measurement and why the scope stops there.
         val order = if (ranking == RANK_UNRANKED || ranking == RANK_RECENCY) " order by created_at desc" else ""
         val limit = q.limit?.let { if (it <= 0) return null else " limit $it" } ?: ""
         return VespaQuery(
@@ -507,7 +558,8 @@ object EventYql {
     /**
      * An EXACT-count query: same filters, a grouping `count()`, NO `order by` —
      * attribute sorting trips Vespa's match-phase on a large corpus and caps
-     * `totalCount` (10x+ undercount). Grouping over the unranked match set is exact.
+     * `totalCount` (10x+ undercount; the mechanism is the sorting degrader,
+     * [SORT_DEGRADING]). Grouping over the unranked match set is exact.
      */
     fun buildCount(q: EventQuery): VespaQuery? = grouping(q, "all(output(count()))")
 

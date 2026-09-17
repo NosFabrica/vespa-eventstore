@@ -53,6 +53,18 @@ class SampledQueryCarriesThroughTest {
         assertTrue(q.sampled, "the id-time builder dropped `sampled`")
     }
 
+    /**
+     * `sampled` is TOLERANCE of a cut, not a request for one. A sampled walk
+     * still tells the engine not to cut it (EventYql.SORT_DEGRADING); the
+     * tolerance lives on the response check alone, so the rule stays one
+     * rule. Nothing measured says a sampled unranked read is cheaper cut.
+     */
+    @Test
+    fun `a sampled id-time walk still opts out of the sorting degrader`() {
+        val q = assertNotNull(EventYql.buildIdTime(EventQuery(kinds = listOf(30382), authors = listOf(author), sampled = true), withDTag = false))
+        assertEquals(EventYql.SORT_DEGRADING_OFF, q.params[EventYql.SORT_DEGRADING], "a sample tolerates a cut; it does not ask for one")
+    }
+
     @Test
     fun `not asking for a sample is still the default, and still strict`() {
         val q = assertNotNull(EventYql.build(EventQuery(kinds = listOf(30382), authors = listOf(author), limit = 3)))

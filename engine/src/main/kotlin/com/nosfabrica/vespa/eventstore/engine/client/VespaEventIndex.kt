@@ -857,14 +857,21 @@ class VespaEventIndex(
      *
      * WHAT THIS WALK CAN ACTUALLY BE REFUSED FOR is a node redistributing or
      * still opening its buckets — `non-ideal-state`, a bare coverage shortfall.
-     * It cannot be refused for size: [EventYql.buildIdTime] ranks `unranked`,
-     * Vespa's built-in no-scoring profile, and `event.sd` declares `match-phase`
-     * on `recency` and `recency_gated` alone. Measured against a real Vespa:
-     * 120,000 matches on `unranked` came back at 100% coverage, six times the
-     * 20,000 max-hits that cut `recency` to 19% on the identical window.
+     * It WAS also refused for size, and this comment said it could not be:
+     * [EventYql.buildIdTime] ranks `unranked` and `event.sd` declares
+     * `match-phase` on `recency` and `recency_gated` alone, so the reasoning
+     * went that no cut could reach it — and 120,000 matches on `unranked` did
+     * come back at 100% coverage, six times the 20,000 max-hits that cut
+     * `recency` to 19% on the identical window. What that sample did not
+     * show is Vespa's query-time sorting degrader, which the `order by
+     * created_at desc` activates on any profile and which cut the same walk
+     * to 3% on a 30-day window on staging (2026-09-12). The walk now sends
+     * `sorting.degrading=false` ([EventYql.SORT_DEGRADING]), so a `match-phase`
+     * refusal here means a serving query profile turned the degrader back on,
+     * or a Vespa release changed it — and the halving below is the net.
      *
-     * SO WAITING IS THE WHOLE REMEDY, and it is the right one: those states
-     * clear on their own, in wall-clock time. Four asks over 4.2 s.
+     * SO WAITING IS THE REMEDY for the cluster states, and it is the right
+     * one: those clear on their own, in wall-clock time. Four asks over 4.2 s.
      *
      * AND THEN IT THROWS, rather than falling back to a whole-corpus scan.
      * That fallback was the shape of this code for a long time and it is
@@ -981,6 +988,17 @@ class VespaEventIndex(
                     // the budget, taking scan load from 16 concurrent to 1.7 and
                     // the cluster from 15.4 cores to ~7. So the remedy stands on
                     // its outcome, not on the theory that motivated it.
+                    //
+                    // The mechanism was found afterwards (2026-09-12): Vespa's
+                    // query-time sorting degrader, which the `order by` alone
+                    // activates on every profile, and which the walk now turns
+                    // off (EventYql.SORT_DEGRADING). That is CONSISTENT WITH
+                    // cuts landing on day-wide windows — the mirror sizes its
+                    // windows to 100k to 1M ids, so a day can hold a match set
+                    // as large as a year's — but the per-window match counts
+                    // were never recorded, so "consistent with" is all this
+                    // says. With the flag sent, a cut reaching here is the
+                    // exception the budget was insurance for.
                     //
                     // So halve and ask again, which the caller cannot do for us: it handed
                     // this walk a range and expects every id in it.
@@ -1627,7 +1645,10 @@ class VespaEventIndex(
          * real cut needs: production spent it on 7 of 396 cuts, and resolved
          * the other 389 by splitting — most of them windows of a day or less,
          * which is not what the four hand-run queries behind the original
-         * "wide ranges get cut" reading would have predicted.
+         * "wide ranges get cut" reading would have predicted. Those 396 cuts
+         * were Vespa's sorting degrader, which the walk has since turned off
+         * ([EventYql.SORT_DEGRADING]); the budget is now insurance against a
+         * serving profile or a Vespa release that brings it back.
          */
         const val MAX_CUT_NARROWINGS = 6
 
