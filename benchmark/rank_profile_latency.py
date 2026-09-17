@@ -121,6 +121,12 @@ class Accumulator:
         self.rows = defaultdict(lambda: defaultdict(float))
         self.seen = set()
         self.hosts = set()
+        # Whether ANY payload carried the searchnode service at all. An empty
+        # report means two very different things -- an idle cluster, or a URL
+        # that never had these metrics on it -- and conflating them sends the
+        # reader looking for traffic that was never the problem.
+        self.saw_service = False
+        self.undated = 0
 
     def add(self, payload):
         """Fold every window in [payload] that has not been counted already."""
@@ -130,7 +136,17 @@ class Accumulator:
             for svc in node.get("services", []) or []:
                 if svc.get("name") != SERVICE:
                     continue
-                window = (host, svc.get("name"), svc.get("timestamp"))
+                self.saw_service = True
+                stamp = svc.get("timestamp")
+                if stamp is None:
+                    # The window identity IS the timestamp (trap 4). Without
+                    # one, every window would key alike and the second onward
+                    # would be dropped as a duplicate -- a --watch that
+                    # silently reported its first minute forever. Refuse the
+                    # window instead of collapsing the run into it.
+                    self.undated += 1
+                    continue
+                window = (host, svc.get("name"), stamp)
                 if window in self.seen:
                     continue
                 self.seen.add(window)
@@ -182,10 +198,21 @@ def mean_ms(row, timer):
 
 def print_rows(acc, min_queries):
     rows = {k: v for k, v in acc.rows.items() if v.get("query_latency.count", 0) >= min_queries}
+    if acc.undated:
+        print(f"\nWARNING: {acc.undated} window(s) arrived with no `timestamp` and were refused — see Accumulator.add.")
+    if not acc.saw_service:
+        print(
+            f"\nNo `{SERVICE}` service in the payload at all. This is NOT an idle cluster:\n"
+            "the rank-profile metrics live on the CONTENT nodes, so either the URL points at\n"
+            "a container-only metrics proxy, or the consumer filters them out — try\n"
+            "…:19092/metrics/v2/values?consumer=Vespa, which carries the full set.",
+        )
+        return
     if not rows:
         print(
             f"\nNo rank profile saw {min_queries}+ queries in {len(acc.seen)} window(s). "
-            "Either the cluster is idle, or --watch has not yet covered a window with traffic.",
+            "The searchnode is reporting, so this is an idle cluster (or a --watch that has "
+            "not yet covered a window with traffic), not a wrong endpoint.",
         )
         return
     print(
@@ -270,7 +297,17 @@ def main():
 
     acc = Accumulator()
     if args.json:
-        acc.add(json.load(open(args.json)))
+        # A diagnostic tool that dies with a JSONDecodeError traceback on a
+        # truncated curl has told the reader nothing about which of the two
+        # things went wrong.
+        try:
+            with open(args.json) as f:
+                payload = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            sys.exit(f"{args.json} is not a readable metrics dump ({type(exc).__name__}: {exc})")
+        if not isinstance(payload, dict):
+            sys.exit(f"{args.json} parsed, but is not a metrics object — expected the /metrics/v2/values shape")
+        acc.add(payload)
     elif not args.watch:
         acc.add(fetch(args.metrics))
     else:

@@ -945,7 +945,10 @@ measured 12/88 split) that projects to **~3.7s** — an extrapolation across a
 660x corpus and a different cluster, not a measurement.
 
 **What it costs in answers** (`rankPageDiff`, a new probe: same query from
-`EventYql`, one page per profile, diffed by position on id and on relevance):
+`EventYql`, one page per profile, diffed by position). The identity rows below
+are ID ORDER; the scores were verified separately and match to 1e-6 wherever
+the ids do — see §10, which is also where the tool's original failure to
+compare them is recorded:
 
 | term | `text` vs candidate | `search` vs candidate |
 | --- | --- | --- |
@@ -1191,31 +1194,48 @@ What is actually true, checked in the schema rather than reasoned from the
 comments:
 
 - `perfect_tier()` rides `query(w_perfect_tier_text)` and `query(w_perfect_tier)`,
-  and **both default to 0.0**. The term therefore contributes exactly nothing
-  on *every* query today, one word or many — not just on one-word queries. Its
-  `fieldMatch(.fieldCompleteness)` and `.orderness` reads are paid regardless.
+  and **both are 0.0 on purpose** — §12.3 says so in as many words ("0.0 SHIPS
+  IT INERT"), because a band above the token rung would move every crossing
+  calculus beneath it and no report has yet shown a multi-word page that needs
+  it. So this is not an oversight; it is a rung parked until a report measures
+  its value. The consequence for §4's reasoning stands, though, and is the
+  only reason it appears here: the term contributes nothing on *every* query
+  today, and its `fieldMatch(.fieldCompleteness)` and `.orderness` reads are
+  paid on every hit regardless. At −1% (below) that is a fair price for
+  keeping the rung one `rankAb` sweep away from being live.
 - `scattered_match()` IS provably 0 at `query(n_words)` 1: `naming_coverage()`
   is then `min(1.0, sum)` over three matchCounts, so it is either 0 or exactly
   1.0, and the gate `<= 0 || > 0.999` drops both. Its cost is 15 matchCounts.
-- `proximity()` was asserted above to be "a constant, per its own comment" —
-  the field comment says "~1 for single-word queries (harmless)". It rides a
-  LIVE weight (`query(w_proximity)` 30.0), and 1-vs-0 across a page is not
-  harmless, so that reasoning did not hold. The measurement below settles it
-  the other way: dropping the term changes no page at all, so it is inert on a
-  one-word query rather than constant at 1. **The field comment is wrong about
-  which constant it is**, and nothing depended on it until this section.
+- `proximity()` is neither constant nor inert, and **the field comment is
+  right**: it says "~1 for single-word queries", and dropping the term moves
+  the top score by **exactly 30.000000** (1273.665423 → 1243.665423 on `news`,
+  1306.391807 → 1276.391807 on `channel`), which is `query(w_proximity)` 30.0
+  × 1. On `nostr` the top hits lose nothing, so the feature reads 1 where a
+  primary field matched and 0 where it did not — per document, not per query.
+  An earlier revision of this section claimed the opposite ("inert… the field
+  comment is wrong about which constant it is") on the strength of a page diff
+  that **only compared id order**; see §10. The comment was right and the
+  claim against it was wrong.
 
 Three profiles, each removing one more thing, against `text`. `oneword_a` drops
 `perfect_tier` (score-neutral on any query at shipped weights), `oneword_b`
 also drops `scattered_match` (score-neutral on one word), `oneword_c` also
 drops `proximity` (score-neutral only by measurement).
 
-`rankPageDiff`, `limit` 160, pinned instant, six terms — **all three return the
-identical 160-hit page on every term**, `oneword_c` included:
+`rankPageDiff`, `limit` 160, pinned instant, six terms — all three return the
+same 160 ids in the same ORDER on every term. On SCORES they split, and that
+distinction is the whole of §10:
 
 | term | `oneword_a` | `oneword_b` | `oneword_c` |
 | --- | --- | --- | --- |
-| drift, nostr, articles, channel, https, news | identical | identical | identical |
+| drift, nostr, articles, channel, https, news | same order | same order | same order |
+| scores | same (by construction: the dropped term is ×0.0) | same (by construction: `scattered_match()` is 0) | **−30.0 exactly** where a primary field matched |
+
+So `oneword_c` is **not** score-neutral. It happens not to reorder these six
+pages because the top of each is homogeneous — all title-matchers or all
+body-matchers, so the 0-or-30 lands on all of them alike — but a page mixing
+the two would reorder. Only `oneword_a` and `oneword_b` are safe, and they are
+the two worth −1%.
 
 And the latency, interleaved, `hits=0`, 9 reps, p50, with `cand_text_b` beside
 them for scale:
@@ -1276,6 +1296,80 @@ nodes and has its own core budget, and `rerank-count` is per node, so the
 second phase's share of the work grows with node count while the first phase's
 shrinks. The direction here is strong enough to stop worrying about a throughput
 regression; the magnitude is this box's.
+
+### 10. Audit: `rankPageDiff` was not comparing scores, and it cost two claims
+
+`rankPageDiff` (§4, §8) documented itself as diffing pages "position by
+position on id, **and on relevance to six decimals**". It never compared
+relevance. Every "identical" it printed — and every one quoted in §4, §6 and
+§8 — meant *the ids agree in this order*, nothing more. Fixed, and re-run.
+
+**What the fix changed.** Four arms, three terms, `hits=5` (a second phase that
+rescales shows at #1, so this needs neither the 160-hit page nor its 6 MB
+summaries):
+
+| arm | id order | scores | first difference |
+| --- | --- | --- | --- |
+| `text` vs `cand_text_b` | same | **same** | — |
+| `search` vs `cand_search_b` | same | **same** | — |
+| `text` vs `oneword_c` | same | **DIFFER** | #1: 1273.665423 → 1243.665423 |
+| `text` vs `text2` | same | **DIFFER** | #1: 1273.665423 → 1290.332089 |
+
+Two claims were wrong, and both were mine:
+
+1. **`proximity()` is live, and the schema's comment about it was right.** The
+   `oneword_c` delta is exactly 30.000000 = `query(w_proximity)` × 1. §8 had
+   asserted the term was inert *and* that the field comment ("~1 for
+   single-word queries") was wrong about which constant it is. It was not
+   wrong; the page diff simply could not see a uniform 30-point shift. §8 now
+   says so. A correct comment publicly called wrong on the strength of a tool
+   that wasn't measuring the thing is the worst kind of error in a file like
+   this one.
+2. **`text2` does not serve `text`'s page.** Reported as "identical on all 9
+   terms" in an earlier run; its second phase adds
+   `query(w_precision_scale_text) × precision_boost()`, and the scores show it
+   (+16.67, +15.83 on the two terms above). Same order on these terms, different
+   numbers — which is exactly what that profile is for, and exactly what a
+   reader of the old output would have concluded it was not doing.
+
+**What survived.** The claim the candidate actually rests on: `cand_text_b` and
+`cand_search_b` reproduce the shipped score to 1e-6 wherever the ids agree.
+That is the property their second phase was built for — it re-evaluates
+`relevance()` / `floored_text_score() × wot_mult() × recency_mult()` unchanged
+— and it is now measured rather than assumed. The floor-band reorderings in §4
+stand as reported; they were id-order differences, which the tool could see.
+
+**The lesson the tool now carries in its own KDoc**: "identical" is two
+questions, and a rewrite whose second phase quietly rescaled every hit would
+have passed the version of this file that only asked the first.
+
+Three smaller things found in the same pass, all in `rank_profile_latency.py`,
+all fixed:
+
+- a window whose `timestamp` was missing keyed as `(host, service, None)` and
+  so deduped against every later window — a `--watch` that would have reported
+  its first minute forever while claiming success. Refused and counted now.
+- a payload with no `vespa.searchnode` service at all reported "no rank profile
+  saw traffic", which reads as an idle cluster. That is the symptom of pointing
+  at a container-only metrics endpoint, and it now says so and names the fix.
+- a truncated dump died with a raw `JSONDecodeError` traceback. It now names
+  the file and the reason.
+
+And two things checked and found sound, recorded so the next reader does not
+re-derive them:
+
+- **The `min_rank` omission hazard is closed.** `wot_mult()` warns that
+  omitting `query(min_rank)` flattens the trust curve to a constant, so any
+  path reaching a trust profile without a floor would silently degrade ranking
+  to pure text. Two candidate holes — a lensed search with no `filter:rank:`,
+  and a quoted-phrase-only query — are both covered: `FilterMapping` sets the
+  floor whenever `ranked` (`hasText || sort != null`), Quartz's `hasText`
+  counts phrases as well as terms, and `NostrSemanticsStore` fills the termless
+  case from `DEFAULT_MIN_RANK`.
+- **`PageAssembly.asked()` is correct**, including the one-pass
+  copy-on-first-drop loop that is easy to get wrong: key sets are hoisted out
+  of the row scan, the index is counted by hand to avoid `IndexedValue`
+  allocation, and the `subList(0, seen)` backfill fires exactly once.
 
 ### Reproducing
 

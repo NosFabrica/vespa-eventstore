@@ -45,6 +45,12 @@ import kotlinx.serialization.json.jsonPrimitive
  * position that differs with both ids and both scores, so a difference can be
  * read rather than merely counted.
  *
+ * "identical" means the ids agree in every position AND the relevance agrees
+ * to 1e-6 relative. Those are separate questions and this file got it wrong
+ * first time round by only asking the first: a rewrite whose second phase
+ * rescaled every hit would have reported an identical page. `same ids, score
+ * #N` is that case when it happens.
+ *
  *     VESPA_URL=http://localhost:8080 SEARCH_OBSERVER=<hex> \
  *       ./gradlew :benchmark:rankPageDiff --args="text=cand_text_b bitcoin nostr"
  *
@@ -98,13 +104,31 @@ object RankPageDiff {
                         .zip(b.ids)
                         .takeWhile { (x, y) -> x == y }
                         .size
-                val shared = a.ids.count { it in b.ids.toSet() }
+                val bIds = b.ids.toSet()
+                val shared = a.ids.count { it in bIds }
+                // SCORES, not just order. Two pages can agree on every id in
+                // every position and still carry different relevance — a
+                // second phase that recomputes the shipped expression is
+                // supposed to land on the same number, and "the ids matched"
+                // does not check that. Reporting those as identical is how a
+                // rewrite that quietly rescales every hit would pass. Compared
+                // to 1e-6 relative, since these are doubles off the wire.
+                val firstScore =
+                    a.scores.zip(b.scores).indexOfFirst { (x, y) ->
+                        kotlin.math.abs(x - y) > 1e-6 * maxOf(1.0, kotlin.math.abs(x))
+                    }
                 val where =
-                    if (prefix >= minOf(a.ids.size, b.ids.size)) {
-                        if (a.ids.size == b.ids.size) "identical" else "identical prefix, ${a.ids.size} vs ${b.ids.size} hits"
-                    } else {
+                    if (prefix < minOf(a.ids.size, b.ids.size)) {
                         "#${prefix + 1}: ${a.ids[prefix].take(8)}(%.4f)".format(a.scores[prefix]) +
                             " -> ${b.ids[prefix].take(8)}(%.4f)".format(b.scores[prefix])
+                    } else if (a.ids.size != b.ids.size) {
+                        "same order, ${a.ids.size} vs ${b.ids.size} hits"
+                    } else if (firstScore >= 0) {
+                        // Same page, different numbers: worth its own message,
+                        // because it is invisible to a reader who only ranks.
+                        "same ids, score #${firstScore + 1} %.6f -> %.6f".format(a.scores[firstScore], b.scores[firstScore])
+                    } else {
+                        "identical"
                     }
                 println("  %-16s %7d %9d %9d  %s".format(term, prefix, shared, a.ids.size, where))
             }
