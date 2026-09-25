@@ -117,13 +117,13 @@ class SqlParityIT {
         q += "SELECT count(*) FROM events WHERE kind = 1" to emptyList()
         q += "SELECT count(*) FROM events WHERE kind IN (1, 7) AND created_at BETWEEN ? AND ?" to listOf(lo, hi)
         q += "SELECT pubkey, count(*) FROM events WHERE kind = 1 GROUP BY pubkey ORDER BY 2 DESC, 1" to emptyList()
-        q += "SELECT DISTINCT value FROM tags WHERE kind = 10002 AND name = 'r' AND value <> '' ORDER BY 1" to emptyList()
-        q += "SELECT DISTINCT value FROM tags WHERE kind = 1 AND name = 'p' AND value <> '' ORDER BY 1 LIMIT 50" to emptyList()
+        q += "SELECT DISTINCT t1 FROM tags WHERE kind = 10002 AND t0 = 'r' AND t1 <> '' ORDER BY 1" to emptyList()
+        q += "SELECT DISTINCT t1 FROM tags WHERE kind = 1 AND t0 = 'p' AND t1 <> '' ORDER BY 1 LIMIT 50" to emptyList()
         // Scans: newest-first LIMIT (with its tie group), whole walks, positional tag reads.
         q += "SELECT id, created_at FROM events WHERE kind = 1 ORDER BY created_at DESC, id LIMIT 25" to emptyList()
         q += "SELECT id FROM events WHERE kind = 7 ORDER BY created_at DESC, id LIMIT 10 OFFSET 5" to emptyList()
         q += "SELECT kind, count(*), min(created_at), max(created_at) FROM events WHERE kind IN (0, 1, 3, 7) AND created_at >= ? GROUP BY kind ORDER BY kind" to listOf(lo)
-        q += "SELECT DISTINCT value, v2 FROM tags WHERE kind = 10002 AND name = 'r' AND (v2 IS NULL OR v2 = 'write') ORDER BY 1, 2" to emptyList()
+        q += "SELECT DISTINCT t1, t2 FROM tags WHERE kind = 10002 AND t0 = 'r' AND (t2 IS NULL OR t2 = 'write') ORDER BY 1, 2" to emptyList()
         q += "SELECT pubkey, created_at, id FROM events WHERE kind = 0 AND pubkey IN (?, ?, ?, ?) ORDER BY pubkey" to authors.take(4)
         q += "SELECT id FROM events WHERE id IN (?, ?, ?, ?) ORDER BY id" to ids.take(3) + "f".repeat(64)
         // Math functions: zap-style arithmetic over tag values and grouped timestamps.
@@ -131,11 +131,11 @@ class SqlParityIT {
             "SELECT kind, round(sqrt(avg(created_at)), 3), floor(log10(count(*) + 1)), pow(2, kind % 5), mod(max(created_at), 7), " +
             "sign(min(created_at) - ?), exp(ln(count(*))) FROM events WHERE kind IN (0, 1, 3, 7) GROUP BY kind ORDER BY kind" to listOf(lo)
         // Joins whose second side only the join key makes selective.
-        q += "SELECT count(*) FROM tags t JOIN events n ON n.id = t.value WHERE t.kind = 7 AND t.name = 'e'" to emptyList()
+        q += "SELECT count(*) FROM tags t JOIN events n ON n.id = t.t1 WHERE t.kind = 7 AND t.t0 = 'e'" to emptyList()
         q +=
-            "SELECT d.value, count(*) FROM tags l JOIN tags d ON d.event_id = l.event_id AND d.name = 'p' " +
-            "WHERE l.kind = 1 AND l.name = 'e' GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 20" to emptyList()
-        q += "SELECT e.id FROM events e WHERE e.kind = 1 AND EXISTS (SELECT 1 FROM tags t WHERE t.event_id = e.id AND t.name = 'p' AND t.value = ?) ORDER BY e.id" to pValues.take(1)
+            "SELECT d.t1, count(*) FROM tags l JOIN tags d ON d.event_id = l.event_id AND d.t0 = 'p' " +
+            "WHERE l.kind = 1 AND l.t0 = 'e' GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 20" to emptyList()
+        q += "SELECT e.id FROM events e WHERE e.kind = 1 AND EXISTS (SELECT 1 FROM tags t WHERE t.event_id = e.id AND t.t0 = 'p' AND t.t1 = ?) ORDER BY e.id" to pValues.take(1)
 
         // The filter spellings the mirror and the monitor read through.
         val filters =

@@ -191,7 +191,7 @@ class SqlConformanceTest {
 
     @Test
     fun distinctRelayUrlsUseTheTagIndexGrouping() {
-        assertSame("SELECT DISTINCT value FROM tags WHERE kind = 10002 AND name = 'r' AND value <> ''")
+        assertSame("SELECT DISTINCT t1 FROM tags WHERE kind = 10002 AND t0 = 'r' AND t1 <> ''")
         assertEquals(1, spy.distinctTags)
     }
 
@@ -203,26 +203,26 @@ class SqlConformanceTest {
                 "sign(min(created_at) - 1200), ceil(avg(length(content)) / 3.0) FROM events WHERE kind IN (1, 7) GROUP BY kind ORDER BY kind",
         )
         // R10: write relays only — the marker is tag position 2, which no engine index holds.
-        assertSame("SELECT DISTINCT value FROM tags WHERE kind = 10002 AND name = 'r' AND (v2 IS NULL OR v2 = 'write')")
+        assertSame("SELECT DISTINCT t1 FROM tags WHERE kind = 10002 AND t0 = 'r' AND (t2 IS NULL OR t2 = 'write')")
         // R2: newest version per author for one replaceable kind.
         assertSame("SELECT pubkey, max(created_at) FROM events WHERE kind = 0 AND pubkey IN (?, ?, ?) GROUP BY pubkey", authors[0], authors[2], authors[4])
         // R3: window counts per kind.
         assertSame("SELECT kind, count(*) FROM events WHERE created_at BETWEEN 1100 AND 1400 AND kind IN (1, 7, 30166) GROUP BY kind")
         // R12: dead relays in one namespace (tag positions 1 and 2).
-        assertSame("SELECT d.value FROM tags l JOIN tags d ON d.event_id = l.event_id AND d.name = 'd' WHERE l.kind = 30166 AND l.name = 'l' AND l.value = 'dead' AND l.v2 = 'relay.fitness'")
+        assertSame("SELECT d.t1 FROM tags l JOIN tags d ON d.event_id = l.event_id AND d.t0 = 'd' WHERE l.kind = 30166 AND l.t0 = 'l' AND l.t1 = 'dead' AND l.t2 = 'relay.fitness'")
         // R14: latest verdict per url for one monitor, reading the epoch at position 4.
         assertSame(
-            "SELECT d.value, max(e.created_at), l.v4 FROM events e JOIN tags d ON d.event_id = e.id AND d.name = 'd' " +
-                "JOIN tags l ON l.event_id = e.id AND l.name = 'l' WHERE e.kind = 30166 AND e.pubkey = ? GROUP BY d.value",
+            "SELECT d.t1, max(e.created_at), l.t4 FROM events e JOIN tags d ON d.event_id = e.id AND d.t0 = 'd' " +
+                "JOIN tags l ON l.event_id = e.id AND l.t0 = 'l' WHERE e.kind = 30166 AND e.pubkey = ? GROUP BY d.t1",
             authors[0],
         )
         // Reactions to one author's notes.
-        assertSame("SELECT count(*) FROM events r JOIN tags t ON t.event_id = r.id AND t.name = 'e' JOIN events n ON n.id = t.value WHERE r.kind = 7 AND n.kind = 1 AND n.pubkey = ?", authors[0])
+        assertSame("SELECT count(*) FROM events r JOIN tags t ON t.event_id = r.id AND t.t0 = 'e' JOIN events n ON n.id = t.t1 WHERE r.kind = 7 AND n.kind = 1 AND n.pubkey = ?", authors[0])
         // Newest-first listing whose LIMIT lands inside a tie group.
         assertSame("SELECT id, created_at FROM events WHERE kind = 1 ORDER BY created_at DESC, id LIMIT 7")
         assertSame("SELECT id FROM events WHERE kind = 1 ORDER BY created_at DESC, id LIMIT 5 OFFSET 4")
         // Hashtag counts through a tag condition.
-        assertSame("SELECT lower(value), count(*) FROM tags WHERE name = 't' AND value IN ('nostr', 'Nostr') GROUP BY 1")
+        assertSame("SELECT lower(t1), count(*) FROM tags WHERE t0 = 't' AND t1 IN ('nostr', 'Nostr') GROUP BY 1")
     }
 
     @Test
@@ -234,11 +234,11 @@ class SqlConformanceTest {
                 { "SELECT kind, count(*), min(created_at), max(created_at) FROM events WHERE kind IN (${kinds.random(r)}, ${kinds.random(r)}) GROUP BY kind" },
                 { "SELECT pubkey, count(*) FROM events WHERE kind = ${kinds.random(r)} GROUP BY pubkey" },
                 { "SELECT count(*) FROM events WHERE kind = ${kinds.random(r)} AND created_at >= ${1_000 + r.nextInt(400)}" },
-                { "SELECT value, count(*) FROM tags WHERE kind = ${kinds.random(r)} AND name = '${listOf("p", "t", "r", "e").random(r)}' GROUP BY value" },
-                { "SELECT DISTINCT value FROM tags WHERE name = '${listOf("p", "t", "r").random(r)}' AND kind = ${kinds.random(r)} AND value <> ''" },
+                { "SELECT t1, count(*) FROM tags WHERE kind = ${kinds.random(r)} AND t0 = '${listOf("p", "t", "r", "e").random(r)}' GROUP BY t1" },
+                { "SELECT DISTINCT t1 FROM tags WHERE t0 = '${listOf("p", "t", "r").random(r)}' AND kind = ${kinds.random(r)} AND t1 <> ''" },
                 { "SELECT id FROM events WHERE kind = 1 AND pubkey = '${authors.random(r)}' ORDER BY created_at DESC, id LIMIT ${r.nextInt(1, 6)}" },
-                { "SELECT e.content FROM events e WHERE e.kind = 1 AND EXISTS (SELECT 1 FROM tags t WHERE t.event_id = e.id AND t.name = 't' AND t.value = 'sql')" },
-                { "SELECT count(*) FROM tags WHERE name = 'p' AND value = '${authors.random(r)}'" },
+                { "SELECT e.content FROM events e WHERE e.kind = 1 AND EXISTS (SELECT 1 FROM tags t WHERE t.event_id = e.id AND t.t0 = 't' AND t.t1 = 'sql')" },
+                { "SELECT count(*) FROM tags WHERE t0 = 'p' AND t1 = '${authors.random(r)}'" },
             )
         repeat(200) {
             val sql = shapes.random(r)()

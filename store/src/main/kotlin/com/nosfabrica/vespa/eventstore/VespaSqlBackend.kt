@@ -40,8 +40,8 @@ import com.vitorpamplona.quartz.nipXXSql.SqlStoreBackend
  *
  *  - **Aggregates, natively** — `count(*)` is one engine count; `count(*)
  *    GROUP BY pubkey` is the server-side author grouping
- *    ([EventIndex.countByAuthor]); `SELECT DISTINCT value FROM tags WHERE
- *    name = '<letter>' AND value <> ''` is the `tag_index` grouping behind
+ *    ([EventIndex.countByAuthor]); `SELECT DISTINCT t1 FROM tags WHERE
+ *    t0 = '<letter>' AND t1 <> ''` is the `tag_index` grouping behind
  *    [NostrSemanticsStore.distinctTagValues]. Anything else returns null and
  *    Quartz falls back to scans.
  *  - **Scans** — every match of the spec's filter, walked with
@@ -111,8 +111,8 @@ internal class VespaSqlBackend(
             }
 
             // tag_index holds tag[1] of every single-letter tag, minus empty
-            // values: exactly the rows `name = <letter> AND value <> ''` keeps.
-            spec.table == SqlProfile.TAGS && plan.groupBy == listOf("value") && plan.aggregates.isEmpty() &&
+            // values: exactly the rows `t0 = <letter> AND t1 <> ''` keeps.
+            spec.table == SqlProfile.TAGS && plan.groupBy == listOf("t1") && plan.aggregates.isEmpty() &&
                 spec.tagName?.let(::isIndexableTagName) == true && spec.tagValues == null && spec.valueNonEmpty -> {
                 store.distinctTagValues(spec.toFilter(), spec.tagName!!, 1, unconditional = true).map { listOf(it) }
             }
