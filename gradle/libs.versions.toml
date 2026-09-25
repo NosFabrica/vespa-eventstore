@@ -5,7 +5,7 @@ app = "1.0.1"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"
 # Quartz from JitPack (amethyst @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
-# 7510b3d10a = amethyst branch claude/nostr-relay-sql-cursor-0615uh @ 2026-09-25,
+# 61e47f5215 = amethyst branch claude/nostr-relay-sql-cursor-0615uh @ 2026-09-25,
 # bumped FOR this store: it carries the Nostr SQL profile (`nipXXSql`) and
 # the pushdown executor this store now answers it through (`VespaSqlBackend`),
 # including join-key propagation: a reference this store refuses as unselective
@@ -13,7 +13,9 @@ mavenPublish = "0.37.0"
 # the other side loaded, which is what makes the monitor's verdict joins run here;
 # and id walks (`SqlStoreBackend.idsAndTimes`): an events reference read only for
 # id / created_at is answered by `visitIds` with no document fetched, which is
-# every NIP-77 snapshot the mirror reads over SQL.
+# every NIP-77 snapshot the mirror reads over SQL; and SQLite's math functions
+# (sqrt, pow, ln/log, floor/ceil/trunc, sign, mod, trigonometry), which the
+# pushdown's scratch SQLite computes for this store as the SQLite stores do.
 #
 #   IEventStore gains two DEFAULTED members, `sqlBackend()` and `sql(...)`. The
 #     default answers SQL through `query` / `count`; NostrSemanticsStore overrides
@@ -77,7 +79,7 @@ mavenPublish = "0.37.0"
 #
 # Prev cecc3287b2 (2026-09-01: 17 catch-all kinds split into title/body roles, four
 # affiliation URLs, six doubled `t`-tag scans dropped; a ranking backfill).
-quartz = "7510b3d10a"
+quartz = "61e47f5215"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 sqlite = "2.7.0"

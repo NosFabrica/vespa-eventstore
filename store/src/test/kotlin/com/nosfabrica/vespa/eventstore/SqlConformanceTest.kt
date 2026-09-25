@@ -197,6 +197,11 @@ class SqlConformanceTest {
 
     @Test
     fun relayShapedQueriesMatchTheReference() {
+        // Math functions over grouped values, computed on the pushdown's scratch rows.
+        assertSame(
+            "SELECT kind, round(sqrt(avg(created_at)), 3), floor(log10(count(*) + 1)), pow(2, kind % 5), mod(max(created_at), 7), " +
+                "sign(min(created_at) - 1200), ceil(avg(length(content)) / 3.0) FROM events WHERE kind IN (1, 7) GROUP BY kind ORDER BY kind",
+        )
         // R10: write relays only — the marker is tag position 2, which no engine index holds.
         assertSame("SELECT DISTINCT value FROM tags WHERE kind = 10002 AND name = 'r' AND (v2 IS NULL OR v2 = 'write')")
         // R2: newest version per author for one replaceable kind.

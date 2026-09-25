@@ -126,6 +126,10 @@ class SqlParityIT {
         q += "SELECT DISTINCT value, v2 FROM tags WHERE kind = 10002 AND name = 'r' AND (v2 IS NULL OR v2 = 'write') ORDER BY 1, 2" to emptyList()
         q += "SELECT pubkey, created_at, id FROM events WHERE kind = 0 AND pubkey IN (?, ?, ?, ?) ORDER BY pubkey" to authors.take(4)
         q += "SELECT id FROM events WHERE id IN (?, ?, ?, ?) ORDER BY id" to ids.take(3) + "f".repeat(64)
+        // Math functions: zap-style arithmetic over tag values and grouped timestamps.
+        q +=
+            "SELECT kind, round(sqrt(avg(created_at)), 3), floor(log10(count(*) + 1)), pow(2, kind % 5), mod(max(created_at), 7), " +
+            "sign(min(created_at) - ?), exp(ln(count(*))) FROM events WHERE kind IN (0, 1, 3, 7) GROUP BY kind ORDER BY kind" to listOf(lo)
         // Joins whose second side only the join key makes selective.
         q += "SELECT count(*) FROM tags t JOIN events n ON n.id = t.value WHERE t.kind = 7 AND t.name = 'e'" to emptyList()
         q +=
