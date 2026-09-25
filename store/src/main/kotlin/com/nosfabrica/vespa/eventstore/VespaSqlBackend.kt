@@ -46,7 +46,8 @@ import com.vitorpamplona.quartz.nipXXSql.SqlStoreBackend
  *    Quartz falls back to scans.
  *  - **Scans** — every match of the spec's filter, walked with
  *    [EventIndex.visitIds] (no hit cap) and fetched in id batches; a
- *    newest-first listing's LIMIT goes to a plain search instead.
+ *    newest-first listing's LIMIT goes to a plain search instead. A
+ *    reference the query reads only for ids and times is the walk alone.
  *  - **Refusal** — a reference with no condition on id, author, kind or a
  *    single-letter tag would walk the whole corpus, so it is refused and the
  *    query fails `unsupported:`.
@@ -75,6 +76,23 @@ internal class VespaSqlBackend(
             true
         }
     }
+
+    /**
+     * An id listing (`FilterSql.ids`, every NIP-77 snapshot read over SQL): the same
+     * [EventIndex.visitIds] walk the store's own snapshots take, no documents fetched.
+     */
+    override suspend fun idsAndTimes(
+        spec: ScanSpec,
+        onEach: (id: String, createdAt: Long) -> Unit,
+    ): Boolean =
+        withActivity(Activity.Query) {
+            val q = store.plainQuery(spec.toFilter()) ?: return@withActivity true
+            index.visitIds(q) { page ->
+                page.forEach { onEach(it.id, it.createdAt) }
+                true
+            }
+            true
+        }
 
     override fun acceptsScan(spec: ScanSpec) = spec.isSelective
 

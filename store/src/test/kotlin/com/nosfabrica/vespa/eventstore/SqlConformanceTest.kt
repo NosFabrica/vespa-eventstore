@@ -25,9 +25,11 @@ import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.vitorpamplona.quartz.nip01Core.core.Event
+import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.normalizeRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.sqlite.EventStore
+import com.vitorpamplona.quartz.nipXXSql.FilterSql
 import com.vitorpamplona.quartz.nipXXSql.SqlException
 import com.vitorpamplona.quartz.utils.EventFactory
 import kotlinx.coroutines.runBlocking
@@ -52,6 +54,9 @@ class SqlConformanceTest {
         var byAuthor = 0
         var distinctTags = 0
         var walks = 0
+        var searches = 0
+
+        override suspend fun search(query: EventQuery) = inner.search(query).also { searches++ }
 
         override suspend fun count(query: EventQuery) = inner.count(query).also { counts++ }
 
@@ -162,6 +167,19 @@ class SqlConformanceTest {
         assertSame("SELECT count(*) AS n FROM events WHERE kind IN (1, 7) AND created_at BETWEEN 1105 AND 1310")
         assertEquals(2, spy.counts)
         assertEquals(0, spy.walks)
+    }
+
+    @Test
+    fun idListingsAreOneWalkAndNoDocuments() {
+        // The shape the relay's mirror reads NIP-77 snapshots through.
+        val ids = FilterSql.ids(Filter(kinds = listOf(1, 7), authors = authors.take(3), since = 1_100))
+        // Loading the corpus searches (replaceable checks); only what the query does counts.
+        val searchesBefore = spy.searches
+        val actual = run(vespa, ids.sql, ids.params)
+        assertEquals(1, spy.walks)
+        assertEquals(searchesBefore, spy.searches, "an id listing must not fetch documents")
+        assertEquals(run(reference, ids.sql, ids.params), actual)
+        assertTrue(actual.second.isNotEmpty(), "vacuous")
     }
 
     @Test
