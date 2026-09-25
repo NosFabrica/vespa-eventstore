@@ -64,6 +64,7 @@ import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import com.vitorpamplona.quartz.nipXXSql.SqlStoreBackend
 import com.vitorpamplona.quartz.utils.Hex
 import kotlinx.coroutines.sync.Mutex
 import kotlin.coroutines.coroutineContext
@@ -512,6 +513,17 @@ class NostrSemanticsStore(
                 }
             }
         }
+
+    /**
+     * The PLAIN engine query [filter] maps to: expiry at this store's clock,
+     * no observer lens, no ranking — what a NIP-77 snapshot and SQL read.
+     */
+    internal fun plainQuery(filter: Filter): EventQuery? = filter.toExpiryQuery(nowSecs())
+
+    private val sqlBackend by lazy { VespaSqlBackend(this, index) }
+
+    /** Quartz's SQL profile, answered through engine reads; see [VespaSqlBackend]. */
+    override fun sqlBackend(): SqlStoreBackend = sqlBackend
 
     override suspend fun <T : Event> query(filter: Filter): List<T> = query(listOf(filter))
 

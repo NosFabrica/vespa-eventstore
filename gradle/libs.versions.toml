@@ -5,7 +5,29 @@ app = "1.0.1"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"
 # Quartz from JitPack (amethyst @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
-# a8e8778265 = amethyst main @ 2026-09-10. NOT bumped for this store, for once:
+# 9fa6755ebb = amethyst branch claude/nostr-relay-sql-cursor-0615uh @ 2026-09-25,
+# bumped FOR this store: it carries the Nostr SQL profile (`nipXXSql`) and
+# the pushdown executor this store now answers it through (`VespaSqlBackend`),
+# including join-key propagation: a reference this store refuses as unselective
+# (`tags d ON d.event_id = l.event_id AND d.name = 'd'`) is fetched by the ids
+# the other side loaded, which is what makes the monitor's verdict joins run here.
+#
+#   IEventStore gains two DEFAULTED members, `sqlBackend()` and `sql(...)`. The
+#     default answers SQL through `query` / `count`; NostrSemanticsStore overrides
+#     `sqlBackend()` so aggregates go to engine counts / groupings and scans walk
+#     with `visitIds`. VespaEventStore delegates both through `by store`.
+#   Filter, SearchQuery, SearchFieldExtractor, IndexableFields and QueryBuilder
+#     have no changed line between the pins; nip50 adds `SearchableKinds` (a
+#     recorded list, used by nothing on the write path) and a list-diff on
+#     SearchRelayListEvent. So no reindex, and no change to what is findable.
+#   Quartz now links jackson-databind without jackson-module-kotlin, so
+#     kotlin-reflect no longer arrives transitively; the two tests that read
+#     members reflectively declare it themselves (testImplementation).
+#   RejectionReason gains `duplicate:` constants; the relay server now answers
+#     a duplicate or superseded EVENT `OK true`. That is relay behavior, not
+#     store behavior: this store's own rejection strings are unchanged.
+#
+# Prev a8e8778265 = amethyst main @ 2026-09-10. NOT bumped for this store, for once:
 # the range is upstream's own work, and everything this store reads out of it is
 # byte-identical. IEventStore, SQLiteEventStore, Filter, SearchQuery,
 # SearchFieldExtractor and IndexableFields do not have one changed line between
@@ -52,7 +74,7 @@ mavenPublish = "0.37.0"
 #
 # Prev cecc3287b2 (2026-09-01: 17 catch-all kinds split into title/body roles, four
 # affiliation URLs, six doubled `t`-tag scans dropped; a ranking backfill).
-quartz = "a8e8778265"
+quartz = "9fa6755ebb"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 sqlite = "2.7.0"

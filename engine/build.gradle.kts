@@ -45,6 +45,8 @@ dependencies {
     testFixturesImplementation(libs.jetty.server)
     testFixturesImplementation(libs.jetty.http2.server)
     testImplementation(kotlin("test"))
+    // Tests read members reflectively; quartz stopped carrying kotlin-reflect in with jackson-module-kotlin.
+    testImplementation(kotlin("reflect"))
 }
 
 kotlin {

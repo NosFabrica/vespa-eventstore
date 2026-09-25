@@ -10,6 +10,8 @@ dependencies {
     api(project(":engine"))
     implementation(libs.kotlinx.coroutines)
     testImplementation(kotlin("test"))
+    // Tests read members reflectively; quartz stopped carrying kotlin-reflect in with jackson-module-kotlin.
+    testImplementation(kotlin("reflect"))
     testImplementation(testFixtures(project(":engine")))
     // Virtual-time test clock: measures read/write serialization deterministically
     // by injecting per-round-trip delays into the index (see BatchIngestConcurrencyTest).
