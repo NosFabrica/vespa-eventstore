@@ -398,6 +398,10 @@ class VespaEventStore internal constructor(
             // How old the kind-10040 pass is; -1 while none is cached. Above
             // the refresh interval means the refresher is failing (#145).
             ledger.gauge("trust.providers.age.secs") { store.trustProviderAgeSecs() ?: -1L }
+            // Cards by an unnamed signer that could not be remembered for a
+            // later walk (the skip set is bounded); non-zero means a reconcile
+            // is owed if another process names those signers.
+            ledger.gauge("trust.skipped.dropped") { trust.recompute.skippedDropped() }
             ledger.gauge("feed.inflight") { eventIndex.feedInflight() }
             ledger.gauge("lock.held") { IngestStats.heldAll().size.toLong() }
             // The reconciler's and drainer's mutating batches take the store's

@@ -85,17 +85,20 @@ internal class TrustRecompute(
     /** Seconds since the cached provider pass was issued; null while none is cached. */
     fun providerAgeSecs(): Long? = providers.ageSecs()
 
-    /** A local 10040 write is walking [services] itself — see [ProviderMap.claim]. */
-    fun claimServices(services: Set<String>) = providers.claim(services)
+    /** A local 10040 write STORED and queued a walk of [services] — see [ProviderMap.walkQueued]. */
+    fun walkQueued(services: Set<String>) = providers.walkQueued(services)
 
-    /** Services a pass found that no walk here was declared for — see [ProviderMap.takeDiscovered]. */
-    fun takeDiscoveredServices(): Set<String> = providers.takeDiscovered()
+    /** Signers whose cards were skipped here and that the cached pass now names — see [ProviderMap.takeSkippedNowNamed]. */
+    fun takeSkippedNowNamed(): Set<String> = providers.takeSkippedNowNamed()
 
-    /** Whether a pass found any; a peek, so a quiet refresh never takes a lock. */
-    fun hasDiscoveredServices(): Boolean = providers.hasDiscovered()
+    /** Whether there are any; a peek, so a quiet refresh never takes a lock. */
+    fun hasSkippedNowNamed(): Boolean = providers.hasSkippedNowNamed()
 
-    /** [takeDiscoveredServices]' result back, when its walk could not be queued. */
-    fun giveBackDiscoveredServices(services: Set<String>) = providers.giveBack(services)
+    /** [takeSkippedNowNamed]'s result back, when its walk was never queued. */
+    fun giveBackSkipped(signers: Collection<String>) = providers.giveBack(signers)
+
+    /** Skips not remembered because the set was full — see [ProviderMap.skippedDropped]. */
+    fun skippedDropped(): Long = providers.skippedDropped
 
     /**
      * [recomputeBatch] under a gate, taken PER SLICE rather than once for the
@@ -276,9 +279,15 @@ internal class TrustRecompute(
     ): Set<String> {
         val updates = ArrayList<ReputationCells>(cards.size)
         val unapplied = LinkedHashSet<String>()
+        var unmapped: HashSet<String>? = null
         for (doc in cards.sortedWith(DERIVE_ORDER)) {
             val subject = subjectOf(doc) ?: continue
-            if (!serviceProviders.maps(doc.pubkey)) continue
+            if (!serviceProviders.maps(doc.pubkey)) {
+                // Remembered, not just dropped: if another process's 10040
+                // names this signer later, these cards are owed a walk here.
+                (unmapped ?: HashSet<String>().also { unmapped = it }) += doc.pubkey
+                continue
+            }
             val card = doc.toEvent() as? ContactCardEvent
             if (card == null) {
                 unapplied += subject
@@ -288,6 +297,7 @@ internal class TrustRecompute(
             val followers = card.followerCount()?.toDouble()
             updates += ReputationCells(subject, ServiceKey(doc.pubkey), influence, followers, dropInfluence = influence == null, dropFollowers = followers == null)
         }
+        unmapped?.let(providers::noteSkipped)
         if (updates.isEmpty()) return unapplied
         IngestStats.annotateHold("cell update over ${updates.size} card(s)", WriteLocks.TRUST_GATE)
         IngestStats.timed("proj.write") { reputations.updateCells(updates) }

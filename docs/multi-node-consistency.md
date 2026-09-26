@@ -123,9 +123,13 @@ fail them all whenever coverage dips. So:
 A rebuild is one `/search/` of the stored 10040s (hundreds of documents, not
 the corpus), readers keep the old pass while it runs, and a rebuild that throws
 or reads nothing keeps the old pass (`BackgroundFailures` "trust.providers";
-the `trust.providers.age.secs` gauge climbs past the interval). A rebuild that
-names a service this process never named queues that service's walk, so the
-cards it skipped meanwhile are projected. `refreshTrustProviders()` is the
+the `trust.providers.age.secs` gauge climbs past the interval). Each process
+remembers the signers of the cards it skipped as unnamed; when a pass names
+one, that signer's walk is queued, so the skipped cards are projected — and a
+service another process named and already walked is not walked again where
+nothing was skipped. The memory is bounded (`trust.skipped.dropped` counts what
+did not fit) and does not survive a restart, so cards skipped before one — or
+before this change — need a reconcile with repair. `refreshTrustProviders()` is the
 on-demand barrier; `explainTrust` reports a pass that disagrees with the stored
 list instead of blaming the list.
 

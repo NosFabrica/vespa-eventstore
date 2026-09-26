@@ -21,13 +21,14 @@
 package com.nosfabrica.vespa.eventstore.trust
 
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
+import com.nosfabrica.vespa.eventstore.engine.DocRef
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.serviceCells
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
-import com.nosfabrica.vespa.eventstore.runtime.BackgroundFailures
+import com.nosfabrica.vespa.eventstore.mapping.toDoc
 import com.nosfabrica.vespa.eventstore.runtime.WriterTopology
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -78,8 +79,26 @@ class ProviderRefresherTest {
 
     private enum class ListReads { SERVE, THROW, EMPTY }
 
+    /** Services whose walk (the by-author card id listing) the process under test was asked for, in order. */
+    private val walked = mutableListOf<String>()
+
+    /** A service whose walk fails, as an engine timeout would. */
+    private var failingWalk: String? = null
+
     private val flaky =
         object : EventIndex by shared {
+            override suspend fun visitIds(
+                query: EventQuery,
+                withDTag: Boolean,
+                onPage: suspend (List<DocRef>) -> Boolean,
+            ) {
+                if (query.kinds == listOf(30382) && query.authors.size == 1) {
+                    walked += query.authors.single()
+                    if (query.authors.single() == failingWalk) error("walk timed out")
+                }
+                shared.visitIds(query, withDTag, onPage)
+            }
+
             override suspend fun search(query: EventQuery): List<EventDoc> {
                 if (query.kinds == listOf(TrustProviderListEvent.KIND) && query.authors.isEmpty()) {
                     when (listReads) {
@@ -149,6 +168,7 @@ class ProviderRefresherTest {
     private suspend fun warm() {
         store.insert(rankedBy(bystander, serviceA))
         assertEquals(serviceA, lensOf(bystander).rank, "warm: the pass is built and cached")
+        walked.clear() // that first list's own walk of serviceA
     }
 
     @Test
@@ -247,12 +267,88 @@ class ProviderRefresherTest {
         }
 
     @Test
-    fun `a service a local write already walks is not handed to the refresher again`() =
+    fun `a service first named by another process is not walked here when nothing here skipped its cards`() =
         runBlocking {
             warm()
+            // The other process named it and walked its cards itself.
+            other.insert(card(serviceNew))
+            other.insert(rankedBy(reader, serviceNew))
+            store.refreshTrustProviders()
+            assertEquals(serviceNew, lensOf(reader).rank)
+            // A walk is O(the service's cards) — 279,594 for the largest — and
+            // every card was already projected by the process that named it.
+            assertEquals(emptyList(), walked, "no redundant walk")
+        }
+
+    @Test
+    fun `a local write that names a skipped signer walks it once, not again at the next refresh`() =
+        runBlocking {
+            warm()
+            store.insert(card(serviceNew))
             store.insert(rankedBy(reader, serviceNew))
-            projection.recompute.providerMap() // the cold rebuild after that write's invalidation
-            assertFalse(projection.recompute.hasDiscoveredServices(), "the write declared the walk; the refresher must not")
+            assertEquals(listOf(serviceNew), walked, "the write's own walk")
+            store.refreshTrustProviders()
+            assertEquals(listOf(serviceNew), walked, "the refresher does not walk it a second time")
+            assertEquals(serviceCells(serviceNew to 87), reputations.get(subject)?.influenceScores)
+        }
+
+    /**
+     * A 10040 that LOSES supersession queues no walk, so it must not release
+     * the skips its services are owed: the newer list the other process stored
+     * names the same service, and once the pass catches up the walk is still due.
+     */
+    @Test
+    fun `a 10040 that loses supersession leaves the skipped cards owed`() =
+        runBlocking {
+            warm()
+            val older = rankedBy(reader, serviceNew)
+            val newer = rankedBy(reader, serviceNew)
+            other.insert(newer)
+            store.insert(card(serviceNew))
+            // A client re-sends the older version to this process, racing the
+            // admission probe: the probe saw no newer version, the engine's
+            // conditional put then refuses it. Driven at the projection, since
+            // the store's probe would reject it first in a test without the race.
+            assertFalse(projection.putIfNewer(older.toDoc()), "the premise: the older list loses")
+            assertTrue(reputations.get(subject)?.influenceScores.isNullOrEmpty(), "the premise: skipped, and the stale write walked nothing")
+
+            store.refreshTrustProviders()
+            assertEquals(serviceCells(serviceNew to 87), reputations.get(subject)?.influenceScores)
+        }
+
+    /**
+     * Booting while the engine serves no 10040s yet, then taking a local write:
+     * nothing was skipped for the services already named, so none of them is
+     * walked once the engine catches up — a boot must not re-walk the corpus.
+     */
+    @Test
+    fun `a boot under empty list reads does not re-walk the services already named`() =
+        runBlocking {
+            other.insert(rankedBy(bystander, serviceA))
+            other.insert(rankedBy(curator, serviceB))
+            listReads = ListReads.EMPTY
+            store.insert(rankedBy(reader, serviceNew))
+            listReads = ListReads.SERVE
+            assertEquals(serviceA, lensOf(bystander).rank)
+            store.refreshTrustProviders()
+            assertEquals(listOf(serviceNew), walked, "only the service the local write named")
+        }
+
+    /**
+     * Inline settle: the refresher's queued walk fails inside the same call.
+     * It is in the ledger and the drain retries it; handing it back as well
+     * would re-queue it every tick, each re-queue dropping the provider cache.
+     */
+    @Test
+    fun `a queued walk that fails is left to the ledger, not handed back to the refresher`() =
+        runBlocking {
+            warm()
+            other.insert(rankedBy(reader, serviceNew))
+            store.insert(card(serviceNew))
+            failingWalk = serviceNew
+            assertFailsWith<Throwable> { store.refreshTrustProviders() }
+            assertFalse(projection.recompute.hasSkippedNowNamed(), "not handed back")
+            assertEquals(1L, projection.backlog.pendingServices(), "still queued, for the drain")
         }
 
     @Test
@@ -292,7 +388,6 @@ class ProviderRefresherTest {
                     delay(10)
                 }
             }
-            assertEquals(0L, BackgroundFailures.consecutiveFailures(BackgroundFailures.PROVIDER_REFRESH))
         }
 
     @Test

@@ -46,6 +46,7 @@ internal class TrustExplain(
     private val index: EventIndex,
     private val reputations: ReputationIndex,
     private val recompute: TrustRecompute,
+    private val nowSecs: () -> Long = { System.currentTimeMillis() / 1000 },
 ) {
     class Explanation(
         val pubkey: String,
@@ -122,7 +123,10 @@ internal class TrustExplain(
 
     suspend fun explain(pubkey: String): Explanation {
         val profiles = index.search(EventQuery(kinds = listOf(0), authors = listOf(pubkey), limit = 1)).size
-        val lists = index.search(EventQuery(kinds = listOf(TrustProviderListEvent.KIND), authors = listOf(pubkey), limit = 1))
+        // Live lists only, as the pass reads them: an expired 10040 not yet swept
+        // would otherwise read as a pass that disagrees with it, which no
+        // refresh can ever fix.
+        val lists = index.search(EventQuery(kinds = listOf(TrustProviderListEvent.KIND), authors = listOf(pubkey), notExpiredAt = nowSecs(), limit = 1))
         val lens = recompute.providerMap().lensOf(pubkey)
         val stored = ProviderMap.providersOf(lists).lensOf(pubkey)
         val cards = index.search(EventQuery(kinds = listOf(ContactCardEvent.KIND), tags = mapOf("d" to listOf(pubkey)), limit = MAX_CARDS)).size

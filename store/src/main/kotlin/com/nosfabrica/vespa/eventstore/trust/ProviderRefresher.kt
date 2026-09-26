@@ -62,9 +62,15 @@ import kotlinx.coroutines.launch
  * feeders that bypass the store.
  *
  * Cost per interval: one `/search/` of every non-expired 10040 plus a tag
- * parse — the same query a local 10040 write already triggers — and, only
- * when a pass names a service nobody here named, one ledger bracket queueing
- * its walk. A failed tick keeps the previous pass and is counted in
+ * parse — the same query a local 10040 write already triggers; nothing while
+ * no pass is cached — and, only when the pass names a signer whose cards this
+ * process SKIPPED, one ledger bracket queueing that signer's walk. A service
+ * another process named and walked is not walked again here unless a card
+ * of its was skipped here ([ProviderMap.noteSkipped]).
+ *
+ * KNOWN LIMIT: the skip set is memory. Cards skipped here and not yet walked
+ * when the process stops are left to a reconcile — as is everything a
+ * process skipped before this refresher existed. A failed tick keeps the previous pass and is counted in
  * [BackgroundFailures] under [BackgroundFailures.PROVIDER_REFRESH].
  */
 internal class ProviderRefresher(
