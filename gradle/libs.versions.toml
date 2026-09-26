@@ -5,7 +5,18 @@ app = "1.0.1"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"
 # Quartz from JitPack (amethyst @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
-# 8066ee7bf6 = amethyst branch claude/nostr-relay-sql-cursor-0615uh @ 2026-09-25,
+# c05aefbc08 = amethyst branch claude/nostr-relay-sql-cursor-0615uh @ 2026-09-26:
+# the SQL profile became NIP-FF, the Nostr Query Language (NQL). For this store:
+#   `IEventStore.sql(...)` is now `nql(query, params, maxRows): NqlResult`, answered
+#     for non-SQLite stores by an interpreter in Quartz over the SAME
+#     `SqlStoreBackend` (ScanSpec, AggregatePlan, events, idsAndTimes, acceptsScan
+#     unchanged), so VespaSqlBackend needs no change. Queries use NQL's grammar
+#     and types (aliases need AS, computed columns need names, strict types,
+#     errors on overflow / division by zero). `FilterSql` builds NQL, pages past a
+#     relay's row cap, and hydrates as `events(ids)` + `tags(ids)` (was `hydrate`).
+#   Nothing on the write path, search or Filter semantics moved: no reindex.
+#
+# Prev 8066ee7bf6 = amethyst branch claude/nostr-relay-sql-cursor-0615uh @ 2026-09-25,
 # bumped FOR this store: it carries the Nostr SQL profile (`nipXXSql`) and
 # the pushdown executor this store now answers it through (`VespaSqlBackend`),
 # including join-key propagation: a reference this store refuses as unselective
@@ -81,7 +92,7 @@ mavenPublish = "0.37.0"
 #
 # Prev cecc3287b2 (2026-09-01: 17 catch-all kinds split into title/body roles, four
 # affiliation URLs, six doubled `t`-tag scans dropped; a ranking backfill).
-quartz = "8066ee7bf6"
+quartz = "c05aefbc08"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 sqlite = "2.7.0"

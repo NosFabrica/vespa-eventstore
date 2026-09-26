@@ -41,10 +41,12 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /**
- * SQL over this store must answer exactly what Quartz's SQLite store does
- * for the same events — the relay-shaped queries sync and monitor need,
- * plus a random mix — while taking the engine's aggregate paths where it
- * can (checked through a spy on the index).
+ * NQL (NIP-FF) over this store must answer exactly what Quartz's SQLite
+ * store does for the same events — the relay-shaped queries sync and
+ * monitor need, plus a random mix — while taking the engine's aggregate
+ * paths where it can (checked through a spy on the index). The two sides run
+ * different engines: this store through Quartz's interpreter over
+ * [VespaSqlBackend], the reference compiled to SQLite.
  */
 class SqlConformanceTest {
     private class Spy(
@@ -142,13 +144,11 @@ class SqlConformanceTest {
 
     private fun run(
         store: IEventStore,
-        sql: String,
+        query: String,
         params: List<Any?>,
     ): Pair<List<String>, List<String>> {
-        var columns = emptyList<String>()
-        val rows = ArrayList<String>()
-        runBlocking { store.sql(sql, params, onColumns = { columns = it }) { rows.add(it.toString()) } }
-        return columns to rows.sorted()
+        val result = runBlocking { store.nql(query, params) }
+        return result.columns.map { "${it.name}:${it.type}" } to result.rows.map { it.toString() }.sorted()
     }
 
     private fun assertSame(
@@ -163,7 +163,7 @@ class SqlConformanceTest {
 
     @Test
     fun countIsOneEngineCount() {
-        assertSame("SELECT count(*) FROM events WHERE kind = 1")
+        assertSame("SELECT count(*) AS n FROM events WHERE kind = 1")
         assertSame("SELECT count(*) AS n FROM events WHERE kind IN (1, 7) AND created_at BETWEEN 1105 AND 1310")
         assertEquals(2, spy.counts)
         assertEquals(0, spy.walks)
@@ -175,16 +175,16 @@ class SqlConformanceTest {
         val ids = FilterSql.ids(Filter(kinds = listOf(1, 7), authors = authors.take(3), since = 1_100))
         // Loading the corpus searches (replaceable checks); only what the query does counts.
         val searchesBefore = spy.searches
-        val actual = run(vespa, ids.sql, ids.params)
+        val actual = run(vespa, ids.nql, ids.params)
         assertEquals(1, spy.walks)
         assertEquals(searchesBefore, spy.searches, "an id listing must not fetch documents")
-        assertEquals(run(reference, ids.sql, ids.params), actual)
+        assertEquals(run(reference, ids.nql, ids.params), actual)
         assertTrue(actual.second.isNotEmpty(), "vacuous")
     }
 
     @Test
     fun countPerAuthorIsTheServerSideGrouping() {
-        assertSame("SELECT pubkey, count(*) FROM events WHERE kind = 1 GROUP BY pubkey ORDER BY 2 DESC, 1")
+        assertSame("SELECT pubkey, count(*) AS n FROM events WHERE kind = 1 GROUP BY pubkey ORDER BY n DESC, pubkey")
         assertEquals(1, spy.byAuthor)
         assertEquals(0, spy.walks)
     }
@@ -197,32 +197,33 @@ class SqlConformanceTest {
 
     @Test
     fun relayShapedQueriesMatchTheReference() {
-        // Math functions over grouped values, computed on the pushdown's scratch rows.
+        // Math functions over grouped values, computed by the interpreter over this store's rows.
         assertSame(
-            "SELECT kind, round(sqrt(avg(created_at)), 3), floor(log10(count(*) + 1)), pow(2, kind % 5), mod(max(created_at), 7), " +
-                "sign(min(created_at) - 1200), ceil(avg(length(content)) / 3.0) FROM events WHERE kind IN (1, 7) GROUP BY kind ORDER BY kind",
+            "SELECT kind, round(sqrt(avg(created_at)) * 1000) / 1000 AS root, floor(log10(count(*) + 1)) AS digits, pow(2, kind % 5) AS p, " +
+                "max(created_at) % 7 AS m, abs(min(created_at) - 1200) AS a, ceil(avg(length(content)) / 3.0) AS c " +
+                "FROM events WHERE kind IN (1, 7) GROUP BY kind ORDER BY kind",
         )
         // R10: write relays only — the marker is tag position 2, which no engine index holds.
         assertSame("SELECT DISTINCT t1 FROM tags WHERE kind = 10002 AND t0 = 'r' AND (t2 IS NULL OR t2 = 'write')")
         // R2: newest version per author for one replaceable kind.
-        assertSame("SELECT pubkey, max(created_at) FROM events WHERE kind = 0 AND pubkey IN (?, ?, ?) GROUP BY pubkey", authors[0], authors[2], authors[4])
+        assertSame("SELECT pubkey, max(created_at) AS newest FROM events WHERE kind = 0 AND pubkey IN (?, ?, ?) GROUP BY pubkey", authors[0], authors[2], authors[4])
         // R3: window counts per kind.
-        assertSame("SELECT kind, count(*) FROM events WHERE created_at BETWEEN 1100 AND 1400 AND kind IN (1, 7, 30166) GROUP BY kind")
+        assertSame("SELECT kind, count(*) AS n FROM events WHERE created_at BETWEEN 1100 AND 1400 AND kind IN (1, 7, 30166) GROUP BY kind")
         // R12: dead relays in one namespace (tag positions 1 and 2).
-        assertSame("SELECT d.t1 FROM tags l JOIN tags d ON d.event_id = l.event_id AND d.t0 = 'd' WHERE l.kind = 30166 AND l.t0 = 'l' AND l.t1 = 'dead' AND l.t2 = 'relay.fitness'")
+        assertSame("SELECT d.t1 FROM tags AS l JOIN tags AS d ON d.event_id = l.event_id AND d.t0 = 'd' WHERE l.kind = 30166 AND l.t0 = 'l' AND l.t1 = 'dead' AND l.t2 = 'relay.fitness'")
         // R14: latest verdict per url for one monitor, reading the epoch at position 4.
         assertSame(
-            "SELECT d.t1, max(e.created_at), l.t4 FROM events e JOIN tags d ON d.event_id = e.id AND d.t0 = 'd' " +
-                "JOIN tags l ON l.event_id = e.id AND l.t0 = 'l' WHERE e.kind = 30166 AND e.pubkey = ? GROUP BY d.t1",
+            "SELECT d.t1, max(e.created_at) AS newest, max(l.t4) AS epoch FROM events AS e JOIN tags AS d ON d.event_id = e.id AND d.t0 = 'd' " +
+                "JOIN tags AS l ON l.event_id = e.id AND l.t0 = 'l' WHERE e.kind = 30166 AND e.pubkey = ? GROUP BY d.t1",
             authors[0],
         )
         // Reactions to one author's notes.
-        assertSame("SELECT count(*) FROM events r JOIN tags t ON t.event_id = r.id AND t.t0 = 'e' JOIN events n ON n.id = t.t1 WHERE r.kind = 7 AND n.kind = 1 AND n.pubkey = ?", authors[0])
+        assertSame("SELECT count(*) AS n FROM events AS r JOIN tags AS t ON t.event_id = r.id AND t.t0 = 'e' JOIN events AS n ON n.id = t.t1 WHERE r.kind = 7 AND n.kind = 1 AND n.pubkey = ?", authors[0])
         // Newest-first listing whose LIMIT lands inside a tie group.
         assertSame("SELECT id, created_at FROM events WHERE kind = 1 ORDER BY created_at DESC, id LIMIT 7")
         assertSame("SELECT id FROM events WHERE kind = 1 ORDER BY created_at DESC, id LIMIT 5 OFFSET 4")
         // Hashtag counts through a tag condition.
-        assertSame("SELECT lower(t1), count(*) FROM tags WHERE t0 = 't' AND t1 IN ('nostr', 'Nostr') GROUP BY 1")
+        assertSame("SELECT lower(t1) AS tag, count(*) AS n FROM tags WHERE t0 = 't' AND t1 IN ('nostr', 'Nostr') GROUP BY tag")
     }
 
     @Test
@@ -231,14 +232,14 @@ class SqlConformanceTest {
         val kinds = listOf(0, 1, 3, 7, 10002, 30166)
         val shapes =
             listOf<() -> String>(
-                { "SELECT kind, count(*), min(created_at), max(created_at) FROM events WHERE kind IN (${kinds.random(r)}, ${kinds.random(r)}) GROUP BY kind" },
-                { "SELECT pubkey, count(*) FROM events WHERE kind = ${kinds.random(r)} GROUP BY pubkey" },
-                { "SELECT count(*) FROM events WHERE kind = ${kinds.random(r)} AND created_at >= ${1_000 + r.nextInt(400)}" },
-                { "SELECT t1, count(*) FROM tags WHERE kind = ${kinds.random(r)} AND t0 = '${listOf("p", "t", "r", "e").random(r)}' GROUP BY t1" },
+                { "SELECT kind, count(*) AS n, min(created_at) AS first, max(created_at) AS last FROM events WHERE kind IN (${kinds.random(r)}, ${kinds.random(r)}) GROUP BY kind" },
+                { "SELECT pubkey, count(*) AS n FROM events WHERE kind = ${kinds.random(r)} GROUP BY pubkey" },
+                { "SELECT count(*) AS n FROM events WHERE kind = ${kinds.random(r)} AND created_at >= ${1_000 + r.nextInt(400)}" },
+                { "SELECT t1, count(*) AS n FROM tags WHERE kind = ${kinds.random(r)} AND t0 = '${listOf("p", "t", "r", "e").random(r)}' GROUP BY t1" },
                 { "SELECT DISTINCT t1 FROM tags WHERE t0 = '${listOf("p", "t", "r").random(r)}' AND kind = ${kinds.random(r)} AND t1 <> ''" },
                 { "SELECT id FROM events WHERE kind = 1 AND pubkey = '${authors.random(r)}' ORDER BY created_at DESC, id LIMIT ${r.nextInt(1, 6)}" },
-                { "SELECT e.content FROM events e WHERE e.kind = 1 AND EXISTS (SELECT 1 FROM tags t WHERE t.event_id = e.id AND t.t0 = 't' AND t.t1 = 'sql')" },
-                { "SELECT count(*) FROM tags WHERE t0 = 'p' AND t1 = '${authors.random(r)}'" },
+                { "SELECT e.content FROM events AS e WHERE e.kind = 1 AND EXISTS (SELECT 1 AS x FROM tags AS t WHERE t.event_id = e.id AND t.t0 = 't' AND t.t1 = 'sql')" },
+                { "SELECT count(*) AS n FROM tags WHERE t0 = 'p' AND t1 = '${authors.random(r)}'" },
             )
         repeat(200) {
             val sql = shapes.random(r)()
@@ -248,9 +249,9 @@ class SqlConformanceTest {
 
     @Test
     fun corpusWideScansAreRefused() {
-        val e = assertFailsWith<SqlException> { run(vespa, "SELECT count(*) FROM events WHERE content LIKE '%sql%'", emptyList()) }
+        val e = assertFailsWith<SqlException> { run(vespa, "SELECT count(*) AS n FROM events WHERE content LIKE '%sql%'", emptyList()) }
         assertEquals(SqlException.UNSUPPORTED, e.prefix)
         // The same question, narrowed to a kind, is answered.
-        assertSame("SELECT count(*) FROM events WHERE kind = 1 AND content LIKE '%sql%'")
+        assertSame("SELECT count(*) AS n FROM events WHERE kind = 1 AND content LIKE '%sql%'")
     }
 }

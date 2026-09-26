@@ -39,8 +39,8 @@ import java.time.Duration
 import kotlin.test.assertTrue
 
 /**
- * The Nostr SQL profile on a REAL Vespa against Quartz's SQLite store, which runs
- * the SQL itself and is the reference by definition. Every query here is one the
+ * NQL (NIP-FF) on a REAL Vespa, through Quartz's interpreter over this store's
+ * backend, against Quartz's SQLite store, which compiles it to SQLite. Every query here is one the
  * pushdown answers through a different engine path: native counts and groupings,
  * newest-first LIMIT, `visitIds` walks, join-key propagation, and the filter
  * spellings (`FilterSql`) the relay's own mirror and monitor read through. The
@@ -98,11 +98,7 @@ class SqlParityIT {
         store: IEventStore,
         sql: String,
         params: List<Any?>,
-    ): List<List<Any?>> {
-        val out = ArrayList<List<Any?>>()
-        runBlocking { store.sql(sql, params) { out.add(it) } }
-        return out
-    }
+    ): List<List<Any?>> = runBlocking { store.nql(sql, params) }.rows
 
     /** Relay-shaped queries and filter spellings, parameterized from what the corpus holds. */
     private fun queries(corpus: List<Event>): List<Pair<String, List<Any?>>> {
@@ -114,28 +110,28 @@ class SqlParityIT {
         val q = ArrayList<Pair<String, List<Any?>>>()
 
         // Native shapes: engine count, countByAuthor, the tag_index grouping.
-        q += "SELECT count(*) FROM events WHERE kind = 1" to emptyList()
-        q += "SELECT count(*) FROM events WHERE kind IN (1, 7) AND created_at BETWEEN ? AND ?" to listOf(lo, hi)
-        q += "SELECT pubkey, count(*) FROM events WHERE kind = 1 GROUP BY pubkey ORDER BY 2 DESC, 1" to emptyList()
-        q += "SELECT DISTINCT t1 FROM tags WHERE kind = 10002 AND t0 = 'r' AND t1 <> '' ORDER BY 1" to emptyList()
-        q += "SELECT DISTINCT t1 FROM tags WHERE kind = 1 AND t0 = 'p' AND t1 <> '' ORDER BY 1 LIMIT 50" to emptyList()
+        q += "SELECT count(*) AS n FROM events WHERE kind = 1" to emptyList()
+        q += "SELECT count(*) AS n FROM events WHERE kind IN (1, 7) AND created_at BETWEEN ? AND ?" to listOf(lo, hi)
+        q += "SELECT pubkey, count(*) AS n FROM events WHERE kind = 1 GROUP BY pubkey ORDER BY n DESC, pubkey" to emptyList()
+        q += "SELECT DISTINCT t1 FROM tags WHERE kind = 10002 AND t0 = 'r' AND t1 <> '' ORDER BY t1" to emptyList()
+        q += "SELECT DISTINCT t1 FROM tags WHERE kind = 1 AND t0 = 'p' AND t1 <> '' ORDER BY t1 LIMIT 50" to emptyList()
         // Scans: newest-first LIMIT (with its tie group), whole walks, positional tag reads.
         q += "SELECT id, created_at FROM events WHERE kind = 1 ORDER BY created_at DESC, id LIMIT 25" to emptyList()
         q += "SELECT id FROM events WHERE kind = 7 ORDER BY created_at DESC, id LIMIT 10 OFFSET 5" to emptyList()
-        q += "SELECT kind, count(*), min(created_at), max(created_at) FROM events WHERE kind IN (0, 1, 3, 7) AND created_at >= ? GROUP BY kind ORDER BY kind" to listOf(lo)
-        q += "SELECT DISTINCT t1, t2 FROM tags WHERE kind = 10002 AND t0 = 'r' AND (t2 IS NULL OR t2 = 'write') ORDER BY 1, 2" to emptyList()
+        q += "SELECT kind, count(*) AS n, min(created_at) AS first, max(created_at) AS last FROM events WHERE kind IN (0, 1, 3, 7) AND created_at >= ? GROUP BY kind ORDER BY kind" to listOf(lo)
+        q += "SELECT DISTINCT t1, t2 FROM tags WHERE kind = 10002 AND t0 = 'r' AND (t2 IS NULL OR t2 = 'write') ORDER BY t1, t2" to emptyList()
         q += "SELECT pubkey, created_at, id FROM events WHERE kind = 0 AND pubkey IN (?, ?, ?, ?) ORDER BY pubkey" to authors.take(4)
         q += "SELECT id FROM events WHERE id IN (?, ?, ?, ?) ORDER BY id" to ids.take(3) + "f".repeat(64)
         // Math functions: zap-style arithmetic over tag values and grouped timestamps.
         q +=
-            "SELECT kind, round(sqrt(avg(created_at)), 3), floor(log10(count(*) + 1)), pow(2, kind % 5), mod(max(created_at), 7), " +
-            "sign(min(created_at) - ?), exp(ln(count(*))) FROM events WHERE kind IN (0, 1, 3, 7) GROUP BY kind ORDER BY kind" to listOf(lo)
+            "SELECT kind, round(sqrt(avg(created_at)) * 1000) / 1000 AS root, floor(log10(count(*) + 1)) AS digits, pow(2, kind % 5) AS p, " +
+            "max(created_at) % 7 AS m, abs(min(created_at) - ?) AS a, round(exp(ln(count(*)))) AS n FROM events WHERE kind IN (0, 1, 3, 7) GROUP BY kind ORDER BY kind" to listOf(lo)
         // Joins whose second side only the join key makes selective.
-        q += "SELECT count(*) FROM tags t JOIN events n ON n.id = t.t1 WHERE t.kind = 7 AND t.t0 = 'e'" to emptyList()
+        q += "SELECT count(*) AS n FROM tags AS t JOIN events AS n ON n.id = t.t1 WHERE t.kind = 7 AND t.t0 = 'e'" to emptyList()
         q +=
-            "SELECT d.t1, count(*) FROM tags l JOIN tags d ON d.event_id = l.event_id AND d.t0 = 'p' " +
-            "WHERE l.kind = 1 AND l.t0 = 'e' GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 20" to emptyList()
-        q += "SELECT e.id FROM events e WHERE e.kind = 1 AND EXISTS (SELECT 1 FROM tags t WHERE t.event_id = e.id AND t.t0 = 'p' AND t.t1 = ?) ORDER BY e.id" to pValues.take(1)
+            "SELECT d.t1, count(*) AS n FROM tags AS l JOIN tags AS d ON d.event_id = l.event_id AND d.t0 = 'p' " +
+            "WHERE l.kind = 1 AND l.t0 = 'e' GROUP BY d.t1 ORDER BY n DESC, t1 LIMIT 20" to emptyList()
+        q += "SELECT e.id FROM events AS e WHERE e.kind = 1 AND EXISTS (SELECT 1 AS x FROM tags AS t WHERE t.event_id = e.id AND t.t0 = 'p' AND t.t1 = ?) ORDER BY e.id" to pValues.take(1)
 
         // The filter spellings the mirror and the monitor read through.
         val filters =
@@ -149,10 +145,11 @@ class SqlParityIT {
                 Filter(ids = ids.take(20)),
             )
         for (f in filters) {
-            FilterSql.ids(f).let { q += it.sql to it.params }
-            FilterSql.count(f).let { q += it.sql to it.params }
+            FilterSql.ids(f).let { q += it.nql to it.params }
+            FilterSql.count(f).let { q += it.nql to it.params }
         }
-        FilterSql.hydrate(ids.take(FilterSql.HYDRATE_CHUNK)).let { q += it.sql to it.params }
+        FilterSql.events(ids.take(FilterSql.HYDRATE_CHUNK)).let { q += it.nql to it.params }
+        FilterSql.tags(ids.take(FilterSql.HYDRATE_CHUNK)).let { q += it.nql to it.params }
         return q
     }
 
