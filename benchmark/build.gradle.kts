@@ -222,3 +222,14 @@ tasks.register<JavaExec>("trustProbe") {
     maxHeapSize = System.getenv("BENCH_HEAP") ?: "4g"
     workingDir = rootDir
 }
+
+// The four recency strategies (full scan / match phase / count probe /
+// speculative window) on the dominant REQ shapes, against a loaded cluster,
+// with a same-page check across all four — see RecencyStrategyProbe.kt.
+tasks.register<JavaExec>("recencyStrategyProbe") {
+    group = "verification"
+    description = "A/B the four RecencyStrategy options on the dominant REQ shapes and assert they serve identical pages"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.probe.RecencyStrategyProbe")
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "2g"
+}

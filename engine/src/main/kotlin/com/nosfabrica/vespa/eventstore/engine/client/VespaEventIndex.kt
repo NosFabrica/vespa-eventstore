@@ -116,6 +116,12 @@ class VespaEventIndex(
     private val queryPlanning: Boolean =
         System.getenv("VESPA_QUERY_PLANNER")?.let { it != "0" && !it.equals("false", ignoreCase = true) } ?: true,
     /**
+     * How limit'd newest-first reads avoid walking their whole match set — see
+     * [RecencyStrategy]. `VESPA_RECENCY_STRATEGY` overrides; the default is the
+     * shipped [RecencyStrategy.MATCH_PHASE].
+     */
+    private val recencyStrategy: RecencyStrategy = RecencyStrategy.fromEnv(),
+    /**
      * WHERE ENGINE-LEVEL COST IS PUBLISHED, or null to publish none.
      *
      * The rank profile, the documents matched and Vespa's own timing split are
@@ -152,7 +158,7 @@ class VespaEventIndex(
 
     private val fallbacks = SchemaFallbacks()
 
-    private val planner = RecencyPlanner(queryPlanning, fallbacks) { count(it) }
+    private val planner = RecencyPlanner(queryPlanning, recencyStrategy, fallbacks) { count(it) }
 
     // ADDRESS-KEYED mode (VESPA_ADDRESS_KEYED=1): replaceable/addressable events
     // are stored under their NIP-01 address as the document id, so the engine
@@ -406,7 +412,13 @@ class VespaEventIndex(
      * Ranked queries keep the engine's score order untouched. The gated profiles
      * are recency-ordered too (score IS created_at), so they take this path.
      */
-    private suspend fun recallSummaries(q: EventQuery): List<VespaSummary> {
+    private suspend fun recallSummaries(
+        q: EventQuery,
+        // True once a [RecencyStrategy] has shaped [q] — the strategy's own
+        // windowed attempts and fallbacks come back through here and must not
+        // be planned a second time.
+        planned: Boolean = false,
+    ): List<VespaSummary> {
         if (!q.isRecencyOrdered()) return rankedHits(q).mapNotNull { it.fields }
         val limit = q.limit
         if (limit == null) {
@@ -416,6 +428,13 @@ class VespaEventIndex(
         // A non-positive limit matches nothing (EventYql.build's contract) —
         // the overfetch must not resurrect it into a real query.
         if (limit <= 0) return emptyList()
+        if (!planned && q.isWindowable()) {
+            when (recencyStrategy) {
+                RecencyStrategy.FULL_SCAN -> return recallSummaries(q.fullScan(), planned = true)
+                RecencyStrategy.SPECULATIVE -> return speculative(q, limit)
+                RecencyStrategy.MATCH_PHASE, RecencyStrategy.COUNT_PROBE -> Unit
+            }
+        }
         // Past the match-phase band one query is the wrong shape: the profiles
         // that tolerate a cut cannot serve it, and the unranked alternative is a
         // profile whose degradation this client refuses. Page the band instead —
@@ -446,6 +465,62 @@ class VespaEventIndex(
             }
         }
         return hits.sortedWith(SUMMARY_NEWEST_FIRST).take(limit)
+    }
+
+    /**
+     * [RecencyStrategy.FULL_SCAN]'s shape: the same read on the profile that
+     * walks and orders EVERY match — the gated full-scan twin for a gated read,
+     * plain `unranked` otherwise (whose sorting degrader [recallRoot] turns off
+     * under this strategy, or a large match set would come back cut).
+     */
+    private fun EventQuery.fullScan(): EventQuery = copy(ranking = if (usesGatedProfile()) EventYql.RANK_RECENCY_GATED_EXACT else EventYql.RANK_UNRANKED)
+
+    /**
+     * [RecencyStrategy.SPECULATIVE]: the windowed query is its own probe.
+     *
+     * Each attempt is the caller's read with `since = anchor - window`, served
+     * by the ordinary recency path (profile choice, tie resolution, the
+     * match-phase rerun — all unchanged). A FULL page is the answer: the
+     * window is anchored at the newest end, so nothing outside it can outrank
+     * anything in it ([isWindowable] has the argument, gate included). A short
+     * page proves nothing and the window widens by the rate it observed
+     * ([RecencyPlanner.widen]). The unwindowed read — planned exactly as the
+     * shipped strategy plans it ([RecencyPlanner.shipped]) — runs instead once
+     * the rate projects past [RecencyPlanner.NARROW_HORIZON] (a narrow read,
+     * already cheap unwindowed), after [RecencyPlanner.MAX_ATTEMPTS], past
+     * [RecencyPlanner.MAX_WINDOW], or once the caller's own `since` is already
+     * tighter.
+     *
+     * An attempt the engine answers only partially (a large window tripping a
+     * degrader this client refuses) is not an error of the READ, only of that
+     * guess — it falls through to the unwindowed query rather than failing.
+     *
+     * Same accepted race as [RecencyPlanner.window]: a deletion committing
+     * between a short attempt and the next can shift which page the next one
+     * proves — never serve a wrong page, only a different correct one.
+     */
+    private suspend fun speculative(
+        q: EventQuery,
+        limit: Int,
+    ): List<VespaSummary> {
+        val anchor = q.until ?: q.nowSecs ?: (System.currentTimeMillis() / 1000)
+        var window = RecencyPlanner.FIRST_WINDOW
+        var attempts = 0
+        while (window <= RecencyPlanner.MAX_WINDOW && attempts < RecencyPlanner.MAX_ATTEMPTS) {
+            val since = anchor - window
+            if (q.since != null && since <= q.since) break
+            val page =
+                try {
+                    recallSummaries(q.copy(since = since), planned = true)
+                } catch (_: PartialAnswer) {
+                    break
+                }
+            attempts++
+            if (page.size >= limit) return page
+            if (RecencyPlanner.projected(window, page.size, limit) > RecencyPlanner.NARROW_HORIZON) break
+            window = RecencyPlanner.widen(window, page.size, limit)
+        }
+        return recallSummaries(planner.shipped(q), planned = true)
     }
 
     /**
@@ -587,7 +662,7 @@ class VespaEventIndex(
      * node: everything the cut excluded is older than everything returned.
      */
     private suspend fun recallRoot(q: EventQuery): SearchRoot? {
-        val vq = EventYql.build(q) ?: return null
+        val vq = EventYql.build(q)?.let { if (recencyStrategy == RecencyStrategy.FULL_SCAN) it.withoutSortDegrader() else it } ?: return null
         val root = searchRoot(vq, hits = hitsFor(q))
         val matchPhased = vq.ranking == EventYql.RANK_RECENCY || vq.ranking == EventYql.RANK_RECENCY_GATED
         if (matchPhased && root.coverage.matchPhaseDegraded) {
@@ -636,6 +711,14 @@ class VespaEventIndex(
         }
         return root
     }
+
+    /**
+     * [RecencyStrategy.FULL_SCAN] means the WHOLE match set: `unranked`'s
+     * `order by created_at` otherwise invites Vespa's sorting degrader, whose
+     * cut this client refuses (EventYql.SORT_DEGRADING). No-op on every other
+     * profile, where the parameter changes nothing.
+     */
+    private fun VespaQuery.withoutSortDegrader(): VespaQuery = if (ranking == EventYql.RANK_UNRANKED) copy(params = params + (EventYql.SORT_DEGRADING to EventYql.SORT_DEGRADING_OFF)) else this
 
     /**
      * [search] plus the WHY: each hit carries the engine's relevance score and
@@ -1308,7 +1391,16 @@ class VespaEventIndex(
                     root?.let { GroupingResults.firstCount(it) } ?: 0
                 } else {
                     val vq = EventYql.build(q.copy(ranking = ranked)) ?: return@withProfileFallback 0
-                    searchRoot(vq, hits = 0).fields.totalCount
+                    // ONE hit, never zero: with `hits=0` Vespa answered without
+                    // running first-phase ranking at all, so `rank-score-drop-limit`
+                    // never fired and `totalCount` came back as the UNGATED match
+                    // count — measured on Vespa 8.731 against a 44M-doc relay
+                    // corpus (2026-09-26): an observer-gated kind-1 week read
+                    // 107,878 at hits=0 and 54,077 at hits=1, the latter equal to
+                    // the page the same query serves; the same with a search term
+                    // (3,714 vs 2,676). One hit forces the ranking pass the gate
+                    // lives in, for the price of one document summary.
+                    searchRoot(vq, hits = 1).fields.totalCount
                 }
             }
         }

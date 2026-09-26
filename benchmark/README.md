@@ -876,6 +876,118 @@ count path no longer requests hits, so it is out of that line of fire; every
 other unbounded `rawSearch` caller is still in it, and the operator's guard
 remains `VESPA_UNBOUNDED_HITS`.
 
+**Corrected 2026-09-26: `hits=0` does not run the gate on every Vespa.** On
+Vespa 8.731 against a 44M-doc relay corpus, a hit-less gated query answers
+WITHOUT a first-phase pass, so `rank-score-drop-limit` never fires and
+`totalCount` is the UNGATED match count — with or without a search term:
+
+| gated query (floor 2.0) | `hits=0` | `hits=1` | page served |
+|---|---:|---:|---:|
+| kind 1, last 7 days, no term | 107,878 | 54,077 | 54,077 |
+| same, `bitcoin` | 3,714 | 2,676 | 2,676 |
+
+`SearchCountIT` stayed green on `vespaengine/vespa:latest`, so the behavior is
+version-dependent — which is the problem, since a deployment's Vespa is not
+this repo's to pin. `VespaEventIndex.count` now asks for ONE hit on a ranked
+count: that forces the pass the gate lives in, for one document summary. It
+surfaced as a wrong PAGE, not a wrong count: the count-probe recency strategy
+below trusted a gated count to prove a window full, and served 167 events of a
+200-limit page. `SearchCountIT` gained the termless gated case.
+
+## Recency strategies: a time window for every feed (2026-09-26)
+
+A limit'd, newest-first REQ asks for the newest few of a match set the engine
+otherwise walks in full. Measured on a single-node Vespa 8.731 holding the
+relay's own 44M-doc corpus (6.6M kind 1): **match time is nearly the whole
+cost** of the expensive shapes — summary fill ran 1–10 ms and client JSON parse
+≤ 4 ms against 150–900 ms of matching — and it scales with the postings walked
+(`kind = 1` alone: 93 ms; one day of it: 7 ms). The `recency` match-phase
+profile does NOT make that small at this size: the global feed still spent
+~150 ms at 5% coverage, and the gated profile ranks every candidate it keeps
+through the imported reputation tensor (~1 µs per match, 10× unranked).
+
+The fix is to run the read inside a `since` window anchored at its newest end
+(`until`, else the request clock). A window holding `limit` results IS the
+answer — everything outside it is strictly older than everything inside — and
+the argument is per document, so it survives the trust gate. What differs is
+how a window is proven full. Four strategies, all in `VespaEventIndex`,
+selected by `VESPA_RECENCY_STRATEGY` (`RecencyStrategy`):
+
+- **A `full_scan`** — no planning: walk and sort the whole match set.
+- **B `match_phase`** — what shipped: the match-phase profiles, plus count
+  probes for BARE scans they do not cover.
+- **C `count_probe`** — count probes for every windowable read, gated ones
+  through a gated count, over a 1h/1d/7d/30d/1y ladder.
+- **D `speculative`** — the windowed query is its own probe: a full page proves
+  itself, a short one widens by four times its observed (Poisson-discounted)
+  rate; after two attempts, or once the rate projects past 30 days, the read
+  runs unwindowed exactly as B would have run it.
+
+`./gradlew :benchmark:recencyStrategyProbe` (read-only; `BENCH_OBSERVER` adds
+the gated shapes) runs every shape under all four and **fails the run unless
+all four serve the identical page, ids and order**. Median ms (p95 in the
+probe's output) and engine queries per REQ, 11 interleaved reps, query instant
+pinned to the corpus's newest note, the store's expiry guard on every read.
+"Gated" is a plain REQ carrying an observer at the default floor — how
+SearchOverTrust serves an authenticated client; this corpus's schema predates
+service-keyed trust, so the lens is the observer key:
+
+| REQ shape | A | **B (shipped)** | C | D |
+|---|---:|---:|---:|---:|
+| global kind 1, limit 50 | 389 | **160** [2] | 10.8 [2] | **7.5** [1] |
+| global kinds 1/6/7, limit 100 | 391 | **164** [2] | 12.8 [2] | **9.7** [1] |
+| global kind 1, limit 500 | 407 | **168** | 26.2 [2] | **23.1** [1] |
+| follow 300 authors, limit 500 | 140 | **143** | 42.1 [3] | **39.3** [2] |
+| follow 1000 authors, limit 100 | 155 | **158** | 16.0 [2] | **9.8** [1] |
+| 50 quiet authors, limit 200 | 12.2 | **12.1** | 18.7 [5] | 20.3 [3] |
+| `#t:bitcoin`, limit 50 | 18.9 | **19.1** | 14.8 [3] | **9.7** [2] |
+| kind 1, `until` −180d, limit 50 | 473 | **9.1** [2] | 8.2 [2] | **6.2** [1] |
+| follow 300, `until` −90d, limit 100 | 130 | **130** | 12.3 [2] | **9.4** [1] |
+| gated global kind 1, limit 50 | 4,685 | **368** | 13.5 [2] | **8.0** [1] |
+| gated follow 300, limit 500 | 869 | **866** | 48.3 [3] | **35.9** [2] |
+| gated follow 1000, limit 100 | 1,012 | **1,013** | 18.7 [2] | **11.1** [1] |
+| gated 50 quiet authors | 15.7 | **15.3** | 26.1 [6] | 17.8 [2] |
+| gated `#p` notifications, limit 100 | 63.4 | **63.2** | 25.1 [4] | **15.4** [2] |
+| gated kind 1, `until` −180d | 3,636 | **3,646** | 11.7 [2] | **8.0** [1] |
+| gated follow 300, `until` −90d | 730 | **734** | 15.0 [2] | **10.3** [1] |
+
+What the table says, and what it cost to get there:
+
+- **D wins every broad shape by 3.6–455×**, most of all where the gate was
+  paying per candidate, and usually in ONE engine query. C gets most of the
+  same, one count query later.
+- **The loss is bounded, not zero.** A read with a small match set is already
+  cheap unwindowed, so every attempt is overhead: 50 quiet authors pay 8 ms
+  over shipped. Two rules keep it there. The NARROW HORIZON (projected window
+  > 30 days → run unwindowed) at a PESSIMISTIC rate (`got − √got`, so one event
+  is not a rate) sends a thin read straight to the fallback. The ATTEMPT CAP (2)
+  catches the case the rate cannot: these authors were quiet in kind 1 but
+  busy reacting — 17 matches in the hour, 71 in the day, 115 in the week — so
+  every attempt projected "one more window is enough". At three attempts and a
+  2× jump that read spent four queries (29 ms); the 4× jump also took the gated
+  notifications feed from three queries to two (24 → 15 ms), because
+  overshooting a LOW rate is cheap and undershooting costs a round trip.
+- **A is never the answer**: B's profiles do rescue the bare deep scan, and
+  nothing else.
+
+Ruled out on the same corpus, so they need not be re-tried:
+
+| idea | measured |
+|---|---|
+| drop the `TIE_SLACK` overfetch | ≤ 15 ms, mostly transfer bytes |
+| engine-side tiebreak `sorting=-created_at +raw(id)` (cheaper than the UCA one rejected before) | +20 to +215 ms — slower |
+| CBOR responses (`presentation.format=cbor`) | 6% fewer bytes; parse was ≤ 4 ms to begin with |
+| 4 match threads on feed shapes | no gain; a deep scan got slower (514 → 592 ms) |
+| a dedicated `d_tag` / address attribute | `#d` is already a hash-dictionary posting on `tag_index`: 0–5 ms engine; a same-sized `id in (…)` lookup (the type such a field would get) saves 0–3 ms, for a second copy of every `d` in attribute memory |
+
+Correctness gates: the probe's same-page check (above), `VespaEventIndexTest`
+(every strategy serves one page over each branch — full first window, widening,
+narrow fallback, deep `until`, tight caller `since`, limit past the corpus;
+query counts for the busy and narrow cases; a ranked count asks for one hit),
+`RecencyPlannerTest` (the projection and widening arithmetic), and
+`RecencyStrategyIT`, which checks every strategy against the page computed from
+the corpus itself on a real Vespa, gate and tie group included.
+
 ## Targeted benches (gradle tasks against a live Vespa)
 
 Beyond the head-to-head suite (`:benchmark:run`), these tasks each own one
@@ -894,6 +1006,7 @@ timing is also a proof:
 | `dedupProbe` | the bulk-dedup existence check: full-summary vs summary-free variants at mirror hit rates, chunk × fan-out curves, REQ latency under dedup load | reuses a `corpusLoad` corpus (ids sampled off the live store) | every variant must return the identical member set |
 | `extractBench` | the write path's own derivation (`SearchExtractors`), decomposed by stage, with `--badges N` for the every-event-wears-one corpus | any captured JSON export (`--corpus`), no Vespa | — |
 | `searchTrace` | one NIP-50 term, split per clause family and per rank profile (ablations + Vespa's blueprint cost) | any loaded store — capture one with `exportLoad` | every row prints `totalCount`, so a variant that got fast by matching less shows it |
+| `recencyStrategyProbe` | the four `RecencyStrategy` options on the dominant feed shapes, plain and gated (`BENCH_OBSERVER`), with engine queries per REQ | any loaded store, read-only (`BENCH_NOW` pins the clock to a frozen corpus) | all four strategies must serve the identical page, ids and order |
 | `transportProbe` | read-transport isolation: JDK h1 / OkHttp h1 / OkHttp h2c on identical queries across body sizes | any loaded store | — |
 | `trustProbe` | the trust write path under a real lens: bulk card ingest, single card inserts, a 10040 re-sign, a provider swap (with cards inserted on a clock during each walk to read the gate wait), a provider re-publishing its corpus (`--load-then-republish`), and the lensed page after the swap (`--query-only`) — the harness behind `docs/service-keyed-trust.md` | captured 10040s and two providers' 30382 corpora (JSON arrays; the doc says how they were pulled from staging) | the lensed `sort:rank` page must follow the CURRENT 10040's provider |
 

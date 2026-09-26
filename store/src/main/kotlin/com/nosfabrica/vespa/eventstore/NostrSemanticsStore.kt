@@ -635,7 +635,7 @@ class NostrSemanticsStore(
                 // — 76.0s for a "bitcoin" COUNT on the production relay against
                 // 4.9s for the same search (2026-09-01). [EventIndex.count]
                 // answers the same gated number from the engine's own
-                // `totalCount` with zero hits; the clamp below is unchanged, so
+                // `totalCount` with one hit; the clamp below is unchanged, so
                 // the ANSWER is identical (STORE-C01: a count honours its
                 // filter's limit).
                 q.isRanked() || q.limit != null -> {

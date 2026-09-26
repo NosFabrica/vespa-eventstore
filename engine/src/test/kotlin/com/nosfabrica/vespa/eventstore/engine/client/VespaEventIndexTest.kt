@@ -55,6 +55,12 @@ class VespaEventIndexTest {
 
     private var seq = 0
 
+    private companion object {
+        val BUSY = "b1".repeat(32)
+        val WEEKLY = "b2".repeat(32)
+        val QUIET = "b3".repeat(32)
+    }
+
     @Test
     fun `the feed client starts whatever number of endpoints the cluster names`() {
         // The client sizes ONE Jetty pool at max(min(cores,64),8) + connections *
@@ -473,6 +479,119 @@ class VespaEventIndexTest {
                 planned.close()
                 unplanned.close()
             }
+        }
+
+    /**
+     * A corpus with every density a [RecencyStrategy] branches on: [BUSY]
+     * posting every second of the last half-minute (the first speculative
+     * window fills), [WEEKLY] posting every 8 hours for a week (it widens),
+     * [QUIET] posting only in 1970 (the narrow-read rule gives up at once),
+     * plus kind-7 noise interleaved with the busy author.
+     */
+    private fun seedStrategyCorpus(now: Long) {
+        seed(*(1..30).map { doc(kind = 1, pubkey = BUSY, at = now - it) }.toTypedArray())
+        seed(*(1..20).map { doc(kind = 1, pubkey = WEEKLY, at = now - it * 8 * 3_600L) }.toTypedArray())
+        seed(*(1..5).map { doc(kind = 1, pubkey = QUIET, at = 1_000L + it) }.toTypedArray())
+        seed(*(1..10).map { doc(kind = 7, pubkey = BUSY, at = now - it * 2) }.toTypedArray())
+    }
+
+    /**
+     * THE STRATEGIES ARE INVISIBLE IN RESULTS. Whatever a [RecencyStrategy]
+     * does to the engine's workload, the page it serves is the page every other
+     * strategy serves — ids AND order — across the shapes that exercise each
+     * branch: a window that fills first try, one that widens, a narrow read that
+     * falls back, a deep `until`, a caller `since` tighter than any window, a
+     * limit past the corpus, and the gated profile (whose gate the mock does not
+     * apply — that half is RecencyStrategyIT's, against a real Vespa).
+     */
+    @Test
+    fun `every recency strategy serves the same page`() =
+        runBlocking {
+            val now = System.currentTimeMillis() / 1000
+            seedStrategyCorpus(now)
+            val clients = RecencyStrategy.entries.associateWith { VespaEventIndex(mock.url, recencyStrategy = it) }
+            try {
+                val shapes =
+                    listOf(
+                        EventQuery(kinds = listOf(1), limit = 10),
+                        EventQuery(kinds = listOf(1), limit = 40),
+                        EventQuery(kinds = listOf(1, 7), limit = 35),
+                        EventQuery(authors = listOf(WEEKLY), limit = 5),
+                        EventQuery(authors = listOf(QUIET), limit = 3),
+                        EventQuery(kinds = listOf(1), until = now - 2 * 86_400L, limit = 5),
+                        EventQuery(kinds = listOf(1), since = now - 10, limit = 50),
+                        EventQuery(limit = 500),
+                        EventQuery(kinds = listOf(1), limit = 10, ranking = EventYql.RANK_RECENCY_GATED, observer = BUSY, rankKey = BUSY, minRank = 2.0),
+                    ).map { it.copy(nowSecs = now) }
+                for (q in shapes) {
+                    val pages = clients.mapValues { (_, c) -> c.search(q).map { it.id } }
+                    val expected = pages.getValue(RecencyStrategy.FULL_SCAN)
+                    assertTrue(expected.isNotEmpty(), "the shape must match something: $q")
+                    pages.forEach { (s, ids) -> assertEquals(expected, ids, "$s vs FULL_SCAN: $q") }
+                }
+            } finally {
+                clients.values.forEach { it.close() }
+            }
+        }
+
+    /** The busy feed is the case the speculative window exists for: ONE engine query, and it is the windowed one. */
+    @Test
+    fun `speculative serves a busy feed from its first window`() =
+        runBlocking {
+            val now = System.currentTimeMillis() / 1000
+            seedStrategyCorpus(now)
+            VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.SPECULATIVE).use { speculative ->
+                val before = mock.searchRequests.size
+                val page = speculative.search(EventQuery(kinds = listOf(1), limit = 10, nowSecs = now))
+                val sent = mock.searchRequests.drop(before)
+                assertEquals((1..10).map { now - it }, page.map { it.createdAt })
+                assertEquals(1, sent.size, "a full first window is the whole answer: ${sent.map { it["yql"] }}")
+                assertTrue(sent.single().getValue("yql").contains("created_at >= ${now - RecencyPlanner.FIRST_WINDOW}"), "the one query is the windowed one")
+            }
+        }
+
+    /**
+     * THE NARROW-READ RULE: a read with nothing in the first window has no rate
+     * to widen by, so it projects past [RecencyPlanner.NARROW_HORIZON] and runs
+     * unwindowed immediately — one small attempt over the shipped cost, not a
+     * ladder of them.
+     */
+    @Test
+    fun `speculative gives up on a narrow read after one attempt`() =
+        runBlocking {
+            val now = System.currentTimeMillis() / 1000
+            seedStrategyCorpus(now)
+            VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.SPECULATIVE).use { speculative ->
+                val before = mock.searchRequests.size
+                val page = speculative.search(EventQuery(authors = listOf(QUIET), limit = 3, nowSecs = now))
+                val sent = mock.searchRequests.drop(before).map { it.getValue("yql") }
+                assertEquals(listOf(1_005L, 1_004L, 1_003L), page.map { it.createdAt })
+                assertEquals(2, sent.size, "one windowed attempt, then the unwindowed read: $sent")
+                assertTrue(sent[0].contains("created_at >= "), "the attempt is windowed")
+                assertTrue(!sent[1].contains("created_at >= "), "the fallback is not")
+            }
+        }
+
+    /**
+     * A RANKED COUNT ASKS FOR ONE HIT. With `hits=0` Vespa skips first-phase
+     * ranking, so `rank-score-drop-limit` never removes a below-floor author and
+     * `totalCount` is the UNGATED match count (measured on Vespa 8.731 — see
+     * [VespaEventIndex.count]). One hit is what forces the gate to run.
+     * Plain counts stay on the hit-less grouping.
+     */
+    @Test
+    fun `a ranked count asks the engine for one hit`() =
+        runBlocking {
+            seed(doc())
+            val before = mock.searchRequests.size
+            index.count(EventQuery(kinds = listOf(1), ranking = EventYql.RANK_RECENCY_GATED, observer = BUSY, rankKey = BUSY, minRank = 2.0))
+            val gated = mock.searchRequests.drop(before).single()
+            assertEquals(EventYql.RANK_RECENCY_GATED_EXACT, gated["ranking"])
+            assertEquals("1", gated["hits"], "a gated count must run the ranking pass its gate lives in")
+
+            val plainAt = mock.searchRequests.size
+            index.count(EventQuery(kinds = listOf(1)))
+            assertEquals("0", mock.searchRequests.drop(plainAt).single()["hits"], "an ungated count stays hit-less")
         }
 
     /**
