@@ -69,6 +69,9 @@ enum class Activity {
     /** The guard-owner cache refresh. */
     GuardRefresh,
 
+    /** The kind-10040 provider-pass refresh under a shared writer topology. */
+    ProviderRefresh,
+
     /**
      * Work that reached the port with no activity declared. Not a bug by
      * itself — a bare index in a test has no store above it — but a busy

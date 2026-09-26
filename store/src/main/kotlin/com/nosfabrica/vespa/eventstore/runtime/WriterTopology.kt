@@ -90,3 +90,13 @@ enum class WriterTopology {
  * not a tight loop.
  */
 const val DEFAULT_GUARD_REFRESH_MILLIS: Long = 300_000L
+
+/**
+ * How often a store that is NOT the only writer rebuilds its kind-10040
+ * provider pass, in millis — the bound on how long a list another process
+ * stored goes unapplied to this one's lenses and Trusted List gate (see
+ * `trust/ProviderRefresher`). A rebuild is one `/search/` of every stored
+ * 10040 (hundreds, not the corpus), so unlike the guard refresh this can be
+ * tight; a minute is what vespa-relay's docs have always promised.
+ */
+const val DEFAULT_PROVIDER_REFRESH_MILLIS: Long = 60_000L

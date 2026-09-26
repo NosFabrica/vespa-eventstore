@@ -59,7 +59,22 @@ internal class TrustExplain(
         val followerCells: Int,
         val rankCellFromLens: Int?,
         val followersCellFromLens: Double?,
+        /**
+         * The lens the STORED 10040 gives, read fresh — beside [rankService] /
+         * [followersService], which come from the cached provider pass every
+         * read uses. They disagree when the pass has not caught up with a list
+         * another process stored (#145); the explanation used to report that
+         * as "names no 30382 service", blaming the reader's list.
+         */
+        val storedRankService: String? = rankService,
+        val storedFollowersService: String? = followersService,
+        /** Seconds since the cached pass was issued; null while none is cached. */
+        val passAgeSecs: Long? = null,
     ) {
+        /** Whether the cached pass resolves this observer differently than their stored 10040 does. */
+        val passDisagrees: Boolean
+            get() = providerLists > 0 && (rankService != storedRankService || followersService != storedFollowersService)
+
         /**
          * The first fact that would empty this observer's ranked page, or a
          * clean line. Ordered the way the read fails: no lens beats no cell,
@@ -70,6 +85,13 @@ internal class TrustExplain(
                 when {
                     providerLists == 0 -> {
                         "no kind-10040: this observer has no lens, so a ranked read has nothing to resolve"
+                    }
+
+                    passDisagrees -> {
+                        "the cached provider pass (${passAgeSecs?.let { "${it}s old" } ?: "not cached"}) resolves " +
+                            "rank=${rankService?.take(16) ?: "-"}, followers=${followersService?.take(16) ?: "-"} but the stored " +
+                            "kind-10040 names rank=${storedRankService?.take(16) ?: "-"}, followers=${storedFollowersService?.take(16) ?: "-"} " +
+                            "— reads use the cached one until the pass refreshes"
                     }
 
                     rankService == null && followersService == null -> {
@@ -93,6 +115,7 @@ internal class TrustExplain(
         fun line(): String =
             "trust-explain ${pubkey.take(16)}...: profiles=$profiles lists=$providerLists " +
                 "lens(rank=${rankService?.take(16) ?: "-"}, followers=${followersService?.take(16) ?: "-"}) " +
+                "pass=${passAgeSecs?.let { "${it}s" } ?: "-"} " +
                 "cardsAbout=$cardsAbout parent=$parentExists cells=$influenceCells/$followerCells " +
                 "fromLens(rank=${rankCellFromLens ?: "-"}, followers=${followersCellFromLens ?: "-"}) — $summary"
     }
@@ -101,6 +124,7 @@ internal class TrustExplain(
         val profiles = index.search(EventQuery(kinds = listOf(0), authors = listOf(pubkey), limit = 1)).size
         val lists = index.search(EventQuery(kinds = listOf(TrustProviderListEvent.KIND), authors = listOf(pubkey), limit = 1))
         val lens = recompute.providerMap().lensOf(pubkey)
+        val stored = ProviderMap.providersOf(lists).lensOf(pubkey)
         val cards = index.search(EventQuery(kinds = listOf(ContactCardEvent.KIND), tags = mapOf("d" to listOf(pubkey)), limit = MAX_CARDS)).size
         val parent = reputations.get(pubkey)
         return Explanation(
@@ -115,6 +139,9 @@ internal class TrustExplain(
             followerCells = parent?.followerCounts?.size ?: 0,
             rankCellFromLens = lens.rank?.let { parent?.influenceScores?.get(ServiceKey(it)) },
             followersCellFromLens = lens.followers?.let { parent?.followerCounts?.get(ServiceKey(it)) },
+            storedRankService = stored.rank,
+            storedFollowersService = stored.followers,
+            passAgeSecs = recompute.providerAgeSecs(),
         )
     }
 

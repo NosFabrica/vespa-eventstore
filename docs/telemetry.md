@@ -89,7 +89,7 @@ store's own vocabulary, as a closed set:
 
 ```
 Insert  BatchInsert  Query  Count  Delete  Snapshot
-Drain   Reconcile    Sweep  GuardRefresh   Backfill
+Drain   Reconcile    Sweep  GuardRefresh   ProviderRefresh   Backfill
 ```
 
 Set at each public entry point, read by the decorator. Nothing in between has to

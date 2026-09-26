@@ -209,5 +209,9 @@ internal class WriteLocks {
         /** A sweep's / a reindex page's wait for the trust gate, apart from ingest's — different holders, different remedies. */
         val SWEEP_TRUST = Stage("lock.sweep.trust", TRUST_GATE)
         val REINDEX_TRUST = Stage("lock.reindex.trust", TRUST_GATE)
+
+        /** The provider refresher queueing a walk for a service a foreign 10040 named — rare, and never on a quiet tick. */
+        val PROVIDERS = Stage("lock.providers", WRITE_LOCK)
+        val PROVIDERS_TRUST = Stage("lock.providers.trust", TRUST_GATE)
     }
 }

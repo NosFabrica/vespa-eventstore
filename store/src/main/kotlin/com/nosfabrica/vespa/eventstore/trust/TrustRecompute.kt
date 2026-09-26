@@ -79,6 +79,24 @@ internal class TrustRecompute(
      */
     fun invalidateProviders() = providers.invalidate()
 
+    /** Rebuild the provider pass now, keeping the old one on failure — see [ProviderMap.refresh]. */
+    suspend fun refreshProviders() = providers.refresh()
+
+    /** Seconds since the cached provider pass was issued; null while none is cached. */
+    fun providerAgeSecs(): Long? = providers.ageSecs()
+
+    /** A local 10040 write is walking [services] itself — see [ProviderMap.claim]. */
+    fun claimServices(services: Set<String>) = providers.claim(services)
+
+    /** Services a pass found that no walk here was declared for — see [ProviderMap.takeDiscovered]. */
+    fun takeDiscoveredServices(): Set<String> = providers.takeDiscovered()
+
+    /** Whether a pass found any; a peek, so a quiet refresh never takes a lock. */
+    fun hasDiscoveredServices(): Boolean = providers.hasDiscovered()
+
+    /** [takeDiscoveredServices]' result back, when its walk could not be queued. */
+    fun giveBackDiscoveredServices(services: Set<String>) = providers.giveBack(services)
+
     /**
      * [recomputeBatch] under a gate, taken PER SLICE rather than once for the
      * whole batch.

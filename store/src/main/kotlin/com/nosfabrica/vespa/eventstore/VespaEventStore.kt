@@ -31,6 +31,7 @@ import com.nosfabrica.vespa.eventstore.engine.metrics.MeteredEventIndex
 import com.nosfabrica.vespa.eventstore.engine.metrics.withActivity
 import com.nosfabrica.vespa.eventstore.runtime.BackgroundFailures
 import com.nosfabrica.vespa.eventstore.runtime.DEFAULT_GUARD_REFRESH_MILLIS
+import com.nosfabrica.vespa.eventstore.runtime.DEFAULT_PROVIDER_REFRESH_MILLIS
 import com.nosfabrica.vespa.eventstore.runtime.WriterTopology
 import com.nosfabrica.vespa.eventstore.search.SearchExpansionLimits
 import com.nosfabrica.vespa.eventstore.trust.TrustCoverage
@@ -238,6 +239,18 @@ class VespaEventStore internal constructor(
      */
     suspend fun refreshGuardOwners() = store.refreshGuardOwners()
 
+    /**
+     * The provider-pass barrier: rebuild this process's view of the stored
+     * kind-10040s NOW, instead of waiting out `providerRefreshSeconds`. For a
+     * process that knows another one just stored a 10040 (a sync round that
+     * mirrored some). Costs one read of every stored 10040; the previous pass
+     * stays if it fails. See `NostrSemanticsStore.refreshTrustProviders`.
+     */
+    suspend fun refreshTrustProviders() = store.refreshTrustProviders()
+
+    /** Seconds since the cached kind-10040 pass was issued, or null while none is — see `NostrSemanticsStore.trustProviderAgeSecs`. */
+    fun trustProviderAgeSecs(): Long? = store.trustProviderAgeSecs()
+
     override fun close() {
         // Drainer first: queued work survives in the persisted marker for the
         // next open — shutdown must not block on a six-figure walk.
@@ -286,6 +299,16 @@ class VespaEventStore internal constructor(
          * the middle ground, accepting a window bounded by
          * [guardRefreshSeconds].
          *
+         * [writers] governs the kind-10040 provider pass too — the cache the
+         * observer's lens and the Trusted List gate read. It is invalidated by
+         * every 10040 THIS process writes; under any topology but
+         * [WriterTopology.SINGLE_WRITER] it is also rebuilt every
+         * [providerRefreshSeconds], so a list another process stored applies
+         * within that window rather than at this process's next restart
+         * (#145). Unlike the guard owners it is never uncached: an uncached
+         * pass would put a `complete` read of every 10040 on every observer
+         * query, and fail them all whenever coverage dips.
+         *
          * The store imposes no result cap of its own: bounding a query's cost
          * belongs to whoever writes the filter.
          */
@@ -298,6 +321,8 @@ class VespaEventStore internal constructor(
             deferTrustProjection: Boolean = true,
             writers: WriterTopology = WriterTopology.SHARED_STRICT,
             guardRefreshSeconds: Long = DEFAULT_GUARD_REFRESH_MILLIS / 1000,
+            /** Provider-pass rebuild cadence unless [writers] is [WriterTopology.SINGLE_WRITER]; 0 disables it. */
+            providerRefreshSeconds: Long = DEFAULT_PROVIDER_REFRESH_MILLIS / 1000,
             /**
              * How much of a searching read's answer may be events it POINTS AT
              * — a label's subject, a Trusted List's members. The caps and the
@@ -349,6 +374,7 @@ class VespaEventStore internal constructor(
                     relay = relay,
                     writers = writers,
                     guardRefreshMillis = guardRefreshSeconds * 1000,
+                    providerRefreshMillis = providerRefreshSeconds * 1000,
                     searchExpansion = searchExpansion,
                     maxHitsPerAuthor = maxHitsPerAuthor,
                     metrics = ledger,
@@ -369,6 +395,9 @@ class VespaEventStore internal constructor(
             ledger.gauge("trust.coverage.services.projected") { TrustCoverage.servicesProjected }
             ledger.gauge("trust.coverage.lenses.total") { TrustCoverage.lensesTotal }
             ledger.gauge("trust.coverage.lenses.resolvable") { TrustCoverage.lensesResolvable }
+            // How old the kind-10040 pass is; -1 while none is cached. Above
+            // the refresh interval means the refresher is failing (#145).
+            ledger.gauge("trust.providers.age.secs") { store.trustProviderAgeSecs() ?: -1L }
             ledger.gauge("feed.inflight") { eventIndex.feedInflight() }
             ledger.gauge("lock.held") { IngestStats.heldAll().size.toLong() }
             // The reconciler's and drainer's mutating batches take the store's

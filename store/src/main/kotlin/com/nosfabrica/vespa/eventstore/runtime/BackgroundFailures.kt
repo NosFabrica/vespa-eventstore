@@ -25,7 +25,7 @@ import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Failure accounting for the store's background workers — the trust-projection
- * drain and the guard-owner refresh.
+ * drain, the guard-owner refresh and the provider-pass refresh.
  *
  * Both retry forever by design, and that is right: their state is safe under
  * failure (the backlog marker still names the work; the previous guard sets stay
@@ -48,6 +48,9 @@ internal object BackgroundFailures {
 
     /** The guard-owner cache refresher (`GuardOwners.startRefresher`). */
     const val GUARD_REFRESH = "guards.refresh"
+
+    /** The kind-10040 provider-pass refresher (`trust/ProviderRefresher`) — a stuck one means foreign lists stop applying. */
+    const val PROVIDER_REFRESH = "trust.providers"
 
     /** The one-time re-keying of a store fed under the observer-keyed model (TrustKeyingMigration). */
     const val TRUST_KEYING = "trust.keying"

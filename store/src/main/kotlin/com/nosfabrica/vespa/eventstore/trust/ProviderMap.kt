@@ -83,7 +83,14 @@ internal data class TrustProviders(
  * per list, never a copy per observer.
  *
  * [get] is CACHED across a pass — the maps only change on a 10040
- * write/removal, each of which [invalidate]s. The rebuild runs UNLOCKED (an
+ * write/removal, each of which [invalidate]s when it goes through THIS
+ * process. One that another process stores (the sync router mirroring a list
+ * into the index a relay serves from) reaches no [invalidate] here, so under a
+ * shared writer topology the owner also calls [refresh] on an interval —
+ * `NostrSemanticsStore`'s provider refresher. Without it the pass was as old
+ * as the last 10040 this process wrote itself: on staging (2026-09-26) 24 of 47
+ * recent observers resolved no lens and got EMPTY ranked pages, and Trusted
+ * Lists their stored 10040 delegated did not unpack (#145). The rebuild runs UNLOCKED (an
  * observer-carrying search asks for the read-side gate with no lock at all),
  * so a 10040 write can land while a pass is reading the corpus; a pass that
  * then stored its result would cache a map missing that write, and nothing
@@ -107,12 +114,35 @@ internal class ProviderMap(
     private class Pass(
         val trust: TrustProviders,
         val delegations: Delegations,
+        /** When the query behind it was ISSUED (not answered) — what [ageSecs] measures from. */
+        val builtAtSecs: Long,
     )
 
     @Volatile private var cached: Pass? = null
 
     /** Bumped by every [invalidate]; a pass built under an older generation is not cached. */
     private val generation = AtomicLong()
+
+    /**
+     * The services this process has ACCOUNTED FOR: named by a pass it already
+     * built (their cards were projected when stored, or walked when first
+     * named), or claimed by a local 10040 write that queued their walk itself
+     * ([claim]). Null until the first pass: what the index holds at that point
+     * is the baseline, projected by whichever process named it first — a
+     * boot does not re-walk every service.
+     *
+     * NOT dropped by [invalidate]. The cache is; this is the memory of what
+     * the cache already named, and it is what lets a pass tell a service a
+     * FOREIGN 10040 named since (its cards were skipped here, see
+     * [TrustRecompute.applyCards]) from one it has always named.
+     */
+    private var accounted: Set<String>? = null
+
+    /** Services a pass named that nobody here has queued a walk for — [takeDiscovered] hands them to the refresher. */
+    private val discovered = LinkedHashSet<String>()
+
+    /** Guards [accounted] and [discovered] together: a pass and a claim can land concurrently. */
+    private val ledgerLock = Any()
 
     /**
      * The maps, rebuilt once per pass. Already-expired 10040s (NIP-40) are
@@ -136,28 +166,104 @@ internal class ProviderMap(
      */
     suspend fun delegations(): Delegations = pass().delegations
 
-    private suspend fun pass(): Pass {
-        cached?.let { return it }
+    private suspend fun pass(): Pass = cached ?: build()
+
+    /**
+     * REBUILD NOW, whatever the cache holds — the refresher's tick. Readers
+     * keep the previous pass until this one lands; only a cold cache ever
+     * makes a reader wait. A rebuild that THROWS leaves the previous pass in
+     * place (the caller counts the failure), and one that reads NO documents
+     * does too — the empty-never-cached rule below, applied to a refresh: a
+     * relay that held 418 lists a minute ago and reads none now is one whose
+     * engine is not serving them, not one whose readers all deleted theirs.
+     */
+    suspend fun refresh() {
+        build()
+    }
+
+    /** Seconds since the cached pass was issued, or null while nothing is cached — the staleness gauge. */
+    fun ageSecs(): Long? = cached?.let { nowSecs() - it.builtAtSecs }
+
+    /**
+     * [services] are being walked by the caller — a local 10040 write that
+     * judged them fresh and declared the walk itself. Recorded so the next
+     * pass does not hand them to the refresher as foreign discoveries, which
+     * would walk them twice.
+     */
+    fun claim(services: Set<String>) {
+        if (services.isEmpty()) return
+        synchronized(ledgerLock) {
+            accounted = (accounted ?: emptySet()) + services
+            discovered.removeAll(services)
+        }
+    }
+
+    /**
+     * The services passes have named since the last call that this process
+     * never walked — a 10040 another process stored named them, so every card
+     * this process was handed for them before this pass was skipped. The
+     * caller queues their walk; on failure it [giveBack]s them.
+     */
+    fun takeDiscovered(): Set<String> =
+        synchronized(ledgerLock) {
+            val taken = LinkedHashSet(discovered)
+            discovered.clear()
+            taken
+        }
+
+    /** Whether [takeDiscovered] would return anything. */
+    fun hasDiscovered(): Boolean = synchronized(ledgerLock) { discovered.isNotEmpty() }
+
+    /** [takeDiscovered]'s services back, for a caller that could not queue their walk. */
+    fun giveBack(services: Set<String>) {
+        if (services.isEmpty()) return
+        synchronized(ledgerLock) { discovered += services }
+    }
+
+    private suspend fun build(): Pass {
         val startedUnder = generation.get()
+        val issuedAt = nowSecs()
         // `complete`: a map built from SOME of the 10040s names none of the
         // services the missing lists name, so their cards would not project
         // and their observers would resolve to no lens — the same wrong
         // answer as a short card fetch, one level up.
-        val docs = inner.search(EventQuery(kinds = listOf(TrustProviderListEvent.KIND), notExpiredAt = nowSecs(), complete = true))
+        val docs = inner.search(EventQuery(kinds = listOf(TrustProviderListEvent.KIND), notExpiredAt = issuedAt, complete = true))
         // ONE parse for both projections. Each doc costs a tags parse and an
         // `EventFactory` dispatch, and this rebuilds on every 10040 write, so
         // handing each side the documents to decode itself would double the
         // cost of the pass the KDoc above promises is shared.
         val maps = docs.mapNotNull { it.toEvent() as? TrustProviderListEvent }
-        val fresh = Pass(providersIn(maps), Delegations.delegationsOf(maps))
+        val fresh = Pass(providersIn(maps), Delegations.delegationsOf(maps), issuedAt)
         // Emptiness is judged on the DOCUMENTS, not on either projection: the
         // ambiguity this rule records is "no 10040s" versus "the engine has not
         // finished serving them", and only the query's own answer distinguishes
         // those. Judging it on the trust half instead would also refuse to cache
         // a relay whose Maps carry nothing but bare-kind Trusted List entries —
         // a real shape, and one with no rank or followers provider in it.
-        if (docs.isNotEmpty() && generation.get() == startedUnder) cached = fresh
+        if (docs.isEmpty()) return cached ?: fresh
+        account(fresh.trust.services)
+        if (generation.get() == startedUnder) cached = fresh
         return fresh
+    }
+
+    /**
+     * Note the services a pass names that nothing here has accounted for.
+     * Runs on EVERY non-empty pass, the cold rebuild after a local write's
+     * [invalidate] included: that rebuild also reads whatever other processes
+     * stored meanwhile, and diffing only on [refresh] would miss those.
+     */
+    private fun account(services: Set<String>) {
+        synchronized(ledgerLock) {
+            val known = accounted
+            if (known == null) {
+                accounted = services
+                return
+            }
+            val unseen = services - known
+            if (unseen.isEmpty()) return
+            discovered += unseen
+            accounted = known + unseen
+        }
     }
 
     /** Drop the cache; the next [get] rebuilds. Call after any 10040 write/remove. */
