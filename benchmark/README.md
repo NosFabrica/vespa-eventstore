@@ -923,6 +923,9 @@ selected by `VESPA_RECENCY_STRATEGY` (`RecencyStrategy`):
   rate; after two attempts, or once the rate projects past 30 days, the read
   runs unwindowed exactly as B would have run it.
 
+**`speculative` is the default**; `VESPA_RECENCY_STRATEGY=match_phase` restores
+the shipped behavior.
+
 `./gradlew :benchmark:recencyStrategyProbe` (read-only; `BENCH_OBSERVER` adds
 the gated shapes) runs every shape under all four and **fails the run unless
 all four serve the identical page, ids and order**. Median ms (p95 in the

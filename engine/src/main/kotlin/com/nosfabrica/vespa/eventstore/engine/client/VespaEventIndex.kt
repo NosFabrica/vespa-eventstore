@@ -117,8 +117,9 @@ class VespaEventIndex(
         System.getenv("VESPA_QUERY_PLANNER")?.let { it != "0" && !it.equals("false", ignoreCase = true) } ?: true,
     /**
      * How limit'd newest-first reads avoid walking their whole match set — see
-     * [RecencyStrategy]. `VESPA_RECENCY_STRATEGY` overrides; the default is the
-     * shipped [RecencyStrategy.MATCH_PHASE].
+     * [RecencyStrategy]. `VESPA_RECENCY_STRATEGY` overrides; the default is
+     * [RecencyStrategy.SPECULATIVE] (`match_phase` restores the one this store
+     * shipped with before it).
      */
     private val recencyStrategy: RecencyStrategy = RecencyStrategy.fromEnv(),
     /**

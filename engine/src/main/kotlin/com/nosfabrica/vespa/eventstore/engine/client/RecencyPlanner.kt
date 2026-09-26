@@ -30,8 +30,12 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventYql
  * how many round trips it takes to prove the page complete.
  *
  * `VESPA_RECENCY_STRATEGY` selects one (`full_scan`, `match_phase`,
- * `count_probe`, `speculative`); the default is [MATCH_PHASE], the behavior
- * this store shipped with.
+ * `count_probe`, `speculative`); the default is [SPECULATIVE]. MEASURED on a
+ * 44M-doc relay corpus (2026-09-26, benchmark/README.md "Recency strategies"):
+ * 3.6-455x faster than [MATCH_PHASE] on every broad feed, gated or not — the
+ * gated global feed 368 -> 8 ms, a gated deep page 3.6 s -> 8 ms — for 8 ms on
+ * a quiet 50-author feed that was already cheap. `match_phase` restores the
+ * behavior this store shipped with.
  */
 enum class RecencyStrategy {
     /**
@@ -71,7 +75,7 @@ enum class RecencyStrategy {
     companion object {
         fun fromEnv(): RecencyStrategy =
             System.getenv("VESPA_RECENCY_STRATEGY")?.let { v -> entries.firstOrNull { it.name.equals(v.trim(), ignoreCase = true) } }
-                ?: MATCH_PHASE
+                ?: SPECULATIVE
     }
 }
 
