@@ -230,6 +230,10 @@ class TrustProjection(
         fresh: Set<String>,
     ): ProjectionWork {
         if (docs.any { it.kind == TrustProviderListEvent.KIND }) recompute.invalidateProviders()
+        // HERE, once the list is stored and its walk is about to be queued —
+        // not where [fresh] is judged: a list that loses supersession queues
+        // nothing, and releasing its services' skips then would lose them.
+        recompute.walkQueued(fresh)
         val cards = docs.filter { it.kind == ContactCardEvent.KIND }
         if (cards.isEmpty()) return ProjectionWork(emptySet(), fresh)
         val retracted = recompute.applyCards(cards, recompute.providerMap())
@@ -242,6 +246,47 @@ class TrustProjection(
         if (named.isEmpty()) return emptySet()
         val before = recompute.providerMap()
         return named.filterNot(before::maps).toSet()
+    }
+
+    /**
+     * CATCH UP WITH 10040s ANOTHER PROCESS STORED — the provider refresher's
+     * tick (`NostrSemanticsStore.refreshTrustProviders`).
+     *
+     * The rebuild runs unlocked, like any pass. What it may leave is WORK:
+     * cards this process skipped because their signer was unnamed here, whose
+     * signer the pass now names (the sync mirroring cards for a service first
+     * named on the relay's socket). Their walk is queued exactly as a local
+     * 10040 write queues one — through [ProjectionLedger.insuring], under
+     * [underTrustLock], which must hold BOTH writer locks: the ledger's stamps
+     * are only ordered under the writes mutex, and an inline settle drains
+     * under the gate. Checked even when the rebuild throws, against whatever
+     * pass is cached — a cold read may have built one — and the lock is
+     * skipped when there is nothing to queue, so a quiet tick never waits
+     * behind a drain.
+     */
+    internal suspend fun refreshProviders(underTrustLock: suspend (suspend () -> Unit) -> Unit) {
+        try {
+            recompute.refreshProviders()
+        } finally {
+            if (recompute.hasSkippedNowNamed()) underTrustLock { queueSkippedWalks() }
+        }
+    }
+
+    private suspend fun queueSkippedWalks() {
+        val found = recompute.takeSkippedNowNamed()
+        if (found.isEmpty()) return
+        val walk = ProjectionWork(emptySet(), found)
+        try {
+            backlog.insuring(walk) { Outcome(Unit, walk) }
+        } catch (t: Throwable) {
+            // Only what never reached the ledger goes back. [insuring] queues
+            // before an inline settle can throw, and a queued walk that then
+            // fails stays in the ledger for the drain to retry; handing it back
+            // too would re-queue it every tick, each time with a new stamp that
+            // drops the provider cache again.
+            recompute.giveBackSkipped(found - backlog.queuedRewalks())
+            throw t
+        }
     }
 
     override suspend fun remove(id: String) {

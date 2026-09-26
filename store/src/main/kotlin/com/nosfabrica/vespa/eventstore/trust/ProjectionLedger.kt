@@ -160,6 +160,9 @@ internal class ProjectionLedger(
     /** Services queued for a re-walk right now — a gauge, like [pendingSubjects]. */
     fun pendingServices(): Long = pendingNow().toRewalk.size.toLong()
 
+    /** The services queued for a re-walk right now, by name. */
+    fun queuedRewalks(): Set<String> = pendingNow().toRewalk.keys
+
     /** The stamp source; every queueing takes the next one. */
     private val stamps = AtomicLong()
 

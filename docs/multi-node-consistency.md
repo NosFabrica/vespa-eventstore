@@ -93,6 +93,46 @@ Note the shapes differ: owner-lane sharding fixes the races above completely,
 and it also satisfies `SINGLE_WRITER` — one lane sees all of its owners' guards.
 Role-split processes satisfy neither.
 
+### The same failure, one level up: the kind-10040 provider pass
+
+`ProviderMap` caches one pass over every stored kind-10040, and the observer's
+lens (`rankKey` / `followersKey`), the Trusted List gate (`Delegations`) and the
+card projection's "is this signer a named service" all read it. Like the guard
+cache it learned only from this instance's own writes: a 10040 stored through
+it drops the pass, and nothing else did. De10df3 moved the gate onto that pass
+reasoning that "every write passes through the projection that invalidates
+it" — true per process, not per index.
+
+Measured on search-staging (2026-09-26, relay process up nine days, most 10040s
+mirrored in by the sync router): 24 of 47 recent observers resolved **no lens**
+and got empty ranked pages under the observer gate, and bare-`30392`
+delegations added after the relay's last rebuild did not unpack
+(NosFabrica/vespa-eventstore#145). The reverse held too: the sync skipped cards
+by a service first named on the relay's socket, because its pass did not name
+it.
+
+It is not settled the guard-cache way. Not caching (`SHARED_STRICT`'s answer
+there) would put a `complete` read of every 10040 on every observer query and
+fail them all whenever coverage dips. So:
+
+| | provider pass | a foreign 10040 applies |
+|---|---|---|
+| `SINGLE_WRITER` | cached until a local 10040 write | never — the mode asserts there are none |
+| `SHARED_STRICT`, `SHARED` | also rebuilt every `providerRefreshSeconds` (default 60) | within one rebuild |
+
+A rebuild is one `/search/` of the stored 10040s (hundreds of documents, not
+the corpus), readers keep the old pass while it runs, and a rebuild that throws
+or reads nothing keeps the old pass (`BackgroundFailures` "trust.providers";
+the `trust.providers.age.secs` gauge climbs past the interval). Each process
+remembers the signers of the cards it skipped as unnamed; when a pass names
+one, that signer's walk is queued, so the skipped cards are projected — and a
+service another process named and already walked is not walked again where
+nothing was skipped. The memory is bounded (`trust.skipped.dropped` counts what
+did not fit) and does not survive a restart, so cards skipped before one — or
+before this change — need a reconcile with repair. `refreshTrustProviders()` is the
+on-demand barrier; `explainTrust` reports a pass that disagrees with the stored
+list instead of blaming the list.
+
 ## The right sharding: one WRITE LANE per owner, not one node per pubkey
 
 The saving property of Nostr's semantics: **every constraint this store

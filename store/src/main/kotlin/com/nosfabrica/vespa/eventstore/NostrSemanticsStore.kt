@@ -40,6 +40,7 @@ import com.nosfabrica.vespa.eventstore.mapping.SearchExtractors
 import com.nosfabrica.vespa.eventstore.mapping.toEvent
 import com.nosfabrica.vespa.eventstore.mapping.toEventQuery
 import com.nosfabrica.vespa.eventstore.runtime.DEFAULT_GUARD_REFRESH_MILLIS
+import com.nosfabrica.vespa.eventstore.runtime.DEFAULT_PROVIDER_REFRESH_MILLIS
 import com.nosfabrica.vespa.eventstore.runtime.WriteLocks
 import com.nosfabrica.vespa.eventstore.runtime.WriterTopology
 import com.nosfabrica.vespa.eventstore.search.PageAssembly
@@ -50,6 +51,7 @@ import com.nosfabrica.vespa.eventstore.search.SubjectKeys
 import com.nosfabrica.vespa.eventstore.search.isRanked
 import com.nosfabrica.vespa.eventstore.trust.Delegations
 import com.nosfabrica.vespa.eventstore.trust.Enrolment
+import com.nosfabrica.vespa.eventstore.trust.ProviderRefresher
 import com.nosfabrica.vespa.eventstore.trust.TrustProjection
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -96,8 +98,8 @@ import kotlin.coroutines.coroutineContext
  * There are no cross-document transactions — [transaction] buffers and applies
  * sequentially without rollback. Both properties are about writes THIS process
  * makes; when another process feeds the same index, say so with [writers] —
- * the guard-owner cache is the one piece of state that would otherwise trust
- * this process's writes to be all of them.
+ * the guard-owner cache and the kind-10040 provider pass are the two pieces of
+ * state that would otherwise trust this process's writes to be all of them.
  *
  * Events are NOT verified here; verification is the ingest path's job, once,
  * before insert.
@@ -116,6 +118,14 @@ class NostrSemanticsStore(
     writers: WriterTopology = WriterTopology.SHARED_STRICT,
     /** Guard-cache rebuild cadence under [WriterTopology.SHARED]; 0 disables the refresher. */
     guardRefreshMillis: Long = DEFAULT_GUARD_REFRESH_MILLIS,
+    /**
+     * How stale the kind-10040 provider pass may get under any topology but
+     * [WriterTopology.SINGLE_WRITER] — the window in which a list ANOTHER
+     * process stored is not yet this one's lens, gate or card projection (see
+     * `trust/ProviderRefresher`). 0 disables the refresher, which is exactly
+     * the pre-#145 behaviour: correct only while this process is the sole writer.
+     */
+    providerRefreshMillis: Long = DEFAULT_PROVIDER_REFRESH_MILLIS,
     /** Events removed per sweep round (see [Deletions]). Internal — a test seam, like [nowSecs]. */
     internal val sweepPage: Int = 10_000,
     /**
@@ -172,6 +182,17 @@ class NostrSemanticsStore(
     // NIP-09/62 guard probes entirely (see GuardOwners for the safety argument).
     private val guards = GuardOwners(index, writers, guardRefreshMillis)
 
+    /**
+     * Bounds the provider pass's age when another process may store 10040s
+     * (#145). Null for a store without the projection — it has no pass.
+     */
+    private val providerRefresher =
+        (index as? TrustProjection)?.let { trust ->
+            ProviderRefresher(trust, if (writers == WriterTopology.SINGLE_WRITER) 0L else providerRefreshMillis) { body ->
+                locks.gated(trust = true, WriteLocks.PROVIDERS, WriteLocks.PROVIDERS_TRUST) { body() }
+            }
+        }
+
     private val deletions = Deletions(index, relay, sweepPage)
 
     /** The per-event write rules — shared verbatim with [BulkMixedInsert]'s replay. */
@@ -184,7 +205,9 @@ class NostrSemanticsStore(
      * Read off [TrustProjection] rather than derived here, and the type check is
      * the honest statement of the dependency: the projection is the decorator
      * every write already passes through, so its [ProviderMap] is invalidated by
-     * every 10040 put and remove with no write-path code of its own. A second
+     * every 10040 put and remove with no write-path code of its own — and,
+     * for the 10040s another process stores, rebuilt on [providerRefresher]'s
+     * interval (#145). A second
      * cache in this class would need its own hook on four separate write entry
      * points and would still be a second answer to one question.
      *
@@ -218,7 +241,8 @@ class NostrSemanticsStore(
      * a query carrying an observer is handed the service their kind 10040
      * names per dimension ([EventQuery.rankKey], [EventQuery.followersKey])
      * off the projection's cached provider map — the same pass the write
-     * side and the search gate read, invalidated by every 10040 write. An
+     * side and the search gate read, invalidated by every 10040 write here
+     * and rebuilt on an interval for another process's (#145). An
      * observer with no stored list resolves to no key and ranks as trusting
      * nobody, which is what an observer with no cells ranked as before. A
      * store assembled without the projection has no map and resolves nothing.
@@ -959,9 +983,29 @@ class NostrSemanticsStore(
      */
     suspend fun refreshGuardOwners() = withActivity(Activity.GuardRefresh) { guards.refresh() }
 
+    /**
+     * Rebuild the kind-10040 provider pass NOW, rather than at the refresher's
+     * next tick, and queue a walk for any service it names that this process
+     * never did. For after a known foreign 10040 write, and for a test that
+     * must not wait on a clock. The previous pass stays if the rebuild fails
+     * (this throws) or reads no lists. A no-op on a store without the projection.
+     */
+    suspend fun refreshTrustProviders() {
+        providerRefresher?.refresh()
+    }
+
+    /**
+     * Seconds since the cached provider pass was ISSUED, or null while none is
+     * cached — the staleness gauge. Above the refresh interval means refreshes
+     * are failing (see `backgroundStatus`); under [WriterTopology.SINGLE_WRITER]
+     * it only says when this process last wrote a 10040.
+     */
+    fun trustProviderAgeSecs(): Long? = (index as? TrustProjection)?.recompute?.providerAgeSecs()
+
     override fun close() {
         // Before the index its background walks read through goes away.
         guards.close()
+        providerRefresher?.close()
         index.close()
     }
 
