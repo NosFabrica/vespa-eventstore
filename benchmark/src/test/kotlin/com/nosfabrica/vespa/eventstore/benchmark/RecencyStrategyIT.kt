@@ -119,7 +119,10 @@ class RecencyStrategyIT {
                         for (shape in shapes + gatedShapes) {
                             val q = shape.copy(nowSecs = now)
                             val expected = expectedPage(corpus, q)
-                            assertTrue(expected.isNotEmpty(), "the shape must match something: $q")
+                            // Every UNGATED shape matches something; a gated one may
+                            // rightly serve nothing (the unranked author's feed), and
+                            // every strategy must then agree on the empty page too.
+                            assertTrue(expected.isNotEmpty() || q.ranking == EventYql.RANK_RECENCY_GATED, "the shape must match something: $q")
                             for ((strategy, client) in clients) {
                                 assertEquals(expected, client.search(q).map { it.id }, "$strategy: $q")
                             }
