@@ -5,7 +5,17 @@ app = "1.0.1"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"
 # Quartz from JitPack (amethyst @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
-# c05aefbc08 = amethyst branch claude/nostr-relay-sql-cursor-0615uh @ 2026-09-26:
+# 25e949d07d = amethyst branch claude/nostr-relay-sql-cursor-0615uh @ 2026-09-26:
+# NIP-FF gained `events.d` (an addressable event's first `d` value, '' without
+# one, NULL for other kinds). For this store: the interpreter computes `d` from
+# each event, and pushes `d = …` / `d IN (…)` down as a `#d` filter (a superset,
+# re-checked) — `ScanSpec.dValues`, which VespaSqlBackend passes through
+# `toFilter()` unchanged. Quartz's SQLite reference now supersedes addressable
+# kinds by kind (not by parsed class), which parity comparisons see. A condition
+# on `d` counts as selective (`ScanSpec.isSelective`), so this store's
+# `acceptsScan` takes `d = ?` alone.
+#
+# Prev c05aefbc08 = amethyst branch claude/nostr-relay-sql-cursor-0615uh @ 2026-09-26:
 # the SQL profile became NIP-FF, the Nostr Query Language (NQL). For this store:
 #   `IEventStore.sql(...)` is now `nql(query, params, maxRows): NqlResult`, answered
 #     for non-SQLite stores by an interpreter in Quartz over the SAME
@@ -92,7 +102,7 @@ mavenPublish = "0.37.0"
 #
 # Prev cecc3287b2 (2026-09-01: 17 catch-all kinds split into title/body roles, four
 # affiliation URLs, six doubled `t`-tag scans dropped; a ranking backfill).
-quartz = "c05aefbc08"
+quartz = "25e949d07d"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 sqlite = "2.7.0"

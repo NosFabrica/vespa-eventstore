@@ -217,6 +217,17 @@ class SqlConformanceTest {
                 "JOIN tags AS l ON l.event_id = e.id AND l.t0 = 'l' WHERE e.kind = 30166 AND e.pubkey = ? GROUP BY d.t1",
             authors[0],
         )
+        // R14 through NIP-FF's `events.d`, the addressable identifier: no join to the d tag.
+        assertSame(
+            "SELECT e.d, max(e.created_at) AS newest, max(l.t4) AS epoch FROM events AS e JOIN tags AS l ON l.event_id = e.id AND l.t0 = 'l' " +
+                "WHERE e.kind = 30166 AND e.pubkey = ? GROUP BY e.d",
+            authors[0],
+        )
+        // A keyset page by `d`, and `d = ?` (pushed down as `#d`), and `d` NULL outside addressable kinds.
+        assertSame("SELECT d FROM events WHERE kind = 30166 AND pubkey = ? AND d > ? ORDER BY d LIMIT 2", authors[0], "")
+        val someD = run(reference, "SELECT d FROM events WHERE kind = 30166 ORDER BY d LIMIT 1", emptyList()).second.single().removeSurrounding("[", "]")
+        assertSame("SELECT kind, pubkey FROM events WHERE d = ?", someD)
+        assertSame("SELECT kind, count(*) AS n FROM events WHERE kind IN (1, 30166) AND d IS NULL GROUP BY kind")
         // Reactions to one author's notes.
         assertSame("SELECT count(*) AS n FROM events AS r JOIN tags AS t ON t.event_id = r.id AND t.t0 = 'e' JOIN events AS n ON n.id = t.t1 WHERE r.kind = 7 AND n.kind = 1 AND n.pubkey = ?", authors[0])
         // Newest-first listing whose LIMIT lands inside a tie group.
