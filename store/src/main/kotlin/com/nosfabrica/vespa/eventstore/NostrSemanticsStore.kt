@@ -78,8 +78,8 @@ import kotlin.coroutines.coroutineContext
  *
  * [EventAdmission] enforces the Nostr write rules: dedup ("duplicate:"),
  * replaceable/addressable supersession with the NIP-01 tiebreak — same
- * created_at, LOWEST id wins — (a stale version is "duplicate:" too:
- * already covered, answered `OK true`), NIP-09 deletions and NIP-62
+ * created_at, LOWEST id wins — ("replaced:", answered `OK false`: a stale
+ * version is not stored, see Rejections.REPLACED), NIP-09 deletions and NIP-62
  * vanishes ("blocked:", enforcement in [Deletions], keyed on the event's
  * OWNER — the gift-wrap recipient for kind 1059, else the author),
  * already-expired events rejected and due expirations swept (NIP-40), and

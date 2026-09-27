@@ -222,7 +222,7 @@ internal class BulkRecordInsert(
         if (index.supersedesViaPut) {
             // The address-keyed engine enforces newest-wins per put: replay each
             // address's run through putIfNewer IN ORDER, identical to the
-            // per-event path (a loser comes back false and is SUPERSEDED).
+            // per-event path (a loser comes back false and is REPLACED).
             // Different addresses run concurrently; a single address stays
             // sequential. putIfNewer writes replaceable winners itself; toPut
             // carries only the regular events.
@@ -232,7 +232,7 @@ internal class BulkRecordInsert(
                 groups.entries.toList().mapBounded(PUT_FANOUT) { (_, idxs) ->
                     for (i in idxs) {
                         if (!index.putIfNewer(events[i].toDoc())) {
-                            outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.SUPERSEDED)
+                            outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.REPLACED)
                         }
                     }
                 }
@@ -306,7 +306,7 @@ internal class BulkRecordInsert(
                     val e = events[i]
                     val lost = bestId != null && (bestAt > e.createdAt || (bestAt == e.createdAt && bestId < e.id))
                     if (lost) {
-                        outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.SUPERSEDED)
+                        outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.REPLACED)
                     } else {
                         // The previous best is superseded. An in-run best stays
                         // Accepted but never lands; a stored best is removed.

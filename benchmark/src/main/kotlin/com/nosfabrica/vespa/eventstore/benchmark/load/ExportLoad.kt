@@ -95,8 +95,7 @@ object ExportLoad {
                                 // Keyed by the WHOLE reason: every one this store
                                 // produces is a constant (Rejections.kt), so the
                                 // tally stays bounded, and a prefix would fold
-                                // expired / deleted / vanished into one `blocked`
-                                // and a superseded version into `duplicate`.
+                                // expired / deleted / vanished into one `blocked`.
                                 is IEventStore.InsertOutcome.Rejected -> {
                                     rejected.merge(outcome.reason, 1, Int::plus)
                                 }

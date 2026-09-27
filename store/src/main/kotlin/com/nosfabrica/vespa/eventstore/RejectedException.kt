@@ -20,11 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore
 
-/**
- * A SEMANTIC insert rejection: `duplicate:` (an id already held, or a replaceable version a
- * stored one supersedes — Quartz's SUPERSEDED) or `blocked:`. Transient engine failures are
- * NOT this; they propagate.
- */
+/** A SEMANTIC insert rejection (duplicate, replaced, or blocked). Transient engine failures are NOT this; they propagate. */
 class RejectedException(
     message: String,
 ) : Exception(message)

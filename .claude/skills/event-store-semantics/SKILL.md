@@ -7,9 +7,12 @@ description: The authoritative behavioral contract of Quartz's event stores — 
 
 > **In this repo (vespa-eventstore):** this is the upstream contract our parity gate
 > (`VespaParityIT`) holds us to, and `InMemoryEventIndex` is our local executable spec of it.
-> Use the STORE-xx rule ids in comments and PR notes when matching or diverging. Our one
-> deliberate divergence is **STORE-D05**: we treat deletion-of-a-deletion as a no-op
-> (upstream documents this and agrees ours is the safer reading). Note **STORE-F08**: the
+> Use the STORE-xx rule ids in comments and PR notes when matching or diverging. Our
+> deliberate divergences: **STORE-D05** — we treat deletion-of-a-deletion as a no-op
+> (upstream documents this and agrees ours is the safer reading); and **STORE-W01/W02's
+> reply** — a stale replaceable/addressable version is rejected `REPLACED` (`replaced:`,
+> so `OK false`), not upstream's `SUPERSEDED` (`duplicate:`, `OK true`), because nothing
+> was written and NIP-01's `true` means accepted (`Rejections.REPLACED` has the why). Note **STORE-F08**: the
 > reference leaves same-`created_at` ordering unspecified by default — don't chase
 > byte-for-byte ordering "divergences" there; and **STORE-F06**: the reference's hash-based
 > tag matching can theoretically over-match where Vespa is exact.

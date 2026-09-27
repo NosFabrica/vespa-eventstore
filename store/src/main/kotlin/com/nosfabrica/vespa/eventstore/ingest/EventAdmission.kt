@@ -109,9 +109,9 @@ internal class EventAdmission(
 
             // Replaceable/addressable newest-wins in ONE call: false == a
             // same-or-newer version holds the address, so this insert is
-            // SUPERSEDED (see EventIndex.putIfNewer).
+            // REPLACED (see EventIndex.putIfNewer, and Rejections.REPLACED for why not SUPERSEDED).
             event.kind.isReplaceable() || event.kind.isAddressable() -> {
-                if (!index.putIfNewer(event.toDoc())) throw RejectedException(Rejections.SUPERSEDED)
+                if (!index.putIfNewer(event.toDoc())) throw RejectedException(Rejections.REPLACED)
             }
 
             else -> {

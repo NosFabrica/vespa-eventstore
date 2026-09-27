@@ -426,7 +426,7 @@ m.ports.sortedByDescending { it.nanos }.forEach {
     println("${it.activity} ${it.call}  ${it.calls} calls  ${it.nanos / 1e9}s  ${it.callsPerDoc} calls/doc")
 }
 
-// Why writes were rejected, per the closed set of reasons (duplicate/superseded/blocked/…),
+// Why writes were rejected, per the closed set of reasons (duplicate/replaced/blocked/…),
 // over the denominator that makes them a rate.
 println("${m.admitted} admitted of ${m.offered} offered")
 

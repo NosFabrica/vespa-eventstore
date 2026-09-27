@@ -25,8 +25,9 @@ mavenPublish = "0.37.0"
 # `reindexFullTextSearch()` runs; no resync is needed. The remaining dagger kinds in README
 # (the previous pin's eleven, plus NIP-CC geocaching) are still on the catch-all.
 #
-# Prev 28bf170f92 (2026-09-26: event classes renamed to their NIP names; a stale replaceable
-# is SUPERSEDED, `duplicate:`-prefixed, so a relay acks it OK true; 142 -> 150 reachable
+# Prev 28bf170f92 (2026-09-26: event classes renamed to their NIP names; Quartz's SQLite
+# store answers a stale replaceable with SUPERSEDED, `duplicate:` / OK true, which this store
+# deliberately does NOT follow (Rejections.REPLACED: not written, so OK false); 142 -> 150 reachable
 # searchable kinds, eight new classes on the catch-all; jackson-module-kotlin and kotlin-reflect leave
 # the classpath).
 # Prev a8e8778265 (2026-09-10: 133 -> 144 searchable kind values, all eleven on the

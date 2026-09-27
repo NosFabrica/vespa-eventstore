@@ -80,7 +80,7 @@ The stack `open()` assembles: `NostrSemanticsStore( TrustProjection( VespaEventI
 
 ### Nostr semantics (`NostrSemanticsStore`)
 
-All writes serialize behind one `Mutex` (`withWriteLock`), making query-then-write atomic within the process. `insertLocked` enforces: dedup, replaceable/addressable supersession (NIP-01 tiebreak: same `created_at` → lowest id wins), NIP-09 deletions (same-owner only; deleting a deletion is a no-op — Quartz's SQLite store gets this wrong, we don't), NIP-40 expiration, NIP-62 vanish, ephemeral-never-stored. Rejections return typed `"duplicate:"`/`"blocked:"` reasons (`Rejections.kt`) — a stale replaceable/addressable version is Quartz's `SUPERSEDED`, `duplicate:`-prefixed like an id duplicate, so a relay acks it `OK true` instead of inviting a retry. The store **never verifies signatures** — it deliberately holds unsigned rumors; verification is the caller's ingress job.
+All writes serialize behind one `Mutex` (`withWriteLock`), making query-then-write atomic within the process. `insertLocked` enforces: dedup, replaceable/addressable supersession (NIP-01 tiebreak: same `created_at` → lowest id wins), NIP-09 deletions (same-owner only; deleting a deletion is a no-op — Quartz's SQLite store gets this wrong, we don't), NIP-40 expiration, NIP-62 vanish, ephemeral-never-stored. Rejections return typed `"duplicate:"`/`"replaced:"`/`"blocked:"` reasons (`Rejections.kt`). The store **never verifies signatures** — it deliberately holds unsigned rumors; verification is the caller's ingress job.
 
 The per-event `insert()` path pays admission-probe round trips; `batchInsert()` amortizes them (~47× fewer round trips). Never ingest in a loop over `insert()`.
 

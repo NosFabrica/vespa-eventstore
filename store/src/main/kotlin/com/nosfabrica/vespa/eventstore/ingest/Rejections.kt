@@ -31,15 +31,20 @@ internal object Rejections {
 
     /**
      * A replaceable/addressable version that a stored one already beats (NIP-01:
-     * newer `created_at`, or the same one and a lower id). `duplicate:`-prefixed,
-     * NOT `replaced:`, since Quartz 28bf170f92: its SQLite store answers this way
-     * (STORE-W01/W02), and its `RelaySession` acks every `duplicate:` reason with
-     * `OK true` while every other prefix is `OK false` — which clients (MDK's `wn`
-     * first) read as a refusal and retry forever. A stale version is "already
-     * covered", the same as an id duplicate, so this store says the same words.
-     * The event is still not written.
+     * newer `created_at`, or the same one and a lower id). `replaced:`, so a relay
+     * answers `OK false` — DELIBERATELY not Quartz's `SUPERSEDED`.
+     *
+     * Quartz 28bf170f92 moved its SQLite store to `SUPERSEDED` ("duplicate: a newer
+     * version …", STORE-W01/W02), which its `RelaySession` acks with `OK true`, to stop
+     * MDK's `wn` retrying a same-second KeyPackage forever. This store does not follow:
+     * NIP-01's third `OK` field is `true` when the event was ACCEPTED, and a stale
+     * version is not written — nothing a later REQ could return. `OK true` would tell
+     * the client its event is on this relay when it is not. `replaced:` is also what
+     * strfry answers (`false, "replaced: have newer event"`), and "duplicate" would
+     * misname it: this relay does not have THIS event, it has a newer one. A byte-for-
+     * byte re-offer is still [DUPLICATE] (`OK true`), caught by the id check first.
      */
-    const val SUPERSEDED = RejectionReason.SUPERSEDED
+    const val REPLACED = RejectionReason.REPLACED
     const val INSERT_FAILED = RejectionReason.INSERT_FAILED
 
     // One constant string, not one per field/code point: callers tally
@@ -47,7 +52,7 @@ internal object Rejections {
     const val UNSTORABLE_TEXT = "blocked: text carries a code point the engine cannot store"
 
     /** Every reason this store can produce — the CLOSED set the outcome tally is keyed by. */
-    val ALL: List<String> = listOf(EXPIRED, DUPLICATE, SUPERSEDED, DELETED, VANISHED, INSERT_FAILED, UNSTORABLE_TEXT)
+    val ALL: List<String> = listOf(EXPIRED, DUPLICATE, DELETED, VANISHED, REPLACED, INSERT_FAILED, UNSTORABLE_TEXT)
 
     /**
      * The closed-set reason a rejection [message] belongs to.

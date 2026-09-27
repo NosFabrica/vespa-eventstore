@@ -93,7 +93,7 @@ object TrustProbe {
 
                     is IEventStore.InsertOutcome.Rejected -> rejected.merge(o.reason, 1, Int::plus)
 
-                    // whole reason: constants, and SUPERSEDED must not fold into duplicate
+                    // whole reason: constants, and a prefix would fold expired/deleted/vanished together
                     is IEventStore.InsertOutcome.Failed -> rejected.merge("FAILED", 1, Int::plus)
                 }
             }

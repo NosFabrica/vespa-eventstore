@@ -158,8 +158,10 @@ open class NostrSemanticsStoreTest {
 
             val stale = metadata(at = 150, name = "late")
             val rejected = assertFailsWith<RejectedException> { store.insert(stale) }
-            // Quartz's SUPERSEDED: `duplicate:`-prefixed, so a relay acks it `OK true`.
-            assertEquals(RejectionReason.SUPERSEDED, rejected.message)
+            // REPLACED, not Quartz's SUPERSEDED: nothing was written, so a relay must
+            // answer OK false, and only a `duplicate:` reason is acked true.
+            assertEquals(RejectionReason.REPLACED, rejected.message)
+            assertTrue(!rejected.message!!.startsWith(RejectionReason.PREFIX_DUPLICATE))
         }
 
     /** ReplaceableModule tie-break: equal created_at, LOWEST id wins. */
