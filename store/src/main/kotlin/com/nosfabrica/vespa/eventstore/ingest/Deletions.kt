@@ -31,7 +31,7 @@ import com.vitorpamplona.quartz.nip01Core.core.isAddressable
 import com.vitorpamplona.quartz.nip01Core.core.isReplaceable
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.owner
-import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
+import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 
 /**
@@ -57,7 +57,7 @@ internal class Deletions(
      */
     suspend fun isDeleted(event: Event): Boolean {
         // Deletion requests and vanish requests are immune to kind-5 tombstones.
-        if (event is DeletionEvent || event is RequestToVanishEvent) return false
+        if (event is DeletionRequestEvent || event is RequestToVanishEvent) return false
         val owner = event.owner()
 
         // An EXISTENCE probe on the insert hot path, stamped unranked to opt out
@@ -73,7 +73,7 @@ internal class Deletions(
             index
                 .search(
                     EventQuery(
-                        kinds = listOf(DeletionEvent.KIND),
+                        kinds = listOf(DeletionRequestEvent.KIND),
                         authors = listOf(owner),
                         tags = mapOf(tagKey to listOf(value)),
                         since = event.createdAt,
@@ -99,7 +99,7 @@ internal class Deletions(
      * deletion's created_at, same author only. The caller stores the event
      * itself afterwards, as the tombstone.
      */
-    suspend fun applyDeletion(ev: DeletionEvent) {
+    suspend fun applyDeletion(ev: DeletionRequestEvent) {
         // Deletions routinely carry dozens of e-tags: resolve them with
         // bounded-concurrent gets and remove the victims in ONE pipelined
         // removeDocs — which also hands the trust projection its batch react.
@@ -110,7 +110,7 @@ internal class Deletions(
                 .mapBounded(TARGET_GET_FANOUT) { index.get(it) }
                 .filterNotNull()
                 // Kind 5 against a kind 5 or a kind 62 has no effect.
-                .filter { it.kind != DeletionEvent.KIND && it.kind != RequestToVanishEvent.KIND }
+                .filter { it.kind != DeletionRequestEvent.KIND && it.kind != RequestToVanishEvent.KIND }
                 .filter { it.owner == ev.pubKey }
         if (byId.isNotEmpty()) index.removeDocs(byId)
         // A-tag targets: the queries are independent, so they run

@@ -35,7 +35,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.owner
 import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
-import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
+import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 
 /**
@@ -79,7 +79,7 @@ internal class BulkMixedInsert(
         if (added.isNotEmpty()) index.putAll(added)
         added.forEach {
             when (it.kind) {
-                DeletionEvent.KIND -> guards.noteDeletionStored(it.pubkey)
+                DeletionRequestEvent.KIND -> guards.noteDeletionStored(it.pubkey)
                 RequestToVanishEvent.KIND -> guards.noteVanishStored(it.pubkey)
             }
         }
@@ -97,12 +97,12 @@ internal class BulkMixedInsert(
         snapshot: InMemoryEventIndex,
         events: List<Event>,
     ) {
-        val deletions = events.filterIsInstance<DeletionEvent>()
+        val deletions = events.filterIsInstance<DeletionRequestEvent>()
         val vanishes = events.filterIsInstance<RequestToVanishEvent>()
         val owners = events.map { it.owner() }.distinct()
         val batchIds = events.map { it.id }
         val batchAddresses = events.mapNotNull { it.addressOrNull() }.distinct()
-        val records = events.filter { it !is DeletionEvent && it !is RequestToVanishEvent }
+        val records = events.filter { it !is DeletionRequestEvent && it !is RequestToVanishEvent }
         // Only owners with a provably stored tombstone/vanish (GuardOwners) can
         // guard this batch; everyone else's probes come back empty, so skip
         // them — turning ~3 heavy queries/owner-chunk into zero. Gated per
@@ -118,8 +118,8 @@ internal class BulkMixedInsert(
                 // Guards + immunity: the owners' stored tombstones (targeting this
                 // batch's ids/addresses) and their vanishes — only for flagged owners.
                 flaggedDeleters.chunked(PRELOAD_CHUNK).forEach { auth ->
-                    if (batchIds.isNotEmpty()) add(EventQuery(kinds = listOf(DeletionEvent.KIND), authors = auth, tags = mapOf("e" to batchIds)))
-                    if (batchAddresses.isNotEmpty()) add(EventQuery(kinds = listOf(DeletionEvent.KIND), authors = auth, tags = mapOf("a" to batchAddresses)))
+                    if (batchIds.isNotEmpty()) add(EventQuery(kinds = listOf(DeletionRequestEvent.KIND), authors = auth, tags = mapOf("e" to batchIds)))
+                    if (batchAddresses.isNotEmpty()) add(EventQuery(kinds = listOf(DeletionRequestEvent.KIND), authors = auth, tags = mapOf("a" to batchAddresses)))
                 }
                 flaggedVanishers.chunked(PRELOAD_CHUNK).forEach { auth ->
                     add(EventQuery(kinds = listOf(RequestToVanishEvent.KIND), authors = auth))
