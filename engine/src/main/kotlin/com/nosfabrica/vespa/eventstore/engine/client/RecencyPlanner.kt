@@ -83,7 +83,8 @@ enum class RecencyStrategy {
 
 /**
  * The reads a time window can serve EXACTLY: newest-first by `created_at`, a
- * limit inside the match-phase band, and nothing already naming its documents.
+ * limit (inside the match-phase band for a plain read; any, for a gated one),
+ * and nothing already naming its documents.
  *
  * Why exactness holds: a window `[anchor - w, ∞)` is anchored at the query's
  * newest end, so every document outside it is strictly older than every
@@ -100,8 +101,18 @@ enum class RecencyStrategy {
  */
 internal fun EventQuery.isWindowable(): Boolean {
     val limit = limit ?: return false
-    if (limit !in 1..EventYql.MATCH_PHASE_BAND) return false
+    if (limit < 1) return false
     val plain = ranking == null && search == null && phrases.isEmpty()
+    // PLAIN reads past the band are already windowed a band-sized page at a
+    // time (VespaEventIndex.pagedRecency pages it, and every page is a
+    // windowable read of its own). A GATED read past the band has no pager:
+    // it demotes to the full-scan gated profile over the WHOLE match set —
+    // measured 4.8-5.0 s for a gated kind-1 feed at limits 2,001-5,000
+    // (2026-09-27, 44M-doc corpus), the relay's max_limit being 5,000. The
+    // window argument does not care about the limit, and inside a window
+    // the full-scan profile walks only the window, so gated reads window at
+    // any limit.
+    if (plain && limit > EventYql.MATCH_PHASE_BAND) return false
     return (plain || ranking == EventYql.RANK_RECENCY_GATED) &&
         !complete &&
         !sampled &&
