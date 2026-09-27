@@ -612,6 +612,68 @@ class VespaEventIndexTest {
         }
 
     /**
+     * THE MEMORY PAYS ON THE SECOND READ. A narrow shape's first read spends one
+     * attempt before falling back; the second skips straight to the unwindowed
+     * read — one query, the shipped cost. A shape that needed a second, wider
+     * window starts the next read there and proves out in one. Same pages
+     * throughout: the memory moves cost, never answers.
+     */
+    @Test
+    fun `speculative remembers where a shape found its page`() =
+        runBlocking {
+            val now = System.currentTimeMillis() / 1000
+            seedStrategyCorpus(now)
+            VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.SPECULATIVE).use { speculative ->
+                suspend fun read(q: EventQuery): Pair<List<Long>, Int> {
+                    val before = mock.searchRequests.size
+                    val page = speculative.search(q).map { it.createdAt }
+                    return page to mock.searchRequests.size - before
+                }
+
+                val narrow = EventQuery(authors = listOf(QUIET), limit = 3, nowSecs = now)
+                val (narrowFirst, narrowFirstSent) = read(narrow)
+                var booked = speculativeCalls()
+                val (narrowAgain, narrowAgainSent) = read(narrow)
+                assertEquals(narrowFirst, narrowAgain)
+                assertEquals(2, narrowFirstSent, "cold: one attempt, then the fallback")
+                assertEquals(1, narrowAgainSent, "remembered narrow: the unwindowed read alone")
+                assertEquals(mapOf("" to 1L, ".recalled.narrow" to 1L), speculativeCalls().minus(booked))
+
+                // 30 busy notes in the hour, one weekly note exactly 8h back: a
+                // limit of 31 misses in the first window and proves in the second.
+                val widening = EventQuery(kinds = listOf(1), limit = 31, nowSecs = now)
+                booked = speculativeCalls()
+                val (wideFirst, wideFirstSent) = read(widening)
+                assertEquals(1L, speculativeCalls().minus(booked)[".widened"], "cold: proven by the second window")
+                assertEquals(2, wideFirstSent)
+                booked = speculativeCalls()
+                val (wideAgain, wideAgainSent) = read(widening)
+                assertEquals(wideFirst, wideAgain)
+                assertEquals(1, wideAgainSent, "remembered window: proven by the first attempt")
+                assertEquals(mapOf("" to 1L, ".attempt" to 1L, ".recalled.window" to 1L, ".first" to 1L), speculativeCalls().minus(booked))
+            }
+        }
+
+    /**
+     * Memory off (`VESPA_RECENCY_MEMORY=0`): every read starts cold, which is
+     * what the probe compares against.
+     */
+    @Test
+    fun `speculative without memory starts every read cold`() =
+        runBlocking {
+            val now = System.currentTimeMillis() / 1000
+            seedStrategyCorpus(now)
+            VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.SPECULATIVE, recencyMemory = false).use { speculative ->
+                val narrow = EventQuery(authors = listOf(QUIET), limit = 3, nowSecs = now)
+                repeat(2) {
+                    val before = mock.searchRequests.size
+                    speculative.search(narrow)
+                    assertEquals(2, mock.searchRequests.size - before, "no memory: an attempt and the fallback, every time")
+                }
+            }
+        }
+
+    /**
      * A LEGACY SCHEMA MUST NOT LOSE THE WINDOW. Against a schema without the
      * `recency` profile, the profile net demotes a plain read to
      * [EventYql.RANK_UNRANKED] — an explicit ranking, which [isWindowable]

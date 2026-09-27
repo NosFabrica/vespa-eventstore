@@ -983,11 +983,37 @@ Ruled out on the same corpus, so they need not be re-tried:
 | 4 match threads on feed shapes | no gain; a deep scan got slower (514 → 592 ms) |
 | a dedicated `d_tag` / address attribute | `#d` is already a hash-dictionary posting on `tag_index`: 0–5 ms engine; a same-sized `id in (…)` lookup (the type such a field would get) saves 0–3 ms, for a second copy of every `d` in attribute memory |
 
+**The window memory (2026-09-26).** Speculating pays a round trip per window it
+has to guess, and relay traffic repeats its guesses — every client of a global
+feed asks one filter, a follow feed is re-asked on every reconnect and page. So
+`RecencyWindowMemory` remembers, per read SHAPE (kinds, authors, tags, lens and
+floor, and how far back the anchor sits — never `since`/`until`/`limit`), where
+the last read found its page: a remembered window is the next read's first
+attempt, and a remembered NARROW shape skips the attempts for the unwindowed
+read. 10-minute TTL, 4,096-shape LRU; `VESPA_RECENCY_MEMORY=0` turns it off.
+A window moves cost, never the page, so a stale entry costs a round trip, not
+an answer. Same corpus, same probe — speculative without memory (every read
+cold) against with it (every later read of a seen shape), median ms [queries]:
+
+| REQ shape | shipped | speculative, cold | speculative, remembered |
+|---|---:|---:|---:|
+| 50 quiet authors, limit 200 | 11.2 | 19.7 [3] | **11.2** [1] |
+| follow 300 authors, limit 500 | 139 | 39.2 [2] | **23.0** [1] |
+| gated follow 300, limit 500 | 848 | 39.0 [2] | **29.7** [1] |
+| `#t:bitcoin`, limit 50 | 18.4 | 9.2 [2] | **6.6** [1] |
+| gated `#p` notifications | 60.6 | 14.6 [2] | **12.0** [1] |
+| gated 50 quiet authors | 14.6 | 16.9 [2] | **14.7** [1] |
+
+Every shape resolves in ONE engine query once remembered, and the one shape
+speculation made slower is back at the shipped cost. Shapes that already took
+one query are unchanged within noise.
+
 Watching it live: every speculative read books `IngestStats` stages —
 `recency.speculative` (the read, timed), `.attempt` (each windowed query, timed)
 and one zero-time counter per outcome: `.first` / `.widened` (pages the windows
 proved) or `.fallback.<narrow|attempts|since|partial|window>` (reads that ran
-unwindowed, and why). Attempts per read and the share proven in one query are
+unwindowed, and why), and `.recalled.window` / `.recalled.narrow` when the
+memory supplied the start or skipped the attempts. Attempts per read and the share proven in one query are
 the numbers to read on a real cluster before trusting this table's.
 
 Correctness gates: the probe's same-page check (above), `VespaEventIndexTest`
