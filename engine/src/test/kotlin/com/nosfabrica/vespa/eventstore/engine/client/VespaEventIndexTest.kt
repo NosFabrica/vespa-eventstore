@@ -551,6 +551,28 @@ class VespaEventIndexTest {
         }
 
     /**
+     * A far-future `until` (a client sentinel) must not strand the windows over
+     * empty time: the anchor is capped at the request clock, so the busy feed
+     * still resolves in its first window — and a note dated past the clock
+     * (the live corpus holds some from 2100) is still inside it and still first.
+     */
+    @Test
+    fun `speculative anchors a future until at the request clock`() =
+        runBlocking {
+            val now = System.currentTimeMillis() / 1000
+            seedStrategyCorpus(now)
+            val future = doc(kind = 1, pubkey = BUSY, at = now + 5 * 365 * 86_400L)
+            seed(future)
+            VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.SPECULATIVE).use { speculative ->
+                val before = mock.searchRequests.size
+                val page = speculative.search(EventQuery(kinds = listOf(1), until = now + 100L * 365 * 86_400, limit = 10, nowSecs = now))
+                assertEquals(1, mock.searchRequests.size - before, "one windowed query, anchored at now")
+                assertEquals(future.id, page.first().id, "a future-dated note is inside the window and newest")
+                assertEquals(listOf(future.createdAt) + (1..9).map { now - it }, page.map { it.createdAt })
+            }
+        }
+
+    /**
      * THE NARROW-READ RULE: a read with nothing in the first window has no rate
      * to widen by, so it projects past [RecencyPlanner.NARROW_HORIZON] and runs
      * unwindowed immediately — one small attempt over the shipped cost, not a
@@ -569,6 +591,36 @@ class VespaEventIndexTest {
                 assertEquals(2, sent.size, "one windowed attempt, then the unwindowed read: $sent")
                 assertTrue(sent[0].contains("created_at >= "), "the attempt is windowed")
                 assertTrue(!sent[1].contains("created_at >= "), "the fallback is not")
+            }
+        }
+
+    /**
+     * A LEGACY SCHEMA MUST NOT LOSE THE WINDOW. Against a schema without the
+     * `recency` profile, the profile net demotes a plain read to
+     * [EventYql.RANK_UNRANKED] — an explicit ranking, which [isWindowable]
+     * reads as an opt-out — AFTER planning. The shipped strategy windows the
+     * bare scan before that demotion (count probes); the speculative one must
+     * not hand it past the demotion unplanned, or every small-limit feed on
+     * such a cluster becomes the full unranked sort the degrader cuts.
+     */
+    @Test
+    fun `speculative keeps a window against a schema without the recency profile`() =
+        runBlocking {
+            val now = System.currentTimeMillis() / 1000
+            seedStrategyCorpus(now)
+            mock.rejectRecencyProfile = true
+            VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.SPECULATIVE).use { speculative ->
+                try {
+                    val q = EventQuery(kinds = listOf(1), limit = 10, nowSecs = now)
+                    speculative.search(q) // flips the profile-missing flag
+                    val before = mock.searchRequests.size
+                    val page = speculative.search(q)
+                    val yqls = mock.searchRequests.drop(before).map { it.getValue("yql") }
+                    assertEquals((1..10).map { now - it }, page.map { it.createdAt })
+                    assertTrue(yqls.any { it.contains("created_at >= ") }, "the read must still run inside a window: $yqls")
+                } finally {
+                    mock.rejectRecencyProfile = false
+                }
             }
         }
 

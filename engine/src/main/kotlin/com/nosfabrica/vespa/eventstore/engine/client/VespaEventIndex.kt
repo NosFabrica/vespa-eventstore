@@ -504,7 +504,14 @@ class VespaEventIndex(
         q: EventQuery,
         limit: Int,
     ): List<VespaSummary> {
-        val anchor = q.until ?: q.nowSecs ?: (System.currentTimeMillis() / 1000)
+        // Anchored at the NEWEST END OF THE DATA, not merely of the request: an
+        // `until` in the future (clients send far-future sentinels) would put
+        // every window over empty time and spend the attempts on nothing. Any
+        // anchor is exact — `since` bounds only the old side, so whatever lies
+        // between the anchor and `until` (future-dated notes included) is
+        // inside every window — so the anchor is free to be the request clock.
+        val now = q.nowSecs ?: (System.currentTimeMillis() / 1000)
+        val anchor = q.until?.let { minOf(it, now) } ?: now
         var window = RecencyPlanner.FIRST_WINDOW
         var attempts = 0
         while (window <= RecencyPlanner.MAX_WINDOW && attempts < RecencyPlanner.MAX_ATTEMPTS) {

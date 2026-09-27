@@ -60,10 +60,27 @@ internal class Deletions(
         if (event is DeletionEvent || event is RequestToVanishEvent) return false
         val owner = event.owner()
 
+        // An EXISTENCE probe on the insert hot path, stamped unranked to opt out
+        // of recency planning (the sweeps' convention): a time window can only
+        // add a round trip to a question with an answer of zero or one tiny
+        // match set. Under the speculative strategy a backfilled event (older
+        // than the first window) otherwise paid an empty windowed attempt plus
+        // the real probe — two queries instead of one, twice per insert.
         suspend fun deletionExists(
             tagKey: String,
             value: String,
-        ): Boolean = index.search(EventQuery(kinds = listOf(DeletionEvent.KIND), authors = listOf(owner), tags = mapOf(tagKey to listOf(value)), since = event.createdAt, limit = 1)).isNotEmpty()
+        ): Boolean =
+            index
+                .search(
+                    EventQuery(
+                        kinds = listOf(DeletionEvent.KIND),
+                        authors = listOf(owner),
+                        tags = mapOf(tagKey to listOf(value)),
+                        since = event.createdAt,
+                        limit = 1,
+                        ranking = EventYql.RANK_UNRANKED,
+                    ),
+                ).isNotEmpty()
         if (deletionExists("e", event.id)) return true
         val address = event.addressOrNull() ?: return false
         return deletionExists("a", address)

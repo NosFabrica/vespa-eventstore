@@ -66,8 +66,10 @@ enum class RecencyStrategy {
      * D — the windowed query IS the probe: run the read inside a small
      * `since` window; a full page proves itself (everything outside the window
      * is strictly older than everything in it), a short one widens the window
-     * by the rate it just observed. Falls back to [MATCH_PHASE]'s unwindowed
-     * query once the window would exceed [RecencyPlanner.MAX_WINDOW].
+     * by the rate it just observed. Runs the read unwindowed, planned as
+     * [MATCH_PHASE] plans it, once the rate projects past
+     * [RecencyPlanner.NARROW_HORIZON], after [RecencyPlanner.MAX_ATTEMPTS], or
+     * — for the whole read — on a schema without the `recency` profile.
      */
     SPECULATIVE,
     ;
@@ -166,8 +168,13 @@ internal class RecencyPlanner(
     val enabled: Boolean = planning && strategy != RecencyStrategy.FULL_SCAN
 
     /**
-     * Window [q] if it is a bare recency scan the match-phase `recency`
-     * profile does not already cover: the profile owns the small limits
+     * [q] as [strategy] plans it before it reaches the engine: the count-probe
+     * window for [RecencyStrategy.COUNT_PROBE], [q] untouched for a read
+     * [RecencyStrategy.SPECULATIVE] will window itself, and otherwise the
+     * shipped planning ([shipped]).
+     *
+     * The shipped rule: window [q] if it is a bare recency scan the match-phase
+     * `recency` profile does not already cover: the profile owns the small limits
      * (probing there costs more than it saves — measured 0.6x), the planner
      * windows the limits past the profile's headroom gate, and takes
      * everything back when the serving schema lacks the profile.
@@ -183,8 +190,15 @@ internal class RecencyPlanner(
                 // no longer exempts the small limits.
                 RecencyStrategy.COUNT_PROBE -> return window(q, WIDE_WINDOWS)
 
-                // D: the read itself windows, later (VespaEventIndex.speculative).
-                RecencyStrategy.SPECULATIVE -> return q
+                // D: the read itself windows, later (VespaEventIndex.speculative)
+                // — but only while the `recency` profile serves. Without it the
+                // profile net demotes a plain read to RANK_UNRANKED AFTER this
+                // plan, an explicit ranking isWindowable reads as an opt-out, so
+                // deferring would hand the read past the demotion unplanned: the
+                // full unranked sort the degrader cuts. On such a schema the
+                // shipped probes window it here, before the demotion, as they
+                // always did.
+                RecencyStrategy.SPECULATIVE -> if (fallbacks.recencyProfileAvailable) return q
 
                 RecencyStrategy.FULL_SCAN, RecencyStrategy.MATCH_PHASE -> Unit
             }
