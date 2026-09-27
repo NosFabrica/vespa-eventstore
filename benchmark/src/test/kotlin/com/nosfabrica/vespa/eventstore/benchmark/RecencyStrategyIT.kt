@@ -114,6 +114,8 @@ class RecencyStrategyIT {
                                 EventQuery(kinds = listOf(1), until = now - 2 * 86_400L, limit = 6),
                                 EventQuery(kinds = listOf(1), since = now - 600, limit = 50),
                                 EventQuery(kinds = listOf(1), limit = 500),
+                                // Past the match-phase band: plain pages it; gated windows it.
+                                EventQuery(kinds = listOf(1), limit = EventYql.MATCH_PHASE_BAND + 500),
                             )
                         val gatedShapes = shapes.map { it.copy(ranking = EventYql.RANK_RECENCY_GATED, observer = OBSERVER, rankKey = OBSERVER, followersKey = OBSERVER, minRank = 2.0) }
                         for (shape in shapes + gatedShapes) {

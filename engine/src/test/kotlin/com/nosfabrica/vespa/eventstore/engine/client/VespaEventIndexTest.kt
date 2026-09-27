@@ -588,6 +588,29 @@ class VespaEventIndexTest {
         }
 
     /**
+     * A GATED read past the match-phase band is windowed too. Plain reads past
+     * the band are paged band by band (each page windowed); a gated one has no
+     * pager and used to run the full-scan gated profile over the whole match
+     * set — ~5 s on a 44M-doc corpus at the relay's max_limit. Here the busy
+     * author fills a 3,000-limit page nowhere near, so the read must still be
+     * windowed first and fall back — never go straight to the unbounded scan.
+     */
+    @Test
+    fun `speculative windows a gated read past the band`() =
+        runBlocking {
+            val now = System.currentTimeMillis() / 1000
+            seedStrategyCorpus(now)
+            VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.SPECULATIVE).use { speculative ->
+                val q = EventQuery(kinds = listOf(1), limit = EventYql.MATCH_PHASE_BAND + 1_000, ranking = EventYql.RANK_RECENCY_GATED, observer = BUSY, rankKey = BUSY, minRank = 2.0, nowSecs = now)
+                val before = mock.searchRequests.size
+                val page = speculative.search(q)
+                val yqls = mock.searchRequests.drop(before).map { it.getValue("yql") }
+                assertEquals(55, page.size, "the whole (ungated, on the mock) kind-1 corpus")
+                assertTrue(yqls.first().contains("created_at >= "), "the first query is a window: $yqls")
+            }
+        }
+
+    /**
      * THE NARROW-READ RULE: a read with nothing in the first window has no rate
      * to widen by, so it projects past [RecencyPlanner.NARROW_HORIZON] and runs
      * unwindowed immediately — one small attempt over the shipped cost, not a
