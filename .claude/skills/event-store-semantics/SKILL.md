@@ -15,7 +15,7 @@ description: The authoritative behavioral contract of Quartz's event stores — 
 > tag matching can theoretically over-match where Vespa is exact.
 
 > Skill imported from `vitorpamplona/amethyst` `.claude/skills/event-store-semantics`
-> at commit `9231195890` and refreshed to `28bf170f92` (the Quartz pin in `gradle/libs.versions.toml`). Refresh this copy
+> at commit `9231195890` and refreshed to `1cfb6e922f` (the Quartz pin in `gradle/libs.versions.toml`). Refresh this copy
 > and re-check the upstream semantics changelog at every pin bump.
 
 The SQLite `EventStore` (`quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nip01Core/store/sqlite/`)

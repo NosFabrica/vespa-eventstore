@@ -2,7 +2,7 @@
 
 Every concrete `SearchableEvent` implementor in Quartz, with the exact `indexableContent()`
 expression. **Update this file in the same PR as any change to the searchable set or to an
-`indexableContent()` body** (see SKILL.md). Verified against the code 2026-09-27 (Quartz pin `28bf170f92`; upstream `SearchableKinds.ALL`
+`indexableContent()` body** (see SKILL.md). Verified against the code 2026-09-27 (Quartz pin `1cfb6e922f`; upstream `SearchableKinds.ALL`
 is the reachable set, and every kind in it has a row here).
 
 Counts: 148 concrete classes covering 151 kind values (150 reachable — 31890 is not) (`GitStatusEvent` spans 4 kinds;
@@ -152,7 +152,7 @@ Separator legend: **NL** = `joinToString("\n")`, **SP** = `joinToString(" ")`.
 | 39000 | GroupMetadataEvent | nip29RelayGroups/metadata | `listOfNotNull(name(), about())` NL |
 | 39089 | StarterPackEvent | nip51Lists/starterPack | `listOfNotNull(title(), description())` NL |
 | 39092 | MediaStarterPackEvent | nip51Lists/mediaStarterPack | `listOfNotNull(title(), description())` NL |
-| 39307 | TextTrackEvent | nip71Video/textTrack | `content` (the WebVTT cue text) |
+| 39307 | TextTrackEvent | nip71Video/textTrack | `WebVttText.cueText(content)` NL — each cue's payload lines with tags removed and character references decoded; no header, timings, cue settings, ids, `NOTE`/`STYLE`/`REGION` blocks. Content with no `-->` timing line is not a caption file and is indexed as written |
 | 39701 | WebBookmarkEvent | nipB0WebBookmarks | `listOfNotNull(title(), description())` NL |
 | 39998 | AddressableListHeaderEvent | experimental/decentralizedLists/header | same as 9998 |
 | 39999 | AddressableListItemEvent | experimental/decentralizedLists/item | same as 9998 |

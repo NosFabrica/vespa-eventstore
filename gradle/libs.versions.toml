@@ -5,56 +5,35 @@ app = "1.0.1"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"
 # Quartz from JitPack (amethyst @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
-# 28bf170f92 = amethyst main @ 2026-09-26. 958 commits; four things in it reach this store.
+# 1cfb6e922f = amethyst main @ 2026-09-27: the merge of amethyst #4215, and nothing else
+# in quartz/ since 28bf170f92. That PR was written from this repo, and it closes the three
+# search gaps the last bump could only document:
 #
-#   Event classes renamed to their NIP names (upstream 6d2c37c346). The ones this store
-#     names: ContactCardEvent -> UserAssertionEvent (30382), DeletionEvent ->
-#     DeletionRequestEvent (5), LongTextNoteEvent -> LongFormContentEvent (30023),
-#     peopleList.PeopleListEvent -> followSet.FollowSetEvent (30000), and
-#     followList.FollowListEvent -> starterPack.StarterPackEvent (39089). The old names
-#     survive as @Deprecated typealiases; this bump moves every reference off them anyway.
-#     Kinds, tags and parsing are unchanged, so the trust projection and the deletion
-#     path read exactly what they read before.
+#   9998 / 39998 / 9999 / 39999 (decentralized lists) get their own extractor branch. Names
+#     and titles go to the title role, description and comments to the secondary one, and
+#     the `t` values stay with the funnel's hashtag role, so a list's hashtags index ONCE.
+#     The catch-all used to put them in the body as well, the doubling already removed for
+#     1111, 1311 and 30382.
+#   39307 (text tracks) indexes the words of each cue (WebVttText; SRT reads the same way):
+#     no WEBVTT header, `-->` timing lines, cue settings, ids, NOTE / STYLE blocks or inline
+#     tags. This changes indexableContent() itself, so Quartz's SQLite FTS moves too, and
+#     the searchable-events skill table with it.
+#   30063's extractor branch passes a NIP-82 release's notes as the body. SQLite already
+#     indexed them; this store could not find a release by what changed in it.
 #
-#   A stale replaceable/addressable version is now RejectionReason.SUPERSEDED,
-#     "duplicate: a newer version ...", in SQLiteEventStore (STORE-W01/W02; W09 is new).
-#     Quartz's RelaySession acks every `duplicate:` reason with OK true and everything else
-#     with OK false, so this store's old "replaced:" made a relay built on it answer
-#     OK false to a routine same-second re-publish. That is the loop MDK's `wn` retried
-#     forever against geode. Rejections.SUPERSEDED replaces REPLACED on both
-#     admission paths, which keeps the outcome tally's key set closed and matches the reference.
+# All three are derived data. A corpus fed before this pin keeps the old fields until
+# `reindexFullTextSearch()` runs; no resync is needed. The remaining dagger kinds in README
+# (the previous pin's eleven, plus NIP-CC geocaching) are still on the catch-all.
 #
-#   The searchable set moves again: 144 -> 150 reachable kind values. Eight NEW
-#     classes are searchable, and all eight take SearchFieldExtractor's catch-all (the
-#     whole indexableContent() in the BODY role, titles included, the same ranking
-#     gap as the previous pin's eleven; README's kind table marks both sets with a dagger):
-#       7516 / 37516 / 37517   NIP-CC geocache found log / listing / curation list
-#       9998 / 39998           decentralized list header (hashtags index twice, see README)
-#       9999 / 39999           decentralized list item   (likewise)
-#       39307                  NIP-71 video text track (raw WebVTT, cue timings included)
-#     They are new classes, not new implementors of old ones. Until this pin the factory
-#     parsed those kinds as plain events, so everything already stored under them has no
-#     search fields: recall is FORWARD-ONLY until `reindexFullTextSearch()` runs, like
-#     last time. 31890 (FeedDefinitionEvent) implements SearchableEvent but was never
-#     registered in EventFactory, at this pin or the last; README listed it, and no
-#     longer does. Upstream now keeps the reachable set as SearchableKinds.ALL, swept by
-#     a test over all 65536 kinds, and the searchable-events skill's table is checked
-#     against it. No existing kind's indexableContent() moved (the golden file's diff is
-#     additions only) except 30063. That one now also joins a NIP-82 release's notes, and
-#     the extractor's branch for it does not, so here those notes stay unindexed (README).
-#
-#   Transitively: Quartz now exports jackson-databind instead of jackson-module-kotlin,
-#     and kotlin-reflect leaves the classpath with it. Nothing in main here binds through
-#     Jackson or reflects on Kotlin classes; two tests that listed members through
-#     `KClass.members` now ask java.lang.Class instead. Also kotlin-stdlib 2.4.20
-#     (upstream's Kotlin, one patch past this build's 2.4.0 compiler, same 2.4 metadata)
-#     and androidx sqlite 2.7.1. okhttp 5.5.0 was already what the last pin brought.
-#
+# Prev 28bf170f92 (2026-09-26: event classes renamed to their NIP names; a stale replaceable
+# is SUPERSEDED, `duplicate:`-prefixed, so a relay acks it OK true; 144 -> 150 searchable
+# kinds, eight new classes on the catch-all; jackson-module-kotlin and kotlin-reflect leave
+# the classpath).
 # Prev a8e8778265 (2026-09-10: 133 -> 144 searchable kind values, all eleven on the
 # catch-all; SearchableEvent grows the read-path forEachIndexableField, no reindex).
 # Prev cecc3287b2 (2026-09-01: 17 catch-all kinds split into title/body roles, four
 # affiliation URLs, six doubled `t`-tag scans dropped; a ranking backfill).
-quartz = "28bf170f92"
+quartz = "1cfb6e922f"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 # Matches what Quartz brings transitively; Gradle would resolve to it regardless.

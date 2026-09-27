@@ -34,6 +34,7 @@ import com.vitorpamplona.quartz.nip17Dm.messages.ChatMessageEvent
 import com.vitorpamplona.quartz.nip23LongContent.LongFormContentEvent
 import com.vitorpamplona.quartz.nip34Git.repository.GitRepositoryEvent
 import com.vitorpamplona.quartz.nip35Torrents.TorrentEvent
+import com.vitorpamplona.quartz.nip51Lists.releaseArtifactSet.ReleaseArtifactSetEvent
 import com.vitorpamplona.quartz.nip71Video.textTrack.TextTrackEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import com.vitorpamplona.quartz.nip89AppHandlers.definition.AppDefinitionEvent
@@ -236,15 +237,10 @@ class SearchExtractorsTest {
     /**
      * The eight the 28bf170f92 pin adds — NIP-CC geocaching (7516 / 37516 / 37517), the
      * decentralized lists (9998 / 9999 / 39998 / 39999) and NIP-71 text tracks (39307) —
-     * are new CLASSES upstream, not new implementors of old ones: until this pin the
-     * factory parsed them as plain events, so every one already stored carries no search
-     * fields until `reindexFullTextSearch()` runs. Same catch-all, same factory route as
-     * the eleven above; three witnesses, one per family.
-     *
-     * The list item also pins the one wrinkle the family adds: its `indexableContent()`
-     * joins the `t` values into the body, and the funnel carries them in the hashtag role
-     * as well, so they index TWICE (README, under the kind table). If upstream gives the
-     * family a branch, this is the assertion that moves.
+     * are new CLASSES upstream, not new implementors of old ones: until that pin the
+     * factory parsed them as plain events, so every one stored before it carries no search
+     * fields until `reindexFullTextSearch()` runs. The geocaching kinds still take the
+     * catch-all, like the eleven above; this listing is their witness.
      */
     @Test
     fun `kinds newly searchable in the 28bf170f92 pin index their whole content as body`() {
@@ -259,7 +255,19 @@ class SearchExtractorsTest {
                 "",
             )
         assertEquals(SearchFields(text = "Old Mill Cache\nbehind the waterwheel"), SearchExtractors.extract(listing))
+    }
 
+    /**
+     * The 1cfb6e922f pin (amethyst #4215) closes three gaps the one before it left, and
+     * these are the assertions that moved. A list item's title is a TITLE now and its `t`
+     * values index once, in the secondary tier beside its description, where they used to
+     * sit in the body as well. A text track indexes the words of its cues, not the WebVTT
+     * document around them. A NIP-82 release is findable by its release notes, which Quartz's
+     * SQLite store already indexed. All three are derived data: `reindexFullTextSearch()`
+     * repairs a corpus fed before the pin.
+     */
+    @Test
+    fun `lists split into roles, text tracks index their words, releases their notes`() {
         val item =
             EventFactory.create<Event>(
                 "a".repeat(64),
@@ -271,13 +279,33 @@ class SearchExtractorsTest {
                 "",
             )
         assertEquals(
-            SearchFields(secondary = "bitcoin podcast", text = "Bitcoin Audible\nlong reads, read aloud\nbitcoin\npodcast"),
+            SearchFields(primary = "Bitcoin Audible", secondary = "long reads, read aloud\nbitcoin podcast"),
             SearchExtractors.extract(item),
         )
 
         val track =
-            EventFactory.create<Event>("b".repeat(64), alice, 1L, TextTrackEvent.KIND, arrayOf(arrayOf("d", "subtitles:v1")), "WEBVTT\n\n00:00.000 --> 00:02.000\nhello nostr", "")
-        assertEquals(SearchFields(text = "WEBVTT\n\n00:00.000 --> 00:02.000\nhello nostr"), SearchExtractors.extract(track))
+            EventFactory.create<Event>(
+                "b".repeat(64),
+                alice,
+                1L,
+                TextTrackEvent.KIND,
+                arrayOf(arrayOf("d", "subtitles:v1")),
+                "WEBVTT\n\n00:00.000 --> 00:02.000 align:start\n<v Roger>hello nostr",
+                "",
+            )
+        assertEquals(SearchFields(text = "hello nostr"), SearchExtractors.extract(track))
+
+        val release =
+            EventFactory.create<Event>(
+                "c".repeat(64),
+                alice,
+                1L,
+                ReleaseArtifactSetEvent.KIND,
+                arrayOf(arrayOf("d", "com.example.app@1.2.0"), arrayOf("i", "com.example.app"), arrayOf("version", "1.2.0"), arrayOf("title", "Example 1.2")),
+                "fixes the offline sync crash",
+                "",
+            )
+        assertEquals(SearchFields(primary = "Example 1.2", text = "fixes the offline sync crash"), SearchExtractors.extract(release))
     }
 
     @Test
