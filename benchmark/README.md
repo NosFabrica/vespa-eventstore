@@ -876,6 +876,24 @@ count path no longer requests hits, so it is out of that line of fire; every
 other unbounded `rawSearch` caller is still in it, and the operator's guard
 remains `VESPA_UNBOUNDED_HITS`.
 
+**Corrected 2026-09-26: `hits=0` does not run the gate on every Vespa.** On
+Vespa 8.731 against a 44M-doc relay corpus, a hit-less gated query answers
+WITHOUT a first-phase pass, so `rank-score-drop-limit` never fires and
+`totalCount` is the UNGATED match count — with or without a search term:
+
+| gated query (floor 2.0) | `hits=0` | `hits=1` | page served |
+|---|---:|---:|---:|
+| kind 1, last 7 days, no term | 107,878 | 54,077 | 54,077 |
+| same, `bitcoin` | 3,714 | 2,676 | 2,676 |
+
+`SearchCountIT` stayed green on `vespaengine/vespa:latest`, so the behavior is
+version-dependent — which is the problem, since a deployment's Vespa is not
+this repo's to pin. `VespaEventIndex.count` now asks for ONE hit on a ranked
+count: that forces the pass the gate lives in, for one document summary. An
+observer-gated NIP-45 COUNT on such a Vespa was over-reporting by the
+below-floor share of its match set. `SearchCountIT` gained the termless gated
+case — the shape a plain REQ with an observer produces.
+
 ## Targeted benches (gradle tasks against a live Vespa)
 
 Beyond the head-to-head suite (`:benchmark:run`), these tasks each own one

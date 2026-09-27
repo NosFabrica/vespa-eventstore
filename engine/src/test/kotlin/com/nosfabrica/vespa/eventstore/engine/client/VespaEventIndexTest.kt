@@ -476,6 +476,29 @@ class VespaEventIndexTest {
         }
 
     /**
+     * A RANKED COUNT ASKS FOR ONE HIT. With `hits=0` Vespa skips first-phase
+     * ranking, so `rank-score-drop-limit` never removes a below-floor author and
+     * `totalCount` is the UNGATED match count (measured on Vespa 8.731 — see
+     * [VespaEventIndex.count]). One hit is what forces the gate to run.
+     * Plain counts stay on the hit-less grouping.
+     */
+    @Test
+    fun `a ranked count asks the engine for one hit`() =
+        runBlocking {
+            seed(doc())
+            val observer = "b1".repeat(32)
+            val before = mock.searchRequests.size
+            index.count(EventQuery(kinds = listOf(1), ranking = EventYql.RANK_RECENCY_GATED, observer = observer, rankKey = observer, minRank = 2.0))
+            val gated = mock.searchRequests.drop(before).single()
+            assertEquals(EventYql.RANK_RECENCY_GATED_EXACT, gated["ranking"])
+            assertEquals("1", gated["hits"], "a gated count must run the ranking pass its gate lives in")
+
+            val plainAt = mock.searchRequests.size
+            index.count(EventQuery(kinds = listOf(1)))
+            assertEquals("0", mock.searchRequests.drop(plainAt).single()["hits"], "an ungated count stays hit-less")
+        }
+
+    /**
      * The recency planner must be INVISIBLE in results: a dense live-shaped
      * corpus (events within the last hour) takes the windowed path, a sparse or
      * ancient corpus falls through to the unbounded query — both must return
