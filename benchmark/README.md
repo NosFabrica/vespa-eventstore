@@ -983,11 +983,105 @@ Ruled out on the same corpus, so they need not be re-tried:
 | 4 match threads on feed shapes | no gain; a deep scan got slower (514 → 592 ms) |
 | a dedicated `d_tag` / address attribute | `#d` is already a hash-dictionary posting on `tag_index`: 0–5 ms engine; a same-sized `id in (…)` lookup (the type such a field would get) saves 0–3 ms, for a second copy of every `d` in attribute memory |
 
+**The window memory (2026-09-26).** Speculating pays a round trip per window it
+has to guess, and relay traffic repeats its guesses — every client of a global
+feed asks one filter, a follow feed is re-asked on every reconnect and page. So
+`RecencyWindowMemory` remembers, per read SHAPE (kinds, authors, tags, lens and
+floor, and how far back the anchor sits — never `since`/`until`/`limit`), where
+the last read found its page: a remembered window is the next read's first
+attempt, and a remembered NARROW shape skips the attempts for the unwindowed
+read. 10-minute TTL, 4,096-shape LRU; `VESPA_RECENCY_MEMORY=0` turns it off.
+A window moves cost, never the page, so a stale entry costs a round trip, not
+an answer. Same corpus, same probe — speculative without memory (every read
+cold) against with it (every later read of a seen shape), median ms [queries]:
+
+| REQ shape | shipped | speculative, cold | speculative, remembered |
+|---|---:|---:|---:|
+| 50 quiet authors, limit 200 | 11.2 | 19.7 [3] | **11.2** [1] |
+| follow 300 authors, limit 500 | 139 | 39.2 [2] | **23.0** [1] |
+| gated follow 300, limit 500 | 848 | 39.0 [2] | **29.7** [1] |
+| `#t:bitcoin`, limit 50 | 18.4 | 9.2 [2] | **6.6** [1] |
+| gated `#p` notifications | 60.6 | 14.6 [2] | **12.0** [1] |
+| gated 50 quiet authors | 14.6 | 16.9 [2] | **14.7** [1] |
+
+Every shape resolves in ONE engine query once remembered, and the one shape
+speculation made slower is back at the shipped cost. Shapes that already took
+one query are unchanged within noise.
+
+**The edges (`recencyEdgeProbe`, 2026-09-27)** — the shapes a table of dominant
+shapes flatters, same corpus, every check page-identical across shipped /
+speculative (memory off) / speculative + memory:
+
+- **A relay-shaped workload.** 6,000 REQs over 1,206 distinct follow lists
+  (50–800 of the top 20k authors, Zipf-popular, 30% gated), 8 concurrent:
+  wall 62.8 s → 43.7 s → **35.4 s**; p50 59 → 44 → **32 ms**; p95 223 → 125 →
+  **101 ms**; p99 384 → 305 → 330 ms. Random follow lists are thinner than the
+  top authors, so a cold read's first window rarely held the page (66% widened,
+  1.99 queries per REQ); the memory hit 82% of reads and brought it to 1.18.
+  The honest headline is 1.8×, not the dominant-shape table's 10×.
+- **Pagination.** 100 pages of the global feed: 38.7 s → 2.7 s; gated: 69.2 s
+  → 1.1 s. 200 gated reads at random depths out to a year: **717 s → 1.5 s**
+  (shipped pays the full-scan gated profile, 3.6 s a read).
+- **The band.** Inside it, 3–5× (gated limit 2,000: 439 → 92 ms). Past it,
+  a GATED read had no pager and scanned its whole match set under every
+  strategy — 4.8–5.0 s at limits 2,001–5,000, the relay's `max_limit` being
+  5,000. Gated reads now window at any limit: **94–216 ms**. Plain reads past
+  the band page as before; cold speculation adds a guess per page (limit
+  5,000: 258 → 328 ms), the memory removes it (256 ms).
+- **A stale memory.** A hashtag's burst (#music, 14/day → 341), learned quiet
+  and read at the peak, and the reverse: one engine query either way — never
+  more than shipped, fewer than cold (3). The frozen corpus inflates every
+  variant's absolute time here (it continues past the simulated clock, which
+  a live relay's does not), so read the query counts, not the milliseconds.
+- **A far-future `until`.** One query: 180 → 7 ms (gated 398 → 8).
+
+**Under load (`recencyLoadProbe`, 2026-09-27)** — closed-loop clients on a
+relay-shaped REQ mix (50% follow feeds over 2,000 Zipf-popular lists, global,
+hashtag, notification and deep-page reads; 30% gated), 45 s per phase, Vespa's
+CPU sampled from `docker stats` (percent of one core, 12-core host):
+
+| clients | shipped REQ/s · p50 · p99 · CPU | speculative | + memory |
+|---:|---|---|---|
+| 8 | 36 · 66 ms · 4.4 s · 745% | 96 · 35 ms · 0.9 s · 307% | **100 · 32 ms · 1.0 s · 271%** |
+| 32 | 38 · 257 ms · 14.5 s · 1313% | 100 · 142 ms · 4.4 s · 298% | **98 · 139 ms · 4.7 s · 355%** |
+| 64 | 44 · 772 ms · 13.4 s · 1314% | 106 · 284 ms · 8.6 s · 286% | **110 · 250 ms · 9.3 s · 261%** |
+
+Shipped is ENGINE-bound (13 cores of matching; 555–670 ms of Vespa's own match
+time per REQ). Speculative spends ~17 ms of engine time per REQ (14 match, 3
+summary) and ~2.5× the throughput at a quarter of the CPU — and is NOT
+engine-bound here: its ~100 REQ/s plateau is this Mac's transfer path. Raw
+limit-500 pages top out at 120–155 MB/s through Docker Desktop's port
+forwarding and the container's JSON rendering, and this mix averages ~0.7 MB a
+REQ. On a real network the ceiling sits elsewhere; re-measure there.
+
+With a writer landing events on a live clock (engine-level puts, removed
+afterwards; 32 readers): shipped 38.5 / 41.2 / 30.3 REQ/s at 0 / 50 / 200 ev/s
+(p99 to 16.6 s at 200); speculative + memory 100.1 / 95.6 / 97.7 (p50 142 /
+131 / 110 ms). Writes do not hurt speculation — a moving newest window fills
+sooner (cold first-window proofs 30% → 67% at 200 ev/s) — and they land faster
+beside it: batch-put p50 176 ms under shipped reads at 200 ev/s against 46–50
+ms under speculative ones, because the engine is no longer saturated. 60/60
+sampled pages identical with the writes in place; every probe event removed.
+
+**Page reuse (2026-09-27).** A short attempt used to be thrown away and its
+window re-fetched by the next one. It now stays: a short page holds every match
+in `[boundary, anchor]`, so later attempts — and the fallback — ask only for
+`until = boundary - 1` with the remaining limit. A/B against the commit before
+it, same probes, before run twice around after (median ms, speculative without
+memory — where reuse acts): follow 300 limit 500 39.5 / 40.9 → **29.2**; 50
+quiet authors 25.4 / 20.5 → **17.2**; gated follow 300 limit 500 37.9 / 40.7 →
+**31.6**; small-page shapes unchanged. With memory most reads are one query and
+nothing moves; under load, summary time per REQ 2.3–3.4 → 1.9–2.3 ms and
+throughput +3–6% — inside run noise, and this harness is transfer-bound there
+anyway. What it buys is the COLD read: before the memory warms, after its TTL,
+and the long tail of shapes seen once.
+
 Watching it live: every speculative read books `IngestStats` stages —
 `recency.speculative` (the read, timed), `.attempt` (each windowed query, timed)
 and one zero-time counter per outcome: `.first` / `.widened` (pages the windows
 proved) or `.fallback.<narrow|attempts|since|partial|window>` (reads that ran
-unwindowed, and why). Attempts per read and the share proven in one query are
+unwindowed, and why), and `.recalled.window` / `.recalled.narrow` when the
+memory supplied the start or skipped the attempts. Attempts per read and the share proven in one query are
 the numbers to read on a real cluster before trusting this table's.
 
 Correctness gates: the probe's same-page check (above), `VespaEventIndexTest`
@@ -1016,6 +1110,8 @@ timing is also a proof:
 | `dedupProbe` | the bulk-dedup existence check: full-summary vs summary-free variants at mirror hit rates, chunk × fan-out curves, REQ latency under dedup load | reuses a `corpusLoad` corpus (ids sampled off the live store) | every variant must return the identical member set |
 | `extractBench` | the write path's own derivation (`SearchExtractors`), decomposed by stage, with `--badges N` for the every-event-wears-one corpus | any captured JSON export (`--corpus`), no Vespa | — |
 | `searchTrace` | one NIP-50 term, split per clause family and per rank profile (ablations + Vespa's blueprint cost) | any loaded store — capture one with `exportLoad` | every row prints `totalCount`, so a variant that got fast by matching less shows it |
+| `recencyLoadProbe` | the recency strategies under load: closed-loop throughput at rising concurrency on a relay-shaped mix, and the same reads while a writer lands events on a live clock (engine CPU from `docker stats`, Vespa's match/summary split per REQ) | any loaded store; its writes are TEMPORARY — every id logged before its put, all removed at the end, `BENCH_CLEANUP_ONLY=1` to finish an interrupted run | sampled pages identical across variants with the writes in place; zero probe events left by id |
+| `recencyEdgeProbe` | the speculative strategy's edges: distinct follow lists under concurrency, `until` pagination and random depths, the band edge to 5,000, a stale memory across a hashtag burst, a far-future `until` (`BENCH_SECTIONS`) | any loaded store, read-only | every check must serve the identical page across shipped / speculative / + memory |
 | `recencyStrategyProbe` | the four `RecencyStrategy` options on the dominant feed shapes, plain and gated (`BENCH_OBSERVER`), with engine queries per REQ | any loaded store, read-only (`BENCH_NOW` pins the clock to a frozen corpus) | all four strategies must serve the identical page, ids and order |
 | `transportProbe` | read-transport isolation: JDK h1 / OkHttp h1 / OkHttp h2c on identical queries across body sizes | any loaded store | — |
 | `trustProbe` | the trust write path under a real lens: bulk card ingest, single card inserts, a 10040 re-sign, a provider swap (with cards inserted on a clock during each walk to read the gate wait), a provider re-publishing its corpus (`--load-then-republish`), and the lensed page after the swap (`--query-only`) — the harness behind `docs/service-keyed-trust.md` | captured 10040s and two providers' 30382 corpora (JSON arrays; the doc says how they were pulled from staging) | the lensed `sort:rank` page must follow the CURRENT 10040's provider |

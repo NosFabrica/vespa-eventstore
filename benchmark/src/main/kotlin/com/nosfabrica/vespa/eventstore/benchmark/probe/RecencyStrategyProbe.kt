@@ -28,7 +28,8 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import kotlinx.coroutines.runBlocking
 
 /**
- * A/B the four [RecencyStrategy]s on the REQ shapes that dominate a relay's
+ * A/B the four [RecencyStrategy]s — and the speculative one with and without
+ * its window memory — on the REQ shapes that dominate a relay's
  * read cost, against an ALREADY-LOADED Vespa (read-only: it never deploys,
  * never feeds). Every shape runs through all four strategies through the real
  * client, and the probe FAILS a shape whose four pages are not identical —
@@ -61,6 +62,13 @@ object RecencyStrategyProbe {
         val query: EventQuery,
     )
 
+    /** One client under test: a strategy, with or without the window memory, and its own cost ledger. */
+    private class Variant(
+        val label: String,
+        val client: VespaEventIndex,
+        val ledger: CostLedger,
+    )
+
     @JvmStatic
     fun main(args: Array<String>) =
         runBlocking {
@@ -77,10 +85,18 @@ object RecencyStrategyProbe {
                     ?.map { it.trim() }
                     ?.filter { it.isNotEmpty() }
 
-            val strategies = RecencyStrategy.entries
-            val ledgers = strategies.associateWith { CostLedger() }
-            val clients = strategies.associateWith { VespaEventIndex(url, recencyStrategy = it, ledger = ledgers.getValue(it)) }
-            val reference = clients.getValue(RecencyStrategy.MATCH_PHASE)
+            // Every strategy, plus speculative twice: WITHOUT the window memory
+            // (every read cold — what the first read of any shape pays) and WITH
+            // it (warm — every later read of a shape the client has seen).
+            val variants =
+                RecencyStrategy.entries.map { s ->
+                    val ledger = CostLedger()
+                    Variant(s.name.lowercase(), VespaEventIndex(url, recencyStrategy = s, recencyMemory = false, ledger = ledger), ledger)
+                } +
+                    CostLedger().let { ledger ->
+                        Variant("speculative+memory", VespaEventIndex(url, recencyStrategy = RecencyStrategy.SPECULATIVE, recencyMemory = true, ledger = ledger), ledger)
+                    }
+            val reference = variants.first { it.label == "match_phase" }.client
 
             val wall = System.currentTimeMillis() / 1000
             val now =
@@ -134,63 +150,52 @@ object RecencyStrategyProbe {
             val shapes = (plain + gatedShapes).filter { s -> only == null || only.any { s.name.contains(it, ignoreCase = true) } }
 
             println()
-            println(
-                String.format(
-                    "%-38s %6s | %-24s | %-24s | %-24s | %-24s | %s",
-                    "shape",
-                    "hits",
-                    "A full_scan  p50/p95 q",
-                    "B match_phase p50/p95 q",
-                    "C count_probe p50/p95 q",
-                    "D speculative p50/p95 q",
-                    "same page",
-                ),
-            )
+            println("median ms / p95 ms / engine queries per REQ")
+            println(String.format("%-38s %6s | %s | %s", "shape", "hits", variants.joinToString(" | ") { String.format("%-22s", it.label) }, "same page"))
             var mismatches = 0
             for (shape in shapes) {
                 val q = req(shape.query)
-                // Correctness first, off one untimed pass per strategy.
-                val pages = strategies.associateWith { s -> clients.getValue(s).search(q).map { it.id } }
-                val ref = pages.getValue(RecencyStrategy.FULL_SCAN)
+                // Correctness first, off one untimed pass per variant.
+                val pages = variants.associate { v -> v.label to v.client.search(q).map { it.id } }
+                val ref = pages.getValue("full_scan")
                 val same = pages.values.all { it == ref }
                 if (!same) {
                     mismatches++
-                    pages.forEach { (s, ids) -> System.err.println("  MISMATCH ${shape.name} $s: ${ids.size} ids, first diff at ${ids.indices.firstOrNull { it >= ref.size || ids[it] != ref[it] }}") }
+                    pages.forEach { (label, ids) -> System.err.println("  MISMATCH ${shape.name} $label: ${ids.size} ids, first diff at ${ids.indices.firstOrNull { it >= ref.size || ids[it] != ref[it] }}") }
                 }
-                // Warm every strategy, then time them interleaved.
-                repeat(2) { strategies.forEach { s -> clients.getValue(s).search(q) } }
-                ledgers.values.forEach { it.reset() }
-                val nanos = strategies.associateWith { ArrayList<Long>(reps) }
+                // Warm every variant, then time them interleaved.
+                repeat(2) { variants.forEach { it.client.search(q) } }
+                variants.forEach { it.ledger.reset() }
+                val nanos = variants.associate { it.label to ArrayList<Long>(reps) }
                 repeat(reps) { rep ->
-                    for (i in strategies.indices) {
-                        val s = strategies[(i + rep) % strategies.size]
+                    for (i in variants.indices) {
+                        val v = variants[(i + rep) % variants.size]
                         val t0 = System.nanoTime()
-                        clients.getValue(s).search(q)
-                        nanos.getValue(s).add(System.nanoTime() - t0)
+                        v.client.search(q)
+                        nanos.getValue(v.label).add(System.nanoTime() - t0)
                     }
                 }
                 val cells =
-                    strategies.map { s ->
-                        val sorted = nanos.getValue(s).sorted()
+                    variants.map { v ->
+                        val sorted = nanos.getValue(v.label).sorted()
                         val p50 = sorted[sorted.size / 2] / 1e6
                         val p95 = sorted[minOf(sorted.size - 1, (sorted.size * 95) / 100)] / 1e6
                         val queries =
-                            ledgers
-                                .getValue(s)
+                            v.ledger
                                 .snapshot()
                                 .engine
                                 .sumOf { it.queries }
                                 .toDouble() / reps
-                        String.format("%8.1f %8.1f %4.1f", p50, p95, queries)
+                        String.format("%7.1f %7.1f %4.1f", p50, p95, queries)
                     }
                 println(String.format("%-38s %6d | %s | %s", shape.name, ref.size, cells.joinToString(" | "), if (same) "yes" else "NO"))
             }
-            clients.values.forEach { it.close() }
+            variants.forEach { it.client.close() }
             println()
             if (mismatches > 0) {
-                System.err.println("$mismatches shape(s) served DIFFERENT pages across strategies")
+                System.err.println("$mismatches shape(s) served DIFFERENT pages across variants")
                 kotlin.system.exitProcess(1)
             }
-            println("every shape served the identical page under all four strategies")
+            println("every shape served the identical page under every variant")
         }
 }

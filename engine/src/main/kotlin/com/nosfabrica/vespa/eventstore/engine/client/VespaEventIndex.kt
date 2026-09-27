@@ -123,6 +123,13 @@ class VespaEventIndex(
      */
     private val recencyStrategy: RecencyStrategy = RecencyStrategy.fromEnv(),
     /**
+     * Whether [RecencyStrategy.SPECULATIVE] starts a read where the last read
+     * of its shape found its page ([RecencyWindowMemory]); `VESPA_RECENCY_MEMORY=0`
+     * turns it off, which is also how the probe measures what it buys.
+     */
+    recencyMemory: Boolean =
+        System.getenv("VESPA_RECENCY_MEMORY")?.let { it != "0" && !it.equals("false", ignoreCase = true) } ?: true,
+    /**
      * WHERE ENGINE-LEVEL COST IS PUBLISHED, or null to publish none.
      *
      * The rank profile, the documents matched and Vespa's own timing split are
@@ -160,6 +167,8 @@ class VespaEventIndex(
     private val fallbacks = SchemaFallbacks()
 
     private val planner = RecencyPlanner(queryPlanning, recencyStrategy, fallbacks) { count(it) }
+
+    private val windowMemory: RecencyWindowMemory? = if (recencyMemory) RecencyWindowMemory() else null
 
     // ADDRESS-KEYED mode (VESPA_ADDRESS_KEYED=1): replaceable/addressable events
     // are stored under their NIP-01 address as the document id, so the engine
@@ -513,8 +522,36 @@ class VespaEventIndex(
             // inside every window — so the anchor is free to be the request clock.
             val now = q.nowSecs ?: (System.currentTimeMillis() / 1000)
             val anchor = q.until?.let { minOf(it, now) } ?: now
-            var window = RecencyPlanner.FIRST_WINDOW
+            // What the last read of this shape learned (RecencyWindowMemory):
+            // a NARROW shape skips straight to the unwindowed read — the shipped
+            // cost, nothing speculated — and a remembered WINDOW, scaled to this
+            // limit, replaces the cold first guess.
+            val recalled = windowMemory?.recall(q, anchor, now)
+            if (recalled is RecencyWindowMemory.Recall.Narrow) {
+                outcome("recalled.narrow")
+                return@timed recallSummaries(planner.shipped(q), planned = true)
+            }
+            var window =
+                (recalled as? RecencyWindowMemory.Recall.Window)
+                    ?.let { (it.window * limit / it.limit).coerceIn(RecencyPlanner.FIRST_WINDOW, RecencyPlanner.MAX_WINDOW) }
+                    ?.also { outcome("recalled.window") }
+                    ?: RecencyPlanner.FIRST_WINDOW
             var attempts = 0
+            // PAGE REUSE. A SHORT attempt proves nothing about the answer's END
+            // but everything about its START: it returned every match in
+            // [boundary, anchor] — the recency path hands back a short page only
+            // when the engine ran out inside the window (a match-phase cut is
+            // rerun exact first) — so it IS the newest slice of the answer. It
+            // is kept, and every later query asks only for what is strictly
+            // older (`until = boundary - 1`) with the remaining limit. Exact:
+            // everything kept is at or after the boundary, everything fetched
+            // later strictly before it, and a tie cannot straddle it, because a
+            // short page holds every match AT the boundary second too.
+            // What it saves is the re-fetch: the widened attempt used to match
+            // and return — full summaries — every document the short one had
+            // already delivered, and the fallback the same again.
+            var carried: List<VespaSummary> = emptyList()
+            var boundary: Long? = null
             // Why the loop stopped without a proven page — booked as a counter
             // below, so an operator can tell a narrow corpus from a mistuned rule.
             var fallback = "window"
@@ -528,27 +565,56 @@ class VespaEventIndex(
                     fallback = "since"
                     break
                 }
+                val remaining = limit - carried.size
                 val page =
                     try {
-                        IngestStats.timed("$SPECULATIVE_STAGE.attempt") { recallSummaries(q.copy(since = since), planned = true) }
+                        IngestStats.timed("$SPECULATIVE_STAGE.attempt") { recallSummaries(q.olderThan(boundary, remaining).copy(since = since), planned = true) }
                     } catch (_: PartialAnswer) {
                         fallback = "partial"
                         break
                     }
                 attempts++
-                if (page.size >= limit) {
+                if (page.size >= remaining) {
                     outcome(if (attempts == 1) "first" else "widened")
-                    return@timed page
+                    windowMemory?.remember(q, anchor, now, RecencyWindowMemory.Recall.Window(window, limit))
+                    return@timed carried + page
                 }
-                if (RecencyPlanner.projected(window, page.size, limit) > RecencyPlanner.NARROW_HORIZON) {
+                carried = carried + page
+                boundary = since
+                // The rate is the WHOLE window's — everything in [since, anchor],
+                // carried pages included — exactly what the re-fetching loop saw.
+                if (RecencyPlanner.projected(window, carried.size, limit) > RecencyPlanner.NARROW_HORIZON) {
                     fallback = "narrow"
                     break
                 }
-                window = RecencyPlanner.widen(window, page.size, limit)
+                window = RecencyPlanner.widen(window, carried.size, limit)
             }
             outcome("fallback.$fallback")
-            recallSummaries(planner.shipped(q), planned = true)
+            when (fallback) {
+                // Too thin to window: the next read of this shape skips the attempts.
+                "narrow", "attempts", "window" -> windowMemory?.remember(q, anchor, now, RecencyWindowMemory.Recall.Narrow)
+
+                // An attempt the engine cut says nothing about the shape's rate.
+                "partial" -> windowMemory?.forget(q, anchor, now)
+
+                // The caller's own `since` decided it; the shape learned nothing.
+                else -> Unit
+            }
+            // The unwindowed read, for what the carried pages do not already hold.
+            carried + recallSummaries(planner.shipped(q.olderThan(boundary, limit - carried.size)), planned = true)
         }
+
+    /**
+     * [this] restricted to what is strictly older than [boundary] (null: no
+     * restriction), asking for [remaining] results — the rest of a speculative
+     * read whose newer part short attempts already delivered. `until` only
+     * ever TIGHTENS: a boundary is at or below the anchor, itself at or below
+     * the caller's `until`.
+     */
+    private fun EventQuery.olderThan(
+        boundary: Long?,
+        remaining: Int,
+    ): EventQuery = if (boundary == null) this else copy(until = boundary - 1, limit = remaining)
 
     /**
      * One [RecencyStrategy.SPECULATIVE] outcome, as a zero-time [IngestStats]
@@ -556,7 +622,9 @@ class VespaEventIndex(
      * and `widened` are pages the windows proved, `fallback.<why>` reads that
      * ran unwindowed — `narrow` (the rate projected past the horizon),
      * `attempts` (the cap), `since` (the caller's own window was tighter),
-     * `partial` (an attempt the engine cut), `window` (past MAX_WINDOW).
+     * `partial` (an attempt the engine cut), `window` (past MAX_WINDOW) — and
+     * `recalled.window` / `recalled.narrow` when [RecencyWindowMemory] supplied
+     * the start (a remembered window) or skipped the attempts (a narrow shape).
      * With `recency.speculative` (every read, timed) and `.attempt` (every
      * windowed query, timed), the ratios answer what the local benchmark could
      * only estimate: how often a real cluster's reads prove out in one query.
