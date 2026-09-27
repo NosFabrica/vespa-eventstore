@@ -37,11 +37,11 @@ import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
 import com.vitorpamplona.quartz.nip01Core.tags.events.ETag
 import com.vitorpamplona.quartz.nip01Core.tags.people.PTag
 import com.vitorpamplona.quartz.nip32Labeling.LabelEvent
-import com.vitorpamplona.quartz.nip51Lists.followList.FollowListEvent
-import com.vitorpamplona.quartz.nip51Lists.peopleList.PeopleListEvent
+import com.vitorpamplona.quartz.nip51Lists.followSet.FollowSetEvent
+import com.vitorpamplona.quartz.nip51Lists.starterPack.StarterPackEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.addressables.AddressableAssertionEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.events.EventAssertionEvent
-import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import com.vitorpamplona.quartz.utils.Hex
 
 /**
@@ -129,7 +129,7 @@ internal object SearchReferences {
      * rank under this reader — which is the honest reading of "somebody I trust
      * put this person on a list and said nothing more about them".
      */
-    val PEOPLE_LISTS: Set<Kind> = setOf(PeopleListEvent.KIND, FollowListEvent.KIND)
+    val PEOPLE_LISTS: Set<Kind> = setOf(FollowSetEvent.KIND, StarterPackEvent.KIND)
 
     /**
      * The Trusted List and Trusted Assertion families — the kinds that only
@@ -152,7 +152,7 @@ internal object SearchReferences {
      */
     val DECLARATIONS: Set<Kind> =
         setOf(
-            ContactCardEvent.KIND,
+            UserAssertionEvent.KIND,
             EventAssertionEvent.KIND,
             AddressableAssertionEvent.KIND,
             UserTrustedListEvent.KIND,
@@ -201,8 +201,8 @@ internal object SearchReferences {
         } else {
             when (pointer) {
                 LabelEvent.KIND, EventAssertionEvent.KIND, EventTrustedListEvent.KIND -> true
-                ContactCardEvent.KIND, UserTrustedListEvent.KIND -> PROFILE_KIND in into
-                PeopleListEvent.KIND, FollowListEvent.KIND -> PROFILE_KIND in into
+                UserAssertionEvent.KIND, UserTrustedListEvent.KIND -> PROFILE_KIND in into
+                FollowSetEvent.KIND, StarterPackEvent.KIND -> PROFILE_KIND in into
                 AddressableAssertionEvent.KIND, AddressableTrustedListEvent.KIND -> into.any { it.isAddressable() }
                 else -> false
             }
@@ -233,7 +233,7 @@ internal object SearchReferences {
                 )
             }
 
-            ContactCardEvent.KIND -> {
+            UserAssertionEvent.KIND -> {
                 References(pubKeys = listOfNotNull(event.tags.subjectKey()))
             }
 
@@ -270,7 +270,7 @@ internal object SearchReferences {
                 )
             }
 
-            PeopleListEvent.KIND, FollowListEvent.KIND -> {
+            FollowSetEvent.KIND, StarterPackEvent.KIND -> {
                 // Every public `p` tag, and no confidence: see [PEOPLE_LISTS].
                 // The PRIVATE half of a NIP-51 list is NIP-44 encrypted to its
                 // owner and a store holds no signer, so a reader who keeps a

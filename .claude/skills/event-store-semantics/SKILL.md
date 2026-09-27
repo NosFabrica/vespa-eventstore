@@ -15,7 +15,7 @@ description: The authoritative behavioral contract of Quartz's event stores — 
 > tag matching can theoretically over-match where Vespa is exact.
 
 > Skill imported from `vitorpamplona/amethyst` `.claude/skills/event-store-semantics`
-> at commit `9231195890` (the Quartz pin in `gradle/libs.versions.toml`). Refresh this copy
+> at commit `9231195890` and refreshed to `28bf170f92` (the Quartz pin in `gradle/libs.versions.toml`). Refresh this copy
 > and re-check the upstream semantics changelog at every pin bump.
 
 The SQLite `EventStore` (`quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nip01Core/store/sqlite/`)
@@ -50,7 +50,7 @@ Executable spec: the test suites in
 `quartz/src/commonTest/.../store/sqlite/` (`BasicTest`, `ReplaceableTest`, `AddressableTest`,
 `DeletionTest`, `ExpirationTest`, `RightToVanishTest`, `SearchTest`, `SearchRelevanceOrderTest`,
 `MergeQueryCorrectnessTest`, `TagMergeCorrectnessTest`, `QueryAssemblerTest`,
-`SnapshotIdsForNegentropyTest`, `FilterMatcherTest`, …). If a rule here ever contradicts a test,
+`SnapshotIdsForNegentropyTest`, `FilterMatcherTest`, `InsertOutcomeClassificationTest`, …). If a rule here ever contradicts a test,
 the test wins — and this file has a bug to fix.
 
 ## Kind classes (used throughout)
@@ -156,8 +156,11 @@ messages quoted below (they surface as the NIP-01 `OK false` reason).
 kinds. A `BEFORE INSERT` trigger deletes any stored version that is *older* — meaning
 `created_at` smaller, **or equal `created_at` with lexicographically larger id** (NIP-01
 lowest-id-wins). Inserting a version that is *not* newer under that ordering leaves the stored
-row in place and fails the unique index → rejected (`UNIQUE constraint failed`). Net contract:
-exactly one version stored; newest wins; ties broken by lowest id; older re-inserts blocked.
+row in place and fails the unique index → rejected with `RejectionReason.SUPERSEDED`
+(`duplicate: a newer version of this replaceable event is already stored`), which the relay
+session answers with `OK true` exactly like an id duplicate (NIP-01 `duplicate:` prefix; same
+reply nostr-rs-relay gives). Net contract: exactly one version stored; newest wins; ties broken
+by lowest id; older re-inserts blocked but acknowledged as already covered.
 
 **STORE-W02 — addressable supersession.** Same as W01 with unique index
 `(kind, pubkey, d_tag)` over `30000 ≤ kind < 40000`. Nuance: `d_tag` is populated from the
@@ -198,6 +201,21 @@ are also excluded from `authorsMissingOutbox()`.)
 back alone and reports `Rejected(reason)`; the rest commit. If the **outer commit** fails, every
 entry is treated as `Rejected` (the `IEventStore.batchInsert` contract). Outcomes are returned
 in input order; OK frames pair by event id, not order.
+
+**STORE-W09 — a failed row is classified against the database, not against the driver's
+exception text.** `SQLiteEventStore.classifyRowError` rolls the row's savepoint back and then
+asks the connection (which now shows pre-insert state): id already present → `DUPLICATE`;
+a stored version that beats this one at the replaceable/addressable coordinate (the exact
+complement of the supersession predicate in W01/W02) → `SUPERSEDED`; otherwise `Failed`.
+Message text is only a fast path and a fallback for trigger RAISEs (`blocked:`, `not allowed`),
+which leave no database-visible trace. This matters because the message is driver-specific —
+the bundled JVM driver writes `UNIQUE constraint failed: event_headers.id`, Android's throws an
+`android.database.SQLException` with a **null** message — so a text-only classifier answered
+`OK false` on Android for events the store already held. Corollary: re-offering a stored
+replaceable/addressable event **byte-for-byte** is `DUPLICATE`, not `SUPERSEDED` (it violates
+both indexes and only the id answer is driver-independent); a stale *different* version is
+still `SUPERSEDED`. Both carry the `duplicate:` prefix, so the relay reply is `OK true` either
+way.
 
 ---
 
@@ -333,6 +351,11 @@ non-itemizable cases).
 
 Add one line per behavior change, newest first: `YYYY-MM-DD <short sha> <rule id> — what changed`.
 
+- 2026-09-18 (pending) W09, W01/W02 — insert-failure classification now queries the database
+  instead of parsing the driver's exception message (Android's is null, so duplicates were
+  reported as `Failed`/`OK false`). A byte-for-byte re-offer of a stored replaceable/addressable
+  event now reports `DUPLICATE` where the JVM driver previously reported `SUPERSEDED`; both are
+  `duplicate:` → `OK true`, so the wire answer is unchanged.
 - 2026-08-04 (baseline) — rules F01–F13, W01–W08, D01–D08, C01, S01–S06, N01 written from the
   code at the time this skill was introduced. Changes before this date are not itemized;
   archaeology starts at `git log` on `nip01Core/store/`.

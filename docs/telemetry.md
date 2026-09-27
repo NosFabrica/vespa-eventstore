@@ -157,7 +157,7 @@ Two dimensions and a containment relation:
 - **containment** — which lock scope it ran inside
 
 Two things do not fit this shape and are not counters at the port: the store's
-own admission **outcomes** (`duplicate:`, `replaced:`, `blocked:` — decided
+own admission **outcomes** (`duplicate:`, `blocked:` — decided
 above the port, so a refused event never reaches it) and **gauges** (queue
 depth, in-flight, current lock holder — instantaneous, with no cumulative
 form). Both are part of the model; §10.1 defines them.
@@ -517,8 +517,8 @@ from one document rather than a document plus a screenshot.
 ### 10.1 Two additions to the model
 
 **Outcomes are a third altitude.** §3 has two — the port decorator and the Vespa
-client — and neither can see a *refused* event. `duplicate:`, `replaced:` and
-`blocked:` are decided in `NostrSemanticsStore.insertLocked`, above the port,
+client — and neither can see a *refused* event. `duplicate:` (an id already held,
+or a replaceable version a stored one supersedes) and `blocked:` are decided in `NostrSemanticsStore.insertLocked`, above the port,
 and an event rejected there never reaches `EventIndex` at all. The decorator
 sees the `existingIds` probe and whatever `putAll` followed; inferring the
 rejection from the gap between them is fragile and breaks the first time a batch
@@ -526,7 +526,7 @@ path changes.
 
 So the store books its own outcomes where the decision is made. The key space is
 already closed, which is what makes this safe under §4 — Quartz's
-`RejectionReason` (`EXPIRED`, `DUPLICATE`, `DELETED`, `VANISHED`, `REPLACED`,
+`RejectionReason` (`EXPIRED`, `DUPLICATE`, `SUPERSEDED`, `DELETED`, `VANISHED`,
 `INSERT_FAILED`) plus this store's `UNSTORABLE_TEXT`, and `admitted`. Counted
 per `Activity`, so a mirror's duplicate rate and a live relay's are separable.
 

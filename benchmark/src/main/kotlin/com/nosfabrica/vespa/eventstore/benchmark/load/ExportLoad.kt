@@ -93,7 +93,8 @@ object ExportLoad {
                                 }
 
                                 // The reason's PREFIX is the vocabulary
-                                // (duplicate:/replaced:/blocked:, Rejections.kt);
+                                // (duplicate:/blocked:, Rejections.kt — a stale
+                                // replaceable is `duplicate:` too, as Quartz says it);
                                 // the tail names the individual event.
                                 is IEventStore.InsertOutcome.Rejected -> {
                                     rejected.merge(outcome.reason.substringBefore(':'), 1, Int::plus)

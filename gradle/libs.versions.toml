@@ -5,54 +5,56 @@ app = "1.0.1"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"
 # Quartz from JitPack (amethyst @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
-# a8e8778265 = amethyst main @ 2026-09-10. NOT bumped for this store, for once:
-# the range is upstream's own work, and everything this store reads out of it is
-# byte-identical. IEventStore, SQLiteEventStore, Filter, SearchQuery,
-# SearchFieldExtractor and IndexableFields do not have one changed line between
-# the two pins, so filter semantics, the parity gate, and the per-kind
-# DECOMPOSITION the last two bumps were about all hold exactly as they were.
+# 28bf170f92 = amethyst main @ 2026-09-26. 958 commits; four things in it reach this store.
 #
-# The range is 220 commits; two things in it reach this store.
+#   Event classes renamed to their NIP names (upstream 6d2c37c346). The ones this store
+#     names: ContactCardEvent -> UserAssertionEvent (30382), DeletionEvent ->
+#     DeletionRequestEvent (5), LongTextNoteEvent -> LongFormContentEvent (30023),
+#     peopleList.PeopleListEvent -> followSet.FollowSetEvent (30000), and
+#     followList.FollowListEvent -> starterPack.StarterPackEvent (39089). The old names
+#     survive as @Deprecated typealiases; this bump moves every reference off them anyway.
+#     Kinds, tags and parsing are unchanged, so the trust projection and the deletion
+#     path read exactly what they read before.
 #
-#   SearchableEvent grows a READ path. `forEachIndexableField(visitor)` hands over
-#     the same fields `indexableContent()` joins, without building the joined
-#     string — for Amethyst's per-keystroke scan of the whole cache, where a
-#     string per event per keystroke is not affordable. It and
-#     `indexableSeparator()` are both DEFAULTED on the interface, and every
-#     override the range adds re-expresses a join that already existed: no
-#     `indexableContent()` body moved (the range removes no line mentioning one),
-#     and this store only ever calls the WRITE path, through SearchFieldExtractor.
-#     Upstream added `IndexableContentGoldenTest` and an `indexable-content.golden`
-#     resource in the same range to keep it that way. So: nothing to implement
-#     here, and NO REINDEX — every kind already stored indexes the same words on
-#     the same columns as before.
+#   A stale replaceable/addressable version is now RejectionReason.SUPERSEDED,
+#     "duplicate: a newer version ...", in SQLiteEventStore (STORE-W01/W02; W09 is new).
+#     Quartz's RelaySession acks every `duplicate:` reason with OK true and everything else
+#     with OK false, so this store's old "replaced:" made a relay built on it answer
+#     OK false to a routine same-second re-publish. That is the loop MDK's `wn` retried
+#     forever against geode. Rejections.SUPERSEDED replaces REPLACED on both
+#     admission paths, which keeps the outcome tally's key set closed and matches the reference.
 #
-#   The searchable SET moves, for the first time in several bumps: 133 -> 144 kind
-#     values (130 -> 141 classes). SearchFieldExtractor gained no branch for any of
-#     the 11, so all of them land in its `is SearchableEvent ->` catch-all — the
-#     whole `indexableContent()` in the BODY role, titles included. That is the
-#     same 236x title discount the last two bumps fixed for 19 other kinds, and it
-#     takes the same fix (one branch each, upstream). Left as a note rather than
-#     held for, because it is a RANKING gap on kinds a relay has almost none of
-#     yet, not a recall one. The 11, with what their catch-all body carries:
-#       31 / 32 / 33   external / hardcopy / prompt citation   title, summary, content
-#       818            wiki merge request                      content
-#       30040          publication index                       title, author, summary
-#       30041          publication content                     title, content
-#       30045          bookshelf directory                     title, summary, content
-#       30142          learning resource                       title, summary, content
-#       31987          relay review                            content
-#       32176          Blossom piece index                     title, summary, content
-#       34259          entity rating                           content
-#     Recall on these is FORWARD-ONLY until `reindexFullTextSearch()` runs: events
-#     of those kinds already stored carry NO search fields, because when they were
-#     ingested nothing parsed them as searchable at all. Unlike the last two bumps'
-#     backfill, this one changes what is FINDABLE rather than how it ranks, so it
-#     is the one worth actually scheduling.
+#   The searchable set moves again: 144 -> 150 reachable kind values. Eight NEW
+#     classes are searchable, and all eight take SearchFieldExtractor's catch-all (the
+#     whole indexableContent() in the BODY role, titles included, the same ranking
+#     gap as the previous pin's eleven; README's kind table marks both sets with a dagger):
+#       7516 / 37516 / 37517   NIP-CC geocache found log / listing / curation list
+#       9998 / 39998           decentralized list header (hashtags index twice, see README)
+#       9999 / 39999           decentralized list item   (likewise)
+#       39307                  NIP-71 video text track (raw WebVTT, cue timings included)
+#     They are new classes, not new implementors of old ones. Until this pin the factory
+#     parsed those kinds as plain events, so everything already stored under them has no
+#     search fields: recall is FORWARD-ONLY until `reindexFullTextSearch()` runs, like
+#     last time. 31890 (FeedDefinitionEvent) implements SearchableEvent but was never
+#     registered in EventFactory, at this pin or the last; README listed it, and no
+#     longer does. Upstream now keeps the reachable set as SearchableKinds.ALL, swept by
+#     a test over all 65536 kinds, and the searchable-events skill's table is checked
+#     against it. No existing kind's indexableContent() moved (the golden file's diff is
+#     additions only) except 30063. That one now also joins a NIP-82 release's notes, and
+#     the extractor's branch for it does not, so here those notes stay unindexed (README).
 #
+#   Transitively: Quartz now exports jackson-databind instead of jackson-module-kotlin,
+#     and kotlin-reflect leaves the classpath with it. Nothing in main here binds through
+#     Jackson or reflects on Kotlin classes; two tests that listed members through
+#     `KClass.members` now ask java.lang.Class instead. Also kotlin-stdlib 2.4.20
+#     (upstream's Kotlin, one patch past this build's 2.4.0 compiler, same 2.4 metadata)
+#     and androidx sqlite 2.7.1. okhttp 5.5.0 was already what the last pin brought.
+#
+# Prev a8e8778265 (2026-09-10: 133 -> 144 searchable kind values, all eleven on the
+# catch-all; SearchableEvent grows the read-path forEachIndexableField, no reindex).
 # Prev cecc3287b2 (2026-09-01: 17 catch-all kinds split into title/body roles, four
 # affiliation URLs, six doubled `t`-tag scans dropped; a ranking backfill).
-quartz = "a8e8778265"
+quartz = "28bf170f92"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 sqlite = "2.7.0"

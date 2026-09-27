@@ -28,7 +28,18 @@ internal object Rejections {
     const val DUPLICATE = RejectionReason.DUPLICATE
     const val DELETED = RejectionReason.DELETED
     const val VANISHED = RejectionReason.VANISHED
-    const val REPLACED = RejectionReason.REPLACED
+
+    /**
+     * A replaceable/addressable version that a stored one already beats (NIP-01:
+     * newer `created_at`, or the same one and a lower id). `duplicate:`-prefixed,
+     * NOT `replaced:`, since Quartz 28bf170f92: its SQLite store answers this way
+     * (STORE-W01/W02), and its `RelaySession` acks every `duplicate:` reason with
+     * `OK true` while every other prefix is `OK false` — which clients (MDK's `wn`
+     * first) read as a refusal and retry forever. A stale version is "already
+     * covered", the same as an id duplicate, so this store says the same words.
+     * The event is still not written.
+     */
+    const val SUPERSEDED = RejectionReason.SUPERSEDED
     const val INSERT_FAILED = RejectionReason.INSERT_FAILED
 
     // One constant string, not one per field/code point: callers tally
@@ -36,7 +47,7 @@ internal object Rejections {
     const val UNSTORABLE_TEXT = "blocked: text carries a code point the engine cannot store"
 
     /** Every reason this store can produce — the CLOSED set the outcome tally is keyed by. */
-    val ALL: List<String> = listOf(EXPIRED, DUPLICATE, DELETED, VANISHED, REPLACED, INSERT_FAILED, UNSTORABLE_TEXT)
+    val ALL: List<String> = listOf(EXPIRED, DUPLICATE, SUPERSEDED, DELETED, VANISHED, INSERT_FAILED, UNSTORABLE_TEXT)
 
     /**
      * The closed-set reason a rejection [message] belongs to.

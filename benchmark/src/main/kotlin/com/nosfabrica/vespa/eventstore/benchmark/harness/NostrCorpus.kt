@@ -42,7 +42,7 @@ import kotlin.random.Random
  * timing), so the mix here is modelled on a general relay's kind distribution.
  *
  * Events are built as canonical JSON and parsed through Quartz's [Event.fromJson]
- * so each lands as its proper subclass (kind 5 -> DeletionEvent, kind 0 ->
+ * so each lands as its proper subclass (kind 5 -> DeletionRequestEvent, kind 0 ->
  * MetadataEvent, ...). That matters: the store dispatches on the runtime type,
  * so a bare `Event(kind = 5, ...)` would skip deletion handling entirely.
  *

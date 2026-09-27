@@ -13,7 +13,7 @@ description: The NIP-85 trusted-assertions model in Quartz (`nip85TrustedAsserti
 > the trust projection and should be documented there against this skill's terms.
 
 > Skill imported from `vitorpamplona/amethyst` `.claude/skills/nip85-trusted-assertions`
-> at commit `9231195890` (the Quartz pin). NIP-85 is still evolving — refresh at pin bumps
+> at commit `9231195890`, refreshed to `28bf170f92` (the Quartz pin). NIP-85 is still evolving — refresh at pin bumps
 > and re-check the "Stability notes" section before ranking on new tags.
 
 Package: `quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nip85TrustedAssertions/`.
@@ -37,16 +37,16 @@ event signatures; the 10040→assertion link is **consumer-side convention** (se
 | Kind | Class | Kind class | d-tag = the subject | Content |
 |---|---|---|---|---|
 | 10040 | `list/TrustProviderListEvent` | replaceable | *(none — always `""`)* | NIP-44 private provider entries (optional) |
-| 30382 | `users/ContactCardEvent` | addressable | **target user's pubkey** (hex) | NIP-44 private tags (petname/summary/emoji) |
+| 30382 | `users/UserAssertionEvent` | addressable | **target user's pubkey** (hex) | NIP-44 private tags (petname/summary/emoji) |
 | 30383 | `events/EventAssertionEvent` | addressable | **target event id** (hex) | `""` |
 | 30384 | `addressables/AddressableAssertionEvent` | addressable | **target coordinate** `kind:pubkey:dtag` | `""` |
 | 30385 | `externalIds/ExternalIdAssertionEvent` | addressable | **external identifier** (e.g. `isbn:978-0-13-468599-1`) | `""` |
 
-Addresses: `ContactCardEvent.createAddress(owner, target)` → `Address(30382, owner, target)`
+Addresses: `UserAssertionEvent.createAddress(owner, target)` → `Address(30382, owner, target)`
 (owner = signer, target = subject). `TrustProviderListEvent.createAddress(pubKey)` uses
 `FIXED_D_TAG = ""`. `AssertionEventTest.eventKindsAreCorrect` pins all five numbers.
 
-`ContactCardEvent` is also a `SearchableEvent` — it indexes only the **public** petname/summary
+`UserAssertionEvent` is also a `SearchableEvent` — it indexes only the **public** petname/summary
 tags plus topics; the encrypted card content is intentionally never indexed.
 
 ## The 10040 provider entry (`ServiceProviderTag` / `ServiceType`)
@@ -102,9 +102,9 @@ The same kind serves two roles, distinguished **by author**:
    `followers`, `hops`, …); this is what 10040 discovery points at.
 2. **The account's own contact cards (nicknames, NIP-81-style)** — signed by the account,
    one per target user. The petname, summary, and their NIP-30 emoji mappings **always live in
-   the NIP-44 encrypted content, never in public tags** (`ContactCardEvent.build`/
-   `updatePetNameAndSummary` strip stray public copies; asserted by `ContactCardPetNameTest`).
-   `commons/.../ContactCardsState.kt` keys everything on `author == account` and ignores
+   the NIP-44 encrypted content, never in public tags** (`UserAssertionEvent.build`/
+   `updatePetNameAndSummary` strip stray public copies; asserted by `UserAssertionPetNameTest`).
+   `commons/.../UserAssertionsState.kt` keys everything on `author == account` and ignores
    provider cards.
 
 ## Tag vocabulary and value semantics
@@ -115,7 +115,7 @@ value — a bad tag is *dropped*, never an error) + `assemble(value)` → `[name
 validation (rank isn't clamped, hours aren't checked against 0–23, counts may be negative) —
 consumers must defend.
 
-**On 30382** (`users/tags/`, accessors on `ContactCardEvent` and as `TagArray` extensions in
+**On 30382** (`users/tags/`, accessors on `UserAssertionEvent` and as `TagArray` extensions in
 `users/TagArrayExt.kt` so they also work on decrypted private arrays):
 
 | Tag name | Accessor | Type | Semantics |
@@ -149,7 +149,7 @@ val providers: List<ServiceProviderTag> = updated.serviceProviders()          //
 val private = updated.privateTags(signer)?.serviceProviders()                 // private side
 
 // Provider-style contact card (public metrics) — the GrapeRankPublisher pattern:
-val card = ContactCardEvent.create(
+val card = UserAssertionEvent.create(
     targetUser = subjectPubkey,
     signer = providerSigner,
     publicInitializer = {
@@ -236,8 +236,8 @@ card's `a`-tag (`30382:<provider>:<target>`).
 
 - **Publisher**: `quartz/.../experimental/graperank/GrapeRankPublisher.kt` (canonical 30382
   writer), `cli/.../graperank/` (`amy graperank register|unregister|providers|publish`).
-- **Client model**: `commons/.../model/nip85TrustedAssertions/` (`ContactCardsState`,
-  `UserCardsCache`, `ContactCardDecryptionCache`, `TrustProviderListDecryptionCache`),
+- **Client model**: `commons/.../model/nip85TrustedAssertions/` (`UserAssertionsState`,
+  `UserCardsCache`, `UserAssertionDecryptionCache`, `TrustProviderListDecryptionCache`),
   `amethyst/.../model/trustedAssertions/TrustProviderListState.kt`.
 - **Relay plumbing**: `commons/.../relayClient/assemblers/ContactCardFilters.kt`,
   `amethyst/.../reqCommand/user/watchers/UserCardsSubAssembler.kt`.

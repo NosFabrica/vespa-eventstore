@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.eventstore.mapping
 
 import com.nosfabrica.vespa.eventstore.engine.doc.SearchFields
+import com.vitorpamplona.quartz.experimental.decentralizedLists.item.ListItemEvent
 import com.vitorpamplona.quartz.experimental.library.LearningResourceEvent
 import com.vitorpamplona.quartz.experimental.nip82SoftwareApps.application.SoftwareApplicationEvent
 import com.vitorpamplona.quartz.experimental.ratings.RelayReviewEvent
@@ -30,14 +31,16 @@ import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip10Notes.TextNoteEvent
 import com.vitorpamplona.quartz.nip15Marketplace.stall.StallEvent
 import com.vitorpamplona.quartz.nip17Dm.messages.ChatMessageEvent
-import com.vitorpamplona.quartz.nip23LongContent.LongTextNoteEvent
+import com.vitorpamplona.quartz.nip23LongContent.LongFormContentEvent
 import com.vitorpamplona.quartz.nip34Git.repository.GitRepositoryEvent
 import com.vitorpamplona.quartz.nip35Torrents.TorrentEvent
-import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import com.vitorpamplona.quartz.nip71Video.textTrack.TextTrackEvent
+import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import com.vitorpamplona.quartz.nip89AppHandlers.definition.AppDefinitionEvent
 import com.vitorpamplona.quartz.nip99Classifieds.ClassifiedsEvent
 import com.vitorpamplona.quartz.nipB0WebBookmarks.WebBookmarkEvent
 import com.vitorpamplona.quartz.nipC0CodeSnippets.CodeSnippetEvent
+import com.vitorpamplona.quartz.nipCCGeocaching.listing.GeocacheListingEvent
 import com.vitorpamplona.quartz.nipXXPodcasting20.episode.Podcasting20EpisodeEvent
 import com.vitorpamplona.quartz.utils.EventFactory
 import kotlin.test.Test
@@ -158,7 +161,7 @@ class SearchExtractorsTest {
     @Test
     fun `a declared shortcode is rewritten in a titled kind too`() {
         val tags = arrayOf(arrayOf("d", "post"), arrayOf("title", "My :verified: Post"), arrayOf("emoji", "verified", "https://static/v.png"))
-        val fields = SearchExtractors.extract(LongTextNoteEvent("8".repeat(64), alice, 1L, tags, "body", ""))
+        val fields = SearchExtractors.extract(LongFormContentEvent("8".repeat(64), alice, 1L, tags, "body", ""))
         assertEquals("My Post", fields.primary)
         assertEquals("xemojiverified", fields.secondary, "the badge tier is the same for every kind")
     }
@@ -173,14 +176,14 @@ class SearchExtractorsTest {
                 arrayOf("t", "nostr"),
                 arrayOf("emoji", "verified", "https://static/v.png"),
             )
-        val fields = SearchExtractors.extract(LongTextNoteEvent("c".repeat(64), alice, 1L, tags, "body", ""))
+        val fields = SearchExtractors.extract(LongFormContentEvent("c".repeat(64), alice, 1L, tags, "body", ""))
         assertEquals("tl;dr\nnostr\nxemojiverified", fields.secondary)
     }
 
     @Test
     fun `long-form decomposes into title, summary plus hashtags, content`() {
         val tags = arrayOf(arrayOf("d", "post"), arrayOf("title", "My Post"), arrayOf("summary", "tl;dr"), arrayOf("t", "nostr"), arrayOf("t", "search"))
-        val fields = SearchExtractors.extract(LongTextNoteEvent("2".repeat(64), alice, 1L, tags, "the whole article", ""))
+        val fields = SearchExtractors.extract(LongFormContentEvent("2".repeat(64), alice, 1L, tags, "the whole article", ""))
         assertEquals(SearchFields(primary = "My Post", secondary = "tl;dr\nnostr search", text = "the whole article"), fields)
     }
 
@@ -198,7 +201,7 @@ class SearchExtractorsTest {
     }
 
     /**
-     * The eleven kinds the current Quartz pin adds to the searchable set (31/32/33
+     * The eleven kinds the a8e8778265 Quartz pin added to the searchable set (31/32/33
      * citations, 818, 30040/30041, 30045, 30142, 31987, 32176, 34259) have no
      * `SearchFieldExtractor` branch, so every one of them takes the catch-all above:
      * the whole `indexableContent()`, TITLE INCLUDED, in the body. README's kind table
@@ -211,7 +214,7 @@ class SearchExtractorsTest {
      * nothing about the second, which is the half a version bump actually moves.
      */
     @Test
-    fun `kinds newly searchable in this quartz pin index their whole content as body`() {
+    fun `kinds newly searchable in the a8e8778265 pin index their whole content as body`() {
         val titled =
             EventFactory.create<Event>(
                 "7".repeat(64),
@@ -228,6 +231,53 @@ class SearchExtractorsTest {
         val bodyOnly =
             EventFactory.create<Event>("8".repeat(64), alice, 1L, RelayReviewEvent.KIND, emptyArray(), "fast, never drops a REQ", "")
         assertEquals(SearchFields(text = "fast, never drops a REQ"), SearchExtractors.extract(bodyOnly))
+    }
+
+    /**
+     * The eight the 28bf170f92 pin adds — NIP-CC geocaching (7516 / 37516 / 37517), the
+     * decentralized lists (9998 / 9999 / 39998 / 39999) and NIP-71 text tracks (39307) —
+     * are new CLASSES upstream, not new implementors of old ones: until this pin the
+     * factory parsed them as plain events, so every one already stored carries no search
+     * fields until `reindexFullTextSearch()` runs. Same catch-all, same factory route as
+     * the eleven above; three witnesses, one per family.
+     *
+     * The list item also pins the one wrinkle the family adds: its `indexableContent()`
+     * joins the `t` values into the body, and the funnel carries them in the hashtag role
+     * as well, so they index TWICE (README, under the kind table). If upstream gives the
+     * family a branch, this is the assertion that moves.
+     */
+    @Test
+    fun `kinds newly searchable in the 28bf170f92 pin index their whole content as body`() {
+        val listing =
+            EventFactory.create<Event>(
+                "9".repeat(64),
+                alice,
+                1L,
+                GeocacheListingEvent.KIND,
+                arrayOf(arrayOf("d", "gc1"), arrayOf("name", "Old Mill Cache")),
+                "behind the waterwheel",
+                "",
+            )
+        assertEquals(SearchFields(text = "Old Mill Cache\nbehind the waterwheel"), SearchExtractors.extract(listing))
+
+        val item =
+            EventFactory.create<Event>(
+                "a".repeat(64),
+                alice,
+                1L,
+                ListItemEvent.KIND,
+                arrayOf(arrayOf("z", "podcasts"), arrayOf("title", "Bitcoin Audible"), arrayOf("description", "long reads, read aloud"), arrayOf("t", "bitcoin"), arrayOf("t", "podcast")),
+                "",
+                "",
+            )
+        assertEquals(
+            SearchFields(secondary = "bitcoin podcast", text = "Bitcoin Audible\nlong reads, read aloud\nbitcoin\npodcast"),
+            SearchExtractors.extract(item),
+        )
+
+        val track =
+            EventFactory.create<Event>("b".repeat(64), alice, 1L, TextTrackEvent.KIND, arrayOf(arrayOf("d", "subtitles:v1")), "WEBVTT\n\n00:00.000 --> 00:02.000\nhello nostr", "")
+        assertEquals(SearchFields(text = "WEBVTT\n\n00:00.000 --> 00:02.000\nhello nostr"), SearchExtractors.extract(track))
     }
 
     @Test
@@ -331,18 +381,18 @@ class SearchExtractorsTest {
                 arrayOf("t", "podcast"),
                 arrayOf("rank", "90"),
             )
-        val fields = SearchExtractors.extract(ContactCardEvent("e".repeat(64), alice, 1L, tags, "", ""))
+        val fields = SearchExtractors.extract(UserAssertionEvent("e".repeat(64), alice, 1L, tags, "", ""))
         assertEquals(SearchFields(primary = "Bramblecast", secondary = "vouched by two independent raters\npodcast"), fields)
     }
 
     @Test
     fun `a contact card with only topics still indexes them`() {
-        // The shape quartz's own ContactCardEvent.build() produces: petname and
+        // The shape quartz's own UserAssertionEvent.build() produces: petname and
         // summary go in the NIP-44 content, so the public card carries nothing
         // but its topics. They must survive the fold into the secondary column
         // rather than collapsing the extraction to NONE.
         val tags = arrayOf(arrayOf("d", alice), arrayOf("t", "podcast"), arrayOf("t", "bitcoin"), arrayOf("rank", "90"))
-        val fields = SearchExtractors.extract(ContactCardEvent("f".repeat(64), alice, 1L, tags, "encrypted", ""))
+        val fields = SearchExtractors.extract(UserAssertionEvent("f".repeat(64), alice, 1L, tags, "encrypted", ""))
         assertEquals(SearchFields(secondary = "podcast bitcoin"), fields)
     }
 

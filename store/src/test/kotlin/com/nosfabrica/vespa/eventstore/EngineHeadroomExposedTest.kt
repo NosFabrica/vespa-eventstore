@@ -33,7 +33,9 @@ import kotlin.test.assertTrue
 class EngineHeadroomExposedTest {
     @Test
     fun `the store's front door offers engine headroom`() {
-        val exposed = VespaEventStore::class.members.map { it.name }
+        // Java reflection: kotlin-reflect left the classpath with Quartz's
+        // jackson-module-kotlin (28bf170f92). A suspend fun keeps its JVM name.
+        val exposed = VespaEventStore::class.java.methods.map { it.name }
         assertTrue("engineHeadroom" in exposed, "no page can show what the store does not expose: $exposed")
     }
 }

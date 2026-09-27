@@ -34,10 +34,11 @@ import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.normalizeRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
-import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
+import com.vitorpamplona.quartz.nip01Core.store.RejectionReason
+import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
 import com.vitorpamplona.quartz.nip59Giftwrap.wraps.GiftWrapEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
-import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -87,7 +88,7 @@ open class NostrSemanticsStoreTest {
         subject: String,
         at: Long = next(),
         eventId: String = id(),
-    ) = ContactCardEvent(eventId, alice, at, arrayOf(arrayOf("d", subject), arrayOf("rank", "50")), "", "")
+    ) = UserAssertionEvent(eventId, alice, at, arrayOf(arrayOf("d", subject), arrayOf("rank", "50")), "", "")
 
     @Test
     fun `rawQuery matches query ids order and wire json`() =
@@ -157,7 +158,8 @@ open class NostrSemanticsStoreTest {
 
             val stale = metadata(at = 150, name = "late")
             val rejected = assertFailsWith<RejectedException> { store.insert(stale) }
-            assertTrue(rejected.message!!.startsWith("replaced:"))
+            // Quartz's SUPERSEDED: `duplicate:`-prefixed, so a relay acks it `OK true`.
+            assertEquals(RejectionReason.SUPERSEDED, rejected.message)
         }
 
     /** ReplaceableModule tie-break: equal created_at, LOWEST id wins. */
@@ -182,7 +184,7 @@ open class NostrSemanticsStoreTest {
             store.insert(forBob)
             store.insert(forOther)
             store.insert(forBobNewer)
-            assertEquals(setOf(forBobNewer.id, forOther.id), store.query<Event>(Filter(kinds = listOf(ContactCardEvent.KIND))).map { it.id }.toSet())
+            assertEquals(setOf(forBobNewer.id, forOther.id), store.query<Event>(Filter(kinds = listOf(UserAssertionEvent.KIND))).map { it.id }.toSet())
         }
 
     /** DeletionRequestModule: e-tag targets erased, tombstone kept, re-inserts blocked — same author only. */
@@ -194,7 +196,7 @@ open class NostrSemanticsStoreTest {
             store.insert(target)
             store.insert(bobs)
 
-            store.insert(DeletionEvent(id(), alice, next(), arrayOf(arrayOf("e", target.id), arrayOf("e", bobs.id)), "", ""))
+            store.insert(DeletionRequestEvent(id(), alice, next(), arrayOf(arrayOf("e", target.id), arrayOf("e", bobs.id)), "", ""))
 
             // Alice's target is gone; bob's event survives (NIP-09 same-author rule).
             assertEquals(setOf(bobs.id), store.query<Event>(Filter(kinds = listOf(1))).map { it.id }.toSet())
@@ -208,14 +210,14 @@ open class NostrSemanticsStoreTest {
     fun `deletion by address erases versions up to its time`() =
         runBlocking {
             store.insert(card(subject = bob, at = 100))
-            store.insert(DeletionEvent(id(), alice, 200, arrayOf(arrayOf("a", "${ContactCardEvent.KIND}:$alice:$bob")), "", ""))
-            assertEquals(0, store.count(Filter(kinds = listOf(ContactCardEvent.KIND))))
+            store.insert(DeletionRequestEvent(id(), alice, 200, arrayOf(arrayOf("a", "${UserAssertionEvent.KIND}:$alice:$bob")), "", ""))
+            assertEquals(0, store.count(Filter(kinds = listOf(UserAssertionEvent.KIND))))
 
             // Older than the deletion: blocked.
             assertFailsWith<RejectedException> { store.insert(card(subject = bob, at = 150)) }
             // Newer than the deletion: accepted.
             store.insert(card(subject = bob, at = 300))
-            assertEquals(1, store.count(Filter(kinds = listOf(ContactCardEvent.KIND))))
+            assertEquals(1, store.count(Filter(kinds = listOf(UserAssertionEvent.KIND))))
         }
 
     /** SQLiteEventStore.insertEvent: ephemeral kinds are ACCEPTED but never persisted (NIP-01). */
@@ -402,7 +404,7 @@ open class NostrSemanticsStoreTest {
     @Test
     fun `replaceable addresses keep the trailing colon`() {
         assertEquals("0:$alice:", metadata().addressOrNull())
-        assertEquals("${ContactCardEvent.KIND}:$alice:$bob", card(subject = bob).addressOrNull())
+        assertEquals("${UserAssertionEvent.KIND}:$alice:$bob", card(subject = bob).addressOrNull())
     }
 
     /** FullTextSearchModule: only SearchableEvent kinds are searchable, via indexableContent(). */
@@ -519,7 +521,7 @@ open class NostrSemanticsStoreTest {
             store.insert(wrap)
 
             // The recipient's deletion erases it — even though she never signed it.
-            store.insert(DeletionEvent(id(), alice, next(), arrayOf(arrayOf("e", wrap.id)), "", ""))
+            store.insert(DeletionRequestEvent(id(), alice, next(), arrayOf(arrayOf("e", wrap.id)), "", ""))
             assertEquals(0, store.count(Filter(kinds = listOf(GiftWrapEvent.KIND))))
             // And the tombstone blocks its return.
             assertFailsWith<RejectedException> { store.insert(wrap) }
@@ -571,17 +573,17 @@ open class NostrSemanticsStoreTest {
         runBlocking {
             val target = note()
             store.insert(target)
-            val deletion = DeletionEvent(id(), alice, next(), arrayOf(arrayOf("e", target.id)), "", "")
+            val deletion = DeletionRequestEvent(id(), alice, next(), arrayOf(arrayOf("e", target.id)), "", "")
             store.insert(deletion)
 
             val vanishOther = RequestToVanishEvent(id(), bob, next(), arrayOf(arrayOf("relay", "wss://elsewhere.example.com/")), "", "")
             store.insert(vanishOther)
 
-            store.insert(DeletionEvent(id(), alice, next(), arrayOf(arrayOf("e", deletion.id)), "", ""))
-            store.insert(DeletionEvent(id(), bob, next(), arrayOf(arrayOf("e", vanishOther.id)), "", ""))
+            store.insert(DeletionRequestEvent(id(), alice, next(), arrayOf(arrayOf("e", deletion.id)), "", ""))
+            store.insert(DeletionRequestEvent(id(), bob, next(), arrayOf(arrayOf("e", vanishOther.id)), "", ""))
 
             // Both tombstones survive their own deletion requests.
-            assertEquals(3, store.count(Filter(kinds = listOf(DeletionEvent.KIND))))
+            assertEquals(3, store.count(Filter(kinds = listOf(DeletionRequestEvent.KIND))))
             assertEquals(1, store.count(Filter(kinds = listOf(RequestToVanishEvent.KIND))))
         }
 

@@ -40,7 +40,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.owner
 import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
-import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
+import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
 import com.vitorpamplona.quartz.nip40Expiration.isExpired
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 
@@ -222,7 +222,7 @@ internal class BulkRecordInsert(
         if (index.supersedesViaPut) {
             // The address-keyed engine enforces newest-wins per put: replay each
             // address's run through putIfNewer IN ORDER, identical to the
-            // per-event path (a loser comes back false and is REPLACED).
+            // per-event path (a loser comes back false and is SUPERSEDED).
             // Different addresses run concurrently; a single address stays
             // sequential. putIfNewer writes replaceable winners itself; toPut
             // carries only the regular events.
@@ -232,7 +232,7 @@ internal class BulkRecordInsert(
                 groups.entries.toList().mapBounded(PUT_FANOUT) { (_, idxs) ->
                     for (i in idxs) {
                         if (!index.putIfNewer(events[i].toDoc())) {
-                            outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.REPLACED)
+                            outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.SUPERSEDED)
                         }
                     }
                 }
@@ -306,7 +306,7 @@ internal class BulkRecordInsert(
                     val e = events[i]
                     val lost = bestId != null && (bestAt > e.createdAt || (bestAt == e.createdAt && bestId < e.id))
                     if (lost) {
-                        outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.REPLACED)
+                        outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.SUPERSEDED)
                     } else {
                         // The previous best is superseded. An in-run best stays
                         // Accepted but never lands; a stored best is removed.
@@ -394,10 +394,10 @@ internal class BulkRecordInsert(
                 val rows = chunk.flatMap { it.value }
                 buildList {
                     rows.map { events[it].id }.chunked(CHECK_CHUNK).forEach {
-                        add(EventQuery(kinds = listOf(DeletionEvent.KIND), authors = authors, tags = mapOf("e" to it)))
+                        add(EventQuery(kinds = listOf(DeletionRequestEvent.KIND), authors = authors, tags = mapOf("e" to it)))
                     }
                     rows.mapNotNull { events[it].addressOrNull() }.distinct().chunked(CHECK_CHUNK).forEach {
-                        add(EventQuery(kinds = listOf(DeletionEvent.KIND), authors = authors, tags = mapOf("a" to it)))
+                        add(EventQuery(kinds = listOf(DeletionRequestEvent.KIND), authors = authors, tags = mapOf("a" to it)))
                     }
                 }
             }

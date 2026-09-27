@@ -222,6 +222,7 @@ place column:
 | **1163** | profile-gallery entry | summary |
 | **20** | picture | title, content |
 | **21 / 22 / 34235 / 34236** | video (normal / short / horizontal / vertical) | title, content |
+| **39307** † | video text track — captions, subtitles, chapters (NIP-71) | content (the WebVTT document, cue timings included) |
 | **1063** | file | summary, content |
 | **1065** | file-storage header | summary |
 | **31337** | audio track | subject |
@@ -290,7 +291,8 @@ place column:
 | **30015** | interest set | title, description + hashtags |
 | **30004 / 30005 / 30006 / 30063 / 30267** | article / video / picture / release / app curation sets | title, description |
 | **30002 / 39092 / 39701** | relay set / media starter pack / web bookmark | title, description |
-| **31890** | feed definition | title |
+| **9998 / 39998** † | decentralized list header (immutable / editable) | names + titles (singular, plural), description, comments, hashtags |
+| **9999 / 39999** † | decentralized list item (immutable / editable) | name, title, description, comments, hashtags |
 | **30382** | contact card / relationship | petname, summary + topics as hashtags (the encrypted half is never indexed) |
 | **30392 / 30393 / 30394 / 30395** | trusted list of pubkeys / events / addressables / external ids | title |
 | **30296 / 30297** | interactive story prologue / scene | title, summary, content |
@@ -303,9 +305,12 @@ place column:
 | **2473** | bird detection (Birdstar) | species + common name, alt |
 | **12473** | Birdex species collection | summary + species names |
 | **1315** | road event report (Roadstr) | content |
+| **37516** † | geocache listing (NIP-CC) | cache name, content |
+| **37517** † | geocache curation list (NIP-CC) | title, description, content |
+| **7516** † | geocache found log (NIP-CC) | content |
 
-† **No tier split yet.** These kinds became searchable in the current Quartz pin, and
-upstream's `SearchFieldExtractor` has no branch for them yet, so the kind's OWN text — title,
+† **No tier split yet.** These kinds became searchable in one of the last two Quartz pins,
+and upstream's `SearchFieldExtractor` has no branch for them yet, so the kind's OWN text — title,
 summary and body alike — arrives as one blob in the **body**. A title on one of them is
 therefore reached by substring like prose, without the prefix and typo matching a primary
 field carries, and it does not outweigh the rest of the event. The tag-derived roles are
@@ -321,8 +326,21 @@ and `blossom` servers; a learning resource's `author`, content url, and its sche
 hashtag funnel does not see them). Both halves take the same fix — one upstream
 `SearchFieldExtractor` branch per kind, reading accessors straight into roles, which
 `IndexableFields` already allows to carry more than the flat blob does (kind 30617 does
-exactly this with its clone URLs). Kinds 818, 31987 and 34259 are `content`-only and already
-land correctly; 31987 still misses its relay url. The rows above become tiered, and complete,
+exactly this with its clone URLs). Kinds 818, 31987, 34259, 7516 and 39307 are `content`-only
+and already land correctly; 31987 still misses its relay url, and 39307's body is raw WebVTT, so
+its cue timestamps are indexed beside the words.
+
+The decentralized-list family (9998 / 9999 / 39998 / 39999) has one more wrinkle: its
+`indexableContent()` joins the `t` values into the blob, and the funnel ALSO carries them in the
+hashtag role — so a list's hashtags index twice, once in the body and once in the secondary
+tier. That is the doubling upstream already removed for 1111, 1311 and 30382 by passing the
+body alone, and the same branch fixes it here.
+
+Kind 30063 runs the other way. Its `indexableContent()` now carries a NIP-82 software
+release's notes (`content`, only when the `i` + `version` tags mark it as one, since a NIP-51
+set may keep encrypted items there), but upstream's `SearchFieldExtractor` branch for it still
+passes title and description only. So a release is found here by its name and summary, and
+not by its release notes, which Quartz's SQLite store does index. The rows above become tiered, and complete,
 the moment those branches land.
 
 Anything Quartz parses to a `SearchableEvent` is indexed, current or future. The

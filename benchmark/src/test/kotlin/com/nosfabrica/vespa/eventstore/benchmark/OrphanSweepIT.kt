@@ -23,7 +23,7 @@ package com.nosfabrica.vespa.eventstore.benchmark
 import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
-import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assumptions.assumeTrue
@@ -110,7 +110,7 @@ class OrphanSweepIT {
                             assertEquals(CARDS_PER_SERVICE, storedCards(store), "only the named service's cards remain")
                             assertEquals(
                                 CARDS_PER_SERVICE,
-                                store.engine.count(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(MAPPED_SERVICE))),
+                                store.engine.count(EventQuery(kinds = listOf(UserAssertionEvent.KIND), authors = listOf(MAPPED_SERVICE))),
                                 "and they are the named service's",
                             )
 
@@ -126,7 +126,7 @@ class OrphanSweepIT {
 
     // ------------------------------------------------------------------
 
-    private suspend fun storedCards(store: VespaEventStore) = store.engine.count(EventQuery(kinds = listOf(ContactCardEvent.KIND)))
+    private suspend fun storedCards(store: VespaEventStore) = store.engine.count(EventQuery(kinds = listOf(UserAssertionEvent.KIND)))
 
     /** Poll until every fed card is searchable — the grouping must see the whole corpus. */
     private suspend fun awaitCards(
@@ -156,7 +156,7 @@ class OrphanSweepIT {
     private fun card(
         service: String,
         about: String,
-    ) = ContactCardEvent(
+    ) = UserAssertionEvent(
         id(),
         service,
         1_700_000_000L,

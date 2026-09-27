@@ -25,7 +25,7 @@ import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.runtime.WriterTopology
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.normalizeRelayUrl
-import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
+import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
@@ -62,7 +62,7 @@ class GuardOwnersTest {
             deleters.forEach { author ->
                 val noteId = id()
                 store.insert(Event(noteId, author, 1_000, 1, emptyArray(), "hi", ""))
-                store.insert(DeletionEvent(id(), author, 2_000, arrayOf(arrayOf("e", noteId)), "", ""))
+                store.insert(DeletionRequestEvent(id(), author, 2_000, arrayOf(arrayOf("e", noteId)), "", ""))
             }
             vanishers.forEach { author ->
                 store.insert(Event(id(), author, 1_000, 1, emptyArray(), "hi", ""))
