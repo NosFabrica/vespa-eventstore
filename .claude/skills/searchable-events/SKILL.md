@@ -14,7 +14,7 @@ description: The NIP-50 indexing surface of Quartz — the `SearchableEvent` int
 > describes — we parse with `SearchQuery.parse`-compatible semantics; keep it that way.
 
 > Skill imported from `vitorpamplona/amethyst` `.claude/skills/searchable-events`
-> at commit `98f09f29c0`; upstream has not touched it since, so only the kind table below
+> at commit `98f09f29c0` and refreshed to `ec16988e3a`; the kind table below
 > is kept current here. Refresh this copy at every pin bump.
 
 ## The contract
@@ -64,7 +64,8 @@ Rules every implementation follows (keep them when adding one):
 
 **`references/searchable-kinds.md`** in this skill holds the authoritative table — every
 implementor with its kind number, class, and the exact `indexableContent()` expression
-(141 concrete classes / 144 kind values as of 2026-09, Quartz pin `a8e8778265`). Diff that file at a version bump to
+(148 concrete classes / 151 kind values as of 2026-09, Quartz pin `ec16988e3a`; upstream now
+keeps the reachable set as `nip50Search/SearchableKinds.ALL`, swept by `SearchableKindsTest`). Diff that file at a version bump to
 answer "did the searchable set or any kind's indexed text change?".
 
 Notables that surprise people:
@@ -73,10 +74,9 @@ Notables that surprise people:
   (`zapRequest?.content.orEmpty()`) — receipts are searchable by the zapper's comment.
 - **Kind 0 / 31990** index many profile fields space-joined (name, about, nip05, lud16,
   website, picture URL, …).
-- **Kind 30063 is claimed twice** (`ReleaseArtifactSetEvent` in nip51Lists and the experimental
-  `SoftwareReleaseEvent`); `EventFactory` resolves 30063 to `ReleaseArtifactSetEvent`, so
-  `title()\ndescription()` is what actually gets indexed — `SoftwareReleaseEvent.indexableContent()`
-  is dead on the store path.
+- **Kind 30063** (`ReleaseArtifactSetEvent`) serves both NIP-51 release artifact sets and NIP-82
+  software releases: it indexes `title()\ndescription()`, plus the release notes in `content` only
+  for NIP-82 releases (NIP-51 `content` can be encrypted private items).
 - Poll kinds (1068, 6969) append each option label on its own line.
 
 ## MANDATORY maintenance when you touch this surface

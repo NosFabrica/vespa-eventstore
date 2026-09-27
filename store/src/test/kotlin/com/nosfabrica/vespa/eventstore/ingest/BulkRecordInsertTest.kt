@@ -27,10 +27,10 @@ import com.nosfabrica.vespa.eventstore.ingest.Rejections
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.normalizeRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
-import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
-import com.vitorpamplona.quartz.nip23LongContent.LongTextNoteEvent
+import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
+import com.vitorpamplona.quartz.nip23LongContent.LongFormContentEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
-import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -65,13 +65,13 @@ class BulkRecordInsertTest {
         at: Long = next(),
         rank: Int = 50,
         eventId: String = id(),
-    ) = ContactCardEvent(eventId, service, at, arrayOf(arrayOf("d", subject), arrayOf("rank", "$rank")), "", "")
+    ) = UserAssertionEvent(eventId, service, at, arrayOf(arrayOf("d", subject), arrayOf("rank", "$rank")), "", "")
 
     private fun deletion(
         targetId: String,
         at: Long = next(),
         author: String = alice,
-    ) = DeletionEvent(id(), author, at, arrayOf(arrayOf("e", targetId)), "", "")
+    ) = DeletionRequestEvent(id(), author, at, arrayOf(arrayOf("e", targetId)), "", "")
 
     /** Padding so every batch crosses the BULK_MIN threshold. */
     private fun padding(n: Int) = (1..n).map { note(content = "pad $it") }
@@ -224,7 +224,7 @@ class BulkRecordInsertTest {
     private fun dlessArticle(
         at: Long = next(),
         eventId: String = id(),
-    ) = LongTextNoteEvent(eventId, alice, at, emptyArray(), "body", "")
+    ) = LongFormContentEvent(eventId, alice, at, emptyArray(), "body", "")
 
     /**
      * Empty-d addressables: a stored version with NO d tag carries no "d:" pair

@@ -25,7 +25,7 @@ import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
-import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 
 /**
  * WHY THIS PUBKEY SEES WHAT IT SEES — every fact behind one ranked read, in
@@ -129,7 +129,7 @@ internal class TrustExplain(
         val lists = index.search(EventQuery(kinds = listOf(TrustProviderListEvent.KIND), authors = listOf(pubkey), notExpiredAt = nowSecs(), limit = 1))
         val lens = recompute.providerMap().lensOf(pubkey)
         val stored = ProviderMap.providersOf(lists).lensOf(pubkey)
-        val cards = index.search(EventQuery(kinds = listOf(ContactCardEvent.KIND), tags = mapOf("d" to listOf(pubkey)), limit = MAX_CARDS)).size
+        val cards = index.search(EventQuery(kinds = listOf(UserAssertionEvent.KIND), tags = mapOf("d" to listOf(pubkey)), limit = MAX_CARDS)).size
         val parent = reputations.get(pubkey)
         return Explanation(
             pubkey = pubkey,

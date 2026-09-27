@@ -30,7 +30,7 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.nosfabrica.vespa.eventstore.ingest.GuardBloom
 import com.nosfabrica.vespa.eventstore.mapping.toEvent
-import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import com.vitorpamplona.quartz.utils.Hex
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -137,7 +137,7 @@ class TrustReconciler internal constructor(
         onProgress: ((subjectsChecked: Int) -> Unit)? = null,
     ): TrustAudit {
         backlog.drain(gate)
-        val seen = GuardBloom(expectedInsertions = index.count(EventQuery(kinds = listOf(ContactCardEvent.KIND))).coerceAtLeast(1024), fpp = 1e-6)
+        val seen = GuardBloom(expectedInsertions = index.count(EventQuery(kinds = listOf(UserAssertionEvent.KIND))).coerceAtLeast(1024), fpp = 1e-6)
         val samples = ArrayList<TrustDrift>()
         var driftCount = 0
         var subjectsChecked = 0
@@ -181,7 +181,7 @@ class TrustReconciler internal constructor(
             subjectsChecked += batch.size
             onProgress?.invoke(subjectsChecked)
         }
-        index.visitIds(EventQuery(kinds = listOf(ContactCardEvent.KIND)), withDTag = true) { page ->
+        index.visitIds(EventQuery(kinds = listOf(UserAssertionEvent.KIND)), withDTag = true) { page ->
             page.forEach { it.dTag?.takeIf(Hex::isHex64)?.let(buffer::add) }
             if (buffer.size >= VERIFY_BATCH) screenBatch()
             true
@@ -281,7 +281,7 @@ class TrustReconciler internal constructor(
                 val older =
                     index.search(
                         EventQuery(
-                            kinds = listOf(ContactCardEvent.KIND),
+                            kinds = listOf(UserAssertionEvent.KIND),
                             authors = listOf(service),
                             until = cutoff - SAMPLE_HORIZON_SECONDS,
                             limit = RECONCILE_SAMPLES,
@@ -292,7 +292,7 @@ class TrustReconciler internal constructor(
                 val sample =
                     older.ifEmpty {
                         index.search(
-                            EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service), limit = RECONCILE_SAMPLES, notExpiredAt = cutoff, sampled = true),
+                            EventQuery(kinds = listOf(UserAssertionEvent.KIND), authors = listOf(service), limit = RECONCILE_SAMPLES, notExpiredAt = cutoff, sampled = true),
                         )
                     }
                 if (sample.isEmpty()) {
@@ -301,7 +301,7 @@ class TrustReconciler internal constructor(
                 }
                 // Only sampled cards that CARRY a tag can prove that dimension
                 // unprojected — else every startup would re-walk the service.
-                val cards = sample.mapNotNull { doc -> subjectOf(doc)?.let { s -> (doc.toEvent() as? ContactCardEvent)?.let { s to it } } }
+                val cards = sample.mapNotNull { doc -> subjectOf(doc)?.let { s -> (doc.toEvent() as? UserAssertionEvent)?.let { s to it } } }
                 val rankSubjects = cards.filter { it.second.boundedRank() != null }.map { it.first }.distinct()
                 val followerSubjects = cards.filter { it.second.followerCount() != null }.map { it.first }.distinct()
                 val parents = (rankSubjects + followerSubjects).distinct().mapNotNull { s -> reputations.get(s)?.let { s to it } }.toMap()
@@ -394,7 +394,7 @@ class TrustReconciler internal constructor(
         // its card count with no doc reconstruction, so the dry run needs no
         // per-service query. A signer the grouping missed keeps its cards —
         // completeness only matters in the harmless direction.
-        val cardsBySigner = index.countByAuthor(EventQuery(kinds = listOf(ContactCardEvent.KIND)))
+        val cardsBySigner = index.countByAuthor(EventQuery(kinds = listOf(UserAssertionEvent.KIND)))
         val candidates = cardsBySigner.keys.filterNot(providers::maps)
         val doomed = candidates.sumOf { cardsBySigner[it] ?: 0 }
         onProgress?.invoke(0, candidates.size, 0, doomed)
@@ -412,7 +412,7 @@ class TrustReconciler internal constructor(
                 EventQuery(
                     // No expiry cutoff: an expired orphan card is still stored,
                     // and this pass exists to reclaim exactly that storage.
-                    kinds = listOf(ContactCardEvent.KIND),
+                    kinds = listOf(UserAssertionEvent.KIND),
                     authors = listOf(service),
                     limit = SWEEP_PAGE,
                     // A sweep wants ANY page: explicit ranking opts out of the
@@ -476,7 +476,7 @@ class TrustReconciler internal constructor(
         var derived = 0
         TrustProgress.begin(REBUILD, "deriving every card's subject")
         recompute.recomputeWalk(
-            EventQuery(kinds = listOf(ContactCardEvent.KIND)),
+            EventQuery(kinds = listOf(UserAssertionEvent.KIND)),
             onSubjects = { n ->
                 derived = n
                 TrustProgress.advance(REBUILD, n.toLong())

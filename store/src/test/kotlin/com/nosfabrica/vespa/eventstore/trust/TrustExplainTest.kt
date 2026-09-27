@@ -27,7 +27,7 @@ import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryReputationIndex
 import com.nosfabrica.vespa.eventstore.mapping.toDoc
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
-import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertContains
@@ -61,7 +61,7 @@ class TrustExplainTest {
             "",
         )
 
-    private fun card(about: String) = ContactCardEvent(id(), service, 1_000L + seq, arrayOf(arrayOf("d", about), arrayOf("rank", "87"), arrayOf("followers", "12")), "", "")
+    private fun card(about: String) = UserAssertionEvent(id(), service, 1_000L + seq, arrayOf(arrayOf("d", about), arrayOf("rank", "87"), arrayOf("followers", "12")), "", "")
 
     private fun profile(of: String) = MetadataEvent(id(), of, 1_000L + seq, emptyArray(), """{"name":"n"}""", "")
 

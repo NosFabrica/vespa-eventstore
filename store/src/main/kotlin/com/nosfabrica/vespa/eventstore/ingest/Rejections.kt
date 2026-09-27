@@ -28,6 +28,21 @@ internal object Rejections {
     const val DUPLICATE = RejectionReason.DUPLICATE
     const val DELETED = RejectionReason.DELETED
     const val VANISHED = RejectionReason.VANISHED
+
+    /**
+     * A replaceable/addressable version that a stored one already beats (NIP-01:
+     * newer `created_at`, or the same one and a lower id): STORE-W01/W02. `replaced:`,
+     * so a relay answers `OK false` — NIP-01's third `OK` field is `true` when the event
+     * was ACCEPTED, and a stale version is not written, nothing a later REQ could
+     * return. Same answer as strfry (`false, "replaced: have newer event"`) and as
+     * Quartz's SQLite store.
+     *
+     * NOT Quartz's deprecated `SUPERSEDED` ("duplicate: a newer version …"), which its
+     * `RelaySession` acks `OK true`. Quartz 28bf170f92 answered with it to stop MDK's
+     * `wn` retrying a same-second KeyPackage; this store never followed, and amethyst
+     * #4222 (ec16988e3a) reverted it upstream, so the two agree again. A byte-for-byte
+     * re-offer is still [DUPLICATE] (`OK true`), caught by the id check first.
+     */
     const val REPLACED = RejectionReason.REPLACED
     const val INSERT_FAILED = RejectionReason.INSERT_FAILED
 

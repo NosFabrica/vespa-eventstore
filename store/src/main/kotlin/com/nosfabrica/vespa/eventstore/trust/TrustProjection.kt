@@ -35,7 +35,7 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.vitorpamplona.quartz.nip01Core.core.isAddressable
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
-import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 
 /**
  * Maintains the `reputation` parent documents (per-pubkey trust tensors the
@@ -234,7 +234,7 @@ class TrustProjection(
         // not where [fresh] is judged: a list that loses supersession queues
         // nothing, and releasing its services' skips then would lose them.
         recompute.walkQueued(fresh)
-        val cards = docs.filter { it.kind == ContactCardEvent.KIND }
+        val cards = docs.filter { it.kind == UserAssertionEvent.KIND }
         if (cards.isEmpty()) return ProjectionWork(emptySet(), fresh)
         val retracted = recompute.applyCards(cards, recompute.providerMap())
         return ProjectionWork(retracted, fresh)
@@ -353,7 +353,7 @@ class TrustProjection(
         if (docs.any { it.kind == TrustProviderListEvent.KIND }) recompute.invalidateProviders()
         val removals =
             docs
-                .filter { it.kind == ContactCardEvent.KIND }
+                .filter { it.kind == UserAssertionEvent.KIND }
                 .mapNotNull { doc -> subjectOf(doc)?.let { CellRemoval(it, ServiceKey(doc.pubkey), influence = true, followers = true) } }
         if (removals.isNotEmpty()) IngestStats.timed("proj.write") { reputations.removeCells(removals) }
         return ProjectionWork.NONE
@@ -362,7 +362,7 @@ class TrustProjection(
     /** Crash insurance for ONE doc's write: a card its subject (re-derived exactly if the cell write is lost), a 10040 nothing — its walk is declared as work, not insured. */
     private fun insuranceFor(doc: EventDoc): ProjectionWork =
         when (doc.kind) {
-            ContactCardEvent.KIND -> ProjectionWork(setOfNotNull(subjectOf(doc)), emptySet())
+            UserAssertionEvent.KIND -> ProjectionWork(setOfNotNull(subjectOf(doc)), emptySet())
             else -> ProjectionWork.NONE
         }
 
@@ -375,10 +375,10 @@ class TrustProjection(
      */
     private fun insuranceForPuts(docs: List<EventDoc>): ProjectionWork {
         val subjects = LinkedHashSet<String>()
-        for (doc in docs) if (doc.kind == ContactCardEvent.KIND) subjectOf(doc)?.let(subjects::add)
+        for (doc in docs) if (doc.kind == UserAssertionEvent.KIND) subjectOf(doc)?.let(subjects::add)
         val services = LinkedHashSet<String>()
         if (subjects.size > DIRT_SUBJECT_CAP) {
-            docs.forEach { if (it.kind == ContactCardEvent.KIND) services += it.pubkey }
+            docs.forEach { if (it.kind == UserAssertionEvent.KIND) services += it.pubkey }
             subjects.clear()
         }
         return ProjectionWork(subjects, services)
@@ -387,13 +387,13 @@ class TrustProjection(
     /** What a REMOVE of [docs] insures: card subjects exactly — a lost cell remove is repaired by the exact derive, which also drops an emptied parent. */
     private fun insuranceForRemovals(docs: List<EventDoc>): ProjectionWork {
         val subjects = LinkedHashSet<String>()
-        for (doc in docs) if (doc.kind == ContactCardEvent.KIND) subjectOf(doc)?.let(subjects::add)
+        for (doc in docs) if (doc.kind == UserAssertionEvent.KIND) subjectOf(doc)?.let(subjects::add)
         return ProjectionWork(subjects, emptySet())
     }
 
     internal companion object {
         /** The only kinds whose write or removal can touch the projection — what the store's trust gate is taken for. */
-        val TRUST_KINDS = listOf(ContactCardEvent.KIND, TrustProviderListEvent.KIND)
+        val TRUST_KINDS = listOf(UserAssertionEvent.KIND, TrustProviderListEvent.KIND)
 
         /** Ids per removeAll read-back query — round-trip width, not a result cap. */
         const val REMOVE_CHUNK = 500

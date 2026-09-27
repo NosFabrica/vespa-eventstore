@@ -62,10 +62,10 @@ import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import com.vitorpamplona.quartz.nip01Core.store.StoreQueryContext
 import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
-import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
+import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
-import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import com.vitorpamplona.quartz.utils.Hex
 import kotlinx.coroutines.sync.Mutex
 import kotlin.coroutines.coroutineContext
@@ -78,7 +78,8 @@ import kotlin.coroutines.coroutineContext
  *
  * [EventAdmission] enforces the Nostr write rules: dedup ("duplicate:"),
  * replaceable/addressable supersession with the NIP-01 tiebreak — same
- * created_at, LOWEST id wins — ("replaced:"), NIP-09 deletions and NIP-62
+ * created_at, LOWEST id wins — ("replaced:", answered `OK false`: a stale
+ * version is not stored, see Rejections.REPLACED), NIP-09 deletions and NIP-62
  * vanishes ("blocked:", enforcement in [Deletions], keyed on the event's
  * OWNER — the gift-wrap recipient for kind 1059, else the author),
  * already-expired events rejected and due expirations swept (NIP-40), and
@@ -309,9 +310,9 @@ class NostrSemanticsStore(
      * relay is asked to store.
      */
     private fun touchesTrust(event: Event): Boolean =
-        event.kind == ContactCardEvent.KIND ||
+        event.kind == UserAssertionEvent.KIND ||
             event.kind == TrustProviderListEvent.KIND ||
-            event is DeletionEvent ||
+            event is DeletionRequestEvent ||
             event is RequestToVanishEvent
 
     private suspend fun <T> lockedForWrite(
@@ -399,7 +400,7 @@ class NostrSemanticsStore(
 
     /** [batchInsert]'s body; split because `withActivity` cannot express a non-local return. */
     private suspend fun batchInsertUnder(events: List<Event>): List<IEventStore.InsertOutcome> {
-        if (events.any { it is DeletionEvent || it is RequestToVanishEvent }) {
+        if (events.any { it is DeletionRequestEvent || it is RequestToVanishEvent }) {
             return lockedForBatch(events) { if (events.size < BULK_MIN) events.map { admission.tryAdmit(it) } else bulkMixed.run(events) }
         }
         // Bulk-or-loop is decided on the batch the CALLER sent, not on a

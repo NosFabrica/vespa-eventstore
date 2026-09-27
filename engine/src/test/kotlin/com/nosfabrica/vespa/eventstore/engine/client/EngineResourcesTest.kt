@@ -20,8 +20,10 @@
  */
 package com.nosfabrica.vespa.eventstore.engine.client
 
+import kotlin.coroutines.Continuation
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
@@ -64,8 +66,11 @@ class EngineResourcesTest {
      */
     @Test
     fun `the index exposes headroom rather than orphaning the probe`() {
-        val onIndex = VespaEventIndex::class.members.map { it.name }
-        assertTrue("engineHeadroom" in onIndex, "the probe must be reachable from the index, not dead code beside it: $onIndex")
+        // A MEMBER, looked up on the class: an extension of the same name would compile to a
+        // static elsewhere and fail this. Java reflection because kotlin-reflect left the
+        // classpath with Quartz's jackson-module-kotlin (28bf170f92); a suspend fun is a
+        // JVM method taking the Continuation.
+        assertNotNull(VespaEventIndex::class.java.getMethod("engineHeadroom", Continuation::class.java), "the probe must be reachable from the index, not dead code beside it")
     }
 
     /** The state the panel exists to make visible: feed blocked on ONE node blocks the cluster. */

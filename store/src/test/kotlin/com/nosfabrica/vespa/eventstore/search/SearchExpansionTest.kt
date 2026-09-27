@@ -641,6 +641,28 @@ class SearchExpansionTest {
             assertEquals(listOf(pack.id, profile.id), page(search("podcaster", listOf(0, 39089))))
         }
 
+    /**
+     * 39092 is the media-client twin of 39089 — same `p` members, same gate. It was
+     * searchable and ranked all along but missing from PEOPLE_LISTS, so a reader's own
+     * pack surfaced as a hit and spliced nobody.
+     */
+    @Test
+    fun `a media follow pack converts to profiles like a follow pack, and only the reader's own`() =
+        runBlocking {
+            store.insert(profile)
+            val mine = event(39092, arrayOf(arrayOf("d", "pack"), arrayOf("title", "Podcaster Media Pack"), arrayOf("p", subject)), author = reader)
+            val theirs = event(39092, arrayOf(arrayOf("d", "theirs"), arrayOf("title", "Podcaster Media Pack"), arrayOf("p", subject)), author = stranger)
+            store.insert(mine)
+            store.insert(theirs)
+
+            assertEquals(
+                listOf(theirs.id, mine.id, profile.id),
+                page(search("podcaster", listOf(0, 39092))),
+                "the reader's own pack splices its members; the stranger's is an ordinary hit",
+            )
+            assertEquals(listOf(profile.id), page(search("podcaster", listOf(0))), "and on the People tab only the person comes back")
+        }
+
     @Test
     fun `the per-author cap thins a ranked page and never a recency one`() =
         runBlocking {

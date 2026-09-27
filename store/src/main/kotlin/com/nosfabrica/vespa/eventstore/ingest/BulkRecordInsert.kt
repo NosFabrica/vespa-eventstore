@@ -40,7 +40,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.owner
 import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
-import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
+import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
 import com.vitorpamplona.quartz.nip40Expiration.isExpired
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 
@@ -394,10 +394,10 @@ internal class BulkRecordInsert(
                 val rows = chunk.flatMap { it.value }
                 buildList {
                     rows.map { events[it].id }.chunked(CHECK_CHUNK).forEach {
-                        add(EventQuery(kinds = listOf(DeletionEvent.KIND), authors = authors, tags = mapOf("e" to it)))
+                        add(EventQuery(kinds = listOf(DeletionRequestEvent.KIND), authors = authors, tags = mapOf("e" to it)))
                     }
                     rows.mapNotNull { events[it].addressOrNull() }.distinct().chunked(CHECK_CHUNK).forEach {
-                        add(EventQuery(kinds = listOf(DeletionEvent.KIND), authors = authors, tags = mapOf("a" to it)))
+                        add(EventQuery(kinds = listOf(DeletionRequestEvent.KIND), authors = authors, tags = mapOf("a" to it)))
                     }
                 }
             }
