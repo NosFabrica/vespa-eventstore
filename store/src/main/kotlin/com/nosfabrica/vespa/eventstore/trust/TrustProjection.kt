@@ -76,6 +76,12 @@ class TrustProjection(
 
     override suspend fun search(query: EventQuery): List<EventDoc> = inner.search(query)
 
+    override suspend fun searchInDOrder(
+        query: EventQuery,
+        after: String,
+        limit: Int,
+    ): List<EventDoc>? = inner.searchInDOrder(query, after, limit)
+
     override suspend fun existingIds(ids: List<String>): Set<String> = inner.existingIds(ids)
 
     // MUST delegate, not ride the interface default, which would route through

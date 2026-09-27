@@ -57,6 +57,13 @@ class SqlConformanceTest {
         var distinctTags = 0
         var walks = 0
         var searches = 0
+        var inDOrder = 0
+
+        override suspend fun searchInDOrder(
+            query: EventQuery,
+            after: String,
+            limit: Int,
+        ) = inner.searchInDOrder(query, after, limit).also { inDOrder++ }
 
         override suspend fun search(query: EventQuery) = inner.search(query).also { searches++ }
 
@@ -79,6 +86,10 @@ class SqlConformanceTest {
     private val spy = Spy(InMemoryEventIndex())
     private val vespa = NostrSemanticsStore(spy, relay = "wss://sot.test/".normalizeRelayUrl(), nowSecs = { 2_000_000_000L })
     private val reference = EventStore(dbName = null, relay = null)
+
+    /** The same store reading addressable events in `d` order off `d_tag` (dOrderedReads). */
+    private val dSpy = Spy(InMemoryEventIndex())
+    private val vespaD = NostrSemanticsStore(dSpy, relay = "wss://sot.test/".normalizeRelayUrl(), nowSecs = { 2_000_000_000L }, dOrderedReads = true)
 
     private val authors = List(6) { "a$it".repeat(32) }
     private var seq = 0
@@ -132,6 +143,7 @@ class SqlConformanceTest {
             events.forEach {
                 vespa.insert(it)
                 reference.insert(it)
+                vespaD.insert(it)
             }
         }
     }
@@ -140,6 +152,7 @@ class SqlConformanceTest {
     fun close() {
         reference.close()
         vespa.close()
+        vespaD.close()
     }
 
     private fun run(
@@ -159,6 +172,62 @@ class SqlConformanceTest {
         val actual = run(vespa, sql, params.toList())
         assertEquals(expected, actual, sql)
         assertTrue(expected.second.isNotEmpty(), "vacuous: $sql")
+    }
+
+    /**
+     * NQL keyset pages by `events.d`, read off `d_tag` in byte order: every page, in
+     * order, is the reference's, and the engine's d-ordered read is what served them.
+     */
+    @Test
+    fun dOrderedPagesMatchTheReference() {
+        // More cards than one read's batch (100), so the engine's order decides
+        // which reach a page: mixed case, non-ASCII and emoji (byte order is not
+        // UTF-16 or collation order), and two authors per `d` (ties at a boundary).
+        val r = Random(11)
+        val shapes = listOf("B", "b", "Z", "a", "\u00e9", "\uD83D\uDC9C", "\uFB01")
+        runBlocking {
+            repeat(250) { i ->
+                val d = shapes[i % shapes.size] + (i / 2)
+                val card = event(authors[i % 2], 3_000L + i, 30382, arrayOf(arrayOf("d", d), arrayOf("rank", r.nextInt(100).toString())))
+                reference.insert(card)
+                vespaD.insert(card)
+            }
+            // A full batch on one page, split by where code point and UTF-16 order
+            // disagree: U+FB01 sorts before an emoji by code point, after it in UTF-16.
+            repeat(150) { i ->
+                val d = (if (i < 100) "\uFB01" else "\uD83D\uDC9C") + i.toString().padStart(3, '0')
+                val card = event(authors[2], 4_000L + i, 30384, arrayOf(arrayOf("d", d)))
+                reference.insert(card)
+                vespaD.insert(card)
+            }
+        }
+        val pages =
+            listOf(
+                "SELECT e.d AS target FROM events AS e WHERE e.kind = 30384 AND e.d > ? ORDER BY target LIMIT 100",
+                "SELECT e.d AS target, e.id, CAST(r.t1 AS INTEGER) AS rank FROM events AS e JOIN tags AS r ON r.event_id = e.id AND r.t0 = 'rank' " +
+                    "WHERE e.kind = 30382 AND e.d > ? ORDER BY target, e.id LIMIT 7",
+                "SELECT e.d AS target FROM events AS e JOIN tags AS r ON r.event_id = e.id AND r.t0 = 'rank' " +
+                    "WHERE e.kind = 30382 AND e.d > ? AND CAST(r.t1 AS INTEGER) > 60 ORDER BY target, e.id LIMIT 5",
+                "SELECT e.d AS target, e.id FROM events AS e WHERE e.kind = 30166 AND e.d > ? ORDER BY target, e.id LIMIT 2",
+                "SELECT e.d AS target, l.t1 AS label, l.t2 AS ns FROM events AS e JOIN tags AS l ON l.event_id = e.id AND l.t0 = 'l' " +
+                    "WHERE e.kind = 30166 AND e.d > ? ORDER BY target LIMIT 3",
+                "SELECT e.d AS target FROM events AS e JOIN tags AS l ON l.event_id = e.id AND l.t0 = 'l' " +
+                    "WHERE e.kind = 30166 AND e.pubkey = ? AND e.d > ? AND l.t1 = 'dead' ORDER BY target LIMIT 1",
+            )
+        for (q in pages) {
+            var after = ""
+            var walked = 0
+            while (true) {
+                val params = if (q.contains("e.pubkey = ?")) listOf(authors[0], after) else listOf(after)
+                val expected = runBlocking { reference.nql(q, params) }.rows
+                assertEquals(expected, runBlocking { vespaD.nql(q, params) }.rows, "$q after '$after'")
+                if (expected.isEmpty()) break
+                walked += expected.size
+                after = expected.last()[0] as String
+            }
+            assertTrue(walked > 0, "vacuous: $q")
+        }
+        assertTrue(dSpy.inDOrder > 0, "the d-ordered read should serve these pages")
     }
 
     @Test

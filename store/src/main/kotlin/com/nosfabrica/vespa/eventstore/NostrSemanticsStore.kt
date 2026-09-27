@@ -165,6 +165,15 @@ class NostrSemanticsStore(
      * [index], which `VespaEventStore.open` installs.
      */
     val metrics: CostLedger = CostLedger(),
+    /**
+     * Let NQL page addressable events by `d` off the engine's `d_tag`
+     * attribute ([VespaSqlBackend.eventsInDOrder]): one sorted read per page
+     * instead of a walk of every match. OFF BY DEFAULT because a document fed
+     * before the schema had `d_tag` lacks it and such a read would skip it:
+     * turn it on for a corpus fed entirely by a build that writes `d_tag` (a
+     * fresh cluster, or after a re-feed).
+     */
+    private val dOrderedReads: Boolean = false,
 ) : IEventStore {
     /** The two writer mutexes and their wait/hold accounting — see [WriteLocks]. */
     private val locks = WriteLocks()
@@ -520,7 +529,7 @@ class NostrSemanticsStore(
      */
     internal fun plainQuery(filter: Filter): EventQuery? = filter.toExpiryQuery(nowSecs())
 
-    private val sqlBackend by lazy { VespaSqlBackend(this, index) }
+    private val sqlBackend by lazy { VespaSqlBackend(this, index, dOrderedReads) }
 
     /** Quartz's SQL profile, answered through engine reads; see [VespaSqlBackend]. */
     override fun sqlBackend(): SqlStoreBackend = sqlBackend

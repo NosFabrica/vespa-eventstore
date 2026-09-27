@@ -59,6 +59,8 @@ import com.vitorpamplona.quartz.nipXXSql.SqlStoreBackend
 internal class VespaSqlBackend(
     private val store: NostrSemanticsStore,
     private val index: EventIndex,
+    /** Whether every document carries `d_tag`; see NostrSemanticsStore's `dOrderedReads`. */
+    private val dOrderedReads: Boolean = false,
 ) : SqlStoreBackend {
     override suspend fun events(
         spec: ScanSpec,
@@ -93,6 +95,24 @@ internal class VespaSqlBackend(
             }
             true
         }
+
+    /**
+     * A page of addressable events in `d` order (NQL's `… AND e.d > ? ORDER BY
+     * e.d LIMIT n`): one sorted engine read of `d_tag`, where a scan would walk
+     * every match of the spec for each page.
+     */
+    override suspend fun eventsInDOrder(
+        spec: ScanSpec,
+        limit: Int,
+        onEvent: (Event) -> Unit,
+    ): Boolean {
+        if (!dOrderedReads) return false
+        val after = spec.dAfter ?: return false
+        val q = store.plainQuery(spec.toFilter()) ?: return true
+        val docs = withActivity(Activity.Query) { index.searchInDOrder(q.copy(limit = null), after, limit) } ?: return false
+        docs.forEach { onEvent(it.toEvent()) }
+        return true
+    }
 
     override fun acceptsScan(spec: ScanSpec) = spec.isSelective
 

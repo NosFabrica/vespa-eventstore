@@ -329,6 +329,8 @@ class VespaEventStore internal constructor(
              * where they are captured.
              */
             slowQueryThresholdMillis: Long? = null,
+            /** See [NostrSemanticsStore]'s `dOrderedReads`: only for a corpus fed entirely with `d_tag`. */
+            dOrderedReads: Boolean = false,
         ): VespaEventStore {
             if (autoDeploy) SchemaDeployer(configUrl).deployIfAbsent(url)
             val ledger = CostLedger(slowQueryThresholdNanos = slowQueryThresholdMillis?.let { it * 1_000_000 })
@@ -352,6 +354,7 @@ class VespaEventStore internal constructor(
                     searchExpansion = searchExpansion,
                     maxHitsPerAuthor = maxHitsPerAuthor,
                     metrics = ledger,
+                    dOrderedReads = dOrderedReads,
                 )
             // GAUGES: instantaneous, pulled at snapshot time, and read from
             // their owners rather than mirrored — a queue depth has no

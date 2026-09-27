@@ -85,27 +85,45 @@ class Nip85WalkIT {
                     val page =
                         "SELECT e.d AS target, CAST(r.t1 AS INTEGER) AS rank FROM events AS e JOIN tags AS r ON r.event_id = e.id AND r.t0 = 'rank' " +
                             "WHERE e.kind = 30382 AND e.pubkey = ? AND e.d > ? ORDER BY target LIMIT 1000"
-                    var rows = 0
-                    var pages = 0
-                    var first = 0L
-                    val walk =
-                        ms {
-                            var last = ""
-                            while (true) {
-                                var got = 0
-                                val t =
-                                    ms {
-                                        val r = runBlocking { store.nql(page, listOf(svc, last)) }
-                                        got = r.rows.size
-                                        if (got > 0) last = r.rows.last()[0] as String
-                                    }
-                                if (pages == 0) first = t
-                                if (got == 0) break
-                                rows += got
-                                pages++
+                    val pageTimes = ArrayList<Long>()
+                    // The quadratic walk (every page re-reads every card) only for its first pages past this size.
+                    val oldPages = System.getenv("NIP85_OLD_PAGES")?.toIntOrNull() ?: Int.MAX_VALUE
+
+                    fun walk(
+                        s: VespaEventStore,
+                        maxPages: Int,
+                    ): Triple<List<List<Any?>>, Long, Long> {
+                        val rows = ArrayList<List<Any?>>()
+                        pageTimes.clear()
+                        var pages = 0
+                        var first = 0L
+                        val total =
+                            ms {
+                                var last = ""
+                                while (pages < maxPages) {
+                                    var got: List<List<Any?>> = emptyList()
+                                    val t = ms { got = runBlocking { s.nql(page, listOf(svc, last)) }.rows }
+                                    if (pages == 0) first = t
+                                    pageTimes += t
+                                    if (got.isEmpty()) break
+                                    rows.addAll(got)
+                                    last = got.last()[0] as String
+                                    pages++
+                                }
                             }
-                        }
-                    println("NIP85V nql by d: $rows rows, $pages pages, $walk ms (first page $first ms)")
+                        return Triple(rows, total, first)
+                    }
+                    val (oldRows, oldMs, oldFirst) = walk(store, oldPages)
+                    println("NIP85V nql by d (scan): ${oldRows.size} rows, ${oldRows.size / 1000} pages, $oldMs ms (first page $oldFirst ms)")
+                    VespaEventStore.open(url = queryUrl, autoDeploy = false, configUrl = configUrl, dOrderedReads = true).use { ordered ->
+                        val (newRows, newMs, newFirst) = walk(ordered, Int.MAX_VALUE)
+                        println("NIP85V nql by d (d_tag): ${newRows.size} rows, ${newRows.size / 1000} pages, $newMs ms (first page $newFirst ms)")
+                        // Page cost along the walk: flat if a page costs a page, falling if it costs what is left.
+                        val tenths = pageTimes.chunked(maxOf(1, pageTimes.size / 10)).map { it.average().toLong() }
+                        println("NIP85V   ms per page, by tenth of the walk: $tenths")
+                        check(newRows.take(oldRows.size) == oldRows) { "the d_tag walk must page exactly as the scan does" }
+                        check(newRows.size == n) { "the d_tag walk must reach every card: ${newRows.size} of $n" }
+                    }
 
                     val all =
                         "SELECT e.d AS target, CAST(r.t1 AS INTEGER) AS rank FROM events AS e JOIN tags AS r ON r.event_id = e.id AND r.t0 = 'rank' " +

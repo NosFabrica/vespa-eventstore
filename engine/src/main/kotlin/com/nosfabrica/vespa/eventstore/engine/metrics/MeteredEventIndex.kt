@@ -198,6 +198,12 @@ class MeteredEventIndex(
 
     override suspend fun search(query: EventQuery): List<EventDoc> = meterQuery(PortCall.Search, query, { inner.search(query) }, { it.size.toLong() })
 
+    override suspend fun searchInDOrder(
+        query: EventQuery,
+        after: String,
+        limit: Int,
+    ): List<EventDoc>? = meterQuery(PortCall.Search, query, { inner.searchInDOrder(query, after, limit) }, { it?.size?.toLong() ?: 0L })
+
     override suspend fun rawSearch(query: EventQuery): List<RawEvent> = meterQuery(PortCall.Search, query, { inner.rawSearch(query) }, { it.size.toLong() })
 
     override suspend fun searchRanked(query: EventQuery): List<Ranked<EventDoc>> = meterQuery(PortCall.Search, query, { inner.searchRanked(query) }, { it.size.toLong() })

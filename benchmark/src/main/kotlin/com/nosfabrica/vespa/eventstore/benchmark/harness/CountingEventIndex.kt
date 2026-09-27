@@ -126,6 +126,15 @@ class CountingEventIndex(
         return inner.search(query)
     }
 
+    override suspend fun searchInDOrder(
+        query: EventQuery,
+        after: String,
+        limit: Int,
+    ): List<EventDoc>? {
+        searches.incrementAndGet()
+        return inner.searchInDOrder(query, after, limit)
+    }
+
     // Counted as the search it is, and DELEGATED: riding the default would
     // route through search() above — same count, but null scores, so a
     // benchmark of a multi-filter REQ would measure the recency merge instead

@@ -92,6 +92,21 @@ schema event {
         # Exact event content — reconstruction only. Search never runs against
         # raw content; searchable kinds contribute curated text to the fields
         # below instead (a kind-0's content is a JSON blob).
+        # NIP-FF (NQL) `events.d`: an addressable event's first `d` value, fed
+        # only for kinds 30000..39999 with a non-empty one (an absent attribute
+        # is what '' and "no d" both mean, and `d > x` never matches either).
+        # CASED, so `range` compares bytes and `order by {"function":"raw"}`
+        # sorts in UTF-8 byte (= code point) order, NQL's text order. Measured
+        # on Vespa 8: string `>` is refused by YQL, `range` is not.
+        # Existing corpora need a RE-FEED before reads may rely on it: see
+        # NostrSemanticsStore's `dOrderedReads`.
+        field d_tag type string {
+            indexing: attribute
+            attribute: fast-search
+            match: cased
+            rank: filter
+        }
+
         field content type string {
             indexing: summary
         }

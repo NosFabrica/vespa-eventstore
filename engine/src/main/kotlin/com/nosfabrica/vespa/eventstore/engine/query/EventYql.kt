@@ -556,6 +556,39 @@ object EventYql {
     }
 
     /**
+     * NIP-FF's keyset read by `d`: [q]'s filters, `d_tag > after` (a left-open
+     * `range`, since YQL refuses `>` on strings; the upper bound is U+10FFFF),
+     * `order by` the raw bytes of `d_tag`, first [limit]. UNRANKED with the
+     * sorting degrader OFF, like the id walk ([buildIdTime]): an attribute sort
+     * turns the degrader on, and a cut page here would skip events silently —
+     * searchRoot refuses any degraded unranked answer. Null when [q] can match
+     * nothing.
+     */
+    fun buildInDOrder(
+        q: EventQuery,
+        after: String,
+        limit: Int,
+    ): VespaQuery? {
+        if (limit <= 0) return null
+        val params = LinkedHashMap<String, String>()
+        val clauses = filterClauses(q, params) ?: return null
+        val d = "({bounds:\"leftOpen\"}range(d_tag, ${quote(after)}, \"\\uDBFF\\uDFFF\"))"
+        params[MATCH_THREADS] = SINGLE_MATCH_THREAD
+        params[SORT_DEGRADING] = SORT_DEGRADING_OFF
+        return VespaQuery(
+            yql = "select $SUMMARY_FIELDS from event where ${whereOf(clauses + d)} order by {\"function\":\"raw\"}d_tag asc limit $limit",
+            params = params,
+            ranking = RANK_UNRANKED,
+            complete = q.complete,
+            sampled = q.sampled,
+            shape = clauseShape(q),
+        )
+    }
+
+    /** Whether [s] can ride in a YQL string literal ([quote]): no control characters but whitespace. */
+    fun canQuote(s: String): Boolean = isQuotable(s)
+
+    /**
      * An EXACT-count query: same filters, a grouping `count()`, NO `order by` —
      * attribute sorting trips Vespa's match-phase on a large corpus and caps
      * `totalCount` (10x+ undercount; the mechanism is the sorting degrader,

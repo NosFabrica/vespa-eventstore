@@ -5,7 +5,17 @@ app = "1.0.1"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"
 # Quartz from JitPack (amethyst @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
-# 25e949d07d = amethyst branch claude/nostr-relay-sql-cursor-0615uh @ 2026-09-26:
+# 2b987a06cc = amethyst branch claude/nostr-relay-sql-cursor-0615uh @ 2026-09-27:
+# NQL keyset pages by `events.d` read in `d` order. For this store:
+#   `SqlStoreBackend.eventsInDOrder` (default off) is answered off the new `d_tag`
+#     attribute when `dOrderedReads` is on: one sorted read per page instead of a
+#     walk of every match. `ScanSpec.dAfter` carries the `d > ?` bound.
+#   A `tags` source joined by `event_id` to loaded events reads their tags; no
+#     second fetch by id.
+#   Measured here (Nip85WalkIT, real Vespa): 20k cards, 20 pages 42.6 s -> 1.4 s;
+#   300k cards, 300 pages in 41.5 s, where the old walk never finished.
+#
+# Prev 25e949d07d = amethyst branch claude/nostr-relay-sql-cursor-0615uh @ 2026-09-26:
 # NIP-FF gained `events.d` (an addressable event's first `d` value, '' without
 # one, NULL for other kinds). For this store: the interpreter computes `d` from
 # each event, and pushes `d = …` / `d IN (…)` down as a `#d` filter (a superset,
@@ -102,7 +112,7 @@ mavenPublish = "0.37.0"
 #
 # Prev cecc3287b2 (2026-09-01: 17 catch-all kinds split into title/body roles, four
 # affiliation URLs, six doubled `t`-tag scans dropped; a ranking backfill).
-quartz = "25e949d07d"
+quartz = "2b987a06cc"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 sqlite = "2.7.0"

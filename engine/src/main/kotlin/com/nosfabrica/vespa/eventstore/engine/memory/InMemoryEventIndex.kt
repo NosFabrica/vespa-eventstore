@@ -178,6 +178,34 @@ class InMemoryEventIndex(
         return query.limit?.let(hits::take) ?: hits
     }
 
+    override suspend fun searchInDOrder(
+        query: EventQuery,
+        after: String,
+        limit: Int,
+    ): List<EventDoc> {
+        if (limit <= 0) return emptyList()
+        val c = Compiled(query.copy(limit = null))
+        val floor = after.encodeToByteArray()
+        return docs.values
+            .mapNotNull { d -> d.dTagAttribute?.let { it.encodeToByteArray() to d } }
+            .filter { (key, d) -> compareBytes(key, floor) > 0 && c.matches(d) }
+            .sortedWith { a, b -> compareBytes(a.first, b.first) }
+            .take(limit)
+            .map { it.second }
+    }
+
+    /** Unsigned lexicographic byte order: UTF-8 bytes compare as code points do. */
+    private fun compareBytes(
+        a: ByteArray,
+        b: ByteArray,
+    ): Int {
+        for (i in 0 until minOf(a.size, b.size)) {
+            val c = (a[i].toInt() and 0xff) - (b[i].toInt() and 0xff)
+            if (c != 0) return c
+        }
+        return a.size - b.size
+    }
+
     override suspend fun count(query: EventQuery): Int {
         // Sentinel as in EventYql.grouping: limit <= 0 matches nothing; a
         // positive limit is about hits, not the count, and is ignored.

@@ -85,6 +85,20 @@ internal class SchemaFallbacks {
         nearFieldsAvailable = false
     }
 
+    /** The serving schema has `d_tag` (NIP-FF's `events.d`); false once it proves it doesn't. */
+    @Volatile var dTagAvailable = true
+        private set
+
+    fun markDTagMissing() {
+        dTagAvailable = false
+    }
+
+    /** A feed refused for naming `d_tag`: a schema predating it. */
+    fun isMissingDTagField(message: String?): Boolean = message != null && message.contains("400") && message.contains(NOT_IN_DOCUMENT_TYPE) && message.contains("d_tag")
+
+    /** A read refused for naming `d_tag`: the YQL parser's wording for the same gap. */
+    fun isMissingDTagOnRead(message: String?): Boolean = message != null && message.contains("d_tag") && message.contains("does not exist")
+
     /**
      * Whether this failure is a schema predating the near columns REFUSING A
      * FEED. Not the read side's predicate: the YQL parser says `Field 'x' does

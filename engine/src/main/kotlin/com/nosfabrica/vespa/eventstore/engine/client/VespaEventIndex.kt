@@ -194,7 +194,7 @@ class VespaEventIndex(
     private fun putOp(doc: EventDoc) =
         feed.client.put(
             DocumentId.of(EVENT_NAMESPACE, EVENT_DOCTYPE, docIdOf(doc)),
-            buildJsonObject { put("fields", doc.indexFields(includeNear = fallbacks.nearFieldsAvailable)) }.toString(),
+            buildJsonObject { put("fields", doc.indexFields(includeNear = fallbacks.nearFieldsAvailable, includeDTag = fallbacks.dTagAvailable)) }.toString(),
             feedParams(),
         )
 
@@ -222,21 +222,30 @@ class VespaEventIndex(
         docs: List<EventDoc>,
         ops: List<CompletableFuture<Result>>,
     ) {
-        var refused: Throwable? = null
-        for (op in ops) {
-            try {
-                op.await()
-            } catch (e: Throwable) {
-                // Await the rest before reacting: they are already in flight,
-                // and leaving futures unawaited would surface later as
-                // unhandled completions on an unrelated call.
-                if (!fallbacks.isMissingNearField(e.message)) throw e
-                refused = e
+        // One pass per column a schema may lack (near, d_tag), then a final
+        // one that must succeed: each refusal names one field.
+        var pending = ops
+        repeat(2) {
+            var refused = false
+            for (op in pending) {
+                try {
+                    op.await()
+                } catch (e: Throwable) {
+                    // Await the rest before reacting: they are already in flight,
+                    // and leaving futures unawaited would surface later as
+                    // unhandled completions on an unrelated call.
+                    when {
+                        fallbacks.isMissingNearField(e.message) -> fallbacks.markNearFieldsMissing()
+                        fallbacks.isMissingDTagField(e.message) -> fallbacks.markDTagMissing()
+                        else -> throw e
+                    }
+                    refused = true
+                }
             }
+            if (!refused) return
+            pending = docs.map { putOp(it) }
         }
-        if (refused == null) return
-        fallbacks.markNearFieldsMissing()
-        docs.map { putOp(it) }.forEach { it.await() }
+        pending.forEach { it.await() }
     }
 
     private fun removeOp(id: String) = feed.client.remove(DocumentId.of(EVENT_NAMESPACE, EVENT_DOCTYPE, id), feedParams())
@@ -284,7 +293,7 @@ class VespaEventIndex(
             feed.client
                 .put(
                     DocumentId.of(EVENT_NAMESPACE, EVENT_DOCTYPE, address),
-                    buildJsonObject { put("fields", doc.indexFields(includeNear = fallbacks.nearFieldsAvailable)) }.toString(),
+                    buildJsonObject { put("fields", doc.indexFields(includeNear = fallbacks.nearFieldsAvailable, includeDTag = fallbacks.dTagAvailable)) }.toString(),
                     feedParams().createIfNonExistent(true).testAndSetCondition(condition),
                 ).await()
         val result =
@@ -358,6 +367,27 @@ class VespaEventIndex(
                 return super.existingIds(ids)
             }
         return root.children.mapNotNullTo(HashSet()) { hit -> hit.fields?.id?.takeIf { it.isNotEmpty() } }
+    }
+
+    override suspend fun searchInDOrder(
+        query: EventQuery,
+        after: String,
+        limit: Int,
+    ): List<EventDoc>? {
+        if (!fallbacks.dTagAvailable || !EventYql.canQuote(after)) return null
+        val vq = EventYql.buildInDOrder(query, after, limit) ?: return emptyList()
+        val root =
+            try {
+                searchRoot(vq, hits = limit)
+            } catch (e: Exception) {
+                if (!fallbacks.isMissingDTagOnRead(e.message)) throw e
+                fallbacks.markDTagMissing()
+                return null
+            }
+        return root.children
+            .mapNotNull { it.fields }
+            .filter { it.id.isNotEmpty() }
+            .mapNotNull { it.toDoc() }
     }
 
     override suspend fun search(query: EventQuery): List<EventDoc> {

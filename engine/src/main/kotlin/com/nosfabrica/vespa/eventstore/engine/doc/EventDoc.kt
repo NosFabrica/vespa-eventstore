@@ -118,6 +118,13 @@ data class EventDoc(
         }
 
     /**
+     * The `d_tag` attribute: NIP-FF's `events.d` for an addressable event (its
+     * first `d` value), null for other kinds and for '' (an absent attribute).
+     */
+    val dTagAttribute: String?
+        get() = if (kind.isAddressable()) dTag() else null
+
+    /**
      * The document's field map — one shape for both feeding and summary parsing
      * ([fromSummary]).
      *
@@ -128,7 +135,10 @@ data class EventDoc(
      * of SchemaFallbacks' read-side demotion). reindexFullTextSearch repairs
      * docs written that way — an omitted column reads back as drift.
      */
-    fun indexFields(includeNear: Boolean = true): JsonObject =
+    fun indexFields(
+        includeNear: Boolean = true,
+        includeDTag: Boolean = true,
+    ): JsonObject =
         buildJsonObject {
             put("id", id)
             put("pubkey", pubkey)
@@ -138,6 +148,7 @@ data class EventDoc(
             put("tag_index", JsonArray(tagIndex().map(::JsonPrimitive)))
             put("content", content)
             put("sig", sig)
+            if (includeDTag) dTagAttribute?.let { put("d_tag", it) }
             put("owner", owner)
             // The author's ranking state (global reputation parent) — purely
             // pubkey-derived, so stamped here rather than by an extractor.

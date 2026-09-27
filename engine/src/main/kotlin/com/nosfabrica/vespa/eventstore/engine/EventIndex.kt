@@ -68,6 +68,18 @@ interface EventIndex : AutoCloseable {
     suspend fun search(query: EventQuery): List<EventDoc>
 
     /**
+     * NIP-FF's keyset read by `d`: the first [limit] docs matching [query] whose
+     * `d_tag` is greater than [after], in UTF-8 byte (code point) order of
+     * `d_tag`, ties in any order. Null when this index can't order by `d_tag`
+     * (a schema without it); the caller then scans.
+     */
+    suspend fun searchInDOrder(
+        query: EventQuery,
+        after: String,
+        limit: Int,
+    ): List<EventDoc>? = null
+
+    /**
      * Which of [ids] the index holds — the bulk-dedup EXISTENCE check, the
      * hottest read on a mirroring relay (~99% of offered ids already held).
      * Semantically `search(EventQuery(ids)).map { it.id }` — RAW presence, no
