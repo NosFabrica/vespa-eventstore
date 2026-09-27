@@ -75,17 +75,17 @@ internal class RecencyWindowMemory(
         val atMillis: Long,
     )
 
+    /**
+     * A shape, as a FIXED-SIZE digest: 128 bits of SHA-256 over the canonical
+     * shape. Holding the shape itself would hold its author list — a
+     * 1,000-author follow feed is ~100 KB of strings per entry, ~400 MB at
+     * [capacity] — for a table whose whole value is being cheap. A collision
+     * is harmless by the class's own argument: it can only hand a read the
+     * wrong starting guess, which costs a round trip, never a page.
+     */
     private data class Key(
-        val kinds: List<Int>,
-        val authors: List<String>,
-        val owners: List<String>,
-        val tags: Map<String, List<String>>,
-        val tagsAll: Map<String, List<String>>,
-        val notSearch: List<String>,
-        val gated: Boolean,
-        val rankKey: String?,
-        val minRank: Double?,
-        val ageBucket: Int,
+        val hi: Long,
+        val lo: Long,
     )
 
     // Access-ordered: the eldest entry is the least recently USED shape.
@@ -138,18 +138,27 @@ internal class RecencyWindowMemory(
         q: EventQuery,
         anchor: Long,
         now: Long,
-    ) = Key(
-        kinds = q.kinds.sorted(),
-        authors = q.authors.map { it.lowercase() }.sorted(),
-        owners = q.owners.map { it.lowercase() }.sorted(),
-        tags = q.tags.mapValues { (_, v) -> v.sorted() },
-        tagsAll = q.tagsAll.mapValues { (_, v) -> v.sorted() },
-        notSearch = q.notSearch.sorted(),
-        gated = q.usesGatedProfile(),
-        rankKey = if (q.usesGatedProfile()) q.rankKey else null,
-        minRank = if (q.usesGatedProfile()) q.minRank else null,
-        ageBucket = ageBucket(now - anchor),
-    )
+    ): Key {
+        val gated = q.usesGatedProfile()
+        val canonical =
+            buildString {
+                append("k=").append(q.kinds.sorted())
+                append("|a=").append(q.authors.map { it.lowercase() }.sorted())
+                append("|o=").append(q.owners.map { it.lowercase() }.sorted())
+                append("|t=").append(q.tags.toSortedMap().mapValues { (_, v) -> v.sorted() })
+                append("|T=").append(q.tagsAll.toSortedMap().mapValues { (_, v) -> v.sorted() })
+                append("|n=").append(q.notSearch.sorted())
+                append("|g=").append(gated)
+                if (gated) append("|r=").append(q.rankKey).append("|m=").append(q.minRank)
+                append("|age=").append(ageBucket(now - anchor))
+            }
+        val digest =
+            java.security.MessageDigest
+                .getInstance("SHA-256")
+                .digest(canonical.toByteArray(Charsets.UTF_8))
+        val buf = java.nio.ByteBuffer.wrap(digest)
+        return Key(buf.getLong(), buf.getLong())
+    }
 
     companion object {
         /**
