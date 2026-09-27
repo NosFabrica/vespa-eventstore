@@ -31,7 +31,7 @@ import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip10Notes.TextNoteEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
-import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Tag
@@ -105,7 +105,7 @@ class ServiceKeyedTrustIT {
 
                             // ---- the retraction ------------------------------------------
                             val retracted = SUBJECTS[0]
-                            store.insert(ContactCardEvent(hexId(), P2, 5_000, arrayOf(arrayOf("d", retracted), arrayOf("followers", "7")), "", ""))
+                            store.insert(UserAssertionEvent(hexId(), P2, 5_000, arrayOf(arrayOf("d", retracted), arrayOf("followers", "7")), "", ""))
                             store.awaitTrustProjection()
                             val doc = reputations.get(retracted)
                             assertEquals(serviceCells(P1 to RANKS[0]), doc?.influenceScores, "P2's rank cell is gone in the same update its followers landed")
@@ -113,7 +113,7 @@ class ServiceKeyedTrustIT {
                             assertEquals(SUBJECTS.reversed().dropLast(1), page(store), "an author the lens no longer ranks leaves the page")
 
                             val unknown = "9".repeat(64)
-                            store.insert(ContactCardEvent(hexId(), P2, 5_001, arrayOf(arrayOf("d", unknown)), "", ""))
+                            store.insert(UserAssertionEvent(hexId(), P2, 5_001, arrayOf(arrayOf("d", unknown)), "", ""))
                             store.awaitTrustProjection()
                             assertNull(reputations.get(unknown), "a retraction alone creates no document")
 
@@ -163,7 +163,7 @@ class ServiceKeyedTrustIT {
         service: String,
         subject: String,
         rank: Int,
-    ) = ContactCardEvent(hexId(), service, 1_000L + rank, arrayOf(arrayOf("d", subject), arrayOf("rank", rank.toString()), arrayOf("followers", "12")), "", "")
+    ) = UserAssertionEvent(hexId(), service, 1_000L + rank, arrayOf(arrayOf("d", subject), arrayOf("rank", rank.toString()), arrayOf("followers", "12")), "", "")
 
     private fun note(
         n: Int,

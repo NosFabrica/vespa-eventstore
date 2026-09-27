@@ -32,7 +32,7 @@ import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.mapping.toEvent
 import com.nosfabrica.vespa.eventstore.runtime.WriteLocks
-import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import com.vitorpamplona.quartz.utils.Hex
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
@@ -198,7 +198,7 @@ internal class TrustRecompute(
                 // a fetch that missed cards. That is the write-side counterpart
                 // of the read path's rounded-100 carve-out, and the failure
                 // that removed 17k parents on staging (2026-09-04).
-                produce = { chunk -> chunk to inner.search(EventQuery(kinds = listOf(ContactCardEvent.KIND), tags = mapOf("d" to chunk), notExpiredAt = cutoff, complete = true)) },
+                produce = { chunk -> chunk to inner.search(EventQuery(kinds = listOf(UserAssertionEvent.KIND), tags = mapOf("d" to chunk), notExpiredAt = cutoff, complete = true)) },
             ) { (chunk, docs) ->
                 // Serialized by forEachBounded, so this plain map needs no lock.
                 val bySubject = HashMap<String, MutableList<EventDoc>>(chunk.size * 2)
@@ -288,7 +288,7 @@ internal class TrustRecompute(
                 (unmapped ?: HashSet<String>().also { unmapped = it }) += doc.pubkey
                 continue
             }
-            val card = doc.toEvent() as? ContactCardEvent
+            val card = doc.toEvent() as? UserAssertionEvent
             if (card == null) {
                 unapplied += subject
                 continue
@@ -337,7 +337,7 @@ internal class TrustRecompute(
             //
             // One count query per service, against a walk that fetches every
             // card it names.
-            val total = runCatching { inner.count(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service))) }.getOrDefault(0)
+            val total = runCatching { inner.count(EventQuery(kinds = listOf(UserAssertionEvent.KIND), authors = listOf(service))) }.getOrDefault(0)
             TrustProgress.begin(WALK, "walking ${service.take(12)}'s cards into cells", total.toLong())
             // BUFFERED ACROSS PAGES, not chunked within one. A page is whatever
             // the visit happened to deliver, and on the document-API path that
@@ -412,7 +412,7 @@ internal class TrustRecompute(
                                 // Missing ids cost nothing: applyCards writes a
                                 // cell per card it HAS, the absent one's winner
                                 // already wrote its own, and the next round re-lists.
-                                val docs = IngestStats.timed("proj.fetch.page") { inner.search(EventQuery(ids = ids, kinds = listOf(ContactCardEvent.KIND))) }
+                                val docs = IngestStats.timed("proj.fetch.page") { inner.search(EventQuery(ids = ids, kinds = listOf(UserAssertionEvent.KIND))) }
                                 applyCards(docs, providers.get())
                                 applied += docs.size
                             }
@@ -427,7 +427,7 @@ internal class TrustRecompute(
                     // if the listing turns out to be the wall clock after all, this
                     // is the number that says so.
                     IngestStats.timed("proj.visit.ids") {
-                        inner.visitIds(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service)), withDTag = false) { page ->
+                        inner.visitIds(EventQuery(kinds = listOf(UserAssertionEvent.KIND), authors = listOf(service)), withDTag = false) { page ->
                             pending += page.map { it.id }
                             while (pending.size >= PROJECT_PAGE) {
                                 batches.send(pending.take(PROJECT_PAGE))
@@ -473,7 +473,7 @@ internal class TrustRecompute(
         for (doc in docs.sortedWith(DERIVE_ORDER)) {
             // Direct by-kind reconstruction — no JSON round trip; runs once per
             // fetched card across every recompute walk.
-            val card = doc.toEvent() as? ContactCardEvent ?: continue
+            val card = doc.toEvent() as? UserAssertionEvent ?: continue
             // Keyed by the SIGNING SERVICE. Only services some stored 10040
             // names are projected (memory: the reputation type is global), and
             // both tags land whatever dimension the service was named for — a
@@ -546,4 +546,4 @@ internal fun subjectOf(doc: EventDoc): String? = doc.dTagOrEmpty().takeIf(Hex::i
  * thresholds. Clamped at EVERY read of the tag — the fast path, the bulk path,
  * and the derive must land the same cell value or [TrustReconciler] reads drift.
  */
-internal fun ContactCardEvent.boundedRank(): Int? = rank()?.coerceIn(0, 100)
+internal fun UserAssertionEvent.boundedRank(): Int? = rank()?.coerceIn(0, 100)

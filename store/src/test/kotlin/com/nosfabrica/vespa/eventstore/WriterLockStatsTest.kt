@@ -26,7 +26,7 @@ import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
-import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -68,7 +68,7 @@ class WriterLockStatsTest {
     private fun contactCard(
         id: String,
         about: String = "c".repeat(64),
-    ) = ContactCardEvent(id, alice, 1, arrayOf(arrayOf("d", about), arrayOf("rank", "50")), "", "")
+    ) = UserAssertionEvent(id, alice, 1, arrayOf(arrayOf("d", about), arrayOf("rank", "50")), "", "")
 
     /** A kind-1 with its own id — not replaceable, so a batch of them all survive. */
     private fun textNote(id: String) = Event(id, alice, 1, 1, emptyArray(), "hello", "")
@@ -306,10 +306,10 @@ class WriterLockStatsTest {
                 delay(100)
                 // The gate is still held: notes in, cards not.
                 assertEquals(20, store.query<Event>(Filter(kinds = listOf(1))).size, "the notes committed while the cards waited")
-                assertEquals(0, store.query<Event>(Filter(kinds = listOf(ContactCardEvent.KIND))).size, "the cards are still queued for the gate")
+                assertEquals(0, store.query<Event>(Filter(kinds = listOf(UserAssertionEvent.KIND))).size, "the cards are still queued for the gate")
                 holding.await()
                 val outcomes = inserting.await()
-                assertEquals(2, store.query<Event>(Filter(kinds = listOf(ContactCardEvent.KIND))).size, "the cards committed once the gate was free")
+                assertEquals(2, store.query<Event>(Filter(kinds = listOf(UserAssertionEvent.KIND))).size, "the cards committed once the gate was free")
                 assertTrue(outcomes.all { it == IEventStore.InsertOutcome.Accepted }, "every event was accepted: $outcomes")
             }
         }
@@ -336,7 +336,7 @@ class WriterLockStatsTest {
             val rejectedAt = outcomes.indices.filter { outcomes[it] != IEventStore.InsertOutcome.Accepted }
             assertEquals(listOf(6, 21), rejectedAt, "rejections sit at the positions of the events that earned them: $outcomes")
             assertEquals(20, store.query<Event>(Filter(kinds = listOf(1))).size, "the duplicate note was already stored; every other note is new")
-            assertEquals(2, store.query<Event>(Filter(kinds = listOf(ContactCardEvent.KIND))).size)
+            assertEquals(2, store.query<Event>(Filter(kinds = listOf(UserAssertionEvent.KIND))).size)
         }
 
     /**
