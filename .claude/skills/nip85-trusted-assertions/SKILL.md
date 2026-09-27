@@ -13,7 +13,7 @@ description: The NIP-85 trusted-assertions model in Quartz (`nip85TrustedAsserti
 > the trust projection and should be documented there against this skill's terms.
 
 > Skill imported from `vitorpamplona/amethyst` `.claude/skills/nip85-trusted-assertions`
-> at commit `9231195890`, refreshed to `1cfb6e922f` (the Quartz pin). NIP-85 is still evolving — refresh at pin bumps
+> at commit `9231195890`, refreshed to `ec16988e3a` (the Quartz pin). NIP-85 is still evolving — refresh at pin bumps
 > and re-check the "Stability notes" section before ranking on new tags.
 
 Package: `quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nip85TrustedAssertions/`.

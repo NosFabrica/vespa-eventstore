@@ -5,9 +5,16 @@ app = "1.0.1"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"
 # Quartz from JitPack (amethyst @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
-# 1cfb6e922f = amethyst main @ 2026-09-27: the merge of amethyst #4215, and nothing else
-# in quartz/ since 28bf170f92. That PR was written from this repo, and it closes the three
-# search gaps the last bump could only document:
+# ec16988e3a = amethyst main @ 2026-09-27: the merge of amethyst #4222, and nothing else
+# in quartz/ since 1cfb6e922f. That PR, also written from this repo, returns Quartz's SQLite
+# store to REPLACED (`replaced:` -> OK false) for a stale replaceable/addressable version,
+# which 28bf170f92 had made SUPERSEDED (`duplicate:` -> OK true) although it is never
+# written. This store never followed that, so the pin ends a divergence rather than
+# changing behaviour here: Rejections.REPLACED and Quartz's STORE-W01/W02 agree again, and
+# SUPERSEDED survives upstream only as a @Deprecated constant.
+#
+# 1cfb6e922f (2026-09-27, the merge of amethyst #4215, same PR series) closed the three
+# search gaps 28bf170f92 could only document:
 #
 #   9998 / 39998 / 9999 / 39999 (decentralized lists) get their own extractor branch. Names
 #     and titles go to the title role, description and comments to the secondary one, and
@@ -26,15 +33,15 @@ mavenPublish = "0.37.0"
 # (the previous pin's eleven, plus NIP-CC geocaching) are still on the catch-all.
 #
 # Prev 28bf170f92 (2026-09-26: event classes renamed to their NIP names; Quartz's SQLite
-# store answers a stale replaceable with SUPERSEDED, `duplicate:` / OK true, which this store
-# deliberately does NOT follow (Rejections.REPLACED: not written, so OK false); 142 -> 150 reachable
+# store answered a stale replaceable with SUPERSEDED, `duplicate:` / OK true, which this store
+# did not follow and ec16988e3a reverted upstream; 142 -> 150 reachable
 # searchable kinds, eight new classes on the catch-all; jackson-module-kotlin and kotlin-reflect leave
 # the classpath).
 # Prev a8e8778265 (2026-09-10: 133 -> 144 searchable kind values, all eleven on the
 # catch-all; SearchableEvent grows the read-path forEachIndexableField, no reindex).
 # Prev cecc3287b2 (2026-09-01: 17 catch-all kinds split into title/body roles, four
 # affiliation URLs, six doubled `t`-tag scans dropped; a ranking backfill).
-quartz = "1cfb6e922f"
+quartz = "ec16988e3a"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 # Matches what Quartz brings transitively; Gradle would resolve to it regardless.
