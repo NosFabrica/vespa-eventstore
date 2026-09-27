@@ -20,8 +20,9 @@
  */
 package com.nosfabrica.vespa.eventstore
 
+import kotlin.coroutines.Continuation
 import kotlin.test.Test
-import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 
 /**
  * THE TEST THAT WAS MISSING FROM #132. That PR shipped the headroom parser and
@@ -33,9 +34,9 @@ import kotlin.test.assertEquals
 class EngineHeadroomExposedTest {
     @Test
     fun `the store's front door offers engine headroom`() {
-        // A callable reference: a missing member fails the COMPILE, and it needs no
-        // kotlin-reflect (gone with Quartz's jackson-module-kotlin at 28bf170f92).
-        val exposed = VespaEventStore::engineHeadroom
-        assertEquals("engineHeadroom", exposed.name, "no page can show what the store does not expose")
+        // A MEMBER of the front door, not an extension someone could add beside it (that
+        // compiles to a static elsewhere). Java reflection: kotlin-reflect left with
+        // Quartz's jackson-module-kotlin (28bf170f92); a suspend fun takes a Continuation.
+        assertNotNull(VespaEventStore::class.java.getMethod("engineHeadroom", Continuation::class.java), "no page can show what the store does not expose")
     }
 }

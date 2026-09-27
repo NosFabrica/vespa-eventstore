@@ -21,7 +21,6 @@
 package com.nosfabrica.vespa.eventstore.benchmark.probe
 
 import com.nosfabrica.vespa.eventstore.VespaEventStore
-import com.nosfabrica.vespa.eventstore.benchmark.harness.tallyKey
 import com.nosfabrica.vespa.eventstore.engine.client.VespaReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
 import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
@@ -91,7 +90,10 @@ object TrustProbe {
             store.batchInsert(chunk).forEach { o ->
                 when (o) {
                     is IEventStore.InsertOutcome.Accepted -> accepted++
-                    is IEventStore.InsertOutcome.Rejected -> rejected.merge(tallyKey(o.reason), 1, Int::plus)
+
+                    is IEventStore.InsertOutcome.Rejected -> rejected.merge(o.reason, 1, Int::plus)
+
+                    // whole reason: constants, and SUPERSEDED must not fold into duplicate
                     is IEventStore.InsertOutcome.Failed -> rejected.merge("FAILED", 1, Int::plus)
                 }
             }

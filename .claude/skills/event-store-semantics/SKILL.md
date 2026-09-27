@@ -351,7 +351,7 @@ non-itemizable cases).
 
 Add one line per behavior change, newest first: `YYYY-MM-DD <short sha> <rule id> — what changed`.
 
-- 2026-09-18 (pending) W09, W01/W02 — insert-failure classification now queries the database
+- 2026-09-18 65c683c9c7 W09, W01/W02 — insert-failure classification now queries the database
   instead of parsing the driver's exception message (Android's is null, so duplicates were
   reported as `Failed`/`OK false`). A byte-for-byte re-offer of a stored replaceable/addressable
   event now reports `DUPLICATE` where the JVM driver previously reported `SUPERSEDED`; both are

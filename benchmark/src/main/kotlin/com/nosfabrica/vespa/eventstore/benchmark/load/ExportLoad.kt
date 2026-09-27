@@ -21,7 +21,6 @@
 package com.nosfabrica.vespa.eventstore.benchmark.load
 
 import com.nosfabrica.vespa.eventstore.VespaEventStore
-import com.nosfabrica.vespa.eventstore.benchmark.harness.tallyKey
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import kotlinx.coroutines.runBlocking
@@ -93,12 +92,13 @@ object ExportLoad {
                                     accepted++
                                 }
 
-                                // The reason's PREFIX is the vocabulary
-                                // (duplicate:/blocked:, Rejections.kt); the tail
-                                // names the individual event. See [tallyKey] for
-                                // the one reason the prefix alone would lose.
+                                // Keyed by the WHOLE reason: every one this store
+                                // produces is a constant (Rejections.kt), so the
+                                // tally stays bounded, and a prefix would fold
+                                // expired / deleted / vanished into one `blocked`
+                                // and a superseded version into `duplicate`.
                                 is IEventStore.InsertOutcome.Rejected -> {
-                                    rejected.merge(tallyKey(outcome.reason), 1, Int::plus)
+                                    rejected.merge(outcome.reason, 1, Int::plus)
                                 }
 
                                 // A write that threw, not a rule that refused —

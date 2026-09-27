@@ -26,8 +26,8 @@ mavenPublish = "0.37.0"
 # (the previous pin's eleven, plus NIP-CC geocaching) are still on the catch-all.
 #
 # Prev 28bf170f92 (2026-09-26: event classes renamed to their NIP names; a stale replaceable
-# is SUPERSEDED, `duplicate:`-prefixed, so a relay acks it OK true; 144 -> 150 searchable
-# kinds, eight new classes on the catch-all; jackson-module-kotlin and kotlin-reflect leave
+# is SUPERSEDED, `duplicate:`-prefixed, so a relay acks it OK true; 142 -> 150 reachable
+# searchable kinds, eight new classes on the catch-all; jackson-module-kotlin and kotlin-reflect leave
 # the classpath).
 # Prev a8e8778265 (2026-09-10: 133 -> 144 searchable kind values, all eleven on the
 # catch-all; SearchableEvent grows the read-path forEachIndexableField, no reindex).
