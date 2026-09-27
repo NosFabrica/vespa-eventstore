@@ -1035,6 +1035,34 @@ speculative (memory off) / speculative + memory:
   a live relay's does not), so read the query counts, not the milliseconds.
 - **A far-future `until`.** One query: 180 → 7 ms (gated 398 → 8).
 
+**Under load (`recencyLoadProbe`, 2026-09-27)** — closed-loop clients on a
+relay-shaped REQ mix (50% follow feeds over 2,000 Zipf-popular lists, global,
+hashtag, notification and deep-page reads; 30% gated), 45 s per phase, Vespa's
+CPU sampled from `docker stats` (percent of one core, 12-core host):
+
+| clients | shipped REQ/s · p50 · p99 · CPU | speculative | + memory |
+|---:|---|---|---|
+| 8 | 36 · 66 ms · 4.4 s · 745% | 96 · 35 ms · 0.9 s · 307% | **100 · 32 ms · 1.0 s · 271%** |
+| 32 | 38 · 257 ms · 14.5 s · 1313% | 100 · 142 ms · 4.4 s · 298% | **98 · 139 ms · 4.7 s · 355%** |
+| 64 | 44 · 772 ms · 13.4 s · 1314% | 106 · 284 ms · 8.6 s · 286% | **110 · 250 ms · 9.3 s · 261%** |
+
+Shipped is ENGINE-bound (13 cores of matching; 555–670 ms of Vespa's own match
+time per REQ). Speculative spends ~17 ms of engine time per REQ (14 match, 3
+summary) and ~2.5× the throughput at a quarter of the CPU — and is NOT
+engine-bound here: its ~100 REQ/s plateau is this Mac's transfer path. Raw
+limit-500 pages top out at 120–155 MB/s through Docker Desktop's port
+forwarding and the container's JSON rendering, and this mix averages ~0.7 MB a
+REQ. On a real network the ceiling sits elsewhere; re-measure there.
+
+With a writer landing events on a live clock (engine-level puts, removed
+afterwards; 32 readers): shipped 38.5 / 41.2 / 30.3 REQ/s at 0 / 50 / 200 ev/s
+(p99 to 16.6 s at 200); speculative + memory 100.1 / 95.6 / 97.7 (p50 142 /
+131 / 110 ms). Writes do not hurt speculation — a moving newest window fills
+sooner (cold first-window proofs 30% → 67% at 200 ev/s) — and they land faster
+beside it: batch-put p50 176 ms under shipped reads at 200 ev/s against 46–50
+ms under speculative ones, because the engine is no longer saturated. 60/60
+sampled pages identical with the writes in place; every probe event removed.
+
 Watching it live: every speculative read books `IngestStats` stages —
 `recency.speculative` (the read, timed), `.attempt` (each windowed query, timed)
 and one zero-time counter per outcome: `.first` / `.widened` (pages the windows
@@ -1069,6 +1097,7 @@ timing is also a proof:
 | `dedupProbe` | the bulk-dedup existence check: full-summary vs summary-free variants at mirror hit rates, chunk × fan-out curves, REQ latency under dedup load | reuses a `corpusLoad` corpus (ids sampled off the live store) | every variant must return the identical member set |
 | `extractBench` | the write path's own derivation (`SearchExtractors`), decomposed by stage, with `--badges N` for the every-event-wears-one corpus | any captured JSON export (`--corpus`), no Vespa | — |
 | `searchTrace` | one NIP-50 term, split per clause family and per rank profile (ablations + Vespa's blueprint cost) | any loaded store — capture one with `exportLoad` | every row prints `totalCount`, so a variant that got fast by matching less shows it |
+| `recencyLoadProbe` | the recency strategies under load: closed-loop throughput at rising concurrency on a relay-shaped mix, and the same reads while a writer lands events on a live clock (engine CPU from `docker stats`, Vespa's match/summary split per REQ) | any loaded store; its writes are TEMPORARY — every id logged before its put, all removed at the end, `BENCH_CLEANUP_ONLY=1` to finish an interrupted run | sampled pages identical across variants with the writes in place; zero probe events left by id |
 | `recencyEdgeProbe` | the speculative strategy's edges: distinct follow lists under concurrency, `until` pagination and random depths, the band edge to 5,000, a stale memory across a hashtag burst, a far-future `until` (`BENCH_SECTIONS`) | any loaded store, read-only | every check must serve the identical page across shipped / speculative / + memory |
 | `recencyStrategyProbe` | the four `RecencyStrategy` options on the dominant feed shapes, plain and gated (`BENCH_OBSERVER`), with engine queries per REQ | any loaded store, read-only (`BENCH_NOW` pins the clock to a frozen corpus) | all four strategies must serve the identical page, ids and order |
 | `transportProbe` | read-transport isolation: JDK h1 / OkHttp h1 / OkHttp h2c on identical queries across body sizes | any loaded store | — |

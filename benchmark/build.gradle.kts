@@ -244,3 +244,14 @@ tasks.register<JavaExec>("recencyEdgeProbe") {
     mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.probe.RecencyEdgeProbe")
     maxHeapSize = System.getenv("BENCH_HEAP") ?: "2g"
 }
+
+// The recency strategies under LOAD: closed-loop throughput at rising
+// concurrency, and the same reads while a writer lands (temporary, cleaned-up)
+// events on a live clock. See RecencyLoadProbe.kt.
+tasks.register<JavaExec>("recencyLoadProbe") {
+    group = "verification"
+    description = "Throughput and read-under-write load for the recency strategies against a loaded cluster (writes are removed afterwards)"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.probe.RecencyLoadProbe")
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "3g"
+}
