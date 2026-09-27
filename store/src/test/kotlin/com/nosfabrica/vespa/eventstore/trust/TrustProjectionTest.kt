@@ -34,10 +34,10 @@ import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
-import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
+import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
-import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -99,7 +99,7 @@ class TrustProjectionTest {
         at: Long = next(),
         eventId: String = id(),
         expires: Long? = null,
-    ): ContactCardEvent {
+    ): UserAssertionEvent {
         val tags =
             buildList {
                 add(arrayOf("d", about))
@@ -107,7 +107,7 @@ class TrustProjectionTest {
                 followers?.let { add(arrayOf("followers", it.toString())) }
                 expires?.let { add(arrayOf("expiration", it.toString())) }
             }.toTypedArray()
-        return ContactCardEvent(eventId, signer, at, tags, "", "")
+        return UserAssertionEvent(eventId, signer, at, tags, "", "")
     }
 
     @Test
@@ -151,7 +151,7 @@ class TrustProjectionTest {
             assertEquals(serviceCells(service to 87), derived[subject]?.influenceScores, "derived through the fetch")
             // The derivation's shape: cards BY SUBJECT (`d`), any signer, live at
             // the cutoff — not the store's own by-author dedup read of the card.
-            val cardFetches = seen.filter { it.kinds == listOf(ContactCardEvent.KIND) && it.authors.isEmpty() && it.notExpiredAt != null }
+            val cardFetches = seen.filter { it.kinds == listOf(UserAssertionEvent.KIND) && it.authors.isEmpty() && it.notExpiredAt != null }
             // Likewise the attribution map's read: EVERY live 10040, not the store's by-author dedup read of the one arriving.
             val listReads = seen.filter { it.kinds == listOf(TrustProviderListEvent.KIND) && it.authors.isEmpty() }
             assertTrue(cardFetches.isNotEmpty() && cardFetches.all { it.complete }, "every unlimited card fetch is complete: $cardFetches")
@@ -199,7 +199,7 @@ class TrustProjectionTest {
             store.insert(list10040())
             val scored = card()
             store.insert(scored)
-            store.insert(DeletionEvent(id(), service, next(), arrayOf(arrayOf("e", scored.id)), "", ""))
+            store.insert(DeletionRequestEvent(id(), service, next(), arrayOf(arrayOf("e", scored.id)), "", ""))
             assertNoCells(reputations, subject)
         }
 
@@ -572,7 +572,7 @@ class TrustProjectionTest {
             assertFailsWith<RuntimeException> { st.batchInsert(batch) }
 
             // Events landed, cells did not — the exact drift, named by the marker.
-            assertEquals(20, inner.search(EventQuery(kinds = listOf(ContactCardEvent.KIND))).count { subjectOf(it) in subjects })
+            assertEquals(20, inner.search(EventQuery(kinds = listOf(UserAssertionEvent.KIND))).count { subjectOf(it) in subjects })
             subjects.forEach { assertNull(reps.get(it), "cells must be missing after the failure") }
             assertEquals(subjects.map(::ServiceKey).toSet(), reps.get(ProjectionLedger.MARKER_KEY)?.influenceScores?.keys, "the marker names the dirty subjects")
 
@@ -590,7 +590,7 @@ class TrustProjectionTest {
     fun `a card whose d tag is the marker id projects nothing and breaks nothing`() =
         runBlocking {
             store.insert(list10040())
-            store.insert(ContactCardEvent(id(), service, next(), arrayOf(arrayOf("d", ProjectionLedger.MARKER_KEY), arrayOf("rank", "87")), "", ""))
+            store.insert(UserAssertionEvent(id(), service, next(), arrayOf(arrayOf("d", ProjectionLedger.MARKER_KEY), arrayOf("rank", "87")), "", ""))
             assertNull(reputations.get(ProjectionLedger.MARKER_KEY))
             // And ordinary projection still works beside it.
             store.insert(card())
@@ -731,7 +731,7 @@ class TrustProjectionTest {
                 st.batchInsert((1..20).map { card(about = it.toString(16).padStart(64, 'a'), rank = 10) })
                 st.insert(list10040(author = observer2, serviceKey = service2, at = 12)) // observer2 switches provider
                 st.insert(deleted)
-                st.insert(DeletionEvent(id(), service2, 600, arrayOf(arrayOf("e", deleted.id)), "", ""))
+                st.insert(DeletionRequestEvent(id(), service2, 600, arrayOf(arrayOf("e", deleted.id)), "", ""))
                 st.insert(card(about = "ef".repeat(32), rank = 30, at = 300))
                 st.insert(card(about = "ef".repeat(32), rank = null, followers = null, at = 400)) // retraction
             }
@@ -843,7 +843,7 @@ class TrustProjectionTest {
                     proj.backlog.drain { it() }
                     assertEquals(serviceCells(service to 87), reps.get(subject)?.influenceScores, "projected while the event lives")
                 }
-                st.insert(DeletionEvent(id(), service, next(), arrayOf(arrayOf("e", scored.id)), "", ""))
+                st.insert(DeletionRequestEvent(id(), service, next(), arrayOf(arrayOf("e", scored.id)), "", ""))
                 proj.backlog.drain { it() }
                 assertNoCells(reps, subject, "deleted event derives nothing (drainBetween=$drainBetween)")
             }

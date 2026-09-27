@@ -5,58 +5,36 @@ app = "1.0.1"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"
 # Quartz from JitPack (amethyst @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
-# a8e8778265 = amethyst main @ 2026-09-10. NOT bumped for this store, for once:
-# the range is upstream's own work, and everything this store reads out of it is
-# byte-identical. IEventStore, SQLiteEventStore, Filter, SearchQuery,
-# SearchFieldExtractor and IndexableFields do not have one changed line between
-# the two pins, so filter semantics, the parity gate, and the per-kind
-# DECOMPOSITION the last two bumps were about all hold exactly as they were.
+# fcd76d2075 = amethyst main @ 2026-09-27: the merge of amethyst #4231. NOTHING THIS STORE CALLS
+# MOVES: in quartz/ the range touches nipFERelayOverHttp (NIP-FE's simpler, published form: one
+# client frame POSTed to the relay's URL, and a client side), RelaySession (an additive
+# receive(text, parsed)), NIP-49, a new Bech32Transcription and LibSodiumInstance; neither this
+# store's jar nor the engine's references a class in any of them. Pinned so vespa-relay, which moved
+# to fcd76d2075 for the new NIP-FE, resolves quartz without `force(libs.quartz)` overriding this
+# pin -- the arrow `a53cafd577 -> fcd76d2075` its graph carries until this lands.
 #
-# The range is 220 commits; two things in it reach this store.
-#
-#   SearchableEvent grows a READ path. `forEachIndexableField(visitor)` hands over
-#     the same fields `indexableContent()` joins, without building the joined
-#     string — for Amethyst's per-keystroke scan of the whole cache, where a
-#     string per event per keystroke is not affordable. It and
-#     `indexableSeparator()` are both DEFAULTED on the interface, and every
-#     override the range adds re-expresses a join that already existed: no
-#     `indexableContent()` body moved (the range removes no line mentioning one),
-#     and this store only ever calls the WRITE path, through SearchFieldExtractor.
-#     Upstream added `IndexableContentGoldenTest` and an `indexable-content.golden`
-#     resource in the same range to keep it that way. So: nothing to implement
-#     here, and NO REINDEX — every kind already stored indexes the same words on
-#     the same columns as before.
-#
-#   The searchable SET moves, for the first time in several bumps: 133 -> 144 kind
-#     values (130 -> 141 classes). SearchFieldExtractor gained no branch for any of
-#     the 11, so all of them land in its `is SearchableEvent ->` catch-all — the
-#     whole `indexableContent()` in the BODY role, titles included. That is the
-#     same 236x title discount the last two bumps fixed for 19 other kinds, and it
-#     takes the same fix (one branch each, upstream). Left as a note rather than
-#     held for, because it is a RANKING gap on kinds a relay has almost none of
-#     yet, not a recall one. The 11, with what their catch-all body carries:
-#       31 / 32 / 33   external / hardcopy / prompt citation   title, summary, content
-#       818            wiki merge request                      content
-#       30040          publication index                       title, author, summary
-#       30041          publication content                     title, content
-#       30045          bookshelf directory                     title, summary, content
-#       30142          learning resource                       title, summary, content
-#       31987          relay review                            content
-#       32176          Blossom piece index                     title, summary, content
-#       34259          entity rating                           content
-#     Recall on these is FORWARD-ONLY until `reindexFullTextSearch()` runs: events
-#     of those kinds already stored carry NO search fields, because when they were
-#     ingested nothing parsed them as searchable at all. Unlike the last two bumps'
-#     backfill, this one changes what is FINDABLE rather than how it ranks, so it
-#     is the one worth actually scheduling.
-#
+# Prev a53cafd577 (2026-09-27: amethyst #4214, NIP-FE's review fixes; nothing this store called
+# moved, pinned for the relay the same way).
+# Prev ec16988e3a (2026-09-27: amethyst #4222 returned Quartz's SQLite store to REPLACED,
+# `replaced:` / OK false, for a stale replaceable, which this store never left; #4215 before it
+# (1cfb6e922f) gave decentralized lists, text tracks and release notes their own extractor
+# branches, derived data a corpus picks up with reindexFullTextSearch()).
+# Prev 28bf170f92 (2026-09-26: event classes renamed to their NIP names; Quartz's SQLite
+# store answered a stale replaceable with SUPERSEDED, `duplicate:` / OK true, which this store
+# did not follow and ec16988e3a reverted upstream; 142 -> 150 reachable
+# searchable kinds, eight new classes on the catch-all; jackson-module-kotlin and kotlin-reflect leave
+# the classpath).
+# Prev a8e8778265 (2026-09-10: 133 -> 144 searchable kind values, all eleven on the
+# catch-all; SearchableEvent grows the read-path forEachIndexableField, no reindex).
 # Prev cecc3287b2 (2026-09-01: 17 catch-all kinds split into title/body roles, four
 # affiliation URLs, six doubled `t`-tag scans dropped; a ranking backfill).
-quartz = "a8e8778265"
+quartz = "fcd76d2075"
 coroutines = "1.11.0"
 serialization = "1.11.0"
-sqlite = "2.7.0"
-okhttp = "5.4.0"
+# Matches what Quartz brings transitively; Gradle would resolve to it regardless.
+sqlite = "2.7.1"
+# Likewise Quartz's own okhttp line (it already was, at the previous pin).
+okhttp = "5.5.0"
 ktor = "3.5.1"
 # Vespa's official feed client: async document writes multiplexed over HTTP/2.
 vespa-feed = "8.714.25"

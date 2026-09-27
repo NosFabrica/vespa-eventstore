@@ -25,7 +25,7 @@ import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryReputationIndex
 import com.nosfabrica.vespa.eventstore.mapping.toDoc
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
-import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import kotlinx.coroutines.runBlocking
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
@@ -61,7 +61,7 @@ class TrustProgressReportedTest {
 
     private fun list10040() = TrustProviderListEvent(id(), observer, 1_000L + seq, arrayOf(arrayOf("30382:rank", service, "wss://s.example/")), "", "")
 
-    private fun card(about: String) = ContactCardEvent(id(), service, 1_000L + seq, arrayOf(arrayOf("d", about), arrayOf("rank", "80")), "", "")
+    private fun card(about: String) = UserAssertionEvent(id(), service, 1_000L + seq, arrayOf(arrayOf("d", about), arrayOf("rank", "80")), "", "")
 
     /** A drain that has work to do must appear in the registry WHILE it runs, with a denominator. */
     @Test

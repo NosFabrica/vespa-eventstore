@@ -25,7 +25,7 @@ import com.nosfabrica.vespa.eventstore.engine.client.RecencyStrategy
 import com.nosfabrica.vespa.eventstore.engine.client.VespaEventIndex
 import com.nosfabrica.vespa.eventstore.mapping.toDoc
 import com.vitorpamplona.quartz.nip01Core.core.Event
-import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
+import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
 import kotlinx.coroutines.runBlocking
 import kotlin.test.AfterTest
 import kotlin.test.Test
@@ -75,7 +75,7 @@ class DeletionsTest {
     fun `the probe still finds the tombstone`() =
         runBlocking {
             val old = Event(id(), alice, now - 30 * 86_400L, 1, emptyArray(), "deleted later", "")
-            val tombstone = DeletionEvent(id(), alice, now - 29 * 86_400L, arrayOf(arrayOf("e", old.id)), "", "")
+            val tombstone = DeletionRequestEvent(id(), alice, now - 29 * 86_400L, arrayOf(arrayOf("e", old.id)), "", "")
             index.put(tombstone.toDoc())
             assertTrue(deletions.isDeleted(old), "a same-owner kind 5 newer than the event blocks it")
         }

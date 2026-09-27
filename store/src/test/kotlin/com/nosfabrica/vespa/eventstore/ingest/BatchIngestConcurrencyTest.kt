@@ -27,7 +27,7 @@ import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.runtime.WriterTopology
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.normalizeRelayUrl
-import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
@@ -117,7 +117,7 @@ class BatchIngestConcurrencyTest {
         at: Long = 1_000L,
     ) = (0 until count).map { i ->
         val subject = "%064x".format(i)
-        ContactCardEvent(id(), provider, at, arrayOf(arrayOf("d", subject), arrayOf("rank", "50")), "", "")
+        UserAssertionEvent(id(), provider, at, arrayOf(arrayOf("d", subject), arrayOf("rank", "50")), "", "")
     }
 
     private fun provider(n: Int) = "%02x".format(n).repeat(32)
@@ -168,10 +168,10 @@ class BatchIngestConcurrencyTest {
             // exactly the outbox stream's shape, and the worst case for run-splitting.
             val mixed =
                 (0 until n).flatMap { i ->
-                    val card = ContactCardEvent(id(), provider(1), 1_000L, arrayOf(arrayOf("d", "%064x".format(i)), arrayOf("rank", "1")), "", "")
+                    val card = UserAssertionEvent(id(), provider(1), 1_000L, arrayOf(arrayOf("d", "%064x".format(i)), arrayOf("rank", "1")), "", "")
                     val del =
                         com.vitorpamplona.quartz.nip09Deletions
-                            .DeletionEvent(id(), provider(1), 1_000L, arrayOf(arrayOf("e", id())), "", "")
+                            .DeletionRequestEvent(id(), provider(1), 1_000L, arrayOf(arrayOf("e", id())), "", "")
                     listOf(card, del)
                 }
             val t1 = testScheduler.currentTime
@@ -257,8 +257,8 @@ class BatchIngestConcurrencyTest {
             fun cardBatch(at: Long) =
                 // 16+ events to engage the bulk path; the LAST one is the contested address.
                 (0 until 16).map { i ->
-                    ContactCardEvent(id(), provider(0), at, arrayOf(arrayOf("d", "pad-$i-$at"), arrayOf("rank", "1")), "", "")
-                } + ContactCardEvent(id(), provider(0), at, arrayOf(arrayOf("d", subject), arrayOf("rank", "$at")), "", "")
+                    UserAssertionEvent(id(), provider(0), at, arrayOf(arrayOf("d", "pad-$i-$at"), arrayOf("rank", "1")), "", "")
+                } + UserAssertionEvent(id(), provider(0), at, arrayOf(arrayOf("d", subject), arrayOf("rank", "$at")), "", "")
 
             val older = cardBatch(at = 100)
             val newer = cardBatch(at = 200)
@@ -269,7 +269,7 @@ class BatchIngestConcurrencyTest {
 
             val versions =
                 index
-                    .search(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(provider(0))))
+                    .search(EventQuery(kinds = listOf(UserAssertionEvent.KIND), authors = listOf(provider(0))))
                     .filter { it.dTagOrEmpty() == subject }
             assertEquals(1, versions.size, "the contested address must keep exactly one version, found ${versions.size}")
             assertEquals(200L, versions.single().createdAt, "the surviving version must be the newest")

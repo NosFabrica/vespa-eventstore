@@ -92,11 +92,12 @@ object ExportLoad {
                                     accepted++
                                 }
 
-                                // The reason's PREFIX is the vocabulary
-                                // (duplicate:/replaced:/blocked:, Rejections.kt);
-                                // the tail names the individual event.
+                                // Keyed by the WHOLE reason: every one this store
+                                // produces is a constant (Rejections.kt), so the
+                                // tally stays bounded, and a prefix would fold
+                                // expired / deleted / vanished into one `blocked`.
                                 is IEventStore.InsertOutcome.Rejected -> {
-                                    rejected.merge(outcome.reason.substringBefore(':'), 1, Int::plus)
+                                    rejected.merge(outcome.reason, 1, Int::plus)
                                 }
 
                                 // A write that threw, not a rule that refused —

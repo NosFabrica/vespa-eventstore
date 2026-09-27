@@ -34,7 +34,7 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.mapping.toDoc
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
-import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -63,7 +63,7 @@ class ProjectionLedgerTest {
     private fun cardFor(
         subj: String,
         rank: Int,
-    ) = ContactCardEvent(id(), service, next(), arrayOf(arrayOf("d", subj), arrayOf("rank", rank.toString())), "", "")
+    ) = UserAssertionEvent(id(), service, next(), arrayOf(arrayOf("d", subj), arrayOf("rank", rank.toString())), "", "")
 
     /** More dirty subjects than one gate slice holds, so a round is more than one slice. */
     private fun manySubjects(n: Int = TrustRecompute.GATE_SLICE + 100) = (1..n).map { it.toString(16).padStart(64, '0') }
@@ -78,7 +78,7 @@ class ProjectionLedgerTest {
 
     private fun list10040(serviceKey: String = service) = TrustProviderListEvent(id(), observer, next(), arrayOf(arrayOf("30382:rank", serviceKey, "wss://scores.example.com/")), "", "")
 
-    private fun card(rank: Int) = ContactCardEvent(id(), service, next(), arrayOf(arrayOf("d", subject), arrayOf("rank", rank.toString())), "", "")
+    private fun card(rank: Int) = UserAssertionEvent(id(), service, next(), arrayOf(arrayOf("d", subject), arrayOf("rank", rank.toString())), "", "")
 
     private fun note() = MetadataEvent(id(), "cc".repeat(32), next(), emptyArray(), """{"name":"n"}""", "")
 
@@ -140,7 +140,7 @@ class ProjectionLedgerTest {
 
             // Two services named by the observer, each with a card to project.
             projection.put(cardFor(subject, 40).toDoc())
-            projection.put(ContactCardEvent(id(), service2, next(), arrayOf(arrayOf("d", subject), arrayOf("followers", "70")), "", "").toDoc())
+            projection.put(UserAssertionEvent(id(), service2, next(), arrayOf(arrayOf("d", subject), arrayOf("followers", "70")), "", "").toDoc())
             // One provider per DIMENSION: naming two under `30382:rank` names
             // only the last. `rank` and `followers` are the two the projection
             // reads, so this is the smallest list that queues two walks.
@@ -311,7 +311,7 @@ class ProjectionLedgerTest {
 
             val subjects = (1..600).map { it.toString(16).padStart(64, '0') }
             subjects.forEach { subj ->
-                projection.put(ContactCardEvent(id(), service, next(), arrayOf(arrayOf("d", subj), arrayOf("rank", "42")), "", "").toDoc())
+                projection.put(UserAssertionEvent(id(), service, next(), arrayOf(arrayOf("d", subj), arrayOf("rank", "42")), "", "").toDoc())
             }
             projection.put(list10040().toDoc())
             index.searches = 0
@@ -361,7 +361,7 @@ class ProjectionLedgerTest {
             val cards = TrustRecompute.PROJECT_PAGE * 10
             (1..cards).forEach { n ->
                 val subj = n.toString(16).padStart(64, '0')
-                projection.put(ContactCardEvent(id(), service, next(), arrayOf(arrayOf("d", subj), arrayOf("rank", "7")), "", "").toDoc())
+                projection.put(UserAssertionEvent(id(), service, next(), arrayOf(arrayOf("d", subj), arrayOf("rank", "7")), "", "").toDoc())
             }
             projection.put(list10040().toDoc())
 
@@ -533,7 +533,7 @@ class ProjectionLedgerTest {
                     landed = true
                     // 100 cards for OTHER subjects: a delta past DELTA_ADD_MAX,
                     // persisted as one marker-doc put.
-                    d.projection.putAll((1..100).map { i -> ContactCardEvent(id(), service, next(), arrayOf(arrayOf("d", i.toString(16).padStart(64, 'e')), arrayOf("rank", "1")), "", "").toDoc() })
+                    d.projection.putAll((1..100).map { i -> UserAssertionEvent(id(), service, next(), arrayOf(arrayOf("d", i.toString(16).padStart(64, 'e')), arrayOf("rank", "1")), "", "").toDoc() })
                     val marker = assertNotNull(d.marker(), "the marker still stands")
                     assertTrue(ServiceKey(service) in marker.followerCounts, "the marker still names the service the round is walking")
                 }
@@ -554,7 +554,7 @@ class ProjectionLedgerTest {
         runBlocking {
             val d = Deferred()
             // No 10040 at all: every card is by an unmapped signer.
-            d.projection.putAll((1..100).map { i -> ContactCardEvent(id(), service, next(), arrayOf(arrayOf("d", i.toString(16).padStart(64, 'a')), arrayOf("rank", "1")), "", "").toDoc() })
+            d.projection.putAll((1..100).map { i -> UserAssertionEvent(id(), service, next(), arrayOf(arrayOf("d", i.toString(16).padStart(64, 'a')), arrayOf("rank", "1")), "", "").toDoc() })
             assertNull(d.marker(), "no work was left, so no marker stands")
             // The per-event path applies its cell inline (or, unmapped, nothing)
             // and leaves no work either; a list naming a fresh service is what

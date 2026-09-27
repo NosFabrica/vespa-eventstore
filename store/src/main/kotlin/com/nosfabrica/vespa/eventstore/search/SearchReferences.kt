@@ -37,11 +37,12 @@ import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
 import com.vitorpamplona.quartz.nip01Core.tags.events.ETag
 import com.vitorpamplona.quartz.nip01Core.tags.people.PTag
 import com.vitorpamplona.quartz.nip32Labeling.LabelEvent
-import com.vitorpamplona.quartz.nip51Lists.followList.FollowListEvent
-import com.vitorpamplona.quartz.nip51Lists.peopleList.PeopleListEvent
+import com.vitorpamplona.quartz.nip51Lists.followSet.FollowSetEvent
+import com.vitorpamplona.quartz.nip51Lists.mediaStarterPack.MediaStarterPackEvent
+import com.vitorpamplona.quartz.nip51Lists.starterPack.StarterPackEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.addressables.AddressableAssertionEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.events.EventAssertionEvent
-import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import com.vitorpamplona.quartz.utils.Hex
 
 /**
@@ -77,7 +78,7 @@ import com.vitorpamplona.quartz.utils.Hex
  * | 1985 | NIP-32 label | every `e` / `p` / `a` tag (`r` and `t` are not nostr records) |
  * | 30382-30384 | NIP-85 assertion | the `d` tag: a pubkey, an event id, an a-coordinate |
  * | 30392-30394 | Trusted List | the member tag this kind's last digit denotes: `p` / `e` / `a` |
- * | 30000, 39089 | NIP-51 people list / follow pack | every `p` tag |
+ * | 30000, 39089, 39092 | NIP-51 people list / follow pack / media follow pack | every `p` tag |
  *
  * The 5-suffixed pair (30385, 30395) carries NIP-73 EXTERNAL identifiers —
  * urls, ISBNs, podcast guids. There is no nostr event to add for those, so
@@ -99,9 +100,11 @@ internal object SearchReferences {
     const val PROFILE_KIND = 0
 
     /**
-     * NIP-51 LISTS OF PEOPLE — a people list (30000) and a follow pack (39089),
-     * both of which carry a searchable title and name their members in `p`
-     * tags.
+     * NIP-51 LISTS OF PEOPLE — a people list (30000), a follow pack (39089) and
+     * a media follow pack (39092, the same pack for picture and short-video
+     * clients), all of which carry a searchable title and name their members
+     * in `p` tags. 39092 was missing until the 28bf170f92 bump's audit: it was
+     * searchable, and ranked, and then spliced nobody.
      *
      * WHY THEY ARE HERE AT ALL. A reader who curates a list called `Verified
      * Human` is answering the query "verified human" with the people on it, and
@@ -129,7 +132,7 @@ internal object SearchReferences {
      * rank under this reader — which is the honest reading of "somebody I trust
      * put this person on a list and said nothing more about them".
      */
-    val PEOPLE_LISTS: Set<Kind> = setOf(PeopleListEvent.KIND, FollowListEvent.KIND)
+    val PEOPLE_LISTS: Set<Kind> = setOf(FollowSetEvent.KIND, StarterPackEvent.KIND, MediaStarterPackEvent.KIND)
 
     /**
      * The Trusted List and Trusted Assertion families — the kinds that only
@@ -152,7 +155,7 @@ internal object SearchReferences {
      */
     val DECLARATIONS: Set<Kind> =
         setOf(
-            ContactCardEvent.KIND,
+            UserAssertionEvent.KIND,
             EventAssertionEvent.KIND,
             AddressableAssertionEvent.KIND,
             UserTrustedListEvent.KIND,
@@ -201,8 +204,8 @@ internal object SearchReferences {
         } else {
             when (pointer) {
                 LabelEvent.KIND, EventAssertionEvent.KIND, EventTrustedListEvent.KIND -> true
-                ContactCardEvent.KIND, UserTrustedListEvent.KIND -> PROFILE_KIND in into
-                PeopleListEvent.KIND, FollowListEvent.KIND -> PROFILE_KIND in into
+                UserAssertionEvent.KIND, UserTrustedListEvent.KIND -> PROFILE_KIND in into
+                FollowSetEvent.KIND, StarterPackEvent.KIND, MediaStarterPackEvent.KIND -> PROFILE_KIND in into
                 AddressableAssertionEvent.KIND, AddressableTrustedListEvent.KIND -> into.any { it.isAddressable() }
                 else -> false
             }
@@ -233,7 +236,7 @@ internal object SearchReferences {
                 )
             }
 
-            ContactCardEvent.KIND -> {
+            UserAssertionEvent.KIND -> {
                 References(pubKeys = listOfNotNull(event.tags.subjectKey()))
             }
 
@@ -270,7 +273,7 @@ internal object SearchReferences {
                 )
             }
 
-            PeopleListEvent.KIND, FollowListEvent.KIND -> {
+            FollowSetEvent.KIND, StarterPackEvent.KIND, MediaStarterPackEvent.KIND -> {
                 // Every public `p` tag, and no confidence: see [PEOPLE_LISTS].
                 // The PRIVATE half of a NIP-51 list is NIP-44 encrypted to its
                 // owner and a store holds no signer, so a reader who keeps a
