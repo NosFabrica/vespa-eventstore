@@ -5,20 +5,30 @@ app = "1.0.1"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"
 # Quartz from JitPack (amethyst @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
-# a53cafd577 = amethyst main @ 2026-09-27: the merge of amethyst #4214 (NIP-FE's review
-# fixes), plus a translations sync. NOTHING THIS STORE CALLS MOVES: the range touches only
-# nipFERelayOverHttp and nip01Core/relay/server (the relay engine's session and policies),
-# and neither this store's jar nor the engine's references a class in either package. It is
-# pinned so the relay that serves this store can move its own quartz to a53cafd577 (it now
-# runs its HTTP commands on quartz's HttpRelayHandler) without `force(libs.quartz)` overriding
-# this toml's pin -- the arrow `ec16988e3a -> a53cafd577` its resolved graph carried until
-# this lands.
+# fcd76d2075 = amethyst main @ 2026-09-27: the merge of amethyst #4231. NOTHING THIS STORE CALLS
+# MOVES: in quartz/ the range touches nipFERelayOverHttp (NIP-FE's simpler, published form: one
+# client frame POSTed to the relay's URL, and a client side), RelaySession (an additive
+# receive(text, parsed)), NIP-49, a new Bech32Transcription and LibSodiumInstance; neither this
+# store's jar nor the engine's references a class in any of them. Pinned so vespa-relay, which moved
+# to fcd76d2075 for the new NIP-FE, resolves quartz without `force(libs.quartz)` overriding this
+# pin -- the arrow `a53cafd577 -> fcd76d2075` its graph carries until this lands.
 #
+# Prev a53cafd577 (2026-09-27: amethyst #4214, NIP-FE's review fixes; nothing this store called
+# moved, pinned for the relay the same way).
 # Prev ec16988e3a (2026-09-27: amethyst #4222 returned Quartz's SQLite store to REPLACED,
 # `replaced:` / OK false, for a stale replaceable, which this store never left; #4215 before it
 # (1cfb6e922f) gave decentralized lists, text tracks and release notes their own extractor
 # branches, derived data a corpus picks up with reindexFullTextSearch()).
-quartz = "a53cafd577"
+# Prev 28bf170f92 (2026-09-26: event classes renamed to their NIP names; Quartz's SQLite
+# store answered a stale replaceable with SUPERSEDED, `duplicate:` / OK true, which this store
+# did not follow and ec16988e3a reverted upstream; 142 -> 150 reachable
+# searchable kinds, eight new classes on the catch-all; jackson-module-kotlin and kotlin-reflect leave
+# the classpath).
+# Prev a8e8778265 (2026-09-10: 133 -> 144 searchable kind values, all eleven on the
+# catch-all; SearchableEvent grows the read-path forEachIndexableField, no reindex).
+# Prev cecc3287b2 (2026-09-01: 17 catch-all kinds split into title/body roles, four
+# affiliation URLs, six doubled `t`-tag scans dropped; a ranking backfill).
+quartz = "fcd76d2075"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 # Matches what Quartz brings transitively; Gradle would resolve to it regardless.
