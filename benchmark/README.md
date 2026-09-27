@@ -983,6 +983,13 @@ Ruled out on the same corpus, so they need not be re-tried:
 | 4 match threads on feed shapes | no gain; a deep scan got slower (514 → 592 ms) |
 | a dedicated `d_tag` / address attribute | `#d` is already a hash-dictionary posting on `tag_index`: 0–5 ms engine; a same-sized `id in (…)` lookup (the type such a field would get) saves 0–3 ms, for a second copy of every `d` in attribute memory |
 
+Watching it live: every speculative read books `IngestStats` stages —
+`recency.speculative` (the read, timed), `.attempt` (each windowed query, timed)
+and one zero-time counter per outcome: `.first` / `.widened` (pages the windows
+proved) or `.fallback.<narrow|attempts|since|partial|window>` (reads that ran
+unwindowed, and why). Attempts per read and the share proven in one query are
+the numbers to read on a real cluster before trusting this table's.
+
 Correctness gates: the probe's same-page check (above), `VespaEventIndexTest`
 (every strategy serves one page over each branch — full first window, widening,
 narrow fallback, deep `until`, tight caller `since`, limit past the corpus;

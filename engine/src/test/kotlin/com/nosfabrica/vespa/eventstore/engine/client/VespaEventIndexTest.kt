@@ -55,6 +55,19 @@ class VespaEventIndexTest {
 
     private var seq = 0
 
+    /**
+     * Calls booked under each `recency.speculative*` stage, keyed by the suffix.
+     * [IngestStats] is process-global, so tests compare a before/after pair.
+     */
+    private fun speculativeCalls(): Map<String, Long> =
+        IngestStats
+            .snapshot()
+            .filterKeys { it.startsWith(VespaEventIndex.SPECULATIVE_STAGE) }
+            .mapKeys { it.key.removePrefix(VespaEventIndex.SPECULATIVE_STAGE) }
+            .mapValues { it.value.calls }
+
+    private fun Map<String, Long>.minus(before: Map<String, Long>): Map<String, Long> = mapValues { (k, v) -> v - (before[k] ?: 0L) }.filterValues { it != 0L }
+
     private companion object {
         val BUSY = "b1".repeat(32)
         val WEEKLY = "b2".repeat(32)
@@ -542,8 +555,10 @@ class VespaEventIndexTest {
             seedStrategyCorpus(now)
             VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.SPECULATIVE).use { speculative ->
                 val before = mock.searchRequests.size
+                val booked = speculativeCalls()
                 val page = speculative.search(EventQuery(kinds = listOf(1), limit = 10, nowSecs = now))
                 val sent = mock.searchRequests.drop(before)
+                assertEquals(mapOf("" to 1L, ".attempt" to 1L, ".first" to 1L), speculativeCalls().minus(booked), "one read, one attempt, proven first")
                 assertEquals((1..10).map { now - it }, page.map { it.createdAt })
                 assertEquals(1, sent.size, "a full first window is the whole answer: ${sent.map { it["yql"] }}")
                 assertTrue(sent.single().getValue("yql").contains("created_at >= ${now - RecencyPlanner.FIRST_WINDOW}"), "the one query is the windowed one")
@@ -585,7 +600,9 @@ class VespaEventIndexTest {
             seedStrategyCorpus(now)
             VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.SPECULATIVE).use { speculative ->
                 val before = mock.searchRequests.size
+                val booked = speculativeCalls()
                 val page = speculative.search(EventQuery(authors = listOf(QUIET), limit = 3, nowSecs = now))
+                assertEquals(mapOf("" to 1L, ".attempt" to 1L, ".fallback.narrow" to 1L), speculativeCalls().minus(booked), "one attempt, then the narrow-read fallback")
                 val sent = mock.searchRequests.drop(before).map { it.getValue("yql") }
                 assertEquals(listOf(1_005L, 1_004L, 1_003L), page.map { it.createdAt })
                 assertEquals(2, sent.size, "one windowed attempt, then the unwindowed read: $sent")

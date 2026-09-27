@@ -503,33 +503,65 @@ class VespaEventIndex(
     private suspend fun speculative(
         q: EventQuery,
         limit: Int,
-    ): List<VespaSummary> {
-        // Anchored at the NEWEST END OF THE DATA, not merely of the request: an
-        // `until` in the future (clients send far-future sentinels) would put
-        // every window over empty time and spend the attempts on nothing. Any
-        // anchor is exact — `since` bounds only the old side, so whatever lies
-        // between the anchor and `until` (future-dated notes included) is
-        // inside every window — so the anchor is free to be the request clock.
-        val now = q.nowSecs ?: (System.currentTimeMillis() / 1000)
-        val anchor = q.until?.let { minOf(it, now) } ?: now
-        var window = RecencyPlanner.FIRST_WINDOW
-        var attempts = 0
-        while (window <= RecencyPlanner.MAX_WINDOW && attempts < RecencyPlanner.MAX_ATTEMPTS) {
-            val since = anchor - window
-            if (q.since != null && since <= q.since) break
-            val page =
-                try {
-                    recallSummaries(q.copy(since = since), planned = true)
-                } catch (_: PartialAnswer) {
+    ): List<VespaSummary> =
+        IngestStats.timed(SPECULATIVE_STAGE) {
+            // Anchored at the NEWEST END OF THE DATA, not merely of the request: an
+            // `until` in the future (clients send far-future sentinels) would put
+            // every window over empty time and spend the attempts on nothing. Any
+            // anchor is exact — `since` bounds only the old side, so whatever lies
+            // between the anchor and `until` (future-dated notes included) is
+            // inside every window — so the anchor is free to be the request clock.
+            val now = q.nowSecs ?: (System.currentTimeMillis() / 1000)
+            val anchor = q.until?.let { minOf(it, now) } ?: now
+            var window = RecencyPlanner.FIRST_WINDOW
+            var attempts = 0
+            // Why the loop stopped without a proven page — booked as a counter
+            // below, so an operator can tell a narrow corpus from a mistuned rule.
+            var fallback = "window"
+            while (window <= RecencyPlanner.MAX_WINDOW) {
+                if (attempts >= RecencyPlanner.MAX_ATTEMPTS) {
+                    fallback = "attempts"
                     break
                 }
-            attempts++
-            if (page.size >= limit) return page
-            if (RecencyPlanner.projected(window, page.size, limit) > RecencyPlanner.NARROW_HORIZON) break
-            window = RecencyPlanner.widen(window, page.size, limit)
+                val since = anchor - window
+                if (q.since != null && since <= q.since) {
+                    fallback = "since"
+                    break
+                }
+                val page =
+                    try {
+                        IngestStats.timed("$SPECULATIVE_STAGE.attempt") { recallSummaries(q.copy(since = since), planned = true) }
+                    } catch (_: PartialAnswer) {
+                        fallback = "partial"
+                        break
+                    }
+                attempts++
+                if (page.size >= limit) {
+                    outcome(if (attempts == 1) "first" else "widened")
+                    return@timed page
+                }
+                if (RecencyPlanner.projected(window, page.size, limit) > RecencyPlanner.NARROW_HORIZON) {
+                    fallback = "narrow"
+                    break
+                }
+                window = RecencyPlanner.widen(window, page.size, limit)
+            }
+            outcome("fallback.$fallback")
+            recallSummaries(planner.shipped(q), planned = true)
         }
-        return recallSummaries(planner.shipped(q), planned = true)
-    }
+
+    /**
+     * One [RecencyStrategy.SPECULATIVE] outcome, as a zero-time [IngestStats]
+     * counter under [SPECULATIVE_STAGE] (the `walk.refused.*` idiom): `first`
+     * and `widened` are pages the windows proved, `fallback.<why>` reads that
+     * ran unwindowed — `narrow` (the rate projected past the horizon),
+     * `attempts` (the cap), `since` (the caller's own window was tighter),
+     * `partial` (an attempt the engine cut), `window` (past MAX_WINDOW).
+     * With `recency.speculative` (every read, timed) and `.attempt` (every
+     * windowed query, timed), the ratios answer what the local benchmark could
+     * only estimate: how often a real cluster's reads prove out in one query.
+     */
+    private suspend fun outcome(name: String) = IngestStats.timed("$SPECULATIVE_STAGE.$name") { }
 
     /**
      * The overfetch must not change WHICH PROFILE serves the query. [TIE_SLACK]
@@ -1701,6 +1733,9 @@ class VespaEventIndex(
          * id tiebreak resolves in memory (see [recallSummaries]).
          */
         const val TIE_SLACK = 64
+
+        /** The [IngestStats] stage every [RecencyStrategy.SPECULATIVE] read books under; see [outcome]. */
+        const val SPECULATIVE_STAGE = "recency.speculative"
 
         /**
          * Ids per cursor page of a snapshot walk — see [visitIds].
