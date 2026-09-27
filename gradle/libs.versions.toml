@@ -57,8 +57,10 @@ mavenPublish = "0.37.0"
 quartz = "28bf170f92"
 coroutines = "1.11.0"
 serialization = "1.11.0"
-sqlite = "2.7.0"
-okhttp = "5.4.0"
+# Matches what Quartz brings transitively; Gradle would resolve to it regardless.
+sqlite = "2.7.1"
+# Likewise Quartz's own okhttp line (it already was, at the previous pin).
+okhttp = "5.5.0"
 ktor = "3.5.1"
 # Vespa's official feed client: async document writes multiplexed over HTTP/2.
 vespa-feed = "8.714.25"

@@ -64,12 +64,11 @@ class EngineResourcesTest {
      */
     @Test
     fun `the index exposes headroom rather than orphaning the probe`() {
-        // JAVA reflection, not `::class.members`: that needs kotlin-reflect, which only
-        // ever reached this classpath through Quartz's jackson-module-kotlin, and Quartz
-        // dropped both at 28bf170f92. A suspend fun keeps its name on the JVM, so the
-        // question asked is the same one.
-        val onIndex = VespaEventIndex::class.java.methods.map { it.name }
-        assertTrue("engineHeadroom" in onIndex, "the probe must be reachable from the index, not dead code beside it: $onIndex")
+        // A callable reference, not `::class.members`: it fails at COMPILE time if the
+        // member goes, and needs no kotlin-reflect (which left this classpath with
+        // Quartz's jackson-module-kotlin at 28bf170f92).
+        val probe = VespaEventIndex::engineHeadroom
+        assertEquals("engineHeadroom", probe.name, "the probe must be reachable from the index, not dead code beside it")
     }
 
     /** The state the panel exists to make visible: feed blocked on ONE node blocks the cluster. */

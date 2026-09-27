@@ -21,7 +21,7 @@
 package com.nosfabrica.vespa.eventstore
 
 import kotlin.test.Test
-import kotlin.test.assertTrue
+import kotlin.test.assertEquals
 
 /**
  * THE TEST THAT WAS MISSING FROM #132. That PR shipped the headroom parser and
@@ -33,9 +33,9 @@ import kotlin.test.assertTrue
 class EngineHeadroomExposedTest {
     @Test
     fun `the store's front door offers engine headroom`() {
-        // Java reflection: kotlin-reflect left the classpath with Quartz's
-        // jackson-module-kotlin (28bf170f92). A suspend fun keeps its JVM name.
-        val exposed = VespaEventStore::class.java.methods.map { it.name }
-        assertTrue("engineHeadroom" in exposed, "no page can show what the store does not expose: $exposed")
+        // A callable reference: a missing member fails the COMPILE, and it needs no
+        // kotlin-reflect (gone with Quartz's jackson-module-kotlin at 28bf170f92).
+        val exposed = VespaEventStore::engineHeadroom
+        assertEquals("engineHeadroom", exposed.name, "no page can show what the store does not expose")
     }
 }

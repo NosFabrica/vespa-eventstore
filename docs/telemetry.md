@@ -561,7 +561,7 @@ deferred (§9).
 | --- | --- | --- | --- |
 | health strip | REQ / COUNT / search rate | P | per `Activity` |
 | | ingest rate | P | `putAll` under `BatchInsert` |
-| | admitted / duplicate / replaced | **O** | §10.1 |
+| | admitted / duplicate / superseded | **O** | §10.1 |
 | | ranked-search p99 | P | §10.3 |
 | | feed in-flight, latency, retries | X + **G** | `VespaFeed.statusLine()` exists |
 | | degraded responses | E | `SearchCoverage` already parsed |
