@@ -15,7 +15,7 @@ under `experimental/`**. The categorized list below may lag behind —
 | 04 | `nip04Dm/` | EncryptedDmEvent.kt | Legacy encrypted DMs (deprecated for NIP-17) |
 | 05 | `nip05DnsIdentifiers/` | UserHexResolver.kt, Nip05Client.kt | Internet identifiers; `resolveUserHexOrNull` resolves hex/npub/nprofile/`name@domain` → pubkey (see references/nip05-identifiers.md) |
 | 06 | `nip06KeyDerivation/` | Mnemonic-related | BIP-39 key derivation |
-| 09 | `nip09Deletions/` | DeletionEvent.kt | Event deletion requests (kind 5) |
+| 09 | `nip09Deletions/` | DeletionRequestEvent.kt | Event deletion requests (kind 5) |
 | 11 | `nip11RelayInfo/` | RelayInformation.kt | Relay metadata |
 | 13 | `nip13Pow/` | ProofOfWork.kt | Proof of work |
 | 14 | `nip14Subject/` | Subject tags | Subject tags for text notes |
@@ -33,7 +33,7 @@ ent for NIP-04) |
 | 10 | `nip10Notes/` | TextNoteEvent.kt | Text notes with threading (kind 1) |
 | 18 | `nip18Reposts/` | RepostEvent.kt, GenericRepostEvent.kt | Reposts (kind 6, 16) |
 | 22 | `nip22Comments/` | CommentEvent.kt | Comments (kind 1111) |
-| 23 | `nip23LongContent/` | LongTextNoteEvent.kt | Long-form content (kind 30023) |
+| 23 | `nip23LongContent/` | LongFormContentEvent.kt | Long-form content (kind 30023) |
 | 25 | `nip25Reactions/` | ReactionEvent.kt | Reactions (kind 7) |
 | 31 | `nip31Alts/` | Alt tags | Alt description tags |
 | 36 | `nip36SensitiveContent/` | Content warnings | Content warning tags |

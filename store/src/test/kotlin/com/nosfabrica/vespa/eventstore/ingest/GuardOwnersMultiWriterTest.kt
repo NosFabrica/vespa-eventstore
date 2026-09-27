@@ -29,7 +29,7 @@ import com.nosfabrica.vespa.eventstore.ingest.Rejections
 import com.nosfabrica.vespa.eventstore.runtime.WriterTopology
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.normalizeRelayUrl
-import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
+import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -77,7 +77,7 @@ class GuardOwnersMultiWriterTest {
     private fun tombstone(
         author: String,
         vararg targets: String,
-    ) = DeletionEvent(id(), author, 2_000, targets.map { arrayOf("e", it) }.toTypedArray(), "", "")
+    ) = DeletionRequestEvent(id(), author, 2_000, targets.map { arrayOf("e", it) }.toTypedArray(), "", "")
 
     /**
      * The acceptance case, made deterministic by the explicit barrier: the

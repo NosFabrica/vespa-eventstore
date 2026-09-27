@@ -26,7 +26,7 @@ import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryReputationIndex
 import com.nosfabrica.vespa.eventstore.mapping.toDoc
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
-import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -62,7 +62,7 @@ class TrustKeyingMigrationTest {
     private fun card(
         about: String,
         rank: Int,
-    ) = ContactCardEvent(id(), service, 1_000L + seq, arrayOf(arrayOf("d", about), arrayOf("rank", rank.toString()), arrayOf("followers", "12")), "", "")
+    ) = UserAssertionEvent(id(), service, 1_000L + seq, arrayOf(arrayOf("d", about), arrayOf("rank", rank.toString()), arrayOf("followers", "12")), "", "")
 
     /** The old shape, written straight to the index and the reputation store: events without their projection, cells under the observer. */
     // A sentinel key owned by no subsystem here — the sweep must leave it alone.

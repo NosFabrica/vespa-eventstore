@@ -27,7 +27,7 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.runtime.BackgroundFailures
 import com.nosfabrica.vespa.eventstore.runtime.DEFAULT_GUARD_REFRESH_MILLIS
 import com.nosfabrica.vespa.eventstore.runtime.WriterTopology
-import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
+import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -280,7 +280,7 @@ internal class GuardOwners(
         // Independent corpus walks run CONCURRENTLY: the first-insert
         // stall is one walk's wall time, not two in series.
         coroutineScope {
-            val deleters = async { index.scanAuthors(EventQuery(kinds = listOf(DeletionEvent.KIND))) }
+            val deleters = async { index.scanAuthors(EventQuery(kinds = listOf(DeletionRequestEvent.KIND))) }
             val vanishers = async { index.scanAuthors(EventQuery(kinds = listOf(RequestToVanishEvent.KIND))) }
             Blooms(bloomOf(deleters.await()), bloomOf(vanishers.await()))
         }

@@ -36,7 +36,7 @@ import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.normalizeRelayUrl
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
-import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import com.vitorpamplona.quartz.utils.EventFactory
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
@@ -448,7 +448,7 @@ class TrustedListIndexingTest {
             // score — as a 30382 — does land the cell. So the null above is the
             // list being ignored, not the 10040 attribution being miswired here.
             trustStore.insert(
-                ContactCardEvent(id(), service, next(), arrayOf(arrayOf("d", subject), arrayOf("rank", "80")), "", ""),
+                UserAssertionEvent(id(), service, next(), arrayOf(arrayOf("d", subject), arrayOf("rank", "80")), "", ""),
             )
             assertEquals(serviceCells(service to 80), assertNotNull(reputations.get(subject)).influenceScores)
         }

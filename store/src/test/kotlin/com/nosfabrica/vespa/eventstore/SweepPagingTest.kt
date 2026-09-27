@@ -26,7 +26,7 @@ import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
-import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
+import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
@@ -166,7 +166,7 @@ class SweepPagingTest {
             store.batchInsert((1..CORPUS).map { article(at = 4_000L + it, slug = "slug-$it") })
 
             index.queries.clear()
-            store.insert(DeletionEvent(id(), alice, 5_000L, arrayOf(arrayOf("a", "30023:$alice:slug-7")), "", ""))
+            store.insert(DeletionRequestEvent(id(), alice, 5_000L, arrayOf(arrayOf("a", "30023:$alice:slug-7")), "", ""))
             val reads = index.queries.toList()
 
             assertEquals(
@@ -192,7 +192,7 @@ class SweepPagingTest {
             store.insert(Event(id(), alice, 4_000L, 10002, emptyArray(), "relays", ""))
 
             index.queries.clear()
-            store.insert(DeletionEvent(id(), alice, 5_000L, arrayOf(arrayOf("a", "10002:$alice:")), "", ""))
+            store.insert(DeletionRequestEvent(id(), alice, 5_000L, arrayOf(arrayOf("a", "10002:$alice:")), "", ""))
             val reads = index.queries.toList()
 
             assertEquals(0, store.query<Event>(listOf(Filter(kinds = listOf(10002)))).size, "the relay list is gone")

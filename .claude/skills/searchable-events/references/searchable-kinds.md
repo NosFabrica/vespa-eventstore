@@ -75,7 +75,7 @@ Separator legend: **NL** = `joinToString("\n")`, **SP** = `joinToString(" ")`.
 | 12473 | BirdexEvent | experimental/birdstar | `(listOfNotNull(summary()) + speciesNames())` NL |
 | 15128 | RootSiteEvent | nip5aStaticWebsites | `listOfNotNull(title(), description())` NL |
 | 15129 | RootNappletEvent | nip5dNapplets | `listOfNotNull(title(), description())` NL |
-| 30000 | PeopleListEvent | nip51Lists/peopleList | `listOfNotNull(titleOrName(), description())` NL |
+| 30000 | FollowSetEvent | nip51Lists/followSet | `listOfNotNull(titleOrName(), description())` NL |
 | 30001 | OldBookmarkListEvent | nip51Lists/bookmarkList | `listOfNotNull(title())` NL |
 | 30002 | RelaySetEvent | nip51Lists/relaySets | `listOfNotNull(title(), description())` NL |
 | 30003 | LabeledBookmarkListEvent | nip51Lists/labeledBookmarkList | `listOfNotNull(titleOrName(), description())` NL |
@@ -88,7 +88,7 @@ Separator legend: **NL** = `joinToString("\n")`, **SP** = `joinToString(" ")`.
 | 30018 | ProductEvent | nip15Marketplace/product | `productData()?.let { (listOfNotNull(it.name, it.description) + categories()).joinToString("\n") } ?: ""` |
 | 30019 | MarketplaceEvent | nip15Marketplace/marketplace | `marketplaceData()?.let { listOfNotNull(it.name, it.about).joinToString("\n") } ?: ""` |
 | 30020 | AuctionEvent | nip15Marketplace/auction | `auctionData()?.let { (listOfNotNull(it.name, it.description) + tags.hashtags()).joinToString("\n") } ?: ""` |
-| 30023 | LongTextNoteEvent | nip23LongContent | `listOfNotNull(title(), summary(), content)` NL |
+| 30023 | LongFormContentEvent | nip23LongContent | `listOfNotNull(title(), summary(), content)` NL |
 | 30030 | EmojiPackEvent | nip30CustomEmoji/pack | `listOfNotNull(titleOrName(), description(), content)` NL |
 | 30040 | PublicationIndexEvent | experimental/publications | `listOfNotNull(title(), author(), summary())` NL |
 | 30041 | PublicationContentEvent | experimental/publications | `listOfNotNull(title(), content)` NL |
@@ -107,7 +107,7 @@ Separator legend: **NL** = `joinToString("\n")`, **SP** = `joinToString(" ")`.
 | 30312 | MeetingSpaceEvent | nip53LiveActivities/meetingSpaces | `listOfNotNull(room(), summary(), content)` NL |
 | 30313 | MeetingRoomEvent | nip53LiveActivities/meetingSpaces | `listOfNotNull(title(), summary())` NL |
 | 30315 | StatusEvent | nip38UserStatus | `content` |
-| 30382 | ContactCardEvent | nip85TrustedAssertions/users | `(listOfNotNull(petName(), summary()) + topics())` NL — public tags only, never the NIP-44 content |
+| 30382 | UserAssertionEvent | nip85TrustedAssertions/users | `(listOfNotNull(petName(), summary()) + topics())` NL — public tags only, never the NIP-44 content |
 | 30392 | UserTrustedListEvent | experimental/trustedLists/users | inherited `TrustedListEvent`: `title() ?: ""` — the label only; `metric`/`d` are machine ids and `content` is a JSON echo of the membership |
 | 30393 | EventTrustedListEvent | experimental/trustedLists/events | inherited `TrustedListEvent`: `title() ?: ""` |
 | 30394 | AddressableTrustedListEvent | experimental/trustedLists/addressables | inherited `TrustedListEvent`: `title() ?: ""` |
@@ -144,7 +144,7 @@ Separator legend: **NL** = `joinToString("\n")`, **SP** = `joinToString(" ")`.
 | 38192 | Ps1SaveEvent | experimental/ps1saves | `listOfNotNull(summary(), saveTitle(), region(), filename())` NL |
 | 38383 | P2POrderEvent | nip69P2pOrderEvents | `(listOfNotNull(makerName(), currency()) + paymentMethods().orEmpty()).joinToString(" ")` (SP) |
 | 39000 | GroupMetadataEvent | nip29RelayGroups/metadata | `listOfNotNull(name(), about())` NL |
-| 39089 | FollowListEvent | nip51Lists/followList | `listOfNotNull(title(), description())` NL |
+| 39089 | StarterPackEvent | nip51Lists/starterPack | `listOfNotNull(title(), description())` NL |
 | 39092 | MediaStarterPackEvent | nip51Lists/mediaStarterPack | `listOfNotNull(title(), description())` NL |
 | 39701 | WebBookmarkEvent | nipB0WebBookmarks | `listOfNotNull(title(), description())` NL |
 | 40002 | StreamMessageV2Event | buzz/stream | `content` |

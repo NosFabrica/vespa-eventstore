@@ -90,7 +90,7 @@ class LnZapEvent(...) : Event(...)
 
 ### Long-Form Content (kind 30023)
 ```kotlin
-class LongTextNoteEvent(...) : BaseAddressableEvent(...)
+class LongFormContentEvent(...) : BaseAddressableEvent(...)
     // Blog posts, articles
     // Addressable via kind:pubkey:d-tag
 ```
@@ -279,7 +279,7 @@ val metadata2 = MetadataEvent.createNew(name = "Alice Updated", picture = "url2"
 ### Event Deletion
 ```kotlin
 // Delete events
-val deletion = DeletionEvent.create(
+val deletion = DeletionRequestEvent.create(
     deleteEvents = listOf(eventId1, eventId2),
     reason = "Spam",
     signer = signer

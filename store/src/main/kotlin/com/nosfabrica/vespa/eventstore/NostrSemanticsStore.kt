@@ -62,10 +62,10 @@ import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import com.vitorpamplona.quartz.nip01Core.store.StoreQueryContext
 import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
-import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
+import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
-import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import com.vitorpamplona.quartz.utils.Hex
 import kotlinx.coroutines.sync.Mutex
 import kotlin.coroutines.coroutineContext
@@ -309,9 +309,9 @@ class NostrSemanticsStore(
      * relay is asked to store.
      */
     private fun touchesTrust(event: Event): Boolean =
-        event.kind == ContactCardEvent.KIND ||
+        event.kind == UserAssertionEvent.KIND ||
             event.kind == TrustProviderListEvent.KIND ||
-            event is DeletionEvent ||
+            event is DeletionRequestEvent ||
             event is RequestToVanishEvent
 
     private suspend fun <T> lockedForWrite(
@@ -399,7 +399,7 @@ class NostrSemanticsStore(
 
     /** [batchInsert]'s body; split because `withActivity` cannot express a non-local return. */
     private suspend fun batchInsertUnder(events: List<Event>): List<IEventStore.InsertOutcome> {
-        if (events.any { it is DeletionEvent || it is RequestToVanishEvent }) {
+        if (events.any { it is DeletionRequestEvent || it is RequestToVanishEvent }) {
             return lockedForBatch(events) { if (events.size < BULK_MIN) events.map { admission.tryAdmit(it) } else bulkMixed.run(events) }
         }
         // Bulk-or-loop is decided on the batch the CALLER sent, not on a

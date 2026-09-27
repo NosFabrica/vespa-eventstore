@@ -30,10 +30,10 @@ import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip10Notes.TextNoteEvent
 import com.vitorpamplona.quartz.nip15Marketplace.stall.StallEvent
 import com.vitorpamplona.quartz.nip17Dm.messages.ChatMessageEvent
-import com.vitorpamplona.quartz.nip23LongContent.LongTextNoteEvent
+import com.vitorpamplona.quartz.nip23LongContent.LongFormContentEvent
 import com.vitorpamplona.quartz.nip34Git.repository.GitRepositoryEvent
 import com.vitorpamplona.quartz.nip35Torrents.TorrentEvent
-import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import com.vitorpamplona.quartz.nip89AppHandlers.definition.AppDefinitionEvent
 import com.vitorpamplona.quartz.nip99Classifieds.ClassifiedsEvent
 import com.vitorpamplona.quartz.nipB0WebBookmarks.WebBookmarkEvent
@@ -158,7 +158,7 @@ class SearchExtractorsTest {
     @Test
     fun `a declared shortcode is rewritten in a titled kind too`() {
         val tags = arrayOf(arrayOf("d", "post"), arrayOf("title", "My :verified: Post"), arrayOf("emoji", "verified", "https://static/v.png"))
-        val fields = SearchExtractors.extract(LongTextNoteEvent("8".repeat(64), alice, 1L, tags, "body", ""))
+        val fields = SearchExtractors.extract(LongFormContentEvent("8".repeat(64), alice, 1L, tags, "body", ""))
         assertEquals("My Post", fields.primary)
         assertEquals("xemojiverified", fields.secondary, "the badge tier is the same for every kind")
     }
@@ -173,14 +173,14 @@ class SearchExtractorsTest {
                 arrayOf("t", "nostr"),
                 arrayOf("emoji", "verified", "https://static/v.png"),
             )
-        val fields = SearchExtractors.extract(LongTextNoteEvent("c".repeat(64), alice, 1L, tags, "body", ""))
+        val fields = SearchExtractors.extract(LongFormContentEvent("c".repeat(64), alice, 1L, tags, "body", ""))
         assertEquals("tl;dr\nnostr\nxemojiverified", fields.secondary)
     }
 
     @Test
     fun `long-form decomposes into title, summary plus hashtags, content`() {
         val tags = arrayOf(arrayOf("d", "post"), arrayOf("title", "My Post"), arrayOf("summary", "tl;dr"), arrayOf("t", "nostr"), arrayOf("t", "search"))
-        val fields = SearchExtractors.extract(LongTextNoteEvent("2".repeat(64), alice, 1L, tags, "the whole article", ""))
+        val fields = SearchExtractors.extract(LongFormContentEvent("2".repeat(64), alice, 1L, tags, "the whole article", ""))
         assertEquals(SearchFields(primary = "My Post", secondary = "tl;dr\nnostr search", text = "the whole article"), fields)
     }
 
@@ -331,18 +331,18 @@ class SearchExtractorsTest {
                 arrayOf("t", "podcast"),
                 arrayOf("rank", "90"),
             )
-        val fields = SearchExtractors.extract(ContactCardEvent("e".repeat(64), alice, 1L, tags, "", ""))
+        val fields = SearchExtractors.extract(UserAssertionEvent("e".repeat(64), alice, 1L, tags, "", ""))
         assertEquals(SearchFields(primary = "Bramblecast", secondary = "vouched by two independent raters\npodcast"), fields)
     }
 
     @Test
     fun `a contact card with only topics still indexes them`() {
-        // The shape quartz's own ContactCardEvent.build() produces: petname and
+        // The shape quartz's own UserAssertionEvent.build() produces: petname and
         // summary go in the NIP-44 content, so the public card carries nothing
         // but its topics. They must survive the fold into the secondary column
         // rather than collapsing the extraction to NONE.
         val tags = arrayOf(arrayOf("d", alice), arrayOf("t", "podcast"), arrayOf("t", "bitcoin"), arrayOf("rank", "90"))
-        val fields = SearchExtractors.extract(ContactCardEvent("f".repeat(64), alice, 1L, tags, "encrypted", ""))
+        val fields = SearchExtractors.extract(UserAssertionEvent("f".repeat(64), alice, 1L, tags, "encrypted", ""))
         assertEquals(SearchFields(secondary = "podcast bitcoin"), fields)
     }
 

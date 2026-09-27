@@ -34,7 +34,7 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.mapping.toDoc
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
-import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -80,14 +80,14 @@ class TrustReconcilerTest {
         followers: Int? = 120,
         at: Long = next(),
         eventId: String = id(),
-    ): ContactCardEvent {
+    ): UserAssertionEvent {
         val tags =
             buildList {
                 add(arrayOf("d", about))
                 rank?.let { add(arrayOf("rank", it.toString())) }
                 followers?.let { add(arrayOf("followers", it.toString())) }
             }.toTypedArray()
-        return ContactCardEvent(eventId, signer, at, tags, "", "")
+        return UserAssertionEvent(eventId, signer, at, tags, "", "")
     }
 
     @Test
@@ -410,8 +410,8 @@ class TrustReconcilerTest {
             assertEquals(listOf(service2), report.orphans)
             assertEquals(2, report.scoresSwept)
             assertEquals(2, report.servicesSeen, "both signers were examined")
-            assertEquals(0, index.count(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service2))), "the orphan corpus is gone")
-            assertEquals(1, index.count(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service))), "the mapped service is untouched")
+            assertEquals(0, index.count(EventQuery(kinds = listOf(UserAssertionEvent.KIND), authors = listOf(service2))), "the orphan corpus is gone")
+            assertEquals(1, index.count(EventQuery(kinds = listOf(UserAssertionEvent.KIND), authors = listOf(service))), "the mapped service is untouched")
             assertEquals(serviceCells(service to 87), reputations.get(subject)?.influenceScores, "an orphan carried no cell, so none was lost")
             assertTrue(reconciler.verify().isClean(), "the sweep leaves the projection consistent")
             assertTrue(reconciler.sweepOrphanScores().isClean(), "second run finds nothing")
@@ -427,7 +427,7 @@ class TrustReconcilerTest {
 
             val report = reconciler.sweepOrphanScores()
             assertTrue(report.isClean())
-            assertEquals(1, index.count(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service2))))
+            assertEquals(1, index.count(EventQuery(kinds = listOf(UserAssertionEvent.KIND), authors = listOf(service2))))
         }
 
     /**
@@ -446,7 +446,7 @@ class TrustReconcilerTest {
             assertTrue(report.refused, "no 10040 stored -> nothing swept")
             assertFalse(report.isClean(), "a refusal examined nothing; it is not an all-clear")
             assertEquals(0, report.scoresSwept)
-            assertEquals(2, index.count(EventQuery(kinds = listOf(ContactCardEvent.KIND))), "every card survives")
+            assertEquals(2, index.count(EventQuery(kinds = listOf(UserAssertionEvent.KIND))), "every card survives")
         }
 
     @Test
@@ -461,7 +461,7 @@ class TrustReconcilerTest {
             assertTrue(report.dryRun)
             assertEquals(listOf(service2), report.orphans)
             assertEquals(2, report.scoresSwept, "the count it WOULD delete")
-            assertEquals(3, index.count(EventQuery(kinds = listOf(ContactCardEvent.KIND))), "no writes")
+            assertEquals(3, index.count(EventQuery(kinds = listOf(UserAssertionEvent.KIND))), "no writes")
         }
 
     /**
@@ -504,7 +504,7 @@ class TrustReconcilerTest {
             val report = racing.sweepOrphanScores()
             assertEquals(listOf(service2), report.remapped)
             assertTrue(report.orphans.isEmpty(), "it was never swept")
-            assertEquals(1, index.count(EventQuery(kinds = listOf(ContactCardEvent.KIND), authors = listOf(service2))), "its cards stand")
+            assertEquals(1, index.count(EventQuery(kinds = listOf(UserAssertionEvent.KIND), authors = listOf(service2))), "its cards stand")
         }
 
     /** Every mutating reconciler batch must run inside the gate (the store's writer lock). */

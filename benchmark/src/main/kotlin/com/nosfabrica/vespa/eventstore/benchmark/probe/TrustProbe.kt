@@ -29,7 +29,7 @@ import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
-import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -100,11 +100,11 @@ object TrustProbe {
     }
 
     private fun freshCard(
-        template: ContactCardEvent,
+        template: UserAssertionEvent,
         rank: Int,
-    ): ContactCardEvent {
+    ): UserAssertionEvent {
         val tags = template.tags.map { t -> if (t.isNotEmpty() && t[0] == "rank") arrayOf("rank", rank.toString()) else t }.toTypedArray()
-        return ContactCardEvent(hexId(), template.pubKey, template.createdAt + 1_000, tags, "", "")
+        return UserAssertionEvent(hexId(), template.pubKey, template.createdAt + 1_000, tags, "", "")
     }
 
     private fun resigned(
@@ -136,7 +136,7 @@ object TrustProbe {
     /** Insert [cards] one by one through the client path; returns each insert's wall time in ms. */
     private suspend fun timedInserts(
         store: IEventStore,
-        cards: List<ContactCardEvent>,
+        cards: List<UserAssertionEvent>,
     ): List<Long> =
         cards.map { c ->
             val t0 = System.nanoTime()
@@ -154,7 +154,7 @@ object TrustProbe {
         store: VespaEventStore,
         label: String,
         walkSeconds: Long,
-        templates: List<ContactCardEvent>,
+        templates: List<UserAssertionEvent>,
         mutation: suspend () -> Unit,
     ) {
         println("== $label")
@@ -223,8 +223,8 @@ object TrustProbe {
                         store.awaitTrustProjection()
                         println("  loaded and settled")
                     }
-                    val stored = cardsA.filterIsInstance<ContactCardEvent>().associateBy { it.pubKey + (it.aboutUser() ?: "") }.values
-                    val republished = stored.map { c -> ContactCardEvent(hexId(), c.pubKey, c.createdAt + 100_000, c.tags, "", "") }
+                    val stored = cardsA.filterIsInstance<UserAssertionEvent>().associateBy { it.pubKey + (it.aboutUser() ?: "") }.values
+                    val republished = stored.map { c -> UserAssertionEvent(hexId(), c.pubKey, c.createdAt + 100_000, c.tags, "", "") }
                     println("== 6. the provider republishes ${republished.size} cards (every one a supersession)")
                     val derive0 = stage("proj.fetch.derive")
                     val t0 = System.nanoTime()
@@ -264,7 +264,7 @@ object TrustProbe {
                 println("  projection settled %.1fs after the feeds started".format((System.nanoTime() - t0) / 1e9))
                 println("  " + statsLine("write", "proj.write", "proj.fetch.derive", "lock.ingest.hold", "lock.ingest.trust.wait", "lock.gate.hold"))
 
-                val templates = cardsA.filterIsInstance<ContactCardEvent>().shuffled(rnd).take(400)
+                val templates = cardsA.filterIsInstance<UserAssertionEvent>().shuffled(rnd).take(400)
                 println("== 2. single card inserts, drain idle (client path)")
                 val single = timedInserts(store, templates.take(20).map { freshCard(it, rank = 55) })
                 val t1 = System.nanoTime()
@@ -285,7 +285,7 @@ object TrustProbe {
                 // ---- 6. a swap to a provider NOBODY has named: the one walk left.
                 // The second corpus re-signed under a fresh key, stored while unnamed.
                 val providerC = "7".repeat(64)
-                val cardsC = cardsB.filterIsInstance<ContactCardEvent>().map { c -> ContactCardEvent(hexId(), providerC, c.createdAt, c.tags, "", "") }
+                val cardsC = cardsB.filterIsInstance<UserAssertionEvent>().map { c -> UserAssertionEvent(hexId(), providerC, c.createdAt, c.tags, "", "") }
                 feed(store, cardsC, batch, "cards C (${providerC.take(8)}, named by nobody)")
                 val page0 = stage("proj.fetch.page")
                 watchWalk(store, "6. observer SWAPS to a NEVER-named provider (${providerB.take(8)} -> ${providerC.take(8)}): the service walk", walkSeconds, templates.drop(200)) {
@@ -366,7 +366,7 @@ object TrustProbe {
             }
         }
 
-    private fun rankOf(card: Event): Int? = (card as? ContactCardEvent)?.rank()
+    private fun rankOf(card: Event): Int? = (card as? UserAssertionEvent)?.rank()
 
     /**
      * WHAT THE LENS SERVES after the swap: one kind-1 note per probe author —
@@ -386,7 +386,7 @@ object TrustProbe {
             val byRank = LinkedHashMap<Int, String>()
             for (c in cards.sortedBy { it.id }) {
                 val r = rankOf(c) ?: continue
-                val subject = (c as ContactCardEvent).aboutUser() ?: continue
+                val subject = (c as UserAssertionEvent).aboutUser() ?: continue
                 if (r in listOf(95, 70, 45, 20, 5) && r !in byRank) byRank[r] = subject
                 if (byRank.size == 5) break
             }
@@ -394,8 +394,8 @@ object TrustProbe {
         }
         val fromB = pick(cardsB)
         val fromA = pick(cardsA).filter { (s, _) -> fromB.none { it.first == s } }
-        val ranksB = cardsB.associate { ((it as ContactCardEvent).aboutUser() ?: "") to rankOf(it) }
-        val ranksA = cardsA.associate { ((it as ContactCardEvent).aboutUser() ?: "") to rankOf(it) }
+        val ranksB = cardsB.associate { ((it as UserAssertionEvent).aboutUser() ?: "") to rankOf(it) }
+        val ranksA = cardsA.associate { ((it as UserAssertionEvent).aboutUser() ?: "") to rankOf(it) }
         val authors = (fromB + fromA).map { it.first }
         val notes =
             authors.mapIndexed { i, a ->

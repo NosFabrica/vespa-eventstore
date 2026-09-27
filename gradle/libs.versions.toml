@@ -5,54 +5,66 @@ app = "1.0.1"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"
 # Quartz from JitPack (amethyst @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
-# a8e8778265 = amethyst main @ 2026-09-10. NOT bumped for this store, for once:
-# the range is upstream's own work, and everything this store reads out of it is
-# byte-identical. IEventStore, SQLiteEventStore, Filter, SearchQuery,
-# SearchFieldExtractor and IndexableFields do not have one changed line between
-# the two pins, so filter semantics, the parity gate, and the per-kind
-# DECOMPOSITION the last two bumps were about all hold exactly as they were.
+# 28bf170f92 = amethyst main @ 2026-09-26 (PR #4212 merged). MOVED BECAUSE THE RELAY
+# ASKED: #4212 is the relay's own change (NIP-FE, relay commands over HTTP, and the
+# engine seams it needs), and the relay's `force(libs.quartz)` would otherwise run
+# THIS store on a quartz it was never compiled against.
 #
-# The range is 220 commits; two things in it reach this store.
+# That is not hypothetical this time. The range is 958 commits, and one of them
+# (6d2c37c346) renames 110 event classes to their NIP names with no alias left
+# behind. Two of them are on this store's write and trust paths:
+#   DeletionEvent    -> DeletionRequestEvent   (nip09Deletions; EventAdmission's
+#                                               `instanceof` on every insert)
+#   ContactCardEvent -> UserAssertionEvent     (nip85TrustedAssertions.users)
+# plus three the tests and the benchmark name (LongTextNoteEvent ->
+# LongFormContentEvent, PeopleListEvent -> nip51Lists.followSet.FollowSetEvent,
+# FollowListEvent -> nip51Lists.starterPack.StarterPackEvent). A store jar built on
+# a8e8778265 and run on this quartz dies with NoClassDefFoundError on its first
+# insert, so the relay cannot move its pin until this one has.
 #
-#   SearchableEvent grows a READ path. `forEachIndexableField(visitor)` hands over
-#     the same fields `indexableContent()` joins, without building the joined
-#     string — for Amethyst's per-keystroke scan of the whole cache, where a
-#     string per event per keystroke is not affordable. It and
-#     `indexableSeparator()` are both DEFAULTED on the interface, and every
-#     override the range adds re-expresses a join that already existed: no
-#     `indexableContent()` body moved (the range removes no line mentioning one),
-#     and this store only ever calls the WRITE path, through SearchFieldExtractor.
-#     Upstream added `IndexableContentGoldenTest` and an `indexable-content.golden`
-#     resource in the same range to keep it that way. So: nothing to implement
-#     here, and NO REINDEX — every kind already stored indexes the same words on
-#     the same columns as before.
+# What this store reads out of the range, beyond the renames:
 #
-#   The searchable SET moves, for the first time in several bumps: 133 -> 144 kind
-#     values (130 -> 141 classes). SearchFieldExtractor gained no branch for any of
-#     the 11, so all of them land in its `is SearchableEvent ->` catch-all — the
-#     whole `indexableContent()` in the BODY role, titles included. That is the
-#     same 236x title discount the last two bumps fixed for 19 other kinds, and it
-#     takes the same fix (one branch each, upstream). Left as a note rather than
-#     held for, because it is a RANKING gap on kinds a relay has almost none of
-#     yet, not a recall one. The 11, with what their catch-all body carries:
-#       31 / 32 / 33   external / hardcopy / prompt citation   title, summary, content
-#       818            wiki merge request                      content
-#       30040          publication index                       title, author, summary
-#       30041          publication content                     title, content
-#       30045          bookshelf directory                     title, summary, content
-#       30142          learning resource                       title, summary, content
-#       31987          relay review                            content
-#       32176          Blossom piece index                     title, summary, content
-#       34259          entity rating                           content
-#     Recall on these is FORWARD-ONLY until `reindexFullTextSearch()` runs: events
-#     of those kinds already stored carry NO search fields, because when they were
-#     ingested nothing parsed them as searchable at all. Unlike the last two bumps'
-#     backfill, this one changes what is FINDABLE rather than how it ranks, so it
-#     is the one worth actually scheduling.
+#   IEventStore, Filter, FilterMatcher, SearchQuery, IndexableFields: no changed line.
 #
-# Prev cecc3287b2 (2026-09-01: 17 catch-all kinds split into title/body roles, four
-# affiliation URLs, six doubled `t`-tag scans dropped; a ranking backfill).
-quartz = "a8e8778265"
+#   SearchFieldExtractor: renames only — every branch keeps its fields, roles and
+#     weights, so every kind already stored indexes the same words on the same
+#     columns. NO REINDEX for what is already searchable.
+#
+#   The searchable SET grows 142 -> 150 kinds (every kind 0..65535 built through
+#     EventFactory, both jars; the previous note's 144 counted differently). None
+#     leave. All eight fall through the `is SearchableEvent ->` catch-all, body role:
+#       7516 / 37516 / 37517   NIP-CC geocache found log / listing / curation list
+#       9998 / 9999            Tapestry decentralized list header / item
+#       39998 / 39999          the same, addressable
+#       39307                  NIP-71 video text track
+#     The listing's `cacheName()` and the list headers' titles take the body-role
+#     title discount the last bumps fixed for other kinds: a RANKING gap, fixed
+#     upstream with one branch each. Recall is FORWARD-ONLY until
+#     `reindexFullTextSearch()` runs, as last time: events of these kinds already
+#     stored were ingested as plain events and carry no search fields.
+#
+#   SQLiteEventStore (the parity gate's reference): insert failures are classified
+#     against the database instead of the driver's message, and a superseded
+#     replaceable is now `duplicate:` (RejectionReason.SUPERSEDED). This store still
+#     answers a superseded replaceable with `replaced:` (Rejections.REPLACED): the two
+#     reference stores now DISAGREE on that reason, which the parity gate does not
+#     compare (it compares what is stored and served, not rejection text).
+#
+#   The relay engine answers a `duplicate:` rejection with OK TRUE (NIP-01), where it
+#     answered false. So a relay on this store now acknowledges an exact resend, and
+#     still refuses a superseded replaceable with OK false `replaced:` — NIP-01 allows
+#     either for that case; adopting SUPERSEDED is a separate, visible choice.
+#
+#   Quartz no longer depends on jackson-module-kotlin (jackson-databind instead),
+#     which was the only thing putting kotlin-reflect on this build's classpath. Two
+#     tests read members by reflection; they now declare kotlin-reflect themselves.
+#
+# DIRECTION: a8e8778265 is a strict ancestor of this.
+#   git merge-base --is-ancestor a8e8778265 28bf170f92   # verified
+#
+# Prev a8e8778265 (2026-09-10: SearchableEvent's read path, 133 -> 144 kind values
+# by that count, no reindex for stored kinds).
+quartz = "28bf170f92"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 sqlite = "2.7.0"

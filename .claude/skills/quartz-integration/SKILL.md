@@ -690,9 +690,9 @@ val (dmEvent, giftWrap) = NIP17Factory.create(
 ### NIP-23 — Long-form article (kind 30023)
 
 ```kotlin
-import com.vitorpamplona.quartz.nip23LongContent.LongTextNoteEvent
+import com.vitorpamplona.quartz.nip23LongContent.LongFormContentEvent
 
-val template = LongTextNoteEvent.build(
+val template = LongFormContentEvent.build(
     body = markdownContent,
     title = "My Article",
     image = "https://example.com/cover.jpg",
@@ -895,7 +895,7 @@ use `Nip11RelayInformation.fromJson(json)`.
 | 1 | Text note | 10 | `TextNoteEvent` |
 | 3 | Follow list | 02 | `ContactListEvent` |
 | 4 | Legacy DM | 04 | `PrivateDmEvent` |
-| 5 | Deletion | 09 | `DeletionEvent` |
+| 5 | Deletion | 09 | `DeletionRequestEvent` |
 | 6 | Repost | 18 | `RepostEvent` |
 | 7 | Reaction | 25 | `ReactionEvent` |
 | 14 | Chat message (sealed) | 17 | `NIP17GroupMessage` |
@@ -903,7 +903,7 @@ use `Nip11RelayInformation.fromJson(json)`.
 | 9734 | Zap request | 57 | `LnZapRequestEvent` |
 | 9735 | Zap receipt | 57 | `LnZapEvent` |
 | 10002 | Relay list | 65 | `AdvertisedRelayListEvent` |
-| 30023 | Long-form content | 23 | `LongTextNoteEvent` |
+| 30023 | Long-form content | 23 | `LongFormContentEvent` |
 
 ## Related Skills
 

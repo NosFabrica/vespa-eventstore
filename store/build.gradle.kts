@@ -9,6 +9,9 @@ dependencies {
     api(libs.quartz)
     api(project(":engine"))
     implementation(libs.kotlinx.coroutines)
+    // Quartz stopped carrying jackson-module-kotlin, which was the only thing that put
+    // kotlin-reflect on this classpath; EngineHeadroomExposedTest reads members by reflection.
+    testImplementation(kotlin("reflect"))
     testImplementation(kotlin("test"))
     testImplementation(testFixtures(project(":engine")))
     // Virtual-time test clock: measures read/write serialization deterministically

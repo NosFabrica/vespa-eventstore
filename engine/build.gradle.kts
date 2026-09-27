@@ -44,6 +44,9 @@ dependencies {
     testFixturesImplementation(libs.kotlinx.coroutines)
     testFixturesImplementation(libs.jetty.server)
     testFixturesImplementation(libs.jetty.http2.server)
+    // Quartz stopped carrying jackson-module-kotlin, which was the only thing that put
+    // kotlin-reflect on this classpath; EngineResourcesTest reads members by reflection.
+    testImplementation(kotlin("reflect"))
     testImplementation(kotlin("test"))
 }
 

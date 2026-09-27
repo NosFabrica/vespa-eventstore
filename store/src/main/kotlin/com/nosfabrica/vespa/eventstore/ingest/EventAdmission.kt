@@ -30,7 +30,7 @@ import com.vitorpamplona.quartz.nip01Core.core.isEphemeral
 import com.vitorpamplona.quartz.nip01Core.core.isReplaceable
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.owner
-import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
+import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
 import com.vitorpamplona.quartz.nip40Expiration.isExpired
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import kotlinx.coroutines.async
@@ -95,7 +95,7 @@ internal class EventAdmission(
             }
         }
         when {
-            event is DeletionEvent -> {
+            event is DeletionRequestEvent -> {
                 deletions.applyDeletion(event)
                 index.put(event.toDoc())
                 guards.noteDeletionStored(event.pubKey)
