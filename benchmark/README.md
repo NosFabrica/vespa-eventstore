@@ -1063,6 +1063,19 @@ beside it: batch-put p50 176 ms under shipped reads at 200 ev/s against 46–50
 ms under speculative ones, because the engine is no longer saturated. 60/60
 sampled pages identical with the writes in place; every probe event removed.
 
+**Page reuse (2026-09-27).** A short attempt used to be thrown away and its
+window re-fetched by the next one. It now stays: a short page holds every match
+in `[boundary, anchor]`, so later attempts — and the fallback — ask only for
+`until = boundary - 1` with the remaining limit. A/B against the commit before
+it, same probes, before run twice around after (median ms, speculative without
+memory — where reuse acts): follow 300 limit 500 39.5 / 40.9 → **29.2**; 50
+quiet authors 25.4 / 20.5 → **17.2**; gated follow 300 limit 500 37.9 / 40.7 →
+**31.6**; small-page shapes unchanged. With memory most reads are one query and
+nothing moves; under load, summary time per REQ 2.3–3.4 → 1.9–2.3 ms and
+throughput +3–6% — inside run noise, and this harness is transfer-bound there
+anyway. What it buys is the COLD read: before the memory warms, after its TTL,
+and the long tail of shapes seen once.
+
 Watching it live: every speculative read books `IngestStats` stages —
 `recency.speculative` (the read, timed), `.attempt` (each windowed query, timed)
 and one zero-time counter per outcome: `.first` / `.widened` (pages the windows
