@@ -147,6 +147,17 @@ class SearchCountIT {
                             "sort:recent: the count follows the same gate onto the exact profile",
                         )
                         assertEquals(gatedCount, index.count(recent), "same gate, same match set, same number")
+
+                        // TERMLESS: the observer-gated plain COUNT — no search at
+                        // all, the lens alone. On Vespa 8.731 a hit-less count on
+                        // this shape came back UNGATED (rank-score-drop-limit never
+                        // ran: 107,878 vs the 54,077 the page serves), which is
+                        // why EventIndex.count asks for one hit. The strictly-
+                        // smaller half is the assertion a hit-less count fails.
+                        val plainGated = recent.copy(search = null)
+                        assertEquals(index.search(plainGated).size, index.count(plainGated), "a termless gated count equals its page")
+                        assertEquals(10, index.count(plainGated), "only the trusted(50) author's notes clear a floor of 20, with no term either")
+                        assertTrue(index.count(plainGated) < matched, "a termless gated count is strictly smaller than the match set")
                     }
                 }
             }

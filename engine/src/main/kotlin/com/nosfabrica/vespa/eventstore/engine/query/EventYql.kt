@@ -444,9 +444,11 @@ object EventYql {
      * query that is NOT the size of the match set: the trust profiles map a
      * below-floor author to the sentinel and `rank-score-drop-limit` deletes the
      * hit, so the served count is strictly smaller. Vespa reports the served
-     * number as the response's own `totalCount` ([SearchRootFields]), which is
-     * why a count on those profiles is one hit-less query rather than a page the
-     * caller has to materialize and measure.
+     * number as the response's own `totalCount` ([SearchRootFields]) — once
+     * the ranking pass has run, which a `hits=0` query may skip (it does on
+     * Vespa 8.731, see VespaEventIndex.count) — which is why a count on those
+     * profiles is one ONE-hit query rather than a page the caller has to
+     * materialize and measure.
      *
      * The two MATCH-PHASE profiles are the exception, and they split:
      *

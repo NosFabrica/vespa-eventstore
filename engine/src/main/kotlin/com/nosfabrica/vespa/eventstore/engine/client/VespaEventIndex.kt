@@ -1308,7 +1308,16 @@ class VespaEventIndex(
                     root?.let { GroupingResults.firstCount(it) } ?: 0
                 } else {
                     val vq = EventYql.build(q.copy(ranking = ranked)) ?: return@withProfileFallback 0
-                    searchRoot(vq, hits = 0).fields.totalCount
+                    // ONE hit, never zero: with `hits=0` Vespa answered without
+                    // running first-phase ranking at all, so `rank-score-drop-limit`
+                    // never fired and `totalCount` came back as the UNGATED match
+                    // count — measured on Vespa 8.731 against a 44M-doc relay
+                    // corpus (2026-09-26): an observer-gated kind-1 week read
+                    // 107,878 at hits=0 and 54,077 at hits=1, the latter equal to
+                    // the page the same query serves; the same with a search term
+                    // (3,714 vs 2,676). One hit forces the ranking pass the gate
+                    // lives in, for the price of one document summary.
+                    searchRoot(vq, hits = 1).fields.totalCount
                 }
             }
         }
