@@ -1008,6 +1008,33 @@ Every shape resolves in ONE engine query once remembered, and the one shape
 speculation made slower is back at the shipped cost. Shapes that already took
 one query are unchanged within noise.
 
+**The edges (`recencyEdgeProbe`, 2026-09-27)** — the shapes a table of dominant
+shapes flatters, same corpus, every check page-identical across shipped /
+speculative (memory off) / speculative + memory:
+
+- **A relay-shaped workload.** 6,000 REQs over 1,206 distinct follow lists
+  (50–800 of the top 20k authors, Zipf-popular, 30% gated), 8 concurrent:
+  wall 62.8 s → 43.7 s → **35.4 s**; p50 59 → 44 → **32 ms**; p95 223 → 125 →
+  **101 ms**; p99 384 → 305 → 330 ms. Random follow lists are thinner than the
+  top authors, so a cold read's first window rarely held the page (66% widened,
+  1.99 queries per REQ); the memory hit 82% of reads and brought it to 1.18.
+  The honest headline is 1.8×, not the dominant-shape table's 10×.
+- **Pagination.** 100 pages of the global feed: 38.7 s → 2.7 s; gated: 69.2 s
+  → 1.1 s. 200 gated reads at random depths out to a year: **717 s → 1.5 s**
+  (shipped pays the full-scan gated profile, 3.6 s a read).
+- **The band.** Inside it, 3–5× (gated limit 2,000: 439 → 92 ms). Past it,
+  a GATED read had no pager and scanned its whole match set under every
+  strategy — 4.8–5.0 s at limits 2,001–5,000, the relay's `max_limit` being
+  5,000. Gated reads now window at any limit: **94–216 ms**. Plain reads past
+  the band page as before; cold speculation adds a guess per page (limit
+  5,000: 258 → 328 ms), the memory removes it (256 ms).
+- **A stale memory.** A hashtag's burst (#music, 14/day → 341), learned quiet
+  and read at the peak, and the reverse: one engine query either way — never
+  more than shipped, fewer than cold (3). The frozen corpus inflates every
+  variant's absolute time here (it continues past the simulated clock, which
+  a live relay's does not), so read the query counts, not the milliseconds.
+- **A far-future `until`.** One query: 180 → 7 ms (gated 398 → 8).
+
 Watching it live: every speculative read books `IngestStats` stages —
 `recency.speculative` (the read, timed), `.attempt` (each windowed query, timed)
 and one zero-time counter per outcome: `.first` / `.widened` (pages the windows
@@ -1042,6 +1069,7 @@ timing is also a proof:
 | `dedupProbe` | the bulk-dedup existence check: full-summary vs summary-free variants at mirror hit rates, chunk × fan-out curves, REQ latency under dedup load | reuses a `corpusLoad` corpus (ids sampled off the live store) | every variant must return the identical member set |
 | `extractBench` | the write path's own derivation (`SearchExtractors`), decomposed by stage, with `--badges N` for the every-event-wears-one corpus | any captured JSON export (`--corpus`), no Vespa | — |
 | `searchTrace` | one NIP-50 term, split per clause family and per rank profile (ablations + Vespa's blueprint cost) | any loaded store — capture one with `exportLoad` | every row prints `totalCount`, so a variant that got fast by matching less shows it |
+| `recencyEdgeProbe` | the speculative strategy's edges: distinct follow lists under concurrency, `until` pagination and random depths, the band edge to 5,000, a stale memory across a hashtag burst, a far-future `until` (`BENCH_SECTIONS`) | any loaded store, read-only | every check must serve the identical page across shipped / speculative / + memory |
 | `recencyStrategyProbe` | the four `RecencyStrategy` options on the dominant feed shapes, plain and gated (`BENCH_OBSERVER`), with engine queries per REQ | any loaded store, read-only (`BENCH_NOW` pins the clock to a frozen corpus) | all four strategies must serve the identical page, ids and order |
 | `transportProbe` | read-transport isolation: JDK h1 / OkHttp h1 / OkHttp h2c on identical queries across body sizes | any loaded store | — |
 | `trustProbe` | the trust write path under a real lens: bulk card ingest, single card inserts, a 10040 re-sign, a provider swap (with cards inserted on a clock during each walk to read the gate wait), a provider re-publishing its corpus (`--load-then-republish`), and the lensed page after the swap (`--query-only`) — the harness behind `docs/service-keyed-trust.md` | captured 10040s and two providers' 30382 corpora (JSON arrays; the doc says how they were pulled from staging) | the lensed `sort:rank` page must follow the CURRENT 10040's provider |

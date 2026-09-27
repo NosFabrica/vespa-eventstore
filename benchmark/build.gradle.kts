@@ -233,3 +233,14 @@ tasks.register<JavaExec>("recencyStrategyProbe") {
     mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.probe.RecencyStrategyProbe")
     maxHeapSize = System.getenv("BENCH_HEAP") ?: "2g"
 }
+
+// The speculative strategy's EDGES — distinct follow lists under concurrency,
+// until-pagination, the band edge, a trending hashtag against a stale memory,
+// a far-future until — with a same-page check. See RecencyEdgeProbe.kt.
+tasks.register<JavaExec>("recencyEdgeProbe") {
+    group = "verification"
+    description = "Drive the speculative recency strategy's edge cases against a loaded cluster and assert identical pages"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.probe.RecencyEdgeProbe")
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "2g"
+}
