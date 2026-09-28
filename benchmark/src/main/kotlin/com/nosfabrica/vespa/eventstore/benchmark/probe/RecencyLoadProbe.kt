@@ -85,6 +85,8 @@ object RecencyLoadProbe {
     private class Template(
         val query: EventQuery,
         val depthDays: Long? = null,
+        /** The REQ class for the tail breakdown: follow / global / tag / notif / deep, `GATED ` prefixed when lensed. */
+        val label: String = "",
     )
 
     @JvmStatic
@@ -222,6 +224,12 @@ object RecencyLoadProbe {
 
         fun maybeGated(q: EventQuery) = if (rnd.nextDouble() < gatedShare) q.copy(ranking = EventYql.RANK_RECENCY_GATED, observer = observer, rankKey = lensKey, minRank = minRank) else q
 
+        fun labeled(
+            cls: String,
+            q: EventQuery,
+            depthDays: Long? = null,
+        ) = maybeGated(q).let { Template(it, depthDays, (if (it.ranking == EventYql.RANK_RECENCY_GATED) "GATED " else "") + cls + " lim${it.limit}") }
+
         // 2,000 users, Zipf-popular: each has one follow list, re-asked on every visit.
         val users = (0 until 2_000).map { (0 until rnd.nextInt(50, 801)).map { pool[rnd.nextInt(pool.size)] }.distinct() }
         val weights = DoubleArray(users.size) { 1.0 / Math.pow((it + 1).toDouble(), 1.1) }
@@ -232,23 +240,23 @@ object RecencyLoadProbe {
                 in 0 until 50 -> {
                     val x = rnd.nextDouble() * cumulative.last()
                     val u = cumulative.binarySearch(x).let { i -> if (i >= 0) i else -i - 1 }.coerceAtMost(users.size - 1)
-                    Template(maybeGated(EventQuery(kinds = listOf(1, 6, 7), authors = users[u], limit = listOf(50, 100, 500)[u % 3])))
+                    labeled("follow", EventQuery(kinds = listOf(1, 6, 7), authors = users[u], limit = listOf(50, 100, 500)[u % 3]))
                 }
 
                 in 50 until 65 -> {
-                    Template(maybeGated(EventQuery(kinds = if (rnd.nextBoolean()) listOf(1) else listOf(1, 6, 7), limit = if (rnd.nextBoolean()) 50 else 100)))
+                    labeled("global", EventQuery(kinds = if (rnd.nextBoolean()) listOf(1) else listOf(1, 6, 7), limit = if (rnd.nextBoolean()) 50 else 100))
                 }
 
                 in 65 until 75 -> {
-                    Template(maybeGated(EventQuery(kinds = listOf(1), tags = mapOf("t" to listOf(tags[rnd.nextInt(tags.size)])), limit = 50)))
+                    labeled("tag", EventQuery(kinds = listOf(1), tags = mapOf("t" to listOf(tags[rnd.nextInt(tags.size)])), limit = 50))
                 }
 
                 in 75 until 90 -> {
-                    Template(maybeGated(EventQuery(kinds = listOf(1, 6, 7, 9735), tags = mapOf("p" to listOf(byVolume[rnd.nextInt(2_000)])), limit = 100)))
+                    labeled("notif", EventQuery(kinds = listOf(1, 6, 7, 9735), tags = mapOf("p" to listOf(byVolume[rnd.nextInt(2_000)])), limit = 100))
                 }
 
                 else -> {
-                    Template(maybeGated(EventQuery(kinds = listOf(1), limit = 50)), depthDays = rnd.nextLong(1, 366))
+                    labeled("deep", EventQuery(kinds = listOf(1), limit = 50), depthDays = rnd.nextLong(1, 366))
                 }
             }
         }
@@ -293,6 +301,7 @@ object RecencyLoadProbe {
         writeRate: Int? = null,
     ) {
         val latencies = ConcurrentLinkedQueue<Long>()
+        val byClass = java.util.concurrent.ConcurrentHashMap<String, ConcurrentLinkedQueue<Long>>()
         val errors = AtomicInteger()
         val next = AtomicInteger(Random(seed).nextInt(templates.size))
         val q0 = v.queries()
@@ -310,7 +319,9 @@ object RecencyLoadProbe {
                             val t0 = System.nanoTime()
                             try {
                                 v.client.search(stamp(t, clock()))
-                                latencies += System.nanoTime() - t0
+                                val took = System.nanoTime() - t0
+                                latencies += took
+                                byClass.computeIfAbsent(t.label) { ConcurrentLinkedQueue() } += took
                             } catch (e: CancellationException) {
                                 throw e
                             } catch (_: Exception) {
@@ -352,6 +363,20 @@ object RecencyLoadProbe {
                 outcomes,
             ),
         )
+        // WHERE THE TAIL IS: each REQ class's share of the phase and its own
+        // percentiles, heaviest p99 first, and how much of the phase's
+        // slowest 1% it accounts for.
+        if (System.getenv("BENCH_BREAKDOWN") == "1" && n > 0) {
+            val cut = sorted[minOf(n - 1, (n * 0.99).toInt())]
+            println(String.format("    %-24s %6s %8s %8s %8s %9s", "class", "share", "p50 ms", "p95 ms", "p99 ms", "of slow 1%"))
+            byClass.entries
+                .map { (label, qs) -> label to qs.sorted() }
+                .sortedByDescending { (_, xs) -> xs[minOf(xs.size - 1, (xs.size * 0.99).toInt())] }
+                .forEach { (label, xs) ->
+                    fun p(q: Double) = xs[minOf(xs.size - 1, (xs.size * q).toInt())] / 1e6
+                    println(String.format("    %-24s %5.1f%% %8.1f %8.1f %8.1f %8.1f%%", label, 100.0 * xs.size / n, p(0.5), p(0.95), p(0.99), 100.0 * xs.count { it >= cut } / maxOf(1, sorted.count { it >= cut })))
+                }
+        }
     }
 
     /** The engine container's CPU (percent of one core, docker's convention), or null without docker. */
