@@ -1112,6 +1112,34 @@ and the long tail of shapes seen once.
   +0.3 ms over the engine under it. The engine IS the latency: its gains reach
   the client ~1:1.
 
+**Id-first fetch (2026-09-28)** — the fix for the tail above. A limit'd
+newest-first read now resolves its page off the attribute-only `idtime`
+summary (id, created_at — memory, never the document store): the
+`limit + TIE_SLACK` overfetch, the tie window, every speculative attempt and
+every band page. Then ONE `id in (…)` query reads the documents for exactly the
+page. `VESPA_ID_FIRST=0` turns it off. A/B on the same build, off / on / off,
+speculative + memory under the load probe:
+
+| clients | REQ/s | p50 | p95 | p99 |
+|---:|---|---|---|---|
+| 8 | 102 / **150** / 98 | 32 / **26** / 34 ms | 198 / **124** / 215 ms | 1,147 / **694** / 1,065 ms |
+| 32 | 103 / **163** / 111 | 130 / **96** / 120 ms | 827 / **430** / 756 ms | 4,445 / **2,311** / 4,383 ms |
+
++50% throughput and roughly half the tail, because what speculation left
+behind was DOCUMENT reads: `#t` feeds' p99 at 32 clients went 3.1 / 2.7 s →
+0.71 s; `#p` notifications 7.5 / 6.6 s → 5.0 s (still the tail — their `limit`
+documents are cold and a year deep, and are now all that is read). It also
+removes a pathological case: a bulk-published tie group (a provider's 242k
+cards on one second) used to be read WHOLE as documents when a page boundary
+landed in it; it now resolves from ids.
+
+The price is one more round trip, paid where the documents are already hot:
+single warm reads, one at a time, moved 0–5 ms (e.g. global limit 50 7.6 →
+7.3 ms, follow 300 limit 500 25 → 28.5 ms; one noisy gated shape 13–17 → 32
+ms) — every page identical in all three runs. It is on by default because a
+relay's load is concurrent and its corpus larger than memory; a deployment
+whose corpus fits in RAM can turn it off.
+
 Watching it live: every speculative read books `IngestStats` stages —
 `recency.speculative` (the read, timed), `.attempt` (each windowed query, timed)
 and one zero-time counter per outcome: `.first` / `.widened` (pages the windows

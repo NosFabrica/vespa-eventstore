@@ -56,6 +56,14 @@ class VespaEventIndexTest {
     private var seq = 0
 
     /**
+     * The queries that RESOLVE a page, without the id-first hydration (the one
+     * `id in (…)` lookup that reads the documents afterwards — see
+     * VespaEventIndex.hydrate). The strategy tests count attempts; hydration is
+     * pinned by its own tests.
+     */
+    private fun List<Map<String, String>>.pageQueries() = filter { !it.getValue("yql").contains(" where id in (") }
+
+    /**
      * Calls booked under each `recency.speculative*` stage, keyed by the suffix.
      * [IngestStats] is process-global, so tests compare a before/after pair.
      */
@@ -384,11 +392,15 @@ class VespaEventIndexTest {
             seedBulk(List(band + 40) { doc(kind = 1, at = 5_000L + it) })
 
             // At the very top of the band the overfetch must not demote it.
-            mock.searchRankings.clear()
+            val atBand = mock.searchRequests.size
             assertEquals(band, index.search(EventQuery(kinds = listOf(1), limit = band)).size, "the band's own limit is served whole")
             assertEquals(
                 listOf(EventYql.RANK_RECENCY),
-                mock.searchRankings.distinct(),
+                mock.searchRequests
+                    .drop(atBand)
+                    .pageQueries()
+                    .map { it["ranking"] }
+                    .distinct(),
                 "a limit inside the band rides the match-phase profile, overfetch and all",
             )
 
@@ -557,7 +569,7 @@ class VespaEventIndexTest {
                 val before = mock.searchRequests.size
                 val booked = speculativeCalls()
                 val page = speculative.search(EventQuery(kinds = listOf(1), limit = 10, nowSecs = now))
-                val sent = mock.searchRequests.drop(before)
+                val sent = mock.searchRequests.drop(before).pageQueries()
                 assertEquals(mapOf("" to 1L, ".attempt" to 1L, ".first" to 1L), speculativeCalls().minus(booked), "one read, one attempt, proven first")
                 assertEquals((1..10).map { now - it }, page.map { it.createdAt })
                 assertEquals(1, sent.size, "a full first window is the whole answer: ${sent.map { it["yql"] }}")
@@ -581,7 +593,14 @@ class VespaEventIndexTest {
             VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.SPECULATIVE).use { speculative ->
                 val before = mock.searchRequests.size
                 val page = speculative.search(EventQuery(kinds = listOf(1), until = now + 100L * 365 * 86_400, limit = 10, nowSecs = now))
-                assertEquals(1, mock.searchRequests.size - before, "one windowed query, anchored at now")
+                assertEquals(
+                    1,
+                    mock.searchRequests
+                        .drop(before)
+                        .pageQueries()
+                        .size,
+                    "one windowed query, anchored at now",
+                )
                 assertEquals(future.id, page.first().id, "a future-dated note is inside the window and newest")
                 assertEquals(listOf(future.createdAt) + (1..9).map { now - it }, page.map { it.createdAt })
             }
@@ -626,7 +645,11 @@ class VespaEventIndexTest {
                 val booked = speculativeCalls()
                 val page = speculative.search(EventQuery(authors = listOf(QUIET), limit = 3, nowSecs = now))
                 assertEquals(mapOf("" to 1L, ".attempt" to 1L, ".fallback.narrow" to 1L), speculativeCalls().minus(booked), "one attempt, then the narrow-read fallback")
-                val sent = mock.searchRequests.drop(before).map { it.getValue("yql") }
+                val sent =
+                    mock.searchRequests
+                        .drop(before)
+                        .pageQueries()
+                        .map { it.getValue("yql") }
                 assertEquals(listOf(1_005L, 1_004L, 1_003L), page.map { it.createdAt })
                 assertEquals(2, sent.size, "one windowed attempt, then the unwindowed read: $sent")
                 assertTrue(sent[0].contains("created_at >= "), "the attempt is windowed")
@@ -650,7 +673,11 @@ class VespaEventIndexTest {
                 suspend fun read(q: EventQuery): Pair<List<Long>, Int> {
                     val before = mock.searchRequests.size
                     val page = speculative.search(q).map { it.createdAt }
-                    return page to mock.searchRequests.size - before
+                    return page to
+                        mock.searchRequests
+                            .drop(before)
+                            .pageQueries()
+                            .size
                 }
 
                 val narrow = EventQuery(authors = listOf(QUIET), limit = 3, nowSecs = now)
@@ -692,7 +719,11 @@ class VespaEventIndexTest {
                 val q = EventQuery(kinds = listOf(1), limit = 31, nowSecs = now)
                 val before = mock.searchRequests.size
                 val page = speculative.search(q)
-                val yqls = mock.searchRequests.drop(before).map { it.getValue("yql") }
+                val yqls =
+                    mock.searchRequests
+                        .drop(before)
+                        .pageQueries()
+                        .map { it.getValue("yql") }
                 assertEquals(2, yqls.size, "a short window, then one widened attempt: $yqls")
                 val boundary = now - RecencyPlanner.FIRST_WINDOW
                 assertTrue(yqls[1].contains("created_at <= ${boundary - 1}"), "the widened attempt stops below the first window: ${yqls[1]}")
@@ -720,7 +751,11 @@ class VespaEventIndexTest {
                 val q = EventQuery(authors = listOf(QUIET, recent.pubkey), limit = 3, nowSecs = now)
                 val before = mock.searchRequests.size
                 val page = speculative.search(q)
-                val yqls = mock.searchRequests.drop(before).map { it.getValue("yql") }
+                val yqls =
+                    mock.searchRequests
+                        .drop(before)
+                        .pageQueries()
+                        .map { it.getValue("yql") }
                 assertEquals(2, yqls.size, "one windowed attempt, then the fallback: $yqls")
                 val boundary = now - RecencyPlanner.FIRST_WINDOW
                 assertTrue(yqls[1].contains("created_at <= ${boundary - 1}") && !yqls[1].contains("created_at >= "), "the fallback is unwindowed below the boundary: ${yqls[1]}")
@@ -743,8 +778,111 @@ class VespaEventIndexTest {
                 repeat(2) {
                     val before = mock.searchRequests.size
                     speculative.search(narrow)
-                    assertEquals(2, mock.searchRequests.size - before, "no memory: an attempt and the fallback, every time")
+                    assertEquals(
+                        2,
+                        mock.searchRequests
+                            .drop(before)
+                            .pageQueries()
+                            .size,
+                        "no memory: an attempt and the fallback, every time",
+                    )
                 }
+            }
+        }
+
+    /**
+     * ID-FIRST: the page is resolved off the attribute-only `idtime` summary —
+     * overfetch included — and the documents are read ONCE, for exactly the
+     * page's ids. Same page as reading documents all the way.
+     */
+    @Test
+    fun `id-first reads documents only for the page`() =
+        runBlocking {
+            val now = System.currentTimeMillis() / 1000
+            seedStrategyCorpus(now)
+            val q = EventQuery(kinds = listOf(1), limit = 10, nowSecs = now)
+            VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.SPECULATIVE, recencyMemory = false).use { idFirst ->
+                val before = mock.searchRequests.size
+                val page = idFirst.search(q)
+                val sent = mock.searchRequests.drop(before)
+                val resolve = sent.filter { !it.getValue("yql").contains(" where id in (") }
+                val hydrate = sent.filter { it.getValue("yql").contains(" where id in (") }
+                assertTrue(resolve.isNotEmpty() && resolve.all { it["presentation.summary"] == "idtime" && it.getValue("yql").startsWith("select id, created_at from ") }, "every page query is ids-only: $resolve")
+                assertEquals(1, hydrate.size, "the documents are read once: $hydrate")
+                assertEquals("10", hydrate.single()["hits"], "for exactly the page")
+                assertEquals((1..10).map { now - it }, page.map { it.createdAt })
+                VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.SPECULATIVE, recencyMemory = false, idFirst = false).use { documents ->
+                    assertEquals(documents.search(q).map { it.id }, page.map { it.id }, "the page reading documents all the way serves")
+                    assertEquals(page.map { it.content }, documents.search(q).map { it.content }, "and the same documents, whole")
+                }
+            }
+        }
+
+    /** Id-first moves reads, never answers: every strategy, every branch, the same page with it on and off. */
+    @Test
+    fun `id-first and documents-first serve the same pages`() =
+        runBlocking {
+            val now = System.currentTimeMillis() / 1000
+            seedStrategyCorpus(now)
+            val shapes =
+                listOf(
+                    EventQuery(kinds = listOf(1), limit = 10),
+                    EventQuery(kinds = listOf(1), limit = 31),
+                    EventQuery(kinds = listOf(1, 7), limit = 35),
+                    EventQuery(authors = listOf(QUIET), limit = 3),
+                    EventQuery(kinds = listOf(1), until = now - 2 * 86_400L, limit = 5),
+                    EventQuery(limit = 500),
+                    EventQuery(kinds = listOf(1), limit = 10, ranking = EventYql.RANK_RECENCY_GATED, observer = BUSY, rankKey = BUSY, minRank = 2.0),
+                ).map { it.copy(nowSecs = now) }
+            for (strategy in RecencyStrategy.entries) {
+                VespaEventIndex(mock.url, recencyStrategy = strategy, idFirst = true).use { on ->
+                    VespaEventIndex(mock.url, recencyStrategy = strategy, idFirst = false).use { off ->
+                        for (q in shapes) assertEquals(off.search(q).map { it.id }, on.search(q).map { it.id }, "$strategy: $q")
+                    }
+                }
+            }
+        }
+
+    /**
+     * A BULK TIE GROUP — a trust provider publishes hundreds of thousands of
+     * cards on one second — resolves off ids: the tie window reads the group's
+     * ids, not its documents, and only the page's documents are read.
+     */
+    @Test
+    fun `a bulk tie group resolves from ids`() =
+        runBlocking {
+            val second = 1_700_000_000L
+            seedBulk(List(300) { doc(kind = 30382, pubkey = WEEKLY, at = second) })
+            VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.MATCH_PHASE).use { index ->
+                val before = mock.searchRequests.size
+                val page = index.search(EventQuery(kinds = listOf(30382), limit = 5))
+                val sent = mock.searchRequests.drop(before)
+                val resolve = sent.filter { !it.getValue("yql").contains(" where id in (") }
+                assertTrue(resolve.any { it.getValue("yql").contains("created_at >= $second") && it.getValue("yql").contains("created_at <= $second") }, "the tie window ran: $resolve")
+                assertTrue(resolve.all { it["presentation.summary"] == "idtime" }, "and ids-only, like the page query: $resolve")
+                assertEquals("5", sent.single { it.getValue("yql").contains(" where id in (") }["hits"], "five documents read, not three hundred")
+                assertEquals(page.map { it.id }.sorted(), page.map { it.id }, "the lowest ids win the tie (NIP-01 order)")
+                assertEquals(5, page.size)
+            }
+        }
+
+    /** A serving schema without `idtime` is remembered, and every read goes back to documents-first. */
+    @Test
+    fun `id-first falls back on a schema without the idtime summary`() =
+        runBlocking {
+            val now = System.currentTimeMillis() / 1000
+            seedStrategyCorpus(now)
+            mock.rejectIdTimeSummary = true
+            try {
+                VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.MATCH_PHASE).use { index ->
+                    val q = EventQuery(kinds = listOf(1), limit = 10, nowSecs = now)
+                    assertEquals((1..10).map { now - it }, index.search(q).map { it.createdAt }, "served, documents-first")
+                    val before = mock.searchRequests.size
+                    index.search(q)
+                    assertTrue(mock.searchRequests.drop(before).none { it["presentation.summary"] == "idtime" }, "and never asked for idtime again")
+                }
+            } finally {
+                mock.rejectIdTimeSummary = false
             }
         }
 

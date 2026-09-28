@@ -81,6 +81,16 @@ internal class SchemaFallbacks {
         dedupSummaryAvailable = false
     }
 
+    /** The attribute-only `idtime` summary the id-first fetch resolves pages with (VespaEventIndex.recallSummaries). */
+    @Volatile var idTimeSummaryAvailable = true
+        private set
+
+    fun markIdTimeSummaryMissing() {
+        idTimeSummaryAvailable = false
+    }
+
+    fun isMissingIdTimeSummary(e: IllegalArgumentException): Boolean = e.message?.contains("400") == true && e.message?.contains(EventYql.SUMMARY_IDTIME) == true
+
     fun markNearFieldsMissing() {
         nearFieldsAvailable = false
     }

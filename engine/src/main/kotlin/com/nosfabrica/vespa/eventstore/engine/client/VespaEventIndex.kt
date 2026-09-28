@@ -123,6 +123,14 @@ class VespaEventIndex(
      */
     private val recencyStrategy: RecencyStrategy = RecencyStrategy.fromEnv(),
     /**
+     * Whether a limit'd newest-first read resolves its page from the
+     * attribute-only `idtime` summary first and reads full documents only for
+     * the ids that made it — see [recallSummaries]. `VESPA_ID_FIRST=0` turns it
+     * off, which is also how the probes measure what it buys.
+     */
+    private val idFirst: Boolean =
+        System.getenv("VESPA_ID_FIRST")?.let { it != "0" && !it.equals("false", ignoreCase = true) } ?: true,
+    /**
      * Whether [RecencyStrategy.SPECULATIVE] starts a read where the last read
      * of its shape found its page ([RecencyWindowMemory]); `VESPA_RECENCY_MEMORY=0`
      * turns it off, which is also how the probe measures what it buys.
@@ -424,15 +432,84 @@ class VespaEventIndex(
      */
     private suspend fun recallSummaries(
         q: EventQuery,
+        planned: Boolean = false,
+    ): List<VespaSummary> {
+        val eligible = idFirst && q.limit != null && q.isRecencyOrdered() && fallbacks.idTimeSummaryAvailable
+        if (!eligible) return recallPage(q, planned, idOnly = false)
+        val page =
+            try {
+                recallPage(q, planned, idOnly = true)
+            } catch (e: IllegalArgumentException) {
+                if (!fallbacks.isMissingIdTimeSummary(e)) throw e
+                fallbacks.markIdTimeSummaryMissing()
+                return recallPage(q, planned, idOnly = false)
+            }
+        return hydrate(page)
+    }
+
+    /**
+     * ID-FIRST, second half: the full documents for [page] — an id-only page
+     * resolved by [recallPage] — in [page]'s order, by one `id in (…)` query per
+     * [HYDRATE_CHUNK] ids.
+     *
+     * Why a page is resolved from ids first. A recency read asks the engine for
+     * `limit + TIE_SLACK` hits so the boundary tie resolves client-side, and a
+     * speculative read may try several windows — and every one of those hits
+     * used to arrive as a FULL document read off the document store. On a
+     * corpus larger than memory those reads are cold and scattered: measured on
+     * the 44M-doc relay corpus (2026-09-28), a notification feed's 164 hits cost
+     * 3 ms from the attribute-only summary and ~40–50 ms as documents, and under
+     * load those reads were ~97% of the slowest 1% of REQs. Resolving from
+     * attributes makes the overfetch, the tie window and every speculative
+     * attempt memory-only; the document store is read exactly `limit` times.
+     *
+     * The price is one more round trip — the same trade the existence check
+     * made (EventIndex.existingIds). A document deleted between the two queries
+     * drops out of the page: one short page on a rare interleaving, the race
+     * [RecencyPlanner.window] already accepts.
+     */
+    private suspend fun hydrate(page: List<VespaSummary>): List<VespaSummary> {
+        if (page.isEmpty()) return page
+        val full = HashMap<String, VespaSummary>(page.size * 2)
+        page.map { it.id }.chunked(HYDRATE_CHUNK).forEach { ids ->
+            // COMPLETENESS IS COUNTED HERE, not read off the coverage flag: this
+            // is a lookup of named ids, so an answer holding every one of them is
+            // whole whatever the engine reports — and one that is short AND
+            // degraded is a partial answer, refused like any other. (Short and
+            // undegraded is the deletion race above.)
+            val vq = EventYql.build(EventQuery(ids = ids, ranking = EventYql.RANK_UNRANKED, limit = ids.size))?.copy(sampled = true) ?: return@forEach
+            val root = searchRoot(vq, hits = ids.size)
+            var got = 0
+            root.children.forEach { hit ->
+                hit.fields?.takeIf { it.id.isNotEmpty() }?.let {
+                    full[it.id] = it
+                    got++
+                }
+            }
+            if (got < ids.size) root.coverage.requireComplete(allowMatchPhase = false)
+        }
+        return page.mapNotNull { full[it.id] }
+    }
+
+    /**
+     * The recency page itself: [recallSummaries] without the hydration, and —
+     * with [idOnly] — as (id, created_at) summaries off the attribute-only
+     * `idtime` summary rather than documents. Every path under it (the
+     * speculative attempts, the band paging, the tie windows, the match-phase
+     * rerun) threads [idOnly] through, so nothing below reads a document.
+     */
+    private suspend fun recallPage(
+        q: EventQuery,
         // True once a [RecencyStrategy] has shaped [q] — the strategy's own
         // windowed attempts and fallbacks come back through here and must not
         // be planned a second time.
-        planned: Boolean = false,
+        planned: Boolean,
+        idOnly: Boolean,
     ): List<VespaSummary> {
         if (!q.isRecencyOrdered()) return rankedHits(q).mapNotNull { it.fields }
         val limit = q.limit
         if (limit == null) {
-            val all = recallRoot(q)?.children?.mapNotNull { it.fields }?.filter { it.id.isNotEmpty() } ?: emptyList()
+            val all = recallRoot(q, idOnly)?.children?.mapNotNull { it.fields }?.filter { it.id.isNotEmpty() } ?: emptyList()
             return all.sortedWith(SUMMARY_NEWEST_FIRST)
         }
         // A non-positive limit matches nothing (EventYql.build's contract) —
@@ -440,8 +517,8 @@ class VespaEventIndex(
         if (limit <= 0) return emptyList()
         if (!planned && q.isWindowable()) {
             when (recencyStrategy) {
-                RecencyStrategy.FULL_SCAN -> return recallSummaries(q.fullScan(), planned = true)
-                RecencyStrategy.SPECULATIVE -> return speculative(q, limit)
+                RecencyStrategy.FULL_SCAN -> return recallPage(q.fullScan(), planned = true, idOnly = idOnly)
+                RecencyStrategy.SPECULATIVE -> return speculative(q, limit, idOnly)
                 RecencyStrategy.MATCH_PHASE, RecencyStrategy.COUNT_PROBE -> Unit
             }
         }
@@ -449,10 +526,10 @@ class VespaEventIndex(
         // that tolerate a cut cannot serve it, and the unranked alternative is a
         // profile whose degradation this client refuses. Page the band instead —
         // the caller's limit is honoured either way, which is the contract.
-        if (limit > EventYql.MATCH_PHASE_BAND && q.ranking == null) return pagedRecency(q, limit)
+        if (limit > EventYql.MATCH_PHASE_BAND && q.ranking == null) return pagedRecency(q, limit, idOnly)
         val fetch = q.copy(limit = limit + TIE_SLACK).keepingProfileOf(q)
         var hits =
-            recallRoot(fetch)?.children?.mapNotNull { it.fields }?.filter { it.id.isNotEmpty() }
+            recallRoot(fetch, idOnly)?.children?.mapNotNull { it.fields }?.filter { it.id.isNotEmpty() }
                 ?: return emptyList()
         if (hits.size > limit) {
             val t = hits[limit - 1].createdAt
@@ -466,7 +543,7 @@ class VespaEventIndex(
                 // below-floor authors into the boundary group.
                 val tieRanking = if (q.usesGatedProfile()) EventYql.RANK_RECENCY_GATED_EXACT else EventYql.RANK_UNRANKED
                 val ties =
-                    recallRoot(q.copy(since = t, until = t, limit = null, ranking = tieRanking))
+                    recallRoot(q.copy(since = t, until = t, limit = null, ranking = tieRanking), idOnly)
                         ?.children
                         ?.mapNotNull { it.fields }
                         ?.filter { it.id.isNotEmpty() }
@@ -512,6 +589,7 @@ class VespaEventIndex(
     private suspend fun speculative(
         q: EventQuery,
         limit: Int,
+        idOnly: Boolean,
     ): List<VespaSummary> =
         IngestStats.timed(SPECULATIVE_STAGE) {
             // Anchored at the NEWEST END OF THE DATA, not merely of the request: an
@@ -529,7 +607,7 @@ class VespaEventIndex(
             val recalled = windowMemory?.recall(q, anchor, now)
             if (recalled is RecencyWindowMemory.Recall.Narrow) {
                 outcome("recalled.narrow")
-                return@timed recallSummaries(planner.shipped(q), planned = true)
+                return@timed recallPage(planner.shipped(q), planned = true, idOnly = idOnly)
             }
             var window =
                 (recalled as? RecencyWindowMemory.Recall.Window)
@@ -568,7 +646,7 @@ class VespaEventIndex(
                 val remaining = limit - carried.size
                 val page =
                     try {
-                        IngestStats.timed("$SPECULATIVE_STAGE.attempt") { recallSummaries(q.olderThan(boundary, remaining).copy(since = since), planned = true) }
+                        IngestStats.timed("$SPECULATIVE_STAGE.attempt") { recallPage(q.olderThan(boundary, remaining).copy(since = since), planned = true, idOnly = idOnly) }
                     } catch (_: PartialAnswer) {
                         fallback = "partial"
                         break
@@ -601,7 +679,7 @@ class VespaEventIndex(
                 else -> Unit
             }
             // The unwindowed read, for what the carried pages do not already hold.
-            carried + recallSummaries(planner.shipped(q.olderThan(boundary, limit - carried.size)), planned = true)
+            carried + recallPage(planner.shipped(q.olderThan(boundary, limit - carried.size)), planned = true, idOnly = idOnly)
         }
 
     /**
@@ -686,6 +764,7 @@ class VespaEventIndex(
     private suspend fun pagedRecency(
         q: EventQuery,
         limit: Int,
+        idOnly: Boolean,
     ): List<VespaSummary> {
         val page = EventYql.MATCH_PHASE_BAND
         // Keyed by id: the boundary window re-reads docs the page already
@@ -693,7 +772,7 @@ class VespaEventIndex(
         val out = LinkedHashMap<String, VespaSummary>()
         var until = q.until
         while (out.size < limit) {
-            val hits = recallSummaries(q.copy(until = until, limit = page))
+            val hits = recallPage(q.copy(until = until, limit = page), planned = false, idOnly = idOnly)
             if (hits.isEmpty()) break
             // Short of a page: the engine ran out, so this is the whole tail.
             if (hits.size < page) {
@@ -707,7 +786,7 @@ class VespaEventIndex(
             // group cannot contain a hit and is not worth reading — which is
             // what keeps the unbounded window below off the common path.
             if (out.size >= limit) break
-            recallSummaries(q.copy(since = boundary, until = boundary, limit = null)).forEach { out[it.id] = it }
+            recallPage(q.copy(since = boundary, until = boundary, limit = null), planned = false, idOnly = idOnly).forEach { out[it.id] = it }
             // Strictly past the group just taken in full — `boundary - 1` is what
             // makes the cursor terminate on a corpus that shares one timestamp.
             if (boundary <= (q.since ?: Long.MIN_VALUE)) break
@@ -769,8 +848,14 @@ class VespaEventIndex(
      * spam). A degraded response with a FULL page needs no rerun on a single
      * node: everything the cut excluded is older than everything returned.
      */
-    private suspend fun recallRoot(q: EventQuery): SearchRoot? {
-        val vq = EventYql.build(q)?.let { if (recencyStrategy == RecencyStrategy.FULL_SCAN) it.withoutSortDegrader() else it } ?: return null
+    private suspend fun recallRoot(
+        q: EventQuery,
+        // Project every query this issues — the recall AND its exact rerun — to
+        // (id, created_at) off the attribute-only summary; see [recallPage].
+        idOnly: Boolean = false,
+    ): SearchRoot? {
+        fun shaped(vq: VespaQuery): VespaQuery = (if (recencyStrategy == RecencyStrategy.FULL_SCAN) vq.withoutSortDegrader() else vq).let { if (idOnly) EventYql.idTimeOnly(it) else it }
+        val vq = EventYql.build(q)?.let(::shaped) ?: return null
         val root = searchRoot(vq, hits = hitsFor(q))
         val matchPhased = vq.ranking == EventYql.RANK_RECENCY || vq.ranking == EventYql.RANK_RECENCY_GATED
         if (matchPhased && root.coverage.matchPhaseDegraded) {
@@ -813,7 +898,7 @@ class VespaEventIndex(
                             exact
                         }
                     }
-                val rerunVq = EventYql.build(rerun) ?: return root
+                val rerunVq = EventYql.build(rerun)?.let(::shaped) ?: return root
                 return searchRoot(rerunVq, hits = hitsFor(q))
             }
         }
@@ -1801,6 +1886,9 @@ class VespaEventIndex(
          * id tiebreak resolves in memory (see [recallSummaries]).
          */
         const val TIE_SLACK = 64
+
+        /** Ids per hydration query (see [hydrate]): one query up to the match-phase band's width. */
+        const val HYDRATE_CHUNK = 2_000
 
         /** The [IngestStats] stage every [RecencyStrategy.SPECULATIVE] read books under; see [outcome]. */
         const val SPECULATIVE_STAGE = "recency.speculative"
