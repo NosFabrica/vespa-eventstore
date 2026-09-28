@@ -1641,6 +1641,51 @@ class VespaEventIndexTest {
             }
         }
 
+    /**
+     * A LIMIT THAT CUTS A TIE GROUP TAKES ITS LOWEST IDS — NIP-01's
+     * `created_at desc, id asc`, the page a read serves. The walk orders by
+     * created_at alone, so the members of a group straddling the Nth position
+     * were whichever the engine sorted first, and a NIP-77 snapshot of a
+     * limit'd filter disagreed with its own REQ at exactly that seam. Both
+     * limit'd paths: one overfetched page, and the budgeted cursor.
+     */
+    @Test
+    fun `a limit'd walk cutting a tie group keeps the group's lowest ids`() =
+        runBlocking {
+            val bob = "b5".repeat(32)
+            seed(*(1..8).map { doc(kind = 30382, pubkey = bob, at = (7_000 + it).toLong()) }.toTypedArray())
+            seed(*(1..30).map { doc(kind = 30382, pubkey = bob, at = 6_000L) }.toTypedArray())
+            val all = reference.search(EventQuery(kinds = listOf(30382), authors = listOf(bob))).map { DocRef(it.id, it.createdAt) }
+            val nip01 = all.sortedWith(compareByDescending<DocRef> { it.createdAt }.thenBy { it.id })
+            // Real Vespa's single-key sort picks tie MEMBERSHIP arbitrarily; the
+            // mock's own order would hide the bug, so flip ids within each tie.
+            mock.scrambleTieOrder = true
+            try {
+                limitCases(bob, nip01)
+            } finally {
+                mock.scrambleTieOrder = false
+            }
+        }
+
+    private suspend fun limitCases(
+        bob: String,
+        nip01: List<DocRef>,
+    ) {
+        for ((pageSize, limit) in listOf(100 to 20, 10 to 25)) {
+            val paged = VespaEventIndex(mock.url, idPageSize = pageSize)
+            try {
+                val got = ArrayList<DocRef>()
+                paged.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(bob), limit = limit)) {
+                    got += it
+                    true
+                }
+                assertEquals(nip01.take(limit).map { it.id }.toSet(), got.map { it.id }.toSet(), "limit $limit on $pageSize-id pages: the newest, lowest-id first")
+            } finally {
+                paged.close()
+            }
+        }
+    }
+
     /** A tie group straddling the page boundary: partly in the page, the rest behind it. */
     @Test
     fun `visitIds completes a tie group that straddles the page boundary`() =
@@ -1719,8 +1764,10 @@ class VespaEventIndexTest {
      * asked for, and #134 made that ten times bigger: a `limit: 500` walk
      * serialized 20,064 id rows to serve 500, having first paid a 2,000-row
      * routing probe to decide it. Neither buys anything on this shape — a walk
-     * that stops inside its first page never crosses a boundary, so there is no
-     * tie group to resolve and nothing for the scan to be better at.
+     * that stops inside its first page never crosses a PAGE boundary, and the
+     * one tie group it can cut — at the Nth position — is resolved from the tie
+     * slack it overfetches, with a `[t, t]` read only when that group runs past
+     * the slack.
      *
      * Asserted on the WIRE, on the number of requests AND the hits each asked
      * for: the ids returned are identical either way, which is exactly why this
@@ -1744,7 +1791,12 @@ class VespaEventIndexTest {
                 assertEquals(40, got.size, "still exactly the newest N")
                 assertEquals(reference.search(q).map { it.id }.sorted(), got.map { it.id }.sorted(), "and the same N search() serves")
                 assertEquals(1, after.size, "one round trip, not a probe plus a page: ${after.map { it["hits"] }}")
-                assertEquals("40", after.single()["hits"], "it must ask the engine for the LIMIT, not for a whole page")
+                // The limit plus the tie slack, never a whole page: the slack is
+                // how the walk sees whether a tie group straddles the Nth
+                // position, which it must resolve by id to serve the page a read
+                // serves (see "a limit'd walk cutting a tie group keeps the
+                // group's lowest ids"). Attribute-only ids, 64 of them.
+                assertEquals((40 + VespaEventIndex.TIE_SLACK).toString(), after.single()["hits"], "it must ask for the LIMIT and its tie slack, not for a whole page")
             } finally {
                 paged.close()
             }

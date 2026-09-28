@@ -337,10 +337,21 @@ object EventYql {
         params["presentation.summary"] = if (withDTag) SUMMARY_IDTIME_TAG else SUMMARY_IDTIME
         params[MATCH_THREADS] = SINGLE_MATCH_THREAD
         params[SORT_DEGRADING] = SORT_DEGRADING_OFF
+        // A GATED WALK GATES. The walk is how a query's whole id set leaves the
+        // engine (NIP-77 snapshots above all), and on `unranked` a lensed read
+        // walked every author the lens drops: a reconcile declared through an
+        // observer handed over exactly the corpus the observer gate exists to
+        // withhold. `recency_gated_exact` drops below-floor authors engine-side
+        // — the same `user_score >= min_rank` every trust profile gates on — and
+        // scores by created_at alone, so the `order by` the cursor pages on is
+        // unchanged; it has no match-phase, so nothing cuts the walk. A walk is
+        // termless (walksGated), so no text feature was emitted to strip.
+        val gated = walksGated(q)
+        if (gated) lensParams(q, params)
         return VespaQuery(
             yql = "select ${if (withDTag) "id, created_at, tag_index" else "id, created_at"} from event where ${whereOf(clauses)} order by created_at desc$limit",
             params = params,
-            ranking = RANK_UNRANKED,
+            ranking = if (gated) RANK_RECENCY_GATED_EXACT else RANK_UNRANKED,
             complete = q.complete,
             sampled = q.sampled,
             shape = clauseShape(q),
@@ -450,6 +461,61 @@ object EventYql {
     }
 
     /**
+     * THE FLOOR [q]'s LENS ENFORCES, or null when its reads gate nobody — the
+     * one answer to "who is gated" that the stored page, the id walk, a NIP-77
+     * snapshot and a relay's live gate all read, so they cannot disagree.
+     *
+     * Gated: a hex observer to read the lens through, a floor above 0, and a
+     * profile whose first phase drops `user_score < min_rank` — the recency-gated
+     * pair, the three trust sorts, and the default `search` profile (whose
+     * `wot_mult()` is 0 below the floor). Not gated: no observer ([build] sends
+     * no lens), `sort:text` (the `text` profile reads none), plain recall, and a
+     * floor of 0 or less — every rank cell is 0..100, so `include:spam`'s 0 admits
+     * every author and a gate there could only cost reads.
+     */
+    fun gateFloor(q: EventQuery): Double? {
+        if (q.observer?.lowercase()?.takeIf(Hex::isHex64) == null) return null
+        val floor = q.minRank?.takeIf { it > 0.0 } ?: return null
+        return when (profileOf(q)) {
+            RANK_RECENCY_GATED, RANK_RECENCY_GATED_EXACT, RANK_DESC, RANK_ASC, RANK_FOLLOWERS, RANK_SEARCH -> floor
+            else -> null
+        }
+    }
+
+    /**
+     * Whether [buildIdTime] walks [q] through the observer gate: a query that
+     * gates ([gateFloor]) with no search text — the walk's where clause has no
+     * text ranking to offer, and a searching read is a relevance question the
+     * walk does not answer. A trust SORT walks gated too: the walk's order is
+     * created_at whatever the profile, but its SET is the sort's, whose gate is
+     * the same floor — so an unlimited walk of it is exactly its gated set.
+     */
+    fun walksGated(q: EventQuery): Boolean = q.search.isNullOrBlank() && q.phrases.isEmpty() && gateFloor(q) != null
+
+    /**
+     * Whether a LIMIT'D walk of [q] is the page its read serves: plain recall,
+     * or the recency-gated pair, whose score IS created_at — the newest N either
+     * way. A trust sort's first N are its most trusted, not its newest, so a
+     * limit'd one is a search, never a walk.
+     */
+    fun walksInOrder(q: EventQuery): Boolean = q.search.isNullOrBlank() && q.phrases.isEmpty() && (q.ranking == null || q.ranking == RANK_UNRANKED || q.ranking == RANK_RECENCY || q.ranking == RANK_RECENCY_GATED || q.ranking == RANK_RECENCY_GATED_EXACT)
+
+    /**
+     * The lens a trust profile reads, as query features. The tensors are keyed
+     * by SERVICE: the lens is the observer's resolved provider per dimension,
+     * and an unresolved one is the empty tensor — "trusts nobody", score 0 —
+     * never the observer's own key, which no card is keyed under.
+     */
+    private fun lensParams(
+        q: EventQuery,
+        params: MutableMap<String, String>,
+    ) {
+        params["ranking.features.query(user_q)"] = q.rankKey?.takeIf(Hex::isHex64)?.let { "{$it:1.0}" } ?: "{}"
+        params["ranking.features.query(followers_q)"] = q.followersKey?.takeIf(Hex::isHex64)?.let { "{$it:1.0}" } ?: "{}"
+        q.minRank?.let { params["ranking.features.query(min_rank)"] = it.toString() }
+    }
+
+    /**
      * THE PROFILE A COUNT MUST RUN ON, or null when the query needs no profile
      * at all and the unranked grouping counts it exactly ([buildCount]).
      *
@@ -489,15 +555,7 @@ object EventYql {
 
         val observer = q.observer?.lowercase()?.takeIf(Hex::isHex64)
         val ranking = profileOf(q)
-        if (ranking != RANK_UNRANKED && ranking != RANK_RECENCY && observer != null) {
-            // The tensors are keyed by SERVICE: the lens is the observer's
-            // resolved provider per dimension, and an unresolved one is the
-            // empty tensor — "trusts nobody", score 0 — never the observer's
-            // own key, which no card is keyed under.
-            params["ranking.features.query(user_q)"] = q.rankKey?.takeIf(Hex::isHex64)?.let { "{$it:1.0}" } ?: "{}"
-            params["ranking.features.query(followers_q)"] = q.followersKey?.takeIf(Hex::isHex64)?.let { "{$it:1.0}" } ?: "{}"
-            q.minRank?.let { params["ranking.features.query(min_rank)"] = it.toString() }
-        }
+        if (ranking != RANK_UNRANKED && ranking != RANK_RECENCY && observer != null) lensParams(q, params)
         // A MEMBER PROFILE WITHOUT AN OBSERVER WOULD SATURATE, not degrade.
         // wot_mult() reads `min_rank`, which defaults to -1e9 so the gate in
         // the rank_* profiles is a no-op; with no user_q the member's

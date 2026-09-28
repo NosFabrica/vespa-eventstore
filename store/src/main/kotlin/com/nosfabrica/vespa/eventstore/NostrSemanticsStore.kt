@@ -52,6 +52,7 @@ import com.nosfabrica.vespa.eventstore.search.isRanked
 import com.nosfabrica.vespa.eventstore.trust.Delegations
 import com.nosfabrica.vespa.eventstore.trust.Enrolment
 import com.nosfabrica.vespa.eventstore.trust.ProviderRefresher
+import com.nosfabrica.vespa.eventstore.trust.TrustCells
 import com.nosfabrica.vespa.eventstore.trust.TrustProjection
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -587,6 +588,45 @@ class NostrSemanticsStore(
         onEach: (T) -> Unit,
     ) = query<T>(filter).forEach(onEach)
 
+    /**
+     * The observer gate for [filters]' LIVE events — or null when there is
+     * nothing to hold them to: no filter gates (no observer, `include:spam`'s
+     * floor of 0, `sort:text`) and none searches, so such a subscription pays
+     * nothing. Built from the same query each filter's stored read compiles to
+     * (connection observer and `observer:` token, floor, lens — resolved in one
+     * pass), and gated by `EventYql.gateFloor`, the rule every read path
+     * shares. See [LiveGate]; call it in the subscription's own context, where
+     * the connection observer is read from.
+     */
+    suspend fun liveGate(filters: List<Filter>): LiveGate? {
+        val observer = connectionObserver()
+        val cutoff = nowSecs()
+        val compiled = filters.mapNotNull { f -> f.toExpiryQuery(cutoff, observer)?.let { f to it } }
+        val lensedQueries = lensed(compiled.map { it.second })
+        val rules =
+            compiled.zip(lensedQueries) { (f, _), q ->
+                val floor = EventYql.gateFloor(q)
+                val text =
+                    LiveGate.Text(
+                        terms = LiveGate.Text.words(q.search),
+                        phrases = q.phrases.map(LiveGate.Text::words).filter { it.isNotEmpty() },
+                        excluded = q.notSearch.map(LiveGate.Text::words).filter { it.isNotEmpty() },
+                    )
+                LiveGate.Rule(f, text.takeUnless { it.isEmpty() }, if (floor != null) q.rankKey else null, floor)
+            }
+        if (rules.none { it.floor != null || it.text != null }) return null
+        return LiveGate(rules, trustCells) { event ->
+            SearchExtractors
+                .extract(event)
+                .fields()
+                .values
+                .joinToString(" ")
+        }
+    }
+
+    /** The rank cells [liveGate] reads: the projection's reputation index, or none on a store assembled without it. */
+    private val trustCells = TrustCells((index as? TrustProjection)?.reputations, nowSecs)
+
     override suspend fun <T : Event> query(
         filters: List<Filter>,
         onEach: (T) -> Unit,
@@ -668,10 +708,12 @@ class NostrSemanticsStore(
                 // honours a limit on the id walk itself, so the relay's
                 // `limit: 100000` no longer turns a count into a full-summary
                 // recall (measured: 40 s for two window filters over 51k
-                // events, against 0.2 s counted singly). Only a ranked filter
-                // has to recall through the search path, where its ids ARE
-                // the ranking.
-                if (!q.isRanked()) {
+                // events, against 0.2 s counted singly). So does a gated
+                // RECENCY read (the observer gate on a plain filter): the walk
+                // gates engine-side and its newest N are that page's N
+                // (EventYql.walksInOrder). Only a filter whose ids ARE a
+                // ranking — terms, or a trust sort — recalls through search.
+                if (!q.isRanked() || EventYql.walksInOrder(q)) {
                     val seen = ArrayList<String>()
                     index.visitIds(q) { page ->
                         page.forEach { seen += it.id }
@@ -759,10 +801,22 @@ class NostrSemanticsStore(
 
     /**
      * (created_at, id) pairs straight off the docs — no Event materialization.
-     * Plain filters walk the corpus through the engine's visit, so a
-     * negentropy session sees the COMPLETE match set even when it dwarfs the
-     * search page limit. Searching or limit'd filters keep the search path,
-     * since their semantics live there.
+     * Every TERMLESS filter goes to the engine's id walk, so a negentropy
+     * session sees the COMPLETE set even when it dwarfs a search page, and a
+     * GATED one — an `observer:` declared on the filter — through the lens that
+     * observer's 10040 resolves to (the walk gates engine-side on
+     * EventYql.gateFloor, the rule the REQ gates on). A limit'd walk is the
+     * newest N with NIP-01's id tiebreak, the page a recency read serves; a
+     * limit'd TRUST SORT's first N are its most trusted, so the engine answers
+     * it with the same ranked search its REQ runs (VespaEventIndex.visitIds).
+     * Only searching filters keep the search path here, since their semantics
+     * live there.
+     *
+     * Both used to go wrong on a relay that stamped its REQ `default_limit` on
+     * NEG-OPEN: a limit'd filter left the walk for one bounded search page, so
+     * a reconcile covered the newest `default_limit` events and called that the
+     * set; and the token's gate ran with no lens resolved — the empty tensor,
+     * "trusts nobody" — so an observer-declared reconcile covered NOTHING.
      *
      * [maxEntries] returns at most `maxEntries + 1` — one over, so the caller
      * can tell "at budget" from "over budget" — and STOPS the walk there: a
@@ -813,10 +867,12 @@ class NostrSemanticsStore(
         // buys is bounded by the cap: its early exit — the filters left can
         // only add to the union — is work a fan-out has already done. Worth
         // revisiting for the uncapped NIP-77 catch-up, with the heap measured.
-        for (q in filters.mapNotNull { it.toExpiryQuery(cutoff) }) {
+        // lensed: a filter's `observer:` token must reach the engine as the
+        // services its 10040 names, or the gate reads an empty lens.
+        for (q in lensed(filters.mapNotNull { it.toExpiryQuery(cutoff) })) {
             // Already over budget: the filters left can only add to the union.
             if (cap != null && all.size >= cap) break
-            if (q.search == null && q.limit == null) {
+            if (q.search == null && q.phrases.isEmpty()) {
                 index.visitIds(q) { page ->
                     page.forEach { collect(it.id, it.createdAt) }
                     onProgress?.invoke(all.size)

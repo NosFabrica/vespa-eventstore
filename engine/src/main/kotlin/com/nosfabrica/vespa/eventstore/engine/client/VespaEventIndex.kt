@@ -1101,21 +1101,30 @@ class VespaEventIndex(
             if (query.limit <= 0) return
             // A LIMIT IS AN ORDER, not just a count: "the newest N". The ids of
             // a ranked walk ARE its ranking, so only the search path can
-            // produce them.
-            if (query.isRankedShape()) return super.visitIds(query, withDTag, onPage)
-            // A LIMIT THAT FITS IN ONE PAGE IS ONE QUERY. `buildIdTime` is
-            // unranked, ordered `created_at desc` and honours the limit, so the
-            // newest N arrive in a single round trip — and a walk that stops
-            // inside its first page never crosses a boundary, so there is no
-            // tie group to resolve.
+            // produce them — except the recency-gated pair, whose score is
+            // created_at: its newest N are what the ordered id query already
+            // returns, and [EventYql.buildIdTime] gates it (a search would stop
+            // at one page). A trust sort's first N are not its newest: search.
+            if (query.isRankedShape() && !EventYql.walksInOrder(query)) return super.visitIds(query, withDTag, onPage)
+            // A LIMIT THAT FITS IN ONE PAGE IS ONE QUERY, plus the tie slack.
+            // `buildIdTime` orders by `created_at desc` ALONE, so a tie group
+            // straddling the Nth position would come back as whichever members
+            // the engine sorted first — while the read it mirrors serves the
+            // group's LOWEST ids (NIP-01's `created_at desc, id asc`, which
+            // recallSummaries restores). A NIP-77 snapshot of the filter then
+            // disagreed with its own REQ at exactly that seam. Overfetch, and
+            // read the straddling group whole, as recallSummaries does.
             if (query.limit <= idPageSize) {
-                val hits = idTimeRetrying(query, withDTag, "walk.limited.onepage")
+                val hits = newestExact(query, withDTag, query.limit)
                 if (hits.isNotEmpty()) onPage(hits)
                 return
             }
+            // Past one page, the cursor: it hands every tie group over whole
+            // (see its boundary read), so ordering each page by NIP-01's rule
+            // before taking the budget takes the same lowest ids the read does.
             var budget: Int = query.limit
             return visitIdsByCursor(query.copy(limit = null), withDTag, remaining = { budget }) { page ->
-                val take = page.take(budget)
+                val take = page.sortedWith(DOCREF_NEWEST_FIRST).take(budget)
                 budget -= take.size
                 (take.isEmpty() || onPage(take)) && budget > 0
             }
@@ -1351,7 +1360,11 @@ class VespaEventIndex(
                 //
                 // Default `unboundedHits` is Int.MAX_VALUE, so this is the
                 // plain threshold on every uncapped deployment.
-                val cap = budget ?: minOf(idPageSize * TIE_DENSE_FACTOR + 1, unboundedHits)
+                // A limited walk reads the group whole as well (to the same dense
+                // cap): which of its members a budget keeps is decided by id,
+                // client-side, and that needs them all. Only past the cap does a
+                // limited walk settle for the engine's members, instead of the scan.
+                val cap = minOf(idPageSize * TIE_DENSE_FACTOR + 1, unboundedHits)
                 val group = idTimeRetrying(query.copy(since = boundary, until = boundary, limit = cap), withDTag, "walk.ids.tiegroup")
                 if (budget == null && group.size >= cap) {
                     // TOO WIDE TO RESOLVE ON THE CURSOR — a service that
@@ -1390,6 +1403,35 @@ class VespaEventIndex(
             seconds < 31_536_000 -> "1y"
             else -> "1y+"
         }
+
+    /**
+     * The newest [limit] matches of [query] in NIP-01 order (`created_at desc,
+     * id asc`) from one overfetched id query — plus, only when the tie group at
+     * the Nth position may have been cut short, one `[t, t]` read of that group.
+     * The same resolution recallSummaries applies to a page, on the id walk.
+     * A group wider than the dense cap is read to the cap: past it the members
+     * taken are the engine's, the one case this cannot make exact.
+     */
+    private suspend fun newestExact(
+        query: EventQuery,
+        withDTag: Boolean,
+        limit: Int,
+    ): List<DocRef> {
+        val fetch = limit + TIE_SLACK
+        val hits = idTimeRetrying(query.copy(limit = fetch), withDTag, "walk.limited.onepage")
+        if (hits.size <= limit) return hits.sortedWith(DOCREF_NEWEST_FIRST)
+        val t = hits[limit - 1].createdAt
+        // Complete if the engine ran out, or already emitted something older than t.
+        val complete = hits.size < fetch || hits.last().createdAt < t
+        val pool =
+            if (complete) {
+                hits
+            } else {
+                val cap = minOf(idPageSize * TIE_DENSE_FACTOR + 1, unboundedHits)
+                hits.filter { it.createdAt > t } + idTimeRetrying(query.copy(since = t, until = t, limit = cap), withDTag, "walk.limited.tiegroup")
+            }
+        return pool.sortedWith(DOCREF_NEWEST_FIRST).take(limit)
+    }
 
     /** Whether the ids are the ENGINE's ordering to give — terms, phrases or an explicit profile — rather than plain recency. */
     private fun EventQuery.isRankedShape(): Boolean = !search.isNullOrBlank() || phrases.isNotEmpty() || ranking != null

@@ -84,9 +84,10 @@ deliberate decision (it fails until the layer table names it) rather than a drif
   the FACADE: exactly the types a CONSUMER names, and nothing else. Today that is
   `VespaEventStore.open()` (the front door), `NostrSemanticsStore` (the `IEventStore`
   implementation), and the values it hands back or throws — `RejectedException`, `EngineReads`,
-  `TrustHealth`. A new type here has to earn it by being named from outside; the machinery
+  `TrustHealth`, `LiveGate` (the observer gate a relay applies to a subscription's live events).
+  A new type here has to earn it by being named from outside; the machinery
   behind one goes in a leaf (`TrustHealth` is a DTO, while the registries it reads stay
-  `internal` in `trust/`). Nothing below the root imports the two COMPOSED types
+  `internal` in `trust/`; `LiveGate`'s rank-cell cache is `trust/TrustCells`). Nothing below the root imports the two COMPOSED types
 (`NostrSemanticsStore`, `VespaEventStore`) — that is the cycle the layering exists to prevent.
 A value the store hands back or throws is not that: `ingest/EventAdmission` throws
 `RejectedException` because it is the store's public vocabulary for a rejection, and a value
@@ -128,7 +129,7 @@ page assembly). So when hunting a rule: supersession and address computation are
 
 `EventIndex` (`:engine`, `EventIndex.kt`) is the seam everything hangs on: get/put/remove + `EventQuery` recall, with a hard contract — read-your-writes per document, and an **acked put is visible to search**. That contract is what makes the store's query-then-write logic sound. There are two implementations: the real Vespa client, and `InMemoryEventIndex`, which is the **executable specification** of `EventQuery` matching semantics — store tests run against it with no Vespa. `MockVespaEngine` (testFixtures, a Jetty h2c server) additionally exercises the real HTTP clients' wire format.
 
-**Known blind spot**: the in-memory reference and the mock can miss real-Vespa-only divergences (e.g. Vespa omits empty-string fields from summaries; string attributes match uncased unless `match: cased`). Anything touching YQL, summaries, or the schema needs the integration gate (`-Pintegration`): `VespaParityIT` asserts exact result parity with Quartz's SQLite store (127/127 checks), `RankRegressionIT` pins search-ranking quality against a canonical corpus, `ObserverGateIT` pins the observer gate engine-side (trust-gated recall, both gated profiles), `OrphanSweepIT` pins the orphan-score sweep (the `distinctAuthors` grouping decides what gets deleted) — the mock cannot rank or gate.
+**Known blind spot**: the in-memory reference and the mock can miss real-Vespa-only divergences (e.g. Vespa omits empty-string fields from summaries; string attributes match uncased unless `match: cased`). Anything touching YQL, summaries, or the schema needs the integration gate (`-Pintegration`): `VespaParityIT` asserts exact result parity with Quartz's SQLite store (127/127 checks), `RankRegressionIT` pins search-ranking quality against a canonical corpus, `ObserverGateIT` pins the observer gate engine-side (trust-gated recall, both gated profiles), `OrphanSweepIT` pins the orphan-score sweep (the `distinctAuthors` grouping decides what gets deleted), `FilterMatrixIT` runs ~10k REQ+COUNT pairs through `open()` — NIP-01 shapes × lens modes × `sort:` × search shapes — against an in-test oracle (served set == oracle, COUNT == served) — the mock cannot rank or gate.
 
 ### Recency planning (`RecencyStrategy`, `engine/client/`)
 
