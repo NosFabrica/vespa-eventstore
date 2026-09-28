@@ -342,13 +342,12 @@ object EventYql {
         // walked every author the lens drops: a reconcile declared through an
         // observer handed over exactly the corpus the observer gate exists to
         // withhold. `recency_gated_exact` drops below-floor authors engine-side
-        // and scores by created_at alone, so the `order by` the cursor pages on
-        // is unchanged; it has no match-phase, so nothing cuts the walk.
+        // — the same `user_score >= min_rank` every trust profile gates on — and
+        // scores by created_at alone, so the `order by` the cursor pages on is
+        // unchanged; it has no match-phase, so nothing cuts the walk. A walk is
+        // termless (walksGated), so no text feature was emitted to strip.
         val gated = walksGated(q)
-        if (gated) {
-            lensParams(q, params)
-            params.keys.removeAll(TEXT_RANK_FEATURES)
-        }
+        if (gated) lensParams(q, params)
         return VespaQuery(
             yql = "select ${if (withDTag) "id, created_at, tag_index" else "id, created_at"} from event where ${whereOf(clauses)} order by created_at desc$limit",
             params = params,
@@ -462,17 +461,44 @@ object EventYql {
     }
 
     /**
-     * Whether [buildIdTime] walks [q] through the observer gate: a gated
-     * profile, a hex observer to read the lens through, and no search text — the
-     * walk's where clause has no text ranking to offer, and a searching read is
-     * a relevance question the walk does not answer. A gated profile with no
-     * observer is pure recency ([build] sends no lens either), so it walks plain.
+     * THE FLOOR [q]'s LENS ENFORCES, or null when its reads gate nobody — the
+     * one answer to "who is gated" that the stored page, the id walk, a NIP-77
+     * snapshot and a relay's live gate all read, so they cannot disagree.
+     *
+     * Gated: a hex observer to read the lens through, a floor above 0, and a
+     * profile whose first phase drops `user_score < min_rank` — the recency-gated
+     * pair, the three trust sorts, and the default `search` profile (whose
+     * `wot_mult()` is 0 below the floor). Not gated: no observer ([build] sends
+     * no lens), `sort:text` (the `text` profile reads none), plain recall, and a
+     * floor of 0 or less — every rank cell is 0..100, so `include:spam`'s 0 admits
+     * every author and a gate there could only cost reads.
      */
-    fun walksGated(q: EventQuery): Boolean =
-        (q.ranking == RANK_RECENCY_GATED || q.ranking == RANK_RECENCY_GATED_EXACT) &&
-            q.observer?.lowercase()?.takeIf(Hex::isHex64) != null &&
-            q.search.isNullOrBlank() &&
-            q.phrases.isEmpty()
+    fun gateFloor(q: EventQuery): Double? {
+        if (q.observer?.lowercase()?.takeIf(Hex::isHex64) == null) return null
+        val floor = q.minRank?.takeIf { it > 0.0 } ?: return null
+        return when (profileOf(q)) {
+            RANK_RECENCY_GATED, RANK_RECENCY_GATED_EXACT, RANK_DESC, RANK_ASC, RANK_FOLLOWERS, RANK_SEARCH -> floor
+            else -> null
+        }
+    }
+
+    /**
+     * Whether [buildIdTime] walks [q] through the observer gate: a query that
+     * gates ([gateFloor]) with no search text — the walk's where clause has no
+     * text ranking to offer, and a searching read is a relevance question the
+     * walk does not answer. A trust SORT walks gated too: the walk's order is
+     * created_at whatever the profile, but its SET is the sort's, whose gate is
+     * the same floor — so an unlimited walk of it is exactly its gated set.
+     */
+    fun walksGated(q: EventQuery): Boolean = q.search.isNullOrBlank() && q.phrases.isEmpty() && gateFloor(q) != null
+
+    /**
+     * Whether a LIMIT'D walk of [q] is the page its read serves: plain recall,
+     * or the recency-gated pair, whose score IS created_at — the newest N either
+     * way. A trust sort's first N are its most trusted, not its newest, so a
+     * limit'd one is a search, never a walk.
+     */
+    fun walksInOrder(q: EventQuery): Boolean = q.search.isNullOrBlank() && q.phrases.isEmpty() && (q.ranking == null || q.ranking == RANK_UNRANKED || q.ranking == RANK_RECENCY || q.ranking == RANK_RECENCY_GATED || q.ranking == RANK_RECENCY_GATED_EXACT)
 
     /**
      * The lens a trust profile reads, as query features. The tensors are keyed

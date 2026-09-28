@@ -142,19 +142,29 @@ class NegentropySnapshotTest {
         assertTrue(searched.none { it.kinds == listOf(1) }, "no bounded search page: $searched")
     }
 
+    /**
+     * A trust sort reaches the walk AS the trust sort, lens resolved: the
+     * engine gates it on EventYql.gateFloor (the floor its REQ gates on), walks
+     * it whole when unlimited, and answers a limit'd one with the ranked search
+     * its REQ runs — its first N are its most trusted, not its newest.
+     * `sort:text` reads no lens, so its walk gates nothing.
+     */
     @Test
-    fun `a trust sort reduces to the gated walk, and sort-text to a plain one`() {
+    fun `a trust sort reaches the walk gated, and sort-text ungated`() {
         seed()
         listOf("sort:rank", "sort:rank:asc", "sort:followers").forEach { sort ->
             walked.clear()
             snapshot(Filter(kinds = listOf(1), search = "observer:$observer $sort filter:rank:gte:50"))
             val q = walked.single()
-            assertEquals(EventYql.RANK_RECENCY_GATED, q.ranking, sort)
             assertEquals(service, q.rankKey, sort)
-            assertEquals(50.0, q.minRank, sort)
+            assertEquals(50.0, EventYql.gateFloor(q), sort)
+            assertTrue(EventYql.walksGated(q), "$sort: the walk gates")
+            walked.clear()
+            snapshot(Filter(kinds = listOf(1), limit = 3, search = "observer:$observer $sort"))
+            assertTrue(!EventYql.walksInOrder(walked.single()), "$sort: a limit'd trust sort is the engine's ranked search, not the newest N")
         }
         walked.clear()
         snapshot(Filter(kinds = listOf(1), search = "observer:$observer sort:text"))
-        assertNull(walked.single().ranking, "sort:text reads no lens, so its set is ungated")
+        assertTrue(!EventYql.walksGated(walked.single()), "sort:text reads no lens, so its set is ungated")
     }
 }

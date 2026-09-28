@@ -65,7 +65,11 @@ import kotlin.test.assertTrue
  *    serves exactly the oracle's set;
  *  - COUNT equals what that REQ served (NIP-45, STORE-C01's clamp included);
  *  - the NIP-77 snapshot of the same filters holds the same set, whole, read
- *    through the `observer:` token (a reconcile carries no connection lens);
+ *    through the `observer:` token (a reconcile carries no connection lens) —
+ *    and a limit'd snapshot is exactly the page the REQ served, a tie group cut
+ *    at the Nth position included ([TIES]);
+ *  - what a relay would deliver LIVE — quartz's in-memory filter match, then
+ *    the store's LiveGate — is that same set, one filter or many;
  *  - a chronological read is in NIP-01 order, and a termless trust sort is
  *    monotone in the key it names.
  *
@@ -92,7 +96,7 @@ class FilterMatrixIT {
                 SchemaDeployer(configUrl).deployIfAbsent(queryUrl)
                 VespaEventStore.open(url = queryUrl, autoDeploy = false, configUrl = configUrl).use { front ->
                     runBlocking {
-                        front.batchInsert(CARDS + NOTES + REACTIONS)
+                        front.batchInsert(CARDS + NOTES + TIES + REACTIONS)
                         front.insert(LIST_10040)
                         front.awaitTrustProjection()
                         awaitCorpus(front.store)
@@ -167,6 +171,35 @@ class FilterMatrixIT {
                     (snapshot.toSet() - want).takeIf { it.isNotEmpty() }?.let { " | extra ${describe(it)}" }.orEmpty()
             }
             if (snapshot.size != snapshot.toSet().size) problems += "SNAPSHOT duplicates"
+
+            // LIVE: what a relay would deliver of each event were it to arrive
+            // now — quartz's in-memory match of the filters, then the store's
+            // LiveGate, in the subscription's own context. It must be the set
+            // the page serves: the same lens, floor and text, one filter or many.
+            val gate =
+                if (case.connection != null) {
+                    withContext(StoreQueryContext(setOf(case.connection))) { store.liveGate(case.filters) }
+                } else {
+                    store.liveGate(case.filters)
+                }
+            val live = ALL.filter { e -> case.filters.any { it.match(e) } && (gate?.admits(e) ?: true) }.map { it.id }.toSet()
+            val page = expected.map { it.id }.toSet()
+            if (live != page) {
+                problems += "LIVE ${live.size}, oracle ${page.size}" +
+                    (page - live).takeIf { it.isNotEmpty() }?.let { " | missing ${describe(it)}" }.orEmpty() +
+                    (live - page).takeIf { it.isNotEmpty() }?.let { " | extra ${describe(it)}" }.orEmpty()
+            }
+        } else if (case.connection == null || case.lens.tokenObserver != null) {
+            // A LIMIT'D snapshot is the page its REQ serves — the newest N with
+            // NIP-01's id tiebreak for a recency read, the top N for a ranking —
+            // wherever the two read through the same observer (a reconcile
+            // carries only the token's; see expectedSnapshot).
+            val snapshot = store.snapshotIdsForNegentropy(case.filters, null, null).map { it.id }.toSet()
+            if (snapshot != servedIds.toSet()) {
+                problems += "LIMIT'D SNAPSHOT ${snapshot.size}, served ${servedIds.size}" +
+                    (servedIds.toSet() - snapshot).takeIf { it.isNotEmpty() }?.let { " | missing ${describe(it)}" }.orEmpty() +
+                    (snapshot - servedIds.toSet()).takeIf { it.isNotEmpty() }?.let { " | extra ${describe(it)}" }.orEmpty()
+            }
         }
         val oracleCount = limit?.let { minOf(it, expected.size) } ?: expected.size
         if (count != oracleCount) problems += "COUNT $count != oracle $oracleCount"
@@ -380,9 +413,6 @@ class FilterMatrixIT {
         PHRASE("\"pizza party\""),
         EXCLUDE("-bitcoin"),
         PIZZA_NOT_BITCOIN("pizza -bitcoin"),
-        ;
-
-        val terms: List<String> get() = query?.split(' ')?.filter { !it.startsWith("-") }.orEmpty()
     }
 
     private enum class Order { CHRONOLOGICAL, TRUST_DESC, TRUST_ASC, FOLLOWERS_DESC, ANY }
@@ -445,7 +475,15 @@ class FilterMatrixIT {
                 ReactionEvent(hexId(), author, 1_700_000_100L + i, arrayOf(arrayOf("e", target.id), arrayOf("p", target.pubKey)), "+", "e".repeat(128))
             }
 
-        val ALL: List<Event> = CARDS + LIST_10040 + NOTES + REACTIONS
+        /**
+         * A TIE GROUP AT THE TOP OF KIND 1: four notes sharing one second, newer
+         * than every other note, so `kind 1 limit=3` cuts through it — the one
+         * place a walk ordered by created_at alone could pick different members
+         * than the page's NIP-01 `id asc` tiebreak.
+         */
+        val TIES: List<Event> = AUTHORS.take(4).map { author -> TextNoteEvent(hexId(), author, 1_700_000_050L, emptyArray(), "tied second", "e".repeat(128)) }
+
+        val ALL: List<Event> = CARDS + LIST_10040 + NOTES + TIES + REACTIONS
 
         val NEWEST_FIRST = compareByDescending<Event> { it.createdAt }.thenBy { it.id }
 

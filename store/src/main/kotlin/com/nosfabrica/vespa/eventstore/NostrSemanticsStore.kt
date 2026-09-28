@@ -589,27 +589,39 @@ class NostrSemanticsStore(
     ) = query<T>(filter).forEach(onEach)
 
     /**
-     * The observer gate for [filters]' LIVE events — or null when none of them
-     * is gated, so an unlensed subscription pays nothing. Built from the same
-     * query each filter's stored read compiles to (connection observer and
-     * `observer:` token, floor, lens), so a live event is delivered exactly
-     * when that stored page would have served it. See [LiveGate].
-     *
-     * A filter gates when an observer resolves and it keeps a floor, unless it
-     * sorts by `sort:text`, the one profile that reads no lens. Call it in the
-     * subscription's own context: the connection observer is read from it.
+     * The observer gate for [filters]' LIVE events — or null when there is
+     * nothing to hold them to: no filter gates (no observer, `include:spam`'s
+     * floor of 0, `sort:text`) and none searches, so such a subscription pays
+     * nothing. Built from the same query each filter's stored read compiles to
+     * (connection observer and `observer:` token, floor, lens — resolved in one
+     * pass), and gated by `EventYql.gateFloor`, the rule every read path
+     * shares. See [LiveGate]; call it in the subscription's own context, where
+     * the connection observer is read from.
      */
     suspend fun liveGate(filters: List<Filter>): LiveGate? {
         val observer = connectionObserver()
         val cutoff = nowSecs()
+        val compiled = filters.mapNotNull { f -> f.toExpiryQuery(cutoff, observer)?.let { f to it } }
+        val lensedQueries = lensed(compiled.map { it.second })
         val rules =
-            filters.mapNotNull { f ->
-                val q = f.toExpiryQuery(cutoff, observer) ?: return@mapNotNull null
-                val gated = q.observer != null && q.minRank != null && q.ranking != EventYql.RANK_TEXT
-                LiveGate.Rule(f, if (gated) lensed(listOf(q)).single().rankKey else null, if (gated) q.minRank else null)
+            compiled.zip(lensedQueries) { (f, _), q ->
+                val floor = EventYql.gateFloor(q)
+                val text =
+                    LiveGate.Text(
+                        terms = LiveGate.Text.words(q.search),
+                        phrases = q.phrases.map(LiveGate.Text::words).filter { it.isNotEmpty() },
+                        excluded = q.notSearch.map(LiveGate.Text::words).filter { it.isNotEmpty() },
+                    )
+                LiveGate.Rule(f, text.takeUnless { it.isEmpty() }, if (floor != null) q.rankKey else null, floor)
             }
-        if (rules.none { it.floor != null }) return null
-        return LiveGate(rules, trustCells)
+        if (rules.none { it.floor != null || it.text != null }) return null
+        return LiveGate(rules, trustCells) { event ->
+            SearchExtractors
+                .extract(event)
+                .fields()
+                .values
+                .joinToString(" ")
+        }
     }
 
     /** The rank cells [liveGate] reads: the projection's reputation index, or none on a store assembled without it. */
@@ -696,10 +708,12 @@ class NostrSemanticsStore(
                 // honours a limit on the id walk itself, so the relay's
                 // `limit: 100000` no longer turns a count into a full-summary
                 // recall (measured: 40 s for two window filters over 51k
-                // events, against 0.2 s counted singly). Only a ranked filter
-                // has to recall through the search path, where its ids ARE
-                // the ranking.
-                if (!q.isRanked()) {
+                // events, against 0.2 s counted singly). So does a gated
+                // RECENCY read (the observer gate on a plain filter): the walk
+                // gates engine-side and its newest N are that page's N
+                // (EventYql.walksInOrder). Only a filter whose ids ARE a
+                // ranking — terms, or a trust sort — recalls through search.
+                if (!q.isRanked() || EventYql.walksInOrder(q)) {
                     val seen = ArrayList<String>()
                     index.visitIds(q) { page ->
                         page.forEach { seen += it.id }
@@ -787,13 +801,16 @@ class NostrSemanticsStore(
 
     /**
      * (created_at, id) pairs straight off the docs — no Event materialization.
-     * Every TERMLESS filter walks the corpus through the engine's id walk, so a
-     * negentropy session sees the COMPLETE set even when it dwarfs a search
-     * page: a limit'd one too (the walk honours it as "the newest N"), and a
-     * GATED one — an `observer:` declared on the filter — through the lens
-     * that observer's 10040 resolves to, exactly the set the same REQ serves
-     * (the walk gates engine-side, see EventYql.buildIdTime). Only searching
-     * filters keep the search path, since their semantics live there.
+     * Every TERMLESS filter goes to the engine's id walk, so a negentropy
+     * session sees the COMPLETE set even when it dwarfs a search page, and a
+     * GATED one — an `observer:` declared on the filter — through the lens that
+     * observer's 10040 resolves to (the walk gates engine-side on
+     * EventYql.gateFloor, the rule the REQ gates on). A limit'd walk is the
+     * newest N with NIP-01's id tiebreak, the page a recency read serves; a
+     * limit'd TRUST SORT's first N are its most trusted, so the engine answers
+     * it with the same ranked search its REQ runs (VespaEventIndex.visitIds).
+     * Only searching filters keep the search path here, since their semantics
+     * live there.
      *
      * Both used to go wrong on a relay that stamped its REQ `default_limit` on
      * NEG-OPEN: a limit'd filter left the walk for one bounded search page, so
@@ -852,7 +869,7 @@ class NostrSemanticsStore(
         // revisiting for the uncapped NIP-77 catch-up, with the heap measured.
         // lensed: a filter's `observer:` token must reach the engine as the
         // services its 10040 names, or the gate reads an empty lens.
-        for (q in lensed(filters.mapNotNull { it.toExpiryQuery(cutoff)?.asSnapshotSet() })) {
+        for (q in lensed(filters.mapNotNull { it.toExpiryQuery(cutoff) })) {
             // Already over budget: the filters left can only add to the union.
             if (cap != null && all.size >= cap) break
             if (q.search == null && q.phrases.isEmpty()) {
@@ -869,23 +886,6 @@ class NostrSemanticsStore(
         // A page (or a search, which has no page hook to stop on) can carry
         // the count past the cap — trim to the sentinel the contract promises.
         return if (cap != null && all.size > cap) all.subList(0, cap) else all
-    }
-
-    /**
-     * A snapshot has no ORDER, only a SET — so a termless query's `sort:` is
-     * reduced to the set its REQ serves: a trust sort gates on the same floor
-     * as the recency-gated walk (the rank profiles' gate is that floor), and
-     * `sort:text`, which reads no lens, gates nothing. Without it a trust sort
-     * would reach the walk as a profile the walk cannot run, and walk ungated.
-     * Searching queries keep their profile: they take the search path.
-     */
-    private fun EventQuery.asSnapshotSet(): EventQuery {
-        if (search != null || phrases.isNotEmpty()) return this
-        return when (ranking) {
-            null, EventYql.RANK_RECENCY_GATED, EventYql.RANK_RECENCY_GATED_EXACT -> this
-            EventYql.RANK_DESC, EventYql.RANK_ASC, EventYql.RANK_FOLLOWERS -> copy(ranking = if (observer != null && minRank != null) EventYql.RANK_RECENCY_GATED else null)
-            else -> copy(ranking = null, minRank = null)
-        }
     }
 
     // ---- deletes ------------------------------------------------------------

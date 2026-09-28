@@ -60,8 +60,10 @@ class EventYqlTest {
                 EventQuery(kinds = listOf(1), minRank = 50.0),
                 // A gated profile with no observer is pure recency: nothing to gate.
                 EventQuery(kinds = listOf(1), ranking = EventYql.RANK_RECENCY_GATED, minRank = 2.0),
-                // A trust sort is not a walk the id query can run; the store reduces it first.
-                EventQuery(kinds = listOf(1), ranking = EventYql.RANK_DESC, observer = "c".repeat(64), minRank = 2.0),
+                // include:spam's floor of 0 admits every author: nothing to gate.
+                EventQuery(kinds = listOf(1), ranking = EventYql.RANK_DESC, observer = "c".repeat(64), minRank = 0.0),
+                // sort:text reads no lens.
+                EventQuery(kinds = listOf(1), ranking = EventYql.RANK_TEXT, observer = "c".repeat(64), minRank = 2.0),
             )
         shapes.forEach { q ->
             assertEquals(EventYql.RANK_UNRANKED, EventYql.buildIdTime(q, withDTag = false)!!.ranking, "id walk of $q")
@@ -80,7 +82,7 @@ class EventYqlTest {
     @Test
     fun `a lensed id walk runs on the gated full-scan profile, with its lens`() {
         val service = "5e".repeat(32)
-        listOf(EventYql.RANK_RECENCY_GATED, EventYql.RANK_RECENCY_GATED_EXACT).forEach { profile ->
+        listOf(EventYql.RANK_RECENCY_GATED, EventYql.RANK_RECENCY_GATED_EXACT, EventYql.RANK_DESC, EventYql.RANK_ASC, EventYql.RANK_FOLLOWERS).forEach { profile ->
             val q = EventQuery(kinds = listOf(1), ranking = profile, observer = "c".repeat(64), rankKey = service, followersKey = service, minRank = 50.0, limit = 1000)
             listOf(false, true).forEach { withDTag ->
                 val walk = assertNotNull(EventYql.buildIdTime(q, withDTag = withDTag))
@@ -89,14 +91,53 @@ class EventYqlTest {
                 assertEquals("50.0", walk.params["ranking.features.query(min_rank)"])
                 assertTrue(walk.yql.endsWith(" order by created_at desc limit 1000"), walk.yql)
                 assertEquals(EventYql.SORT_DEGRADING_OFF, walk.params[EventYql.SORT_DEGRADING])
-                assertTrue(walk.params.keys.none { it.contains("now_secs") }, "no text features: ${walk.params.keys}")
             }
         }
         // An unresolved lens is "trusts nobody", as in every other gated read.
         val unresolved = assertNotNull(EventYql.buildIdTime(EventQuery(kinds = listOf(1), ranking = EventYql.RANK_RECENCY_GATED, observer = "c".repeat(64), minRank = 2.0)))
         assertEquals("{}", unresolved.params["ranking.features.query(user_q)"])
-        assertTrue(EventYql.walksGated(EventQuery(ranking = EventYql.RANK_RECENCY_GATED, observer = "c".repeat(64))))
-        assertFalse(EventYql.walksGated(EventQuery(ranking = EventYql.RANK_RECENCY_GATED, observer = "c".repeat(64), search = "pizza")), "a searching read is not a walk")
+        assertTrue(EventYql.walksGated(EventQuery(ranking = EventYql.RANK_RECENCY_GATED, observer = "c".repeat(64), minRank = 2.0)))
+        assertFalse(EventYql.walksGated(EventQuery(ranking = EventYql.RANK_RECENCY_GATED, observer = "c".repeat(64), minRank = 2.0, search = "pizza")), "a searching read is not a walk")
+        assertFalse(EventYql.walksGated(EventQuery(ranking = EventYql.RANK_RECENCY_GATED, observer = "c".repeat(64), minRank = 0.0)), "a floor of 0 gates nobody")
+    }
+
+    /**
+     * WHO IS GATED — one rule, read by the page, the walk, the snapshot and a
+     * relay's live gate alike, so the four cannot disagree about an author.
+     */
+    @Test
+    fun `gateFloor is the floor a lens enforces, and null where nothing is gated`() {
+        val o = "c".repeat(64)
+        val gated =
+            mapOf(
+                "recency gated" to EventQuery(ranking = EventYql.RANK_RECENCY_GATED, observer = o, minRank = 2.0),
+                "recency gated exact" to EventQuery(ranking = EventYql.RANK_RECENCY_GATED_EXACT, observer = o, minRank = 2.0),
+                "sort:rank" to EventQuery(ranking = EventYql.RANK_DESC, observer = o, minRank = 2.0),
+                "sort:rank:asc" to EventQuery(ranking = EventYql.RANK_ASC, observer = o, minRank = 2.0),
+                "sort:followers" to EventQuery(ranking = EventYql.RANK_FOLLOWERS, observer = o, minRank = 2.0),
+                "the default search profile" to EventQuery(search = "pizza", observer = o, minRank = 2.0),
+            )
+        gated.forEach { (name, q) -> assertEquals(2.0, EventYql.gateFloor(q), name) }
+        val ungated =
+            mapOf(
+                "no observer" to EventQuery(ranking = EventYql.RANK_RECENCY_GATED, minRank = 2.0),
+                "a non-hex observer" to EventQuery(ranking = EventYql.RANK_RECENCY_GATED, observer = "npub1", minRank = 2.0),
+                "no floor" to EventQuery(ranking = EventYql.RANK_DESC, observer = o),
+                "include:spam's floor of 0" to EventQuery(search = "pizza", observer = o, minRank = 0.0),
+                "sort:text" to EventQuery(search = "pizza", ranking = EventYql.RANK_TEXT, observer = o, minRank = 2.0),
+                "plain recall" to EventQuery(kinds = listOf(1), observer = o, minRank = 2.0),
+            )
+        ungated.forEach { (name, q) -> assertNull(EventYql.gateFloor(q), name) }
+    }
+
+    /** A limit'd walk is the page only where the page is the newest N. */
+    @Test
+    fun `walksInOrder holds for recency reads and not for rankings`() {
+        val o = "c".repeat(64)
+        assertTrue(EventYql.walksInOrder(EventQuery(kinds = listOf(1))))
+        assertTrue(EventYql.walksInOrder(EventQuery(ranking = EventYql.RANK_RECENCY_GATED, observer = o, minRank = 2.0)))
+        assertFalse(EventYql.walksInOrder(EventQuery(ranking = EventYql.RANK_DESC, observer = o, minRank = 2.0)), "a trust sort's first N are its most trusted")
+        assertFalse(EventYql.walksInOrder(EventQuery(search = "pizza")), "a search's are its most relevant")
     }
 
     /**

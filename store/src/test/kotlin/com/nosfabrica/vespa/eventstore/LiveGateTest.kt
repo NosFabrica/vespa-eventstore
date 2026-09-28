@@ -20,6 +20,8 @@
  */
 package com.nosfabrica.vespa.eventstore
 
+import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
+import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryReputationIndex
 import com.nosfabrica.vespa.eventstore.trust.TrustProjection
@@ -30,8 +32,14 @@ import com.vitorpamplona.quartz.nip10Notes.TextNoteEvent
 import com.vitorpamplona.quartz.nip25Reactions.ReactionEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -62,7 +70,10 @@ class LiveGateTest {
 
     private fun id() = (++seq).toString(16).padStart(64, '0')
 
-    private fun note(author: String) = TextNoteEvent(id(), author, 1_700_000_000L + seq, emptyArray(), "live", "")
+    private fun note(
+        author: String,
+        text: String = "live",
+    ) = TextNoteEvent(id(), author, 1_700_000_000L + seq, emptyArray(), text, "")
 
     init {
         runBlocking {
@@ -85,11 +96,83 @@ class LiveGateTest {
     private fun LiveGate.admitted(author: String): Boolean = runBlocking { admits(note(author)) }
 
     @Test
-    fun `no lens, no gate`() {
+    fun `no lens and no text, no gate`() {
         assertNull(gate(null), "an anonymous plain feed")
-        assertNull(gate("pizza"), "an anonymous search")
         assertNull(gate("include:spam"), "a waiver")
         assertNull(gate("filter:rank:gte:50"), "a floor with no observer to read it through")
+        assertNull(gate("observer:$observer include:spam"), "include:spam's floor of 0 admits every author: no reads to spend")
+    }
+
+    /**
+     * A SEARCH HOLDS ITS LIVE EVENTS TO ITS TEXT. Quartz's Filter.match ignores
+     * `search`, so without this a "pizza" subscription streamed every note.
+     * The check is the engine's exact and prefix tiers: every term a prefix of
+     * some word, phrases word for word, exclusions absent.
+     */
+    @Test
+    fun `a search admits only what its text matches`() {
+        val g = assertNotNull(gate("pizza"), "an anonymous search has no lens, but it has text")
+        assertTrue(runBlocking { g.admits(note(spammer, "pizza night")) }, "no lens: any author, if the text matches")
+        assertTrue(runBlocking { g.admits(note(spammer, "pizzas all round")) }, "a prefix is a match")
+        assertFalse(runBlocking { g.admits(note(spammer, "hello")) }, "no match, no delivery")
+        val phrase = assertNotNull(gate("\"pizza party\""))
+        assertTrue(runBlocking { phrase.admits(note(trusted, "a pizza party tonight")) })
+        assertFalse(runBlocking { phrase.admits(note(trusted, "party pizza")) }, "a phrase is in order")
+        val excluding = assertNotNull(gate("pizza -bitcoin"))
+        assertFalse(runBlocking { excluding.admits(note(trusted, "pizza for bitcoin")) }, "an excluded word vetoes")
+    }
+
+    /**
+     * AN UNGATED SEARCH RULE VOUCHES ONLY FOR WHAT ITS TEXT MATCHES. Before, it
+     * matched by its NIP-01 part alone and admitted an event a gated sibling
+     * filter was there to judge (the audit's case).
+     */
+    @Test
+    fun `an ungated search filter cannot vouch for a sibling's event`() {
+        val g =
+            assertNotNull(
+                runBlocking {
+                    withContext(StoreQueryContext(setOf(observer))) {
+                        store.liveGate(listOf(Filter(kinds = listOf(1), search = "pizza sort:text"), Filter(kinds = listOf(1))))
+                    }
+                },
+            )
+        assertFalse(runBlocking { g.admits(note(spammer, "hello")) }, "only the gated plain filter matches this, and it drops the author")
+        assertTrue(runBlocking { g.admits(note(spammer, "pizza time")) }, "the sort:text search matches it, and reads no lens")
+        assertTrue(runBlocking { g.admits(note(trusted, "hello")) }, "the plain filter admits a trusted author")
+    }
+
+    @Test
+    fun `concurrent reads of one cold author are one reputation read`() {
+        val counting = CountingReputations(InMemoryReputationIndex())
+        val cold = NostrSemanticsStore(TrustProjection(InMemoryEventIndex(), counting), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+        runBlocking {
+            cold.batchInsert(listOf(UserAssertionEvent(id(), service, 1_000L, arrayOf(arrayOf("d", trusted), arrayOf("rank", "90")), "", "")))
+            cold.insert(TrustProviderListEvent(id(), observer, 1_000L, arrayOf(arrayOf("30382:rank", service, "wss://scores.example.com/")), "", ""))
+            val g = assertNotNull(cold.liveGate(listOf(Filter(kinds = listOf(1), search = "observer:$observer"))))
+            counting.gets.set(0)
+            counting.gate = CompletableDeferred()
+            val waiting = (1..50).map { async(Dispatchers.Default) { g.admits(note(trusted)) } }
+            delay(200)
+            counting.gate?.complete(Unit)
+            assertTrue(waiting.awaitAll().all { it })
+            assertEquals(1, counting.gets.get(), "fifty readers of one cold cell, one read")
+        }
+    }
+
+    /** Counts gets, and can hold them open so readers pile up behind the first. */
+    private class CountingReputations(
+        private val inner: InMemoryReputationIndex,
+    ) : ReputationIndex by inner {
+        val gets = AtomicInteger()
+
+        @Volatile var gate: CompletableDeferred<Unit>? = null
+
+        override suspend fun get(pubkey: String): ReputationDoc? {
+            gets.incrementAndGet()
+            gate?.await()
+            return inner.get(pubkey)
+        }
     }
 
     @Test

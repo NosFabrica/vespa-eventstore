@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.eventstore.trust
 
 import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
+import kotlinx.coroutines.CompletableDeferred
 
 /**
  * AN AUTHOR'S RANK CELL UNDER ONE SERVICE, READ FOR THE LIVE GATE.
@@ -69,21 +70,46 @@ internal class TrustCells(
         return entry.score.takeIf { nowSecs() - entry.readAt < ttlSecs }
     }
 
-    /** The cell, read now when [cached] has none. */
+    /** Reads in flight, by key: concurrent readers of one cold cell share ONE read. */
+    private val inFlight = HashMap<String, CompletableDeferred<Double>>()
+
+    /**
+     * The cell, read now when [cached] has none — SINGLE-FLIGHT: a cold author
+     * whose note lands in two thousand lensed subscriptions at once is one
+     * reputation read, not two thousand, and the same again at every TTL
+     * expiry. A failed read fails every waiter (the live gate drops, closed)
+     * and is not cached, so the next event retries.
+     */
     suspend fun read(
         author: String,
         service: String?,
     ): Double {
         if (service == null || reputations == null) return 0.0
         cached(author, service)?.let { return it }
-        val score =
-            reputations
-                .get(author)
-                ?.influenceScores
-                ?.get(ServiceKey(service))
-                ?.toDouble() ?: 0.0
-        synchronized(entries) { entries[key(author, service)] = Entry(score, nowSecs()) }
-        return score
+        val k = key(author, service)
+        val (pending, owner) =
+            synchronized(entries) {
+                inFlight[k]?.let { it to false } ?: (CompletableDeferred<Double>().also { inFlight[k] = it } to true)
+            }
+        if (!owner) return pending.await()
+        try {
+            val score =
+                reputations
+                    .get(author)
+                    ?.influenceScores
+                    ?.get(ServiceKey(service))
+                    ?.toDouble() ?: 0.0
+            synchronized(entries) {
+                entries[k] = Entry(score, nowSecs())
+                inFlight.remove(k)
+            }
+            pending.complete(score)
+            return score
+        } catch (t: Throwable) {
+            synchronized(entries) { inFlight.remove(k) }
+            pending.completeExceptionally(t)
+            throw t
+        }
     }
 
     companion object {
