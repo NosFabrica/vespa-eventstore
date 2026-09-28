@@ -1076,6 +1076,70 @@ throughput +3–6% — inside run noise, and this harness is transfer-bound ther
 anyway. What it buys is the COLD read: before the memory warms, after its TTL,
 and the long tail of shapes seen once.
 
+**What is left (2026-09-28)** — three probes, same corpus, all read-only:
+
+- **Gated COUNT** (`benchmark/gated_count_probe.py`). Windows cannot help a
+  count, and an observer-gated one ranks every match to read the author's
+  trust: global kind 1 **5.2 s** (ungated 292 ms), kinds 1/6/7 5.4 s, a
+  300-author follow 962 ms, 1,000 authors 1.1 s; small sets stay cheap
+  (`#p` 60 ms, a week of kind 1 81 ms). The gate as a MATCH filter —
+  prototyped as `pubkey in (the observer's 147,948 trusted authors)` on the
+  ungated grouping count — returns the IDENTICAL count on every shape and cuts
+  the large ones 2–5× (global 5.2 s → 1.0 s), but its inline set costs
+  ~300–450 ms of term lookups everywhere, so small counts got slower. That is
+  an upper bound: a per-service "trusted" attribute imported from the
+  reputation parent would not pay it — the open question is whether an
+  imported-attribute filter walks like a posting list, which needs the schema
+  change on a fresh engine. NIP-45's `"approximate": true` is the cheap
+  alternative for the huge sets.
+- **Where the tail is** (`recencyLoadProbe` with `BENCH_BREAKDOWN=1`, 32
+  clients). Under speculative + memory, `#p` NOTIFICATION reads are ~97% of
+  the slowest 1% (p95 ~5 s, p99 ~7 s), then `#t` feeds (p95 2.6 s); every
+  other class holds p99 under 711 ms. They are not matching (0–9 ms): their
+  match sets are small and a year deep, so every hit is a cold, scattered
+  DOCUMENT read — 80–160 ms of summary fetch single-threaded, queued on the
+  disk under load (92 GB of documents in a 30 GB container here). The same
+  164 hits from the attribute-only `idtime` summary take 3 ms against ~40–50
+  ms of full summaries, and ~40% of those full reads are the `TIE_SLACK`
+  overfetch — so an id-first fetch (resolve the page from attributes, then
+  fetch exactly `limit` documents) is the lever for this tail. (Shipped's tail
+  was elsewhere: gated deep pages at p50 13 s, which windows already fixed.)
+- **End to end** (`relayE2EProbe`). The August relay image over `ws://`
+  (read-only: its startup reconcile and expiry sweep off) against the engine
+  client on the same filters: the relay adds 2–4 ms, 14–23 ms on 100–500-event
+  pages (serialization), and served the engine's page on all 7 shapes, gated
+  included. Today's `NostrSemanticsStore.rawQuery` in-process adds −0.3 to
+  +0.3 ms over the engine under it. The engine IS the latency: its gains reach
+  the client ~1:1.
+
+**Id-first fetch (2026-09-28)** — the fix for the tail above. A limit'd
+newest-first read now resolves its page off the attribute-only `idtime`
+summary (id, created_at — memory, never the document store): the
+`limit + TIE_SLACK` overfetch, the tie window, every speculative attempt and
+every band page. Then ONE `id in (…)` query reads the documents for exactly the
+page. `VESPA_ID_FIRST=0` turns it off. A/B on the same build, off / on / off,
+speculative + memory under the load probe:
+
+| clients | REQ/s | p50 | p95 | p99 |
+|---:|---|---|---|---|
+| 8 | 102 / **150** / 98 | 32 / **26** / 34 ms | 198 / **124** / 215 ms | 1,147 / **694** / 1,065 ms |
+| 32 | 103 / **163** / 111 | 130 / **96** / 120 ms | 827 / **430** / 756 ms | 4,445 / **2,311** / 4,383 ms |
+
++50% throughput and roughly half the tail, because what speculation left
+behind was DOCUMENT reads: `#t` feeds' p99 at 32 clients went 3.1 / 2.7 s →
+0.71 s; `#p` notifications 7.5 / 6.6 s → 5.0 s (still the tail — their `limit`
+documents are cold and a year deep, and are now all that is read). It also
+removes a pathological case: a bulk-published tie group (a provider's 242k
+cards on one second) used to be read WHOLE as documents when a page boundary
+landed in it; it now resolves from ids.
+
+The price is one more round trip, paid where the documents are already hot:
+single warm reads, one at a time, moved 0–5 ms (e.g. global limit 50 7.6 →
+7.3 ms, follow 300 limit 500 25 → 28.5 ms; one noisy gated shape 13–17 → 32
+ms) — every page identical in all three runs. It is on by default because a
+relay's load is concurrent and its corpus larger than memory; a deployment
+whose corpus fits in RAM can turn it off.
+
 Watching it live: every speculative read books `IngestStats` stages —
 `recency.speculative` (the read, timed), `.attempt` (each windowed query, timed)
 and one zero-time counter per outcome: `.first` / `.widened` (pages the windows
@@ -1110,6 +1174,7 @@ timing is also a proof:
 | `dedupProbe` | the bulk-dedup existence check: full-summary vs summary-free variants at mirror hit rates, chunk × fan-out curves, REQ latency under dedup load | reuses a `corpusLoad` corpus (ids sampled off the live store) | every variant must return the identical member set |
 | `extractBench` | the write path's own derivation (`SearchExtractors`), decomposed by stage, with `--badges N` for the every-event-wears-one corpus | any captured JSON export (`--corpus`), no Vespa | — |
 | `searchTrace` | one NIP-50 term, split per clause family and per rank profile (ablations + Vespa's blueprint cost) | any loaded store — capture one with `exportLoad` | every row prints `totalCount`, so a variant that got fast by matching less shows it |
+| `relayE2EProbe` | what a client sees: REQ → EOSE over a relay WebSocket beside the engine client on the same filters, and `NostrSemanticsStore.rawQuery` in-process against the engine under it | any loaded store and (for `wire`) a relay pointed at it; read-only | the relay's page and the store's page must equal the engine's |
 | `recencyLoadProbe` | the recency strategies under load: closed-loop throughput at rising concurrency on a relay-shaped mix, and the same reads while a writer lands events on a live clock (engine CPU from `docker stats`, Vespa's match/summary split per REQ) | any loaded store; its writes are TEMPORARY — every id logged before its put, all removed at the end, `BENCH_CLEANUP_ONLY=1` to finish an interrupted run | sampled pages identical across variants with the writes in place; zero probe events left by id |
 | `recencyEdgeProbe` | the speculative strategy's edges: distinct follow lists under concurrency, `until` pagination and random depths, the band edge to 5,000, a stale memory across a hashtag burst, a far-future `until` (`BENCH_SECTIONS`) | any loaded store, read-only | every check must serve the identical page across shipped / speculative / + memory |
 | `recencyStrategyProbe` | the four `RecencyStrategy` options on the dominant feed shapes, plain and gated (`BENCH_OBSERVER`), with engine queries per REQ | any loaded store, read-only (`BENCH_NOW` pins the clock to a frozen corpus) | all four strategies must serve the identical page, ids and order |
