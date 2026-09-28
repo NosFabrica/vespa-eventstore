@@ -64,6 +64,8 @@ import kotlin.test.assertTrue
  *  - the REQ (the raw path a relay serves, [NostrSemanticsStore.rawQuery])
  *    serves exactly the oracle's set;
  *  - COUNT equals what that REQ served (NIP-45, STORE-C01's clamp included);
+ *  - the NIP-77 snapshot of the same filters holds the same set, whole, read
+ *    through the `observer:` token (a reconcile carries no connection lens);
  *  - a chronological read is in NIP-01 order, and a termless trust sort is
  *    monotone in the key it names.
  *
@@ -153,6 +155,19 @@ class FilterMatrixIT {
         }
 
         if (count != servedIds.size) problems += "COUNT $count != served ${servedIds.size}"
+
+        // NIP-77: the snapshot a reconcile of these filters walks. The whole set
+        // — no page limit — read through the token observer only.
+        if (limit == null) {
+            val snapshot = store.snapshotIdsForNegentropy(case.filters, null, null).map { it.id }
+            val want = case.expectedSnapshot().map { it.id }.toSet()
+            if (snapshot.toSet() != want) {
+                problems += "SNAPSHOT ${snapshot.toSet().size}, oracle ${want.size}" +
+                    (want - snapshot.toSet()).takeIf { it.isNotEmpty() }?.let { " | missing ${describe(it)}" }.orEmpty() +
+                    (snapshot.toSet() - want).takeIf { it.isNotEmpty() }?.let { " | extra ${describe(it)}" }.orEmpty()
+            }
+            if (snapshot.size != snapshot.toSet().size) problems += "SNAPSHOT duplicates"
+        }
         val oracleCount = limit?.let { minOf(it, expected.size) } ?: expected.size
         if (count != oracleCount) problems += "COUNT $count != oracle $oracleCount"
 
@@ -230,7 +245,10 @@ class FilterMatrixIT {
         private val observer: String? = lens.tokenObserver ?: lens.connection
 
         /** The lens's rank table: the fixture's, or nobody's for an observer whose 10040 names no one. */
-        private fun trustOf(author: String): Int = if (observer == OBSERVER) RANK[author] ?: 0 else 0
+        private fun trustOf(
+            author: String,
+            through: String?,
+        ): Int = if (through == OBSERVER) RANK[author] ?: 0 else 0
 
         val order: Order
             get() {
@@ -248,11 +266,19 @@ class FilterMatrixIT {
             }
 
         /** What the whole request should serve, before any limit: the union over its filters. */
-        fun expected(): List<Event> = ALL.filter { e -> filters.any { f -> matches(f, e) } }
+        fun expected(): List<Event> = ALL.filter { e -> filters.any { f -> matches(f, e, observer) } }
+
+        /**
+         * What a NIP-77 snapshot of these filters should hold: the same set, read
+         * through the TOKEN observer alone — a reconcile carries no connection
+         * lens (the relay's NEG path runs outside any StoreQueryContext).
+         */
+        fun expectedSnapshot(): List<Event> = ALL.filter { e -> filters.any { f -> matches(f, e, lens.tokenObserver) } }
 
         private fun matches(
             f: Filter,
             e: Event,
+            through: String?,
         ): Boolean {
             if (!f.copy(search = null, limit = null).match(e)) return false
             val parsed = parse(f.search)
@@ -275,7 +301,7 @@ class FilterMatrixIT {
             // The gate: only a resolved observer gates, and `include:spam`
             // lifts the DEFAULT floor only — an explicit floor survives it.
             val floor = parsed.floor ?: if (parsed.includeSpam) null else DEFAULT_FLOOR
-            if (observer != null && floor != null && trustOf(e.pubKey) < floor) return false
+            if (through != null && floor != null && trustOf(e.pubKey, through) < floor) return false
             return true
         }
     }

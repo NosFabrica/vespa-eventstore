@@ -32,8 +32,10 @@ import kotlin.test.assertTrue
 
 class EventYqlTest {
     /**
-     * THE ID WALK IS ALWAYS UNRANKED — the load-bearing fact under the whole
-     * partial-answer ladder, and nothing pinned it.
+     * THE ID WALK NEVER RANKS ON A MATCH-PHASE PROFILE — the load-bearing fact
+     * under the whole partial-answer ladder, and nothing pinned it. A plain walk
+     * is `unranked`; a LENSED one is `recency_gated_exact` (the next test), which
+     * declares no match-phase either, so the argument below covers both.
      *
      * `unranked` is Vespa's built-in no-scoring profile and `event.sd` declares
      * `match-phase` on `recency` and `recency_gated` alone, so a SCHEMA cut
@@ -48,7 +50,7 @@ class EventYqlTest {
      * behind both.
      */
     @Test
-    fun `the id walk ranks unranked, whatever the query asks for`() {
+    fun `the id walk ranks unranked, whatever an ungated query asks for`() {
         val shapes =
             listOf(
                 EventQuery(kinds = listOf(1)),
@@ -56,11 +58,45 @@ class EventYqlTest {
                 EventQuery(authors = listOf("a1".repeat(32)), since = 1, until = 2),
                 EventQuery(kinds = listOf(30382), authors = listOf("b2".repeat(32))),
                 EventQuery(kinds = listOf(1), minRank = 50.0),
+                // A gated profile with no observer is pure recency: nothing to gate.
+                EventQuery(kinds = listOf(1), ranking = EventYql.RANK_RECENCY_GATED, minRank = 2.0),
+                // A trust sort is not a walk the id query can run; the store reduces it first.
+                EventQuery(kinds = listOf(1), ranking = EventYql.RANK_DESC, observer = "c".repeat(64), minRank = 2.0),
             )
         shapes.forEach { q ->
             assertEquals(EventYql.RANK_UNRANKED, EventYql.buildIdTime(q, withDTag = false)!!.ranking, "id walk of $q")
             assertEquals(EventYql.RANK_UNRANKED, EventYql.buildIdTime(q, withDTag = true)!!.ranking, "d-tag id walk of $q")
         }
+    }
+
+    /**
+     * A LENSED WALK GATES. The walk is how a query's whole id set leaves the
+     * engine — a NIP-77 snapshot above all — and on `unranked` an observer-gated
+     * read walked every author its lens drops. It runs on the gated FULL-SCAN
+     * profile (no match-phase to cut the walk), carries the lens and the floor,
+     * keeps the `order by` the cursor pages on, and ships no text features the
+     * standalone profile never declares.
+     */
+    @Test
+    fun `a lensed id walk runs on the gated full-scan profile, with its lens`() {
+        val service = "5e".repeat(32)
+        listOf(EventYql.RANK_RECENCY_GATED, EventYql.RANK_RECENCY_GATED_EXACT).forEach { profile ->
+            val q = EventQuery(kinds = listOf(1), ranking = profile, observer = "c".repeat(64), rankKey = service, followersKey = service, minRank = 50.0, limit = 1000)
+            listOf(false, true).forEach { withDTag ->
+                val walk = assertNotNull(EventYql.buildIdTime(q, withDTag = withDTag))
+                assertEquals(EventYql.RANK_RECENCY_GATED_EXACT, walk.ranking, "$profile, withDTag=$withDTag")
+                assertEquals("{$service:1.0}", walk.params["ranking.features.query(user_q)"])
+                assertEquals("50.0", walk.params["ranking.features.query(min_rank)"])
+                assertTrue(walk.yql.endsWith(" order by created_at desc limit 1000"), walk.yql)
+                assertEquals(EventYql.SORT_DEGRADING_OFF, walk.params[EventYql.SORT_DEGRADING])
+                assertTrue(walk.params.keys.none { it.contains("now_secs") }, "no text features: ${walk.params.keys}")
+            }
+        }
+        // An unresolved lens is "trusts nobody", as in every other gated read.
+        val unresolved = assertNotNull(EventYql.buildIdTime(EventQuery(kinds = listOf(1), ranking = EventYql.RANK_RECENCY_GATED, observer = "c".repeat(64), minRank = 2.0)))
+        assertEquals("{}", unresolved.params["ranking.features.query(user_q)"])
+        assertTrue(EventYql.walksGated(EventQuery(ranking = EventYql.RANK_RECENCY_GATED, observer = "c".repeat(64))))
+        assertFalse(EventYql.walksGated(EventQuery(ranking = EventYql.RANK_RECENCY_GATED, observer = "c".repeat(64), search = "pizza")), "a searching read is not a walk")
     }
 
     /**

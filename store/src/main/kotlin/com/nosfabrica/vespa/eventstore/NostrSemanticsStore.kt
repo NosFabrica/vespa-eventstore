@@ -759,10 +759,19 @@ class NostrSemanticsStore(
 
     /**
      * (created_at, id) pairs straight off the docs — no Event materialization.
-     * Plain filters walk the corpus through the engine's visit, so a
-     * negentropy session sees the COMPLETE match set even when it dwarfs the
-     * search page limit. Searching or limit'd filters keep the search path,
-     * since their semantics live there.
+     * Every TERMLESS filter walks the corpus through the engine's id walk, so a
+     * negentropy session sees the COMPLETE set even when it dwarfs a search
+     * page: a limit'd one too (the walk honours it as "the newest N"), and a
+     * GATED one — an `observer:` declared on the filter — through the lens
+     * that observer's 10040 resolves to, exactly the set the same REQ serves
+     * (the walk gates engine-side, see EventYql.buildIdTime). Only searching
+     * filters keep the search path, since their semantics live there.
+     *
+     * Both used to go wrong on a relay that stamped its REQ `default_limit` on
+     * NEG-OPEN: a limit'd filter left the walk for one bounded search page, so
+     * a reconcile covered the newest `default_limit` events and called that the
+     * set; and the token's gate ran with no lens resolved — the empty tensor,
+     * "trusts nobody" — so an observer-declared reconcile covered NOTHING.
      *
      * [maxEntries] returns at most `maxEntries + 1` — one over, so the caller
      * can tell "at budget" from "over budget" — and STOPS the walk there: a
@@ -813,10 +822,12 @@ class NostrSemanticsStore(
         // buys is bounded by the cap: its early exit — the filters left can
         // only add to the union — is work a fan-out has already done. Worth
         // revisiting for the uncapped NIP-77 catch-up, with the heap measured.
-        for (q in filters.mapNotNull { it.toExpiryQuery(cutoff) }) {
+        // lensed: a filter's `observer:` token must reach the engine as the
+        // services its 10040 names, or the gate reads an empty lens.
+        for (q in lensed(filters.mapNotNull { it.toExpiryQuery(cutoff)?.asSnapshotSet() })) {
             // Already over budget: the filters left can only add to the union.
             if (cap != null && all.size >= cap) break
-            if (q.search == null && q.limit == null) {
+            if (q.search == null && q.phrases.isEmpty()) {
                 index.visitIds(q) { page ->
                     page.forEach { collect(it.id, it.createdAt) }
                     onProgress?.invoke(all.size)
@@ -830,6 +841,23 @@ class NostrSemanticsStore(
         // A page (or a search, which has no page hook to stop on) can carry
         // the count past the cap — trim to the sentinel the contract promises.
         return if (cap != null && all.size > cap) all.subList(0, cap) else all
+    }
+
+    /**
+     * A snapshot has no ORDER, only a SET — so a termless query's `sort:` is
+     * reduced to the set its REQ serves: a trust sort gates on the same floor
+     * as the recency-gated walk (the rank profiles' gate is that floor), and
+     * `sort:text`, which reads no lens, gates nothing. Without it a trust sort
+     * would reach the walk as a profile the walk cannot run, and walk ungated.
+     * Searching queries keep their profile: they take the search path.
+     */
+    private fun EventQuery.asSnapshotSet(): EventQuery {
+        if (search != null || phrases.isNotEmpty()) return this
+        return when (ranking) {
+            null, EventYql.RANK_RECENCY_GATED, EventYql.RANK_RECENCY_GATED_EXACT -> this
+            EventYql.RANK_DESC, EventYql.RANK_ASC, EventYql.RANK_FOLLOWERS -> copy(ranking = if (observer != null && minRank != null) EventYql.RANK_RECENCY_GATED else null)
+            else -> copy(ranking = null, minRank = null)
+        }
     }
 
     // ---- deletes ------------------------------------------------------------

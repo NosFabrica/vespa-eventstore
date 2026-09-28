@@ -1016,8 +1016,10 @@ class VespaEventIndex(
             if (query.limit <= 0) return
             // A LIMIT IS AN ORDER, not just a count: "the newest N". The ids of
             // a ranked walk ARE its ranking, so only the search path can
-            // produce them.
-            if (query.isRankedShape()) return super.visitIds(query, withDTag, onPage)
+            // produce them — except a GATED walk, whose score is created_at:
+            // its newest N are what the ordered id query already returns, and
+            // [EventYql.buildIdTime] gates it (a search would stop at one page).
+            if (query.isRankedShape() && !EventYql.walksGated(query)) return super.visitIds(query, withDTag, onPage)
             // A LIMIT THAT FITS IN ONE PAGE IS ONE QUERY. `buildIdTime` is
             // unranked, ordered `created_at desc` and honours the limit, so the
             // newest N arrive in a single round trip — and a walk that stops

@@ -324,10 +324,22 @@ object EventYql {
         params["presentation.summary"] = if (withDTag) SUMMARY_IDTIME_TAG else SUMMARY_IDTIME
         params[MATCH_THREADS] = SINGLE_MATCH_THREAD
         params[SORT_DEGRADING] = SORT_DEGRADING_OFF
+        // A GATED WALK GATES. The walk is how a query's whole id set leaves the
+        // engine (NIP-77 snapshots above all), and on `unranked` a lensed read
+        // walked every author the lens drops: a reconcile declared through an
+        // observer handed over exactly the corpus the observer gate exists to
+        // withhold. `recency_gated_exact` drops below-floor authors engine-side
+        // and scores by created_at alone, so the `order by` the cursor pages on
+        // is unchanged; it has no match-phase, so nothing cuts the walk.
+        val gated = walksGated(q)
+        if (gated) {
+            lensParams(q, params)
+            params.keys.removeAll(TEXT_RANK_FEATURES)
+        }
         return VespaQuery(
             yql = "select ${if (withDTag) "id, created_at, tag_index" else "id, created_at"} from event where ${whereOf(clauses)} order by created_at desc$limit",
             params = params,
-            ranking = RANK_UNRANKED,
+            ranking = if (gated) RANK_RECENCY_GATED_EXACT else RANK_UNRANKED,
             complete = q.complete,
             sampled = q.sampled,
             shape = clauseShape(q),
@@ -437,6 +449,34 @@ object EventYql {
     }
 
     /**
+     * Whether [buildIdTime] walks [q] through the observer gate: a gated
+     * profile, a hex observer to read the lens through, and no search text — the
+     * walk's where clause has no text ranking to offer, and a searching read is
+     * a relevance question the walk does not answer. A gated profile with no
+     * observer is pure recency ([build] sends no lens either), so it walks plain.
+     */
+    fun walksGated(q: EventQuery): Boolean =
+        (q.ranking == RANK_RECENCY_GATED || q.ranking == RANK_RECENCY_GATED_EXACT) &&
+            q.observer?.lowercase()?.takeIf(Hex::isHex64) != null &&
+            q.search.isNullOrBlank() &&
+            q.phrases.isEmpty()
+
+    /**
+     * The lens a trust profile reads, as query features. The tensors are keyed
+     * by SERVICE: the lens is the observer's resolved provider per dimension,
+     * and an unresolved one is the empty tensor — "trusts nobody", score 0 —
+     * never the observer's own key, which no card is keyed under.
+     */
+    private fun lensParams(
+        q: EventQuery,
+        params: MutableMap<String, String>,
+    ) {
+        params["ranking.features.query(user_q)"] = q.rankKey?.takeIf(Hex::isHex64)?.let { "{$it:1.0}" } ?: "{}"
+        params["ranking.features.query(followers_q)"] = q.followersKey?.takeIf(Hex::isHex64)?.let { "{$it:1.0}" } ?: "{}"
+        q.minRank?.let { params["ranking.features.query(min_rank)"] = it.toString() }
+    }
+
+    /**
      * THE PROFILE A COUNT MUST RUN ON, or null when the query needs no profile
      * at all and the unranked grouping counts it exactly ([buildCount]).
      *
@@ -476,15 +516,7 @@ object EventYql {
 
         val observer = q.observer?.lowercase()?.takeIf(Hex::isHex64)
         val ranking = profileOf(q)
-        if (ranking != RANK_UNRANKED && ranking != RANK_RECENCY && observer != null) {
-            // The tensors are keyed by SERVICE: the lens is the observer's
-            // resolved provider per dimension, and an unresolved one is the
-            // empty tensor — "trusts nobody", score 0 — never the observer's
-            // own key, which no card is keyed under.
-            params["ranking.features.query(user_q)"] = q.rankKey?.takeIf(Hex::isHex64)?.let { "{$it:1.0}" } ?: "{}"
-            params["ranking.features.query(followers_q)"] = q.followersKey?.takeIf(Hex::isHex64)?.let { "{$it:1.0}" } ?: "{}"
-            q.minRank?.let { params["ranking.features.query(min_rank)"] = it.toString() }
-        }
+        if (ranking != RANK_UNRANKED && ranking != RANK_RECENCY && observer != null) lensParams(q, params)
         // A MEMBER PROFILE WITHOUT AN OBSERVER WOULD SATURATE, not degrade.
         // wot_mult() reads `min_rank`, which defaults to -1e9 so the gate in
         // the rank_* profiles is a no-op; with no user_q the member's
