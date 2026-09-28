@@ -292,6 +292,19 @@ object EventYql {
      */
     const val SUMMARY_DEDUP = "dedup"
 
+    /**
+     * [vq] projected to (id, created_at) off the attribute-only [SUMMARY_IDTIME]
+     * summary: the same match, the same order, the same hits — but served from
+     * memory, never the document store. The id-first fetch resolves a page with
+     * this and reads full documents only for the ids that made it
+     * (VespaEventIndex.recallSummaries).
+     */
+    fun idTimeOnly(vq: VespaQuery): VespaQuery =
+        vq.copy(
+            yql = vq.yql.replaceFirst("select $SUMMARY_FIELDS from ", "select id, created_at from "),
+            params = vq.params + ("presentation.summary" to SUMMARY_IDTIME),
+        )
+
     // Attribute-only projections for snapshot walks — see buildIdTime.
     const val SUMMARY_IDTIME = "idtime"
     const val SUMMARY_IDTIME_TAG = "idtimetag"

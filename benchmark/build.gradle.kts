@@ -255,3 +255,14 @@ tasks.register<JavaExec>("recencyLoadProbe") {
     mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.probe.RecencyLoadProbe")
     maxHeapSize = System.getenv("BENCH_HEAP") ?: "3g"
 }
+
+// What a client sees against what the engine does: REQ -> EOSE over a relay's
+// WebSocket beside the engine client, and the store's own overhead in-process.
+// Read-only. See RelayE2EProbe.kt.
+tasks.register<JavaExec>("relayE2EProbe") {
+    group = "verification"
+    description = "Time REQs over a relay WebSocket and through the store in-process, against the engine client on the same filters"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.probe.RelayE2EProbe")
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "2g"
+}
