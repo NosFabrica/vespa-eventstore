@@ -1091,7 +1091,14 @@ and the long tail of shapes seen once.
   reputation parent would not pay it — the open question is whether an
   imported-attribute filter walks like a posting list, which needs the schema
   change on a fresh engine. NIP-45's `"approximate": true` is the cheap
-  alternative for the huge sets.
+  alternative for the huge sets. **Both since measured** — the imported
+  filter (`benchmark/trust_filter_probe.py`, `docs/trust-gate-filter.md`: with
+  parent `fast-search` 11× on the global COUNT but a fixed ~230 ms on every
+  query; without it, parity — not shipped) and the approximate count
+  (`benchmark/approx_count_probe.py`, `docs/gated-count.md`: sampling is
+  0.2–34% off and rejected; counting BY AUTHOR — group the ungated match set by
+  pubkey, sum the lens's trusted authors — is exact and 4–7× faster on large
+  counts, the one worth building).
 - **Where the tail is** (`recencyLoadProbe` with `BENCH_BREAKDOWN=1`, 32
   clients). Under speculative + memory, `#p` NOTIFICATION reads are ~97% of
   the slowest 1% (p95 ~5 s, p99 ~7 s), then `#t` feeds (p95 2.6 s); every
