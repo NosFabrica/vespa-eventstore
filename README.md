@@ -89,7 +89,11 @@ request* into that lens, plain NIP-01 filters included: non-search queries keep
 their newest-first order but drop authors the observer trusts below the floor
 (2 by default, `filter:rank:` to move it, `include:spam` to lift it). Recall
 without a resolved observer is never gated — an anonymous REQ sees everything —
-and sync paths (negentropy snapshots, internal sweeps) never resolve one.
+and internal sync paths (sweeps, the store's own diffs) never resolve one. Two
+paths answer to the same lens as the page itself: a NIP-77 snapshot of a filter
+that names `observer:` holds exactly the set that filter's REQ serves (a reconcile
+carries no connection observer, so only the token counts), and `liveGate()` holds a
+subscription's live events to the same floor its stored page was served through.
 
 How they combine (`<hex>` = a 64-hex observer pubkey; the examples assume no
 context observer, so the token is the only source):

@@ -52,6 +52,7 @@ import com.nosfabrica.vespa.eventstore.search.isRanked
 import com.nosfabrica.vespa.eventstore.trust.Delegations
 import com.nosfabrica.vespa.eventstore.trust.Enrolment
 import com.nosfabrica.vespa.eventstore.trust.ProviderRefresher
+import com.nosfabrica.vespa.eventstore.trust.TrustCells
 import com.nosfabrica.vespa.eventstore.trust.TrustProjection
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -586,6 +587,33 @@ class NostrSemanticsStore(
         filter: Filter,
         onEach: (T) -> Unit,
     ) = query<T>(filter).forEach(onEach)
+
+    /**
+     * The observer gate for [filters]' LIVE events — or null when none of them
+     * is gated, so an unlensed subscription pays nothing. Built from the same
+     * query each filter's stored read compiles to (connection observer and
+     * `observer:` token, floor, lens), so a live event is delivered exactly
+     * when that stored page would have served it. See [LiveGate].
+     *
+     * A filter gates when an observer resolves and it keeps a floor, unless it
+     * sorts by `sort:text`, the one profile that reads no lens. Call it in the
+     * subscription's own context: the connection observer is read from it.
+     */
+    suspend fun liveGate(filters: List<Filter>): LiveGate? {
+        val observer = connectionObserver()
+        val cutoff = nowSecs()
+        val rules =
+            filters.mapNotNull { f ->
+                val q = f.toExpiryQuery(cutoff, observer) ?: return@mapNotNull null
+                val gated = q.observer != null && q.minRank != null && q.ranking != EventYql.RANK_TEXT
+                LiveGate.Rule(f, if (gated) lensed(listOf(q)).single().rankKey else null, if (gated) q.minRank else null)
+            }
+        if (rules.none { it.floor != null }) return null
+        return LiveGate(rules, trustCells)
+    }
+
+    /** The rank cells [liveGate] reads: the projection's reputation index, or none on a store assembled without it. */
+    private val trustCells = TrustCells((index as? TrustProjection)?.reputations, nowSecs)
 
     override suspend fun <T : Event> query(
         filters: List<Filter>,

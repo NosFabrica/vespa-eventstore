@@ -84,9 +84,10 @@ deliberate decision (it fails until the layer table names it) rather than a drif
   the FACADE: exactly the types a CONSUMER names, and nothing else. Today that is
   `VespaEventStore.open()` (the front door), `NostrSemanticsStore` (the `IEventStore`
   implementation), and the values it hands back or throws — `RejectedException`, `EngineReads`,
-  `TrustHealth`. A new type here has to earn it by being named from outside; the machinery
+  `TrustHealth`, `LiveGate` (the observer gate a relay applies to a subscription's live events).
+  A new type here has to earn it by being named from outside; the machinery
   behind one goes in a leaf (`TrustHealth` is a DTO, while the registries it reads stay
-  `internal` in `trust/`). Nothing below the root imports the two COMPOSED types
+  `internal` in `trust/`; `LiveGate`'s rank-cell cache is `trust/TrustCells`). Nothing below the root imports the two COMPOSED types
 (`NostrSemanticsStore`, `VespaEventStore`) — that is the cycle the layering exists to prevent.
 A value the store hands back or throws is not that: `ingest/EventAdmission` throws
 `RejectedException` because it is the store's public vocabulary for a rejection, and a value
