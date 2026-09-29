@@ -26,6 +26,7 @@ import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.client.VespaEventIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
+import com.nosfabrica.vespa.eventstore.engine.query.EventSelection
 
 /**
  * THE ENGINE, READ DIRECTLY — under the trust projection and under the meter,
@@ -103,10 +104,18 @@ class EngineReads internal constructor(
      * (null starts the walk; a null continuation back means it is complete).
      * O(page) memory, and resumable across a restart because the continuation
      * is a plain string the caller may persist.
+     *
+     * The query must be one a document selection can express (kinds, authors,
+     * since/until — [EventSelection]): anything else (ids, tags, a limit,
+     * search) would fall back to the port's search-based default, which is
+     * capped — a dump that silently ends early. That is refused here instead.
      */
     suspend fun visitDocsPage(
         query: EventQuery,
         resumeFrom: String?,
         maxDocs: Int,
-    ): DocsPage = index.visitDocsPage(query, resumeFrom, maxDocs)
+    ): DocsPage {
+        require(EventSelection.build(query) != null) { "visitDocsPage needs a selection-expressible query (kinds, authors, since/until): $query" }
+        return index.visitDocsPage(query, resumeFrom, maxDocs)
+    }
 }

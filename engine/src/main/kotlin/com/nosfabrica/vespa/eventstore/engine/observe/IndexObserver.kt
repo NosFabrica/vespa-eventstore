@@ -21,6 +21,8 @@
 package com.nosfabrica.vespa.eventstore.engine.observe
 
 import com.vitorpamplona.quartz.nip01Core.core.Event
+import kotlin.coroutines.AbstractCoroutineContextElement
+import kotlin.coroutines.CoroutineContext
 
 /**
  * Told about every ACKED physical write to the event index — the hook a
@@ -58,10 +60,12 @@ import com.vitorpamplona.quartz.nip01Core.core.Event
  *    `EngineReads` (`visitIds`, `visitDocsPage`) are how it reconciles.
  *  - AT-LEAST-AS-ASKED, not exactly-what-changed: [onRemove] carries every id a
  *    removal was issued for, including ids the index did not hold, and
- *    [onPut] may repeat an event already stored (a full-text reindex re-puts
- *    documents unchanged). A mirror must apply both idempotently.
- *  - A call that FAILED reports nothing, though a bulk one may have partially
- *    landed before it threw. Reconcile for that too.
+ *    [onPut] may repeat an event already stored. A mirror must apply both
+ *    idempotently. (A full-text reindex, which re-puts stored events with no
+ *    NIP-01 field changed, writes under [ObserverSilence] and is not reported.)
+ *  - A call that FAILED (or was cancelled) is reported to [onUncertain], never
+ *    to [onPut] / [onRemove]: a bulk call may have partly landed before it threw,
+ *    and which part is unknown. A mirror marks those for its reconcile.
  */
 interface IndexObserver {
     /**
@@ -73,4 +77,27 @@ interface IndexObserver {
 
     /** Event ids removed from the index — by any route (see the class KDoc). */
     fun onRemove(ids: List<String>)
+
+    /**
+     * A write call that THREW: each of [events] may or may not now be stored, each
+     * of [ids] may or may not now be removed. Default: nothing (a mirror that
+     * reconciles on a schedule will find them anyway; one that tracks what it owes
+     * should mark them).
+     */
+    fun onUncertain(
+        events: List<Event>,
+        ids: List<String>,
+    ) {}
 }
+
+/**
+ * Writes made inside `withContext(ObserverSilence)` are NOT reported to
+ * [IndexObserver.onPut]. Only for writes that change no NIP-01 field of an event
+ * already stored — the full-text reindex re-puts the corpus to refresh derived
+ * search columns, and telling a mirror about hundreds of millions of unchanged
+ * events would bury its live feed. Removals are always reported.
+ */
+object ObserverSilence : AbstractCoroutineContextElement(ObserverSilenceKey)
+
+// Its own object: an element cannot be its own key (the key is read while the element is built).
+internal object ObserverSilenceKey : CoroutineContext.Key<ObserverSilence>

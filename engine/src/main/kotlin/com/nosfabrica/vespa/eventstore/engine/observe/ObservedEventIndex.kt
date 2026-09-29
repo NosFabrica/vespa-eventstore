@@ -28,6 +28,7 @@ import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
+import kotlinx.coroutines.currentCoroutineContext
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -91,28 +92,50 @@ class ObservedEventIndex(
     // ---- writes: forward, then tell --------------------------------------------
 
     override suspend fun put(doc: EventDoc) {
-        inner.put(doc)
+        uncertainOnThrow(listOf(doc), emptyList()) { inner.put(doc) }
         reportPut(listOf(doc))
     }
 
     override suspend fun putAll(docs: List<EventDoc>) {
-        inner.putAll(docs)
+        uncertainOnThrow(docs, emptyList()) { inner.putAll(docs) }
         reportPut(docs)
     }
 
     override suspend fun remove(id: String) {
-        inner.remove(id)
+        uncertainOnThrow(emptyList(), listOf(id)) { inner.remove(id) }
         reportRemove(listOf(id))
     }
 
     override suspend fun removeAll(ids: List<String>) {
-        inner.removeAll(ids)
+        uncertainOnThrow(emptyList(), ids) { inner.removeAll(ids) }
         reportRemove(ids)
     }
 
     override suspend fun removeDocs(docs: List<EventDoc>) {
-        inner.removeDocs(docs)
+        uncertainOnThrow(emptyList(), docs.map { it.id }) { inner.removeDocs(docs) }
         reportRemove(docs.map { it.id })
+    }
+
+    /**
+     * A write that throws — a bulk one after some chunks landed, a timeout whose
+     * write the engine applied anyway, a cancellation mid-flight — leaves its
+     * batch in an unknown state. Say so ([IndexObserver.onUncertain]) before the
+     * throw travels on, or a mirror would silently miss what did land.
+     */
+    private suspend inline fun uncertainOnThrow(
+        docs: List<EventDoc>,
+        ids: List<String>,
+        write: () -> Unit,
+    ) {
+        try {
+            write()
+        } catch (t: Throwable) {
+            if (t !is VirtualMachineError && (docs.isNotEmpty() || ids.isNotEmpty())) {
+                val events = docs.map { it.toPlainEvent() }
+                tell { it.onUncertain(events, ids) }
+            }
+            throw t
+        }
     }
 
     /** See the class KDoc: rides the read-then-supersede default unless the engine supersedes atomically. */
@@ -121,13 +144,15 @@ class ObservedEventIndex(
         // so the replaced versions and the winner are each reported once, by
         // the members above. Nothing to report here on that branch.
         if (!inner.supersedesViaPut) return super.putIfNewer(doc)
-        val stored = inner.putIfNewer(doc)
+        var stored = false
+        uncertainOnThrow(listOf(doc), emptyList()) { stored = inner.putIfNewer(doc) }
         if (stored) reportPut(listOf(doc))
         return stored
     }
 
-    private fun reportPut(docs: List<EventDoc>) {
+    private suspend fun reportPut(docs: List<EventDoc>) {
         if (docs.isEmpty()) return
+        if (currentCoroutineContext()[ObserverSilenceKey] != null) return
         val events = docs.map { it.toPlainEvent() }
         tell { it.onPut(events) }
     }

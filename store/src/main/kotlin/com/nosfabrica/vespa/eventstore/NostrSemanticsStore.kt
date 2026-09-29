@@ -27,6 +27,7 @@ import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.metrics.Activity
 import com.nosfabrica.vespa.eventstore.engine.metrics.CostLedger
 import com.nosfabrica.vespa.eventstore.engine.metrics.withActivity
+import com.nosfabrica.vespa.eventstore.engine.observe.ObserverSilence
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.nosfabrica.vespa.eventstore.ingest.BulkMixedInsert
@@ -69,6 +70,7 @@ import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEve
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import com.vitorpamplona.quartz.utils.Hex
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.withContext
 import kotlin.coroutines.coroutineContext
 
 /**
@@ -1011,7 +1013,10 @@ class NostrSemanticsStore(
                 // the newest for its address — so this is the split's rule
                 // kept at its fifth entry point, not a repair.
                 val (trust, plain) = changed.partition { it.kind in TrustProjection.TRUST_KINDS }
-                if (plain.isNotEmpty()) index.putAll(plain)
+                // Silent to index observers: a reindex re-puts STORED events with no
+                // NIP-01 field changed, and a mirror told of the whole corpus again
+                // would bury its live feed (ObserverSilence).
+                if (plain.isNotEmpty()) withContext(ObserverSilence) { index.putAll(plain) }
                 FtsReindexProgress(cursor = page.continuation, processedThisBatch = page.docs.size, done = page.continuation == null) to trust
             }
         if (trustDocs.isNotEmpty()) {
@@ -1024,7 +1029,7 @@ class NostrSemanticsStore(
                 // evidence included, which a re-read would not carry.
                 val alive = index.existingIds(trustDocs.map { it.id })
                 val still = trustDocs.filter { it.id in alive }
-                if (still.isNotEmpty()) index.putAll(still)
+                if (still.isNotEmpty()) withContext(ObserverSilence) { index.putAll(still) }
             }
         }
         return progress

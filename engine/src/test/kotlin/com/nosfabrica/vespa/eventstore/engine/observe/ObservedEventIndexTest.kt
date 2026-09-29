@@ -26,6 +26,7 @@ import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -189,5 +190,58 @@ class ObservedEventIndexTest {
             assertEquals(listOf("+${doc(1).id}", "-${doc(1).id}", "+${doc(2).id}"), rec.log, "the healthy observer after the broken one still hears everything")
             assertEquals(3L, index.observerFailures())
             assertEquals(listOf(doc(2).id), inner.search(EventQuery()).map { it.id }, "every write landed regardless")
+        }
+
+    @Test
+    fun `a write that throws is reported as uncertain, never as done`() =
+        runBlocking {
+            val uncertain = ArrayList<String>()
+            val rec =
+                object : IndexObserver {
+                    val done = ArrayList<String>()
+
+                    override fun onPut(events: List<Event>) {
+                        events.forEach { done += "+${it.id}" }
+                    }
+
+                    override fun onRemove(ids: List<String>) {
+                        ids.forEach { done += "-$it" }
+                    }
+
+                    override fun onUncertain(
+                        events: List<Event>,
+                        ids: List<String>,
+                    ) {
+                        events.forEach { uncertain += "+${it.id}" }
+                        ids.forEach { uncertain += "-$it" }
+                    }
+                }
+            // A bulk put that lands its first doc, then fails: which part landed is unknown.
+            val halfway =
+                object : EventIndex by InMemoryEventIndex() {
+                    override suspend fun putAll(docs: List<EventDoc>) {
+                        put(docs.first())
+                        error("timed out after the first chunk")
+                    }
+
+                    override suspend fun removeAll(ids: List<String>): Unit = error("timed out")
+                }
+            val index = ObservedEventIndex(halfway, listOf(rec))
+            assertFailsWith<IllegalStateException> { index.putAll(listOf(doc(1), doc(2))) }
+            assertFailsWith<IllegalStateException> { index.removeAll(listOf(doc(3).id)) }
+            assertEquals(listOf("+${doc(1).id}", "+${doc(2).id}", "-${doc(3).id}"), uncertain)
+            assertTrue(rec.done.isEmpty(), "nothing reported as done")
+        }
+
+    @Test
+    fun `puts under ObserverSilence are not reported, removals still are`() =
+        runBlocking {
+            val rec = Recorder()
+            val index = ObservedEventIndex(InMemoryEventIndex(), listOf(rec))
+            withContext(ObserverSilence) {
+                index.putAll(listOf(doc(1)))
+                index.remove(doc(1).id)
+            }
+            assertEquals(listOf("-${doc(1).id}"), rec.log)
         }
 }
