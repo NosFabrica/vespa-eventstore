@@ -70,7 +70,7 @@ Three modules, layered strictly bottom-up:
 - **`:store`** — Nostr semantics on top: `NostrSemanticsStore` (the `IEventStore` implementation), the NIP-85 trust projection (`trust/`), per-kind search extraction (a thin wrapper over Quartz's `SearchFieldExtractor` in `mapping/SearchExtractors`), and `VespaEventStore.open()` — the public front door.
 - **`:benchmark`** — not published. Perf harness + the parity/rank-regression integration tests (the CI correctness gates).
 
-The stack `open()` assembles: `NostrSemanticsStore( TrustProjection( VespaEventIndex + VespaReputationIndex ) )`. Consumers only ever see the Quartz `IEventStore` interface.
+The stack `open()` assembles: `NostrSemanticsStore( TrustProjection( VespaEventIndex + VespaReputationIndex ) )`. Consumers only ever see the Quartz `IEventStore` interface — plus `open(observers = …)`, which slips `engine/observe/ObservedEventIndex` in below the projection so each `IndexObserver` hears every acked put and removal (empty installs nothing), and `EngineReads.visitIds` / `visitDocsPage`, the read-only walks such a mirror reconciles with.
 
 ### The engine port and its executable spec
 

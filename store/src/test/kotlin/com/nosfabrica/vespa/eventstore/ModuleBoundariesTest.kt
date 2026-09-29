@@ -46,7 +46,9 @@ class ModuleBoundariesTest {
      * Where each `:engine` package sits. Lower may not import higher, so:
      * shared leaves (text/async/app), then the document shapes, then the query
      * compiler they feed, then the PORT that composes them, then the decorators
-     * and implementations of that port.
+     * and implementations of that port. `observe` is a decorator beside
+     * `metrics` (the mirror hook, `ObservedEventIndex`): it wraps the port and
+     * nothing below it may know it exists.
      */
     private val engineLayer =
         mapOf(
@@ -57,6 +59,7 @@ class ModuleBoundariesTest {
             "engine.query" to 2,
             "engine" to 3,
             "engine.metrics" to 4,
+            "engine.observe" to 4,
             "engine.memory" to 5,
             "engine.client" to 5,
         )

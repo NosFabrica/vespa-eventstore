@@ -168,4 +168,47 @@ class EngineReadsTest {
             withActivity(Activity.Query) { metered.search(EventQuery()) }
             assertTrue(ledger.snapshot().ports.isNotEmpty(), "the same read through the metered index must book one")
         }
+
+    /**
+     * THE MIRROR'S TWO WALKS, over the wire. The id sets are the easy half — the
+     * port's defaults would return the same ones by riding `search`, which on a
+     * real corpus is one response materializing every matching DOCUMENT. So
+     * this also pins the path each took: `visitIds` the client's created_at
+     * cursor over the attribute-only `idtime` summary (no document read), and
+     * `visitDocsPage` the document-API visit.
+     */
+    @Test
+    fun `the walks page the engine's document visit`() =
+        runBlocking {
+            val engine = EngineReads(index)
+            val held = (1..5).map { it.toString().repeat(64) }
+            index.putAll(held.map { doc(it) } + doc("9".repeat(64), kind = 7))
+
+            val searchesBefore = mock.searchRequests.size
+            val seen = ArrayList<String>()
+            engine.visitIds(EventQuery(kinds = listOf(1))) { page ->
+                page.forEach { seen += it.id }
+                true
+            }
+            assertEquals(held.toSet(), seen.toSet(), "visitIds must stream every match, and only matches")
+            assertEquals(held.size, seen.size, "each once")
+            val walk = mock.searchRequests.drop(searchesBefore)
+            assertTrue(
+                walk.isNotEmpty() && walk.all { it["presentation.summary"] == "idtime" },
+                "visitIds must page ids off the attribute summary, not fetch documents: ${walk.map { it["presentation.summary"] }}",
+            )
+
+            val visitsBefore = mock.visitRequests
+
+            val dumped = ArrayList<EventDoc>()
+            var cursor: String? = null
+            do {
+                val page = engine.visitDocsPage(EventQuery(kinds = listOf(1)), cursor, maxDocs = 2)
+                dumped += page.docs
+                cursor = page.continuation
+            } while (cursor != null)
+            assertEquals(held.toSet(), dumped.map { it.id }.toSet(), "visitDocsPage must walk the whole match set across pages")
+            assertEquals("hello", dumped.first().content, "as FULL documents — a dump, not a projection")
+            assertTrue(mock.visitRequests > visitsBefore, "visitDocsPage must ride the document visit, not a re-listing search")
+        }
 }

@@ -73,8 +73,10 @@ deliberate decision (it fails until the layer table names it) rather than a drif
   Vespa application package and its deployer) → `doc/` (document shapes) → `query/` (the
   `EventQuery` → YQL compiler) → the package root (`EventIndex`, `ReputationIndex`, `ScoredHit`,
   `Ranked` — the PORT) → `metrics/` (`MeteredEventIndex`, the cost ledger, `IngestStats`,
-  `DegradedReads`) → `memory/` + `client/` (the two implementations: the in-memory executable
-  spec, and `VespaEventIndex` reading via OkHttp h2c / writing via Vespa's feed client,
+  `DegradedReads`) + `observe/` (`ObservedEventIndex` and the `IndexObserver` a consumer
+  implements — in `:engine`, not the facade, because the decorator that calls it wraps the port)
+  → `memory/` + `client/` (the two implementations: the in-memory executable spec, and
+  `VespaEventIndex` reading via OkHttp h2c / writing via Vespa's feed client,
   `VespaReputationIndex`).
 - **`:store`** — relay policy on top. `runtime/` and `mapping/` are leaves that import no other
   store package (`WriterTopology` + background-worker failure accounting; the Quartz `Filter` →
@@ -98,6 +100,10 @@ travelling up is the opposite of a package reaching up.
   correctness gates.
 
 The stack `open()` assembles: `NostrSemanticsStore( TrustProjection( VespaEventIndex + VespaReputationIndex ) )`.
+`open(observers = …)` adds `ObservedEventIndex` directly over the metered engine and BELOW the
+projection (the projection's own supersession and the orphan sweep write beneath it), telling each
+`IndexObserver` about every acked put and removal — the hook a mirror of the store hangs on. Empty
+(the default) installs nothing.
 
 Two rules the compiler cannot hold, so tests do (`:store`, and they read the SOURCE — the test
 task declares both source trees as inputs so a violation added in `:engine` cannot leave them
@@ -107,13 +113,14 @@ import from below, and a test named after a class lives in that class's package.
 matters more than it sounds: several port members have DEFAULT bodies that are correct-but-slow
 answers for an engine that cannot do better, so a decorator that inherits one does not fail to
 decorate it, it ANSWERS with it. Adding a member to `EventIndex` means adding it to
-`TrustProjection` and `MeteredEventIndex` in the same commit.
+`TrustProjection`, `MeteredEventIndex` and `ObservedEventIndex` in the same commit.
 
 Consumers get the Quartz `IEventStore` surface (`VespaEventStore` delegates it), plus two deliberate
 escape hatches for ops and benchmarks: `store` (the concrete `NostrSemanticsStore`, for capabilities
 beyond the interface) and `engine` (read-only, un-metered, NOT trust-projected — what is really
-stored, and what a rank profile does). Both are documented at their declaration; prefer the
-`IEventStore` surface for real reads.
+stored, and what a rank profile does; its `visitIds` / `visitDocsPage` walks are how an observer's
+mirror diffs id windows and bulk-dumps the corpus to reconcile). Both are documented at their
+declaration; prefer the `IEventStore` surface for real reads.
 
 **Where the seam actually is.** It is NOT "Nostr-free engine / Nostr-aware store" — `:engine` knows
 Nostr, deliberately: `EventIndex.putIfNewer` implements the NIP-01 supersession rule *and its

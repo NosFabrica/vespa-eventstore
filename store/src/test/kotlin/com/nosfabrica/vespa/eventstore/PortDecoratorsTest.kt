@@ -55,6 +55,11 @@ class PortDecoratorsTest {
         listOf(
             "store/src/main/kotlin/com/nosfabrica/vespa/eventstore/trust/TrustProjection.kt",
             "engine/src/main/kotlin/com/nosfabrica/vespa/eventstore/engine/metrics/MeteredEventIndex.kt",
+            // Installed only when `open()` is given observers — which is exactly
+            // why it belongs here: the stack every test and most deployments run
+            // does not contain it, so nothing else would notice it answering a
+            // read with the port's slow default.
+            "engine/src/main/kotlin/com/nosfabrica/vespa/eventstore/engine/observe/ObservedEventIndex.kt",
             // Not published, and it still counts: this one's whole job is
             // reporting what the store asks of the engine, so a member it
             // inherits is a measurement of the PORT's default round trips

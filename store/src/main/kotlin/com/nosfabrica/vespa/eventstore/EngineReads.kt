@@ -20,6 +20,8 @@
  */
 package com.nosfabrica.vespa.eventstore
 
+import com.nosfabrica.vespa.eventstore.engine.DocRef
+import com.nosfabrica.vespa.eventstore.engine.DocsPage
 import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.client.VespaEventIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
@@ -37,6 +39,10 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
  *  - **Whether an id is already held**, before paying to verify it: an ingest
  *    that skips a duplicate wants membership in the corpus, which is a
  *    different question from whether the connecting user could see it.
+ *  - **The whole corpus, walked**: a mirror fed by `open(observers = …)`
+ *    diffs id windows against it ([visitIds]) and bulk-dumps it
+ *    ([visitDocsPage]) to reconcile the batches an observer missed — and a
+ *    mirror is of what is STORED, not of what some lens would serve.
  *
  * READ-ONLY, and that is the point of the type. This used to be the concrete
  * [VespaEventIndex] hanging off the front door, which handed every consumer
@@ -74,4 +80,33 @@ class EngineReads internal constructor(
      * return the event — only that writing it again would be wasted work.
      */
     suspend fun existingIds(ids: List<String>): Set<String> = index.existingIds(ids)
+
+    /**
+     * Stream every match's (id, created_at[, d tag]) in engine-defined order,
+     * a page at a time — the id-window diff a mirror reconciles with. [onPage]
+     * returns whether to CONTINUE. The client pages a created_at cursor over
+     * the attribute-only id summary — no document is read — so it holds one
+     * page in memory however large the corpus. [withDTag] also projects the `d`
+     * tag an addressable-corpus diff keys on. UN-METERED like everything here,
+     * so a full walk makes the store look idle while Vespa is busy (see the
+     * class KDoc).
+     */
+    suspend fun visitIds(
+        query: EventQuery,
+        withDTag: Boolean = false,
+        onPage: suspend (List<DocRef>) -> Boolean,
+    ) = index.visitIds(query, withDTag, onPage)
+
+    /**
+     * One page of FULL documents from a resumable, exhaustive walk (the
+     * engine's document-API visit) — the bulk dump. Pass the previous page's [DocsPage.continuation] as [resumeFrom]
+     * (null starts the walk; a null continuation back means it is complete).
+     * O(page) memory, and resumable across a restart because the continuation
+     * is a plain string the caller may persist.
+     */
+    suspend fun visitDocsPage(
+        query: EventQuery,
+        resumeFrom: String?,
+        maxDocs: Int,
+    ): DocsPage = index.visitDocsPage(query, resumeFrom, maxDocs)
 }

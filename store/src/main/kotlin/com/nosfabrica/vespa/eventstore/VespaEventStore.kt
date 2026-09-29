@@ -29,6 +29,8 @@ import com.nosfabrica.vespa.eventstore.engine.metrics.DegradedReads
 import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.metrics.MeteredEventIndex
 import com.nosfabrica.vespa.eventstore.engine.metrics.withActivity
+import com.nosfabrica.vespa.eventstore.engine.observe.IndexObserver
+import com.nosfabrica.vespa.eventstore.engine.observe.ObservedEventIndex
 import com.nosfabrica.vespa.eventstore.runtime.BackgroundFailures
 import com.nosfabrica.vespa.eventstore.runtime.DEFAULT_GUARD_REFRESH_MILLIS
 import com.nosfabrica.vespa.eventstore.runtime.DEFAULT_PROVIDER_REFRESH_MILLIS
@@ -354,6 +356,17 @@ class VespaEventStore internal constructor(
              * where they are captured.
              */
             slowQueryThresholdMillis: Long? = null,
+            /**
+             * Told about every ACKED physical write to the event index — every
+             * insert and every removal style (supersession, NIP-09, NIP-62,
+             * NIP-40 sweeps, `delete(filter)`, the orphan-score sweep) — for a
+             * consumer that mirrors this store; see [IndexObserver] for the
+             * contract (never block, never throw, apply idempotently).
+             *
+             * Empty (the default) installs NOTHING: the stack is the one built
+             * before this hook existed, not one with an idle forwarding layer.
+             */
+            observers: List<IndexObserver> = emptyList(),
         ): VespaEventStore {
             if (autoDeploy) SchemaDeployer(configUrl).deployIfAbsent(url)
             val ledger = CostLedger(slowQueryThresholdNanos = slowQueryThresholdMillis?.let { it * 1_000_000 })
@@ -367,7 +380,14 @@ class VespaEventStore internal constructor(
             // store's own reads, the projection's, a sweep's. Nothing above
             // needs a call-site timer.
             val metered = MeteredEventIndex(ledger, eventIndex)
-            val trust = TrustProjection(metered, reputations)
+            // OBSERVED BELOW THE PROJECTION, directly over the meter: the
+            // projection replays supersession against its INNER index, and
+            // the reconciler's orphan sweep removes through the raw one, so a
+            // hook above either would miss those writes. [writes] is what the
+            // projection and the reconciler are both handed.
+            val observed = ObservedEventIndex.of(metered, observers)
+            val writes = observed ?: metered
+            val trust = TrustProjection(writes, reputations)
             val store =
                 NostrSemanticsStore(
                     trust,
@@ -404,6 +424,11 @@ class VespaEventStore internal constructor(
             ledger.gauge("trust.skipped.dropped") { trust.recompute.skippedDropped() }
             ledger.gauge("feed.inflight") { eventIndex.feedInflight() }
             ledger.gauge("lock.held") { IngestStats.heldAll().size.toLong() }
+            // Observer calls that threw, CUMULATIVE since open (the one gauge
+            // here that only grows — read it as "has a mirror missed a batch",
+            // which any non-zero value says). Only registered when an observer
+            // is installed, so a store without one reports exactly what it did.
+            observed?.let { o -> ledger.gauge("index.observers.failures") { o.observerFailures() } }
             // The reconciler's and drainer's mutating batches take the store's
             // writer lock (the gate): repairs must not race live inserts'
             // recomputes.
@@ -414,8 +439,10 @@ class VespaEventStore internal constructor(
             // cards on a real deployment — landed in no activity at all. An
             // operator watching the page during a reconcile saw a store doing
             // nothing while Vespa was busy, which is the exact reading the page
-            // exists to prevent.
-            val reconciler = TrustReconciler(metered, reputations, trust.recompute, trust.backlog, gate = gate)
+            // exists to prevent. And the OBSERVED one when observers are
+            // installed: `sweepOrphanScores` removes 30382s through this
+            // index, and a mirror must be told about those too.
+            val reconciler = TrustReconciler(writes, reputations, trust.recompute, trust.backlog, gate = gate)
             val drainScope = if (deferTrustProjection) startDrainer(trust, gate) else null
             // Once, for a store written under the observer-keyed model: every
             // named service walked into cells, the old cells swept, a marker
