@@ -724,4 +724,4 @@ one-author, time-spread fixture pinning five claims:
    conservative call and it is what shipped. If the reports keep coming, the
    next round is about the ladder, not about recency.
 4. **`recency:` extension token in v1** (§7.5) — the store owns the grammar and
-   `search-staging` is the only consumer that would send it.
+   `search.brainstorm.world` is the only consumer that would send it.
