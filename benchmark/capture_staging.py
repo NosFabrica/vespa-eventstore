@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Capture a real corpus from the staging relay, for StagingCorpusIT.
+"""Capture a real corpus from the live relay (search.brainstorm.world), for StagingCorpusIT.
 
     python3 benchmark/capture_staging.py /tmp/staging_corpus.json
     STAGING_CORPUS=/tmp/staging_corpus.json ./gradlew :benchmark:test -Pintegration --tests '*StagingCorpusIT*'
@@ -7,7 +7,7 @@
 READ ONLY — REQ and COUNT only, never an EVENT. Writes a plain JSON array of
 events, which is all a fixture needs to be (see
 benchmark/src/test/resources/search_vitor_pamplona_export.json). The output is
-NOT committed: a useful capture runs to megabytes, staging deploys on its own
+NOT committed: a useful capture runs to megabytes, the relay deploys on its own
 cadence, and the whole point of the relay is that you can re-pull it.
 
 WHY THE ODD-LOOKING FILTERS. The relay gates every read through a web of trust
@@ -22,7 +22,7 @@ the same way.
 import asyncio, json, ssl, sys, time
 import websockets
 
-RELAY = "wss://search-staging.brainstorm.world/"
+RELAY = "wss://search.brainstorm.world/"
 OBSERVER = "460c25e682fda7832b52d1f22d3d22b3176d972f60dcdc3212ed8c92ef85065c"
 PROVIDER = "7d7ffd720b907fe597a7f454afe02f2dc1eca440baa029e9117b1c3209839377"
 
@@ -73,7 +73,7 @@ async def main():
 
         # Size the corpus first — COUNT is exact here and is the cheapest way.
         total = await count(ws, "c1", {"kinds": [1], "search": "include:spam"})
-        print(f"  staging holds {total:,} kind-1 events" if total else "  COUNT unavailable", file=sys.stderr)
+        print(f"  the relay holds {total:,} kind-1 events" if total else "  COUNT unavailable", file=sys.stderr)
 
         # 1. The trust lens: the observer's kind 10040, then the provider's
         #    score cards. Without these every ranked search comes back empty.
