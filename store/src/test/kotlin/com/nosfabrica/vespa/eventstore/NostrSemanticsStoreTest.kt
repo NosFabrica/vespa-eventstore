@@ -705,6 +705,31 @@ open class NostrSemanticsStoreTest {
         }
 
     /**
+     * The kind-scoped reindex repairs exactly the kinds it names: a stale
+     * ballot is re-derived, and a stale profile of a kind not named is left
+     * as it was, because the walk never reads it.
+     */
+    @Test
+    fun `a kind-scoped reindex repairs only the kinds it names`() =
+        runBlocking {
+            val ballot = EventFactory.create<Event>(id(), alice, next(), 38000, arrayOf(arrayOf("d", "b1"), arrayOf("election", "City Council")), "", "")
+            index.put(EventDoc.fromEventJson(ballot.toJson()))
+            index.put(EventDoc.fromEventJson(metadata(name = "satoshi").toJson()))
+            assertEquals(0, store.count(Filter(search = "council")))
+
+            var cursor: String? = null
+            do {
+                val progress = store.reindexFullTextSearch(listOf(38000), cursor, batchSize = 1)
+                cursor = progress.cursor
+            } while (!progress.done)
+            assertEquals(1, store.count(Filter(search = "council")))
+            assertEquals(0, store.count(Filter(search = "satoshi")), "kind 0 was not named, so not walked")
+
+            assertFailsWith<IllegalArgumentException> { store.reindexFullTextSearch(emptyList(), null) }
+            Unit
+        }
+
+    /**
      * reindexFullTextSearch is also the near-tier RE-FEED. A corpus fed before
      * the `*_parts`/`*_tokens` attributes existed re-extracts to byte-identical
      * SearchFields — the column comparison alone would skip it forever, and

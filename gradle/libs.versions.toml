@@ -19,10 +19,14 @@ mavenPublish = "0.37.0"
 #    imeta and anything machine-shaped (isNaturalLanguageValue). 30267 reads titleOrName().
 #  - NIP-62: a vanish `relay` tag is compared as a NormalizedRelayUrl, so `wss://relay.example`
 #    now reaches the relay normalized as `wss://relay.example/` (a raw string match accepted the
-#    request and deleted nothing).
+#    request and deleted nothing). Such a request stored BEFORE this pin still erased nothing, and
+#    nothing replays it, though it now blocks back-dated inserts; the live corpus holds none
+#    (5 kind 62s on 2026-10-05, none naming the relay in any spelling).
 #  - A 30394 member `a` must be a `kind:pubkey:d` coordinate (CoordinateShape): an naddr there is
 #    no longer decoded into a search-expansion pointer.
-# The first two are derived data -- reindexFullTextSearch() rolls them out, no resync. Also in
+# The first two are derived data, rolled out with no resync by the kind-scoped
+# `store.reindexFullTextSearch(listOf(38000, 30267, 9998, 9999, 39998, 39999))`: ~75k docs live,
+# where the unscoped walk reads all 445M. Also in
 # range and inert here: Event.dTag() defers to AddressableEvent (this store reads tags.dTag()),
 # EventFactory.probe(kind) for kind-level questions, DeletionIndex's comparator fix, local
 # search (EventSearchMatcher) matching only what a kind indexes, Address.isOfKind bounds.

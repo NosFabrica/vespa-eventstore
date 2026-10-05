@@ -981,10 +981,50 @@ class NostrSemanticsStore(
     override suspend fun reindexFullTextSearch(
         resumeFrom: String?,
         batchSize: Int,
+    ): FtsReindexProgress = reindexPage(EventQuery(), resumeFrom, batchSize)
+
+    /**
+     * [reindexFullTextSearch] over [kinds] only: the repair for a change that
+     * moves a KNOWN set of kinds, which is what a Quartz pin bump usually is.
+     * The same per-document drift check and the same writes, but the walk is a
+     * kind selection the engine evaluates server-side, so documents of other
+     * kinds are never shipped, parsed or re-extracted. The difference is the
+     * whole cost: the d792ebc4bf bump moved about 75 000 documents (kinds 38000,
+     * 30267 and the four list kinds) on a 445M-event corpus, which the
+     * unscoped walk would have to read entirely to find them.
+     *
+     * Only as complete as [kinds]: a kind left out is not repaired. When
+     * unsure which kinds a change touched, run the unscoped walk.
+     */
+    suspend fun reindexFullTextSearch(kinds: List<Int>) =
+        withActivity(Activity.Reconcile) {
+            var cursor: String? = null
+            do {
+                val progress = reindexFullTextSearch(kinds, cursor)
+                cursor = progress.cursor
+            } while (!progress.done)
+        }
+
+    /** Resumable form of the kind-scoped walk; the cursor is only valid for the same [kinds]. */
+    suspend fun reindexFullTextSearch(
+        kinds: List<Int>,
+        resumeFrom: String?,
+        batchSize: Int = IEventStore.DEFAULT_FTS_REINDEX_BATCH,
+    ): FtsReindexProgress {
+        // An empty list is EventQuery's "every kind", the whole-corpus walk this
+        // overload exists to avoid; asking for it by accident must not start one.
+        require(kinds.isNotEmpty()) { "no kinds to reindex: call reindexFullTextSearch() for the whole corpus" }
+        return reindexPage(EventQuery(kinds = kinds.distinct()), resumeFrom, batchSize)
+    }
+
+    private suspend fun reindexPage(
+        scope: EventQuery,
+        resumeFrom: String?,
+        batchSize: Int,
     ): FtsReindexProgress {
         val (progress, trustDocs) =
             locks.underWrites(WriteLocks.REINDEX) {
-                val page = index.visitDocsPage(EventQuery(), resumeFrom, batchSize)
+                val page = index.visitDocsPage(scope, resumeFrom, batchSize)
                 // ONE pipelined write per page: serial awaited puts pay per-op ack
                 // latency — hours of it on a churny reindex.
                 val changed = ArrayList<EventDoc>()
