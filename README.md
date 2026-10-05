@@ -293,11 +293,11 @@ place column:
 | **30000 / 39089** | people list / follow pack | title, description |
 | **10003 / 30001 / 30003** | bookmark lists | title, description |
 | **30015** | interest set | title, description + hashtags |
-| **30004 / 30005 / 30006 / 30267** | article / video / picture / app curation sets | title, description |
+| **30004 / 30005 / 30006 / 30267** | article / video / picture / app curation sets | title (30267: or name), description |
 | **30063** | release artifact set (NIP-51) / software release (NIP-82) | title, description, release notes (NIP-82 only: a NIP-51 set may keep encrypted items in its content) |
 | **30002 / 39092 / 39701** | relay set / media starter pack / web bookmark | title, description |
-| **9998 / 39998** | decentralized list header (immutable / editable) | names + titles (singular, plural), description + comments, hashtags |
-| **9999 / 39999** | decentralized list item (immutable / editable) | name + title, description + comments, hashtags |
+| **9998 / 39998** | decentralized list header (immutable / editable) | names + titles (singular, plural), description + comments, hashtags; every other natural-language tag value (`author`, `subject`, …) as text |
+| **9999 / 39999** | decentralized list item (immutable / editable) | name + title, description + comments, hashtags; every other natural-language tag value (`author`, `subject`, …) as text |
 | **30382** | contact card / relationship | petname, summary + topics as hashtags (the encrypted half is never indexed) |
 | **30392 / 30393 / 30394 / 30395** | trusted list of pubkeys / events / addressables / external ids | title |
 | **30296 / 30297** | interactive story prologue / scene | title, summary, content |
@@ -306,7 +306,9 @@ place column:
 | **5302 / 5303** | NIP-90 content / people search request | content |
 | **11871 / 31873** | attestor proficiency / recommendation | content |
 | **31871 / 31872** | attestation / attestation request | content |
-| **38000** | mint recommendation | content |
+| **38000** ‡ | mint recommendation (NIP-87) | content |
+| **38000** † ‡ | ballot | election, answers |
+| **38000** † ‡ | prediction market | title, description |
 | **2473** | bird detection (Birdstar) | species + common name, alt |
 | **12473** | Birdex species collection | summary + species names |
 | **1315** | road event report (Roadstr) | content |
@@ -334,6 +336,14 @@ hashtag funnel does not see them). Both halves take the same fix — one upstrea
 exactly this with its clone URLs). Kinds 818, 31987, 34259 and 7516 are `content`-only and
 already land correctly; 31987 still misses its relay url. The rows above become tiered, and
 complete, the moment those branches land.
+
+‡ **Kind 38000 is shared, and Quartz picks the class by tags.** A `k` naming a mint kind
+(or, on old events with no `k`, a mint `u` or `a`) makes a mint recommendation; else an
+`election` makes a ballot; else a `market`, two or more `outcome`s, or `type` + `end` makes a
+prediction market; anything else is junk that Quartz parses as an unrecognized 38000 and does
+not index. On a large relay that last group is most of the kind: `d`-only "sybil test votes".
+They stay addressable, so supersession and NIP-09 by `d` still apply. They are just never found
+by search.
 
 Anything Quartz parses to a `SearchableEvent` is indexed, current or future. The
 authoritative mapping is

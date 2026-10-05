@@ -5,14 +5,30 @@ app = "1.0.1"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"
 # Quartz from JitPack (amethyst @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
-# fcd76d2075 = amethyst main @ 2026-09-27: the merge of amethyst #4231. NOTHING THIS STORE CALLS
-# MOVES: in quartz/ the range touches nipFERelayOverHttp (NIP-FE's simpler, published form: one
-# client frame POSTed to the relay's URL, and a client side), RelaySession (an additive
-# receive(text, parsed)), NIP-49, a new Bech32Transcription and LibSodiumInstance; neither this
-# store's jar nor the engine's references a class in any of them. Pinned so vespa-relay, which moved
-# to fcd76d2075 for the new NIP-FE, resolves quartz without `force(libs.quartz)` overriding this
-# pin -- the arrow `a53cafd577 -> fcd76d2075` its graph carries until this lands.
+# d792ebc4bf = amethyst main @ 2026-10-05: the merge of amethyst #4325 (the v1.17.0 release
+# train). What this store calls moves in four places, all upstream decisions it inherits as-is:
+#  - Kind 38000 is split BY TAGS (EventFactory): MintRecommendationEvent on a `k` 38172/38173
+#    (or, on old events, a `u` or a mint `a`), else BallotEvent on `election`, else
+#    PredictionMarketEvent on `market` / >=2 `outcome` / `type`+`end`, else
+#    UnrecognizedKind38000Event -- still addressable, so supersession and NIP-09 by `d` are
+#    unchanged, but NOT searchable: the d-only "sybil test vote" spam that is most of the kind
+#    stops being indexed. Ballots (election + answers) and markets (title, description) land on
+#    the catch-all body, like every kind without an extractor branch.
+#  - Decentralized lists (9998/9999/39998/39999) gain a TEXT tier: every natural-language value
+#    of every tag the fixed fields do not own (author, subject, artist, ...), minus alt/client/
+#    imeta and anything machine-shaped (isNaturalLanguageValue). 30267 reads titleOrName().
+#  - NIP-62: a vanish `relay` tag is compared as a NormalizedRelayUrl, so `wss://relay.example`
+#    now reaches the relay normalized as `wss://relay.example/` (a raw string match accepted the
+#    request and deleted nothing).
+#  - A 30394 member `a` must be a `kind:pubkey:d` coordinate (CoordinateShape): an naddr there is
+#    no longer decoded into a search-expansion pointer.
+# The first two are derived data -- reindexFullTextSearch() rolls them out, no resync. Also in
+# range and inert here: Event.dTag() defers to AddressableEvent (this store reads tags.dTag()),
+# EventFactory.probe(kind) for kind-level questions, DeletionIndex's comparator fix, local
+# search (EventSearchMatcher) matching only what a kind indexes, Address.isOfKind bounds.
 #
+# Prev fcd76d2075 (2026-09-27: amethyst #4231, NIP-FE's published form, RelaySession,
+# NIP-49; nothing this store called moved, pinned for vespa-relay).
 # Prev a53cafd577 (2026-09-27: amethyst #4214, NIP-FE's review fixes; nothing this store called
 # moved, pinned for the relay the same way).
 # Prev ec16988e3a (2026-09-27: amethyst #4222 returned Quartz's SQLite store to REPLACED,
@@ -28,7 +44,7 @@ mavenPublish = "0.37.0"
 # catch-all; SearchableEvent grows the read-path forEachIndexableField, no reindex).
 # Prev cecc3287b2 (2026-09-01: 17 catch-all kinds split into title/body roles, four
 # affiliation URLs, six doubled `t`-tag scans dropped; a ranking backfill).
-quartz = "fcd76d2075"
+quartz = "d792ebc4bf"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 # Matches what Quartz brings transitively; Gradle would resolve to it regardless.

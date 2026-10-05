@@ -14,7 +14,7 @@ description: The NIP-50 indexing surface of Quartz — the `SearchableEvent` int
 > describes — we parse with `SearchQuery.parse`-compatible semantics; keep it that way.
 
 > Skill imported from `vitorpamplona/amethyst` `.claude/skills/searchable-events`
-> at commit `98f09f29c0` and refreshed to `ec16988e3a`; the kind table below
+> at commit `98f09f29c0` and refreshed to `d792ebc4bf`; the kind table below
 > is kept current here. Refresh this copy at every pin bump.
 
 ## The contract
@@ -35,7 +35,9 @@ interface SearchableEvent {
 
 Marker and extractor in one. An event kind is searchable **iff** its event class
 implements this interface **and** the class is wired into `EventFactory` (the stores probe
-searchability by kind through `EventFactory.create` — an unwired implementor is invisible).
+searchability by kind through `EventFactory.probe(kind)` — an unwired implementor is invisible;
+`probe` exists because kind 38000 picks its class by tags, and a tagless 38000 would otherwise
+land on the unsearchable `UnrecognizedKind38000Event`).
 
 Only `indexableContent()` is the **write path**, and it is the only one any store — this one
 included — ever calls. The other two are the **read path**, added for Amethyst's per-keystroke
@@ -64,7 +66,7 @@ Rules every implementation follows (keep them when adding one):
 
 **`references/searchable-kinds.md`** in this skill holds the authoritative table — every
 implementor with its kind number, class, and the exact `indexableContent()` expression
-(148 concrete classes / 151 kind values as of 2026-09, Quartz pin `ec16988e3a`; upstream now
+(150 concrete classes / 151 kind values as of 2026-10, Quartz pin `d792ebc4bf`; upstream now
 keeps the reachable set as `nip50Search/SearchableKinds.ALL`, swept by `SearchableKindsTest`). Diff that file at a version bump to
 answer "did the searchable set or any kind's indexed text change?".
 

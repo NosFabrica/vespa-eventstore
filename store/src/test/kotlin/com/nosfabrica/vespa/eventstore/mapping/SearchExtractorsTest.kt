@@ -308,6 +308,58 @@ class SearchExtractorsTest {
         assertEquals(SearchFields(primary = "Example 1.2", text = "fixes the offline sync crash"), SearchExtractors.extract(release))
     }
 
+    /**
+     * The d792ebc4bf pin (amethyst #4325) moves two kinds' derived fields, both repaired on an
+     * existing corpus by `reindexFullTextSearch()`.
+     *
+     * Kind 38000 picks its class BY TAGS now. The d-only spam votes that are most of the kind on
+     * a live relay used to parse as a mint recommendation and index their content. Now they parse
+     * as an unrecognized 38000 and index nothing. A ballot sharing the number indexes its election
+     * and answers on the catch-all body, and a real recommendation (a `k` naming a mint kind)
+     * still indexes its content.
+     *
+     * A decentralized list's tags beyond its fixed fields (`author`, `subject`, …) are the TEXT
+     * tier when they read as natural language, below the title and description; machine values
+     * (`lang`, an ISBN) and the NIP-31 `alt` restatement stay out.
+     */
+    @Test
+    fun `kind 38000 splits by tags and lists index their other tags as text`() {
+        fun k38000(
+            id: Char,
+            tags: Array<Array<String>>,
+            content: String,
+        ) = EventFactory.create<Event>(id.toString().repeat(64), alice, 1L, 38000, tags, content, "")
+
+        assertEquals(SearchFields.NONE, SearchExtractors.extract(k38000('1', arrayOf(arrayOf("d", "x")), "sybil test vote")))
+        assertEquals(
+            SearchFields(text = "City Council 2026\nAlice Smith"),
+            SearchExtractors.extract(k38000('2', arrayOf(arrayOf("d", "b1"), arrayOf("election", "City Council 2026")), """{"vote_choice":"Alice Smith"}""")),
+        )
+        assertEquals(
+            SearchFields(text = "fast and reliable mint"),
+            SearchExtractors.extract(k38000('3', arrayOf(arrayOf("d", "m1"), arrayOf("k", "38172")), "fast and reliable mint")),
+        )
+
+        val book =
+            EventFactory.create<Event>(
+                "4".repeat(64),
+                alice,
+                1L,
+                ListItemEvent.KIND,
+                arrayOf(
+                    arrayOf("title", "Waking with Enemies"),
+                    arrayOf("author", "Christopher Pike"),
+                    arrayOf("subject", "Horror tales"),
+                    arrayOf("lang", "eng"),
+                    arrayOf("isbn", "9781534445145"),
+                    arrayOf("alt", "Book: Waking with Enemies by Christopher Pike"),
+                ),
+                "",
+                "",
+            )
+        assertEquals(SearchFields(primary = "Waking with Enemies", text = "Christopher Pike\nHorror tales"), SearchExtractors.extract(book))
+    }
+
     @Test
     fun `app handler metadata reuses the kind-0 profile columns`() {
         val content = """{"name":"Damus","display_name":"Damus App","about":"a nostr client","nip05":"_@damus.io","lud16":"tips@damus.io","website":"https://damus.io"}"""

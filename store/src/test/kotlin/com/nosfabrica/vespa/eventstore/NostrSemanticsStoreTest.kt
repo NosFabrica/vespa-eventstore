@@ -39,6 +39,7 @@ import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
 import com.vitorpamplona.quartz.nip59Giftwrap.wraps.GiftWrapEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
+import com.vitorpamplona.quartz.utils.EventFactory
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -268,6 +269,47 @@ open class NostrSemanticsStoreTest {
             assertTrue(rejected.message!!.startsWith("blocked:"))
             // Newer than the request: accepted.
             store.insert(note(at = 300))
+        }
+
+    /**
+     * NIP-62 scope compares relay URLs NORMALIZED (Quartz d792ebc4bf): a client that typed this
+     * relay without its trailing slash still reaches it. A raw string match used to store the
+     * request, answer OK, and delete nothing.
+     */
+    @Test
+    fun `a vanish naming this relay unnormalized still reaches it`() =
+        runBlocking {
+            store.insert(note(at = 100))
+            store.insert(RequestToVanishEvent(id(), alice, 200, arrayOf(arrayOf("relay", "wss://sot.test")), "", ""))
+
+            assertEquals(0, store.count(Filter(kinds = listOf(1))))
+            val rejected = assertFailsWith<RejectedException> { store.insert(note(at = 150)) }
+            assertTrue(rejected.message!!.startsWith("blocked:"))
+        }
+
+    /**
+     * Kind 38000 picks its class by tags (Quartz d792ebc4bf). The d-only spam that is most of the
+     * kind on a live relay is still ADDRESSABLE: a newer one replaces the older by `d`. It is no
+     * longer searchable. A ballot under the same kind number is found by its election.
+     */
+    @Test
+    fun `kind 38000 spam stays addressable but leaves search`() =
+        runBlocking {
+            fun k38000(
+                author: String,
+                at: Long,
+                tags: Array<Array<String>>,
+                content: String,
+            ) = EventFactory.create<Event>(id(), author, at, 38000, tags, content, "")
+
+            store.insert(k38000(alice, 100, arrayOf(arrayOf("d", "vote")), "sybil test vote"))
+            val newer = k38000(alice, 200, arrayOf(arrayOf("d", "vote")), "sybil test vote")
+            store.insert(newer)
+            assertEquals(listOf(newer.id), store.query<Event>(Filter(kinds = listOf(38000))).map { it.id })
+            assertEquals(0, store.query<Event>(Filter(search = "sybil")).size)
+
+            store.insert(k38000(bob, 300, arrayOf(arrayOf("d", "b1"), arrayOf("election", "City Council")), """{"vote_choice":"Alice Smith"}"""))
+            assertEquals(listOf(bob), store.query<Event>(Filter(search = "council")).map { it.pubKey })
         }
 
     @Test
