@@ -296,8 +296,8 @@ place column:
 | **30004 / 30005 / 30006 / 30267** | article / video / picture / app curation sets | title (30267: or name), description |
 | **30063** | release artifact set (NIP-51) / software release (NIP-82) | title, description, release notes (NIP-82 only: a NIP-51 set may keep encrypted items in its content) |
 | **30002 / 39092 / 39701** | relay set / media starter pack / web bookmark | title, description |
-| **9998 / 39998** | decentralized list header (immutable / editable) | names + titles (singular, plural), description + comments, hashtags; every other natural-language tag value (`author`, `subject`, …) as text |
-| **9999 / 39999** | decentralized list item (immutable / editable) | name + title, description + comments, hashtags; every other natural-language tag value (`author`, `subject`, …) as text |
+| **9998 / 39998** | decentralized list header (immutable / editable) | names + titles (singular, plural), description + comments, hashtags; every other natural-language tag value (`author`, `subject`, …) as text — one with a space or non-ASCII, or a single Capitalized word (`romance`, `Afro-Americans` and other one-word lowercase or punctuated values read as machine values and stay out) |
+| **9999 / 39999** | decentralized list item (immutable / editable) | name + title, description + comments, hashtags; every other natural-language tag value (`author`, `subject`, …) as text — one with a space or non-ASCII, or a single Capitalized word (`romance`, `Afro-Americans` and other one-word lowercase or punctuated values read as machine values and stay out) |
 | **30382** | contact card / relationship | petname, summary + topics as hashtags (the encrypted half is never indexed) |
 | **30392 / 30393 / 30394 / 30395** | trusted list of pubkeys / events / addressables / external ids | title |
 | **30296 / 30297** | interactive story prologue / scene | title, summary, content |
