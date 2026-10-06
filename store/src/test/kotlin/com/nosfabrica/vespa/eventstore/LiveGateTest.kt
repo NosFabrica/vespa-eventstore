@@ -122,6 +122,17 @@ class LiveGateTest {
         assertFalse(runBlocking { excluding.admits(note(trusted, "pizza for bitcoin")) }, "an excluded word vetoes")
     }
 
+    /** AN EMOJI IS A WORD, live as in the index: required, and excluded. */
+    @Test
+    fun `live text treats an emoji as the word the engine indexed`() {
+        val bolt = assertNotNull(gate("⚡"))
+        assertTrue(runBlocking { bolt.admits(note(trusted, "zap⚡ sent")) })
+        assertFalse(runBlocking { bolt.admits(note(trusted, "zap sent")) })
+        val fire = assertNotNull(gate("pizza -🔥"))
+        assertFalse(runBlocking { fire.admits(note(trusted, "pizza 🔥🔥")) })
+        assertTrue(runBlocking { fire.admits(note(trusted, "pizza 🍕")) })
+    }
+
     /**
      * A PHRASE VESPA WOULD REFUSE IS JUDGED AS THE ENGINE RAN IT (PhraseRuns):
      * the page excluded every note holding five "no"s, so the live stream

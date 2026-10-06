@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore.engine.query
 
+import com.nosfabrica.vespa.eventstore.engine.text.IndexableChars
 import com.nosfabrica.vespa.eventstore.engine.text.NearText
 
 /**
@@ -210,6 +211,11 @@ internal object FuzzyWordGroup {
     ): String {
         val clauses = ArrayList<String>()
         for (field in SEARCH_FIELDS) clauses += exactClause(field, "@$name", roleOf(field))
+        // A word with no letter or digit ("⚡", "🔥🔥") is exact-only: the near
+        // attributes and the gram fields hold letters and digits alone, so a
+        // prefix, typo or n-gram clause for it could match nothing and would
+        // still cost its dictionary walk.
+        if (!IndexableChars.hasLetterOrDigit(literal)) return "(${clauses.joinToString(" or ")})"
         if (nearFields) {
             // The folded twin rides out-of-band too. Floors and budgets use
             // the FOLDED form — the string the attribute dictionaries hold.

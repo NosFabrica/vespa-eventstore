@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.eventstore.mapping
 
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
+import com.nosfabrica.vespa.eventstore.engine.text.IndexableChars
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip50Search.SearchQuery
 import com.vitorpamplona.quartz.utils.Hex
@@ -66,7 +67,8 @@ import com.vitorpamplona.quartz.utils.Hex
  * Term-level syntax beside the extensions — Google's minus and quotes:
  *
  *  - A leading `-` makes an EXCLUSION ([EventQuery.notSearch]), exact-match
- *    only; an index-invisible exclusion (`-⚡`) is dropped here, and an
+ *    only; an index-invisible exclusion (`-₿`, `-#`) is dropped here — an
+ *    emoji is indexed, so `-🔥` excludes — and an
  *    exclusions-only query is plain recall minus the words.
  *  - A `"quoted span"` is an exact-phrase REQUIREMENT ([EventQuery.phrases]):
  *    adjacent tokens in order, no typo/prefix reach; `-"…"` excludes the
@@ -91,8 +93,9 @@ internal fun Filter.toEventQuery(): EventQuery? {
     // and exclusions alike. Quoted phrases are left literal: quoting asks for
     // the text as typed.
     val terms = Shortcodes.rewriteQuery(parsed.terms.ifEmpty { null })
-    // Exclusions no index can hold ("-⚡") are vacuous either way — dropped.
-    val notSearch = (parsed.notTerms.map(Shortcodes::rewriteWord) + parsed.notPhrases).filter { w -> w.any(Char::isLetterOrDigit) }
+    // Exclusions no index can hold ("-₿") are vacuous either way — dropped.
+    // An emoji is indexed ([IndexableChars]): "-🔥" is a real exclusion.
+    val notSearch = (parsed.notTerms.map(Shortcodes::rewriteWord) + parsed.notPhrases).filter(IndexableChars::hasIndexable)
     val sort = parsed.extensions["sort"]?.let(::rankReputationOf)
     val floor = parsed.extensions["filter"]?.let(::rankFloorOf)
     val observer = parsed.extensions["observer"]?.lowercase()?.takeIf(Hex::isHex64)

@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore
 
+import com.nosfabrica.vespa.eventstore.engine.text.IndexableChars
 import com.nosfabrica.vespa.eventstore.trust.TrustCells
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -77,12 +78,8 @@ class LiveGate internal constructor(
                 excluded.none { pieces -> pieces.all { x -> words.windowed(x.size).any { it == x } } }
 
         companion object {
-            fun words(text: String?): List<String> =
-                text
-                    ?.lowercase()
-                    ?.split(Regex("[^\\p{L}\\p{N}]+"))
-                    ?.filter { it.isNotEmpty() }
-                    .orEmpty()
+            /** The engine's tokens ([IndexableChars.tokens]): letter/digit runs, and each emoji a word of its own. */
+            fun words(text: String?): List<String> = text?.lowercase()?.let(IndexableChars::tokens).orEmpty()
         }
     }
 

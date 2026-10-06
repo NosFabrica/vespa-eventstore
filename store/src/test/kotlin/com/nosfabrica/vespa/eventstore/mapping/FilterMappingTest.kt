@@ -167,8 +167,9 @@ class FilterMappingTest {
     fun `minus edge cases — lone dash, unindexable word, mid-word hyphens`() {
         assertEquals("-", map("-").search, "a lone dash is a term (never-matching), not syntax")
         assertTrue(map("-").notSearch.isEmpty())
-        assertEquals("cat", map("cat -⚡").search)
-        assertTrue(map("cat -⚡").notSearch.isEmpty(), "an exclusion no index can hold excludes nothing")
+        assertEquals("cat", map("cat -₿").search)
+        assertTrue(map("cat -₿").notSearch.isEmpty(), "an exclusion no index can hold excludes nothing")
+        assertEquals(listOf("🔥"), map("cat -🔥").notSearch, "an emoji is indexed, so its exclusion is real")
         assertEquals("e-cash", map("e-cash").search, "mid-word hyphens are not exclusions")
         assertEquals(listOf("e-cash"), map("-e-cash").notSearch, "…but a leading dash flips the whole term")
         assertNull(map("-e-cash").search)

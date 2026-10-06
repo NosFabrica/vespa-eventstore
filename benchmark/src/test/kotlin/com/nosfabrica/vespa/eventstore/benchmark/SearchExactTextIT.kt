@@ -215,6 +215,34 @@ class SearchExactTextIT {
                         // a row is the same refusal, so the phrase runs cut to five.
                         index.search(EventQuery(phrases = listOf("gm ☕☕☕☕☕☕")))
                         index.search(EventQuery(search = "gina", notSearch = listOf("lol😂😂😂😂😂😂")))
+                        // ---- emoji are indexed; ₿ and a prefix star are not words ----
+
+                        // Vespa 8.763 indexes every other-symbol code point as a
+                        // term of its own (IndexableChars): an emoji is searched
+                        // for, alone or beside words, and excluded.
+                        val zap = profile(9, name = "hal", about = "zap⚡ sent with ❤️")
+                        val plainHeart = profile(10, name = "ivy", about = "made with ❤ and 🔥")
+                        index.putAll(listOf(zap, plainHeart))
+                        awaitCorpus(index, 10)
+                        assertEquals(listOf(zap.id), index.search(EventQuery(search = "⚡")).map { it.id }, "an emoji alone is a search")
+                        assertEquals(listOf(zap.id), index.search(EventQuery(search = "hal ⚡")).map { it.id })
+                        assertEquals(
+                            setOf(zap.id, plainHeart.id),
+                            index.search(EventQuery(search = "❤️")).map { it.id }.toSet(),
+                            "the variation selector is stripped, so ❤️ finds the plain heart too",
+                        )
+                        assertEquals(
+                            listOf(zap.id),
+                            index.search(EventQuery(search = "❤", notSearch = listOf("🔥"))).map { it.id },
+                            "-🔥 excludes: the emoji is in the index",
+                        )
+                        // A currency sign is in no index: dropped, never a 400.
+                        assertEquals(listOf(zap.id), index.search(EventQuery(search = "hal ₿")).map { it.id })
+                        assertEquals(emptyList(), index.search(EventQuery(search = "₿")).map { it.id })
+                        // A trailing star was prefix syntax, an HTTP 400 on an index
+                        // field; stripped, the word keeps its prefix reach anyway.
+                        assertEquals(listOf(zap.id), index.search(EventQuery(search = "hal*")).map { it.id })
+
                         // A quote character inside a positive word turned the rest
                         // of it into a phrase: stripped, these are plain words again.
                         index.search(EventQuery(search = "x\"no-no-no-no-no-no"))
