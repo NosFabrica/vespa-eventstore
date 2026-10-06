@@ -804,15 +804,25 @@ class EventYqlTest {
         assertEquals("nostr", q.params["w1"])
         assertEquals("❤", q.params["w2"], "the selector is its own indexed term: left in, a plain heart never matches")
         assertNull(EventYql.build(EventQuery(search = "* ＊")), "only syntax is still no match")
+        // A star INSIDE a word separates, as the document's tokenizer did.
+        val inner = EventYql.build(EventQuery(search = "f*ck"))!!
+        assertEquals(listOf("f", "ck"), listOf(inner.params["w0"], inner.params["w1"]))
+        // A selector glued to a digit or letter is part of the indexed word.
+        assertEquals("1️⃣", EventYql.build(EventQuery(search = "1️⃣"))!!.params["w0"])
+        assertEquals("⚡️zap", EventYql.build(EventQuery(search = "⚡️zap"))!!.params["w0"])
+        // An emoji beside a long word does not weight the trigrams up.
+        assertEquals("2.0", EventYql.build(EventQuery(search = "extraordinary 🔥"))!!.params["ranking.features.query(w_gram)"])
     }
 
     @Test
     fun `quote characters inside a positive word are stripped before it is sent`() {
         // Upstream lifts only an ASCII quote at a word boundary; Vespa reads
         // thirteen code points as one, and would parse what follows as a phrase.
+        // They become SPACES, not nothing: the document tokenized x"no as x, no.
         val q = EventYql.build(EventQuery(search = "x\"no-no-no-no-no-no “ha-ha-ha-ha-ha-ha”"))!!
-        assertEquals("xno-no-no-no-no-no", q.params["w0"])
-        assertEquals("ha-ha-ha-ha-ha-ha", q.params["w1"])
+        assertEquals("x", q.params["w0"])
+        assertEquals("no-no-no-no-no-no", q.params["w1"])
+        assertEquals("ha-ha-ha-ha-ha-ha", q.params["w2"])
         // …but a search that is ONLY quotes still matches nothing, never everything.
         assertNull(EventYql.build(EventQuery(search = "“ ”")))
     }

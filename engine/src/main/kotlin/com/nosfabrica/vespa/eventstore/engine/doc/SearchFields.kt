@@ -82,14 +82,16 @@ data class SearchFields(
      * place looseness must NOT apply: a word nothing indexes ("₿", "∞" —
      * [IndexableChars]) is erased by engine tokenization and EventYql drops it
      * too — requiring it here would split reference and engine on whole-query
-     * recall. An emoji is indexed, and required like any word; its variation
-     * selector is stripped, as EventYql strips it, so "❤️" finds a plain ❤.
+     * recall. An emoji is indexed, and required like any word. The text is
+     * cleaned exactly as EventYql cleans what it sends
+     * ([IndexableChars.queryText]: "bitcoin*" is bitcoin, "❤️" finds a plain ❤,
+     * 👍🏽 is 👍).
      */
     fun matches(term: String): Boolean {
         val words =
-            term
+            IndexableChars
+                .queryText(term)
                 .split(WHITESPACE)
-                .map { w -> w.filterNot { it == IndexableChars.VARIATION_SELECTOR } }
                 .filter(IndexableChars::hasIndexable)
         if (words.isEmpty()) return false
         val values = fields().values

@@ -252,7 +252,7 @@ class InMemoryEventIndex(
 
         /** The phrases as the engine runs them ([PhraseRuns.pieces]), rewritten once per query, not per doc. */
         private val phrasePieces = q.phrases.map { PhraseRuns.pieces(it) }
-        private val exclusionPieces = q.notSearch.map { PhraseRuns.pieces(it) }
+        private val exclusionPieces = q.notSearch.map(PhraseRuns::exclusionPieces)
 
         fun matches(d: EventDoc): Boolean {
             if (unsatisfiable) return false

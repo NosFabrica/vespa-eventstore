@@ -789,23 +789,31 @@ object EventYql {
         // "⚡" is indexed, and searches for itself. (SearchFields.matches
         // applies the same rule.)
         //
-        // Default-grammar syntax is stripped from what is SENT
-        // ([PhraseRuns.literalWord]: quotes, the prefix star, the emoji
-        // variation selector), each of which made a typed word a different
-        // query or a 400. Not from [words]: a search that is only syntax must
-        // stay "provably no match", never become a search for everything.
+        // Default-grammar syntax is cleaned from what is SENT
+        // ([IndexableChars.queryText]: quotes and stars become spaces, a lone
+        // variation selector and skin tones go), each of which made a typed
+        // word a different query or a 400. Not from [words]: a search that is
+        // only syntax must stay "provably no match", never a search for
+        // everything.
         val words =
             q.search
                 ?.trim()
                 .orEmpty()
                 .split(WHITESPACE)
                 .filter { it.isNotEmpty() }
-        val matchable = words.map(PhraseRuns::literalWord).filter(IndexableChars::hasIndexable)
+        val matchable =
+            IndexableChars
+                .queryText(q.search?.trim().orEmpty())
+                .split(WHITESPACE)
+                .filter(IndexableChars::hasIndexable)
         if (words.isNotEmpty() && matchable.isEmpty()) return null
         if (matchable.isNotEmpty()) {
             clauses += FuzzyWordGroup.clause(matchable, params, nearFields = q.nearMatching, bodyGram = q.bodyGramMatching)
-            // Short queries lean harder on the trigram safety net.
-            params[F_W_GRAM] = if (FuzzyWordGroup.leansOnGrams(matchable)) "8.0" else "2.0"
+            // Short queries lean harder on the trigram safety net — judged by
+            // the words that HAVE grams: an emoji beside "extraordinary" is no
+            // reason to weight its trigrams up.
+            val gramWords = matchable.filter(IndexableChars::hasLetterOrDigit)
+            params[F_W_GRAM] = if (gramWords.isNotEmpty() && FuzzyWordGroup.leansOnGrams(gramWords)) "8.0" else "2.0"
         }
 
         // Quoted phrases ([EventQuery.phrases]): one REQUIRED phrase-grammar
@@ -851,11 +859,10 @@ object EventYql {
         // "-no-no-no-no-no-no" is six "no"s in one phrase, an HTTP 400. A word
         // in pieces drops the documents holding ALL of them.
         q.notSearch
-            .map(PhraseRuns::exclusion)
             .filter(IndexableChars::hasIndexable)
             .forEachIndexed { i, word ->
                 val pieces =
-                    PhraseRuns.pieces(word).mapIndexed { j, piece ->
+                    PhraseRuns.exclusionPieces(word).mapIndexed { j, piece ->
                         val name = if (j == 0) "n$i" else "n${i}c$j"
                         params[name] = piece
                         "({defaultIndex:\"default\",grammar:\"phrase\"}userInput(@$name))"

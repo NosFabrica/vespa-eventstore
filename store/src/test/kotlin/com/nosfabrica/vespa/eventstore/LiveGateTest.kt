@@ -131,6 +131,11 @@ class LiveGateTest {
         val fire = assertNotNull(gate("pizza -🔥"))
         assertFalse(runBlocking { fire.admits(note(trusted, "pizza 🔥🔥")) })
         assertTrue(runBlocking { fire.admits(note(trusted, "pizza 🍕")) })
+        // The same cleaning as the page: -❤️ drops a plain heart, a star is no word.
+        val hearts = assertNotNull(gate("pizza -❤️"))
+        assertFalse(runBlocking { hearts.admits(note(trusted, "pizza ❤ forever")) })
+        val star = assertNotNull(gate("pizz*"))
+        assertTrue(runBlocking { star.admits(note(trusted, "pizza night")) })
     }
 
     /**

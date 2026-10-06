@@ -487,6 +487,14 @@ open class NostrSemanticsStoreTest {
             assertEquals(listOf(zapper.id), store.query<Event>(Filter(search = "vitor ⚡")).map { it.id })
             assertEquals(listOf(zapper.id), store.query<Event>(Filter(search = "⚡")).map { it.id })
             assertEquals(2, store.query<Event>(Filter(search = "vitor -⚡")).size, "-⚡ drops the zapper, keeps the other two")
+
+            // Default-grammar syntax is cleaned the same way on every path —
+            // this runs against the in-memory spec AND through the wire mock.
+            assertEquals(3, store.query<Event>(Filter(search = "vitor*")).size, "a trailing star is a word, not a 400")
+            assertEquals(3, store.query<Event>(Filter(search = "“vitor”")).size, "curly quotes are not syntax inside the store")
+            val thumbs = MetadataEvent(id(), "d4".repeat(32), next(), emptyArray(), """{"name":"thumbs 👍"}""", "")
+            store.insert(thumbs)
+            assertEquals(listOf(thumbs.id), store.query<Event>(Filter(search = "👍🏽")).map { it.id }, "a skin tone is ignored, as the engine ignores it")
         }
 
     /**

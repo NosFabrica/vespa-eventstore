@@ -617,7 +617,7 @@ class NostrSemanticsStore(
                                 .filter { it.isNotEmpty() },
                         excluded =
                             q.notSearch
-                                .map { w -> PhraseRuns.pieces(w).map(LiveGate.Text::words).filter { it.isNotEmpty() } }
+                                .map { w -> PhraseRuns.exclusionPieces(w).map(LiveGate.Text::words).filter { it.isNotEmpty() } }
                                 .filter { it.isNotEmpty() },
                     )
                 LiveGate.Rule(f, text.takeUnless { it.isEmpty() }, if (floor != null) q.rankKey else null, floor)

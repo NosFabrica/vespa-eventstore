@@ -55,7 +55,8 @@ import java.text.Normalizer
  * "hahaha…" is eleven "hah" grams, never two in a row; a quoted sentence says
  * "the" eleven times. A hyphen-joined POSITIVE word passes both — its exact
  * clause is not phrase grammar — UNLESS it carries one of Vespa's quote
- * characters, which turns the rest of it into a phrase ([literalWord]).
+ * characters, which turns the rest of it into a phrase
+ * ([IndexableChars.queryText] turns them into spaces first).
  *
  * Public for the store's live gate, which must judge a streamed event by the
  * same rewritten phrases the page was read with.
@@ -154,35 +155,12 @@ object PhraseRuns {
     }
 
     /**
-     * [word] as a plain word for Vespa's DEFAULT grammar — the characters that
-     * grammar reads as syntax, which only ever turn a typed word into a query
-     * the user did not write, removed:
-     *  - its 13 QUOTE characters (Tokenizer.java): ASCII, the curly and low
-     *    pairs, the guillemets, the CJK and full-width forms. Upstream lifts
-     *    only an ASCII quote standing at a word boundary into a phrase, so
-     *    `x"no-no-no-no-no-no` or an iOS keyboard's `“ha-ha-ha-ha-ha-ha”`
-     *    reached the word clauses still quoted, and Vespa parsed the quoted
-     *    part as a phrase — a 400 when it repeats ([pieces]).
-     *  - its STAR, ASCII and full-width: a trailing one is prefix syntax, and
-     *    an index field answers prefix with an HTTP 400 ("Prefix matching is
-     *    not supported") for the whole query. MEASURED on Vespa 8.763: "bitcoin*"
-     *    failed every REQ it was in. Nothing is lost — every word already
-     *    gets prefix reach from its near-attribute clauses.
-     *  - the emoji variation selector ([IndexableChars.VARIATION_SELECTOR]),
-     *    which the engine indexes as a word of its own: left in, "❤️" asks for
-     *    the heart AND the selector and misses every plain ❤.
-     * None of these is ever an indexed character on its own, so a word made
-     * only of them was vacuous before and stays so.
+     * An exclusion (`-word`) as the pieces it is sent as: its text as
+     * [IndexableChars.exclusionText] keeps it, then [pieces]. The ONE place the
+     * engine query, the in-memory reference and the live gate get it from, so
+     * the three cannot cut the same exclusion differently.
      */
-    fun literalWord(word: String): String = if (word.none { it in WORD_SYNTAX }) word else word.filterNot { it in WORD_SYNTAX }
-
-    /**
-     * [word] for a phrase-grammar exclusion: the variation selector removed
-     * when it is one word (`-❤️` must drop the plain ❤ too), kept inside a
-     * multi-word phrase, where removing it would demand an adjacency the
-     * document — which indexed the selector between the two — cannot have.
-     */
-    fun exclusion(word: String): String = if (word.any(Char::isWhitespace)) word else word.filterNot { it == IndexableChars.VARIATION_SELECTOR }
+    fun exclusionPieces(word: String): List<String> = pieces(IndexableChars.exclusionText(word))
 
     /** NFKD, marks dropped, lowercased: compatibility forms, accents and case merge, as they do (and more) in Vespa. */
     private fun fold(token: String): String =
@@ -192,6 +170,4 @@ object PhraseRuns {
             .lowercase()
 
     private val TOKEN = Regex("[\\p{L}\\p{Nd}\\p{M}]+|\\p{So}")
-
-    private const val WORD_SYNTAX = "\"\u201C\u201D\u201E\u201F\u2039\u203A\u00AB\u00BB\u301D\u301E\u301F\uFF02*\uFF0A\uFE0F"
 }

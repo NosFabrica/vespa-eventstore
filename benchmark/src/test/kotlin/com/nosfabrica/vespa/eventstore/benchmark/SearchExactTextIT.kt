@@ -243,6 +243,26 @@ class SearchExactTextIT {
                         // field; stripped, the word keeps its prefix reach anyway.
                         assertEquals(listOf(zap.id), index.search(EventQuery(search = "hal*")).map { it.id })
 
+                        // The selector is a combining mark: glued to a digit or a
+                        // letter it is PART of the indexed word ("1️", "️zap"), and
+                        // stripping it there lost these notes — only a lone one goes.
+                        val keycap = profile(11, name = "jo", about = "1️⃣ first")
+                        val glued = profile(12, name = "kai", about = "⚡️zap glued")
+                        val hearts = profile(13, name = "lu", about = "❤️❤️ double")
+                        val star = profile(14, name = "max", about = "f*ck star")
+                        val thumbs = profile(15, name = "ned", about = "👍 nice")
+                        index.putAll(listOf(keycap, glued, hearts, star, thumbs))
+                        awaitCorpus(index, 15)
+                        assertEquals(listOf(keycap.id), index.search(EventQuery(search = "1️⃣")).map { it.id })
+                        assertEquals(listOf(glued.id), index.search(EventQuery(search = "⚡️zap")).map { it.id })
+                        // In a run the selectors sit BETWEEN the hearts, so the
+                        // exclusion rides as typed and still drops the note.
+                        assertEquals(emptyList(), index.search(EventQuery(search = "lu", notSearch = listOf("❤️❤️"))).map { it.id })
+                        // A star inside a word separates, as the indexer did.
+                        assertEquals(listOf(star.id), index.search(EventQuery(search = "f*ck")).map { it.id })
+                        // A skin tone is ignored: 👍🏽 finds the plain 👍.
+                        assertEquals(listOf(thumbs.id), index.search(EventQuery(search = "👍🏽")).map { it.id })
+
                         // A quote character inside a positive word turned the rest
                         // of it into a phrase: stripped, these are plain words again.
                         index.search(EventQuery(search = "x\"no-no-no-no-no-no"))
