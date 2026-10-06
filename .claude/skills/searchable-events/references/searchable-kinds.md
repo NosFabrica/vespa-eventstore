@@ -2,11 +2,11 @@
 
 Every concrete `SearchableEvent` implementor in Quartz, with the exact `indexableContent()`
 expression. **Update this file in the same PR as any change to the searchable set or to an
-`indexableContent()` body** (see SKILL.md). Verified against the code 2026-09-27 (Quartz pin `ec16988e3a`; upstream `SearchableKinds.ALL`
+`indexableContent()` body** (see SKILL.md). Verified against the code 2026-10-05 (Quartz pin `d792ebc4bf`; upstream `SearchableKinds.ALL`
 is the reachable set, and every kind in it has a row here).
 
-Counts: 148 concrete classes covering 151 kind values (150 reachable — 31890 is not) (`GitStatusEvent` spans 4 kinds;
-kind 30063 is shared by two NIPs — see the footnote). File paths are under
+Counts: 150 concrete classes covering 151 kind values (150 reachable — 31890 is not) (`GitStatusEvent` spans 4 kinds;
+kind 30063 is shared by two NIPs and kind 38000 by three classes — see the footnotes). File paths are under
 `quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/`.
 
 Separator legend: **NL** = `joinToString("\n")`, **SP** = `joinToString(" ")`.
@@ -70,7 +70,7 @@ Separator legend: **NL** = `joinToString("\n")`, **SP** = `joinToString(" ")`.
 | 9736 | Bolt12ZapEvent | nipB1Bolt12Zaps/zap | `content` |
 | 9737 | Bolt12ZapIntentEvent | nipB1Bolt12Zaps/intent | `content` |
 | 9802 | HighlightEvent | nip84Highlights | `listOfNotNull(comment(), context(), content)` NL |
-| 9998 | ListHeaderEvent | experimental/decentralizedLists/header | `tags.searchableListContent()` NL — `names` (singular, plural), `titles` (singular, plural), `name`, `title`, `description`, `comments`, then every `t` value; ids/pubkeys/coordinates are left to tag filters |
+| 9998 | ListHeaderEvent | experimental/decentralizedLists/header | `tags.searchableListContent()` NL — `names` (singular, plural), `titles` (singular, plural), `name`, `title`, `description`, `comments`, then in tag order every `t` value that is not `isMachineValue` and every value of every other tag (except `alt`, `client`, `imeta`) that passes `isNaturalLanguageValue` (has whitespace or non-ASCII, or is one capitalized letters-only word; never JSON, numbers, URIs of any scheme, addresses, hex ids, UUIDs, bech32); ids/pubkeys/coordinates are left to tag filters. `SearchFieldExtractor` routes those other-tag values to the TEXT tier (`searchableListExtraText()`) |
 | 9999 | ListItemEvent | experimental/decentralizedLists/item | same as 9998 |
 | 10003 | BookmarkListEvent | nip51Lists/bookmarkList | `listOfNotNull(title())` NL |
 | 10100 | AgentProfileEvent | buzz/agentProfiles | `profileOrNull()?.let { listOfNotNull(it.name, it.displayName).joinToString("\n") } ?: ""` |
@@ -104,7 +104,7 @@ Separator legend: **NL** = `joinToString("\n")`, **SP** = `joinToString(" ")`.
 | 30175 | PersonaEvent | buzz/apPersonas | `personaOrNull()?.let { listOfNotNull(it.displayName, it.systemPrompt).joinToString("\n") } ?: ""` |
 | 30176 | TeamEvent | buzz/teams | `teamOrNull()?.let { listOfNotNull(it.name, it.description, it.instructions).joinToString("\n") } ?: ""` |
 | 30177 | ManagedAgentEvent | buzz/managedAgents | `agentOrNull()?.let { listOfNotNull(it.name, it.systemPrompt).joinToString("\n") } ?: ""` |
-| 30267 | AppCurationSetEvent | nip51Lists/appCurationSet | `listOfNotNull(title(), description())` NL |
+| 30267 | AppCurationSetEvent | nip51Lists/appCurationSet | `listOfNotNull(titleOrName(), description())` NL |
 | 30296 | InteractiveStoryPrologueEvent | experimental/interactiveStories | inherited base: `listOfNotNull(title(), summary(), content)` NL |
 | 30297 | InteractiveStorySceneEvent | experimental/interactiveStories | inherited base: `listOfNotNull(title(), summary(), content)` NL |
 | 30311 | LiveActivitiesEvent | nip53LiveActivities/streaming | `listOfNotNull(title(), summary(), content)` NL |
@@ -146,7 +146,9 @@ Separator legend: **NL** = `joinToString("\n")`, **SP** = `joinToString(" ")`.
 | 36787 | MusicTrackEvent | experimental/music/track | `listOfNotNull(title(), artist(), album(), content)` NL |
 | 37516 | GeocacheListingEvent | nipCCGeocaching/listing | `listOfNotNull(cacheName(), content)` NL (the `hint` is deliberately not indexed — matching a hint is spoiling it) |
 | 37517 | GeocacheCurationListEvent | nipCCGeocaching/curation | `listOfNotNull(title(), description(), content)` NL |
-| 38000 | MintRecommendationEvent | nip87Ecash/recommendation | `content` |
+| 38000 | MintRecommendationEvent ‡ | nip87Ecash/recommendation | `content` |
+| 38000 | BallotEvent ‡ | experimental/ballots | `(listOfNotNull(election()) + answers().map { it.answer })` NL |
+| 38000 | PredictionMarketEvent ‡ | experimental/predictionMarkets | `listOfNotNull(title(), description())` NL |
 | 38192 | Ps1SaveEvent | experimental/ps1saves | `listOfNotNull(summary(), saveTitle(), region(), filename())` NL |
 | 38383 | P2POrderEvent | nip69P2pOrderEvents | `(listOfNotNull(makerName(), currency()) + paymentMethods().orEmpty()).joinToString(" ")` (SP) |
 | 39000 | GroupMetadataEvent | nip29RelayGroups/metadata | `listOfNotNull(name(), about())` NL |
@@ -166,6 +168,15 @@ Separator legend: **NL** = `joinToString("\n")`, **SP** = `joinToString(" ")`.
 `ReleaseArtifactSetEvent` parses both. It indexes `title()` and `description()`, plus `content`
 (the release notes) only when the event carries the NIP-82 `i` + `version` tags — a NIP-51 set
 may hold encrypted private items in `content`, which must never be indexed.
+
+‡ **Kind 38000 is shared** by NIP-87 mint recommendations and two app formats, and `EventFactory`
+picks the class by tags: `MintRecommendationEvent` when any `k` is 38172/38173 (or, with no
+`k`, a non-blank `u` or an `a` to a 38172/38173 address); else `BallotEvent` on a non-blank
+`election`; else `PredictionMarketEvent` on a `market`, ≥2 `outcome`s, or `type` + `end`; else
+`UnrecognizedKind38000Event` — addressable (stores still key it by `d`) but unsearchable (the
+spam votes that make up most of the kind). Kind-level probes (`EventFactory.probe`) answer as
+`MintRecommendationEvent`. A market's `title()`/`description()` come from its `data` tag JSON,
+the `title` tag, or JSON `content`, in that order.
 
 ## Abstract bases (no kind of their own)
 

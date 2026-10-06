@@ -15,7 +15,7 @@ description: The authoritative behavioral contract of Quartz's event stores — 
 > tag matching can theoretically over-match where Vespa is exact.
 
 > Skill imported from `vitorpamplona/amethyst` `.claude/skills/event-store-semantics`
-> at commit `9231195890` and refreshed to `ec16988e3a` (the Quartz pin in `gradle/libs.versions.toml`). Refresh this copy
+> at commit `9231195890` and refreshed to `d792ebc4bf` (the Quartz pin in `gradle/libs.versions.toml`). Refresh this copy
 > and re-check the upstream semantics changelog at every pin bump.
 
 The SQLite `EventStore` (`quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nip01Core/store/sqlite/`)
@@ -253,6 +253,9 @@ the changelog — parity suites key off it.
 
 **STORE-D06 — NIP-62 vanish is relay-scoped.** A kind-62 only cascades when
 `shouldVanishFrom(relay)` — its `relay` tags name this store's `relay` URL or `ALL_RELAYS`.
+The tag is compared as a `NormalizedRelayUrl` (since `d792ebc4bf`; a raw string match before),
+so `wss://relay.example` reaches the relay normalized as `wss://relay.example/`; a value that
+does not normalize matches nothing.
 (A store constructed with `relay = null` matches only `ALL_RELAYS` requests.) Out-of-scope
 vanish events are stored as regular events with no side effects.
 

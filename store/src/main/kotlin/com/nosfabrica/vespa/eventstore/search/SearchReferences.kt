@@ -266,9 +266,11 @@ internal object SearchReferences {
                 References(
                     addresses = event.tags.mapNotNull { canonical(AddressMemberTag.parseAddressId(it)) },
                     // Keyed by the CANONICAL coordinate, since that is what the
-                    // lookup files a found subject under — a member written as
-                    // `naddr1…` or with an upper-case key would otherwise carry
-                    // a score nothing could look up.
+                    // lookup files a found subject under — a member with an
+                    // upper-case key would otherwise carry a score nothing could
+                    // look up. (An `naddr1…` member never gets this far: since
+                    // Quartz d792ebc4bf `parseAddressId` takes only a
+                    // `kind:pubkey:d` shape, so such a member is not a pointer.)
                     confidence = event.tags.memberScores(AddressMemberTag.TAG_NAME) { canonical(AddressMemberTag.parseAddressId(it)) },
                 )
             }
@@ -305,8 +307,9 @@ internal object SearchReferences {
      * NORMALIZED HERE so both sides of the match are the same string. The
      * lookup recalls by (kind, author, `d`) and the result is recognized again
      * by reassembling the coordinate from the event's OWN fields, which are
-     * canonical — so a member published as `naddr1…` (which `Address.parse`
-     * decodes) or with an upper-case pubkey would be fetched and then silently
+     * canonical — so a value spelled as `naddr1…` (which `Address.parse`
+     * decodes; a 30384 `d` can be, a 30394 member no longer reaches here as
+     * one) or with an upper-case pubkey would be fetched and then silently
      * dropped for failing to equal its own raw tag string. Nostr hex is
      * lower-case by convention and the store holds it that way, so the
      * publisher's spelling is the side that gives.
