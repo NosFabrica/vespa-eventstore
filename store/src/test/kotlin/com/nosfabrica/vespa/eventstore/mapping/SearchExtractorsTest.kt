@@ -21,17 +21,22 @@
 package com.nosfabrica.vespa.eventstore.mapping
 
 import com.nosfabrica.vespa.eventstore.engine.doc.SearchFields
+import com.vitorpamplona.quartz.experimental.citations.ExternalCitationEvent
 import com.vitorpamplona.quartz.experimental.decentralizedLists.item.ListItemEvent
+import com.vitorpamplona.quartz.experimental.library.BookshelfDirectoryEvent
 import com.vitorpamplona.quartz.experimental.library.LearningResourceEvent
 import com.vitorpamplona.quartz.experimental.nip82SoftwareApps.application.SoftwareApplicationEvent
 import com.vitorpamplona.quartz.experimental.ratings.RelayReviewEvent
 import com.vitorpamplona.quartz.experimental.trustedLists.users.UserTrustedListEvent
+import com.vitorpamplona.quartz.feedDefinition.FeedDefinitionEvent
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
+import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
 import com.vitorpamplona.quartz.nip10Notes.TextNoteEvent
 import com.vitorpamplona.quartz.nip15Marketplace.stall.StallEvent
 import com.vitorpamplona.quartz.nip17Dm.messages.ChatMessageEvent
 import com.vitorpamplona.quartz.nip23LongContent.LongFormContentEvent
+import com.vitorpamplona.quartz.nip30CustomEmoji.pack.EmojiPackEvent
 import com.vitorpamplona.quartz.nip34Git.repository.GitRepositoryEvent
 import com.vitorpamplona.quartz.nip35Torrents.TorrentEvent
 import com.vitorpamplona.quartz.nip51Lists.releaseArtifactSet.ReleaseArtifactSetEvent
@@ -203,10 +208,11 @@ class SearchExtractorsTest {
 
     /**
      * The eleven kinds the a8e8778265 Quartz pin added to the searchable set (31/32/33
-     * citations, 818, 30040/30041, 30045, 30142, 31987, 32176, 34259) have no
-     * `SearchFieldExtractor` branch, so every one of them takes the catch-all above:
-     * the whole `indexableContent()`, TITLE INCLUDED, in the body. README's kind table
-     * carries the `†` for exactly this, and these two are its witnesses.
+     * citations, 818, 30040/30041, 30045, 30142, 31987, 32176, 34259) arrived with no
+     * `SearchFieldExtractor` branch, so each took the catch-all: the whole
+     * `indexableContent()`, TITLE INCLUDED, in the body. The 68268da413 pin gave the
+     * citations and the learning resource branches (pinned below); the rest still take the
+     * catch-all, which README's kind table marks with `†`, and these two are its witnesses.
      *
      * Built THROUGH THE FACTORY on purpose. Searchability on the store path is two
      * conditions, not one — the class must implement `SearchableEvent` AND `EventFactory`
@@ -215,14 +221,14 @@ class SearchExtractorsTest {
      * nothing about the second, which is the half a version bump actually moves.
      */
     @Test
-    fun `kinds newly searchable in the a8e8778265 pin index their whole content as body`() {
+    fun `kinds still on the catch-all index their whole content as body`() {
         val titled =
             EventFactory.create<Event>(
                 "7".repeat(64),
                 alice,
                 1L,
-                LearningResourceEvent.KIND,
-                arrayOf(arrayOf("title", "Nostr 101"), arrayOf("summary", "the basics")),
+                BookshelfDirectoryEvent.KIND,
+                arrayOf(arrayOf("d", "shelf"), arrayOf("title", "Nostr 101"), arrayOf("summary", "the basics")),
                 "read this first",
                 "",
             )
@@ -232,6 +238,68 @@ class SearchExtractorsTest {
         val bodyOnly =
             EventFactory.create<Event>("8".repeat(64), alice, 1L, RelayReviewEvent.KIND, emptyArray(), "fast, never drops a REQ", "")
         assertEquals(SearchFields(text = "fast, never drops a REQ"), SearchExtractors.extract(bodyOnly))
+    }
+
+    /**
+     * What the 68268da413 pin moves, through the factory: two former catch-all kinds now
+     * split into roles (a learning resource's title is a title again; a citation's author
+     * and publisher are indexed at all), an emoji pack stops indexing its `content` — the
+     * NIP-44 ciphertext of its private emojis — for its public shortcodes, kind 31890 is
+     * finally built as the searchable class it always declared, and one of the 42 newly
+     * searchable kinds (a deletion request's stated reason) lands as body.
+     */
+    @Test
+    fun `the 68268da413 pin tiers former catch-all kinds and drops emoji-pack ciphertext`() {
+        fun build(
+            kind: Int,
+            tags: Array<Array<String>>,
+            content: String,
+        ) = EventFactory.create<Event>("9".repeat(64), alice, 1L, kind, tags, content, "")
+
+        assertEquals(
+            SearchFields(primary = "Nostr 101", secondary = "the basics", text = "read this first"),
+            SearchExtractors.extract(
+                build(LearningResourceEvent.KIND, arrayOf(arrayOf("title", "Nostr 101"), arrayOf("summary", "the basics")), "read this first"),
+            ),
+        )
+        assertEquals(
+            SearchFields(primary = "On Relays", secondary = "the abstract\nAnn Author\nNostr Press", text = "full text"),
+            SearchExtractors.extract(
+                build(
+                    ExternalCitationEvent.KIND,
+                    arrayOf(
+                        arrayOf("title", "On Relays"),
+                        arrayOf("summary", "the abstract"),
+                        arrayOf("author", "Ann Author"),
+                        arrayOf("published_by", "Nostr Press"),
+                    ),
+                    "full text",
+                ),
+            ),
+        )
+        assertEquals(
+            SearchFields(primary = "Cats", secondary = "cat faces\nmeow"),
+            SearchExtractors.extract(
+                build(
+                    EmojiPackEvent.KIND,
+                    arrayOf(
+                        arrayOf("d", "cats"),
+                        arrayOf("title", "Cats"),
+                        arrayOf("description", "cat faces"),
+                        arrayOf("emoji", "meow", "https://example.com/meow.png"),
+                    ),
+                    "AnEncryptedNip44PayloadThatMustNeverBeIndexed",
+                ),
+            ),
+        )
+        assertEquals(
+            SearchFields(primary = "Morning Reads"),
+            SearchExtractors.extract(build(FeedDefinitionEvent.KIND, arrayOf(arrayOf("d", "feed"), arrayOf("title", "Morning Reads")), "")),
+        )
+        assertEquals(
+            SearchFields(text = "posted the wrong link"),
+            SearchExtractors.extract(build(DeletionRequestEvent.KIND, arrayOf(arrayOf("e", "f".repeat(64))), "posted the wrong link")),
+        )
     }
 
     /**
