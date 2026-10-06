@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
+import com.nosfabrica.vespa.eventstore.engine.query.PhraseRuns
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import com.vitorpamplona.quartz.utils.Hex
 import java.util.concurrent.ConcurrentHashMap
@@ -267,9 +268,10 @@ class InMemoryEventIndex(
                 (q.search.isNullOrBlank() || d.search.matches(q.search.trim())) &&
                 // Phrases and exclusions share the exact-adjacency check, never
                 // the loose substring positive words get — mirroring the engine,
-                // where both are the same phrase-grammar term.
-                q.phrases.all { d.search.containsPhrase(it) } &&
-                q.notSearch.none { d.search.containsPhrase(it) }
+                // where both are the same phrase-grammar term — cut by the same
+                // [PhraseRuns.cap], since the engine can only run the cut one.
+                q.phrases.all { d.search.containsPhrase(PhraseRuns.cap(it)) } &&
+                q.notSearch.none { d.search.containsPhrase(PhraseRuns.cap(it)) }
         }
     }
 

@@ -155,6 +155,37 @@ class SearchExactTextIT {
                                 .map { it.id },
                             "all three text clause kinds compose",
                         )
+
+                        // ---- one term repeated past Vespa's phrase limit ----
+
+                        // Vespa refuses a phrase repeating one term more than
+                        // five times in a row with an HTTP 400 for the whole
+                        // query (PhraseRuns). Each of these three used to be
+                        // that 400, all reachable from a search box; the
+                        // first is a word from a real kind-31890 title.
+                        val runs = profile(6, name = "erin", about = "the feeeeeeeeed says no no no no no no")
+                        index.putAll(listOf(runs))
+                        awaitCorpus(index, 6)
+                        assertEquals(
+                            listOf(runs.id),
+                            index.search(EventQuery(search = "feeeeeeeeed")).map { it.id },
+                            "eight e's: no body phrase, and the word still finds its doc",
+                        )
+                        assertEquals(
+                            listOf(runs.id),
+                            index.search(EventQuery(phrases = listOf("no no no no no no no"))).map { it.id },
+                            "a phrase of seven repeated words runs as the five Vespa accepts",
+                        )
+                        assertEquals(
+                            emptyList(),
+                            index.search(EventQuery(search = "erin", notSearch = listOf("no-no-no-no-no-no"))).map { it.id },
+                            "an exclusion tokenizing into six repeated words is cut the same way, and drops the doc",
+                        )
+                        assertEquals(
+                            setOf(pamplona.id, model.id),
+                            index.search(EventQuery(search = "vitor", notSearch = listOf("no-no-no-no-no-no"))).map { it.id }.toSet(),
+                            "…and leaves the docs that never say it",
+                        )
                     }
                 }
             }

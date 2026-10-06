@@ -556,6 +556,23 @@ open class NostrSemanticsStoreTest {
             assertEquals(listOf(bob), store.query<Event>(Filter(search = "vitor -\"vitor pamplona\"")).map { it.pubKey })
         }
 
+    /**
+     * A phrase repeating one word past Vespa's limit (PhraseRuns): the engine
+     * can only run it cut to five, so the spec answers the cut phrase too — and
+     * the REQ answers, where it used to fail outright.
+     */
+    @Test
+    fun `a quoted phrase repeating a word six times answers as the five it is cut to`() =
+        runBlocking {
+            val six = metadata(name = "no no no no no no")
+            store.insert(six)
+            store.insert(MetadataEvent(id(), bob, next(), emptyArray(), """{"name":"no no no no no"}""", ""))
+
+            // Both read five "no"s in a row, so the cut phrase holds for both.
+            assertEquals(2, store.query<Event>(Filter(search = "\"no no no no no no\"")).size)
+            assertEquals(0, store.query<Event>(Filter(search = "-no-no-no-no-no-no")).size, "the exclusion is cut the same way")
+        }
+
     /** EventIndexesModule pubkey_owner_hash: a gift-wrap is OWNED by its p-tag recipient. */
     @Test
     fun `gift wraps obey their recipient not their signer`() =

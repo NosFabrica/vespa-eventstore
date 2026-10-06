@@ -700,6 +700,48 @@ class EventYqlTest {
     }
 
     @Test
+    fun `a run of one trigram past Vespa's phrase limit gets no body phrase`() {
+        // Vespa answers a phrase repeating one term more than five times in a
+        // row with an HTTP 400 for the WHOLE query. Eight o's is six "ooo"
+        // grams: no phrase, and the word keeps its other clauses.
+        val eight = EventYql.build(EventQuery(search = "noooooooo"))!!
+        assertFalse("search_text_gram contains phrase" in eight.yql, eight.yql)
+        assertTrue("({defaultIndex:\"search_text\"}userInput(@w0))" in eight.yql)
+        assertTrue("about_gram contains \"ooo\"" in eight.yql, "the AND net is not a phrase, so it keeps the word")
+        // Seven o's is five "ooo" in a row — Vespa accepts it, so the net stays.
+        val seven = EventYql.build(EventQuery(search = "nooooooo"))!!
+        assertTrue("search_text_gram contains phrase(\"noo\", \"ooo\", \"ooo\", \"ooo\", \"ooo\", \"ooo\")" in seven.yql, seven.yql)
+        // A long word alternating two grams is no run at all.
+        assertTrue("search_text_gram contains phrase" in EventYql.build(EventQuery(search = "hahahahahahaha"))!!.yql)
+    }
+
+    @Test
+    fun `typed phrases and exclusions repeating a word past the limit are cut to it`() {
+        val q =
+            EventYql.build(
+                EventQuery(
+                    search = "cat",
+                    phrases = listOf("no no no no no no no", "no no no no no"),
+                    notSearch = listOf("no-no-no-no-no-no", "No nó NO no no no."),
+                ),
+            )!!
+        assertEquals("no no no no no", q.params["p0"], "six and seven cut to five, separators with them")
+        assertEquals("no no no no no", q.params["p1"], "five is within the limit and rides untouched")
+        assertEquals("no-no-no-no-no", q.params["n0"])
+        // Case and accents fold like the index folds them; the text kept is the user's.
+        assertEquals("No nó NO no no.", q.params["n1"])
+    }
+
+    @Test
+    fun `only a run past the limit is cut, and only a run of one term counts`() {
+        val doc = "one no no no no no two"
+        assertEquals("one no no no no no two", PhraseRuns.cap(doc), "text without an over-long run is itself")
+        assertEquals("a b b b b b c", PhraseRuns.cap("a b b b b b b b c"))
+        assertFalse(PhraseRuns.exceeds(listOf("ooo", "ooo", "ooo", "ooo", "ooo")))
+        assertTrue(PhraseRuns.exceeds(listOf("noo", "ooo", "ooo", "ooo", "ooo", "ooo", "ooo")))
+    }
+
+    @Test
     fun `bodyGramMatching off drops the body phrase and nothing else`() {
         // The compatibility demotion for a schema predating search_text_gram.
         // It must NOT take the near columns with it: those shipped earlier, so a

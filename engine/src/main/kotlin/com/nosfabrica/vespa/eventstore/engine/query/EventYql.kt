@@ -803,10 +803,12 @@ object EventYql {
         // term per entry against the `default` fieldset, text out-of-band. No
         // fuzzy word group — exact and adjacent is the point of quoting. The
         // phrase rides RAW (the tokenizer drops what indexing dropped), so
-        // only an ALL-erased phrase needs the unsatisfiable-requirement rule.
+        // only an ALL-erased phrase needs the unsatisfiable-requirement rule —
+        // and RAW but for [PhraseRuns.cap]: a word repeated six times in a row
+        // is a phrase Vespa refuses outright, failing the whole REQ.
         q.phrases.forEachIndexed { i, phrase ->
             if (phrase.none(Char::isLetterOrDigit)) return null
-            params["p$i"] = phrase
+            params["p$i"] = PhraseRuns.cap(phrase)
             clauses += "({defaultIndex:\"default\",grammar:\"phrase\"}userInput(@p$i))"
         }
 
@@ -828,11 +830,12 @@ object EventYql {
         // keeps a punctuated word ("e-cash") one adjacent unit. A tokenization-
         // erased word ("⚡") is vacuous here (no index holds it, so nothing
         // can be excluded by it) and is simply dropped — the mirror of the
-        // positive-side rule.
+        // positive-side rule. Phrase grammar is also why [PhraseRuns.cap]:
+        // "-no-no-no-no-no-no" is six "no"s in one phrase, an HTTP 400.
         q.notSearch
             .filter { w -> w.any(Char::isLetterOrDigit) }
             .forEachIndexed { i, word ->
-                params["n$i"] = word
+                params["n$i"] = PhraseRuns.cap(word)
                 clauses += "!(({defaultIndex:\"default\",grammar:\"phrase\"}userInput(@n$i)))"
             }
         return clauses
