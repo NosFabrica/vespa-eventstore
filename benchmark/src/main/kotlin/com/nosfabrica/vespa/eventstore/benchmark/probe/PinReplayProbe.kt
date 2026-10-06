@@ -56,18 +56,24 @@ import java.io.File
  *         and the columns THIS build's SearchExtractors derive; print the stale
  *         count per kind. Under the new pin before the repair, a stale kind
  *         outside the list is the bug this exists to catch; after it,
- *         `--require-clean` fails the run on any stale doc.
+ *         `--require-clean` fails the run on any stale doc. Stale means what
+ *         the reindex means by it: changed columns, OR unchanged columns over
+ *         a near tier that does not match them (counted apart — a pin switch
+ *         cannot move NearText, which has no Quartz in it, so a near-stale
+ *         doc says the corpus was fed by an older build of THIS repo).
  *     reindex <kinds.json>
  *         the scoped repair itself, through the store, timed.
  *     search <probes.jsonl> <out.jsonl>
  *         each probe's {kinds, search, limit} as a NIP-50 REQ through the whole
- *         store (`open()`, so the trust lens is live), ids appended.
+ *         store (`open()`, so the trust lens is live), ids appended — or the
+ *         error, for a query the engine refused: one bad query must not end
+ *         the run, and `pin_replay.py grade` counts an error as a failure.
  *
  * The procedure, the capture and the probe/grade halves are in
  * `benchmark/pin_replay.py`; the 68268da413 run is in benchmark/README.md,
  * "Replaying a pin bump". The engine walk is the reindex's own (visitDocsPage)
- * and the comparison is the reindex's own (`derived != doc.search`), so the
- * snapshot's stale count is exactly the set the repair will rewrite.
+ * and so is the comparison (both predicates of `reindexPage`), so the
+ * snapshot's stale count is the set the repair will rewrite.
  */
 object PinReplayProbe {
     private fun SearchFields.json() = JsonObject(fields().mapValues { JsonPrimitive(it.value) })
@@ -76,20 +82,26 @@ object PinReplayProbe {
     fun main(args: Array<String>) =
         runBlocking {
             val url = System.getenv("VESPA_URL") ?: "http://localhost:8080"
-            when (args[0]) {
+            when (args.firstOrNull()) {
                 "snapshot" -> {
                     VespaEventIndex(url).use { idx ->
                         File(args[1]).bufferedWriter().use { out ->
                             var cursor: String? = null
                             var n = 0
                             val stale = HashMap<Int, Int>()
+                            val nearStale = HashMap<Int, Int>()
                             val total = HashMap<Int, Int>()
                             do {
                                 val page = idx.visitDocsPage(EventQuery(), cursor, 1000)
                                 for (doc in page.docs) {
                                     val derived = SearchExtractors.extract(EventFactory.create<Event>(doc.id, doc.pubkey, doc.createdAt, doc.kind, Array(doc.tags.size) { doc.tags[it].toTypedArray() }, doc.content, doc.sig))
                                     total.merge(doc.kind, 1, Int::plus)
-                                    if (derived != doc.search) stale.merge(doc.kind, 1, Int::plus)
+                                    // reindexPage's two predicates, in its order.
+                                    if (derived != doc.search) {
+                                        stale.merge(doc.kind, 1, Int::plus)
+                                    } else if (doc.storedNearFields?.let { it != derived.nearFieldsWritten() } == true) {
+                                        nearStale.merge(doc.kind, 1, Int::plus)
+                                    }
                                     val row =
                                         JsonObject(
                                             mapOf(
@@ -105,9 +117,12 @@ object PinReplayProbe {
                                 }
                                 cursor = page.continuation
                             } while (cursor != null)
-                            println("snapshot: $n docs, ${stale.values.sum()} stale under this pin")
+                            println("snapshot: $n docs, ${stale.values.sum()} stale under this pin, ${nearStale.values.sum()} more with a stale near tier only")
                             stale.toSortedMap().forEach { (k, v) -> println("  kind $k: $v of ${total[k]} stale") }
-                            check("--require-clean" !in args || stale.isEmpty()) { "${stale.values.sum()} docs stale under this pin" }
+                            nearStale.toSortedMap().forEach { (k, v) -> println("  kind $k: $v of ${total[k]} near tier stale") }
+                            check("--require-clean" !in args || (stale.isEmpty() && nearStale.isEmpty())) {
+                                "${stale.values.sum() + nearStale.values.sum()} docs the reindex would still rewrite"
+                            }
                         }
                     }
                 }
@@ -128,12 +143,23 @@ object PinReplayProbe {
                                 val q = Json.parseToJsonElement(line).jsonObject
                                 val kinds = q["kinds"]?.jsonArray?.map { it.jsonPrimitive.int }
                                 val filter = Filter(kinds = kinds, search = q["search"]!!.jsonPrimitive.content, limit = q["limit"]?.jsonPrimitive?.int ?: 500)
-                                val ids = store.query<Event>(listOf(filter)).map { JsonPrimitive(it.id) }
-                                out.write(JsonObject(q + ("ids" to JsonArray(ids))).toString())
+                                // An error is recorded, never an empty page: an empty
+                                // page would PASS an "added" probe before the repair.
+                                val answer =
+                                    try {
+                                        "ids" to JsonArray(store.query<Event>(listOf(filter)).map { JsonPrimitive(it.id) })
+                                    } catch (e: Exception) {
+                                        "error" to JsonPrimitive(e.message?.take(300) ?: e.toString())
+                                    }
+                                out.write(JsonObject(q + answer).toString())
                                 out.newLine()
                             }
                         }
                     }
+                }
+
+                else -> {
+                    error("usage: pinReplayProbe snapshot <out.jsonl> [--require-clean] | reindex <kinds.json> | search <probes.jsonl> <out.jsonl>")
                 }
             }
         }

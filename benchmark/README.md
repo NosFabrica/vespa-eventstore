@@ -1186,9 +1186,11 @@ exists between two. So the list was checked against real events instead
   here move only on shapes this sample lacks (none of the 600 kind 14s
   carries a `subject`, no captured video carries `segment` chapters, no
   10003 uses the legacy `name`).
-- **The repair**: 8.3–9.5 s for the 61 kinds on this corpus, rewriting
-  exactly the 2,309 and nothing else; afterwards 0 stale, and the store
-  matches what the new pin derives on every document. Run at the old pin
+- **The repair**: 8.3–9.5 s for the 61 kinds on this corpus. The pre- and
+  post-repair snapshots differ in exactly the 2,309 documents (the reindex
+  reports no count of its own; this is the snapshot diff), and afterwards
+  nothing is stale: the store holds what the new pin derives on every
+  document. Run at the old pin
   again, it rolls the columns back just as cleanly — a revert of the pin is
   the same repair.
 - **Searches** (`pin_replay.py probes`/`grade`, through the whole store):
@@ -1196,8 +1198,9 @@ exists between two. So the list was checked against real events instead
   31890 feeds, 38000 market questions moving out of the body, imeta `alt`,
   1065 captions, deletion and vanish reasons, highlight context) miss before
   the repair and hit after; 3/3 dropped terms hit before and miss after;
-  556/556 control terms hit both times. `observer:` searches over the
-  repaired kinds still gate: every lensed hit's author holds a card.
+  556/556 control terms hit both times. Checked by hand, not by the
+  probes (all of which read `include:spam`): `observer:` searches over the
+  repaired kinds still gate — every lensed hit's author holds a card.
 - **Live size of the repair** (COUNT on the relay the same day): ≈2.9M
   documents across the 61 kinds, 2.27M of them kind 34236, which this sample
   says almost never moves — the scoped walk still reads them all, so that is
@@ -1209,12 +1212,24 @@ emoji packs that put PLAINTEXT there (VRML scenes, captions) stop matching
 on it.
 
 The replay also found a bug unrelated to the bump. A word from a real 31890
-title, "feeeeeeeeed", failed its whole REQ with an HTTP 400: Vespa refuses a
-phrase that repeats one term more than five times in a row, and the body
-gram net is a phrase of trigrams (eight e's = six "eee"). A quoted phrase of
-six identical words and a `-no-no-no-no-no-no` exclusion hit the same
-limit. Fixed in `engine/query/PhraseRuns.kt`; `SearchExactTextIT` pins all
-three against a real Vespa.
+title, "feeeeeeeeed", failed its whole REQ with an HTTP 400. Vespa's
+container (`InputCheckingSearcher`, in the default search chain) refuses any
+phrase that repeats one term more than five times in a row, or more than ten
+times anywhere in it, and the body gram net is a phrase of trigrams: eight
+e's is six "eee" in a row, a 24-character "hahaha…" eleven "hah". Quoted
+phrases and `-exclusions` are phrase grammar too, so six identical words in
+a row, or a quoted sentence saying "the" eleven times, failed the same way.
+`engine/query/PhraseRuns.kt` rewrites these into what Vespa accepts (no gram
+phrase for such a word; a typed phrase's run cut to five, and a phrase split
+into required pieces at a term's eleventh occurrence), keeping the check in
+the chain as the cost guard it is. Its terms are counted as Vespa's query
+tokenizer reads them, over-counting where unsure: every emoji is a word
+("gm ☕☕☕☕☕☕" was the same 400), combining marks stay inside one (Devanagari),
+and compatibility forms fold together. A quote character INSIDE a word
+(`x"no-no-…`, an iOS `“ha-ha-…”`) made Vespa's default grammar parse the
+rest as a phrase, so positive words drop them. The live gate judges streamed
+events by the same rewritten phrases. `SearchExactTextIT` runs every shape
+against a real Vespa.
 
 ## Targeted benches (gradle tasks against a live Vespa)
 

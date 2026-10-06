@@ -40,14 +40,22 @@ OBSERVER = "460c25e682fda7832b52d1f22d3d22b3176d972f60dcdc3212ed8c92ef85065c"
 PROVIDER = "7d7ffd720b907fe597a7f454afe02f2dc1eca440baa029e9117b1c3209839377"
 
 
+def _notice(m):
+    if m[0] == "NOTICE":
+        print(f"  NOTICE: {m[1:]}", file=sys.stderr)
+
+
 async def _req(ws, sub, filt, budget=60):
     await ws.send(json.dumps(["REQ", sub, filt]))
     out, deadline = [], time.time() + budget
-    while time.time() < deadline:
+    while True:
         try:
-            m = json.loads(await asyncio.wait_for(ws.recv(), timeout=deadline - time.time()))
+            m = json.loads(await asyncio.wait_for(ws.recv(), timeout=max(0.01, deadline - time.time())))
         except asyncio.TimeoutError:
+            # A partial page is still a page, but never a silent one.
+            print(f"  {sub}: no EOSE within {budget}s, keeping {len(out)} events", file=sys.stderr)
             break
+        _notice(m)
         if m[0] == "EVENT" and m[1] == sub:
             out.append(m[2])
         elif m[0] in ("EOSE", "CLOSED") and m[1] == sub:
@@ -66,6 +74,7 @@ async def _count(ws, sub, filt, budget=60):
             m = json.loads(await asyncio.wait_for(ws.recv(), timeout=deadline - time.time()))
         except asyncio.TimeoutError:
             return None
+        _notice(m)
         if m[0] == "COUNT" and m[1] == sub:
             return m[2].get("count")
         if m[0] == "CLOSED" and m[1] == sub:
@@ -86,19 +95,47 @@ async def capture(out_path, kinds_path, per_kind):
         corpus.extend(fresh)
         return len(fresh)
 
-    async with websockets.connect(RELAY, ssl=ssl.create_default_context(), max_size=32 << 20, open_timeout=45) as ws:
+    async def lens(ws):
         add(await _req(ws, "l1", {"kinds": [10040], "authors": [OBSERVER], "search": "include:spam"}))
         add(await _req(ws, "l2", {"kinds": [30382], "authors": [PROVIDER], "limit": 3000, "search": "include:spam"}, budget=120))
-        for k in kinds:
-            counts[k] = await _count(ws, f"c{k}", {"kinds": [k], "search": "include:spam"})
-            got = add(await _req(ws, f"r{k}", {"kinds": [k], "limit": per_kind, "search": "include:spam"}, budget=90)) if counts[k] else 0
-            print(f"  kind {k}: live {counts[k]} captured {got}", file=sys.stderr)
-    json.dump(corpus, open(out_path, "w"))
-    json.dump(counts, open(out_path + ".counts.json", "w"))
+
+    async def one_kind(ws, k):
+        counts[k] = await _count(ws, f"c{k}", {"kinds": [k], "search": "include:spam"})
+        # Only a COUNT of exactly 0 skips the REQ: a timed-out or refused COUNT
+        # (None) is most likely on the BIGGEST kinds, the last ones to leave out.
+        got = add(await _req(ws, f"r{k}", {"kinds": [k], "limit": per_kind, "search": "include:spam"}, budget=90)) if counts[k] != 0 else 0
+        print(f"  kind {k}: live {counts[k]} captured {got}", file=sys.stderr)
+
+    # One reconnect per step: a socket dropped an hour into ~200 kinds costs
+    # that step's retry, not the capture — and whatever was gathered is
+    # written even if the run dies.
+    steps = [lens] + [(lambda k: lambda ws: one_kind(ws, k))(k) for k in kinds]
+    ws = None
+    try:
+        for i, step in enumerate(steps):
+            for attempt in (1, 2):
+                try:
+                    if ws is None:
+                        ws = await websockets.connect(RELAY, ssl=ssl.create_default_context(), max_size=32 << 20, open_timeout=45)
+                    await step(ws)
+                    break
+                except (websockets.ConnectionClosed, OSError, asyncio.TimeoutError) as e:
+                    ws = None
+                    print(f"  step {i}: connection lost ({e!r}){', retrying' if attempt == 1 else ', skipped'}", file=sys.stderr)
+    finally:
+        if ws is not None:
+            await ws.close()
+        json.dump(corpus, open(out_path, "w"))
+        json.dump(counts, open(out_path + ".counts.json", "w"))
     print(f"wrote {len(corpus)} events; live total {sum(v or 0 for v in counts.values()):,}", file=sys.stderr)
 
 
-WORD = re.compile(r"[a-z]{5,20}")
+TOKEN, WORD = re.compile(r"\w+"), re.compile(r"[a-z]{5,20}")
+
+
+def _words(text):
+    """WHOLE tokens of 5-20 ascii letters: a fragment cut out of "bitcoinería" or a 30-letter run is no term a search can hit."""
+    return {t for t in TOKEN.findall(text) if WORD.fullmatch(t)}
 
 
 def probes(snap_path, out_path, per_kind=25):
@@ -108,7 +145,7 @@ def probes(snap_path, out_path, per_kind=25):
     text = lambda cols: "\n".join(cols.values()).lower()
     df = collections.Counter()
     for r in rows:
-        df.update(set(WORD.findall(text(r["derived"]))) | set(WORD.findall(text(r["stored"]))))
+        df.update(_words(text(r["derived"])) | _words(text(r["stored"])))
 
     def pick(words, other):
         # Rarest first, and absent from the other side even as a SUBSTRING:
@@ -129,24 +166,30 @@ def probes(snap_path, out_path, per_kind=25):
         random.shuffle(rs)
         for r in [r for r in rs if r["stored"] != r["derived"]][:per_kind]:
             s, d = text(r["stored"]), text(r["derived"])
-            probe(k, r, "added", pick(set(WORD.findall(d)), s))
-            probe(k, r, "dropped", pick(set(WORD.findall(s)), d))
-        # Control terms come from the TEXT tiers: a website is one URL token,
-        # and a word buried inside it is not something a search can hit.
+            probe(k, r, "added", pick(_words(d), s))
+            probe(k, r, "dropped", pick(_words(s), d))
         for r in [r for r in rs if r["stored"] == r["derived"] and r["derived"]][:5]:
-            probe(k, r, "control", pick(set(WORD.findall(text({f: v for f, v in r["derived"].items() if f != "website"}))), ""))
+            probe(k, r, "control", pick(_words(text(r["derived"])), ""))
     with open(out_path, "w") as f:
         f.writelines(json.dumps(q) + "\n" for q in out)
     print(dict(collections.Counter(q["probe"] for q in out)))
 
 
 def grade(before_path, after_path):
-    """Exit 1 unless every probe's doc is found / missed as its kind of probe expects."""
+    """Exit 1 unless every probe's doc is found / missed as its kind of probe expects; a refused query is a failure, never an empty page."""
     want = {"added": (False, True), "dropped": (True, False), "control": (True, True)}
     load = lambda p: [json.loads(l) for l in open(p)]
     tally, bad = collections.Counter(), []
-    for b, a in zip(load(before_path), load(after_path), strict=True):
-        assert (b["search"], b["id"]) == (a["search"], a["id"])
+    before, after = load(before_path), load(after_path)
+    if len(before) != len(after):
+        sys.exit(f"{len(before)} results before, {len(after)} after: not the same probe file, or a run that died")
+    for b, a in zip(before, after):
+        if (b["search"], b["id"]) != (a["search"], a["id"]):
+            sys.exit(f"probe order differs at {b['search']!r}: not the same probe file")
+        if "error" in b or "error" in a:
+            tally[(b["probe"], "ERROR")] += 1
+            bad.append((b["probe"], b["kinds"][0], b["term"], b["id"][:12], b.get("error") or a.get("error")))
+            continue
         got = (b["id"] in b["ids"], a["id"] in a["ids"])
         ok = got == want[b["probe"]]
         tally[(b["probe"], "ok" if ok else "MISMATCH")] += 1
