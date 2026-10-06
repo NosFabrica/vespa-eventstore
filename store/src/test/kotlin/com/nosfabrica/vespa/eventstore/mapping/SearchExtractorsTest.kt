@@ -26,6 +26,7 @@ import com.vitorpamplona.quartz.experimental.decentralizedLists.item.ListItemEve
 import com.vitorpamplona.quartz.experimental.library.BookshelfDirectoryEvent
 import com.vitorpamplona.quartz.experimental.library.LearningResourceEvent
 import com.vitorpamplona.quartz.experimental.nip82SoftwareApps.application.SoftwareApplicationEvent
+import com.vitorpamplona.quartz.experimental.predictionMarkets.PredictionMarketEvent
 import com.vitorpamplona.quartz.experimental.ratings.RelayReviewEvent
 import com.vitorpamplona.quartz.experimental.trustedLists.users.UserTrustedListEvent
 import com.vitorpamplona.quartz.feedDefinition.FeedDefinitionEvent
@@ -39,8 +40,10 @@ import com.vitorpamplona.quartz.nip23LongContent.LongFormContentEvent
 import com.vitorpamplona.quartz.nip30CustomEmoji.pack.EmojiPackEvent
 import com.vitorpamplona.quartz.nip34Git.repository.GitRepositoryEvent
 import com.vitorpamplona.quartz.nip35Torrents.TorrentEvent
+import com.vitorpamplona.quartz.nip51Lists.bookmarkList.BookmarkListEvent
 import com.vitorpamplona.quartz.nip51Lists.releaseArtifactSet.ReleaseArtifactSetEvent
 import com.vitorpamplona.quartz.nip71Video.textTrack.TextTrackEvent
+import com.vitorpamplona.quartz.nip84Highlights.HighlightEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import com.vitorpamplona.quartz.nip89AppHandlers.definition.AppDefinitionEvent
 import com.vitorpamplona.quartz.nip99Classifieds.ClassifiedsEvent
@@ -299,6 +302,29 @@ class SearchExtractorsTest {
         assertEquals(
             SearchFields(text = "posted the wrong link"),
             SearchExtractors.extract(build(DeletionRequestEvent.KIND, arrayOf(arrayOf("e", "f".repeat(64))), "posted the wrong link")),
+        )
+        // The three branches the 0..65535 sample could not reach, which decided
+        // three of the 61 reindex kinds by reading alone. A 38000 market: the
+        // question leads, its outcome labels follow.
+        assertEquals(
+            SearchFields(primary = "Will it rain?", secondary = "Yes\nNo"),
+            SearchExtractors.extract(
+                build(
+                    PredictionMarketEvent.KIND,
+                    arrayOf(arrayOf("d", "m1"), arrayOf("market", "m1"), arrayOf("title", "Will it rain?"), arrayOf("outcome", "y", "Yes"), arrayOf("outcome", "n", "No")),
+                    "",
+                ),
+            ),
+        )
+        // A 9802 highlight with no `context`: the quote selector's prefix and suffix stand in.
+        assertEquals(
+            SearchFields(secondary = "before the quote after it", text = "the quote"),
+            SearchExtractors.extract(build(HighlightEvent.KIND, arrayOf(arrayOf("textquoteselector", "-", "before the quote", "after it")), "the quote")),
+        )
+        // A 10003 bookmark list named the legacy way.
+        assertEquals(
+            SearchFields(primary = "My Reads"),
+            SearchExtractors.extract(build(BookmarkListEvent.KIND, arrayOf(arrayOf("name", "My Reads")), "")),
         )
     }
 

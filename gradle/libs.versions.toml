@@ -19,8 +19,8 @@ mavenPublish = "0.37.0"
 #    8003/9035/9036, 30178, 30621, 40003/40006/40007/40008/40099, 40901, 42000, 43001-43006,
 #    45010, 46030/46031). 19 kinds extract differently: 14 subject -> primary; 20 imeta
 #    alt -> secondary; 21/22/34235/34236 chapter titles -> secondary; 31/32/33 and 30142 leave the
-#    catch-all for title / summary roles (+ author, publisher, editor, journal, model; name,
-#    description); 38000 prediction markets get a branch; 1065 indexes its caption; 9802 falls back
+#    catch-all for title / summary roles (+ author, publisher, editor, journal, model; 30142:
+#    alternate name and description, author, subject/type/level facet labels); 38000 prediction markets get a branch; 1065 indexes its caption; 9802 falls back
 #    to the quote's prefix/suffix when there is no `context`; 10003 reads a legacy `name`; 30030
 #    emoji packs stop indexing `content` -- the NIP-44 ciphertext of their private emojis -- for
 #    their public shortcodes; 30054 person names + soundbite titles; 30175 persona description;

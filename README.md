@@ -307,7 +307,7 @@ place column. URLs listed below fill the website column a profile's website does
 | **30066 / 30068** | live chess move / draw offer (NIP-64) | content (the move comment or message) |
 | **30009** | badge | name, description, content |
 | **30008** | badge set (NIP-58) | title, description |
-| **30030** | emoji pack | title, description + emoji shortcodes (the content is the NIP-44 ciphertext of the private emojis, never indexed) |
+| **30030** | emoji pack | title (or name), description + emoji shortcodes (the content is the NIP-44 ciphertext of the private emojis, never indexed) |
 | **30017 / 30018 / 30019 / 30020** | marketplace stall / product / config / auction (NIP-15) | name, description |
 | **1022** | auction bid confirmation (NIP-15) | the seller's message |
 | **38383** | P2P order (NIP-69) | maker name, currency + payment methods |
