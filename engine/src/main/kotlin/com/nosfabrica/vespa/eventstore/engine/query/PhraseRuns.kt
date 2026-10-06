@@ -112,6 +112,9 @@ object PhraseRuns {
      */
     fun pieces(text: String): List<String> {
         val tokens = TOKEN.findAll(text).toList()
+        // Neither rule can fire under six tokens (six in a row, eleven in all):
+        // nearly every phrase anyone types returns here, before any folding.
+        if (tokens.size <= MAX_RUN) return listOf(text)
         val folded = tokens.map { fold(it.value) }
         if (fits(folded)) return listOf(text)
 

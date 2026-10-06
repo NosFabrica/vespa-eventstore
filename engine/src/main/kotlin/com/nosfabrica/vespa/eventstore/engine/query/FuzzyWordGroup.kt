@@ -361,7 +361,7 @@ internal object FuzzyWordGroup {
     ): String? {
         val lower = NearText.foldAccents(word)
         val all = (0..lower.length - 3).map { lower.substring(it, it + 3) }
-        if (all.size < MIN_PHRASE_GRAMS || all.any { gram -> !gram.all(Char::isLetterOrDigit) } || !PhraseRuns.fits(all)) return null
+        if (all.size < MIN_PHRASE_GRAMS || all.any { gram -> !gram.all(Char::isLetterOrDigit) } || (all.size > PhraseRuns.MAX_RUN && !PhraseRuns.fits(all))) return null
         return all.joinToString(", ", prefix = "($gramField contains phrase(", postfix = "))") { "\"$it\"" }
     }
 

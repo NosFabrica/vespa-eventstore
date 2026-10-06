@@ -74,10 +74,29 @@ class LiveGate internal constructor(
 
         fun admits(words: List<String>): Boolean =
             terms.all { t -> words.any { it.startsWith(t) } } &&
-                phrases.all { p -> words.windowed(p.size).any { it == p } } &&
-                excluded.none { pieces -> pieces.all { x -> words.windowed(x.size).any { it == x } } }
+                phrases.all { p -> containsRun(words, p) } &&
+                excluded.none { pieces -> pieces.all { x -> containsRun(words, x) } }
 
         companion object {
+            /**
+             * True when [run] appears in [words] adjacently, in order — by index,
+             * without allocating: this runs on the INGEST path, per live event
+             * per gated rule, where `windowed()` built a list per word position
+             * of a note (thousands, for a long one) to compare one exclusion.
+             */
+            fun containsRun(
+                words: List<String>,
+                run: List<String>,
+            ): Boolean {
+                if (run.size == 1) return words.contains(run[0])
+                for (at in 0..words.size - run.size) {
+                    var k = 0
+                    while (k < run.size && words[at + k] == run[k]) k++
+                    if (k == run.size) return true
+                }
+                return false
+            }
+
             /** The engine's tokens ([IndexableChars.tokens]): letter/digit runs, and each emoji a word of its own. */
             fun words(text: String?): List<String> = text?.lowercase()?.let(IndexableChars::tokens).orEmpty()
         }
