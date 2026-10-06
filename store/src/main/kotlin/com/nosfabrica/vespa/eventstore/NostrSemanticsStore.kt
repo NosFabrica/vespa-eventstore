@@ -29,6 +29,7 @@ import com.nosfabrica.vespa.eventstore.engine.metrics.CostLedger
 import com.nosfabrica.vespa.eventstore.engine.metrics.withActivity
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
+import com.nosfabrica.vespa.eventstore.engine.query.PhraseRuns
 import com.nosfabrica.vespa.eventstore.ingest.BulkMixedInsert
 import com.nosfabrica.vespa.eventstore.ingest.BulkRecordInsert
 import com.nosfabrica.vespa.eventstore.ingest.Deletions
@@ -609,8 +610,15 @@ class NostrSemanticsStore(
                 val text =
                     LiveGate.Text(
                         terms = LiveGate.Text.words(q.search),
-                        phrases = q.phrases.map(LiveGate.Text::words).filter { it.isNotEmpty() },
-                        excluded = q.notSearch.map(LiveGate.Text::words).filter { it.isNotEmpty() },
+                        phrases =
+                            q.phrases
+                                .flatMap(PhraseRuns::pieces)
+                                .map(LiveGate.Text::words)
+                                .filter { it.isNotEmpty() },
+                        excluded =
+                            q.notSearch
+                                .map { w -> PhraseRuns.pieces(w).map(LiveGate.Text::words).filter { it.isNotEmpty() } }
+                                .filter { it.isNotEmpty() },
                     )
                 LiveGate.Rule(f, text.takeUnless { it.isEmpty() }, if (floor != null) q.rankKey else null, floor)
             }

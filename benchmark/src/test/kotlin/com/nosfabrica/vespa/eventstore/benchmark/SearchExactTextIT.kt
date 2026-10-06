@@ -156,25 +156,45 @@ class SearchExactTextIT {
                             "all three text clause kinds compose",
                         )
 
-                        // ---- one term repeated past Vespa's phrase limit ----
+                        // ---- phrases Vespa would refuse (PhraseRuns) ----
 
-                        // Vespa refuses a phrase repeating one term more than
-                        // five times in a row with an HTTP 400 for the whole
-                        // query (PhraseRuns). Each of these three used to be
-                        // that 400, all reachable from a search box; the
-                        // first is a word from a real kind-31890 title.
+                        // The container's InputCheckingSearcher answers a
+                        // phrase repeating one term more than five times in a
+                        // row, or more than ten times anywhere, with an HTTP
+                        // 400 for the whole query. Every query below used to be
+                        // that 400 (or would have been), all reachable from a
+                        // search box; "feeeeeeeeed" is a word from a real
+                        // kind-31890 title.
+                        val said = (1..11).joinToString(" ") { "the w$it" }
                         val runs = profile(6, name = "erin", about = "the feeeeeeeeed says no no no no no no")
-                        index.putAll(listOf(runs))
-                        awaitCorpus(index, 6)
+                        val laugh = profile(7, name = "frank", about = "${"ha".repeat(12)} $said")
+                        val coffee = profile(8, name = "gina", about = "gm ☕☕☕☕☕☕ friends")
+                        index.putAll(listOf(runs, laugh, coffee))
+                        awaitCorpus(index, 8)
                         assertEquals(
                             listOf(runs.id),
                             index.search(EventQuery(search = "feeeeeeeeed")).map { it.id },
                             "eight e's: no body phrase, and the word still finds its doc",
                         )
                         assertEquals(
+                            listOf(laugh.id),
+                            index.search(EventQuery(search = "ha".repeat(12))).map { it.id },
+                            "eleven alternating hah grams: no body phrase, and the word still finds its doc",
+                        )
+                        assertEquals(
                             listOf(runs.id),
                             index.search(EventQuery(phrases = listOf("no no no no no no no"))).map { it.id },
                             "a phrase of seven repeated words runs as the five Vespa accepts",
+                        )
+                        assertEquals(
+                            listOf(laugh.id),
+                            index.search(EventQuery(phrases = listOf(said))).map { it.id },
+                            "eleven the's: split into required pieces, still exact within each",
+                        )
+                        assertEquals(
+                            emptyList(),
+                            index.search(EventQuery(phrases = listOf(said.replace("w11", "w12")))).map { it.id },
+                            "…and every piece is required",
                         )
                         assertEquals(
                             emptyList(),
@@ -186,6 +206,19 @@ class SearchExactTextIT {
                             index.search(EventQuery(search = "vitor", notSearch = listOf("no-no-no-no-no-no"))).map { it.id }.toSet(),
                             "…and leaves the docs that never say it",
                         )
+                        assertEquals(
+                            emptyList(),
+                            index.search(EventQuery(search = "frank", notSearch = listOf(said.replace(' ', '-')))).map { it.id },
+                            "an exclusion in pieces — !(a and b) — drops the doc holding all of them",
+                        )
+                        // Each emoji is a word to Vespa's query tokenizer: six in
+                        // a row is the same refusal, so the phrase runs cut to five.
+                        index.search(EventQuery(phrases = listOf("gm ☕☕☕☕☕☕")))
+                        index.search(EventQuery(search = "gina", notSearch = listOf("lol😂😂😂😂😂😂")))
+                        // A quote character inside a positive word turned the rest
+                        // of it into a phrase: stripped, these are plain words again.
+                        index.search(EventQuery(search = "x\"no-no-no-no-no-no"))
+                        index.search(EventQuery(search = "“ha-ha-ha-ha-ha-ha”"))
                     }
                 }
             }

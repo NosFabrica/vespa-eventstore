@@ -785,13 +785,19 @@ object EventYql {
         // and its empty requirement would fall to Vespa's null-term handling;
         // it is dropped, and a query that is ONLY such words is provably no
         // match. (SearchFields.matches applies the same filter.)
+        //
+        // Quote characters are stripped from what is SENT ([PhraseRuns.unquote]):
+        // one left inside a word makes Vespa's default grammar parse what
+        // follows it as a phrase, which can be one it refuses outright. Not
+        // from [words]: a search that is only quotes must stay "provably no
+        // match", never become a search for nothing, i.e. everything.
         val words =
             q.search
                 ?.trim()
                 .orEmpty()
                 .split(WHITESPACE)
                 .filter { it.isNotEmpty() }
-        val matchable = words.filter { w -> w.any(Char::isLetterOrDigit) }
+        val matchable = words.map(PhraseRuns::unquote).filter { w -> w.any(Char::isLetterOrDigit) }
         if (words.isNotEmpty() && matchable.isEmpty()) return null
         if (matchable.isNotEmpty()) {
             clauses += FuzzyWordGroup.clause(matchable, params, nearFields = q.nearMatching, bodyGram = q.bodyGramMatching)
@@ -804,12 +810,19 @@ object EventYql {
         // fuzzy word group — exact and adjacent is the point of quoting. The
         // phrase rides RAW (the tokenizer drops what indexing dropped), so
         // only an ALL-erased phrase needs the unsatisfiable-requirement rule —
-        // and RAW but for [PhraseRuns.cap]: a word repeated six times in a row
-        // is a phrase Vespa refuses outright, failing the whole REQ.
+        // and RAW but for [PhraseRuns.pieces]: a phrase repeating one word too
+        // often is one Vespa refuses outright, failing the whole REQ, so it
+        // rides as the pieces Vespa accepts, every one REQUIRED. Nearly every
+        // phrase is one piece, `@p$i`, exactly as typed.
+        var phraseItems = 0
         q.phrases.forEachIndexed { i, phrase ->
             if (phrase.none(Char::isLetterOrDigit)) return null
-            params["p$i"] = PhraseRuns.cap(phrase)
-            clauses += "({defaultIndex:\"default\",grammar:\"phrase\"}userInput(@p$i))"
+            PhraseRuns.pieces(phrase).forEachIndexed { j, piece ->
+                val name = if (j == 0) "p$i" else "p${i}c$j"
+                params[name] = piece
+                clauses += "({defaultIndex:\"default\",grammar:\"phrase\"}userInput(@$name))"
+                phraseItems++
+            }
         }
 
         // How many things the USER asked for — matchable words PLUS quoted
@@ -820,8 +833,9 @@ object EventYql {
         // phrase is ONE matchCount item however many words it spans, so phrases
         // count 1 each; omitting them left the feature unsent on a phrase-only
         // query, where the schema default of 1 is wrong for two phrases.
-        // Both measured on a live Vespa, 2026-08-05.
-        val queryItems = matchable.size + q.phrases.size
+        // Both measured on a live Vespa, 2026-08-05. A phrase split into
+        // pieces (PhraseRuns) is that many matchCount items, so it counts each.
+        val queryItems = matchable.size + phraseItems
         if (queryItems > 0) params[F_N_WORDS] = queryItems.toString()
 
         // Exclusions ([EventQuery.notSearch]): one negated term per word,
@@ -830,13 +844,19 @@ object EventYql {
         // keeps a punctuated word ("e-cash") one adjacent unit. A tokenization-
         // erased word ("⚡") is vacuous here (no index holds it, so nothing
         // can be excluded by it) and is simply dropped — the mirror of the
-        // positive-side rule. Phrase grammar is also why [PhraseRuns.cap]:
-        // "-no-no-no-no-no-no" is six "no"s in one phrase, an HTTP 400.
+        // positive-side rule. Phrase grammar is also why [PhraseRuns.pieces]:
+        // "-no-no-no-no-no-no" is six "no"s in one phrase, an HTTP 400. A word
+        // in pieces drops the documents holding ALL of them.
         q.notSearch
             .filter { w -> w.any(Char::isLetterOrDigit) }
             .forEachIndexed { i, word ->
-                params["n$i"] = PhraseRuns.cap(word)
-                clauses += "!(({defaultIndex:\"default\",grammar:\"phrase\"}userInput(@n$i)))"
+                val pieces =
+                    PhraseRuns.pieces(word).mapIndexed { j, piece ->
+                        val name = if (j == 0) "n$i" else "n${i}c$j"
+                        params[name] = piece
+                        "({defaultIndex:\"default\",grammar:\"phrase\"}userInput(@$name))"
+                    }
+                clauses += "!(${pieces.joinToString(" and ")})"
             }
         return clauses
     }

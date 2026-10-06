@@ -57,18 +57,24 @@ class LiveGate internal constructor(
     private val trust: TrustCells,
     private val textOf: (Event) -> String,
 ) {
-    /** A filter's text, as the live check reads it: lower-cased words. */
+    /**
+     * A filter's text, as the live check reads it: lower-cased words. Phrases
+     * and exclusions arrive as the PIECES the engine ran them as
+     * (`PhraseRuns.pieces`): every piece of a phrase is required, and an
+     * exclusion drops an event holding every piece of it — so a live event is
+     * judged by the query the page was read with, not by the text as typed.
+     */
     internal class Text(
         val terms: List<String>,
         val phrases: List<List<String>>,
-        val excluded: List<List<String>>,
+        val excluded: List<List<List<String>>>,
     ) {
         fun isEmpty() = terms.isEmpty() && phrases.isEmpty() && excluded.isEmpty()
 
         fun admits(words: List<String>): Boolean =
             terms.all { t -> words.any { it.startsWith(t) } } &&
                 phrases.all { p -> words.windowed(p.size).any { it == p } } &&
-                excluded.none { x -> words.windowed(x.size).any { it == x } }
+                excluded.none { pieces -> pieces.all { x -> words.windowed(x.size).any { it == x } } }
 
         companion object {
             fun words(text: String?): List<String> =

@@ -123,6 +123,22 @@ class LiveGateTest {
     }
 
     /**
+     * A PHRASE VESPA WOULD REFUSE IS JUDGED AS THE ENGINE RAN IT (PhraseRuns):
+     * the page excluded every note holding five "no"s, so the live stream
+     * must too — the text as typed (six) would let those through.
+     */
+    @Test
+    fun `live text follows the phrase rewrite the page was read with`() {
+        val g = assertNotNull(gate("pizza -no-no-no-no-no-no"))
+        assertFalse(runBlocking { g.admits(note(trusted, "pizza? no no no no no")) }, "the exclusion runs cut to five")
+        assertTrue(runBlocking { g.admits(note(trusted, "pizza? no no no no")) })
+        val said = (1..11).joinToString(" ") { "the w$it" }
+        val split = assertNotNull(gate("\"$said\""))
+        assertTrue(runBlocking { split.admits(note(trusted, said)) })
+        assertFalse(runBlocking { split.admits(note(trusted, said.replace("w11", "w12"))) }, "every piece is required")
+    }
+
+    /**
      * AN UNGATED SEARCH RULE VOUCHES ONLY FOR WHAT ITS TEXT MATCHES. Before, it
      * matched by its NIP-01 part alone and admitted an event a gated sibling
      * filter was there to judge (the audit's case).

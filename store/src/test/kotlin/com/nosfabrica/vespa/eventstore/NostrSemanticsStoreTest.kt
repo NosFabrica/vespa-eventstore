@@ -557,12 +557,13 @@ open class NostrSemanticsStoreTest {
         }
 
     /**
-     * A phrase repeating one word past Vespa's limit (PhraseRuns): the engine
-     * can only run it cut to five, so the spec answers the cut phrase too — and
+     * Phrases Vespa would refuse (PhraseRuns): the engine can only run them
+     * rewritten — a run cut to five, a phrase saying one word more than ten
+     * times split into required pieces — so the spec answers the same, and
      * the REQ answers, where it used to fail outright.
      */
     @Test
-    fun `a quoted phrase repeating a word six times answers as the five it is cut to`() =
+    fun `a quoted phrase Vespa would refuse answers as the rewrite it runs`() =
         runBlocking {
             val six = metadata(name = "no no no no no no")
             store.insert(six)
@@ -571,6 +572,16 @@ open class NostrSemanticsStoreTest {
             // Both read five "no"s in a row, so the cut phrase holds for both.
             assertEquals(2, store.query<Event>(Filter(search = "\"no no no no no no\"")).size)
             assertEquals(0, store.query<Event>(Filter(search = "-no-no-no-no-no-no")).size, "the exclusion is cut the same way")
+
+            // Eleven "the"s: the pieces are required, and only across the split
+            // is adjacency given up.
+            val said = (1..11).joinToString(" ") { "the w$it" }
+            // A third author: kind 0 is replaceable, and alice's and bob's are taken.
+            val sentence = MetadataEvent(id(), "c3".repeat(32), next(), emptyArray(), """{"about":"$said"}""", "")
+            store.insert(sentence)
+            assertEquals(listOf(sentence.id), store.query<Event>(Filter(search = "\"$said\"")).map { it.id })
+            val firstTen = (1..10).joinToString(" ") { "the w$it" }
+            assertEquals(0, store.query<Event>(Filter(search = "\"$firstTen the w12\"")).size, "every piece is required")
         }
 
     /** EventIndexesModule pubkey_owner_hash: a gift-wrap is OWNED by its p-tag recipient. */

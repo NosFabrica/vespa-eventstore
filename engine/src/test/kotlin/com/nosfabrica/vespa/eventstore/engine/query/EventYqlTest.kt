@@ -700,10 +700,11 @@ class EventYqlTest {
     }
 
     @Test
-    fun `a run of one trigram past Vespa's phrase limit gets no body phrase`() {
+    fun `a word whose trigrams Vespa would refuse as a phrase gets no body phrase`() {
         // Vespa answers a phrase repeating one term more than five times in a
-        // row with an HTTP 400 for the WHOLE query. Eight o's is six "ooo"
-        // grams: no phrase, and the word keeps its other clauses.
+        // row, or more than ten times anywhere, with an HTTP 400 for the WHOLE
+        // query. Eight o's is six "ooo" grams in a row: no phrase, and the word
+        // keeps its other clauses.
         val eight = EventYql.build(EventQuery(search = "noooooooo"))!!
         assertFalse("search_text_gram contains phrase" in eight.yql, eight.yql)
         assertTrue("({defaultIndex:\"search_text\"}userInput(@w0))" in eight.yql)
@@ -711,12 +712,16 @@ class EventYqlTest {
         // Seven o's is five "ooo" in a row — Vespa accepts it, so the net stays.
         val seven = EventYql.build(EventQuery(search = "nooooooo"))!!
         assertTrue("search_text_gram contains phrase(\"noo\", \"ooo\", \"ooo\", \"ooo\", \"ooo\", \"ooo\")" in seven.yql, seven.yql)
-        // A long word alternating two grams is no run at all.
-        assertTrue("search_text_gram contains phrase" in EventYql.build(EventQuery(search = "hahahahahahaha"))!!.yql)
+        // Alternating grams never run, but they COUNT: 22 characters of
+        // "haha…" is ten "hah" (accepted), 24 is eleven (refused).
+        assertTrue("search_text_gram contains phrase" in EventYql.build(EventQuery(search = "ha".repeat(11)))!!.yql)
+        val eleven = EventYql.build(EventQuery(search = "ha".repeat(12)))!!
+        assertFalse("search_text_gram contains phrase" in eleven.yql, eleven.yql)
+        assertTrue("({defaultIndex:\"search_text\"}userInput(@w0))" in eleven.yql)
     }
 
     @Test
-    fun `typed phrases and exclusions repeating a word past the limit are cut to it`() {
+    fun `typed phrases and exclusions repeating a word in a row are cut to the limit`() {
         val q =
             EventYql.build(
                 EventQuery(
@@ -730,15 +735,74 @@ class EventYqlTest {
         assertEquals("no-no-no-no-no", q.params["n0"])
         // Case and accents fold like the index folds them; the text kept is the user's.
         assertEquals("No nó NO no no.", q.params["n1"])
+        assertFalse(q.params.keys.any { "c" in it && (it.startsWith("p") || it.startsWith("n")) }, "a cut is still one piece: ${q.params.keys}")
     }
 
     @Test
-    fun `only a run past the limit is cut, and only a run of one term counts`() {
-        val doc = "one no no no no no two"
-        assertEquals("one no no no no no two", PhraseRuns.cap(doc), "text without an over-long run is itself")
-        assertEquals("a b b b b b c", PhraseRuns.cap("a b b b b b b b c"))
-        assertFalse(PhraseRuns.exceeds(listOf("ooo", "ooo", "ooo", "ooo", "ooo")))
-        assertTrue(PhraseRuns.exceeds(listOf("noo", "ooo", "ooo", "ooo", "ooo", "ooo", "ooo")))
+    fun `a phrase saying one word more than ten times is split into required pieces`() {
+        // Eleven "the"s, never two in a row: the 11th starts a new piece, and
+        // every piece is REQUIRED — adjacency kept inside each, given up only
+        // across the split.
+        val sentence = (1..11).joinToString(" ") { "the w$it" }
+        val q = EventYql.build(EventQuery(phrases = listOf(sentence), notSearch = listOf(sentence.replace(' ', '-'))))!!
+        assertEquals((1..10).joinToString(" ") { "the w$it" }, q.params["p0"])
+        assertEquals("the w11", q.params["p0c1"])
+        assertTrue("""({defaultIndex:"default",grammar:"phrase"}userInput(@p0)) and ({defaultIndex:"default",grammar:"phrase"}userInput(@p0c1))""" in q.yql, q.yql)
+        // The exclusion drops a document only when it holds EVERY piece.
+        assertEquals("the-w11", q.params["n0c1"])
+        assertTrue("""!(({defaultIndex:"default",grammar:"phrase"}userInput(@n0)) and ({defaultIndex:"default",grammar:"phrase"}userInput(@n0c1)))""" in q.yql, q.yql)
+        // perfect_match counts matchCount items: two pieces are two.
+        assertEquals("2", q.params["ranking.features.query(n_words)"])
+    }
+
+    @Test
+    fun `terms count as Vespa reads them - emoji, combining marks, compatibility forms`() {
+        // Under-counting is the dangerous direction: each of these passed the
+        // first tokenizer (letters/digits, accent fold) and was still a 400.
+        // Every emoji is a word of its own to Vespa.
+        assertEquals(listOf("gm ☕☕☕☕☕"), PhraseRuns.pieces("gm ☕☕☕☕☕☕"))
+        assertEquals(listOf("lol😂😂😂😂😂"), PhraseRuns.pieces("lol😂😂😂😂😂😂😂"))
+        // Marks stay inside a word: "नमस्ते" is one term, six times.
+        val namaste = List(6) { "नमस्ते" }.joinToString(" ")
+        assertEquals(listOf(List(5) { "नमस्ते" }.joinToString(" ")), PhraseRuns.pieces(namaste))
+        // NFD-encoded accents, full-width and mathematical forms fold together.
+        assertEquals(1, PhraseRuns.pieces(List(6) { "cafe\u0301" }.joinToString(" ")).size)
+        assertTrue(
+            PhraseRuns
+                .pieces(List(6) { "cafe\u0301" }.joinToString(" "))
+                .single()
+                .split(" ")
+                .size == 5,
+        )
+        assertEquals("no ｎｏ no 𝐧𝐨 NO", PhraseRuns.pieces("no ｎｏ no 𝐧𝐨 NO nó").single())
+    }
+
+    @Test
+    fun `quote characters inside a positive word are stripped before it is sent`() {
+        // Upstream lifts only an ASCII quote at a word boundary; Vespa reads
+        // thirteen code points as one, and would parse what follows as a phrase.
+        val q = EventYql.build(EventQuery(search = "x\"no-no-no-no-no-no “ha-ha-ha-ha-ha-ha”"))!!
+        assertEquals("xno-no-no-no-no-no", q.params["w0"])
+        assertEquals("ha-ha-ha-ha-ha-ha", q.params["w1"])
+        // …but a search that is ONLY quotes still matches nothing, never everything.
+        assertNull(EventYql.build(EventQuery(search = "“ ”")))
+    }
+
+    @Test
+    fun `only a phrase Vespa would refuse is rewritten`() {
+        val ok = "one no no no no no two"
+        assertEquals(listOf(ok), PhraseRuns.pieces(ok), "text that fits is itself, alone")
+        assertEquals(listOf("a b b b b b c"), PhraseRuns.pieces("a b b b b b b b c"))
+        assertTrue(PhraseRuns.fits(List(5) { "ooo" }))
+        assertFalse(PhraseRuns.fits(listOf("noo") + List(6) { "ooo" }))
+        assertTrue(PhraseRuns.fits(List(10) { listOf("hah", "aha") }.flatten()))
+        assertFalse(PhraseRuns.fits(List(11) { listOf("hah", "aha") }.flatten()))
+        // A cut and a split together: the run is cut first, so its five count
+        // toward the ten, and the piece breaks where the 11th "x" arrives.
+        assertEquals(
+            listOf("x x x x x" + " y x".repeat(5) + " y", "x y"),
+            PhraseRuns.pieces("x x x x x x x" + " y x".repeat(6) + " y"),
+        )
     }
 
     @Test

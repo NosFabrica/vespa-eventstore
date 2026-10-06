@@ -341,11 +341,13 @@ internal object FuzzyWordGroup {
      * phrase clause at all and rides its exact clause, which is what tokenized
      * the document that way in the first place.
      *
-     * Bails out, too, on a run of one trigram longer than [PhraseRuns.MAX_RUN]
-     * ("noooooooo": six "ooo" in a row), which Vespa rejects with an HTTP 400
-     * for the WHOLE query. Not cut short like a typed phrase: dropping a middle
-     * gram breaks adjacency exactly as above, so the cut phrase would match
-     * nothing. The word keeps its exact, near and AND-gram clauses.
+     * Bails out, too, on a word whose trigrams Vespa would refuse as a phrase
+     * ([PhraseRuns]: "noooooooo" is six "ooo" in a row, a 24-character
+     * "hahaha…" eleven "hah"), an HTTP 400 for the WHOLE query. Not cut or
+     * split like a typed phrase: dropping a middle gram breaks adjacency
+     * exactly as above, and a word split into pieces is a looser substring
+     * test than this net exists to be. The word keeps its exact, near and
+     * AND-gram clauses.
      */
     private fun phraseGramClause(
         word: String,
@@ -353,7 +355,7 @@ internal object FuzzyWordGroup {
     ): String? {
         val lower = NearText.foldAccents(word)
         val all = (0..lower.length - 3).map { lower.substring(it, it + 3) }
-        if (all.size < MIN_PHRASE_GRAMS || all.any { gram -> !gram.all(Char::isLetterOrDigit) } || PhraseRuns.exceeds(all)) return null
+        if (all.size < MIN_PHRASE_GRAMS || all.any { gram -> !gram.all(Char::isLetterOrDigit) } || !PhraseRuns.fits(all)) return null
         return all.joinToString(", ", prefix = "($gramField contains phrase(", postfix = "))") { "\"$it\"" }
     }
 

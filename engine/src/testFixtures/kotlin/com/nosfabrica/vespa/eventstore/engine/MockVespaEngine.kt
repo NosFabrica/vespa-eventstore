@@ -984,9 +984,14 @@ object MockYql {
                     // phrase term against the default fieldset. Matched
                     // EXACTLY, annotations included — a drifted exclusion
                     // grammar must fail parsing, not silently keep the doc.
+                    //
+                    // A word EventYql had to split (PhraseRuns) negates the AND of
+                    // its pieces; they rejoin with a space, which PhraseRuns splits
+                    // back into the same pieces — the split points depend only on
+                    // the kept tokens — so the in-memory match is the engine's.
                     NOT_SEARCH_CLAUSE.matches(clause) -> {
-                        val param = NOT_SEARCH_CLAUSE.find(clause)!!.groupValues[1]
-                        q.copy(notSearch = q.notSearch + params.getValue(param))
+                        val word = NOT_SEARCH_PARAM.findAll(clause).joinToString(" ") { params.getValue(it.groupValues[1]) }
+                        q.copy(notSearch = q.notSearch + word)
                     }
 
                     clause.startsWith("(tag_index contains ") -> {
@@ -1008,11 +1013,22 @@ object MockYql {
     /** Exactly 3 parens (one word), 4 (AND'd words), or 5 (AND'd words with pair coverage) — anything else is drift. */
     private val SEARCH_CLAUSE = Regex("""^\({3,5}\{defaultIndex:""")
 
-    /** The required-phrase clause EventYql emits per quoted phrase, pinned annotation-for-annotation; group 1 is the @-parameter carrying the phrase. */
-    private val PHRASE_CLAUSE = Regex("""^\(\{defaultIndex:"default",grammar:"phrase"\}userInput\(@(p\d+)\)\)$""")
+    /**
+     * The required-phrase clause EventYql emits per quoted phrase — or per PIECE
+     * of one it had to split (`@p0c1`), each just another required phrase —
+     * pinned annotation-for-annotation; group 1 is the @-parameter carrying it.
+     */
+    private val PHRASE_CLAUSE = Regex("""^\(\{defaultIndex:"default",grammar:"phrase"\}userInput\(@(p\d+(?:c\d+)?)\)\)$""")
 
-    /** The exclusion clause EventYql emits per notSearch word, pinned annotation-for-annotation; group 1 is the @-parameter carrying the word. */
-    private val NOT_SEARCH_CLAUSE = Regex("""^!\(\(\{defaultIndex:"default",grammar:"phrase"\}userInput\(@(n\d+)\)\)\)$""")
+    /** The exclusion clause EventYql emits per notSearch word: the negated AND of its pieces (almost always one), pinned annotation-for-annotation. */
+    private val NOT_SEARCH_CLAUSE =
+        Regex(
+            """^!\((\(\{defaultIndex:"default",grammar:"phrase"\}userInput\(@n\d+(?:c\d+)?\)\))""" +
+                """( and \(\{defaultIndex:"default",grammar:"phrase"\}userInput\(@n\d+(?:c\d+)?\)\))*\)$""",
+        )
+
+    /** Each piece's @-parameter inside a [NOT_SEARCH_CLAUSE]. */
+    private val NOT_SEARCH_PARAM = Regex("""userInput\(@(n\d+(?:c\d+)?)\)""")
 
     /** w0, w1, … until the first gap — the builder emits one per word, with no upper bound. */
     private fun searchWords(params: Map<String, String>): String {
