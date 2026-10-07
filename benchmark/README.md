@@ -1163,6 +1163,74 @@ query counts for the busy and narrow cases; a ranked count asks for one hit),
 `RecencyStrategyIT`, which checks every strategy against the page computed from
 the corpus itself on a real Vespa, gate and tie group included.
 
+## Replaying a pin bump on real data (`pinReplayProbe`, 2026-10-06)
+
+The `d792ebc4bf` → `68268da413` Quartz bump ships with a 61-kind
+`reindexFullTextSearch(kinds)` list read off upstream's diff (the pin note in
+`gradle/libs.versions.toml`). A kind the list misses is never repaired and
+nothing fails: every test derives and compares under ONE pin, and drift only
+exists between two. So the list was checked against real events instead
+(`benchmark/pin_replay.py` holds the procedure):
+
+- **Corpus**, captured read-only from search.brainstorm.world: 600 recent
+  events of each listed kind that has any (8,803; 34 of the 61 kinds hold
+  zero live events), and a CONTROL set — up to 150 of each of the 131
+  searchable kinds NOT on the list, kinds 0 and 1 among them (127 hold
+  events) — with the
+  canonical observer's 10040 and 3,000 of its provider's 30382s. 28,608 docs
+  loaded through `exportLoad` at the OLD pin.
+- **Old pin**: 0 stale. **New pin, before the repair**: 2,309 stale, in 15
+  kinds — 30142 600/600, 31890 569, 30030 478, 38000 192, 20 154, 1065 142,
+  5 127, 9802 37, 31/32/33 2/1/2, 62 1, 30175 1, 30296 1, 30297 2. **Every
+  one on the list; no control kind moved.** Listed kinds that did not move
+  here move only on shapes this sample lacks (none of the 600 kind 14s
+  carries a `subject`, no captured video carries `segment` chapters, no
+  10003 uses the legacy `name`).
+- **The repair**: 8.3–9.5 s for the 61 kinds on this corpus. The pre- and
+  post-repair snapshots differ in exactly the 2,309 documents (the reindex
+  reports no count of its own; this is the snapshot diff), and afterwards
+  nothing is stale: the store holds what the new pin derives on every
+  document. Run at the old pin
+  again, it rolls the columns back just as cleanly — a revert of the pin is
+  the same repair.
+- **Searches** (`pin_replay.py probes`/`grade`, through the whole store):
+  134/134 terms the new pin adds (titles of 30142 learning resources and
+  31890 feeds, 38000 market questions moving out of the body, imeta `alt`,
+  1065 captions, deletion and vanish reasons, highlight context) miss before
+  the repair and hit after; 3/3 dropped terms hit before and miss after;
+  556/556 control terms hit both times. Checked by hand, not by the
+  probes (all of which read `include:spam`): `observer:` searches over the
+  repaired kinds still gate — every lensed hit's author holds a card.
+- **Live size of the repair** (COUNT on the relay the same day): ≈2.9M
+  documents across the 61 kinds, 2.27M of them kind 34236, which this sample
+  says almost never moves — the scoped walk still reads them all, so that is
+  where the repair's time goes.
+
+One deliberate loss to know about: kind 30030's `content` is NIP-51's
+encrypted private-item slot and is no longer indexed, so the 25 sampled
+emoji packs that put PLAINTEXT there (VRML scenes, captions) stop matching
+on it.
+
+The replay also found a bug unrelated to the bump. A word from a real 31890
+title, "feeeeeeeeed", failed its whole REQ with an HTTP 400. Vespa's
+container (`InputCheckingSearcher`, in the default search chain) refuses any
+phrase that repeats one term more than five times in a row, or more than ten
+times anywhere in it, and the body gram net is a phrase of trigrams: eight
+e's is six "eee" in a row, a 24-character "hahaha…" eleven "hah". Quoted
+phrases and `-exclusions` are phrase grammar too, so six identical words in
+a row, or a quoted sentence saying "the" eleven times, failed the same way.
+`engine/query/PhraseRuns.kt` rewrites these into what Vespa accepts (no gram
+phrase for such a word; a typed phrase's run cut to five, and a phrase split
+into required pieces at a term's eleventh occurrence), keeping the check in
+the chain as the cost guard it is. Its terms are counted as Vespa's query
+tokenizer reads them, over-counting where unsure: every emoji is a word
+("gm ☕☕☕☕☕☕" was the same 400), combining marks stay inside one (Devanagari),
+and compatibility forms fold together. A quote character INSIDE a word
+(`x"no-no-…`, an iOS `“ha-ha-…”`) made Vespa's default grammar parse the
+rest as a phrase, so positive words drop them. The live gate judges streamed
+events by the same rewritten phrases. `SearchExactTextIT` runs every shape
+against a real Vespa.
+
 ## Targeted benches (gradle tasks against a live Vespa)
 
 Beyond the head-to-head suite (`:benchmark:run`), these tasks each own one
@@ -1186,6 +1254,7 @@ timing is also a proof:
 | `recencyEdgeProbe` | the speculative strategy's edges: distinct follow lists under concurrency, `until` pagination and random depths, the band edge to 5,000, a stale memory across a hashtag burst, a far-future `until` (`BENCH_SECTIONS`) | any loaded store, read-only | every check must serve the identical page across shipped / speculative / + memory |
 | `recencyStrategyProbe` | the four `RecencyStrategy` options on the dominant feed shapes, plain and gated (`BENCH_OBSERVER`), with engine queries per REQ | any loaded store, read-only (`BENCH_NOW` pins the clock to a frozen corpus) | all four strategies must serve the identical page, ids and order |
 | `transportProbe` | read-transport isolation: JDK h1 / OkHttp h1 / OkHttp h2c on identical queries across body sizes | any loaded store | — |
+| `pinReplayProbe` | a Quartz pin bump on real data: per-kind drift between what the engine holds and what the new pin derives, the scoped `reindexFullTextSearch(kinds)`, NIP-50 probes before and after (procedure: `pin_replay.py`) | a capture of the moved kinds plus a control set of the unmoved searchable kinds, loaded at the OLD pin | before the repair every stale kind must be on the list; after it `--require-clean` fails on any stale doc; `pin_replay.py grade` fails unless each added term hits only after, each dropped term only before, each control both times |
 | `trustProbe` | the trust write path under a real lens: bulk card ingest, single card inserts, a 10040 re-sign, a provider swap (with cards inserted on a clock during each walk to read the gate wait), a provider re-publishing its corpus (`--load-then-republish`), and the lensed page after the swap (`--query-only`) — the harness behind `docs/service-keyed-trust.md` | captured 10040s and two providers' 30382 corpora (JSON arrays; the doc says how they were pulled from staging) | the lensed `sort:rank` page must follow the CURRENT 10040's provider |
 
 The workload benches (`corpusLoad`, `BENCH_MIXED`, `BENCH_THROUGHPUT`,

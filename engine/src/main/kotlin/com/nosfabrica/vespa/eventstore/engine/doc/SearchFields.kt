@@ -19,6 +19,7 @@
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 package com.nosfabrica.vespa.eventstore.engine.doc
+import com.nosfabrica.vespa.eventstore.engine.text.IndexableChars
 import com.nosfabrica.vespa.eventstore.engine.text.NearText
 import com.nosfabrica.vespa.eventstore.engine.text.WHITESPACE
 
@@ -78,16 +79,20 @@ data class SearchFields(
      * positions, and NIP-50 recall is already outside strict parity for the
      * same class of reason. SearchBodyGramIT is where the engine's real
      * behaviour is pinned. One
-     * place looseness must NOT apply: a word with no letter/digit ("⚡") is
-     * erased by engine tokenization and EventYql drops it too — requiring it
-     * here would split reference and engine on whole-query recall.
+     * place looseness must NOT apply: a word nothing indexes ("₿", "∞" —
+     * [IndexableChars]) is erased by engine tokenization and EventYql drops it
+     * too — requiring it here would split reference and engine on whole-query
+     * recall. An emoji is indexed, and required like any word. The text is
+     * cleaned exactly as EventYql cleans what it sends
+     * ([IndexableChars.queryText]: "bitcoin*" is bitcoin, "❤️" finds a plain ❤,
+     * 👍🏽 is 👍).
      */
     fun matches(term: String): Boolean {
         val words =
-            term
+            IndexableChars
+                .queryText(term)
                 .split(WHITESPACE)
-                .filter { it.isNotEmpty() }
-                .filter { w -> w.any(Char::isLetterOrDigit) }
+                .filter(IndexableChars::hasIndexable)
         if (words.isEmpty()) return false
         val values = fields().values
         return words.all { word -> values.any { it.contains(word, ignoreCase = true) } }
@@ -102,31 +107,17 @@ data class SearchFields(
      * this mirrors ONLY the engine's exact side — whole tokens, folded like the
      * index, no substring reach ("-ode" must NOT drop a doc containing "model").
      * Engine stemming and CJK segmentation still diverge, accepted for the same
-     * reason NIP-50 recall is outside strict parity.
+     * reason NIP-50 recall is outside strict parity — and so does a QUOTED
+     * phrase spelled with an emoji variation selector, which the engine
+     * indexes as a word between the emoji and what follows, and this skips.
      */
     fun containsPhrase(phrase: String): Boolean {
-        val wanted = tokensOf(NearText.fold(phrase))
+        val wanted = IndexableChars.tokens(NearText.fold(phrase))
         if (wanted.isEmpty()) return false
         return fields().values.any { value ->
-            val have = tokensOf(NearText.fold(value))
+            val have = IndexableChars.tokens(NearText.fold(value))
             (0..have.size - wanted.size).any { at -> wanted.indices.all { have[at + it] == wanted[it] } }
         }
-    }
-
-    /** Maximal letter/digit runs — the reference's stand-in for the engine's tokenizer. */
-    private fun tokensOf(s: String): List<String> {
-        val out = ArrayList<String>()
-        val cur = StringBuilder()
-        for (c in s) {
-            if (c.isLetterOrDigit()) {
-                cur.append(c)
-            } else if (cur.isNotEmpty()) {
-                out += cur.toString()
-                cur.clear()
-            }
-        }
-        if (cur.isNotEmpty()) out += cur.toString()
-        return out
     }
 
     /**

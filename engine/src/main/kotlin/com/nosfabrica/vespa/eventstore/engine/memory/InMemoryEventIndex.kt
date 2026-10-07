@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
+import com.nosfabrica.vespa.eventstore.engine.query.PhraseRuns
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import com.vitorpamplona.quartz.utils.Hex
 import java.util.concurrent.ConcurrentHashMap
@@ -249,6 +250,10 @@ class InMemoryEventIndex(
         /** tagsAll keeps AND semantics: every listed pair must be on the doc. */
         private val tagAll: List<List<String>> = q.tagsAll.map { (name, values) -> values.map { "$name:$it" } }
 
+        /** The phrases as the engine runs them ([PhraseRuns.pieces]), rewritten once per query, not per doc. */
+        private val phrasePieces = q.phrases.map { PhraseRuns.pieces(it) }
+        private val exclusionPieces = q.notSearch.map(PhraseRuns::exclusionPieces)
+
         fun matches(d: EventDoc): Boolean {
             if (unsatisfiable) return false
             val pairs = if (tagAny.isEmpty() && tagAll.isEmpty()) emptyList() else d.tagIndex()
@@ -267,9 +272,10 @@ class InMemoryEventIndex(
                 (q.search.isNullOrBlank() || d.search.matches(q.search.trim())) &&
                 // Phrases and exclusions share the exact-adjacency check, never
                 // the loose substring positive words get — mirroring the engine,
-                // where both are the same phrase-grammar term.
-                q.phrases.all { d.search.containsPhrase(it) } &&
-                q.notSearch.none { d.search.containsPhrase(it) }
+                // where both are the same phrase-grammar term — in the same
+                // [PhraseRuns.pieces], since those are all the engine can run.
+                phrasePieces.all { pieces -> pieces.all { d.search.containsPhrase(it) } } &&
+                exclusionPieces.none { pieces -> pieces.all { d.search.containsPhrase(it) } }
         }
     }
 

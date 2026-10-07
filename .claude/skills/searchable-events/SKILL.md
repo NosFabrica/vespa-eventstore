@@ -14,7 +14,7 @@ description: The NIP-50 indexing surface of Quartz — the `SearchableEvent` int
 > describes — we parse with `SearchQuery.parse`-compatible semantics; keep it that way.
 
 > Skill imported from `vitorpamplona/amethyst` `.claude/skills/searchable-events`
-> at commit `98f09f29c0` and refreshed to `d792ebc4bf`; the kind table below
+> at commit `98f09f29c0` and refreshed to `68268da413`; the kind table below
 > is kept current here. Refresh this copy at every pin bump.
 
 ## The contract
@@ -58,16 +58,17 @@ Rules every implementation follows (keep them when adding one):
 - **Never throw, never null.** There is no defensive wrapper at any call site; a throw aborts
   the insert transaction. Parsed-JSON implementations use `?.let { … } ?: ""`.
 - **Only public data.** Encrypted content stays out (e.g. kind 30382 contact cards index only
-  the public petname/summary/topics, never the NIP-44 payload).
-- Typical shapes: `content` alone (~33 kinds); `listOfNotNull(title(), content)`;
+  the public petname/summary/topics, never the NIP-44 payload; kind 30030 emoji packs index the
+  public `emoji` shortcodes, never the NIP-44 private-tag ciphertext in `content`).
+- Typical shapes: `content` alone (~57 kinds); `listOfNotNull(title(), content)`;
   `listOfNotNull(title(), summary(), content)`; lists index `title() + description()`.
 
 ## The full kind table
 
 **`references/searchable-kinds.md`** in this skill holds the authoritative table — every
 implementor with its kind number, class, and the exact `indexableContent()` expression
-(150 concrete classes / 151 kind values as of 2026-10, Quartz pin `d792ebc4bf`; upstream now
-keeps the reachable set as `nip50Search/SearchableKinds.ALL`, swept by `SearchableKindsTest`). Diff that file at a version bump to
+(191 concrete classes / 192 kind values as of 2026-10, Quartz pin `68268da413`; the kind set is exactly
+`nip50Search/SearchableKinds.kt`'s `ALL`). Diff that file at a version bump to
 answer "did the searchable set or any kind's indexed text change?".
 
 Notables that surprise people:
@@ -92,7 +93,9 @@ Adding `SearchableEvent` to a kind, removing it, or changing any `indexableConte
    missing) FTS text until `IEventStore.reindexFullTextSearch()` runs — the KDoc on that method
    is the contract. App-side, schedule the resumable overload after shipping such a change.
 3. New implementors must be **registered in `EventFactory`** or the reindex scan and kind
-   pre-filter (`FullTextSearchModule.isSearchableKind`) will never see them.
+   pre-filter (`FullTextSearchModule.isSearchableKind`) will never see them, and listed in
+   `SearchableKinds.ALL` (`SearchableKindsTest` fails otherwise); any body change also moves
+   `jvmTest/resources/indexable-content.golden` (`IndexableContentGoldenTest`).
 
 Eligibility policy: a kind becomes searchable when it carries human-authored, human-meaningful
 text (titles, bodies, names, descriptions). Pure-machine kinds (reactions, follow lists, zaps
@@ -138,6 +141,10 @@ query model (authors/kinds/hashtags/or-terms), unrelated to the NIP-50 wire stri
 ## Tests (executable spec)
 
 - `commonTest/.../nip50Search/SearchQueryTest.kt` — the extension grammar, token by token.
+- `commonTest/.../nip50Search/SearchableKindsTest.kt` — sweeps kinds 0–65535 through
+  `EventFactory`; the searchable set must equal `SearchableKinds.ALL`.
+- `jvmTest/.../nip50Search/IndexableContentGoldenTest.kt` — each searchable kind's
+  `indexableContent()` for a tag-rich sample, pinned in `jvmTest/resources/indexable-content.golden`.
 - `commonTest/.../store/sqlite/SearchTest.kt` — per-kind indexing (kind 0 profile fields,
   40/41 channel JSON, 31924/30617), extension-token ignoring, reindex/resumable-reindex,
   FTS cleanup on replaceable rotation.

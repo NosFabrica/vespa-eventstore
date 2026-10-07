@@ -71,7 +71,9 @@ tokens stay part of the search text:
 | `include:spam` | Turn off the default trust floor. An explicit `filter:rank:` floor always survives it. |
 | `-word` | Google-style exclusion: drop hits containing the word. Exact-match only — the typo/prefix tolerance the positive terms enjoy never widens an exclusion (though the prose fields stem, so `-runs` also drops `running` there) — and hyphenated exclusions (`-e-cash`) exclude the adjacent phrase. A query of *only* exclusions is plain newest-first recall minus the words (the observer gate still applies), and events search can't see (non-searchable kinds) are never excluded. |
 | `:shortcode:` | A NIP-30 custom emoji, searched as the picture it is: a word that is entirely a shortcode matches the accounts and events whose own `emoji` tags DECLARE that badge, never the word inside it (and `verified` never matches the badge). Undeclared runs are ordinary text, so a clock (`8:30:45`) is untouched; quoting (`":verified:"`) asks for the literal text instead. `-:verified:` excludes badge wearers. |
-| `"exact phrase"` | Google-style quotes: the words must appear adjacently, in order. Exact-match only — quoting a single word (`"vitor"`) is the opt-out from typo/prefix matching (not from prose-field stemming). Unlike exclusions, phrases are search text: a phrase-only query is a relevance-ranked search with the normal trust/spam treatment. `-"exact phrase"` excludes the phrase. An unclosed quote runs to the end; quotes protect extension-shaped tokens (`"sort:rank"` is a phrase, not a sort). |
+| `"exact phrase"` | Google-style quotes: the words must appear adjacently, in order. Exact-match only — quoting a single word (`"vitor"`) is the opt-out from typo/prefix matching (not from prose-field stemming). Unlike exclusions, phrases are search text: a phrase-only query is a relevance-ranked search with the normal trust/spam treatment. `-"exact phrase"` excludes the phrase. An unclosed quote runs to the end; quotes protect extension-shaped tokens (`"sort:rank"` is a phrase, not a sort). A phrase Vespa refuses to run is run as close as it allows: more than five of one word in a row is cut to five, and one word more than ten times splits the phrase into pieces that must all match (adjacency kept within each). |
+| emoji | Searchable like words: `⚡` alone finds the notes carrying it, `zap ⚡` requires both, `-🔥` excludes. Each emoji is its own word (`zap⚡` is `zap` and `⚡`); a skin tone is ignored (`👍🏽` finds every 👍), and so is the colour selector where it stands alone (`❤️` finds a plain ❤) — glued to a letter or digit it is part of the word, as written (`1️⃣`, `⚡️zap`). Other symbols — currency (`₿`, `$`), math (`∞`), punctuation — are in no index: dropped from a search, and a search of only those matches nothing. |
+| `word*` | Accepted and ignored: a word of three letters or more already matches as a prefix (`bitco` finds `bitcoin`), so a trailing star adds nothing. A star inside a word separates it, as the indexer did (`f*ck` searches `f` and `ck`); the same goes for a stray quote character. |
 
 **Where the observer comes from.** The `observer:` token is only one of two
 sources. The embedding relay can also supply an observer out-of-band — Quartz's
@@ -203,9 +205,10 @@ one would cost more RAM than the entire rest of the schema and would still only
 reach a post's first few dozen words — see `docs/attribute-memory.md`.
 
 The kinds it indexes and the fields it reads from each (highest weight first).
-Kinds with no title to split out are indexed by their full `content`; on every
+Kinds with no title to split out are indexed by their one text field as the body —
+usually `content`, sometimes a reason or a query Quartz reads out of it; on every
 kind, hashtags also fold into the secondary tier and `location` tags into the
-place column:
+place column. URLs listed below fill the website column a profile's website does:
 
 | Kind(s) | What it is | Indexed fields |
 | --- | --- | --- |
@@ -213,32 +216,42 @@ place column:
 | **1** | note | subject, hashtags, content |
 | **9** | relay chat message (NIP-C7) | content |
 | **11** | thread | title, content |
-| **14** | private chat message (NIP-17) | content |
+| **14** | private chat message (NIP-17) | subject, content |
+| **15** | private file message (NIP-17) | summary (the content is the encrypted file's URL) |
 | **24** | public message | content |
 | **40 / 41** | public chat channel | name, about |
 | **42** | public-chat channel message (NIP-28) | content |
+| **43 / 44** | public-chat hide message / mute user (NIP-28) | the reason |
 | **3302** | chat message edit (Concord CORD-02) | content |
 | **40002** | Buzz stream chat message | content |
+| **40003** | Buzz stream message edit | content (the replacement text) |
+| **40006 / 40007** | Buzz scheduled message / reminder | content |
+| **40008** | Buzz diff message | description (the diff itself is not indexed) |
+| **40099** | Buzz system message (relay-signed channel change) | topic, purpose, public reason — one body, read from the JSON content |
+| **40901** | Buzz channel summary | name, about + topic + purpose |
 | **45001 / 45003** | Buzz forum post / comment | content |
 | **1010** | note modification / edit | summary, content |
 | **1068** | poll (NIP-88) | option labels, content |
 | **1111** | comment (NIP-22) | content |
 | **1163** | profile-gallery entry | summary |
-| **20** | picture | title, content |
-| **21 / 22 / 34235 / 34236** | video (normal / short / horizontal / vertical) | title, content |
+| **20** | picture | title, image alt texts, content |
+| **21 / 22 / 34235 / 34236** | video (normal / short / horizontal / vertical) | title, chapter (`segment`) titles, content |
 | **39307** | video text track — captions, subtitles, chapters (NIP-71) | the words of each cue (WebVTT or SRT; no header, timings, cue settings or markup) |
 | **1063** | file | summary, content |
-| **1065** | file-storage header | summary |
+| **1065** | file-storage header | summary, content (the caption) |
 | **31337** | audio track | subject |
 | **1808** | audio header | content |
 | **36787** | music track | title, artist + album, content |
 | **34139** | music playlist | title, description, content |
-| **54 / 10154** | podcast episode / show | title, description, content |
-| **30054 / 30055** | Podcasting-2.0 episode / trailer | title, description, content |
-| **2003** | torrent | title, content |
+| **54** | podcast episode | title, description, content |
+| **10154** | podcast show | title, description, website URLs |
+| **30054** | Podcasting-2.0 episode | title, description + host/guest names + soundbite titles, content |
+| **30055** | Podcasting-2.0 trailer | title, content |
+| **2003** | torrent | title, file names, content, tracker URLs |
 | **2004** | torrent comment | content |
-| **9802** | highlight | comment + context, content |
-| **30311 / 1313** | live event / clip | title, summary, content |
+| **9802** | highlight | comment + context (or, with no `context` tag, the quote's prefix and suffix), content |
+| **30311** | live event | title, summary, content, streaming URL |
+| **1313** | live clip | title, content |
 | **1311** | live-stream chat message | content |
 | **1312** | live-stream raid | content |
 | **30617** | git repository | name, description, content, homepage + clone URLs |
@@ -246,96 +259,119 @@ place column:
 | **1617** | git patch | content |
 | **1622** | git reply | content |
 | **1630 / 1631 / 1632 / 1633** | git status (open / applied / closed / draft) | content |
-| **1337** | code snippet | name, description, content |
+| **1337** | code snippet | name, description + language + extension + runtime, content, repo URL |
 | **30817** | NIP-on-Nostr document | title, content |
-| **32267** | software application | name, summary, content |
+| **32267** | software application | name, summary, content, app + repository URLs |
 | **30023** | long-form article | title, summary + hashtags, content |
 | **30818** | wiki article | title, summary, content |
-| **818** † | wiki merge request | content |
-| **31 / 32 / 33** † | external / hardcopy / prompt citation | title, summary, content |
+| **818** | wiki merge request | content |
+| **31 / 33** | external / prompt citation | title, summary + author + publisher (33: + model), content |
+| **32** | hardcopy citation | title + chapter title, summary + author + editor + journal + publisher, content |
 | **30040 / 30041** † | publication index / content | title + author + summary — or title, content |
 | **30045** † | bookshelf directory | title, summary, content |
-| **30142** † | learning resource | title, summary, content |
+| **30142** | learning resource | title + alternate name, summary + alternate description + author + subject / type / level labels, content |
 | **32176** † | Blossom piece index | title, summary, content |
-| **31987** † | relay review | content |
-| **34259** † | entity rating | content |
+| **31987** | relay review | content |
+| **34259** | entity rating | content |
 | **30402** | classified listing | title, summary, content |
-| **31924 / 31922 / 31923** | calendar & slots | title, summary, content |
+| **31924** | calendar | title, content |
+| **31922 / 31923** | calendar date / time slot | title, summary, content |
 | **31925** | calendar RSVP | content |
-| **30312 / 30313** | meeting space / room | room or title, summary, content, streaming endpoint |
+| **30312** | meeting space | room, summary, content, streaming endpoint |
+| **30313** | meeting room | title, summary |
 | **34550** | community | name, description + rules, content |
-| **39000** | group | name, about |
-| **9002** | group-metadata edit (NIP-29) | name, about |
-| **31990** | app handler | name + display name, about |
+| **39000** | group (NIP-29) | name, about |
+| **9002 / 9007** | group-metadata edit / group creation (NIP-29) | name, about |
+| **39003** | group roles (NIP-29) | role names + descriptions |
+| **9021 / 9022** | group join / leave request (NIP-29) | content (the reason) |
+| **33534** | relay member role (NIP-43) | label, description |
+| **31990** | app handler | name, display name, about, NIP-05, lightning address, website (the kind-0 profile fields) |
+| **11316** | ContextVM server announcement | server name, about |
 | **10100** | Buzz agent profile | name, display name |
-| **30175** | Buzz agent persona | display name, system prompt |
+| **30175** | Buzz agent persona | display name, description, system prompt |
 | **30177** | Buzz managed agent | name, system prompt |
 | **30176** | Buzz agent team | name, description, instructions |
+| **30178** | Buzz team catalog entry | team name + member display names, description, instructions + member system prompts |
 | **30620** | Buzz workflow definition | name, content |
+| **46030 / 46031** | Buzz workflow approval grant / deny | content (the approver's note) |
+| **43001 – 43006** | Buzz agent job request / accepted / progress / result / cancel / error | content |
+| **30621** | Buzz project (a group of git repositories) | name (or its slug), description |
+| **45010** | Buzz artifact revision (a task, a project card, …) | title, content (unless it is JSON) |
 | **40100** | Buzz channel canvas | content |
 | **48106** | Buzz huddle guidelines | content |
-| **15128 / 35128** | website | title, description |
+| **42000** | Buzz product feedback | content |
+| **9035 / 9036 / 8002 / 8003** | Buzz identity archive / unarchive request, and the relay's archived / unarchived notice | content (the reason) |
+| **15128 / 35128** | website | title, description, source URL |
 | **15129 / 35129 / 5129** | napplet root / named / snapshot | title, description |
+| **11333 / 33331** | Cyberspace avatar / object (an SNO 3-D shape) | name (the content is geometry, not indexed) |
 | **38192** | PlayStation-1 memory-card save | title, summary + region + filename |
+| **64** | chess game (NIP-64, PGN) | the PGN's event, site, player, team, annotator, opening and variation names, the PGN's `{comments}` — never the moves |
+| **30066 / 30068** | live chess move / draw offer (NIP-64) | content (the move comment or message) |
 | **30009** | badge | name, description, content |
-| **30030** | emoji pack | title, description, content |
+| **30008** | badge set (NIP-58) | title, description |
+| **30030** | emoji pack | title (or name), description + emoji shortcodes (the content is the NIP-44 ciphertext of the private emojis, never indexed) |
 | **30017 / 30018 / 30019 / 30020** | marketplace stall / product / config / auction (NIP-15) | name, description |
+| **1022** | auction bid confirmation (NIP-15) | the seller's message |
 | **38383** | P2P order (NIP-69) | maker name, currency + payment methods |
 | **9041** | zap goal | summary, content |
 | **33863** | fundraiser | title, content |
-| **9734 / 9735** | zap request / receipt (NIP-57) | content |
+| **9734 / 9735** | zap request / receipt (NIP-57) | content (9735: the embedded zap request's comment) |
 | **9321** | nutzap (NIP-61) | content |
 | **8333** | onchain zap (NIP-BC) | content |
 | **6969** | zap poll | option labels, content |
 | **9736 / 9737** | BOLT12 zap / intent (NIP-B1) | content |
 | **30315** | user status (NIP-38) | content |
 | **1985** | label (NIP-32) | label values, content |
-| **30000 / 39089** | people list / follow pack | title, description |
-| **10003 / 30001 / 30003** | bookmark lists | title, description |
+| **5** | deletion request (NIP-09) | content (the reason) |
+| **62** | request to vanish (NIP-62) | content |
+| **30000 / 39089** | people list / follow pack | title (30000: or name), description |
+| **10003 / 30001** | bookmark list (current / legacy) | title (10003: or the legacy `name`) |
+| **30003** | bookmark set | title or name, description |
 | **30015** | interest set | title, description + hashtags |
 | **30004 / 30005 / 30006 / 30267** | article / video / picture / app curation sets | title (30267: or name), description |
 | **30063** | release artifact set (NIP-51) / software release (NIP-82) | title, description, release notes (NIP-82 only: a NIP-51 set may keep encrypted items in its content) |
-| **30002 / 39092 / 39701** | relay set / media starter pack / web bookmark | title, description |
+| **30002 / 39092** | relay set / media starter pack | title, description |
+| **39701** | web bookmark | title, description, the bookmarked URL |
+| **31890** | custom feed definition | title |
 | **9998 / 39998** | decentralized list header (immutable / editable) | names + titles (singular, plural), description + comments, hashtags; every other natural-language tag value (`author`, `subject`, …) as text — one with a space or non-ASCII, or a single Capitalized word (`romance`, `Afro-Americans` and other one-word lowercase or punctuated values read as machine values and stay out) |
 | **9999 / 39999** | decentralized list item (immutable / editable) | name + title, description + comments, hashtags; every other natural-language tag value (`author`, `subject`, …) as text — one with a space or non-ASCII, or a single Capitalized word (`romance`, `Afro-Americans` and other one-word lowercase or punctuated values read as machine values and stay out) |
 | **30382** | contact card / relationship | petname, summary + topics as hashtags (the encrypted half is never indexed) |
 | **30392 / 30393 / 30394 / 30395** | trusted list of pubkeys / events / addressables / external ids | title |
-| **30296 / 30297** | interactive story prologue / scene | title, summary, content |
+| **30296 / 30297** | interactive story prologue / scene | title, summary + option labels, content |
 | **1301 / 33401** | workout record / exercise template | title, content |
-| **5050 / 5100 / 5250** | NIP-90 DVM job requests (text / image / speech generation) | content |
-| **5302 / 5303** | NIP-90 content / people search request | content |
-| **11871 / 31873** | attestor proficiency / recommendation | content |
+| **5050 / 5100 / 5250** | NIP-90 DVM job requests (text / image / speech generation) | the prompt or text inputs (5100: + negative prompt) |
+| **5302 / 5303** | NIP-90 content / people search request | the search query |
+| **5901** | NIP-90 OP_RETURN request | the text to inscribe on-chain |
+| **11871 / 31873** | attestor proficiency / recommendation | description |
 | **31871 / 31872** | attestation / attestation request | content |
 | **38000** ‡ | mint recommendation (NIP-87) | content |
 | **38000** † ‡ | ballot | election, answers |
-| **38000** † ‡ | prediction market | title, description |
+| **38000** ‡ | prediction market | question (title), description + outcome labels + resolution + cancel reason, the social post |
 | **2473** | bird detection (Birdstar) | species + common name, alt |
 | **12473** | Birdex species collection | summary + species names |
 | **1315** | road event report (Roadstr) | content |
 | **37516** † | geocache listing (NIP-CC) | cache name, content |
 | **37517** † | geocache curation list (NIP-CC) | title, description, content |
-| **7516** † | geocache found log (NIP-CC) | content |
+| **7516** | geocache found log (NIP-CC) | content |
 
-† **No tier split yet.** These kinds became searchable in one of the last two Quartz pins,
-and upstream's `SearchFieldExtractor` has no branch for them yet, so the kind's OWN text — title,
-summary and body alike — arrives as one blob in the **body**. A title on one of them is
-therefore reached by substring like prose, without the prefix and typo matching a primary
-field carries, and it does not outweigh the rest of the event. The tag-derived roles are
-unaffected: the catch-all runs through the same funnel, so hashtags still fold into the
-secondary tier and `location` tags into the place column.
+† **No tier split.** Upstream's `SearchFieldExtractor` has no branch for these kinds, so the
+catch-all puts the kind's whole `indexableContent()` — title, summary and body alike — in the
+**body**. A title on one of them is therefore reached by substring like prose, without the
+prefix and typo matching a primary field carries, and it does not outweigh the rest of the
+event. The tag-derived roles are unaffected: the catch-all runs through the same funnel, so
+hashtags still fold into the secondary tier and `location` tags into the place column. Plenty of
+other kinds above also take the catch-all — every row whose only field is `content`, a reason, a
+query or a prompt — and they are not marked, because their one field is a body and lands where
+it belongs.
 
-Flat weighting is not the whole of it, either. Because the catch-all reads only
-`indexableContent()`, a field that kind never joins into it is not indexed at all — and on
-several of these that is the field the kind exists to be found by: a citation's `author`,
-`doi`, `published_in` and cited `u`rl; a relay review's `relay` url; a Blossom index's `url`
-and `blossom` servers; a learning resource's `author`, content url, and its schema.org
-`about` / `learningResourceType` / `educationalLevel` facets (which are not `t` tags, so the
-hashtag funnel does not see them). Both halves take the same fix — one upstream
-`SearchFieldExtractor` branch per kind, reading accessors straight into roles, which
-`IndexableFields` already allows to carry more than the flat blob does (kind 30617 does
-exactly this with its clone URLs). Kinds 818, 31987, 34259 and 7516 are `content`-only and
-already land correctly; 31987 still misses its relay url. The rows above become tiered, and
-complete, the moment those branches land.
+What no extractor reads yet is a kind's own URLs and identifiers, and on a few kinds that is
+what it would be searched by: a citation's `doi` and cited `u`rl, a learning resource's content
+url, a relay review's `relay` url (31987), a Blossom piece index's `url` and `blossom` servers
+(32176). The names around them are covered now — a citation's author, editor, journal, publisher
+and model, and a learning resource's author and its schema.org `about` /
+`learningResourceType` / `educationalLevel` labels, all index as keywords on the secondary tier.
+`IndexableFields` already has a role for a URL (kind 30617 fills it with its clone URLs, 39701
+with the bookmarked page), so each of these is one upstream extractor line away.
 
 ‡ **Kind 38000 is shared, and Quartz picks the class by tags.** A `k` naming a mint kind
 (or, on old events with no `k`, a mint `u` or `a`) makes a mint recommendation; else an
@@ -343,7 +379,10 @@ complete, the moment those branches land.
 prediction market; anything else is junk that Quartz parses as an unrecognized 38000 and does
 not index. On a large relay that last group is most of the kind: `d`-only "sybil test votes".
 They stay addressable, so supersession and NIP-09 by `d` still apply. They are just never found
-by search.
+by search. Of the three classes, only the prediction market is split into tiers: its question
+(from the `data` JSON, the `title` tag or a JSON `content`, in that order) is the title, its
+description, outcome labels, resolution and cancel reason sit beside it, and `content` is the
+body only when it is a plain post rather than JSON and no description supersedes it.
 
 Anything Quartz parses to a `SearchableEvent` is indexed, current or future. The
 authoritative mapping is

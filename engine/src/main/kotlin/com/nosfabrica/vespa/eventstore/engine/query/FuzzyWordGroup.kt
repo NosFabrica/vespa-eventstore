@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore.engine.query
 
+import com.nosfabrica.vespa.eventstore.engine.text.IndexableChars
 import com.nosfabrica.vespa.eventstore.engine.text.NearText
 
 /**
@@ -210,6 +211,11 @@ internal object FuzzyWordGroup {
     ): String {
         val clauses = ArrayList<String>()
         for (field in SEARCH_FIELDS) clauses += exactClause(field, "@$name", roleOf(field))
+        // A word with no letter or digit ("⚡", "🔥🔥") is exact-only: the near
+        // attributes and the gram fields hold letters and digits alone, so a
+        // prefix, typo or n-gram clause for it could match nothing and would
+        // still cost its dictionary walk.
+        if (!IndexableChars.hasLetterOrDigit(literal)) return "(${clauses.joinToString(" or ")})"
         if (nearFields) {
             // The folded twin rides out-of-band too. Floors and budgets use
             // the FOLDED form — the string the attribute dictionaries hold.
@@ -340,6 +346,14 @@ internal object FuzzyWordGroup {
      * matches nothing. A word with punctuation inside it therefore gets no
      * phrase clause at all and rides its exact clause, which is what tokenized
      * the document that way in the first place.
+     *
+     * Bails out, too, on a word whose trigrams Vespa would refuse as a phrase
+     * ([PhraseRuns]: "noooooooo" is six "ooo" in a row, a 24-character
+     * "hahaha…" eleven "hah"), an HTTP 400 for the WHOLE query. Not cut or
+     * split like a typed phrase: dropping a middle gram breaks adjacency
+     * exactly as above, and a word split into pieces is a looser substring
+     * test than this net exists to be. The word keeps its exact, near and
+     * AND-gram clauses.
      */
     private fun phraseGramClause(
         word: String,
@@ -347,7 +361,7 @@ internal object FuzzyWordGroup {
     ): String? {
         val lower = NearText.foldAccents(word)
         val all = (0..lower.length - 3).map { lower.substring(it, it + 3) }
-        if (all.size < MIN_PHRASE_GRAMS || all.any { gram -> !gram.all(Char::isLetterOrDigit) }) return null
+        if (all.size < MIN_PHRASE_GRAMS || all.any { gram -> !gram.all(Char::isLetterOrDigit) } || (all.size > PhraseRuns.MAX_RUN && !PhraseRuns.fits(all))) return null
         return all.joinToString(", ", prefix = "($gramField contains phrase(", postfix = "))") { "\"$it\"" }
     }
 

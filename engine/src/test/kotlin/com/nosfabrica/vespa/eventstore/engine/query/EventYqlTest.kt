@@ -352,20 +352,30 @@ class EventYqlTest {
     }
 
     @Test
-    fun `words without a letter or digit cannot be required`() {
-        // Tokenization erases "⚡" from every matcher's view — userInput emits
-        // no term, NearText folds it away, the trigram filter drops it. Under
-        // the AND'd word groups an empty requirement would surrender the whole
-        // conjunction to Vespa's null-term handling, so the builder drops the
-        // word — mirroring what indexing did to the doc side.
-        val q = EventYql.build(EventQuery(search = "vitor ⚡"))!!
+    fun `words nothing indexes cannot be required, and an emoji is not one of them`() {
+        // Tokenization erases "₿" (a currency sign) from every matcher's view
+        // — userInput emits no term, a query of only such terms is an HTTP 400
+        // (NullItem). Under the AND'd word groups an empty requirement would
+        // surrender the whole conjunction, so the builder drops the word —
+        // mirroring what indexing did to the doc side.
+        val q = EventYql.build(EventQuery(search = "vitor ₿"))!!
         assertEquals("vitor", q.params["w0"])
         assertFalse("w1" in q.params, "the symbol word must not become a requirement")
         assertFalse("wj" in q.params, "one matchable word left: no joined variant")
         // A query that is ONLY such words asked for something no index holds.
-        assertNull(EventYql.build(EventQuery(search = "⚡ //")))
+        assertNull(EventYql.build(EventQuery(search = "₿ ∞ # //")))
         // Non-ASCII LETTERS are matchable — the filter is not an ASCII gate.
-        assertEquals("中村", EventYql.build(EventQuery(search = "中村 ⚡"))!!.params["w0"])
+        assertEquals("中村", EventYql.build(EventQuery(search = "中村 ₿"))!!.params["w0"])
+        // An EMOJI is indexed (Vespa 8.763 holds every So code point as a term),
+        // so it is required like a word — exact clauses only: the near and gram
+        // fields hold letters and digits, and would only spend a walk on it.
+        val bolt = EventYql.build(EventQuery(search = "zap ⚡"))!!
+        assertEquals("⚡", bolt.params["w1"])
+        assertTrue("({defaultIndex:\"search_text\"}userInput(@w1))" in bolt.yql, bolt.yql)
+        assertFalse("fw1" in bolt.params, "no near clauses for a word with no letter")
+        val alone = EventYql.build(EventQuery(search = "🔥"))!!
+        assertEquals("🔥", alone.params["w0"])
+        assertFalse("contains ({prefix:true}@fw0)" in alone.yql, alone.yql)
     }
 
     @Test
@@ -394,14 +404,16 @@ class EventYqlTest {
 
     @Test
     fun `an all-erased phrase is an unsatisfiable requirement`() {
-        // Same rule as loose words ("⚡" alone), OPPOSITE of notSearch: a
+        // Same rule as loose words ("₿" alone), OPPOSITE of notSearch: a
         // REQUIRED phrase no index can hold provably matches nothing —
         // dropping it instead would silently flip the query into match-all.
-        assertNull(EventYql.build(EventQuery(phrases = listOf("⚡"))))
-        assertNull(EventYql.build(EventQuery(search = "vitor", phrases = listOf("⚡ //"))))
+        assertNull(EventYql.build(EventQuery(phrases = listOf("₿"))))
+        assertNull(EventYql.build(EventQuery(search = "vitor", phrases = listOf("₿ //"))))
         // A partially-erased phrase rides raw: Vespa's tokenizer drops what
         // indexing dropped, so the emitted phrase equals what docs hold.
-        assertEquals("new ⚡ york", EventYql.build(EventQuery(phrases = listOf("new ⚡ york")))!!.params["p0"])
+        assertEquals("new ₿ york", EventYql.build(EventQuery(phrases = listOf("new ₿ york")))!!.params["p0"])
+        // An emoji-only phrase is a real requirement: the engine indexes it.
+        assertEquals("⚡⚡", EventYql.build(EventQuery(phrases = listOf("⚡⚡")))!!.params["p0"])
     }
 
     @Test
@@ -438,11 +450,16 @@ class EventYqlTest {
     @Test
     fun `a tokenization-erased exclusion is a no-op, not a dead clause`() {
         // The positive-side rule's mirror image with the opposite outcome:
-        // "⚡" is in no index, so requiring it is unsatisfiable (null) but
+        // "₿" is in no index, so requiring it is unsatisfiable (null) but
         // EXCLUDING it is vacuous — nothing holds it, nothing is dropped.
-        val q = EventYql.build(EventQuery(notSearch = listOf("⚡")))!!
+        val q = EventYql.build(EventQuery(notSearch = listOf("₿")))!!
         assertFalse("userInput(@n" in q.yql, q.yql)
         assertTrue(q.yql.contains("where true "), "the erased exclusion leaves plain recall untouched")
+        // "-🔥" is NOT erased: the engine holds the emoji, so it excludes —
+        // and "-❤️" loses its variation selector, so it drops every heart.
+        val fire = EventYql.build(EventQuery(notSearch = listOf("🔥", "❤️")))!!
+        assertEquals("🔥", fire.params["n0"])
+        assertEquals("❤", fire.params["n1"])
     }
 
     /**
@@ -697,6 +714,134 @@ class EventYqlTest {
         val q = EventYql.build(EventQuery(search = "seed-phrase"))!!
         assertFalse("search_text_gram contains phrase" in q.yql, q.yql)
         assertTrue("({defaultIndex:\"search_text\"}userInput(@w0))" in q.yql)
+    }
+
+    @Test
+    fun `a word whose trigrams Vespa would refuse as a phrase gets no body phrase`() {
+        // Vespa answers a phrase repeating one term more than five times in a
+        // row, or more than ten times anywhere, with an HTTP 400 for the WHOLE
+        // query. Eight o's is six "ooo" grams in a row: no phrase, and the word
+        // keeps its other clauses.
+        val eight = EventYql.build(EventQuery(search = "noooooooo"))!!
+        assertFalse("search_text_gram contains phrase" in eight.yql, eight.yql)
+        assertTrue("({defaultIndex:\"search_text\"}userInput(@w0))" in eight.yql)
+        assertTrue("about_gram contains \"ooo\"" in eight.yql, "the AND net is not a phrase, so it keeps the word")
+        // Seven o's is five "ooo" in a row — Vespa accepts it, so the net stays.
+        val seven = EventYql.build(EventQuery(search = "nooooooo"))!!
+        assertTrue("search_text_gram contains phrase(\"noo\", \"ooo\", \"ooo\", \"ooo\", \"ooo\", \"ooo\")" in seven.yql, seven.yql)
+        // Alternating grams never run, but they COUNT: 22 characters of
+        // "haha…" is ten "hah" (accepted), 24 is eleven (refused).
+        assertTrue("search_text_gram contains phrase" in EventYql.build(EventQuery(search = "ha".repeat(11)))!!.yql)
+        val eleven = EventYql.build(EventQuery(search = "ha".repeat(12)))!!
+        assertFalse("search_text_gram contains phrase" in eleven.yql, eleven.yql)
+        assertTrue("({defaultIndex:\"search_text\"}userInput(@w0))" in eleven.yql)
+    }
+
+    @Test
+    fun `typed phrases and exclusions repeating a word in a row are cut to the limit`() {
+        val q =
+            EventYql.build(
+                EventQuery(
+                    search = "cat",
+                    phrases = listOf("no no no no no no no", "no no no no no"),
+                    notSearch = listOf("no-no-no-no-no-no", "No nó NO no no no."),
+                ),
+            )!!
+        assertEquals("no no no no no", q.params["p0"], "six and seven cut to five, separators with them")
+        assertEquals("no no no no no", q.params["p1"], "five is within the limit and rides untouched")
+        assertEquals("no-no-no-no-no", q.params["n0"])
+        // Case and accents fold like the index folds them; the text kept is the user's.
+        assertEquals("No nó NO no no.", q.params["n1"])
+        assertFalse(q.params.keys.any { "c" in it && (it.startsWith("p") || it.startsWith("n")) }, "a cut is still one piece: ${q.params.keys}")
+    }
+
+    @Test
+    fun `a phrase saying one word more than ten times is split into required pieces`() {
+        // Eleven "the"s, never two in a row: the 11th starts a new piece, and
+        // every piece is REQUIRED — adjacency kept inside each, given up only
+        // across the split.
+        val sentence = (1..11).joinToString(" ") { "the w$it" }
+        val q = EventYql.build(EventQuery(phrases = listOf(sentence), notSearch = listOf(sentence.replace(' ', '-'))))!!
+        assertEquals((1..10).joinToString(" ") { "the w$it" }, q.params["p0"])
+        assertEquals("the w11", q.params["p0c1"])
+        assertTrue("""({defaultIndex:"default",grammar:"phrase"}userInput(@p0)) and ({defaultIndex:"default",grammar:"phrase"}userInput(@p0c1))""" in q.yql, q.yql)
+        // The exclusion drops a document only when it holds EVERY piece.
+        assertEquals("the-w11", q.params["n0c1"])
+        assertTrue("""!(({defaultIndex:"default",grammar:"phrase"}userInput(@n0)) and ({defaultIndex:"default",grammar:"phrase"}userInput(@n0c1)))""" in q.yql, q.yql)
+        // perfect_match counts matchCount items: two pieces are two.
+        assertEquals("2", q.params["ranking.features.query(n_words)"])
+    }
+
+    @Test
+    fun `terms count as Vespa reads them - emoji, combining marks, compatibility forms`() {
+        // Under-counting is the dangerous direction: each of these passed the
+        // first tokenizer (letters/digits, accent fold) and was still a 400.
+        // Every emoji is a word of its own to Vespa.
+        assertEquals(listOf("gm ☕☕☕☕☕"), PhraseRuns.pieces("gm ☕☕☕☕☕☕"))
+        assertEquals(listOf("lol😂😂😂😂😂"), PhraseRuns.pieces("lol😂😂😂😂😂😂😂"))
+        // Marks stay inside a word: "नमस्ते" is one term, six times.
+        val namaste = List(6) { "नमस्ते" }.joinToString(" ")
+        assertEquals(listOf(List(5) { "नमस्ते" }.joinToString(" ")), PhraseRuns.pieces(namaste))
+        // NFD-encoded accents, full-width and mathematical forms fold together.
+        assertEquals(1, PhraseRuns.pieces(List(6) { "cafe\u0301" }.joinToString(" ")).size)
+        assertTrue(
+            PhraseRuns
+                .pieces(List(6) { "cafe\u0301" }.joinToString(" "))
+                .single()
+                .split(" ")
+                .size == 5,
+        )
+        assertEquals("no ｎｏ no 𝐧𝐨 NO", PhraseRuns.pieces("no ｎｏ no 𝐧𝐨 NO nó").single())
+    }
+
+    @Test
+    fun `the prefix star and the variation selector are stripped from words`() {
+        // A trailing star is Vespa prefix syntax, and an index field answers it
+        // with an HTTP 400 for the whole query; prefix reach already comes from
+        // the near clauses, so the star is only ever a failure.
+        val q = EventYql.build(EventQuery(search = "bitcoin* ＊nostr ❤️"))!!
+        assertEquals("bitcoin", q.params["w0"])
+        assertEquals("nostr", q.params["w1"])
+        assertEquals("❤", q.params["w2"], "the selector is its own indexed term: left in, a plain heart never matches")
+        assertNull(EventYql.build(EventQuery(search = "* ＊")), "only syntax is still no match")
+        // A star INSIDE a word separates, as the document's tokenizer did.
+        val inner = EventYql.build(EventQuery(search = "f*ck"))!!
+        assertEquals(listOf("f", "ck"), listOf(inner.params["w0"], inner.params["w1"]))
+        // A selector glued to a digit or letter is part of the indexed word.
+        assertEquals("1️⃣", EventYql.build(EventQuery(search = "1️⃣"))!!.params["w0"])
+        assertEquals("⚡️zap", EventYql.build(EventQuery(search = "⚡️zap"))!!.params["w0"])
+        // An emoji beside a long word does not weight the trigrams up.
+        assertEquals("2.0", EventYql.build(EventQuery(search = "extraordinary 🔥"))!!.params["ranking.features.query(w_gram)"])
+    }
+
+    @Test
+    fun `quote characters inside a positive word are stripped before it is sent`() {
+        // Upstream lifts only an ASCII quote at a word boundary; Vespa reads
+        // thirteen code points as one, and would parse what follows as a phrase.
+        // They become SPACES, not nothing: the document tokenized x"no as x, no.
+        val q = EventYql.build(EventQuery(search = "x\"no-no-no-no-no-no “ha-ha-ha-ha-ha-ha”"))!!
+        assertEquals("x", q.params["w0"])
+        assertEquals("no-no-no-no-no-no", q.params["w1"])
+        assertEquals("ha-ha-ha-ha-ha-ha", q.params["w2"])
+        // …but a search that is ONLY quotes still matches nothing, never everything.
+        assertNull(EventYql.build(EventQuery(search = "“ ”")))
+    }
+
+    @Test
+    fun `only a phrase Vespa would refuse is rewritten`() {
+        val ok = "one no no no no no two"
+        assertEquals(listOf(ok), PhraseRuns.pieces(ok), "text that fits is itself, alone")
+        assertEquals(listOf("a b b b b b c"), PhraseRuns.pieces("a b b b b b b b c"))
+        assertTrue(PhraseRuns.fits(List(5) { "ooo" }))
+        assertFalse(PhraseRuns.fits(listOf("noo") + List(6) { "ooo" }))
+        assertTrue(PhraseRuns.fits(List(10) { listOf("hah", "aha") }.flatten()))
+        assertFalse(PhraseRuns.fits(List(11) { listOf("hah", "aha") }.flatten()))
+        // A cut and a split together: the run is cut first, so its five count
+        // toward the ten, and the piece breaks where the 11th "x" arrives.
+        assertEquals(
+            listOf("x x x x x" + " y x".repeat(5) + " y", "x y"),
+            PhraseRuns.pieces("x x x x x x x" + " y x".repeat(6) + " y"),
+        )
     }
 
     @Test

@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore
 
+import com.nosfabrica.vespa.eventstore.engine.text.IndexableChars
 import com.nosfabrica.vespa.eventstore.trust.TrustCells
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -57,26 +58,47 @@ class LiveGate internal constructor(
     private val trust: TrustCells,
     private val textOf: (Event) -> String,
 ) {
-    /** A filter's text, as the live check reads it: lower-cased words. */
+    /**
+     * A filter's text, as the live check reads it: lower-cased words. Phrases
+     * and exclusions arrive as the PIECES the engine ran them as
+     * (`PhraseRuns.pieces`): every piece of a phrase is required, and an
+     * exclusion drops an event holding every piece of it — so a live event is
+     * judged by the query the page was read with, not by the text as typed.
+     */
     internal class Text(
         val terms: List<String>,
         val phrases: List<List<String>>,
-        val excluded: List<List<String>>,
+        val excluded: List<List<List<String>>>,
     ) {
         fun isEmpty() = terms.isEmpty() && phrases.isEmpty() && excluded.isEmpty()
 
         fun admits(words: List<String>): Boolean =
             terms.all { t -> words.any { it.startsWith(t) } } &&
-                phrases.all { p -> words.windowed(p.size).any { it == p } } &&
-                excluded.none { x -> words.windowed(x.size).any { it == x } }
+                phrases.all { p -> containsRun(words, p) } &&
+                excluded.none { pieces -> pieces.all { x -> containsRun(words, x) } }
 
         companion object {
-            fun words(text: String?): List<String> =
-                text
-                    ?.lowercase()
-                    ?.split(Regex("[^\\p{L}\\p{N}]+"))
-                    ?.filter { it.isNotEmpty() }
-                    .orEmpty()
+            /**
+             * True when [run] appears in [words] adjacently, in order — by index,
+             * without allocating: this runs on the INGEST path, per live event
+             * per gated rule, where `windowed()` built a list per word position
+             * of a note (thousands, for a long one) to compare one exclusion.
+             */
+            fun containsRun(
+                words: List<String>,
+                run: List<String>,
+            ): Boolean {
+                if (run.size == 1) return words.contains(run[0])
+                for (at in 0..words.size - run.size) {
+                    var k = 0
+                    while (k < run.size && words[at + k] == run[k]) k++
+                    if (k == run.size) return true
+                }
+                return false
+            }
+
+            /** The engine's tokens ([IndexableChars.tokens]): letter/digit runs, and each emoji a word of its own. */
+            fun words(text: String?): List<String> = text?.lowercase()?.let(IndexableChars::tokens).orEmpty()
         }
     }
 

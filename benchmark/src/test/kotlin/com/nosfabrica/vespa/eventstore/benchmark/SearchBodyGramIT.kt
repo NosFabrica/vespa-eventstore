@@ -25,6 +25,7 @@ import com.nosfabrica.vespa.eventstore.engine.client.VespaEventIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.SearchFields
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
+import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assumptions.assumeTrue
@@ -35,6 +36,7 @@ import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.wait.strategy.Wait
 import java.time.Duration
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -298,17 +300,20 @@ class SearchBodyGramIT {
 
                         // ---- emoji-only bodies: 15 in the real corpus ----
 
-                        // No letter or digit survives tokenization, so the word is
-                        // not requirable at all: EventYql.build answers null
-                        // ("provably no match") and search() short-circuits to
-                        // empty WITHOUT a round trip. The assertion is that this
-                        // stays a proof rather than becoming a 400 — a body net
-                        // that tried to emit trigrams for an emoji would send
-                        // non-alphanumeric grams straight into the YQL.
+                        // Vespa 8.763 indexes every emoji as a word of its own
+                        // (IndexableChars), so an emoji term is a real search —
+                        // this asserted the opposite until it was measured. It
+                        // rides its EXACT clauses only: a body net that tried to
+                        // emit trigrams for an emoji would send non-alphanumeric
+                        // grams straight into the YQL, so there must be none.
+                        assertFalse(
+                            "_gram" in EventYql.build(EventQuery(search = "😂🤙"))!!.yql,
+                            "an all-emoji word gets no gram clause",
+                        )
                         assertEquals(
-                            emptyList(),
+                            listOf(emoji.id),
                             index.search(EventQuery(search = "😂🤙")).map { it.id },
-                            "an all-emoji term is proved unmatchable, never sent",
+                            "an all-emoji term finds the emoji body",
                         )
 
                         // ---- columns the body net does NOT cover ----

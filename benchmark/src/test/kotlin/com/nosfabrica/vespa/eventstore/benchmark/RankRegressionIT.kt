@@ -854,7 +854,7 @@ class RankRegressionIT {
                     //                      word in FuzzyWordGroup's conjunction
                     //                      takes the whole query down with it
                     //                      (the rule EventYql already applies
-                    //                      to letter-less words like "⚡").
+                    //                      to words nothing indexes, like "₿").
                     val ladder =
                         FLOOR_CASES.map { Triple(it.token, id(it.n), it.tier) } +
                             listOf(

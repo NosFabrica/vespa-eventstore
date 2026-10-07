@@ -155,6 +155,118 @@ class SearchExactTextIT {
                                 .map { it.id },
                             "all three text clause kinds compose",
                         )
+
+                        // ---- phrases Vespa would refuse (PhraseRuns) ----
+
+                        // The container's InputCheckingSearcher answers a
+                        // phrase repeating one term more than five times in a
+                        // row, or more than ten times anywhere, with an HTTP
+                        // 400 for the whole query. Every query below used to be
+                        // that 400 (or would have been), all reachable from a
+                        // search box; "feeeeeeeeed" is a word from a real
+                        // kind-31890 title.
+                        val said = (1..11).joinToString(" ") { "the w$it" }
+                        val runs = profile(6, name = "erin", about = "the feeeeeeeeed says no no no no no no")
+                        val laugh = profile(7, name = "frank", about = "${"ha".repeat(12)} $said")
+                        val coffee = profile(8, name = "gina", about = "gm ☕☕☕☕☕☕ friends")
+                        index.putAll(listOf(runs, laugh, coffee))
+                        awaitCorpus(index, 8)
+                        assertEquals(
+                            listOf(runs.id),
+                            index.search(EventQuery(search = "feeeeeeeeed")).map { it.id },
+                            "eight e's: no body phrase, and the word still finds its doc",
+                        )
+                        assertEquals(
+                            listOf(laugh.id),
+                            index.search(EventQuery(search = "ha".repeat(12))).map { it.id },
+                            "eleven alternating hah grams: no body phrase, and the word still finds its doc",
+                        )
+                        assertEquals(
+                            listOf(runs.id),
+                            index.search(EventQuery(phrases = listOf("no no no no no no no"))).map { it.id },
+                            "a phrase of seven repeated words runs as the five Vespa accepts",
+                        )
+                        assertEquals(
+                            listOf(laugh.id),
+                            index.search(EventQuery(phrases = listOf(said))).map { it.id },
+                            "eleven the's: split into required pieces, still exact within each",
+                        )
+                        assertEquals(
+                            emptyList(),
+                            index.search(EventQuery(phrases = listOf(said.replace("w11", "w12")))).map { it.id },
+                            "…and every piece is required",
+                        )
+                        assertEquals(
+                            emptyList(),
+                            index.search(EventQuery(search = "erin", notSearch = listOf("no-no-no-no-no-no"))).map { it.id },
+                            "an exclusion tokenizing into six repeated words is cut the same way, and drops the doc",
+                        )
+                        assertEquals(
+                            setOf(pamplona.id, model.id),
+                            index.search(EventQuery(search = "vitor", notSearch = listOf("no-no-no-no-no-no"))).map { it.id }.toSet(),
+                            "…and leaves the docs that never say it",
+                        )
+                        assertEquals(
+                            emptyList(),
+                            index.search(EventQuery(search = "frank", notSearch = listOf(said.replace(' ', '-')))).map { it.id },
+                            "an exclusion in pieces — !(a and b) — drops the doc holding all of them",
+                        )
+                        // Each emoji is a word to Vespa's query tokenizer: six in
+                        // a row is the same refusal, so the phrase runs cut to five.
+                        index.search(EventQuery(phrases = listOf("gm ☕☕☕☕☕☕")))
+                        index.search(EventQuery(search = "gina", notSearch = listOf("lol😂😂😂😂😂😂")))
+                        // ---- emoji are indexed; ₿ and a prefix star are not words ----
+
+                        // Vespa 8.763 indexes every other-symbol code point as a
+                        // term of its own (IndexableChars): an emoji is searched
+                        // for, alone or beside words, and excluded.
+                        val zap = profile(9, name = "hal", about = "zap⚡ sent with ❤️")
+                        val plainHeart = profile(10, name = "ivy", about = "made with ❤ and 🔥")
+                        index.putAll(listOf(zap, plainHeart))
+                        awaitCorpus(index, 10)
+                        assertEquals(listOf(zap.id), index.search(EventQuery(search = "⚡")).map { it.id }, "an emoji alone is a search")
+                        assertEquals(listOf(zap.id), index.search(EventQuery(search = "hal ⚡")).map { it.id })
+                        assertEquals(
+                            setOf(zap.id, plainHeart.id),
+                            index.search(EventQuery(search = "❤️")).map { it.id }.toSet(),
+                            "the variation selector is stripped, so ❤️ finds the plain heart too",
+                        )
+                        assertEquals(
+                            listOf(zap.id),
+                            index.search(EventQuery(search = "❤", notSearch = listOf("🔥"))).map { it.id },
+                            "-🔥 excludes: the emoji is in the index",
+                        )
+                        // A currency sign is in no index: dropped, never a 400.
+                        assertEquals(listOf(zap.id), index.search(EventQuery(search = "hal ₿")).map { it.id })
+                        assertEquals(emptyList(), index.search(EventQuery(search = "₿")).map { it.id })
+                        // A trailing star was prefix syntax, an HTTP 400 on an index
+                        // field; stripped, the word keeps its prefix reach anyway.
+                        assertEquals(listOf(zap.id), index.search(EventQuery(search = "hal*")).map { it.id })
+
+                        // The selector is a combining mark: glued to a digit or a
+                        // letter it is PART of the indexed word ("1️", "️zap"), and
+                        // stripping it there lost these notes — only a lone one goes.
+                        val keycap = profile(11, name = "jo", about = "1️⃣ first")
+                        val glued = profile(12, name = "kai", about = "⚡️zap glued")
+                        val hearts = profile(13, name = "lu", about = "❤️❤️ double")
+                        val star = profile(14, name = "max", about = "f*ck star")
+                        val thumbs = profile(15, name = "ned", about = "👍 nice")
+                        index.putAll(listOf(keycap, glued, hearts, star, thumbs))
+                        awaitCorpus(index, 15)
+                        assertEquals(listOf(keycap.id), index.search(EventQuery(search = "1️⃣")).map { it.id })
+                        assertEquals(listOf(glued.id), index.search(EventQuery(search = "⚡️zap")).map { it.id })
+                        // In a run the selectors sit BETWEEN the hearts, so the
+                        // exclusion rides as typed and still drops the note.
+                        assertEquals(emptyList(), index.search(EventQuery(search = "lu", notSearch = listOf("❤️❤️"))).map { it.id })
+                        // A star inside a word separates, as the indexer did.
+                        assertEquals(listOf(star.id), index.search(EventQuery(search = "f*ck")).map { it.id })
+                        // A skin tone is ignored: 👍🏽 finds the plain 👍.
+                        assertEquals(listOf(thumbs.id), index.search(EventQuery(search = "👍🏽")).map { it.id })
+
+                        // A quote character inside a positive word turned the rest
+                        // of it into a phrase: stripped, these are plain words again.
+                        index.search(EventQuery(search = "x\"no-no-no-no-no-no"))
+                        index.search(EventQuery(search = "“ha-ha-ha-ha-ha-ha”"))
                     }
                 }
             }

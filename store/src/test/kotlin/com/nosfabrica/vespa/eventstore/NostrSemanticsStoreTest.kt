@@ -474,11 +474,27 @@ open class NostrSemanticsStoreTest {
             // Each word alone still recalls both — AND narrows, it doesn't drop matchers.
             assertEquals(2, store.query<Event>(Filter(search = "vitor")).size)
 
-            // A word tokenization erases ("⚡") cannot be required — it is
+            // A word tokenization erases ("₿") cannot be required — it is
             // dropped, not turned into an unsatisfiable conjunct; a query
             // that is ONLY such words matches nothing, not everything.
-            assertEquals(2, store.query<Event>(Filter(search = "vitor ⚡")).size)
-            assertEquals(0, store.query<Event>(Filter(search = "⚡")).size)
+            assertEquals(2, store.query<Event>(Filter(search = "vitor ₿")).size)
+            assertEquals(0, store.query<Event>(Filter(search = "₿")).size)
+
+            // An emoji is NOT erased: the engine indexes it, so it is required,
+            // searched for alone, and excluded like any word.
+            val zapper = MetadataEvent(id(), "c3".repeat(32), next(), emptyArray(), """{"name":"Vitor ⚡"}""", "")
+            store.insert(zapper)
+            assertEquals(listOf(zapper.id), store.query<Event>(Filter(search = "vitor ⚡")).map { it.id })
+            assertEquals(listOf(zapper.id), store.query<Event>(Filter(search = "⚡")).map { it.id })
+            assertEquals(2, store.query<Event>(Filter(search = "vitor -⚡")).size, "-⚡ drops the zapper, keeps the other two")
+
+            // Default-grammar syntax is cleaned the same way on every path —
+            // this runs against the in-memory spec AND through the wire mock.
+            assertEquals(3, store.query<Event>(Filter(search = "vitor*")).size, "a trailing star is a word, not a 400")
+            assertEquals(3, store.query<Event>(Filter(search = "“vitor”")).size, "curly quotes are not syntax inside the store")
+            val thumbs = MetadataEvent(id(), "d4".repeat(32), next(), emptyArray(), """{"name":"thumbs 👍"}""", "")
+            store.insert(thumbs)
+            assertEquals(listOf(thumbs.id), store.query<Event>(Filter(search = "👍🏽")).map { it.id }, "a skin tone is ignored, as the engine ignores it")
         }
 
     /**
@@ -554,6 +570,34 @@ open class NostrSemanticsStoreTest {
             assertEquals(0, store.query<Event>(Filter(search = "\"pamplona vitor\"")).size, "order matters inside quotes")
             // And the negated phrase is its mirror: only the full name drops.
             assertEquals(listOf(bob), store.query<Event>(Filter(search = "vitor -\"vitor pamplona\"")).map { it.pubKey })
+        }
+
+    /**
+     * Phrases Vespa would refuse (PhraseRuns): the engine can only run them
+     * rewritten — a run cut to five, a phrase saying one word more than ten
+     * times split into required pieces — so the spec answers the same, and
+     * the REQ answers, where it used to fail outright.
+     */
+    @Test
+    fun `a quoted phrase Vespa would refuse answers as the rewrite it runs`() =
+        runBlocking {
+            val six = metadata(name = "no no no no no no")
+            store.insert(six)
+            store.insert(MetadataEvent(id(), bob, next(), emptyArray(), """{"name":"no no no no no"}""", ""))
+
+            // Both read five "no"s in a row, so the cut phrase holds for both.
+            assertEquals(2, store.query<Event>(Filter(search = "\"no no no no no no\"")).size)
+            assertEquals(0, store.query<Event>(Filter(search = "-no-no-no-no-no-no")).size, "the exclusion is cut the same way")
+
+            // Eleven "the"s: the pieces are required, and only across the split
+            // is adjacency given up.
+            val said = (1..11).joinToString(" ") { "the w$it" }
+            // A third author: kind 0 is replaceable, and alice's and bob's are taken.
+            val sentence = MetadataEvent(id(), "c3".repeat(32), next(), emptyArray(), """{"about":"$said"}""", "")
+            store.insert(sentence)
+            assertEquals(listOf(sentence.id), store.query<Event>(Filter(search = "\"$said\"")).map { it.id })
+            val firstTen = (1..10).joinToString(" ") { "the w$it" }
+            assertEquals(0, store.query<Event>(Filter(search = "\"$firstTen the w12\"")).size, "every piece is required")
         }
 
     /** EventIndexesModule pubkey_owner_hash: a gift-wrap is OWNED by its p-tag recipient. */

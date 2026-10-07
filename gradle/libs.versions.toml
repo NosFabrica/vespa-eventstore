@@ -5,32 +5,44 @@ app = "1.0.1"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"
 # Quartz from JitPack (amethyst @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
-# d792ebc4bf = amethyst main @ 2026-10-05: the merge of amethyst #4325 (the v1.17.0 release
-# train). What this store calls moves in four places, all upstream decisions it inherits as-is:
-#  - Kind 38000 is split BY TAGS (EventFactory): MintRecommendationEvent on a `k` 38172/38173
-#    (or, on old events, a `u` or a mint `a`), else BallotEvent on `election`, else
-#    PredictionMarketEvent on `market` / >=2 `outcome` / `type`+`end`, else
-#    UnrecognizedKind38000Event -- still addressable, so supersession and NIP-09 by `d` are
-#    unchanged, but NOT searchable: the d-only "sybil test vote" spam that is most of the kind
-#    stops being indexed. Ballots (election + answers) and markets (title, description) land on
-#    the catch-all body, like every kind without an extractor branch.
-#  - Decentralized lists (9998/9999/39998/39999) gain a TEXT tier: every natural-language value
-#    of every tag the fixed fields do not own (author, subject, artist, ...), minus alt/client/
-#    imeta and anything machine-shaped (isNaturalLanguageValue). 30267 reads titleOrName().
-#  - NIP-62: a vanish `relay` tag is compared as a NormalizedRelayUrl, so `wss://relay.example`
-#    now reaches the relay normalized as `wss://relay.example/` (a raw string match accepted the
-#    request and deleted nothing). Such a request stored BEFORE this pin still erased nothing, and
-#    nothing replays it, though it now blocks back-dated inserts; the live corpus holds none
-#    (5 kind 62s on 2026-10-05, none naming the relay in any spelling).
-#  - A 30394 member `a` must be a `kind:pubkey:d` coordinate (CoordinateShape): an naddr there is
-#    no longer decoded into a search-expansion pointer.
-# The first two are derived data, rolled out with no resync by the kind-scoped
-# `store.reindexFullTextSearch(listOf(38000, 30267, 9998, 9999, 39998, 39999))`: ~75k docs live,
-# where the unscoped walk reads all 445M. Also in
-# range and inert here: Event.dTag() defers to AddressableEvent (this store reads tags.dTag()),
-# EventFactory.probe(kind) for kind-level questions, DeletionIndex's comparator fix, local
-# search (EventSearchMatcher) matching only what a kind indexes, Address.isOfKind bounds.
+# 68268da413 = amethyst main @ 2026-10-06: the hint-provider / NIP-50 / tag-relationship series
+# (amethyst 9c34a3bc..d0cbdaf0) plus its review follow-ups (68268da4). Not the tip, 3e8137ab4e: every
+# commit carrying that day's Crowdin syncs fails on JitPack ("Could not find or load main class
+# org.gradle.wrapper.GradleWrapperMain", the wrapper unchanged), and what 68268da4 lacks of the tip is
+# Quartz refactors this store does not call (native clock, Linux sha256Into, Hex.isHex(start, end)).
+# What this store calls moves in three places:
+#  - SearchFieldExtractor. 42 kinds become searchable: deletion reasons (5), NIP-17 file
+#    headers (15), channel hide/mute reasons (43/44), vanish reasons (62), chess (64/30066/30068),
+#    NIP-29 group create/roles (9007/39003), join/leave requests (9021/9022), badge sets (30008),
+#    feed definitions (31890), ContextVM servers (11316), cyberspace objects (11333/33331), relay
+#    roles (33534), bid confirmations (1022), DVM OP_RETURN jobs (5901), and the Buzz kinds (8002/
+#    8003/9035/9036, 30178, 30621, 40003/40006/40007/40008/40099, 40901, 42000, 43001-43006,
+#    45010, 46030/46031). 19 kinds extract differently: 14 subject -> primary; 20 imeta
+#    alt -> secondary; 21/22/34235/34236 chapter titles -> secondary; 31/32/33 and 30142 leave the
+#    catch-all for title / summary roles (+ author, publisher, editor, journal, model; 30142:
+#    alternate name and description, author, subject/type/level facet labels); 38000 prediction markets get a branch; 1065 indexes its caption; 9802 falls back
+#    to the quote's prefix/suffix when there is no `context`; 10003 reads a legacy `name`; 30030
+#    emoji packs stop indexing `content` -- the NIP-44 ciphertext of their private emojis -- for
+#    their public shortcodes; 30054 person names + soundbite titles; 30175 persona description;
+#    30296/30297 option labels. None leaves the searchable set.
+#  - EventFactory builds 31890 (FeedDefinitionEvent, searchable; was a plain Event) and 10044
+#    (EncryptionKeyListEvent; replaceable either way).
+#  - RequestToVanishEvent is a SearchableEvent (its reason); shouldVanishFrom is unchanged.
+# All derived data, rolled out with no resync by the kind-scoped walk over exactly these
+# 61 kinds (the emoji-pack ciphertext already indexed stays until 30030 is walked):
+#   store.reindexFullTextSearch(listOf(5, 14, 15, 20, 21, 22, 31, 32, 33, 43, 44, 62, 64, 1022,
+#   1065, 5901, 8002, 8003, 9007, 9021, 9022, 9035, 9036, 9802, 10003, 11316, 11333, 30008,
+#   30030, 30054, 30066, 30068, 30142, 30175, 30178, 30296, 30297, 30621, 31890, 33331, 33534,
+#   34235, 34236, 38000, 39003, 40003, 40006, 40007, 40008, 40099, 40901, 42000, 43001, 43002,
+#   43003, 43004, 43005, 43006, 45010, 46030, 46031))
+# Inert here: tag relay slots now parse strictly (ws/wss only; normalizeOrNull stays lenient)
+# and the linked*() / *Hints() providers and named relationship accessors moved -- this store
+# reads provider PUBKEYS only (serviceProviders(), trustedListProvider()) and search expansion
+# reads ATag.parseAddressId, both unchanged.
 #
+# Prev d792ebc4bf (2026-10-05: amethyst #4325; kind 38000 split by tags, decentralized lists'
+# text tier, NIP-62 relay compared normalized, 30394 member `a` coordinate-shaped; repaired by
+# reindexFullTextSearch(listOf(38000, 30267, 9998, 9999, 39998, 39999))).
 # Prev fcd76d2075 (2026-09-27: amethyst #4231, NIP-FE's published form, RelaySession,
 # NIP-49; nothing this store called moved, pinned for vespa-relay).
 # Prev a53cafd577 (2026-09-27: amethyst #4214, NIP-FE's review fixes; nothing this store called
@@ -48,7 +60,7 @@ mavenPublish = "0.37.0"
 # catch-all; SearchableEvent grows the read-path forEachIndexableField, no reindex).
 # Prev cecc3287b2 (2026-09-01: 17 catch-all kinds split into title/body roles, four
 # affiliation URLs, six doubled `t`-tag scans dropped; a ranking backfill).
-quartz = "d792ebc4bf"
+quartz = "68268da413"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 # Matches what Quartz brings transitively; Gradle would resolve to it regardless.

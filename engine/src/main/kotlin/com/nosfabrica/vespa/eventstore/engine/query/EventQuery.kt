@@ -83,7 +83,7 @@ data class EventQuery(
      * order, matched exactly, with none of [search]'s prefix/fuzzy reach
      * (though NOT of the schema's stemming on prose fields). Phrases are
      * positive search text, so a phrase-only query is relevance-ordered. A
-     * phrase no index can hold ("⚡") is unsatisfiable — provably no match, same
+     * phrase no index can hold ("₿" — an emoji IS held) is unsatisfiable — provably no match, same
      * rule as [search] words, the opposite of [notSearch] (where it is vacuous).
      */
     val phrases: List<String> = emptyList(),

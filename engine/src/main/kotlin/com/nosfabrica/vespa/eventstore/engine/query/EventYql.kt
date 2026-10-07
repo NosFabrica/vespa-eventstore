@@ -19,6 +19,7 @@
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 package com.nosfabrica.vespa.eventstore.engine.query
+import com.nosfabrica.vespa.eventstore.engine.text.IndexableChars
 import com.nosfabrica.vespa.eventstore.engine.text.WHITESPACE
 import com.vitorpamplona.quartz.nip01Core.tags.isIndexableTagName
 import com.vitorpamplona.quartz.utils.Hex
@@ -780,34 +781,59 @@ object EventYql {
         q.notExpiredAt?.let { clauses += "expires_at > $it" }
 
         // Every word the caller typed goes into the query — never silently
-        // dropped for speed. Exception: a word with NO letter or digit ("⚡")
-        // is erased by tokenization on the doc side too, so no index holds it
-        // and its empty requirement would fall to Vespa's null-term handling;
-        // it is dropped, and a query that is ONLY such words is provably no
-        // match. (SearchFields.matches applies the same filter.)
+        // dropped for speed. Exception: a word with nothing an index holds
+        // ([IndexableChars]: no letter, digit or emoji — "₿", "∞", "#") is
+        // erased by tokenization on the doc side too, and a query of only such
+        // terms is an HTTP 400 (NullItem); it is dropped, and a query that is
+        // ONLY such words is provably no match. An emoji is NOT such a word:
+        // "⚡" is indexed, and searches for itself. (SearchFields.matches
+        // applies the same rule.)
+        //
+        // Default-grammar syntax is cleaned from what is SENT
+        // ([IndexableChars.queryText]: quotes and stars become spaces, a lone
+        // variation selector and skin tones go), each of which made a typed
+        // word a different query or a 400. Not from [words]: a search that is
+        // only syntax must stay "provably no match", never a search for
+        // everything.
         val words =
             q.search
                 ?.trim()
                 .orEmpty()
                 .split(WHITESPACE)
                 .filter { it.isNotEmpty() }
-        val matchable = words.filter { w -> w.any(Char::isLetterOrDigit) }
+        val matchable =
+            IndexableChars
+                .queryText(q.search?.trim().orEmpty())
+                .split(WHITESPACE)
+                .filter(IndexableChars::hasIndexable)
         if (words.isNotEmpty() && matchable.isEmpty()) return null
         if (matchable.isNotEmpty()) {
             clauses += FuzzyWordGroup.clause(matchable, params, nearFields = q.nearMatching, bodyGram = q.bodyGramMatching)
-            // Short queries lean harder on the trigram safety net.
-            params[F_W_GRAM] = if (FuzzyWordGroup.leansOnGrams(matchable)) "8.0" else "2.0"
+            // Short queries lean harder on the trigram safety net — judged by
+            // the words that HAVE grams: an emoji beside "extraordinary" is no
+            // reason to weight its trigrams up.
+            val gramWords = matchable.filter(IndexableChars::hasLetterOrDigit)
+            params[F_W_GRAM] = if (gramWords.isNotEmpty() && FuzzyWordGroup.leansOnGrams(gramWords)) "8.0" else "2.0"
         }
 
         // Quoted phrases ([EventQuery.phrases]): one REQUIRED phrase-grammar
         // term per entry against the `default` fieldset, text out-of-band. No
         // fuzzy word group — exact and adjacent is the point of quoting. The
         // phrase rides RAW (the tokenizer drops what indexing dropped), so
-        // only an ALL-erased phrase needs the unsatisfiable-requirement rule.
+        // only an ALL-erased phrase needs the unsatisfiable-requirement rule —
+        // and RAW but for [PhraseRuns.pieces]: a phrase repeating one word too
+        // often is one Vespa refuses outright, failing the whole REQ, so it
+        // rides as the pieces Vespa accepts, every one REQUIRED. Nearly every
+        // phrase is one piece, `@p$i`, exactly as typed.
+        var phraseItems = 0
         q.phrases.forEachIndexed { i, phrase ->
-            if (phrase.none(Char::isLetterOrDigit)) return null
-            params["p$i"] = phrase
-            clauses += "({defaultIndex:\"default\",grammar:\"phrase\"}userInput(@p$i))"
+            if (!IndexableChars.hasIndexable(phrase)) return null
+            PhraseRuns.pieces(phrase).forEachIndexed { j, piece ->
+                val name = if (j == 0) "p$i" else "p${i}c$j"
+                params[name] = piece
+                clauses += "({defaultIndex:\"default\",grammar:\"phrase\"}userInput(@$name))"
+                phraseItems++
+            }
         }
 
         // How many things the USER asked for — matchable words PLUS quoted
@@ -818,22 +844,30 @@ object EventYql {
         // phrase is ONE matchCount item however many words it spans, so phrases
         // count 1 each; omitting them left the feature unsent on a phrase-only
         // query, where the schema default of 1 is wrong for two phrases.
-        // Both measured on a live Vespa, 2026-08-05.
-        val queryItems = matchable.size + q.phrases.size
+        // Both measured on a live Vespa, 2026-08-05. A phrase split into
+        // pieces (PhraseRuns) is that many matchCount items, so it counts each.
+        val queryItems = matchable.size + phraseItems
         if (queryItems > 0) params[F_N_WORDS] = queryItems.toString()
 
         // Exclusions ([EventQuery.notSearch]): one negated term per word,
         // out-of-band, deliberately NOT the fuzzy word group — exclusion must
         // never out-reach what the user literally typed. grammar:"phrase"
         // keeps a punctuated word ("e-cash") one adjacent unit. A tokenization-
-        // erased word ("⚡") is vacuous here (no index holds it, so nothing
+        // erased word ("-₿") is vacuous here (no index holds it, so nothing
         // can be excluded by it) and is simply dropped — the mirror of the
-        // positive-side rule.
+        // positive-side rule; "-🔥" is not erased, and excludes. Phrase grammar is also why [PhraseRuns.pieces]:
+        // "-no-no-no-no-no-no" is six "no"s in one phrase, an HTTP 400. A word
+        // in pieces drops the documents holding ALL of them.
         q.notSearch
-            .filter { w -> w.any(Char::isLetterOrDigit) }
+            .filter(IndexableChars::hasIndexable)
             .forEachIndexed { i, word ->
-                params["n$i"] = word
-                clauses += "!(({defaultIndex:\"default\",grammar:\"phrase\"}userInput(@n$i)))"
+                val pieces =
+                    PhraseRuns.exclusionPieces(word).mapIndexed { j, piece ->
+                        val name = if (j == 0) "n$i" else "n${i}c$j"
+                        params[name] = piece
+                        "({defaultIndex:\"default\",grammar:\"phrase\"}userInput(@$name))"
+                    }
+                clauses += "!(${pieces.joinToString(" and ")})"
             }
         return clauses
     }

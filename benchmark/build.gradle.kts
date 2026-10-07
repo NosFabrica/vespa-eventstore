@@ -266,3 +266,15 @@ tasks.register<JavaExec>("relayE2EProbe") {
     mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.probe.RelayE2EProbe")
     maxHeapSize = System.getenv("BENCH_HEAP") ?: "2g"
 }
+
+// A Quartz pin bump replayed on real data: which stored docs the new pin would
+// derive differently, the scoped reindex, and NIP-50 probes around it. The
+// procedure is benchmark/pin_replay.py's docstring. See PinReplayProbe.kt.
+tasks.register<JavaExec>("pinReplayProbe") {
+    group = "verification"
+    description = "Snapshot stored vs derived search columns, run a scoped reindex, or replay NIP-50 probes"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.probe.PinReplayProbe")
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "2g"
+    workingDir = rootDir
+}
