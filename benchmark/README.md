@@ -588,6 +588,20 @@ grew from 406 MB to 439 MB (+8%) and the document store by 26 MB. Feed time was
 substrings and 220 s / 207 s for the baseline. Chunk 1 (363 s) ran straight after
 a Docker daemon restart and is left out of the comparison.
 
+**After the code audit (same day).** Feeding the column is now opt-in
+(`VESPA_BODY_EDGE=1` on the loader, so every number above needs it to
+reproduce), with its own write and read schema fallbacks, and
+`NostrSemanticsStore.backfillBodyEdge` re-feeds a corpus written before it.
+Two changes touch what is fed: words keep their combining marks (a body typed
+in decomposed form split "Lázaro" into "La" + "zaro"), and a document is capped
+at 16,384 elements with 32 fully expanded hashtags. One real article had fed
+205,151, and 6 of the 42,798 long-form documents exceeded the cap. A fresh
+reload with both changes: edge index 432 MB (439 MB before), proton peak RSS
+2,802 MB (2,983 MB), and recall identical on every sampled note word. Long-form
+"nostr" lost 5 instead of 2 and "bitcoin" 3 instead of 2, the cap trimming the
+tail of the largest articles. The edge clause still measured 1-3 ms against
+4-21 ms for the phrase.
+
 Not yet done: a run at a scale where the phrase costs what it does on production,
 and `RankRegressionIT`/`SearchBodyGramIT` with the flag on (the mid-word cases
 there fail by design).
