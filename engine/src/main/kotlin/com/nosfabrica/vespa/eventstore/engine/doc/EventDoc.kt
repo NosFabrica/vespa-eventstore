@@ -152,6 +152,11 @@ data class EventDoc(
                 for ((field, elements) in search.nearFieldsWritten()) {
                     put(field, JsonArray(elements.map(::JsonPrimitive)))
                 }
+                // PROTOTYPE (#161): the body's edge n-grams, fed like the near
+                // arrays because Vespa's indexing language cannot derive them.
+                for ((field, elements) in search.edgeFields()) {
+                    put(field, JsonArray(elements.map(::JsonPrimitive)))
+                }
             }
             // Always written. An absent numeric attribute reads as 0 in Vespa,
             // which would make "not yet expired" range queries impossible.

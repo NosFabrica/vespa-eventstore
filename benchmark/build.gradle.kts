@@ -213,6 +213,15 @@ tasks.register<JavaExec>("searchTrace") {
     maxHeapSize = System.getenv("BENCH_HEAP") ?: "1g"
 }
 
+// PROTOTYPE (#161): body phrase vs fed edge n-grams, clause and store level — see BodyEdgeProbe.kt.
+tasks.register<JavaExec>("bodyEdgeProbe") {
+    group = "verification"
+    description = "A/B the body's trigram phrase against the edge n-gram prototype on a loaded cluster"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.probe.BodyEdgeProbe")
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "1g"
+}
+
 // The trust write path under a real lens, timed — see TrustProbe.kt.
 tasks.register<JavaExec>("trustProbe") {
     group = "verification"

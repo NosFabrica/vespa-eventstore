@@ -236,6 +236,21 @@ schema event {
             stemming: none
         }
 
+        # PROTOTYPE (#161): the body's word-START reach as fed edge n-grams —
+        # every word of search_text also as each of its prefixes (4..20 chars,
+        # accent-folded; EdgeText), so a partial word is ONE term lookup whose
+        # posting list is exactly the bodies holding a word that starts with it.
+        # Measured against search_text_gram's trigram phrase, whose cost follows
+        # the corpus (every body holding all the word's trigrams is position-
+        # checked) rather than the answer. FED, not derived: Vespa's indexing
+        # language has no edge-gram tokenizer, and a prefix QUERY would need an
+        # attribute (~74 GiB modelled, see search_text_gram). Index-only: no
+        # summary, no attribute, no bm25 — only matchCount() reads it.
+        field search_text_edge type array<string> {
+            indexing: index
+            stemming: none
+        }
+
         # Place names, filled systemically from any kind's `location` tags
         # (classifieds, calendar events, pictures/videos). Free-text recall only;
         # geohash-proximity is a separate future column (docs/location-search-column.md).
@@ -1120,7 +1135,7 @@ schema event {
         # mid-word) has no cheap signal here and is deliberately NOT modelled:
         # `Protesting` surfacing for "testin" is loose, not wrong.
         function tier_body_match() {
-            expression: if(any_token_match() > 0 || any_near_match() > 0 || weak_match() > 0, 0, if(matchCount(search_text) > 0 || matchCount(search_location) > 0 || matchCount(search_text_gram) > 0, 1, 0))
+            expression: if(any_token_match() > 0 || any_near_match() > 0 || weak_match() > 0, 0, if(matchCount(search_text) > 0 || matchCount(search_location) > 0 || matchCount(search_text_gram) > 0 || matchCount(search_text_edge) > 0, 1, 0))
         }
 
         # A bio/website affiliation match WITHOUT any name-field token match.
@@ -1445,6 +1460,7 @@ schema event {
                 + matchCount(search_secondary) + matchCount(search_text) + matchCount(search_location)
                 + matchCount(affil_tokens) + matchCount(search_secondary_tokens)
                 + matchCount(about_gram) + matchCount(search_secondary_gram) + matchCount(search_text_gram)
+                + matchCount(search_text_edge)
             }
         }
 
