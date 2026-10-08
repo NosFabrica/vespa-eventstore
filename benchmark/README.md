@@ -566,10 +566,31 @@ the other is therefore roughly disk-neutral (index −324 MB, doc store +334 MB)
 Its feed cost was not measured on its own: dropping the gram field removes
 Vespa-side indexing work, so +9.7% is an upper bound.
 
+**Hashtags get every substring (same day, same corpus, a fresh reload).** A body
+hashtag up to 40 characters now feeds every substring of 4+ characters into the
+same column, so the query side is unchanged and `nostr` reaches `#asknostr`.
+At 448k, in the same run:
+
+| kinds | word | clause phrase → edge (ms) | store phrase → edge (ms) | lost before → after |
+|---|---|---|---|---|
+| notes | nostr | 16 → 4 | 44 → 36 | 458 → 205 of 80,134 |
+| notes | photography | 5 → 1 | 10 → 7 | 247 → 21 of 2,519 |
+| notes | music | 4 → 1 | 8 → 5 | 194 → 150 of 3,358 |
+| notes | presidente | 17 → 2 | 26 → 12 | 17 → 17 of 13,134 |
+| notes | government | 10 → 1 | 15 → 8 | 11 → 4 of 3,033 |
+| long-form | presidente | 14 → 2 | 18 → 5 | 0 of 50 |
+
+No hashtag is among the sampled misses for any word any more. What the edge
+column still misses is a word inside a URL (`nostr` 186 of its 205, `music` 139
+of 150) or inside another word (`sometimes`, `highlight`, `glove`). The column
+grew from 406 MB to 439 MB (+8%) and the document store by 26 MB. Feed time was
+267 s / 260 s for chunks 2 and 3, against 250 s / 240 s without hashtag
+substrings and 220 s / 207 s for the baseline. Chunk 1 (363 s) ran straight after
+a Docker daemon restart and is left out of the comparison.
+
 Not yet done: a run at a scale where the phrase costs what it does on production,
-`RankRegressionIT`/`SearchBodyGramIT` with the flag on (the mid-word cases there
-fail by design), and a cheap answer for compound hashtags. Hashtags are short and
-few, so indexing their suffixes alone is a candidate.
+and `RankRegressionIT`/`SearchBodyGramIT` with the flag on (the mid-word cases
+there fail by design).
 
 ### The write path's own derivation, and what a NIP-30 badge costs (2026-09-01)
 
