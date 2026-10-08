@@ -75,25 +75,39 @@ object EdgeText {
      *    `#AskNostr`, `#70sMusic`, `#LiveMusic` reach "nostr" and "music". A
      *    lowercase compound (`#asknostr`, `astrophotography`) has no boundary to
      *    split on and stays the phrase's — the recall this net gives up.
+     *
+     * HASHTAGS get every substring, not just prefixes ([MAX_HASHTAG] bounds it):
+     * the measured loss that mattered was the lowercase compound hashtag with
+     * the word at its END (`#asknostr`, `#grownostr`, `#astrophotography`, 220
+     * of 400 sampled "nostr" misses). A hashtag is one short token a note
+     * carries a handful of, so its full infix set is a few dozen elements, where
+     * doing the same for every body word is the index the phrase already is.
      */
     fun prefixes(body: String): List<String> {
         val out = LinkedHashSet<String>()
-        for (run in spacedRuns(body)) {
+        for ((run, hashtag) in spacedRuns(body)) {
             addPrefixes(run, out)
             val parts = NearText.splitCamelAndSeparators(run)
             if (parts.size > 1) for (part in parts) addPrefixes(part, out)
+            if (hashtag) addSuffixPrefixes(run, out)
         }
         return out.toList()
     }
 
-    /** Letter/digit runs of [body], broken where the script switches between spaced and unspaced; unspaced runs are dropped. */
-    private fun spacedRuns(body: String): List<String> {
-        val runs = ArrayList<String>()
+    /**
+     * Letter/digit runs of [body], broken where the script switches between
+     * spaced and unspaced; unspaced runs are dropped. Each run says whether it
+     * opens right after a `#` — a hashtag.
+     */
+    private fun spacedRuns(body: String): List<Pair<String, Boolean>> {
+        val runs = ArrayList<Pair<String, Boolean>>()
         val cur = StringBuilder()
         var curUnspaced = false
+        var curHashtag = false
+        var prev = -1
 
         fun flush() {
-            if (cur.isNotEmpty() && !curUnspaced) runs += cur.toString()
+            if (cur.isNotEmpty() && !curUnspaced) runs += cur.toString() to curHashtag
             cur.clear()
         }
         var i = 0
@@ -102,15 +116,38 @@ object EdgeText {
             i += Character.charCount(cp)
             if (!Character.isLetterOrDigit(cp)) {
                 flush()
+                prev = cp
                 continue
             }
             val u = unspaced(cp)
-            if (cur.isNotEmpty() && u != curUnspaced) flush()
+            if (cur.isNotEmpty() && u != curUnspaced) {
+                flush()
+                prev = -1
+            }
+            if (cur.isEmpty()) curHashtag = prev == '#'.code
             curUnspaced = u
             cur.appendCodePoint(cp)
+            prev = cp
         }
         flush()
         return runs
+    }
+
+    /**
+     * Longest hashtag whose every substring is indexed. Beyond it a "hashtag" is
+     * a pasted blob (a hex key, a URL fragment), and only its prefixes go in.
+     */
+    const val MAX_HASHTAG = 40
+
+    /** The prefixes of every proper suffix of [token] at least [MIN_PREFIX] long — with [addPrefixes], every substring. */
+    private fun addSuffixPrefixes(
+        token: String,
+        out: MutableSet<String>,
+    ) {
+        val folded = NearText.foldAccents(token)
+        val len = folded.codePointCount(0, folded.length)
+        if (len > MAX_HASHTAG) return
+        for (start in 1..len - MIN_PREFIX) addPrefixes(folded.substring(folded.offsetByCodePoints(0, start)), out)
     }
 
     /** The term a query word looks up in `search_text_edge`, or null when the word is not [eligible]. */

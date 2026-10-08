@@ -46,7 +46,19 @@ class EdgeTextTest {
         assertEquals(listOf("nost", "nostr"), EdgeText.prefixes("Nostrを使って"))
         val tags = EdgeText.prefixes("#AskNostr #70sMusic")
         assertTrue("nostr" in tags && "music" in tags && "askn" in tags, tags.toString())
-        assertTrue(EdgeText.prefixes("#asknostr").none { it == "nost" }, "a lowercase compound has no boundary to split on")
+        assertTrue(EdgeText.prefixes("asknostr").none { it == "nost" }, "a lowercase compound word has no boundary to split on")
+    }
+
+    @Test
+    fun `a hashtag is indexed by every substring, so a word at its end still finds it`() {
+        val tag = EdgeText.prefixes("gm #asknostr")
+        assertTrue(listOf("nost", "nostr", "askn", "skno").all { it in tag }, tag.toString())
+        assertTrue("photography" in EdgeText.prefixes("#astrophotography"))
+        // Only the token right after the `#`: the next word is an ordinary word again.
+        assertTrue(EdgeText.prefixes("#gm asknostr").none { it == "nostr" })
+        // A blob past MAX_HASHTAG keeps its prefixes and nothing else.
+        val blob = "#" + "ab12".repeat(11)
+        assertTrue(EdgeText.prefixes(blob).all { blob.substring(1).startsWith(it) })
     }
 
     @Test
