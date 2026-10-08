@@ -169,6 +169,9 @@ class MockVespaEngine {
      */
     @Volatile var rejectNearFields: Boolean = false
 
+    /** A schema predating the PROTOTYPE `search_text_edge` column (#161): refuses documents and queries naming it. */
+    @Volatile var rejectEdgeField: Boolean = false
+
     /**
      * Document-API visit requests served. Both snapshot paths return the SAME
      * ids, so only this distinguishes which one ran — a correctness assertion
@@ -346,6 +349,9 @@ class MockVespaEngine {
                 if (rejectNearFields && nearField != null) {
                     return Reply(400, """{"message":"Field '$nearField' is not defined in document type 'event'"}""")
                 }
+                if (rejectEdgeField && FuzzyWordGroup.EDGE_FIELD in fields) {
+                    return Reply(400, """{"message":"Field '${FuzzyWordGroup.EDGE_FIELD}' is not defined in document type 'event'"}""")
+                }
                 runBlocking { inner.put(EventDoc.fromSummary(fields)) }
                 Reply(200, """{"id":"$path"}""")
             }
@@ -425,6 +431,9 @@ class MockVespaEngine {
         // whole query the moment the YQL names an unknown field.
         if (rejectNearFields && "name_near" in yql) {
             return Reply(400, """{"message":"Could not create query from YQL: Field 'name_near' does not exist."}""")
+        }
+        if (rejectEdgeField && FuzzyWordGroup.EDGE_FIELD in yql) {
+            return Reply(400, """{"message":"Could not create query from YQL: Field '${FuzzyWordGroup.EDGE_FIELD}' does not exist."}""")
         }
         val hits = params["hits"]?.toIntOrNull() ?: 10
         // The exact-count query (EventYql.buildCount): "… limit 0 | all(output(count()))".

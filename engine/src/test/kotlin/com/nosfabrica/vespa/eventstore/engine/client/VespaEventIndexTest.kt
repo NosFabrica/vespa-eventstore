@@ -1214,6 +1214,50 @@ class VespaEventIndexTest {
         }
 
     /**
+     * The same write net for the PROTOTYPE edge column (#161), which is its own
+     * schema generation: a schema without `search_text_edge` must keep taking
+     * body documents, and keep the near tier it does have.
+     */
+    @Test
+    fun `a schema without the edge column still accepts body writes, minus that column`() =
+        runBlocking {
+            mock.rejectEdgeField = true
+            val fresh = VespaEventIndex(mock.url, bodyEdgeFeed = true)
+            try {
+                val body = doc(kind = 1, search = SearchFields(text = "tarantellas every night"))
+                fresh.put(body)
+                assertEquals(body.id, fresh.get(body.id)?.id, "the document landed")
+                val batch = (1..3).map { doc(kind = 1, search = SearchFields(text = "tarantella $it")) }
+                fresh.putAll(batch)
+                assertEquals(batch.map { it.id }.toSet(), batch.mapNotNull { fresh.get(it.id)?.id }.toSet(), "the batch landed")
+            } finally {
+                mock.rejectEdgeField = false
+                fresh.close()
+            }
+        }
+
+    /** A schema missing BOTH fed columns names one per refusal: two demotions, then the write lands. */
+    @Test
+    fun `a schema missing the near tier and the edge column demotes twice on write`() =
+        runBlocking {
+            mock.rejectNearFields = true
+            mock.rejectEdgeField = true
+            val fresh = VespaEventIndex(mock.url, bodyEdgeFeed = true)
+            try {
+                val both = doc(kind = 30023, search = SearchFields(primary = "Tarantella", text = "tarantellas every night"))
+                fresh.put(both)
+                assertEquals(both.id, fresh.get(both.id)?.id)
+                val conditional = doc(kind = 30023, search = SearchFields(primary = "Second", text = "another body"))
+                fresh.putAll(listOf(conditional))
+                assertEquals(conditional.id, fresh.get(conditional.id)?.id)
+            } finally {
+                mock.rejectNearFields = false
+                mock.rejectEdgeField = false
+                fresh.close()
+            }
+        }
+
+    /**
      * A PARTIAL ANSWER IS ABOUT THE MOMENT, NOT THE DATA, and must not buy a
      * whole-corpus read. Measured against one predicate on staging: 7.1s of
      * visiting found 4 of 8,765 matches that one indexed query answered

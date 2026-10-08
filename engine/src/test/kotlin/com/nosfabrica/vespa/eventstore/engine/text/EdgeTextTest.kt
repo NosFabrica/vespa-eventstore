@@ -78,4 +78,30 @@ class EdgeTextTest {
         assertEquals("bitc", EdgeText.queryTerm("Bitc"))
         assertEquals("lazar", EdgeText.queryTerm("Lázar"))
     }
+
+    @Test
+    fun `a word typed with combining accents is one word on both sides`() {
+        // "La" + U+0301 + "zaro": the decomposed form iOS/macOS input produces.
+        val decomposed = "La\u0301zaro"
+        assertEquals(listOf("laza", "lazar", "lazaro"), EdgeText.prefixes(decomposed))
+        assertEquals("lazar", EdgeText.queryTerm("La\u0301zar"))
+        // Marks that never compose (Arabic harakat) stay inside the word too.
+        assertEquals(EdgeText.prefixes("كتاب"), EdgeText.prefixes("كِتَاب"))
+    }
+
+    @Test
+    fun `a document feeds at most MAX_ELEMENTS, keeping its opening`() {
+        val words = (0 until 6_000).map { "w${it.toString().padStart(5, '0')}xyz" }
+        val fed = EdgeText.prefixes(words.joinToString(" "))
+        assertEquals(EdgeText.MAX_ELEMENTS, fed.size)
+        assertTrue("w00000xyz" in fed, "the opening survives the cap")
+    }
+
+    @Test
+    fun `only the first hashtags get every substring`() {
+        val tags = (0 until EdgeText.MAX_EXPANDED_HASHTAGS + 1).joinToString(" ") { "#tag${it.toString().padStart(2, '0')}nostr" }
+        val fed = EdgeText.prefixes(tags)
+        assertTrue("00nostr" in fed, "an early hashtag is fully expanded")
+        assertTrue("${EdgeText.MAX_EXPANDED_HASHTAGS}nostr" !in fed, "the one past the limit keeps prefixes only")
+    }
 }

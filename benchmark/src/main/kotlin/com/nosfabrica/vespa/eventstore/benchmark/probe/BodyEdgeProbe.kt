@@ -29,7 +29,6 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.longOrNull
 
 /**
  * PROTOTYPE A/B (#161): the body's partial-word reach as the trigram PHRASE on
@@ -57,7 +56,7 @@ object BodyEdgeProbe {
     fun main(args: Array<String>) {
         val url = System.getenv("VESPA_URL") ?: "http://localhost:8080"
         val kinds = (System.getenv("PROBE_KINDS") ?: "1").split(",").mapNotNull { it.trim().toIntOrNull() }
-        val reps = System.getenv("PROBE_REPS")?.toIntOrNull() ?: 7
+        val reps = (System.getenv("PROBE_REPS")?.toIntOrNull() ?: 7).coerceAtLeast(1)
         val limit = System.getenv("PROBE_LIMIT")?.toIntOrNull() ?: 10
         val label = System.getenv("PROBE_LABEL") ?: "-"
         val terms = args.toList().ifEmpty { listOf("tarantella", "bitcoin", "bitc", "nostr", "freedom") }
@@ -66,7 +65,15 @@ object BodyEdgeProbe {
         println("cluster $url, corpus=$total docs, kinds=$kinds, limit=$limit, reps=$reps, label=$label")
         println("%-14s %-34s %10s %10s".format("term", "variant", "engine ms", "matches"))
         for (term in terms) {
+            // The compiler's own floor and refusal rule (FuzzyWordGroup.phraseGramClause):
+            // at least two trigrams, all alphanumeric. Anything else is a clause it
+            // never sends, so the comparison would be meaningless (and a quote
+            // would break the YQL); such terms are skipped, not approximated.
             val folded = NearText.foldAccents(term)
+            if (folded.length < 4 || !folded.all(Char::isLetterOrDigit)) {
+                println("%-14s skipped: the compiler sends no body phrase for it".format(term))
+                continue
+            }
             val grams = (0..folded.length - 3).map { folded.substring(it, it + 3) }
             val phrase = "search_text_gram contains phrase(${grams.joinToString(", ") { "\"$it\"" }})"
             val edgeTerm = EdgeText.queryTerm(term)
@@ -113,13 +120,7 @@ object BodyEdgeProbe {
         var matches = 0L
         repeat(reps + 1) { i ->
             val body = send()
-            matches = body["root"]
-                ?.jsonObject
-                ?.get("fields")
-                ?.jsonObject
-                ?.get("totalCount")
-                ?.jsonPrimitive
-                ?.longOrNull ?: 0L
+            matches = SearchTrace.totalCount(body)
             val seconds =
                 body["timing"]
                     ?.jsonObject

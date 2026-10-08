@@ -1112,8 +1112,8 @@ schema event {
         # two groups are disjoint per kind (the argument any_token_match()
         # already rests on), and where a kind does fill both, one rung is what
         # the ladder means.
-        # search_text_gram joins the rung (2026-08-15). It is the ONE gram field
-        # that does, and the exception is earned by its matcher, not by its tier:
+        # search_text_gram joins the rung (2026-08-15). It is the ONE trigram
+        # field that does, and the exception is earned by its matcher, not by its tier:
         # every other *_gram is AND-matched, so a hit means "these trigrams appear
         # somewhere", which is the gram-only NOISE real_match() and the cutoff
         # exist to delete. search_text_gram is PHRASE-matched, so a hit means the
@@ -1134,6 +1134,12 @@ schema event {
         # hits that start a word higher" — anchoring itself (word-start above
         # mid-word) has no cheap signal here and is deliberately NOT modelled:
         # `Protesting` surfacing for "testin" is loose, not wrong.
+        #
+        # search_text_edge (PROTOTYPE, #161) joins it for the same reason: a hit
+        # is a body word that STARTS with the query word (or, for a hashtag,
+        # contains it), a genuine body match text_score_cutoff would otherwise
+        # delete. It is fed only under VESPA_BODY_EDGE and queried only under
+        # EventQuery.bodyEdgeMatching, so by default it contributes 0.
         function tier_body_match() {
             expression: if(any_token_match() > 0 || any_near_match() > 0 || weak_match() > 0, 0, if(matchCount(search_text) > 0 || matchCount(search_location) > 0 || matchCount(search_text_gram) > 0 || matchCount(search_text_edge) > 0, 1, 0))
         }
@@ -1453,7 +1459,9 @@ schema event {
         # granularity, so they count: a word reachable only as an INFIX inside a
         # bio word is weaker evidence than the exact bio hit beside it in this
         # list, never stronger, and leaving them out would let that shape keep
-        # the whole token rung.
+        # the whole token rung. The prototype search_text_edge (#161) counts for
+        # the same reason: a body word reached by its start, or a hashtag by any
+        # part, is the body surface, never the naming one.
         function offname_match() {
             expression {
                 matchCount(about) + matchCount(nip05) + matchCount(lud16) + matchCount(website)

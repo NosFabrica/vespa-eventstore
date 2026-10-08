@@ -138,6 +138,16 @@ class VespaEventIndex(
     recencyMemory: Boolean =
         System.getenv("VESPA_RECENCY_MEMORY")?.let { it != "0" && !it.equals("false", ignoreCase = true) } ?: true,
     /**
+     * PROTOTYPE (#161), OFF by default: whether puts feed the body's edge
+     * n-grams (`search_text_edge`, [com.nosfabrica.vespa.eventstore.engine.text.EdgeText]).
+     * `VESPA_BODY_EDGE=1` turns it on. Its own switch, not the near tier's: no
+     * production query reads the column ([EventQuery.bodyEdgeMatching] is off),
+     * so feeding it by default would make every write pay for an index nothing
+     * reads, and a schema predating the column would refuse every body document.
+     */
+    private val bodyEdgeFeed: Boolean =
+        System.getenv("VESPA_BODY_EDGE")?.let { it == "1" || it.equals("true", ignoreCase = true) } ?: false,
+    /**
      * WHERE ENGINE-LEVEL COST IS PUBLISHED, or null to publish none.
      *
      * The rank profile, the documents matched and Vespa's own timing split are
@@ -218,9 +228,12 @@ class VespaEventIndex(
     private fun putOp(doc: EventDoc) =
         feed.client.put(
             DocumentId.of(EVENT_NAMESPACE, EVENT_DOCTYPE, docIdOf(doc)),
-            buildJsonObject { put("fields", doc.indexFields(includeNear = fallbacks.nearFieldsAvailable)) }.toString(),
+            buildJsonObject { put("fields", doc.indexFields(includeNear = fallbacks.nearFieldsAvailable, includeEdge = feedsEdge())) }.toString(),
             feedParams(),
         )
+
+    /** Whether a put feeds `search_text_edge` now: asked for, and not refused by the serving schema. */
+    private fun feedsEdge(): Boolean = bodyEdgeFeed && fallbacks.bodyEdgeAvailable
 
     /**
      * The write-side twin of [SchemaFallbacks.withNearFallback]: await [ops],
@@ -254,13 +267,24 @@ class VespaEventIndex(
                 // Await the rest before reacting: they are already in flight,
                 // and leaving futures unawaited would surface later as
                 // unhandled completions on an unrelated call.
-                if (!fallbacks.isMissingNearField(e.message)) throw e
+                if (!fallbacks.isMissingFedColumn(e.message)) throw e
                 refused = e
             }
         }
         if (refused == null) return
-        fallbacks.markNearFieldsMissing()
-        docs.map { putOp(it) }.forEach { it.await() }
+        // A refusal names ONE unknown field, so a schema missing both the near
+        // tier and the edge column takes two rounds; each flips one flag for good.
+        var attempt = 0
+        while (true) {
+            val retry = docs.map { putOp(it) }
+            try {
+                retry.forEach { it.await() }
+                return
+            } catch (e: Throwable) {
+                if (++attempt > 2 || !fallbacks.isMissingFedColumn(e.message)) throw e
+                retry.forEach { runCatching { it.await() } }
+            }
+        }
     }
 
     private fun removeOp(id: String) = feed.client.remove(DocumentId.of(EVENT_NAMESPACE, EVENT_DOCTYPE, id), feedParams())
@@ -308,17 +332,20 @@ class VespaEventIndex(
             feed.client
                 .put(
                     DocumentId.of(EVENT_NAMESPACE, EVENT_DOCTYPE, address),
-                    buildJsonObject { put("fields", doc.indexFields(includeNear = fallbacks.nearFieldsAvailable)) }.toString(),
+                    buildJsonObject { put("fields", doc.indexFields(includeNear = fallbacks.nearFieldsAvailable, includeEdge = feedsEdge())) }.toString(),
                     feedParams().createIfNonExistent(true).testAndSetCondition(condition),
                 ).await()
-        val result =
+        var refusals = 0
+        var result: Result
+        while (true) {
             try {
-                attempt()
+                result = attempt()
+                break
             } catch (e: Throwable) {
-                if (!fallbacks.isMissingNearField(e.message)) throw e
-                fallbacks.markNearFieldsMissing()
-                attempt()
+                // Each refusal names one unknown column; near and edge are two.
+                if (++refusals > 2 || !fallbacks.isMissingFedColumn(e.message)) throw e
             }
+        }
         // A transport/engine failure completes the future exceptionally (never
         // a Result here), so the else guards only a future enum addition.
         return when (result.type()) {

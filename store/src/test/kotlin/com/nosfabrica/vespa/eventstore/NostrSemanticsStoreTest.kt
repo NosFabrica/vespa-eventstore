@@ -837,6 +837,44 @@ open class NostrSemanticsStoreTest {
             assertEquals(emptyList<String>(), puts, "a backfilled corpus converges to a no-op")
         }
 
+    /**
+     * The edge-column backfill (#161) re-puts every document WITH A BODY and
+     * nothing else, even when the ordinary drift check finds nothing to do —
+     * the column is index-only, so no check could ever see it missing.
+     */
+    @Test
+    fun `the body edge backfill re-puts every body document and only those`() =
+        runBlocking {
+            val inner = InMemoryEventIndex()
+            val puts = mutableListOf<String>()
+            val engine =
+                object : EventIndex by inner {
+                    override suspend fun put(doc: EventDoc) {
+                        puts += doc.id
+                        inner.put(doc)
+                    }
+
+                    override suspend fun putAll(docs: List<EventDoc>) = docs.forEach { put(it) }
+
+                    override suspend fun putIfNewer(doc: EventDoc): Boolean = super.putIfNewer(doc)
+                }
+            val store = NostrSemanticsStore(engine, relay = "wss://sot.test/".normalizeRelayUrl())
+            // Through the factory, as a relay parses it: a bare Event of kind 1 is
+            // not a TextNoteEvent, so it would index no body at insert and then
+            // look drifted to the reindex, which re-parses it typed.
+            val body = EventFactory.create<Event>(id(), alice, next(), 1, emptyArray(), "tarantellas every night", "")
+            store.insert(body)
+            store.insert(metadata(name = "satoshi"))
+
+            puts.clear()
+            store.reindexFullTextSearch()
+            assertEquals(emptyList<String>(), puts, "the ordinary reindex sees no drift")
+
+            puts.clear()
+            store.backfillBodyEdge(batchSize = 1)
+            assertEquals(listOf(body.id), puts, "the note has a body and is re-put; the profile has none")
+        }
+
     /** A present limit <= 0 is the "matches nothing" sentinel on EVERY recall path — never an exception, never a full result. */
     @Test
     fun `a non-positive limit matches nothing instead of throwing`() =

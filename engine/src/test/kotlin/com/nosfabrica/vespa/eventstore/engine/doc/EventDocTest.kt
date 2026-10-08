@@ -27,6 +27,8 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class EventDocTest {
     // Lossiness traps on purpose: a 3-element tag (relay hint), a non-single-letter
@@ -123,6 +125,20 @@ class EventDocTest {
         val storedTags = Json.parseToJsonElement(fields.getValue("tags").jsonPrimitive.content)
         assertEquals(doc.tags, storedTags.jsonArray.map { tag -> tag.jsonArray.map { it.jsonPrimitive.content } })
         assertEquals(doc.tagIndex(), fields.getValue("tag_index").jsonArray.map { it.jsonPrimitive.content })
+    }
+
+    /**
+     * The PROTOTYPE edge column (#161) is fed only when asked, and independently
+     * of the near tier: off by default so production writes do not pay for an
+     * index nothing reads, and not tied to [includeNear] so a schema missing one
+     * generation keeps the other.
+     */
+    @Test
+    fun `the edge column has its own gate and is off by default`() {
+        val body = doc.copy(search = SearchFields(text = "tarantellas every night"))
+        assertFalse("search_text_edge" in body.indexFields())
+        assertTrue("search_text_edge" in body.indexFields(includeEdge = true))
+        assertTrue("search_text_edge" in body.indexFields(includeNear = false, includeEdge = true), "not tied to the near gate")
     }
 
     @Test

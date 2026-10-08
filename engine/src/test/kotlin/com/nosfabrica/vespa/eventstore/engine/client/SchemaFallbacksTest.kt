@@ -153,6 +153,32 @@ class SchemaFallbacksTest {
     }
 
     /**
+     * The PROTOTYPE edge column (#161) demotes on its own: the query answers its
+     * body partial words with the phrase again, and the other columns stay.
+     */
+    @Test
+    fun `a schema missing only the edge column falls back to the body phrase`() {
+        val attempts = columnAttempts(EventQuery(search = "tarantella", bodyEdgeMatching = true), "search_text_edge")
+        assertEquals(2, attempts.size, "one demotion, one rerun")
+        assertEquals(false, attempts.last().bodyEdgeMatching)
+        assertTrue(attempts.last().bodyGramMatching && attempts.last().nearMatching)
+        assertTrue("search_text_gram contains phrase(" in EventYql.build(attempts.last())!!.yql, "the phrase answers again")
+    }
+
+    /**
+     * Three schema generations can all be missing: near, then the edge column
+     * (whose term replaces the phrase), then the phrase the edge demotion brings
+     * back. Each round flips one flag; the net must have room for all three.
+     */
+    @Test
+    fun `a schema missing all three columns demotes three times rather than failing`() {
+        val attempts = columnAttempts(EventQuery(search = "tarantella", bodyEdgeMatching = true), "name_near", "search_text_edge", "search_text_gram")
+        assertEquals(4, attempts.size, "three gaps, three demotions")
+        val last = attempts.last()
+        assertEquals(listOf(false, false, false), listOf(last.nearMatching, last.bodyEdgeMatching, last.bodyGramMatching))
+    }
+
+    /**
      * A 400 that merely MENTIONS a near column must not demote — and Vespa
      * produces exactly such messages, because some of its parse errors ECHO THE
      * QUERY. Measured on Vespa 8 (2026-08-15), a stray syntax error answers
