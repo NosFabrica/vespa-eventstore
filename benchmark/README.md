@@ -475,6 +475,23 @@ Corpus scale caveat: 26k documents, where fixed per-query overhead still
 dominates, so read the **absolute** +2.11 ms rather than the percentage. Re-run
 at 45k+ before treating the percentage as a planning number.
 
+**At production scale the "free" verdict does not hold** (#161, measured on
+`search.brainstorm.world`, ~445M events, 2026-10-08). For `tarantella`, alone
+on `search_text_gram`: the 8-trigram phrase took **2.4 s** to match 1,408
+documents, while the AND of the same trigrams took 64 ms to match 1.49M. Every
+other clause of the word group together took 39 ms, and the phrase added 69
+documents (+3.6 %) to the 1,890 they found. The position checks run on every
+document holding all the trigrams, so the cost follows that candidate set, not
+the result.
+
+A kind filter does not bound it either: Vespa drives an AND from its smallest
+estimate, and kind 0's 60M documents outnumber the phrase's rarest trigram, so
+`kind = 0 and <phrase>` still paid **1.77 s, for 0 matches**. Kind 0 never
+carries `search_text`, so the compiler now omits the phrase on a query whose
+kinds are all body-less (`EventYql.BODYLESS_KINDS`, kind 0 alone, pinned
+by `SearchExtractorsTest`). That is fix 1 of #161. The phrase's cost on body
+kinds (1-5 s per notes or long-form filter) is still open there.
+
 ### The write path's own derivation, and what a NIP-30 badge costs (2026-09-01)
 
 `extractBench` times `SearchExtractors.extract` and nothing else — no Vespa, no
@@ -665,6 +682,11 @@ row is the closest thing to free lunch here (a `kinds:[1]` REQ can never match a
 column only a profile event fills) and it is deliberately not taken: which kinds
 fill which columns is decided UPSTREAM in Quartz's `SearchFieldExtractor`, and a
 copy of that table here would be a silent recall outage the day a kind moves.
+The one exception is narrower on both counts: the body phrase is dropped for
+kind 0 alone (`EventYql.BODYLESS_KINDS`). A test fails the build if kind 0
+ever extracts a body, and a stale entry would lose only partial-word body reach,
+because the exact `search_text` clause still runs. It was bought by a 1.77 s
+clause matching nothing at production scale (see the `search_text_gram` section).
 
 ### 4. What was changed: the match threads
 

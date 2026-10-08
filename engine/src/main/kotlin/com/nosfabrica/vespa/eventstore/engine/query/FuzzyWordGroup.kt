@@ -436,4 +436,17 @@ internal object FuzzyWordGroup {
      * the same compatibility demotion the near columns get.
      */
     val PHRASE_GRAM_FIELDS = listOf("search_text_gram")
+
+    /**
+     * True when a query over [kinds] can reach a document carrying a body —
+     * the condition for emitting [PHRASE_GRAM_FIELDS]. No kinds is every kind;
+     * the body-less set is [EventYql.BODYLESS_KINDS].
+     *
+     * Judged per COMPILED query, from that query's own kinds, never once per
+     * filter: the store re-aims a search at pointer kinds (labels, lists,
+     * assertions — `SearchReferenceExpansion.companions`) with `copy(kinds = …)`,
+     * and a flag settled on the `kinds:[0]` original would ride into a label
+     * companion that does have a body.
+     */
+    fun bodyReachable(kinds: Collection<Int>): Boolean = kinds.isEmpty() || kinds.any { it !in EventYql.BODYLESS_KINDS }
 }

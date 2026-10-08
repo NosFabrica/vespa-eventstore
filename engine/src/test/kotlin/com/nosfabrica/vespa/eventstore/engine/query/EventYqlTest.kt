@@ -706,6 +706,34 @@ class EventYqlTest {
     }
 
     @Test
+    fun `a search over body-less kinds only gets no body phrase`() {
+        // #161: on kind 0 the phrase matched 0 documents in 1.77 s, because the
+        // kind filter is checked only after every position check. Its search_text
+        // is always empty (the guard lives in SearchExtractorsTest).
+        val profiles = EventYql.build(EventQuery(kinds = listOf(0), search = "tarantella"))!!
+        assertFalse("search_text_gram" in profiles.yql, profiles.yql)
+        // Only the phrase goes: the word keeps every other clause, the exact
+        // body clause included (cheap, and the safety net for a stale entry).
+        assertTrue("({defaultIndex:\"search_text\"}userInput(@w0))" in profiles.yql, profiles.yql)
+        assertTrue("about_gram contains \"tar\"" in profiles.yql, profiles.yql)
+
+        val phrase = "search_text_gram contains phrase("
+        assertTrue(phrase in EventYql.build(EventQuery(kinds = listOf(1), search = "tarantella"))!!.yql)
+        assertTrue(phrase in EventYql.build(EventQuery(search = "tarantella"))!!.yql, "no kinds is every kind")
+        assertTrue(phrase in EventYql.build(EventQuery(kinds = listOf(0, 1), search = "tarantella"))!!.yql, "one body kind is enough")
+    }
+
+    @Test
+    fun `the body phrase is decided per compiled query, so a re-aimed copy gets its own answer`() {
+        // The store's reference expansion re-aims a kind 0 search at pointer
+        // kinds with copy(kinds = …). A kind 1985 label has a body, so its
+        // companion must not inherit the profile query's omission.
+        val profiles = EventQuery(kinds = listOf(0), search = "tarantella")
+        val labels = profiles.copy(kinds = listOf(1985))
+        assertTrue("search_text_gram contains phrase(" in EventYql.build(labels)!!.yql)
+    }
+
+    @Test
     fun `a word with inner punctuation gets no body phrase, because a dropped gram breaks adjacency`() {
         // Trigrams straddling the punctuation are not alphanumeric and are
         // filtered; keeping the survivors as a phrase would demand an adjacency
