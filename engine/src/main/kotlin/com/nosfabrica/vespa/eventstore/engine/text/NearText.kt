@@ -198,7 +198,7 @@ object NearText {
      * before the last capital of an ALLCAPS->Capitalized boundary
      * ("HTTPServer" -> [HTTP, Server]).
      */
-    private fun splitCamelAndSeparators(s: String): List<String> {
+    internal fun splitCamelAndSeparators(s: String): List<String> {
         val out = ArrayList<String>()
         val cur = StringBuilder()
         for (i in s.indices) {

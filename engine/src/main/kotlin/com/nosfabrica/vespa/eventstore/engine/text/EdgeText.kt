@@ -64,18 +64,53 @@ object EdgeText {
      * order. Words split at anything that is not a letter or digit — the same
      * boundary Vespa's tokenizer draws — so an element is always one token and
      * the index field's own tokenization keeps it whole.
+     *
+     * Two more boundaries, both measured on 149k real notes (2026-10-08), where
+     * the phrase found documents this net did not:
+     *  - a SCRIPT change: Japanese glues particles straight onto Latin words
+     *    ("Nostrを使って", "BitCoinのウォレット"), and skipping the whole run for
+     *    its kana lost the Latin word. The Latin run is indexed; the unspaced run
+     *    is left to the phrase.
+     *  - CAMEL CASE, as extra words beside the whole one ([NearText]'s own split):
+     *    `#AskNostr`, `#70sMusic`, `#LiveMusic` reach "nostr" and "music". A
+     *    lowercase compound (`#asknostr`, `astrophotography`) has no boundary to
+     *    split on and stays the phrase's — the recall this net gives up.
      */
     fun prefixes(body: String): List<String> {
         val out = LinkedHashSet<String>()
-        var i = 0
-        val n = body.length
-        while (i < n) {
-            while (i < n && !Character.isLetterOrDigit(body.codePointAt(i))) i += Character.charCount(body.codePointAt(i))
-            val start = i
-            while (i < n && Character.isLetterOrDigit(body.codePointAt(i))) i += Character.charCount(body.codePointAt(i))
-            if (i > start) addPrefixes(body.substring(start, i), out)
+        for (run in spacedRuns(body)) {
+            addPrefixes(run, out)
+            val parts = NearText.splitCamelAndSeparators(run)
+            if (parts.size > 1) for (part in parts) addPrefixes(part, out)
         }
         return out.toList()
+    }
+
+    /** Letter/digit runs of [body], broken where the script switches between spaced and unspaced; unspaced runs are dropped. */
+    private fun spacedRuns(body: String): List<String> {
+        val runs = ArrayList<String>()
+        val cur = StringBuilder()
+        var curUnspaced = false
+
+        fun flush() {
+            if (cur.isNotEmpty() && !curUnspaced) runs += cur.toString()
+            cur.clear()
+        }
+        var i = 0
+        while (i < body.length) {
+            val cp = body.codePointAt(i)
+            i += Character.charCount(cp)
+            if (!Character.isLetterOrDigit(cp)) {
+                flush()
+                continue
+            }
+            val u = unspaced(cp)
+            if (cur.isNotEmpty() && u != curUnspaced) flush()
+            curUnspaced = u
+            cur.appendCodePoint(cp)
+        }
+        flush()
+        return runs
     }
 
     /** The term a query word looks up in `search_text_edge`, or null when the word is not [eligible]. */
@@ -93,7 +128,6 @@ object EdgeText {
         token: String,
         out: MutableSet<String>,
     ) {
-        if (token.codePoints().anyMatch(::unspaced)) return
         val folded = truncate(NearText.foldAccents(token))
         val len = folded.codePointCount(0, folded.length)
         for (k in MIN_PREFIX..len) out += folded.substring(0, folded.offsetByCodePoints(0, k))

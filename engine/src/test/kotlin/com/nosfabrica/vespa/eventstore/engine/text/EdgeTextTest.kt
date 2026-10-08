@@ -42,6 +42,14 @@ class EdgeTextTest {
     }
 
     @Test
+    fun `a Latin word glued to Japanese is still indexed, and camel case adds its parts`() {
+        assertEquals(listOf("nost", "nostr"), EdgeText.prefixes("Nostrを使って"))
+        val tags = EdgeText.prefixes("#AskNostr #70sMusic")
+        assertTrue("nostr" in tags && "music" in tags && "askn" in tags, tags.toString())
+        assertTrue(EdgeText.prefixes("#asknostr").none { it == "nost" }, "a lowercase compound has no boundary to split on")
+    }
+
+    @Test
     fun `prefixes stop at the cap, and a longer query word is truncated to meet them`() {
         val word = "pneumonoultramicroscopicsilicovolcanoconiosis"
         val fed = EdgeText.prefixes(word)
