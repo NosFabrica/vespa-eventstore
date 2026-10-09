@@ -7,9 +7,11 @@ mavenPublish = "0.37.0"
 # Quartz from JitPack (amethyst @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
 # 53a7127524 = amethyst main @ 2026-10-08 (#4371). Not the tip, af7b1772cd: it and 439cbcc23f
 # (#4375, the same Quartz as the tip) fail on JitPack with the GradleWrapperMain error the
-# 68268da413 note blamed on Crowdin syncs. That was wrong: 53a7127524 sits after several Crowdin merges and builds, the wrapper
-# jar and gradlew are byte-identical across all three, and every failure reproduced on a fresh
-# JitPack ref. What 53a7127524 lacks of the tip's Quartz is the consumer WoT index
+# 68268da413 note blamed on Crowdin syncs. It does not follow content at all: 53a7127524 and the
+# four main merges before it build, 6cc4a76817 (older still) fails, the wrapper jar and gradlew
+# are byte-identical across every one, and the tip refs failed again on a fresh JitPack ref. A
+# JitPack-side fault, then; the tip may build on a later try.
+# What 53a7127524 lacks of the tip's Quartz is the consumer WoT index
 # (nip85TrustedAssertions/users/index, TrustNetwork*) and three ProviderTypes constants (hops,
 # reporters, muters); this store reads ProviderTypes.rank / followerCount only.
 # What this store calls moves in one place:
