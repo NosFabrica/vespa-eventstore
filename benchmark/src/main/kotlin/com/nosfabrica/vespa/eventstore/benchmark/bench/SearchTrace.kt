@@ -188,14 +188,7 @@ object SearchTrace {
             val t0 = System.nanoTime()
             val body = post(url, yql, params, ranking, if (i == 0) traceLevel else 0)
             val ms = (System.nanoTime() - t0) / 1_000_000
-            val root = body["root"]?.jsonObject
-            matches = root
-                ?.get("fields")
-                ?.jsonObject
-                ?.get("totalCount")
-                ?.jsonPrimitive
-                ?.content
-                ?.toLongOrNull() ?: 0L
+            matches = totalCount(body)
             if (i == 0) {
                 body["trace"]?.let { if (traceLevel > 0) println("  trace: $it") }
             } else {
@@ -246,6 +239,17 @@ object SearchTrace {
         check(res.statusCode() == 200) { "vespa ${res.statusCode()}: ${res.body().take(600)}" }
         return json.parseToJsonElement(res.body()).jsonObject
     }
+
+    /** The response's `totalCount`, 0 when absent. Shared with BodyEdgeProbe so both read a response one way. */
+    internal fun totalCount(body: JsonObject): Long =
+        body["root"]
+            ?.jsonObject
+            ?.get("fields")
+            ?.jsonObject
+            ?.get("totalCount")
+            ?.jsonPrimitive
+            ?.content
+            ?.toLongOrNull() ?: 0L
 
     private fun enc(s: String) = java.net.URLEncoder.encode(s, Charsets.UTF_8)
 

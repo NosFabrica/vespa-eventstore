@@ -19,6 +19,7 @@
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 package com.nosfabrica.vespa.eventstore.engine.doc
+import com.nosfabrica.vespa.eventstore.engine.text.EdgeText
 import com.nosfabrica.vespa.eventstore.engine.text.IndexableChars
 import com.nosfabrica.vespa.eventstore.engine.text.NearText
 import com.nosfabrica.vespa.eventstore.engine.text.WHITESPACE
@@ -157,6 +158,14 @@ data class SearchFields(
                 put("affil_tokens", NearText.merge(*affil.map(NearText::parts).toTypedArray()))
             }
         }
+
+    /**
+     * PROTOTYPE (#161): the body's word prefixes for `search_text_edge` ([EdgeText]).
+     * Kept out of [nearFields] on purpose: that map is read back from summaries
+     * by the reindex drift check, and this column is index-only — nothing can
+     * read it back, so it would read as drift on every document.
+     */
+    fun edgeFields(): Map<String, List<String>> = text?.let { EdgeText.prefixes(it) }?.takeIf { it.isNotEmpty() }?.let { mapOf("search_text_edge" to it) } ?: emptyMap()
 
     /**
      * [nearFields] minus empty arrays — exactly what a put writes, so

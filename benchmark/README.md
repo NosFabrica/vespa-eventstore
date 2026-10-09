@@ -492,6 +492,120 @@ kinds are all body-less (`EventYql.BODYLESS_KINDS`, kind 0 alone, pinned
 by `SearchExtractorsTest`). That is fix 1 of #161. The phrase's cost on body
 kinds (1-5 s per notes or long-form filter) is still open there.
 
+### Edge n-grams instead of the body phrase — prototype A/B (#161, 2026-10-08)
+
+The prototype (`EdgeText`, `search_text_edge`, `EventQuery.bodyEdgeMatching`,
+default off) indexes every body word also as its prefixes (4-20 characters,
+accent-folded, camel-case parts and Latin runs glued to CJK included) in a FED
+index field, so a partial word is one term lookup instead of the trigram phrase.
+It trades mid-word reach for a cost that follows the answer, not the corpus.
+
+**Corpus:** 447,638 real events captured read-only from `search.brainstorm.world`
+(404,840 kind 1 notes plus 42,798 long-form 30023/30024/30818/30040/30041,
+observer-lensed), fed through `exportLoad` in three equal chunks to a single-node
+`vespaengine/vespa:latest` on a 4-core / 15 GB box. Same corpus and chunk order
+for both schemas, nothing else running during a timed feed. Query timings are
+`bodyEdgeProbe`: engine `querytime`, median of 7 after a warm-up pass, at 1 ms
+resolution, measured after a flush at each corpus size.
+
+**Query cost (ms) — the phrase grows with the corpus, the edge term does not.**
+Clause alone (unranked, `hits=0`) and the store's whole ranked query (`limit 10`):
+
+| kinds | word | phrase 149k → 298k → 448k | edge 149k → 298k → 448k | store phrase → edge at 448k |
+|---|---|---|---|---|
+| notes | tarantella (0 matches) | 4 → 6 → 6 | 1 → 1 → 1 | 8 → 4 |
+| notes | government | 5 → 9 → 10 | 1 → 1 → 2 | 16 → 6 |
+| notes | inflation | 4 → 8 → 9 | 1 → 1 → 1 | 13 → 7 |
+| notes | presidente | 10 → 15 → 13 | 2 → 2 → 1 | 24 → 10 |
+| notes | nostr | 9 → 6 → 19 | 3 → 2 → 2 | 34 → 27 |
+| long-form | government | 4 → 10 → 10 | 1 → 1 → 1 | 17 → 7 |
+| long-form | presidente | 5 → 13 → 13 | 1 → 1 → 1 | 19 → 5 |
+
+At this size every query is milliseconds, so read the SLOPE, not the absolute:
+the phrase roughly doubles across a 3× corpus, even for a word with no match at
+all, while the edge term stays at 1-2 ms. Production is ~1,000× larger, where the
+same phrase measured 2.4 s. That ratio is not proven here and needs a run on a
+larger cluster before anyone plans on it.
+
+**Recall given up** (phrase-only documents at 448k, notes; a 400-document sample
+classified by the token holding the word):
+
+| word | phrase matches | lost | of the sample: URL | hashtag | mid-word |
+|---|---|---|---|---|---|
+| bitcoin | 20,322 | 107 (0.5%) | 84 | 2 | 21 |
+| nostr | 80,134 | 458 (0.6%) | 162 | 220 | 18 |
+| photography | 2,519 | 247 (9.8%) | 18 | 224 | 5 |
+| music | 3,358 | 194 (5.8%) | 139 | 44 | 11 |
+| time | 23,012 | 4,869 (21%) | 191 | 8 | 201 |
+| ligh | 7,108 | 3,357 (47%) | 26 | 4 | 369 |
+
+Whole words lose under 1-10%. Most of what is lost is a word inside a URL
+(`nytimes.com`, `loveisbitcoin.com`) or inside another word (`sometimes`,
+`highlight`, `glove`), which is arguably noise. The real loss is **lowercase
+compound hashtags** with the word at the end (`#asknostr`, `#grownostr`,
+`#astrophotography`): no boundary to split on. The edge term found almost
+nothing the phrase did not (0-3 documents per word).
+
+An earlier derivation lost two more classes, now fixed: a Latin word glued to
+Japanese (`Nostrを使って`, so runs split at script changes) and camel-case
+hashtags (`#AskNostr`, `#70sMusic`, so camel parts are indexed too).
+
+**Write and storage cost, both columns fed** (full corpus):
+
+| | baseline (phrase only) | prototype (phrase + edge) |
+|---|---|---|
+| feed wall time, 3 chunks | 708 s | 777 s (+9.7%) |
+| proton peak RSS while feeding | 2,661 MB | 3,059 MB (+15%) |
+| `search_text_gram` index | 730 MB | 730 MB |
+| `search_text_edge` index | — | 406 MB |
+| document store (summary) | 1,039 MB | 1,373 MB (+334 MB) |
+
+The edge index is 56% of the gram index, but a FED field is also stored in the
+document store, which costs nearly what the index saves. Swapping one column for
+the other is therefore roughly disk-neutral (index −324 MB, doc store +334 MB).
+Its feed cost was not measured on its own: dropping the gram field removes
+Vespa-side indexing work, so +9.7% is an upper bound.
+
+**Hashtags get every substring (same day, same corpus, a fresh reload).** A body
+hashtag up to 40 characters now feeds every substring of 4+ characters into the
+same column, so the query side is unchanged and `nostr` reaches `#asknostr`.
+At 448k, in the same run:
+
+| kinds | word | clause phrase → edge (ms) | store phrase → edge (ms) | lost before → after |
+|---|---|---|---|---|
+| notes | nostr | 16 → 4 | 44 → 36 | 458 → 205 of 80,134 |
+| notes | photography | 5 → 1 | 10 → 7 | 247 → 21 of 2,519 |
+| notes | music | 4 → 1 | 8 → 5 | 194 → 150 of 3,358 |
+| notes | presidente | 17 → 2 | 26 → 12 | 17 → 17 of 13,134 |
+| notes | government | 10 → 1 | 15 → 8 | 11 → 4 of 3,033 |
+| long-form | presidente | 14 → 2 | 18 → 5 | 0 of 50 |
+
+No hashtag is among the sampled misses for any word any more. What the edge
+column still misses is a word inside a URL (`nostr` 186 of its 205, `music` 139
+of 150) or inside another word (`sometimes`, `highlight`, `glove`). The column
+grew from 406 MB to 439 MB (+8%) and the document store by 26 MB. Feed time was
+267 s / 260 s for chunks 2 and 3, against 250 s / 240 s without hashtag
+substrings and 220 s / 207 s for the baseline. Chunk 1 (363 s) ran straight after
+a Docker daemon restart and is left out of the comparison.
+
+**After the code audit (same day).** Feeding the column is now opt-in
+(`VESPA_BODY_EDGE=1` on the loader, so every number above needs it to
+reproduce), with its own write and read schema fallbacks, and
+`NostrSemanticsStore.backfillBodyEdge` re-feeds a corpus written before it.
+Two changes touch what is fed: words keep their combining marks (a body typed
+in decomposed form split "Lázaro" into "La" + "zaro"), and a document is capped
+at 16,384 elements with 32 fully expanded hashtags. One real article had fed
+205,151, and 6 of the 42,798 long-form documents exceeded the cap. A fresh
+reload with both changes: edge index 432 MB (439 MB before), proton peak RSS
+2,802 MB (2,983 MB), and recall identical on every sampled note word. Long-form
+"nostr" lost 5 instead of 2 and "bitcoin" 3 instead of 2, the cap trimming the
+tail of the largest articles. The edge clause still measured 1-3 ms against
+4-21 ms for the phrase.
+
+Not yet done: a run at a scale where the phrase costs what it does on production,
+and `RankRegressionIT`/`SearchBodyGramIT` with the flag on (the mid-word cases
+there fail by design).
+
 ### The write path's own derivation, and what a NIP-30 badge costs (2026-09-01)
 
 `extractBench` times `SearchExtractors.extract` and nothing else — no Vespa, no

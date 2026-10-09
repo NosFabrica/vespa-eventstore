@@ -74,6 +74,10 @@ internal class SchemaFallbacks {
     @Volatile var bodyGramAvailable = true
         private set
 
+    /** PROTOTYPE (#161): whether the serving schema has `search_text_edge` — both directions, like [nearFieldsAvailable]. */
+    @Volatile var bodyEdgeAvailable = true
+        private set
+
     @Volatile var dedupSummaryAvailable = true
         private set
 
@@ -114,6 +118,27 @@ internal class SchemaFallbacks {
             message.contains(NOT_IN_DOCUMENT_TYPE) &&
             FuzzyWordGroup.ALL_NEAR_FIELDS.any { message.contains(it) }
 
+    /**
+     * Whether this feed refusal names a FED column the serving schema lacks —
+     * the near tier or the prototype edge column — and, if so, stop feeding it
+     * for the life of the client. The near predicate's exact-phrase rule applies
+     * to both: a false positive silently strips a column off every later write.
+     * The edge column has its own flag because it is its own schema generation:
+     * a schema with the near tier but not the edge column must keep the near
+     * tier, and vice versa.
+     */
+    fun isMissingFedColumn(message: String?): Boolean {
+        if (isMissingNearField(message)) {
+            markNearFieldsMissing()
+            return true
+        }
+        if (message != null && message.contains("400") && message.contains(NOT_IN_DOCUMENT_TYPE) && message.contains(FuzzyWordGroup.EDGE_FIELD)) {
+            bodyEdgeAvailable = false
+            return true
+        }
+        return false
+    }
+
     /** Whether this 400 names the missing `dedup` summary class — proof the attempt used it. */
     fun isMissingDedupSummary(e: IllegalArgumentException): Boolean = e.message?.contains("400") == true && e.message?.contains(EventYql.SUMMARY_DEDUP) == true
 
@@ -152,13 +177,16 @@ internal class SchemaFallbacks {
     /** [q] rebuilt for a schema without `search_text_gram` — a no-op while it serves. */
     fun demoteBodyGram(q: EventQuery): EventQuery = if (!bodyGramAvailable && q.bodyGramMatching) q.copy(bodyGramMatching = false) else q
 
+    /** [q] answering its body partial words with the phrase again, for a schema without `search_text_edge` (PROTOTYPE, #161). */
+    fun demoteBodyEdge(q: EventQuery): EventQuery = if (!bodyEdgeAvailable && q.bodyEdgeMatching) q.copy(bodyEdgeMatching = false) else q
+
     /**
      * Both column demotions. They are SEPARATE schema generations — every schema
      * carrying the near columns predates `search_text_gram` — so a schema can
      * lack either, or both, and demoting them together would strip name/title
      * prefix reach from a schema that still has it.
      */
-    private fun demoteSchema(q: EventQuery): EventQuery = demoteBodyGram(demoteNear(q))
+    private fun demoteSchema(q: EventQuery): EventQuery = demoteBodyEdge(demoteBodyGram(demoteNear(q)))
 
     /**
      * Run [attempt] with the rank-profile nets: a 400 naming the `recency` or
@@ -211,13 +239,13 @@ internal class SchemaFallbacks {
         q: EventQuery,
         attempt: suspend (EventQuery) -> T,
     ): T {
-        // TWO demotions are reachable, so the net retries twice: the near
-        // columns and `search_text_gram` are independent schema generations and
-        // a schema old enough lacks both. Each pass can only ever flip a flag
-        // that was still set, and flipping one strips its clauses from the next
-        // attempt, so the loop cannot spin — a given column can be named at most
-        // once.
-        repeat(2) {
+        // THREE demotions are reachable, so the net retries three times: the near
+        // columns, `search_text_gram` and the prototype `search_text_edge` are
+        // independent schema generations and a schema old enough lacks all of
+        // them. Each pass can only ever flip a flag that was still set, and
+        // flipping one strips its clauses from the next attempt, so the loop
+        // cannot spin — a given column can be named at most once.
+        repeat(3) {
             try {
                 return attempt(demoteSchema(q))
             } catch (e: IllegalArgumentException) {
@@ -263,6 +291,12 @@ internal class SchemaFallbacks {
         }
         if (q.bodyGramMatching && names(FuzzyWordGroup.PHRASE_GRAM_FIELDS)) {
             bodyGramAvailable = false
+            return true
+        }
+        // A demoted edge query answers with the phrase again, which can then
+        // demote on a round of its own if the schema predates that column too.
+        if (q.bodyEdgeMatching && names(listOf(FuzzyWordGroup.EDGE_FIELD))) {
+            bodyEdgeAvailable = false
             return true
         }
         return false

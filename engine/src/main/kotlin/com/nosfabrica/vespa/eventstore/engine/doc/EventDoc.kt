@@ -127,8 +127,16 @@ data class EventDoc(
      * insert of a searchable event (VespaEventIndex's write-side net, the twin
      * of SchemaFallbacks' read-side demotion). reindexFullTextSearch repairs
      * docs written that way — an omitted column reads back as drift.
+     *
+     * [includeEdge] (default OFF) adds the PROTOTYPE `search_text_edge` column.
+     * Unlike the near tier it can never read back as drift (it is index-only), so
+     * a document written without it is repaired only by
+     * `NostrSemanticsStore.backfillBodyEdge`.
      */
-    fun indexFields(includeNear: Boolean = true): JsonObject =
+    fun indexFields(
+        includeNear: Boolean = true,
+        includeEdge: Boolean = false,
+    ): JsonObject =
         buildJsonObject {
             put("id", id)
             put("pubkey", pubkey)
@@ -150,6 +158,15 @@ data class EventDoc(
             // [storedNearFields] against this derivation.
             if (includeNear) {
                 for ((field, elements) in search.nearFieldsWritten()) {
+                    put(field, JsonArray(elements.map(::JsonPrimitive)))
+                }
+            }
+            // PROTOTYPE (#161): the body's edge n-grams, fed like the near arrays
+            // because Vespa's indexing language cannot derive them — but behind
+            // their OWN gate: a different schema generation, opt-in, and refused
+            // independently of the near tier (VespaEventIndex.bodyEdgeFeed).
+            if (includeEdge) {
+                for ((field, elements) in search.edgeFields()) {
                     put(field, JsonArray(elements.map(::JsonPrimitive)))
                 }
             }

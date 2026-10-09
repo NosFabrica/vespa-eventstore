@@ -1025,10 +1025,38 @@ class NostrSemanticsStore(
         return reindexPage(EventQuery(kinds = kinds.distinct()), resumeFrom, batchSize)
     }
 
+    /**
+     * PROTOTYPE (#161) backfill for `search_text_edge`: re-put EVERY stored
+     * document that has a body, over [kinds] (empty = all), whatever the drift
+     * check says.
+     *
+     * The ordinary reindex cannot do this, and neither can Vespa's own: the
+     * column is FED (so a Vespa reindex has nothing to derive it from) and
+     * index-only (so a visit cannot read it back, and [reindexFullTextSearch]
+     * sees no drift and skips every document). Without this, turning on
+     * `EventQuery.bodyEdgeMatching` over a populated corpus would silently lose
+     * partial-word body search on everything written before the column was fed.
+     *
+     * Only meaningful against an index that FEEDS the column
+     * (`VESPA_BODY_EDGE=1` on VespaEventIndex): otherwise every re-put writes
+     * exactly what was there. Costs a full re-put of every body document.
+     */
+    suspend fun backfillBodyEdge(
+        kinds: List<Int> = emptyList(),
+        batchSize: Int = IEventStore.DEFAULT_FTS_REINDEX_BATCH,
+    ) = withActivity(Activity.Reconcile) {
+        var cursor: String? = null
+        do {
+            val progress = reindexPage(EventQuery(kinds = kinds.distinct()), cursor, batchSize, refeedBodies = true)
+            cursor = progress.cursor
+        } while (!progress.done)
+    }
+
     private suspend fun reindexPage(
         scope: EventQuery,
         resumeFrom: String?,
         batchSize: Int,
+        refeedBodies: Boolean = false,
     ): FtsReindexProgress {
         val (progress, trustDocs) =
             locks.underWrites(WriteLocks.REINDEX) {
@@ -1046,7 +1074,10 @@ class NostrSemanticsStore(
                     // changed column already forces the re-put.
                     val columnsChanged = fields != doc.search
                     val nearStale = !columnsChanged && doc.storedNearFields?.let { it != fields.nearFieldsWritten() } == true
-                    if (columnsChanged || nearStale) changed += doc.copy(search = fields)
+                    // [backfillBodyEdge]: a body is re-put unconditionally — its
+                    // edge column is invisible to every drift check above.
+                    val bodyRefeed = refeedBodies && fields.text != null
+                    if (columnsChanged || nearStale || bodyRefeed) changed += doc.copy(search = fields)
                 }
                 // A page can carry cards, and the projection applies their
                 // cells INLINE on putAll — the same documents the drain

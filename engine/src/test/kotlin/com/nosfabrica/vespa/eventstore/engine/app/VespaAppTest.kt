@@ -355,7 +355,7 @@ class VespaAppTest {
         val sd = entry("schemas/event.sd")
         val declared = Regex("""^\s*field\s+(\w+)\s+type""", RegexOption.MULTILINE).findAll(sd).map { it.groupValues[1] }.toSet()
         val rung = sd.substringAfter("function tier_body_match()").substringBefore("}")
-        for (field in FuzzyWordGroup.PHRASE_GRAM_FIELDS) {
+        for (field in FuzzyWordGroup.PHRASE_GRAM_FIELDS + FuzzyWordGroup.EDGE_FIELD) {
             assertTrue(field in declared, "`$field` is phrase-searched but not declared in event.sd: $declared")
             assertTrue(
                 "matchCount($field)" in rung,

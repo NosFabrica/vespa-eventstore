@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore.engine.query
 
+import com.nosfabrica.vespa.eventstore.engine.text.EdgeText
 import com.nosfabrica.vespa.eventstore.engine.text.IndexableChars
 import com.nosfabrica.vespa.eventstore.engine.text.NearText
 
@@ -154,11 +155,12 @@ internal object FuzzyWordGroup {
         params: MutableMap<String, String>,
         nearFields: Boolean = true,
         bodyGram: Boolean = true,
+        bodyEdge: Boolean = false,
     ): String {
         val own =
             words.mapIndexed { i, word ->
                 params["w$i"] = word
-                wordGroup("w$i", word, params, synthetic = false, nearFields = nearFields, bodyGram = bodyGram)
+                wordGroup("w$i", word, params, synthetic = false, nearFields = nearFields, bodyGram = bodyGram, bodyEdge = bodyEdge)
             }
         if (words.size == 1) return "(${own[0]})"
         val coverers = List(words.size) { ArrayList<String>() }
@@ -166,7 +168,7 @@ internal object FuzzyWordGroup {
             for (i in 0 until words.size - 1) {
                 val pair = words[i] + words[i + 1]
                 params["wp$i"] = pair
-                val group = wordGroup("wp$i", pair, params, synthetic = true, nearFields = nearFields, bodyGram = bodyGram)
+                val group = wordGroup("wp$i", pair, params, synthetic = true, nearFields = nearFields, bodyGram = bodyGram, bodyEdge = bodyEdge)
                 coverers[i] += group
                 coverers[i + 1] += group
             }
@@ -177,7 +179,7 @@ internal object FuzzyWordGroup {
             }
         val joined = words.joinToString("")
         params["wj"] = joined
-        val joinedGroup = wordGroup("wj", joined, params, synthetic = true, nearFields = nearFields, bodyGram = bodyGram)
+        val joinedGroup = wordGroup("wj", joined, params, synthetic = true, nearFields = nearFields, bodyGram = bodyGram, bodyEdge = bodyEdge)
         return "(($required) or $joinedGroup)"
     }
 
@@ -208,6 +210,7 @@ internal object FuzzyWordGroup {
         synthetic: Boolean,
         nearFields: Boolean,
         bodyGram: Boolean,
+        bodyEdge: Boolean,
     ): String {
         val clauses = ArrayList<String>()
         for (field in SEARCH_FIELDS) clauses += exactClause(field, "@$name", roleOf(field))
@@ -230,7 +233,15 @@ internal object FuzzyWordGroup {
             for (gramField in TEXT_GRAM_FIELDS) {
                 andGramClause(literal, gramField, MIN_AND_GRAMS_TEXT)?.let { clauses += it }
             }
-            if (bodyGram) {
+            // PROTOTYPE (#161): with [bodyEdge], a word the edge column can serve
+            // is ONE term against it; only the words it cannot (unspaced scripts,
+            // inner punctuation) still pay the phrase. Same gate as the phrase —
+            // [bodyGram] is off exactly where a body cannot match.
+            val edge = if (bodyGram && bodyEdge) EdgeText.queryTerm(literal) else null
+            if (edge != null) {
+                params["e$name"] = edge
+                clauses += "($EDGE_FIELD contains @e$name)"
+            } else if (bodyGram) {
                 for (gramField in PHRASE_GRAM_FIELDS) {
                     phraseGramClause(literal, gramField)?.let { clauses += it }
                 }
@@ -436,6 +447,9 @@ internal object FuzzyWordGroup {
      * the same compatibility demotion the near columns get.
      */
     val PHRASE_GRAM_FIELDS = listOf("search_text_gram")
+
+    /** PROTOTYPE (#161): the body's fed word prefixes ([EdgeText]), matched by one exact term. */
+    const val EDGE_FIELD = "search_text_edge"
 
     /**
      * True when a query over [kinds] can reach a document carrying a body —

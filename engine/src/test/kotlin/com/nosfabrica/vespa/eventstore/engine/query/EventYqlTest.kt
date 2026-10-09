@@ -734,6 +734,21 @@ class EventYqlTest {
     }
 
     @Test
+    fun `the edge prototype swaps the body phrase for one term, only where it can serve the word`() {
+        val q = EventYql.build(EventQuery(kinds = listOf(1), search = "Tarantella", bodyEdgeMatching = true))!!
+        assertTrue("(search_text_edge contains @ew0)" in q.yql, q.yql)
+        assertEquals("tarantella", q.params["ew0"])
+        assertFalse("search_text_gram" in q.yql, q.yql)
+        // A CJK word has no word start to take a prefix of: it keeps the phrase.
+        val cjk = EventYql.build(EventQuery(search = "比特币是", bodyEdgeMatching = true))!!
+        assertFalse("search_text_edge" in cjk.yql, cjk.yql)
+        assertTrue("search_text_gram contains phrase(" in cjk.yql, cjk.yql)
+        // Body-less kinds get neither; off by default, today's phrase is untouched.
+        assertFalse("search_text_edge" in EventYql.build(EventQuery(kinds = listOf(0), search = "tarantella", bodyEdgeMatching = true))!!.yql)
+        assertFalse("search_text_edge" in EventYql.build(EventQuery(search = "tarantella"))!!.yql)
+    }
+
+    @Test
     fun `a word with inner punctuation gets no body phrase, because a dropped gram breaks adjacency`() {
         // Trigrams straddling the punctuation are not alphanumeric and are
         // filtered; keeping the survivors as a phrase would demand an adjacency

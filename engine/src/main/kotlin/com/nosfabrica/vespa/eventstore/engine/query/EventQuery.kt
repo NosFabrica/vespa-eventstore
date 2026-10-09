@@ -228,6 +228,14 @@ data class EventQuery(
      */
     val bodyGramMatching: Boolean = true,
     /**
+     * PROTOTYPE (#161), off by default: answer a body partial word with ONE term
+     * against `search_text_edge` (fed word prefixes, [com.nosfabrica.vespa.eventstore.engine.text.EdgeText])
+     * instead of the trigram phrase on [FuzzyWordGroup.PHRASE_GRAM_FIELDS]. Words
+     * the edge field cannot serve (CJK and other unspaced scripts, punctuation
+     * inside the word) keep the phrase. Benchmarks flip it; nothing else does.
+     */
+    val bodyEdgeMatching: Boolean = false,
+    /**
      * THE ANSWER MUST BE PROVABLY EVERYTHING THAT MATCHES, or it is refused:
      * the engine's own `full` (documents searched == documents active) AND
      * every match served (`totalCount` == hits returned). For a reader that
