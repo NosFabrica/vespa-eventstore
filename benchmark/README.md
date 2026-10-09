@@ -623,33 +623,38 @@ drops it. A second word made the result set larger, not smaller.
 (1,237) under that observer, plus its 10040 and the provider's 30382s for the 44 authors
 (the gate's whole population), fed through `open()` to a local Vespa with
 `VESPA_BODY_EDGE=1`. With grams on, the local result sets and the top 20 matched the live
-relay's exactly. Variants switch the query side only: `grams` is shipped; `no grams` emits
-none of the five `*_gram` clauses; `no grams + edge` adds the #161 edge term.
+relay's exactly. Variants switch the query side only, one gram family at a time: `body edge`
+is the #161 prototype as designed (the edge term replaces the body phrase; the AND nets
+stay); `− text nets` also drops the AND nets on `about_gram` and `search_secondary_gram`;
+`− name nets` also drops them on `name_gram` / `display_name_gram` / `search_primary_gram`,
+leaving no gram clause at all.
 
-| query | grams | no grams | no grams + edge | hits without "tarantell" (grams → edge) |
-|---|---|---|---|---|
-| La Tarantella | 2,126 | 491 | 513 | 1,615 → 2 |
-| tarantella | 1,237 | 1,172 | 1,235 | 79 → 77 |
-| La tarantell | 2,125 | 6 | 512 | 1,614 → 1 |
+| query | grams (shipped) | body edge | + − text nets | + − name nets | no grams, no edge |
+|---|---|---|---|---|---|
+| La Tarantella | 2,126 | 2,126 | 513 | 513 | 491 |
+| tarantella | 1,237 | 1,237 | 1,237 | 1,235 | 1,172 |
+| La tarantell | 2,125 | 2,125 | 512 | 512 | 6 |
 
-- **Grams are mostly noise on this query.** 76% of the shipped answer to "La Tarantella"
-  does not contain "tarantell" anywhere, and those hits take 16 of the first 17 rows.
-- **Dropping grams alone loses real recall.** Inflected and compound forms (`tarantellas`,
-  Finnish `tarantellaa` / `tarantellan` / `tarantellatanssin`, 63 documents for
-  "tarantella") are reached only by a gram, and as-you-type collapses: "La tarantell"
-  falls from 511 real matches to 5.
-- **Edge recovers every one of them.** Each real "tarantell" document the gram variant
-  returned, the edge variant returns too, and it adds nothing the grams did not. Its top 20
-  for "La Tarantella" are the tarantella wiki articles and the Spanish meetups that name the
-  dance. The leftovers without the word are typo-fuzzy name hits (*Tarabella*, *Tito &
-  Tarantula*), which the fuzzy clause is meant to find.
+Every variant with the edge term returns the same 511 documents that contain "tarantell"
+for the two "La" queries (1,158 for "tarantella"); what moves is only the noise.
 
-Not measured: name-side infix reach. `name_gram` / `display_name_gram` /
-`search_primary_gram` are what reach "ODELL" from "dell" (`RankRegressionIT`), and this
-corpus has no profile that needs them. Latency here is not comparable to production: it is
-dominated by hydrating 2,000 large documents. Unlensed, the relay counts 311,584 matches for
-"tarantella" (`include:spam`), against #161's ~1,960 from the clauses it timed. That table
-leaves out `search_secondary_gram`, which is the likely source of the rest.
+- **The body edge alone changes nothing here.** Same counts, same top 20, and the narcissism
+  note is still in: it never came through the body.
+- **The text AND nets are the noise.** Dropping `about_gram` and `search_secondary_gram`
+  takes "La Tarantella" from 2,126 hits, 76% of which do not contain "tarantell" (16 of the
+  top 17 rows), to 513 with two that do not — and loses no real match. The note is gone.
+- **The name nets add two false positives on this query and nothing real:** a kind 0 whose
+  name is a long Japanese recitation, and a kind 20 whose title is an essay-length
+  Quran commentary. Long name-side fields hold every trigram too. They are also the only route for
+  "dell" → ODELL (`RankRegressionIT`), which this corpus cannot test.
+- **The edge term is what keeps recall without grams.** With no edge, inflected and
+  compound forms (`tarantellas`, Finnish `tarantellaa` / `tarantellatanssin`, 63 documents
+  for "tarantella") are lost and as-you-type collapses ("La tarantell": 511 real matches to 5).
+
+Latency here is not comparable to production: it is dominated by hydrating 2,000 large
+documents. Unlensed, the relay counts 311,584 matches for "tarantella" (`include:spam`),
+against #161's ~1,960 from the clauses it timed; that table leaves out
+`search_secondary_gram`, which by the result above is the likely source of the rest.
 
 ### The write path's own derivation, and what a NIP-30 badge costs (2026-09-01)
 
