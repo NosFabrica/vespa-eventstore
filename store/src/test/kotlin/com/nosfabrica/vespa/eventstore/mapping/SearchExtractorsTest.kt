@@ -24,12 +24,17 @@ import com.nosfabrica.vespa.eventstore.engine.doc.SearchFields
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.vitorpamplona.quartz.experimental.citations.ExternalCitationEvent
 import com.vitorpamplona.quartz.experimental.decentralizedLists.item.ListItemEvent
+import com.vitorpamplona.quartz.experimental.fitness.workout.WorkoutTemplateEvent
+import com.vitorpamplona.quartz.experimental.kanban.board.KanbanBoardEvent
+import com.vitorpamplona.quartz.experimental.kanban.card.KanbanCardEvent
 import com.vitorpamplona.quartz.experimental.library.BookshelfDirectoryEvent
 import com.vitorpamplona.quartz.experimental.library.LearningResourceEvent
 import com.vitorpamplona.quartz.experimental.nip82SoftwareApps.application.SoftwareApplicationEvent
 import com.vitorpamplona.quartz.experimental.predictionMarkets.PredictionMarketEvent
+import com.vitorpamplona.quartz.experimental.profileTheme.definition.ThemeDefinitionEvent
 import com.vitorpamplona.quartz.experimental.ratings.RelayReviewEvent
 import com.vitorpamplona.quartz.experimental.trustedLists.users.UserTrustedListEvent
+import com.vitorpamplona.quartz.experimental.walletScrutiny.verification.BuildVerificationEvent
 import com.vitorpamplona.quartz.feedDefinition.FeedDefinitionEvent
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
@@ -38,11 +43,16 @@ import com.vitorpamplona.quartz.nip10Notes.TextNoteEvent
 import com.vitorpamplona.quartz.nip15Marketplace.stall.StallEvent
 import com.vitorpamplona.quartz.nip17Dm.messages.ChatMessageEvent
 import com.vitorpamplona.quartz.nip23LongContent.LongFormContentEvent
+import com.vitorpamplona.quartz.nip23LongContent.draft.LongFormDraftEvent
 import com.vitorpamplona.quartz.nip30CustomEmoji.pack.EmojiPackEvent
+import com.vitorpamplona.quartz.nip30CustomEmoji.stickers.StickerPackEvent
+import com.vitorpamplona.quartz.nip34Git.coverNote.GitCoverNoteEvent
 import com.vitorpamplona.quartz.nip34Git.repository.GitRepositoryEvent
 import com.vitorpamplona.quartz.nip35Torrents.TorrentEvent
 import com.vitorpamplona.quartz.nip51Lists.bookmarkList.BookmarkListEvent
 import com.vitorpamplona.quartz.nip51Lists.releaseArtifactSet.ReleaseArtifactSetEvent
+import com.vitorpamplona.quartz.nip5aStaticWebsites.SiteSnapshotEvent
+import com.vitorpamplona.quartz.nip69P2pOrderEvents.mostroInfo.MostroInfoEvent
 import com.vitorpamplona.quartz.nip71Video.textTrack.TextTrackEvent
 import com.vitorpamplona.quartz.nip84Highlights.HighlightEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
@@ -345,6 +355,67 @@ class SearchExtractorsTest {
             SearchFields(primary = "My Reads"),
             SearchExtractors.extract(build(BookmarkListEvent.KIND, arrayOf(arrayOf("name", "My Reads")), "")),
         )
+    }
+
+    /**
+     * What the 53a7127524 pin moves: nine kinds become searchable, each pinned here through
+     * the factory, and nothing already searchable extracts differently (the 0..65535 sweep
+     * under both pins). Two of the nine share their number with other apps, and Quartz picks
+     * the class by tags, so the shapes that must NOT index are pinned beside the ones that do.
+     */
+    @Test
+    fun `the 53a7127524 pin makes nine kinds searchable`() {
+        fun build(
+            kind: Int,
+            tags: Array<Array<String>>,
+            content: String,
+        ) = EventFactory.create<Event>("9".repeat(64), alice, 1L, kind, tags, content, "")
+
+        val titled = arrayOf(arrayOf("d", "x"), arrayOf("title", "The Title"), arrayOf("description", "The Description"))
+
+        assertEquals(SearchFields(text = "cover letter"), SearchExtractors.extract(build(GitCoverNoteEvent.KIND, emptyArray(), "cover letter")))
+        assertEquals(
+            SearchFields(primary = "The Title", secondary = "The Description", website = "https://site.example"),
+            SearchExtractors.extract(build(SiteSnapshotEvent.KIND, titled + arrayOf(arrayOf("source", "https://site.example")), "")),
+        )
+        assertEquals(
+            SearchFields(primary = "Draft", secondary = "the gist", text = "the body"),
+            SearchExtractors.extract(build(LongFormDraftEvent.KIND, arrayOf(arrayOf("d", "x"), arrayOf("title", "Draft"), arrayOf("summary", "the gist")), "the body")),
+        )
+        // The shortcodes are what a picker search matches; the content is never read.
+        assertEquals(
+            SearchFields(primary = "The Title", secondary = "The Description\nwave"),
+            SearchExtractors.extract(build(StickerPackEvent.KIND, titled + arrayOf(arrayOf("sticker", "wave", "https://e.example/w.png")), "not indexed")),
+        )
+        assertEquals(
+            SearchFields(primary = "Plan", text = "3x5 squats"),
+            SearchExtractors.extract(build(WorkoutTemplateEvent.KIND, arrayOf(arrayOf("d", "x"), arrayOf("title", "Plan")), "3x5 squats")),
+        )
+        assertEquals(SearchFields(primary = "The Title", secondary = "The Description"), SearchExtractors.extract(build(ThemeDefinitionEvent.KIND, titled, "")))
+
+        // 30301 is a Kanban board with a title, a WalletScrutiny verification with an `i` and a
+        // `status` (its text is in the JSON content), and anything else is not indexed.
+        assertEquals(SearchFields(primary = "The Title", secondary = "The Description"), SearchExtractors.extract(build(KanbanBoardEvent.KIND, titled, "")))
+        assertEquals(
+            SearchFields(primary = "Wallet 1.2 reproduces", text = "built twice, same hash"),
+            SearchExtractors.extract(
+                build(
+                    BuildVerificationEvent.KIND,
+                    arrayOf(arrayOf("d", "x"), arrayOf("i", "com.example.wallet"), arrayOf("status", "reproducible")),
+                    """{"description":"Wallet 1.2 reproduces","content":"built twice, same hash"}""",
+                ),
+            ),
+        )
+        assertEquals(SearchFields(), SearchExtractors.extract(build(KanbanBoardEvent.KIND, arrayOf(arrayOf("d", "x"), arrayOf("status", "done")), "a planner task")))
+        assertEquals(SearchFields(primary = "The Title", secondary = "The Description"), SearchExtractors.extract(build(KanbanCardEvent.KIND, titled, "")))
+
+        // 38385 is Mostro's instance info only when Mostro wrote it.
+        val mostro = arrayOf(arrayOf("d", "x"), arrayOf("y", "mostro", "Mostro Lisboa"), arrayOf("fiat_currencies_accepted", "EUR,USD"))
+        assertEquals(
+            SearchFields(primary = "Mostro Lisboa", secondary = "EUR\nUSD"),
+            SearchExtractors.extract(build(MostroInfoEvent.KIND, mostro + arrayOf(arrayOf("z", "info")), "")),
+        )
+        assertEquals(SearchFields(), SearchExtractors.extract(build(MostroInfoEvent.KIND, mostro, "a heartbeat")))
     }
 
     /**

@@ -2,11 +2,12 @@
 
 Every concrete `SearchableEvent` implementor in Quartz, with the exact `indexableContent()`
 expression. **Update this file in the same PR as any change to the searchable set or to an
-`indexableContent()` body** (see SKILL.md). Verified against the code 2026-10-05 (Quartz pin `68268da413`; upstream `SearchableKinds.ALL`
+`indexableContent()` body** (see SKILL.md). Verified against the code 2026-10-09 (Quartz pin `53a7127524`; upstream `SearchableKinds.ALL`
 is the reachable set, and every kind in it has a row here).
 
-Counts: 191 concrete classes covering 192 kind values (`GitStatusEvent` spans 4 kinds;
-kind 30063 is shared by two NIPs and kind 38000 by three classes — see the footnotes). The kind
+Counts: 201 concrete classes covering 201 kind values (`GitStatusEvent` spans 4 kinds;
+kind 30063 is shared by two NIPs, kind 38000 by three classes and kind 30301 by two — see the
+footnotes). The kind
 set is exactly `SearchableKinds.ALL` (`nip50Search/SearchableKinds.kt`). File paths are under
 `quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/`.
 
@@ -54,6 +55,7 @@ Separator legend: **NL** = `joinToString("\n")`, **SP** = `joinToString(" ")`.
 | 1618 | GitPullRequestEvent | nip34Git/pr | `(listOfNotNull(subject(), content) + labels())` NL |
 | 1621 | GitIssueEvent | nip34Git/issue | `(listOfNotNull(subject(), content) + topics())` NL |
 | 1622 | GitReplyEvent | nip34Git/reply | `content` |
+| 1624 | GitCoverNoteEvent | nip34Git/coverNote | `content` |
 | 1630–1633 | GitStatusEvent | nip34Git/status | inherited `GitStatusEvent`: `content` (open/applied/closed/draft) |
 | 1808 | AudioHeaderEvent | experimental/audio/header | `content` |
 | 1985 | LabelEvent | nip32Labeling | `(listOf(content) + labels().map { it.label }).filter { it.isNotEmpty() }` NL |
@@ -63,6 +65,7 @@ Separator legend: **NL** = `joinToString("\n")`, **SP** = `joinToString(" ")`.
 | 3302 | ConcordChatEditEvent | concord/cord03Channels | `content` |
 | 5050 | DvmTextGenerationRequestEvent | nip90Dvms/textGeneration | `inputs().filter { it.type == "prompt" \|\| it.type == "text" }.joinToString(" ") { it.value }` (SP) |
 | 5100 | DvmImageGenerationRequestEvent | nip90Dvms/imageGeneration | `listOfNotNull(prompt(), negativePrompt()).joinToString(" ")` (SP) |
+| 5128 | SiteSnapshotEvent | nip5aStaticWebsites | `listOfNotNull(title(), description())` NL |
 | 5129 | NappletSnapshotEvent | nip5dNapplets | `listOfNotNull(title(), description())` NL |
 | 5250 | DvmTextToSpeechRequestEvent | nip90Dvms/textToSpeech | `text() ?: ""` |
 | 5302 | DvmContentSearchRequestEvent | nip90Dvms/contentSearch | `searchQuery() ?: ""` |
@@ -111,8 +114,10 @@ Separator legend: **NL** = `joinToString("\n")`, **SP** = `joinToString(" ")`.
 | 30018 | ProductEvent | nip15Marketplace/product | `productData()?.let { (listOfNotNull(it.name, it.description) + categories()).joinToString("\n") } ?: ""` |
 | 30019 | MarketplaceEvent | nip15Marketplace/marketplace | `marketplaceData()?.let { listOfNotNull(it.name, it.about).joinToString("\n") } ?: ""` |
 | 30020 | AuctionEvent | nip15Marketplace/auction | `auctionData()?.let { (listOfNotNull(it.name, it.description) + tags.hashtags()).joinToString("\n") } ?: ""` |
-| 30023 | LongFormContentEvent | nip23LongContent | `(listOfNotNull(title(), summary(), content) + topics())` NL |
+| 30023 | LongFormContentEvent | nip23LongContent | `tags.longFormIndexableContent(content)` = `(listOfNotNull(longFormTitle(), longFormSummary(), content) + hashtags())` NL |
+| 30024 | LongFormDraftEvent | nip23LongContent/draft | `tags.longFormIndexableContent(content)`, as 30023 |
 | 30030 | EmojiPackEvent | nip30CustomEmoji/pack | `(listOfNotNull(titleOrName(), description()) + publicEmojiCodes())` NL — the public `emoji` tags' shortcodes; `content` is NOT indexed (it is the NIP-44 ciphertext of the private emoji tags) |
+| 30031 | StickerPackEvent | nip30CustomEmoji/stickers | `(listOfNotNull(title(), description()) + stickers().map { it.code })` NL — the sticker shortcodes; `content` is NOT indexed |
 | 30040 | PublicationIndexEvent | experimental/publications | `listOfNotNull(title(), author(), summary())` NL |
 | 30041 | PublicationContentEvent | experimental/publications | `listOfNotNull(title(), content)` NL |
 | 30045 | BookshelfDirectoryEvent | experimental/library | `listOfNotNull(title(), summary(), content)` NL |
@@ -129,6 +134,9 @@ Separator legend: **NL** = `joinToString("\n")`, **SP** = `joinToString(" ")`.
 | 30267 | AppCurationSetEvent | nip51Lists/appCurationSet | `listOfNotNull(titleOrName(), description())` NL |
 | 30296 | InteractiveStoryPrologueEvent | experimental/interactiveStories | inherited base: `(listOfNotNull(title(), summary(), content) + optionLabels())` NL |
 | 30297 | InteractiveStorySceneEvent | experimental/interactiveStories | inherited base: `(listOfNotNull(title(), summary(), content) + optionLabels())` NL |
+| 30301 | KanbanBoardEvent § | experimental/kanban/board | `listOfNotNull(title(), description())` NL |
+| 30301 | BuildVerificationEvent § | experimental/walletScrutiny/verification | `listOfNotNull(description(), report())` NL — both read from the JSON `content` (`description`, `content`) |
+| 30302 | KanbanCardEvent § | experimental/kanban/card | `listOfNotNull(title(), description())` NL |
 | 30311 | LiveActivitiesEvent | nip53LiveActivities/streaming | `listOfNotNull(title(), summary(), content)` NL |
 | 30312 | MeetingSpaceEvent | nip53LiveActivities/meetingSpaces | `listOfNotNull(room(), summary(), content)` NL |
 | 30313 | MeetingRoomEvent | nip53LiveActivities/meetingSpaces | `listOfNotNull(title(), summary())` NL |
@@ -159,6 +167,7 @@ Separator legend: **NL** = `joinToString("\n")`, **SP** = `joinToString(" ")`.
 | 32267 | SoftwareApplicationEvent | experimental/nip82SoftwareApps/application | `listOfNotNull(name(), summary(), content)` NL |
 | 33331 | SnoObjectEvent | cyberspace/deck0003Sno | `nameTag().orEmpty()` — the `name` tag only; `content` is SNO geometry JSON |
 | 33401 | ExerciseTemplateEvent | experimental/fitness/workout | `listOfNotNull(title(), content)` NL |
+| 33402 | WorkoutTemplateEvent | experimental/fitness/workout | `listOfNotNull(title(), content)` NL |
 | 33534 | RelayRoleEvent | nip43RelayMembers/roles | `listOfNotNull(label(), description())` NL |
 | 33863 | FundraiserEvent | experimental/agora | `listOfNotNull(title(), content)` NL |
 | 34139 | MusicPlaylistEvent | experimental/music/playlist | `listOfNotNull(title(), description(), content)` NL |
@@ -168,6 +177,7 @@ Separator legend: **NL** = `joinToString("\n")`, **SP** = `joinToString(" ")`.
 | 34550 | CommunityDefinitionEvent | nip72ModCommunities/definition | `listOfNotNull(name(), description(), rules(), content)` NL |
 | 35128 | NamedSiteEvent | nip5aStaticWebsites | `listOfNotNull(title(), description())` NL |
 | 35129 | NamedNappletEvent | nip5dNapplets | `listOfNotNull(title(), description())` NL |
+| 36767 | ThemeDefinitionEvent | experimental/profileTheme/definition | `listOfNotNull(title(), description())` NL — never its colors, fonts or URLs; `content` is empty by spec |
 | 36787 | MusicTrackEvent | experimental/music/track | `listOfNotNull(title(), artist(), album(), content)` NL |
 | 37516 | GeocacheListingEvent | nipCCGeocaching/listing | `listOfNotNull(cacheName(), content)` NL (the `hint` is deliberately not indexed — matching a hint is spoiling it) |
 | 37517 | GeocacheCurationListEvent | nipCCGeocaching/curation | `listOfNotNull(title(), description(), content)` NL |
@@ -176,6 +186,7 @@ Separator legend: **NL** = `joinToString("\n")`, **SP** = `joinToString(" ")`.
 | 38000 | PredictionMarketEvent ‡ | experimental/predictionMarkets | `(listOfNotNull(title(), description()) + outcomes() + listOfNotNull(resolution(), cancelReason(), socialPost()))` NL |
 | 38192 | Ps1SaveEvent | experimental/ps1saves | `listOfNotNull(summary(), saveTitle(), region(), filename())` NL |
 | 38383 | P2POrderEvent | nip69P2pOrderEvents | `(listOfNotNull(makerName(), currency()) + paymentMethods().orEmpty()).joinToString(" ")` (SP) |
+| 38385 | MostroInfoEvent § | nip69P2pOrderEvents/mostroInfo | `(listOfNotNull(instanceName()) + fiatCurrenciesAccepted().orEmpty()).joinToString(" ")` (SP) |
 | 39000 | GroupMetadataEvent | nip29RelayGroups/metadata | `(listOfNotNull(name(), about()) + hashtags())` NL |
 | 39003 | GroupRolesEvent | nip29RelayGroups/metadata | `roles().flatMap { listOfNotNull(it.name, it.description) }` NL |
 | 39089 | StarterPackEvent | nip51Lists/starterPack | `(listOfNotNull(title(), description()) + hashtags())` NL |
@@ -222,6 +233,14 @@ spam votes that make up most of the kind). Kind-level probes (`EventFactory.prob
 the `title` tag, or JSON `content`, in that order; it also indexes its outcome labels, the
 resolution, the cancel reason, and `content` as `socialPost()` when it is a non-blank, non-JSON post
 and the market has no `description()` it would merely repeat.
+
+§ **Kinds 30301, 30302 and 38385 are shared with other apps**, and `EventFactory` picks the class
+by tags. 30301: `BuildVerificationEvent` (WalletScrutiny) on a non-blank `i` plus a `status`; else
+`KanbanBoardEvent` on a non-blank `title` or a `col`; else `UnrecognizedKind30301Event` (an
+encrypted planner's tasks). 30302: `KanbanCardEvent` only when `isKanbanCard` holds (Fieldbook's
+team memberships share the number). 38385: `MostroInfoEvent` on a `z` of `info` or a non-blank
+`mostro_version`; else `UnrecognizedKind38385Event` (Paygress heartbeats and others). Every
+`Unrecognized*` class is addressable but unsearchable.
 
 ## Abstract bases (no kind of their own)
 

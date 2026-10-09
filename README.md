@@ -258,11 +258,12 @@ place column. URLs listed below fill the website column a profile's website does
 | **1621 / 1618** | git issue / pull request | subject, content |
 | **1617** | git patch | content |
 | **1622** | git reply | content |
+| **1624** | git cover note (NIP-34) | content |
 | **1630 / 1631 / 1632 / 1633** | git status (open / applied / closed / draft) | content |
 | **1337** | code snippet | name, description + language + extension + runtime, content, repo URL |
 | **30817** | NIP-on-Nostr document | title, content |
 | **32267** | software application | name, summary, content, app + repository URLs |
-| **30023** | long-form article | title, summary + hashtags, content |
+| **30023 / 30024** | long-form article / draft | title, summary + hashtags, content |
 | **30818** | wiki article | title, summary, content |
 | **818** | wiki merge request | content |
 | **31 / 33** | external / prompt citation | title, summary + author + publisher (33: + model), content |
@@ -301,7 +302,7 @@ place column. URLs listed below fill the website column a profile's website does
 | **48106** | Buzz huddle guidelines | content |
 | **42000** | Buzz product feedback | content |
 | **9035 / 9036 / 8002 / 8003** | Buzz identity archive / unarchive request, and the relay's archived / unarchived notice | content (the reason) |
-| **15128 / 35128** | website | title, description, source URL |
+| **15128 / 35128 / 5128** | website root / named / snapshot | title, description, source URL |
 | **15129 / 35129 / 5129** | napplet root / named / snapshot | title, description |
 | **11333 / 33331** | Cyberspace avatar / object (an SNO 3-D shape) | name (the content is geometry, not indexed) |
 | **38192** | PlayStation-1 memory-card save | title, summary + region + filename |
@@ -310,9 +311,11 @@ place column. URLs listed below fill the website column a profile's website does
 | **30009** | badge | name, description, content |
 | **30008** | badge set (NIP-58) | title, description |
 | **30030** | emoji pack | title (or name), description + emoji shortcodes (the content is the NIP-44 ciphertext of the private emojis, never indexed) |
+| **30031** | sticker pack | title, description + sticker shortcodes (never the content) |
 | **30017 / 30018 / 30019 / 30020** | marketplace stall / product / config / auction (NIP-15) | name, description |
 | **1022** | auction bid confirmation (NIP-15) | the seller's message |
 | **38383** | P2P order (NIP-69) | maker name, currency + payment methods |
+| **38385** | Mostro instance info (NIP-69; only with a `z` of `info` or a `mostro_version` — other apps' 38385s are not indexed) | instance name, accepted fiat currencies |
 | **9041** | zap goal | summary, content |
 | **33863** | fundraiser | title, content |
 | **9734 / 9735** | zap request / receipt (NIP-57) | content (9735: the embedded zap request's comment) |
@@ -338,7 +341,10 @@ place column. URLs listed below fill the website column a profile's website does
 | **30382** | contact card / relationship | petname, summary + topics as hashtags (the encrypted half is never indexed) |
 | **30392 / 30393 / 30394 / 30395** | trusted list of pubkeys / events / addressables / external ids | title |
 | **30296 / 30297** | interactive story prologue / scene | title, summary + option labels, content |
-| **1301 / 33401** | workout record / exercise template | title, content |
+| **1301 / 33401 / 33402** | workout record / exercise template / workout template | title, content |
+| **30301 / 30302** | Kanban board / card (30301 only with a `title` or a named `col`; 30302 only as a card — other apps share both numbers and are not indexed) | title, description |
+| **30301** | WalletScrutiny build verification (an `i` product id and a `status`) | the one-line description, the markdown report |
+| **36767** | profile theme definition | title, description (never its colors, fonts or URLs) |
 | **5050 / 5100 / 5250** | NIP-90 DVM job requests (text / image / speech generation) | the prompt or text inputs (5100: + negative prompt) |
 | **5302 / 5303** | NIP-90 content / people search request | the search query |
 | **5901** | NIP-90 OP_RETURN request | the text to inscribe on-chain |

@@ -5,41 +5,38 @@ app = "1.0.1"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"
 # Quartz from JitPack (amethyst @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
-# 68268da413 = amethyst main @ 2026-10-06: the hint-provider / NIP-50 / tag-relationship series
-# (amethyst 9c34a3bc..d0cbdaf0) plus its review follow-ups (68268da4). Not the tip, 3e8137ab4e: every
-# commit carrying that day's Crowdin syncs fails on JitPack ("Could not find or load main class
-# org.gradle.wrapper.GradleWrapperMain", the wrapper unchanged), and what 68268da4 lacks of the tip is
-# Quartz refactors this store does not call (native clock, Linux sha256Into, Hex.isHex(start, end)).
-# What this store calls moves in three places:
-#  - SearchFieldExtractor. 42 kinds become searchable: deletion reasons (5), NIP-17 file
-#    headers (15), channel hide/mute reasons (43/44), vanish reasons (62), chess (64/30066/30068),
-#    NIP-29 group create/roles (9007/39003), join/leave requests (9021/9022), badge sets (30008),
-#    feed definitions (31890), ContextVM servers (11316), cyberspace objects (11333/33331), relay
-#    roles (33534), bid confirmations (1022), DVM OP_RETURN jobs (5901), and the Buzz kinds (8002/
-#    8003/9035/9036, 30178, 30621, 40003/40006/40007/40008/40099, 40901, 42000, 43001-43006,
-#    45010, 46030/46031). 19 kinds extract differently: 14 subject -> primary; 20 imeta
-#    alt -> secondary; 21/22/34235/34236 chapter titles -> secondary; 31/32/33 and 30142 leave the
-#    catch-all for title / summary roles (+ author, publisher, editor, journal, model; 30142:
-#    alternate name and description, author, subject/type/level facet labels); 38000 prediction markets get a branch; 1065 indexes its caption; 9802 falls back
-#    to the quote's prefix/suffix when there is no `context`; 10003 reads a legacy `name`; 30030
-#    emoji packs stop indexing `content` -- the NIP-44 ciphertext of their private emojis -- for
-#    their public shortcodes; 30054 person names + soundbite titles; 30175 persona description;
-#    30296/30297 option labels. None leaves the searchable set.
-#  - EventFactory builds 31890 (FeedDefinitionEvent, searchable; was a plain Event) and 10044
-#    (EncryptionKeyListEvent; replaceable either way).
-#  - RequestToVanishEvent is a SearchableEvent (its reason); shouldVanishFrom is unchanged.
-# All derived data, rolled out with no resync by the kind-scoped walk over exactly these
-# 61 kinds (the emoji-pack ciphertext already indexed stays until 30030 is walked):
-#   store.reindexFullTextSearch(listOf(5, 14, 15, 20, 21, 22, 31, 32, 33, 43, 44, 62, 64, 1022,
-#   1065, 5901, 8002, 8003, 9007, 9021, 9022, 9035, 9036, 9802, 10003, 11316, 11333, 30008,
-#   30030, 30054, 30066, 30068, 30142, 30175, 30178, 30296, 30297, 30621, 31890, 33331, 33534,
-#   34235, 34236, 38000, 39003, 40003, 40006, 40007, 40008, 40099, 40901, 42000, 43001, 43002,
-#   43003, 43004, 43005, 43006, 45010, 46030, 46031))
-# Inert here: tag relay slots now parse strictly (ws/wss only; normalizeOrNull stays lenient)
-# and the linked*() / *Hints() providers and named relationship accessors moved -- this store
-# reads provider PUBKEYS only (serviceProviders(), trustedListProvider()) and search expansion
-# reads ATag.parseAddressId, both unchanged.
+# 53a7127524 = amethyst main @ 2026-10-08 (#4371). Not the tip, af7b1772cd: it and 439cbcc23f
+# (#4375, the same Quartz as the tip) fail on JitPack with the GradleWrapperMain error the
+# 68268da413 note blamed on Crowdin syncs. That was wrong: 53a7127524 sits after several Crowdin merges and builds, the wrapper
+# jar and gradlew are byte-identical across all three, and every failure reproduced on a fresh
+# JitPack ref. What 53a7127524 lacks of the tip's Quartz is the consumer WoT index
+# (nip85TrustedAssertions/users/index, TrustNetwork*) and three ProviderTypes constants (hops,
+# reporters, muters); this store reads ProviderTypes.rank / followerCount only.
+# What this store calls moves in one place:
+#  - SearchFieldExtractor + EventFactory. 9 kinds become searchable, each a new typed class:
+#    git cover notes (1624, content), site snapshots (5128, title / description / source URL),
+#    long-form drafts (30024, as 30023), sticker packs (30031, title / description + shortcodes,
+#    never content), Kanban boards and cards (30301 / 30302, title / description), WalletScrutiny
+#    build verifications (30301 with `i` + `status`: description / report from the JSON content),
+#    workout templates (33402, title / content), profile themes (36767, title / description) and
+#    Mostro instance info (38385 with `z`=info or `mostro_version`: instance name / fiat
+#    currencies). 30301, 30302 and 38385 are shared numbers: Quartz picks the class by tags and
+#    parses the other apps' shapes as Unrecognized* classes, never indexed. 23 more kinds get a
+#    typed class and stay unsearchable (443, 1080, 4454/4455, 8383, 9401, 9840-9844, 13473, 16767,
+#    18678, 19843/19844, 29846, 30509, 31986, 38384, 38386, 39842, 39844). Nothing already
+#    searchable extracts differently and nothing leaves the set: a sweep of every kind 0..65535
+#    through EventFactory + SearchExtractors, three tag shapes each, under both pins.
+# Derived data only, rolled out with no resync by the kind-scoped walk over those 9 kinds:
+#   store.reindexFullTextSearch(listOf(1624, 5128, 30024, 30031, 30301, 30302, 33402, 36767, 38385))
+# Inert here: AddressSerializer's hex check now calls Hex.isHex(start, end) (same table, both
+# cases), and the client-side paging / negentropy / OkHttp socket fixes this store never calls.
 #
+# Prev 68268da413 (2026-10-06: the hint-provider / NIP-50 / tag-relationship series; 42 kinds
+# became searchable and 19 extracted differently -- chat subject, picture alt, video chapters,
+# citations and learning resources tiered, prediction markets, file-storage captions, highlight
+# context, legacy bookmark-list name, persona description, story options, Podcasting 2.0 people,
+# emoji packs dropping their NIP-44 ciphertext; EventFactory built 31890 and 10044; repaired by a
+# reindexFullTextSearch over 61 kinds, listed in commit 987a0cc).
 # Prev d792ebc4bf (2026-10-05: amethyst #4325; kind 38000 split by tags, decentralized lists'
 # text tier, NIP-62 relay compared normalized, 30394 member `a` coordinate-shaped; repaired by
 # reindexFullTextSearch(listOf(38000, 30267, 9998, 9999, 39998, 39999))).
@@ -60,7 +57,7 @@ mavenPublish = "0.37.0"
 # catch-all; SearchableEvent grows the read-path forEachIndexableField, no reindex).
 # Prev cecc3287b2 (2026-09-01: 17 catch-all kinds split into title/body roles, four
 # affiliation URLs, six doubled `t`-tag scans dropped; a ranking backfill).
-quartz = "68268da413"
+quartz = "53a7127524"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 # Matches what Quartz brings transitively; Gradle would resolve to it regardless.
