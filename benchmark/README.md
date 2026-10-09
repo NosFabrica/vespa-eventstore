@@ -606,6 +606,51 @@ Not yet done: a run at a scale where the phrase costs what it does on production
 and `RankRegressionIT`/`SearchBodyGramIT` with the flag on (the mid-word cases
 there fail by design).
 
+### No trigram fields at all, on one real query — "La Tarantella" (2026-10-09)
+
+A report from production: searching "La Tarantella" under the canonical observer
+(`460c25…065c`) ranked a 16 KB multilingual note about narcissism (`eb01c030…`, 1,232
+`t` tags in 20 languages) twelfth, ahead of every wiki article about the dance. It never
+says "tarantella". Its 810 distinct hashtags hold all eight trigrams of the word
+(`hatar`, `bara`, `kerran`, `advantage`, `inte`, `kohtelevat`, `todella`, `nella`), so the
+AND-of-trigrams net on `search_secondary_gram` recalls it, and `#la` matches the other
+word exactly. That exact hashtag hit gives it the weak tier (`w_pop_weak_tier`, 3·10⁷),
+which outranks a real body match (`w_affil_tier`, 10⁷). "tarantella" alone does not
+return it: with no exact hit, the gram-only match has no rung and `text_score_cutoff`
+drops it. A second word made the result set larger, not smaller.
+
+**Corpus:** every hit the live relay served for "La Tarantella" (2,126) and "tarantella"
+(1,237) under that observer, plus its 10040 and the provider's 30382s for the 44 authors
+(the gate's whole population), fed through `open()` to a local Vespa with
+`VESPA_BODY_EDGE=1`. With grams on, the local result sets and the top 20 matched the live
+relay's exactly. Variants switch the query side only: `grams` is shipped; `no grams` emits
+none of the five `*_gram` clauses; `no grams + edge` adds the #161 edge term.
+
+| query | grams | no grams | no grams + edge | hits without "tarantell" (grams → edge) |
+|---|---|---|---|---|
+| La Tarantella | 2,126 | 491 | 513 | 1,615 → 2 |
+| tarantella | 1,237 | 1,172 | 1,235 | 79 → 77 |
+| La tarantell | 2,125 | 6 | 512 | 1,614 → 1 |
+
+- **Grams are mostly noise on this query.** 76% of the shipped answer to "La Tarantella"
+  does not contain "tarantell" anywhere, and those hits take 16 of the first 17 rows.
+- **Dropping grams alone loses real recall.** Inflected and compound forms (`tarantellas`,
+  Finnish `tarantellaa` / `tarantellan` / `tarantellatanssin`, 63 documents for
+  "tarantella") are reached only by a gram, and as-you-type collapses: "La tarantell"
+  falls from 511 real matches to 5.
+- **Edge recovers every one of them.** Each real "tarantell" document the gram variant
+  returned, the edge variant returns too, and it adds nothing the grams did not. Its top 20
+  for "La Tarantella" are the tarantella wiki articles and the Spanish meetups that name the
+  dance. The leftovers without the word are typo-fuzzy name hits (*Tarabella*, *Tito &
+  Tarantula*), which the fuzzy clause is meant to find.
+
+Not measured: name-side infix reach. `name_gram` / `display_name_gram` /
+`search_primary_gram` are what reach "ODELL" from "dell" (`RankRegressionIT`), and this
+corpus has no profile that needs them. Latency here is not comparable to production: it is
+dominated by hydrating 2,000 large documents. Unlensed, the relay counts 311,584 matches for
+"tarantella" (`include:spam`), against #161's ~1,960 from the clauses it timed. That table
+leaves out `search_secondary_gram`, which is the likely source of the rest.
+
 ### The write path's own derivation, and what a NIP-30 badge costs (2026-09-01)
 
 `extractBench` times `SearchExtractors.extract` and nothing else — no Vespa, no
