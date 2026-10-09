@@ -223,6 +223,8 @@ data class EventQuery(
      * Separate from [nearMatching] because the two shipped at different times —
      * every schema carrying the near columns predates this one, so demoting them
      * together would strip name/title prefix reach from a schema that has it.
+     * True is permission, not a promise: the compiler still omits the clause
+     * where [kinds] can hold no body ([FuzzyWordGroup.bodyReachable]).
      */
     val bodyGramMatching: Boolean = true,
     /**

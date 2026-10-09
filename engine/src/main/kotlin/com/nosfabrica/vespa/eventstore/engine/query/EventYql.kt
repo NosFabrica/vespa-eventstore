@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.eventstore.engine.query
 import com.nosfabrica.vespa.eventstore.engine.text.IndexableChars
 import com.nosfabrica.vespa.eventstore.engine.text.WHITESPACE
+import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip01Core.tags.isIndexableTagName
 import com.vitorpamplona.quartz.utils.Hex
 
@@ -36,6 +37,32 @@ import com.vitorpamplona.quartz.utils.Hex
  * alphanumeric characters only.
  */
 object EventYql {
+    /**
+     * Kinds whose documents NEVER carry `search_text`, so `search_text_gram`
+     * ([FuzzyWordGroup.PHRASE_GRAM_FIELDS], derived from it) is empty on every one of them and a body phrase
+     * restricted to them is provably no match.
+     *
+     * Provably no match is not free. MEASURED on production (#161, 445M docs,
+     * 2026-10-08): `kind = 0 and search_text_gram contains phrase(…7 grams…)`
+     * took 1.77 s to match 0 documents. Vespa drives an AND from its smallest
+     * estimate, and the phrase's (its rarest trigram, ~10^6) undercuts kind 0's
+     * 60M, so every position check runs BEFORE the kind is consulted; the kind
+     * filter can only lead for kinds holding fewer documents than that. A
+     * `kinds:[0]` search paid 1.4-1.9 s for this clause alone, against ~40 ms
+     * for every other clause of the word group together.
+     *
+     * Kind 0 alone, deliberately, and pinned rather than mirrored: which kinds
+     * fill which column is Quartz's call (`SearchFieldExtractor` dispatches on
+     * the event CLASS, so there is no per-kind table to derive from), and
+     * benchmark/README.md rejects copying that table for the profile columns.
+     * This is narrower on both counts. A kind 0 extracts to the PROFILE shape,
+     * which has no body slot at all — `SearchExtractorsTest` asserts every kind
+     * here still comes out with `text == null`, through the factory, so the day
+     * Quartz gives one a body the build fails. And a stale entry would cost only
+     * partial-word body reach: the exact `search_text` clause still runs.
+     */
+    val BODYLESS_KINDS: Set<Int> = setOf(MetadataEvent.KIND)
+
     /** Vespa's built-in no-scoring profile — filters without a search term. */
     const val RANK_UNRANKED = "unranked"
 
@@ -808,7 +835,10 @@ object EventYql {
                 .filter(IndexableChars::hasIndexable)
         if (words.isNotEmpty() && matchable.isEmpty()) return null
         if (matchable.isNotEmpty()) {
-            clauses += FuzzyWordGroup.clause(matchable, params, nearFields = q.nearMatching, bodyGram = q.bodyGramMatching)
+            // The body phrase only where a body can exist: on body-less kinds it
+            // matches nothing and still costs seconds ([BODYLESS_KINDS]).
+            val bodyGram = q.bodyGramMatching && FuzzyWordGroup.bodyReachable(q.kinds)
+            clauses += FuzzyWordGroup.clause(matchable, params, nearFields = q.nearMatching, bodyGram = bodyGram)
             // Short queries lean harder on the trigram safety net — judged by
             // the words that HAVE grams: an emoji beside "extraordinary" is no
             // reason to weight its trigrams up.

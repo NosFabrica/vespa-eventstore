@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.eventstore.mapping
 
 import com.nosfabrica.vespa.eventstore.engine.doc.SearchFields
+import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.vitorpamplona.quartz.experimental.citations.ExternalCitationEvent
 import com.vitorpamplona.quartz.experimental.decentralizedLists.item.ListItemEvent
 import com.vitorpamplona.quartz.experimental.library.BookshelfDirectoryEvent
@@ -73,6 +74,24 @@ class SearchExtractorsTest {
             ),
             fields,
         )
+    }
+
+    /**
+     * The guard behind [EventYql.BODYLESS_KINDS]: the query compiler omits
+     * the body phrase for those kinds on the promise that their `search_text` is
+     * always empty. Every kind in the set, through the FACTORY (what the store
+     * path parses), with content carrying prose in every shape a body could be
+     * pulled from — the profile JSON's bio, and a non-JSON body. If Quartz ever
+     * gives one of them a body, this fails before a search loses its reach.
+     */
+    @Test
+    fun `every body-less kind the query compiler trusts really extracts no body`() {
+        for (kind in EventYql.BODYLESS_KINDS) {
+            for (content in listOf("""{"name":"vitor","about":"dances the tarantella every night"}""", "dances the tarantella every night")) {
+                val event = EventFactory.create<Event>("c".repeat(64), alice, 1L, kind, arrayOf(arrayOf("t", "tarantella")), content, "")
+                assertEquals(null, SearchExtractors.extract(event).text, "kind $kind, content $content")
+            }
+        }
     }
 
     @Test
