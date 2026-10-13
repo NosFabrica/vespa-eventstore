@@ -517,7 +517,8 @@ store/    relay policy on top
           runtime/ mapping/   leaves: writer topology + worker failures; Filter -> EventQuery, search extraction
           ingest/ trust/ search/   the write path, the NIP-85 projection, reference expansion
           .                    the FACADE: only what a consumer names — VespaEventStore.open(),
-                               NostrSemanticsStore, RejectedException, EngineReads, TrustHealth
+                               NostrSemanticsStore, RejectedException, EngineReads, TrustHealth,
+                               LiveGate, ScoredSearch
 benchmark/  not published — harness/ bench/ probe/ load/, plus the integration gates
 ```
 

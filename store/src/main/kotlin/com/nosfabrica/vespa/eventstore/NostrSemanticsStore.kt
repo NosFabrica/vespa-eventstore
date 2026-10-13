@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.async.QUERY_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.async.forEachBounded
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
+import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
 import com.nosfabrica.vespa.eventstore.engine.metrics.Activity
 import com.nosfabrica.vespa.eventstore.engine.metrics.CostLedger
 import com.nosfabrica.vespa.eventstore.engine.metrics.withActivity
@@ -55,7 +56,11 @@ import com.nosfabrica.vespa.eventstore.trust.Enrolment
 import com.nosfabrica.vespa.eventstore.trust.ProviderRefresher
 import com.nosfabrica.vespa.eventstore.trust.TrustCells
 import com.nosfabrica.vespa.eventstore.trust.TrustProjection
+import com.nosfabrica.vespa.eventstore.trust.TrustProviders
+import com.nosfabrica.vespa.eventstore.trust.boundedRank
+import com.nosfabrica.vespa.eventstore.trust.subjectOf
 import com.vitorpamplona.quartz.nip01Core.core.Event
+import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.FtsReindexProgress
@@ -252,13 +257,15 @@ class NostrSemanticsStore(
      */
     private suspend fun lensed(queries: List<EventQuery>): List<EventQuery> {
         if (queries.none { it.observer != null }) return queries
-        val recompute = (index as? TrustProjection)?.recompute ?: return queries
-        val providers = recompute.providerMap()
+        val providers = providers() ?: return queries
         return queries.map { q ->
             val lens = providers.lensOf(q.observer ?: return@map q)
             q.copy(rankKey = lens.rank, followersKey = lens.followers)
         }
     }
+
+    /** The projection's cached provider map, or null for a store assembled without it. */
+    private suspend fun providers(): TrustProviders? = (index as? TrustProjection)?.recompute?.providerMap()
 
     /**
      * The read path's page assembly — ordering, splicing, narrowing, the cap.
@@ -582,6 +589,69 @@ class NostrSemanticsStore(
         val cutoff = nowSecs()
         val queries = lensed(filters.mapNotNull { it.toExpiryQuery(cutoff, observer) })
         pages.serve(queries, filters, rawPage).forEach(onEach)
+    }
+
+    /**
+     * Kind-0 profiles whose OWN text matches [text], each with its engine score
+     * under [observer]'s lens: the default relevance profile at the default
+     * trust floor, as a NIP-50 `"<text> observer:<hex>"` read ranks them. No
+     * reference expansion — a spliced subject carries its pointer's placement,
+     * not a score of its own. Extensions in [text] are overridden, not honoured.
+     *
+     * Hits only when the lens is [ScoredSearch.LensStatus.READY]: otherwise the
+     * engine would rank by text alone or gate everything out, and neither is the
+     * observer's ranking.
+     */
+    suspend fun scoredProfileSearch(
+        text: String,
+        observer: String,
+        limit: Int,
+    ): ScoredSearch =
+        withActivity(Activity.Query) {
+            require(limit > 0) { "limit must be positive" }
+            val key = observer.lowercase()
+            require(Hex.isHex64(key)) { "observer must be 64-hex" }
+            val lens = profileLens(key)
+            if (lens.status != ScoredSearch.LensStatus.READY) return@withActivity ScoredSearch(emptyList(), lens)
+            val cutoff = nowSecs()
+            val q =
+                Filter(kinds = listOf(MetadataEvent.KIND), search = text, limit = limit)
+                    .toExpiryQuery(cutoff, key)
+                    ?.copy(observer = key, ranking = null, minRank = DEFAULT_MIN_RANK, includeSpam = false)
+            // Extensions alone leave nothing to match on.
+            if (q == null || (q.search == null && q.phrases.isEmpty())) return@withActivity ScoredSearch(emptyList(), lens)
+            val hits =
+                index
+                    .searchRanked(lensed(listOf(q)).single())
+                    // An engine that does not rank reports no score; one is never invented.
+                    // NaN/Inf has no JSON form and no place in an order: dropped, not serialized.
+                    .mapNotNull { r -> r.score?.takeIf { it.isFinite() }?.let { ScoredSearch.Hit(r.hit.pubkey, it) } }
+                    .sortedByDescending { it.score }
+                    .distinctBy { it.pubkey }
+            ScoredSearch(hits, lens)
+        }
+
+    /**
+     * READY needs a PROJECTED rank card, not just a stored one: a card whose
+     * service had no 10040 when it arrived is held but not a cell until the
+     * reconciler walks it, and a lens over no cells gates every hit out.
+     * Newest cards are sampled — any one carrying the service's cell is enough.
+     */
+    private suspend fun profileLens(observer: String): ScoredSearch.Lens {
+        val projection = index as? TrustProjection
+        val lens = providers()?.lensOf(observer)
+        val service = lens?.rank ?: return ScoredSearch.Lens(ScoredSearch.LensStatus.NO_LIST, null, null)
+        val cards = index.search(EventQuery(kinds = listOf(UserAssertionEvent.KIND), authors = listOf(service), notExpiredAt = nowSecs(), limit = LENS_SAMPLES))
+        val ranked = cards.filter { (it.toEvent() as? UserAssertionEvent)?.boundedRank() != null }.mapNotNull(::subjectOf).distinct()
+        val projected =
+            ranked.any {
+                projection
+                    ?.reputations
+                    ?.get(it)
+                    ?.influenceScores
+                    ?.containsKey(ServiceKey(service)) == true
+            }
+        return ScoredSearch.Lens(if (projected) ScoredSearch.LensStatus.READY else ScoredSearch.LensStatus.NO_CARDS, service, lens.createdAt)
     }
 
     override suspend fun <T : Event> query(
@@ -1151,6 +1221,9 @@ class NostrSemanticsStore(
 
         /** Batches this size or larger take the bulk path; smaller ones aren't worth its setup. */
         const val BULK_MIN = 16
+
+        /** Newest rank-service cards sampled for a projected one; follower-only cards are skipped. */
+        const val LENS_SAMPLES = 8
 
         /** [EventDoc.NEWEST_FIRST] for the raw read path — the same order over [RawEvent]s. */
         val RAW_NEWEST_FIRST = compareByDescending(RawEvent::createdAt).thenBy(RawEvent::id)

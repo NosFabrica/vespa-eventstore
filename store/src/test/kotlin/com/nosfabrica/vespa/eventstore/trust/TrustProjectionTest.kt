@@ -119,7 +119,7 @@ class TrustProjectionTest {
                 ReputationDoc(subject, serviceCells(service to 87), serviceCells(service to 120.0)),
                 reputations.get(subject),
             )
-            assertEquals(TrustProviders.Lens(service, service), lensOf(observer), "the 10040 resolves to the service the query tensors carry")
+            assertEquals(TrustProviders.Lens(service, service), lensOf(observer).copy(createdAt = null), "the 10040 resolves to the service the query tensors carry")
         }
 
     /**
@@ -275,7 +275,7 @@ class TrustProjectionTest {
                 ReputationDoc(subject, serviceCells(service to 87, service2 to 50), serviceCells(service to 999.0, service2 to 300.0)),
                 reputations.get(subject),
             )
-            assertEquals(TrustProviders.Lens(rank = service, followers = service2), lensOf(observer))
+            assertEquals(TrustProviders.Lens(rank = service, followers = service2), lensOf(observer).copy(createdAt = null))
         }
 
     /** The same split through the bulk zero-read cell path: per-dimension partial updates merge into one doc. */
@@ -293,7 +293,7 @@ class TrustProjectionTest {
                 ReputationDoc(subject, serviceCells(service to 87, service2 to 50), serviceCells(service to 999.0, service2 to 300.0)),
                 reputations.get(subject),
             )
-            assertEquals(TrustProviders.Lens(rank = service, followers = service2), lensOf(observer))
+            assertEquals(TrustProviders.Lens(rank = service, followers = service2), lensOf(observer).copy(createdAt = null))
             fillers.forEach { f ->
                 val about = f.tags.first { it[0] == "d" }[1]
                 assertEquals(ReputationDoc(about, serviceCells(service to 10), emptyMap()), reputations.get(about), "rank-only filler $about")
