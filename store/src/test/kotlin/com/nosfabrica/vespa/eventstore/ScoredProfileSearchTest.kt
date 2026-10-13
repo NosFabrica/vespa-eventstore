@@ -26,16 +26,14 @@ import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
-import com.nosfabrica.vespa.eventstore.mapping.toDoc
 import com.nosfabrica.vespa.eventstore.trust.TrustProjection
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
-import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
-/** The ORE read: profiles scored by their own text under one observer's lens, with the lens state beside them. */
+/** The ORE read: profiles scored by their own text under one observer's lens, in one engine query. */
 class ScoredProfileSearchTest {
     private val observer = "0b".repeat(32)
     private val service = "5e".repeat(32)
@@ -46,6 +44,7 @@ class ScoredProfileSearchTest {
     /** Engine scores by author, standing in for Vespa's relevance (the in-memory index ranks nothing). */
     private val scores = HashMap<String, Double>()
     private val ranked = mutableListOf<EventQuery>()
+    private val searched = mutableListOf<EventQuery>()
     private val inner = InMemoryEventIndex()
     private val scoring =
         object : EventIndex by inner {
@@ -53,7 +52,24 @@ class ScoredProfileSearchTest {
                 ranked += query
                 return inner.search(query).map { Ranked(it, scores[it.pubkey]) }
             }
+
+            override suspend fun search(query: EventQuery): List<EventDoc> {
+                searched += query
+                return inner.search(query)
+            }
         }
+
+    /**
+     * [block]'s engine reads alone: run once first so the shared provider map (one kind-10040 read,
+     * cached for every lensed read) is loaded, then counted from a clean slate.
+     */
+    private suspend fun <T> reads(block: suspend () -> T): T {
+        block()
+        ranked.clear()
+        searched.clear()
+        return block()
+    }
+
     private val store = NostrSemanticsStore(TrustProjection(scoring, InMemoryReputationIndex()))
 
     private fun profile(
@@ -61,70 +77,37 @@ class ScoredProfileSearchTest {
         name: String,
     ) = MetadataEvent(id(), author, 1_000L + seq, emptyArray(), """{"name":"$name"}""", "")
 
-    private fun list10040(createdAt: Long = 1_000L) = TrustProviderListEvent(id(), observer, createdAt, arrayOf(arrayOf("30382:rank", service, "wss://scores.example.com/")), "", "")
-
-    private fun card(
-        subject: String,
-        vararg assertion: Array<String> = arrayOf(arrayOf("rank", "80")),
-    ) = UserAssertionEvent(id(), service, 1_000L + seq, arrayOf(arrayOf("d", subject), *assertion), "", "")
+    private fun list10040(
+        createdAt: Long = 1_000L,
+        owner: String = observer,
+    ) = TrustProviderListEvent(id(), owner, createdAt, arrayOf(arrayOf("30382:rank", service, "wss://scores.example.com/")), "", "")
 
     @Test
-    fun `an observer with no 10040 gets NO_LIST and no hits`() =
+    fun `an observer with no 10040 gets no service, no hits, and costs no engine query`() =
         runBlocking {
             val alice = "a1".repeat(32)
+            // Someone else's list: a map holding none is never cached, and a live relay always holds some.
+            store.insert(list10040(owner = "cc".repeat(32)))
             store.insert(profile(alice, "alice"))
             scores[alice] = 10.0
-            val result = store.scoredProfileSearch("alice", observer, limit = 100)
-            assertEquals(ScoredSearch.Lens(ScoredSearch.LensStatus.NO_LIST, null, null), result.lens)
-            assertEquals(emptyList(), result.hits)
+            val result = reads { store.scoredProfileSearch("alice", observer, limit = 100) }
+            assertEquals(ScoredSearch(emptyList(), null), result)
+            assertEquals(emptyList(), ranked + searched)
         }
 
     @Test
-    fun `a 10040 whose service has no cards yet gets NO_CARDS and no hits`() =
-        runBlocking {
-            val alice = "a1".repeat(32)
-            store.insert(list10040())
-            store.insert(profile(alice, "alice"))
-            scores[alice] = 10.0
-            val result = store.scoredProfileSearch("alice", observer, limit = 100)
-            assertEquals(ScoredSearch.Lens(ScoredSearch.LensStatus.NO_CARDS, service, 1_000L), result.lens)
-            assertEquals(emptyList(), result.hits)
-        }
-
-    @Test
-    fun `the lens reports when the observer's resolved 10040 was created`() =
-        runBlocking {
-            store.insert(list10040(createdAt = 1_700_000_123L))
-            assertEquals(1_700_000_123L, store.scoredProfileSearch("alice", observer, limit = 1).lens.listCreatedAt)
-            store.insert(card("a1".repeat(32)))
-            assertEquals(1_700_000_123L, store.scoredProfileSearch("alice", observer, limit = 1).lens.listCreatedAt, "READY reports it too")
-            assertEquals(null, store.scoredProfileSearch("alice", "cc".repeat(32), limit = 1).lens.listCreatedAt, "no list, no time")
-        }
-
-    @Test
-    fun `a stored card the projection never saw is NO_CARDS, not READY`() =
+    fun `a 10040 is the whole lens - nothing asks whether its service's scores are mirrored yet`() =
         runBlocking {
             val alice = "a1".repeat(32)
             store.insert(list10040())
-            // Straight into the engine, as a card held before its service was named and never walked.
-            inner.put(card(alice).toDoc())
             store.insert(profile(alice, "alice"))
             scores[alice] = 10.0
-            val result = store.scoredProfileSearch("alice", observer, limit = 100)
-            assertEquals(ScoredSearch.Lens(ScoredSearch.LensStatus.NO_CARDS, service, 1_000L), result.lens)
-            assertEquals(emptyList(), result.hits)
-        }
-
-    @Test
-    fun `a projected card that asserts no rank is NO_CARDS, not READY`() =
-        runBlocking {
-            val alice = "a1".repeat(32)
-            store.insert(list10040())
-            store.insert(card(alice, arrayOf("followers", "12")))
-            store.insert(profile(alice, "alice"))
-            scores[alice] = 10.0
-            val result = store.scoredProfileSearch("alice", observer, limit = 100)
-            assertEquals(ScoredSearch.Lens(ScoredSearch.LensStatus.NO_CARDS, service, 1_000L), result.lens)
+            // No card at all: the one query runs under the service, and what it answers is the answer
+            // (Vespa gates an unscored profile out; this stand-in index ranks nothing, so alice stays).
+            val result = reads { store.scoredProfileSearch("alice", observer, limit = 100) }
+            assertEquals(ScoredSearch(listOf(ScoredSearch.Hit(alice, 10.0)), service), result)
+            assertEquals(listOf(service), ranked.map { it.rankKey })
+            assertEquals(emptyList(), searched, "no other read: no card sample, no readiness probe")
         }
 
     @Test
@@ -132,7 +115,6 @@ class ScoredProfileSearchTest {
         runBlocking {
             val (nan, inf, ok) = listOf("a1", "a2", "a3").map { it.repeat(32) }
             store.insert(list10040())
-            store.insert(card(ok))
             listOf(nan, inf, ok).forEach { store.insert(profile(it, "alice")) }
             scores += mapOf(nan to Double.NaN, inf to Double.POSITIVE_INFINITY, ok to 3.0)
             val result = store.scoredProfileSearch("alice", observer, limit = 100)
@@ -140,11 +122,10 @@ class ScoredProfileSearchTest {
         }
 
     @Test
-    fun `a READY lens returns matching profiles with their engine scores, highest first`() =
+    fun `matching profiles come back with their engine scores, highest first`() =
         runBlocking {
             val (low, high, mid, other) = listOf("a1", "a2", "a3", "a4").map { it.repeat(32) }
             store.insert(list10040())
-            store.insert(card(high))
             // Inserted lowest-scored last, so the engine's recency order is not the answer.
             store.insert(profile(mid, "alice mid"))
             store.insert(profile(high, "alice high"))
@@ -152,7 +133,7 @@ class ScoredProfileSearchTest {
             store.insert(profile(low, "alice low"))
             scores += mapOf(low to 1.5, high to 900.0, mid to 42.0, other to 5000.0)
             val result = store.scoredProfileSearch("alice", observer, limit = 100)
-            assertEquals(ScoredSearch.Lens(ScoredSearch.LensStatus.READY, service, 1_000L), result.lens)
+            assertEquals(service, result.rankService)
             assertEquals(
                 listOf(ScoredSearch.Hit(high, 900.0), ScoredSearch.Hit(mid, 42.0), ScoredSearch.Hit(low, 1.5)),
                 result.hits,
@@ -163,9 +144,8 @@ class ScoredProfileSearchTest {
     fun `the read is one default-profile kind-0 search at trust floor 2, whatever extensions the text carries`() =
         runBlocking {
             store.insert(list10040())
-            store.insert(card("a1".repeat(32)))
             val stranger = "cc".repeat(32)
-            store.scoredProfileSearch("alice include:spam sort:recent filter:rank:gte:0 observer:$stranger", observer, limit = 7)
+            reads { store.scoredProfileSearch("alice include:spam sort:recent filter:rank:gte:0 observer:$stranger", observer, limit = 7) }
             val q = ranked.single()
             assertEquals(listOf(0), q.kinds, "no pointer kinds: nothing is reached through expansion")
             assertEquals(listOf("alice"), q.search?.split(" "))

@@ -24,7 +24,6 @@ import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.async.QUERY_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.async.forEachBounded
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
-import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
 import com.nosfabrica.vespa.eventstore.engine.metrics.Activity
 import com.nosfabrica.vespa.eventstore.engine.metrics.CostLedger
 import com.nosfabrica.vespa.eventstore.engine.metrics.withActivity
@@ -57,8 +56,6 @@ import com.nosfabrica.vespa.eventstore.trust.ProviderRefresher
 import com.nosfabrica.vespa.eventstore.trust.TrustCells
 import com.nosfabrica.vespa.eventstore.trust.TrustProjection
 import com.nosfabrica.vespa.eventstore.trust.TrustProviders
-import com.nosfabrica.vespa.eventstore.trust.boundedRank
-import com.nosfabrica.vespa.eventstore.trust.subjectOf
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -598,9 +595,11 @@ class NostrSemanticsStore(
      * reference expansion — a spliced subject carries its pointer's placement,
      * not a score of its own. Extensions in [text] are overridden, not honoured.
      *
-     * Hits only when the lens is [ScoredSearch.LensStatus.READY]: otherwise the
-     * engine would rank by text alone or gate everything out, and neither is the
-     * observer's ranking.
+     * ONE engine query. Hits only when [observer]'s 10040 resolves a rank service
+     * (an in-memory lookup): without one the engine would rank by text alone,
+     * which is not the observer's ranking. Whether that service's scores are
+     * mirrored yet is not asked — a sample of its cards could not tell anyway —
+     * so a profile with no projected score is gated out like any NIP-50 read's.
      */
     suspend fun scoredProfileSearch(
         text: String,
@@ -611,15 +610,14 @@ class NostrSemanticsStore(
             require(limit > 0) { "limit must be positive" }
             val key = observer.lowercase()
             require(Hex.isHex64(key)) { "observer must be 64-hex" }
-            val lens = profileLens(key)
-            if (lens.status != ScoredSearch.LensStatus.READY) return@withActivity ScoredSearch(emptyList(), lens)
+            val service = providers()?.lensOf(key)?.rank ?: return@withActivity ScoredSearch(emptyList(), null)
             val cutoff = nowSecs()
             val q =
                 Filter(kinds = listOf(MetadataEvent.KIND), search = text, limit = limit)
                     .toExpiryQuery(cutoff, key)
                     ?.copy(observer = key, ranking = null, minRank = DEFAULT_MIN_RANK, includeSpam = false)
             // Extensions alone leave nothing to match on.
-            if (q == null || (q.search == null && q.phrases.isEmpty())) return@withActivity ScoredSearch(emptyList(), lens)
+            if (q == null || (q.search == null && q.phrases.isEmpty())) return@withActivity ScoredSearch(emptyList(), service)
             val hits =
                 index
                     .searchRanked(lensed(listOf(q)).single())
@@ -628,31 +626,8 @@ class NostrSemanticsStore(
                     .mapNotNull { r -> r.score?.takeIf { it.isFinite() }?.let { ScoredSearch.Hit(r.hit.pubkey, it) } }
                     .sortedByDescending { it.score }
                     .distinctBy { it.pubkey }
-            ScoredSearch(hits, lens)
+            ScoredSearch(hits, service)
         }
-
-    /**
-     * READY needs a PROJECTED rank card, not just a stored one: a card whose
-     * service had no 10040 when it arrived is held but not a cell until the
-     * reconciler walks it, and a lens over no cells gates every hit out.
-     * Newest cards are sampled — any one carrying the service's cell is enough.
-     */
-    private suspend fun profileLens(observer: String): ScoredSearch.Lens {
-        val projection = index as? TrustProjection
-        val lens = providers()?.lensOf(observer)
-        val service = lens?.rank ?: return ScoredSearch.Lens(ScoredSearch.LensStatus.NO_LIST, null, null)
-        val cards = index.search(EventQuery(kinds = listOf(UserAssertionEvent.KIND), authors = listOf(service), notExpiredAt = nowSecs(), limit = LENS_SAMPLES))
-        val ranked = cards.filter { (it.toEvent() as? UserAssertionEvent)?.boundedRank() != null }.mapNotNull(::subjectOf).distinct()
-        val projected =
-            ranked.any {
-                projection
-                    ?.reputations
-                    ?.get(it)
-                    ?.influenceScores
-                    ?.containsKey(ServiceKey(service)) == true
-            }
-        return ScoredSearch.Lens(if (projected) ScoredSearch.LensStatus.READY else ScoredSearch.LensStatus.NO_CARDS, service, lens.createdAt)
-    }
 
     override suspend fun <T : Event> query(
         filter: Filter,
@@ -1221,9 +1196,6 @@ class NostrSemanticsStore(
 
         /** Batches this size or larger take the bulk path; smaller ones aren't worth its setup. */
         const val BULK_MIN = 16
-
-        /** Newest rank-service cards sampled for a projected one; follower-only cards are skipped. */
-        const val LENS_SAMPLES = 8
 
         /** [EventDoc.NEWEST_FIRST] for the raw read path — the same order over [RawEvent]s. */
         val RAW_NEWEST_FIRST = compareByDescending(RawEvent::createdAt).thenBy(RawEvent::id)

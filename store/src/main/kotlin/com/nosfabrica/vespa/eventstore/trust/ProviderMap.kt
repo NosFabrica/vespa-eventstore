@@ -53,14 +53,10 @@ internal data class TrustProviders(
      */
     val lenses: Map<ObserverKey, Lens> = emptyMap(),
 ) {
-    /**
-     * One observer's resolved providers; null on a dimension their 10040 does not name. [createdAt]
-     * is that 10040's `created_at`, null only on [NO_LENS].
-     */
+    /** One observer's resolved providers; null on a dimension their 10040 does not name. */
     data class Lens(
         val rank: String?,
         val followers: String?,
-        val createdAt: Long? = null,
     )
 
     fun isEmpty() = rankServices.isEmpty() && followerServices.isEmpty()
@@ -327,9 +323,7 @@ internal class ProviderMap(
                             }
                         }
                     }
-                    if (lens.rank != null || lens.followers != null) {
-                        lenses[ObserverKey(list.pubKey)] = lens.copy(createdAt = maxOf(lens.createdAt ?: list.createdAt, list.createdAt))
-                    }
+                    if (lens != TrustProviders.NO_LENS) lenses[ObserverKey(list.pubKey)] = lens
                 }
             return TrustProviders(rank, followers, lenses)
         }

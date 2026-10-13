@@ -21,37 +21,18 @@
 package com.nosfabrica.vespa.eventstore
 
 /**
- * A profile search's hits with each one's OWN engine score, and the lens that
- * scored them — see [NostrSemanticsStore.scoredProfileSearch]. Scores compare
- * only within one answer: they are one rank profile's relevance for one query.
+ * A profile search's hits with each one's OWN engine score, and the rank
+ * service that scored them — see [NostrSemanticsStore.scoredProfileSearch].
+ * Scores compare only within one answer: they are one rank profile's relevance
+ * for one query.
  */
 data class ScoredSearch(
     val hits: List<Hit>,
-    val lens: Lens,
+    /** The observer's resolved `30382:rank` service; null when no stored 10040 names one, and then [hits] is empty. */
+    val rankService: String?,
 ) {
     data class Hit(
         val pubkey: String,
         val score: Double,
     )
-
-    /**
-     * The observer's resolved `30382:rank` service and the `created_at` of the
-     * 10040 that named it; both null when [status] is [LensStatus.NO_LIST].
-     */
-    data class Lens(
-        val status: LensStatus,
-        val service: String?,
-        val listCreatedAt: Long? = null,
-    )
-
-    enum class LensStatus {
-        /** The observer's 10040 names a rank service with at least one projected, ranked card. */
-        READY,
-
-        /** No stored 10040 resolves a rank service for the observer. */
-        NO_LIST,
-
-        /** The 10040 resolves, but no ranked card of the service is projected yet. */
-        NO_CARDS,
-    }
 }
