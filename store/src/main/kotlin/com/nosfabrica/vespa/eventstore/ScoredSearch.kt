@@ -28,7 +28,10 @@ package com.nosfabrica.vespa.eventstore
  */
 data class ScoredSearch(
     val hits: List<Hit>,
-    /** The observer's resolved `30382:rank` service; null when no stored 10040 names one, and then [hits] is empty. */
+    /**
+     * The observer's resolved `30382:rank` service; null when no stored 10040 names one (or the store
+     * was assembled without the trust projection, so nothing resolves), and then [hits] is empty.
+     */
     val rankService: String?,
 ) {
     data class Hit(

@@ -596,10 +596,17 @@ class NostrSemanticsStore(
      * not a score of its own. Extensions in [text] are overridden, not honoured.
      *
      * ONE engine query. Hits only when [observer]'s 10040 resolves a rank service
-     * (an in-memory lookup): without one the engine would rank by text alone,
-     * which is not the observer's ranking. Whether that service's scores are
-     * mirrored yet is not asked — a sample of its cards could not tell anyway —
-     * so a profile with no projected score is gated out like any NIP-50 read's.
+     * in the projection's cached provider map: without one the engine would rank
+     * by text alone, which is not the observer's ranking. The map is the one every
+     * lensed read shares, so a cold one (first read, or after a 10040 write) costs
+     * this call the same kind-10040 read it costs a NIP-50 read. Whether that
+     * service's scores are mirrored yet is not asked — a sample of its cards could
+     * not tell anyway — so a profile with no projected score is gated out like any
+     * NIP-50 read's.
+     *
+     * The lens is resolved ONCE and applied here, not through [lensed]: a second
+     * lookup could land on a rebuilt map and query under a different service than
+     * the one [ScoredSearch.rankService] reports.
      */
     suspend fun scoredProfileSearch(
         text: String,
@@ -609,18 +616,20 @@ class NostrSemanticsStore(
         withActivity(Activity.Query) {
             require(limit > 0) { "limit must be positive" }
             val key = observer.lowercase()
-            require(Hex.isHex64(key)) { "observer must be 64-hex" }
-            val service = providers()?.lensOf(key)?.rank ?: return@withActivity ScoredSearch(emptyList(), null)
+            // isHex64 reads the first 64 characters and ignores the rest.
+            require(key.length == 64 && Hex.isHex64(key)) { "observer must be 64-hex" }
+            val lens = providers()?.lensOf(key)
+            val service = lens?.rank ?: return@withActivity ScoredSearch(emptyList(), null)
             val cutoff = nowSecs()
             val q =
                 Filter(kinds = listOf(MetadataEvent.KIND), search = text, limit = limit)
                     .toExpiryQuery(cutoff, key)
-                    ?.copy(observer = key, ranking = null, minRank = DEFAULT_MIN_RANK, includeSpam = false)
+                    ?.copy(observer = key, rankKey = service, followersKey = lens.followers, ranking = null, minRank = DEFAULT_MIN_RANK, includeSpam = false)
             // Extensions alone leave nothing to match on.
             if (q == null || (q.search == null && q.phrases.isEmpty())) return@withActivity ScoredSearch(emptyList(), service)
             val hits =
                 index
-                    .searchRanked(lensed(listOf(q)).single())
+                    .searchRanked(q)
                     // An engine that does not rank reports no score; one is never invented.
                     // NaN/Inf has no JSON form and no place in an order: dropped, not serialized.
                     .mapNotNull { r -> r.score?.takeIf { it.isFinite() }?.let { ScoredSearch.Hit(r.hit.pubkey, it) } }

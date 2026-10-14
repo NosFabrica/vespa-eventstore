@@ -32,6 +32,7 @@ import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEve
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 
 /** The ORE read: profiles scored by their own text under one observer's lens, in one engine query. */
 class ScoredProfileSearchTest {
@@ -108,6 +109,15 @@ class ScoredProfileSearchTest {
             assertEquals(ScoredSearch(listOf(ScoredSearch.Hit(alice, 10.0)), service), result)
             assertEquals(listOf(service), ranked.map { it.rankKey })
             assertEquals(emptyList(), searched, "no other read: no card sample, no readiness probe")
+        }
+
+    @Test
+    fun `an observer key is exactly 64 hex, not 64 hex and more`() =
+        runBlocking {
+            store.insert(list10040())
+            assertFailsWith<IllegalArgumentException> { store.scoredProfileSearch("alice", observer + "0b", limit = 1) }
+            assertFailsWith<IllegalArgumentException> { store.scoredProfileSearch("alice", observer.take(62), limit = 1) }
+            Unit
         }
 
     @Test
