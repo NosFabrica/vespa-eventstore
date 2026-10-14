@@ -54,7 +54,7 @@ class ProviderMapTest {
         assertEquals(setOf(service), p.rankServices)
         assertEquals(setOf(service2), p.followerServices)
         assertTrue(p.maps(service) && p.maps(service2))
-        assertEquals(TrustProviders.Lens(rank = service, followers = service2, createdAt = 1_001L), p.lensOf(observer))
+        assertEquals(TrustProviders.Lens(rank = service, followers = service2), p.lensOf(observer))
         assertEquals(TrustProviders.NO_LENS, p.lensOf(observer2), "an observer with no list resolves to nothing")
     }
 
