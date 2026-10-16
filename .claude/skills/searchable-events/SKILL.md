@@ -14,8 +14,10 @@ description: The NIP-50 indexing surface of Quartz — the `SearchableEvent` int
 > describes — we parse with `SearchQuery.parse`-compatible semantics; keep it that way.
 
 > Skill imported from `vitorpamplona/amethyst` `.claude/skills/searchable-events`
-> at commit `98f09f29c0` and refreshed to `68268da413`; the kind table below
-> is kept current here. Refresh this copy at every pin bump.
+> at commit `98f09f29c0` and refreshed to `ce7f4db1b6`; the kind table below
+> is kept current here. Refresh this copy at every pin bump. Upstream has since folded this
+> skill into `event-store-semantics`, whose `references/searchable-kinds.md` is now the
+> table to diff against.
 
 ## The contract
 
@@ -67,7 +69,7 @@ Rules every implementation follows (keep them when adding one):
 
 **`references/searchable-kinds.md`** in this skill holds the authoritative table — every
 implementor with its kind number, class, and the exact `indexableContent()` expression
-(191 concrete classes / 192 kind values as of 2026-10, Quartz pin `68268da413`; the kind set is exactly
+(204 concrete classes / 204 kind values as of 2026-10, Quartz pin `ce7f4db1b6`; the kind set is exactly
 `nip50Search/SearchableKinds.kt`'s `ALL`). Diff that file at a version bump to
 answer "did the searchable set or any kind's indexed text change?".
 
