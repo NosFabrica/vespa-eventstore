@@ -2165,6 +2165,34 @@ Practical conclusions:
   engine cores, owner-lane parallel writers, multi-node. The fbench study
   reached the same conclusion for reads.
 
+## The feed body, written in one pass (2026-10-16)
+
+A JFR profile of vespa-relay publishing relay.ditto.pub's kind 3s (vespa-relay's
+docs/ingest-benchmark.md) put 12% of the relay's samples in `EventDoc.indexFields`
+building the feed body as a `JsonObject` tree: every tag value its own
+`JsonPrimitive`, each stringified through a fresh builder, and the whole `tags`
+array escaped a second time as a string field. A kind 3 carries hundreds of tags.
+
+`EventDoc.feedJson` writes the same text straight into one builder, and the
+`tags` field in a single pass (`appendJsonTagsString`, each char's escape
+escaped again from a table). Byte-identity with the tree is the contract, since
+the `tags` string is stored and spliced verbatim into served events:
+`JsonTextTest` checks all 65,536 UTF-16 units against kotlinx and the feed body
+across kinds and near/edge gates.
+
+| 20,000 of ditto's newest kind 3s (avg 9.6 KB) | µs per feed body |
+|---|---|
+| `buildJsonObject { put("fields", indexFields()) }.toString()` | 320-360 |
+| `feedJson`, tags serialized then escaped (two passes) | 230-265 |
+| `feedJson`, tags escaped in one pass (shipped) | 183-206 |
+
+End to end it is small: the relay's CPU per published event went from
+1,330-1,380 µs to 1,280-1,300, within run-to-run noise on throughput on a box
+where Vespa takes two thirds of the CPU. Most of what is left in the relay's
+write is the feed client's own HTTP/2 request per document. On the same runs,
+`VESPA_ACCESS_LOG=disabled` was worth 12% (610 to 684 ev/s, Vespa CPU per
+event 2.8 to 2.5 ms): one access-log line per fed document.
+
 ## Mixed read/write load (`BENCH_MIXED=1`)
 
 A relay never serves REQs from a quiet store — queries arrive while syncs

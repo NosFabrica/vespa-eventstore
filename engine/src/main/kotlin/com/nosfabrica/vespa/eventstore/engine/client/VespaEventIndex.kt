@@ -228,7 +228,7 @@ class VespaEventIndex(
     private fun putOp(doc: EventDoc) =
         feed.client.put(
             DocumentId.of(EVENT_NAMESPACE, EVENT_DOCTYPE, docIdOf(doc)),
-            buildJsonObject { put("fields", doc.indexFields(includeNear = fallbacks.nearFieldsAvailable, includeEdge = feedsEdge())) }.toString(),
+            doc.feedJson(includeNear = fallbacks.nearFieldsAvailable, includeEdge = feedsEdge()),
             feedParams(),
         )
 
@@ -332,7 +332,7 @@ class VespaEventIndex(
             feed.client
                 .put(
                     DocumentId.of(EVENT_NAMESPACE, EVENT_DOCTYPE, address),
-                    buildJsonObject { put("fields", doc.indexFields(includeNear = fallbacks.nearFieldsAvailable, includeEdge = feedsEdge())) }.toString(),
+                    doc.feedJson(includeNear = fallbacks.nearFieldsAvailable, includeEdge = feedsEdge()),
                     feedParams().createIfNonExistent(true).testAndSetCondition(condition),
                 ).await()
         var refusals = 0
