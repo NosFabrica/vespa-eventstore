@@ -35,6 +35,7 @@ import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
 import com.vitorpamplona.quartz.nip10Notes.TextNoteEvent
+import com.vitorpamplona.quartz.nip15Marketplace.product.ProductEvent
 import com.vitorpamplona.quartz.nip15Marketplace.stall.StallEvent
 import com.vitorpamplona.quartz.nip17Dm.messages.ChatMessageEvent
 import com.vitorpamplona.quartz.nip23LongContent.LongFormContentEvent
@@ -48,6 +49,9 @@ import com.vitorpamplona.quartz.nip84Highlights.HighlightEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import com.vitorpamplona.quartz.nip89AppHandlers.definition.AppDefinitionEvent
 import com.vitorpamplona.quartz.nip99Classifieds.ClassifiedsEvent
+import com.vitorpamplona.quartz.nip99Classifieds.collection.ProductCollectionEvent
+import com.vitorpamplona.quartz.nip99Classifieds.review.ProductReviewEvent
+import com.vitorpamplona.quartz.nip99Classifieds.shipping.ShippingOptionEvent
 import com.vitorpamplona.quartz.nipB0WebBookmarks.WebBookmarkEvent
 import com.vitorpamplona.quartz.nipC0CodeSnippets.CodeSnippetEvent
 import com.vitorpamplona.quartz.nipCCGeocaching.listing.GeocacheListingEvent
@@ -344,6 +348,70 @@ class SearchExtractorsTest {
         assertEquals(
             SearchFields(primary = "My Reads"),
             SearchExtractors.extract(build(BookmarkListEvent.KIND, arrayOf(arrayOf("name", "My Reads")), "")),
+        )
+    }
+
+    /**
+     * What the ce7f4db1b6 pin moves, through the factory. The Open Markets kinds 30405 / 30406
+     * are tag-split: a collection or shipping option is searchable, while Shopstr's tagless
+     * encrypted carts and escrow records on the same numbers stay addressable but index
+     * nothing. A 31555 review takes the catch-all. And NIP-15 bodies are read leniently: a
+     * product with no `id` and a string `price` failed the strict decode at 68268da413 and
+     * indexed nothing, where it now indexes its name and description.
+     */
+    @Test
+    fun `the ce7f4db1b6 pin indexes Open Markets kinds and reads NIP-15 bodies leniently`() {
+        fun build(
+            kind: Int,
+            tags: Array<Array<String>>,
+            content: String,
+        ) = EventFactory.create<Event>("6".repeat(64), alice, 1L, kind, tags, content, "")
+
+        assertEquals(
+            SearchFields(primary = "Winter Gear", secondary = "warm things", text = "everything for the cold"),
+            SearchExtractors.extract(
+                build(
+                    ProductCollectionEvent.KIND,
+                    arrayOf(arrayOf("d", "winter"), arrayOf("title", "Winter Gear"), arrayOf("summary", "warm things")),
+                    "everything for the cold",
+                ),
+            ),
+        )
+        assertEquals(
+            SearchFields.NONE,
+            SearchExtractors.extract(build(ProductCollectionEvent.KIND, arrayOf(arrayOf("d", "cart")), "AnEncryptedCartThatMustNeverBeIndexed")),
+        )
+        assertEquals(
+            SearchFields(primary = "Standard", secondary = "Correios", text = "five to ten days"),
+            SearchExtractors.extract(
+                build(
+                    ShippingOptionEvent.KIND,
+                    arrayOf(arrayOf("d", "std"), arrayOf("title", "Standard"), arrayOf("service", "standard"), arrayOf("carrier", "Correios")),
+                    "five to ten days",
+                ),
+            ),
+        )
+        assertEquals(
+            SearchFields.NONE,
+            SearchExtractors.extract(
+                build(ShippingOptionEvent.KIND, arrayOf(arrayOf("d", "shopstr:p2pk-escrow:x"), arrayOf("type", "p2pk-escrow")), "AnEscrowRecord"),
+            ),
+        )
+        assertEquals(
+            SearchFields(text = "arrived fast, fits well"),
+            SearchExtractors.extract(
+                build(
+                    ProductReviewEvent.KIND,
+                    arrayOf(arrayOf("d", "a:30402:${"b".repeat(64)}:socks"), arrayOf("rating", "1", "thumb")),
+                    "arrived fast, fits well",
+                ),
+            ),
+        )
+        assertEquals(
+            SearchFields(primary = "Wool socks", secondary = "warm and soft"),
+            SearchExtractors.extract(
+                build(ProductEvent.KIND, arrayOf(arrayOf("d", "socks")), """{"name":"Wool socks","description":"warm and soft","price":"12"}"""),
+            ),
         )
     }
 
