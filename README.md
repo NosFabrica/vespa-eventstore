@@ -258,11 +258,13 @@ place column. URLs listed below fill the website column a profile's website does
 | **1621 / 1618** | git issue / pull request | subject, content |
 | **1617** | git patch | content |
 | **1622** | git reply | content |
+| **1624** | git cover note | content |
 | **1630 / 1631 / 1632 / 1633** | git status (open / applied / closed / draft) | content |
 | **1337** | code snippet | name, description + language + extension + runtime, content, repo URL |
 | **30817** | NIP-on-Nostr document | title, content |
 | **32267** | software application | name, summary, content, app + repository URLs |
 | **30023** | long-form article | title, summary + hashtags, content |
+| **30024** | long-form draft | title, summary + hashtags, content |
 | **30818** | wiki article | title, summary, content |
 | **818** | wiki merge request | content |
 | **31 / 33** | external / prompt citation | title, summary + author + publisher (33: + model), content |
@@ -274,6 +276,9 @@ place column. URLs listed below fill the website column a profile's website does
 | **31987** | relay review | content |
 | **34259** | entity rating | content |
 | **30402** | classified listing | title, summary, content |
+| **30405** ‡ | product collection (Open Markets) | title, summary + hashtags, content |
+| **30406** ‡ | shipping option (Open Markets) | title, carrier, content |
+| **31555** | product review (Open Markets) | content |
 | **31924** | calendar | title, content |
 | **31922 / 31923** | calendar date / time slot | title, summary, content |
 | **31925** | calendar RSVP | content |
@@ -302,6 +307,7 @@ place column. URLs listed below fill the website column a profile's website does
 | **42000** | Buzz product feedback | content |
 | **9035 / 9036 / 8002 / 8003** | Buzz identity archive / unarchive request, and the relay's archived / unarchived notice | content (the reason) |
 | **15128 / 35128** | website | title, description, source URL |
+| **5128** | website snapshot | title, description, source URL |
 | **15129 / 35129 / 5129** | napplet root / named / snapshot | title, description |
 | **11333 / 33331** | Cyberspace avatar / object (an SNO 3-D shape) | name (the content is geometry, not indexed) |
 | **38192** | PlayStation-1 memory-card save | title, summary + region + filename |
@@ -310,9 +316,11 @@ place column. URLs listed below fill the website column a profile's website does
 | **30009** | badge | name, description, content |
 | **30008** | badge set (NIP-58) | title, description |
 | **30030** | emoji pack | title (or name), description + emoji shortcodes (the content is the NIP-44 ciphertext of the private emojis, never indexed) |
+| **30031** | sticker pack | title, description + sticker shortcodes |
 | **30017 / 30018 / 30019 / 30020** | marketplace stall / product / config / auction (NIP-15) | name, description |
 | **1022** | auction bid confirmation (NIP-15) | the seller's message |
 | **38383** | P2P order (NIP-69) | maker name, currency + payment methods |
+| **38385** ‡ | Mostro instance info (NIP-69) | instance name, accepted fiat currencies |
 | **9041** | zap goal | summary, content |
 | **33863** | fundraiser | title, content |
 | **9734 / 9735** | zap request / receipt (NIP-57) | content (9735: the embedded zap request's comment) |
@@ -339,6 +347,10 @@ place column. URLs listed below fill the website column a profile's website does
 | **30392 / 30393 / 30394 / 30395** | trusted list of pubkeys / events / addressables / external ids | title |
 | **30296 / 30297** | interactive story prologue / scene | title, summary + option labels, content |
 | **1301 / 33401** | workout record / exercise template | title, content |
+| **33402** | workout template | title, content |
+| **30301 / 30302** ‡ | Kanban board / card | title, description |
+| **30301** ‡ | reproducible-build verification (WalletScrutiny) | description, the report |
+| **36767** | profile theme | title, description |
 | **5050 / 5100 / 5250** | NIP-90 DVM job requests (text / image / speech generation) | the prompt or text inputs (5100: + negative prompt) |
 | **5302 / 5303** | NIP-90 content / people search request | the search query |
 | **5901** | NIP-90 OP_RETURN request | the text to inscribe on-chain |
@@ -383,6 +395,16 @@ by search. Of the three classes, only the prediction market is split into tiers:
 (from the `data` JSON, the `title` tag or a JSON `content`, in that order) is the title, its
 description, outcome labels, resolution and cancel reason sit beside it, and `content` is the
 body only when it is a plain post rather than JSON and no description supersedes it.
+
+The same rule splits a few more shared numbers, each by its own tags, with the rest parsed as an
+unrecognized event that stays addressable and is never indexed: 30405 is a product collection
+only with a `title` or a product `a`, and 30406 a shipping option only with a `title`,
+`service` or `country` — Shopstr's tagless encrypted carts and its escrow records reuse both
+numbers; 30301 is a reproducible-build verification with `i` + `status`, else a Kanban board
+with a `title` or a named `col` (an encrypted planner app shares it), and 30302 a Kanban card
+only with a `title` or an `a` naming a board (Fieldbook writes team memberships there); 38385 is
+Mostro instance info only with a `z` of `info` or a `mostro_version` (Paygress publishes on it
+too).
 
 Anything Quartz parses to a `SearchableEvent` is indexed, current or future. The
 authoritative mapping is
