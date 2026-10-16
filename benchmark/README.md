@@ -2193,6 +2193,26 @@ write is the feed client's own HTTP/2 request per document. On the same runs,
 `VESPA_ACCESS_LOG=disabled` was worth 12% (610 to 684 ev/s, Vespa CPU per
 event 2.8 to 2.5 ms): one access-log line per fed document.
 
+## Feed compression (`VESPA_FEED_COMPRESSION`, 2026-10-16)
+
+The feed client compresses by default: `Compression.auto` gzips every body over 512 bytes, and
+`VespaFeed` never set it. For a 400-`p`-tag kind 3 (a 72 KB body, 29 KB gzipped) the gzip took
+about 2.0 ms, four times the 0.5 ms `feedJson` spends writing it, and Vespa then inflates it.
+`VESPA_FEED_COMPRESSION` (`auto`, `gzip`, `none`; read strictly) exposes the switch; the default
+stays `auto`, the client's own.
+
+Same harness and slice as above (vespa-relay's ingest benchmark, the first 100k of ditto's kind
+3s, 3 cores, `VESPA_ACCESS_LOG=disabled`), two alternating pairs:
+
+| feed compression | ev/s | relay µs/ev | Vespa µs/ev |
+|---|---|---|---|
+| `auto` (gzip) | 693, 725 | 1,180-1,210 | 2,430-2,440 |
+| `none` | **792, 832** | **940-990** | **2,200-2,280** |
+
+14-15% more publishes per second, a fifth of the relay's CPU per event and 7% of Vespa's. That is
+for a Vespa on the same host or LAN; across a WAN the bytes are the cost, and gzip keeps them to
+about 40% for tag-heavy events (`auto` or `gzip` there).
+
 ## Mixed read/write load (`BENCH_MIXED=1`)
 
 A relay never serves REQs from a quiet store — queries arrive while syncs

@@ -48,6 +48,17 @@ internal class VespaFeed(
         System.getenv("VESPA_FEED_CONNECTIONS")?.toIntOrNull()
             ?: (32 / urls.size).coerceAtLeast(1)
 
+    /**
+     * `VESPA_FEED_COMPRESSION`: `auto` (the client's own default, gzip for any body over 512
+     * bytes), `gzip` or `none`. Read strictly: a misspelling fails at startup rather than
+     * silently keeping the default.
+     */
+    private val compression: FeedClientBuilder.Compression =
+        System.getenv("VESPA_FEED_COMPRESSION")?.trim()?.let { value ->
+            FeedClientBuilder.Compression.entries.firstOrNull { it.name.equals(value, ignoreCase = true) }
+                ?: error("VESPA_FEED_COMPRESSION must be auto, gzip or none, was '$value'")
+        } ?: FeedClientBuilder.Compression.auto
+
     /** The tuned client. Operations go straight through it; only construction and health live here. */
     val client: FeedClient =
         FeedClientBuilder
@@ -62,6 +73,7 @@ internal class VespaFeed(
             // are the measured sweet spot for a small-core single-node host.
             .setConnectionsPerEndpoint(connectionsPerEndpoint)
             .setMaxStreamPerConnection(System.getenv("VESPA_FEED_STREAMS")?.toIntOrNull() ?: 128)
+            .setCompression(compression)
             .apply { System.getenv("VESPA_FEED_INFLIGHT_FACTOR")?.toIntOrNull()?.let { setInitialInflightFactor(it) } }
             .setRetryStrategy(
                 object : FeedClient.RetryStrategy {

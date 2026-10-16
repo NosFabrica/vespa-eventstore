@@ -20,6 +20,8 @@
  */
 package com.nosfabrica.vespa.eventstore.engine.doc
 
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -69,11 +71,20 @@ class JsonTextTest {
             sig = "e".repeat(128),
         )
 
+    private fun kotlinxTags(tags: List<List<String>>) = JsonArray(tags.map { tag -> JsonArray(tag.map(::JsonPrimitive)) }).toString()
+
+    /**
+     * The old tree, with its `tags` string built by kotlinx too: indexFields() now takes it from
+     * tagsJson(), and a reference that shares the code under test cannot catch that code.
+     */
     private fun spec(
         doc: EventDoc,
         near: Boolean,
         edge: Boolean,
-    ) = buildJsonObject { put("fields", doc.indexFields(includeNear = near, includeEdge = edge)) }.toString()
+    ): String {
+        val fields = doc.indexFields(includeNear = near, includeEdge = edge)
+        return buildJsonObject { put("fields", JsonObject(fields + ("tags" to JsonPrimitive(kotlinxTags(doc.tags))))) }.toString()
+    }
 
     @Test
     fun `the feed body is the indexFields object, byte for byte`() {
@@ -82,7 +93,19 @@ class JsonTextTest {
                 kind = 0,
                 tags = listOf(listOf("t", hostile)),
                 content = """{"name":"Ann \"the\" Smith"}""",
-                search = SearchFields(name = "Ann \"the\" Smith", displayName = hostile, about = "tarantellas every night", nip05 = "ann@example.com", text = hostile),
+                search =
+                    SearchFields(
+                        name = "Ann \"the\" Smith",
+                        displayName = hostile,
+                        about = "tarantellas every night",
+                        nip05 = "ann@example.com",
+                        lud16 = "ann@$hostile",
+                        website = "https://example.com/$hostile",
+                        primary = hostile,
+                        secondary = "\u2028\u2029\ud83d lone",
+                        text = hostile,
+                        location = hostile,
+                    ),
             )
         for (doc in listOf(kind3, profile, kind3.copy(tags = emptyList(), content = ""))) {
             for (near in listOf(true, false)) {
@@ -93,13 +116,18 @@ class JsonTextTest {
         }
     }
 
+    /** Every UTF-16 unit as a tag value: 256 tags of 256 values, each unit between two letters. */
+    private val everyUnit = kind3.copy(tags = (0..0xFFFF).chunked(256).map { chunk -> chunk.map { "a" + it.toChar() + "b" } })
+
     @Test
     fun `the stored tags string is kotlinx's`() {
-        assertEquals(
-            kotlinx.serialization.json
-                .JsonArray(kind3.tags.map { tag -> kotlinx.serialization.json.JsonArray(tag.map(::JsonPrimitive)) })
-                .toString(),
-            kind3.tagsJson(),
-        )
+        assertEquals(kotlinxTags(kind3.tags), kind3.tagsJson())
+        assertEquals(kotlinxTags(everyUnit.tags), everyUnit.tagsJson())
+    }
+
+    @Test
+    fun `every UTF-16 unit in a tag value survives both escapes of the feed body`() {
+        // The tags field is JSON inside a JSON string: each unit goes through the TWICE table.
+        assertEquals(spec(everyUnit, near = false, edge = false), everyUnit.feedJson(includeNear = false, includeEdge = false))
     }
 }
