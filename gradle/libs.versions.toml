@@ -5,7 +5,16 @@ app = "1.0.1"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"
 # Quartz from JitPack (amethyst @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
-# ce7f4db1b6 = amethyst main @ 2026-10-16: the amethyst #4506 merge (Open Markets collections,
+# 020e714858 = amethyst main @ 2026-10-16: the amethyst #4510 merge (bulk ingest: EventIngest,
+# OK false for an oversized EVENT, publishStream / publishRawStream, resuming paged walks). 22
+# commits over ce7f4db1b6, six of them touching quartz/, all in nip01Core.relay.client.*,
+# relay.commands.toRelay, relay.server(.backend) and nipBEBle.relay: none of the packages this
+# store imports. Taken so vespa-relay's graph carries one quartz; nothing this store calls moves.
+# ce7f4db1b6 is a strict ancestor (git merge-base --is-ancestor ce7f4db1b6 020e714858).
+# Spelled with 10 hex digits: the full hash's first JitPack build hit the transient Kotlin
+# plugin resolution failure JitPack then caches under that version string.
+#
+# Prev ce7f4db1b6 = amethyst main @ 2026-10-16: the amethyst #4506 merge (Open Markets collections,
 # shipping options and product reviews). 839 commits over 68268da413, 154 of them touching quartz/;
 # 68268da413 is a strict ancestor (git merge-base --is-ancestor, on a full-depth clone).
 # Scanned per package this store imports (21): what this store calls moves in two places, all
@@ -55,7 +64,7 @@ mavenPublish = "0.37.0"
 # catch-all; SearchableEvent grows the read-path forEachIndexableField, no reindex).
 # Prev cecc3287b2 (2026-09-01: 17 catch-all kinds split into title/body roles, four
 # affiliation URLs, six doubled `t`-tag scans dropped; a ranking backfill).
-quartz = "ce7f4db1b6"
+quartz = "020e714858"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 # Matches what Quartz brings transitively; Gradle would resolve to it regardless.
