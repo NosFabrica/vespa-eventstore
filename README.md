@@ -303,6 +303,9 @@ place column. URLs listed below fill the website column a profile's website does
 | **30621** | Buzz project (a group of git repositories) | name (or its slug), description |
 | **45010** | Buzz artifact revision (a task, a project card, …) | title, content (unless it is JSON) |
 | **40100** | Buzz channel canvas | content |
+| **30184** | OpenAgents extension listing | title + slug, description |
+| **3184** | OpenAgents extension release | package slug, version |
+| **30180** | OpenAgents capability | `package/component` path + operation ids, summary, interface id |
 | **48106** | Buzz huddle guidelines | content |
 | **42000** | Buzz product feedback | content |
 | **9035 / 9036 / 8002 / 8003** | Buzz identity archive / unarchive request, and the relay's archived / unarchived notice | content (the reason) |

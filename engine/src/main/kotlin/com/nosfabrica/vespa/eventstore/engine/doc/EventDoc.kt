@@ -142,7 +142,7 @@ data class EventDoc(
             put("pubkey", pubkey)
             put("created_at", createdAt)
             put("kind", kind)
-            put("tags", tagsAsJson().toString())
+            put("tags", tagsJson())
             put("tag_index", JsonArray(tagIndex().map(::JsonPrimitive)))
             put("content", content)
             put("sig", sig)
@@ -175,6 +175,40 @@ data class EventDoc(
             put("expires_at", expiresAt() ?: NO_EXPIRATION)
         }
 
+    /**
+     * The document a put feeds, `{"fields":{…}}`, written in one pass: the same
+     * text `buildJsonObject { put("fields", indexFields(…)) }.toString()` gives
+     * (pinned by `JsonTextTest`), without building the tree. [indexFields] stays
+     * the readable spec and what tests and the mock compare against.
+     */
+    fun feedJson(
+        includeNear: Boolean = true,
+        includeEdge: Boolean = false,
+    ): String {
+        val tagChars = tags.sumOf { tag -> 2 + tag.sumOf { it.length + 5 } }
+        val out = StringBuilder(FEED_OVERHEAD + content.length + 2 * tagChars)
+        out.append("{\"fields\":{")
+        out.appendKey("id", first = true).appendJsonString(id)
+        out.appendKey("pubkey").appendJsonString(pubkey)
+        out.appendKey("created_at").append(createdAt)
+        out.appendKey("kind").append(kind)
+        out.appendKey("tags").appendJsonTagsString(tags)
+        out.appendKey("tag_index").appendJsonStrings(tagIndex())
+        out.appendKey("content").appendJsonString(content)
+        out.appendKey("sig").appendJsonString(sig)
+        out.appendKey("owner").appendJsonString(owner)
+        out.appendKey("author_ref").appendJsonString("id:reputation:reputation::$pubkey")
+        for ((field, value) in search.fields()) out.appendKey(field).appendJsonString(value)
+        if (includeNear) {
+            for ((field, elements) in search.nearFieldsWritten()) out.appendKey(field).appendJsonStrings(elements)
+        }
+        if (includeEdge) {
+            for ((field, elements) in search.edgeFields()) out.appendKey(field).appendJsonStrings(elements)
+        }
+        out.appendKey("expires_at").append(expiresAt() ?: NO_EXPIRATION)
+        return out.append("}}").toString()
+    }
+
     /** The complete NIP-01 event JSON, rebuilt from the exact stored values via Quartz's canonical serializer. */
     fun toEventJson(): String = Event(id, pubkey, createdAt, kind, tagsArray(), content, sig).toJson()
 
@@ -184,13 +218,25 @@ data class EventDoc(
      * built or re-serialized. The Vespa client builds RawEvents from decoded
      * summaries directly, skipping even this EventDoc.
      */
-    fun toRawEvent(): RawEvent = RawEvent(id, pubkey, createdAt, kind, tagsAsJson().toString(), content, sig)
+    fun toRawEvent(): RawEvent = RawEvent(id, pubkey, createdAt, kind, tagsJson(), content, sig)
 
-    private fun tagsAsJson(): JsonArray = JsonArray(tags.map { tag -> JsonArray(tag.map(::JsonPrimitive)) })
+    /** [tags] as the JSON text the `tags` field stores: `[["p","…"],…]`, escaped as kotlinx escapes it. */
+    fun tagsJson(): String {
+        val out = StringBuilder(tags.sumOf { tag -> 2 + tag.sumOf { it.length + 3 } } + 2)
+        out.append('[')
+        for (i in tags.indices) {
+            if (i > 0) out.append(',')
+            out.appendJsonStrings(tags[i])
+        }
+        return out.append(']').toString()
+    }
 
     companion object {
         /** The `expires_at` value for an event with no NIP-40 expiration: far enough out to outlive every range check. */
         const val NO_EXPIRATION = Long.MAX_VALUE
+
+        /** [feedJson]'s keys, the fixed-width values and the quoting, so the builder rarely grows. */
+        private const val FEED_OVERHEAD = 600
 
         /**
          * `created_at desc, id asc` — the ONE order this store defines over
