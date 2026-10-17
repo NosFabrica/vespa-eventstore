@@ -352,6 +352,38 @@ class SearchExtractorsTest {
     }
 
     /**
+     * What the e5bdf1bd37 pin moves: the OpenAgents kinds become searchable, read from their JSON
+     * bodies. Real events, as relay.openagents.com serves them (the fixtures of Quartz's own
+     * OpenAgentsEventsTest). Their `t` tags are protocol markers (`oa:ext:listing:v1`,
+     * `oa:cap:v1`, ...), so none of them reaches a hashtag role: each tier holds only what the
+     * body says.
+     */
+    @Test
+    fun `the e5bdf1bd37 pin indexes the OpenAgents listing, release and capability`() {
+        assertEquals(
+            SearchFields(
+                primary = "Explain this error (payment check)\nexplain-error-check",
+                secondary =
+                    "Reads a failing command's output, finds the file and line in your project it points at, " +
+                        "and explains the likely cause and a likely fix.",
+            ),
+            SearchExtractors.extract(Event.fromJson(OPENAGENTS_LISTING)),
+        )
+        assertEquals(
+            SearchFields(primary = "explain-error-check", secondary = "0.1.1"),
+            SearchExtractors.extract(Event.fromJson(OPENAGENTS_RELEASE)),
+        )
+        assertEquals(
+            SearchFields(
+                primary = "x402/cjtest\ncjtest",
+                secondary = "a paid nostr:openagents:1 resource (x402 exact/lnbtc)",
+                text = "openagents.x402.native.v1",
+            ),
+            SearchExtractors.extract(Event.fromJson(OPENAGENTS_CAPABILITY)),
+        )
+    }
+
+    /**
      * What the ce7f4db1b6 pin moves, through the factory. The Open Markets kinds 30405 / 30406
      * are tag-split: a collection or shipping option is searchable, while Shopstr's tagless
      * encrypted carts and escrow records on the same numbers stay addressable but index
@@ -683,5 +715,11 @@ class SearchExtractorsTest {
     @Test
     fun `non-searchable kinds stay invisible`() {
         assertEquals(SearchFields.NONE, SearchExtractors.extract(Event("5".repeat(64), alice, 1L, 7, emptyArray(), "+", "")))
+    }
+
+    private companion object {
+        const val OPENAGENTS_LISTING = """{"id":"cb0f3c8c64a4c0b97806758562994e421ceac48e28428a2f5aff9d628a65adcb","pubkey":"097201496ea40ca7adf5cf803910f46ea7d1ae073d52d84fe46bdf9be18b002d","created_at":1790996823,"kind":30184,"tags":[["d","explain-error-check"],["t","oa:ext:listing:v1"]],"content":"{\"v\":1,\"requires\":[],\"type\":\"listing\",\"package\":\"097201496ea40ca7adf5cf803910f46ea7d1ae073d52d84fe46bdf9be18b002d:explain-error-check\",\"state\":\"published\",\"release\":{\"id\":\"20407eadbdc045ad99f9e66e2577b025bb0a8dbcd2350fec63e04017471b36ee\",\"pubkey\":\"097201496ea40ca7adf5cf803910f46ea7d1ae073d52d84fe46bdf9be18b002d\",\"kind\":3184},\"title\":\"Explain this error (payment check)\",\"description\":\"Reads a failing command's output, finds the file and line in your project it points at, and explains the likely cause and a likely fix.\",\"meta\":{\"blobs\":[\"https://relay.openagents.com\"]}}","sig":"d55e9b26b07ad7802c4dbc2c067d49947ff2f72e5d7f584addb636ce8701724b6aa642d59fdb2ef53ebba6e4be1caadff78b6e39d15f207940155343714772fb"}"""
+        const val OPENAGENTS_RELEASE = """{"id":"20407eadbdc045ad99f9e66e2577b025bb0a8dbcd2350fec63e04017471b36ee","pubkey":"097201496ea40ca7adf5cf803910f46ea7d1ae073d52d84fe46bdf9be18b002d","created_at":1790996823,"kind":3184,"tags":[["t","oa:ext:release:v1"]],"content":"{\"v\":1,\"requires\":[],\"type\":\"release\",\"package\":\"097201496ea40ca7adf5cf803910f46ea7d1ae073d52d84fe46bdf9be18b002d:explain-error-check\",\"version\":\"0.1.1\",\"manifest\":{\"digest\":\"sha256:7111701e793aa7496216716cb2343c4ae2dbdcb1feff55b1c2a21892efe87678\",\"size\":1244,\"media_type\":\"application/json\",\"schema\":\"openagents.package.v1\"}}","sig":"0bf6e7801b314c20e7d8dceef1ebeabcb30049b313e1b9a34a18bfd69a8821d3d829cafe8329f7aba21a1cf73ab864f8af102744d6b8a61ebc49cb26a384fab1"}"""
+        const val OPENAGENTS_CAPABILITY = """{"id":"f48a9db3e4306797c25b0b96032fecc82b646efbe3d832a6f3de71fd4392cb10","pubkey":"4f71c67c02e9803b605ee5ad7759a3ff8dd212e4db9fcde0db8f5eeed8e3e3ae","created_at":1790568244,"kind":30180,"tags":[["d","cjtest"],["t","oa:cap:v1"],["t","oa:profile:adapter"],["t","oa:transport:nostr-cj"]],"content":"{\"v\":1,\"requires\":[\"oa-x402-v1\"],\"id\":\"4f71c67c02e9803b605ee5ad7759a3ff8dd212e4db9fcde0db8f5eeed8e3e3ae:x402/cjtest\",\"profile\":\"adapter\",\"summary\":\"a paid nostr:openagents:1 resource (x402 exact/lnbtc)\",\"input\":{\"digest\":\"sha256:d3f0fba059ab4261d970244b6e84ec893188daaea06713ea0169239d9db5e40a\",\"size\":44,\"media_type\":\"application/schema+json\"},\"output\":{\"digest\":\"sha256:d3f0fba059ab4261d970244b6e84ec893188daaea06713ea0169239d9db5e40a\",\"size\":44,\"media_type\":\"application/schema+json\"},\"effects\":{\"reads\":[],\"writes\":[],\"network\":[\"remote\"],\"process\":false,\"delegates\":false,\"spend\":false},\"minimum\":{},\"support\":{\"bounds\":{},\"cancellation\":\"unsupported\",\"idempotency\":\"none\",\"evidence\":[]},\"binding_contract\":{\"interface\":\"openagents.x402.native.v1\",\"transport\":\"nostr-cj\",\"operations\":[\"cjtest\"],\"remote\":{\"worker\":\"4f71c67c02e9803b605ee5ad7759a3ff8dd212e4db9fcde0db8f5eeed8e3e3ae\",\"relays\":[\"wss://relay.openagents.com\"]},\"x402\":{\"v\":\"openagents.x402-discovery.v1\",\"protocol\":\"x402-v2\",\"scheme\":\"exact\",\"asset\":\"BTC\",\"method\":\"bolt11\",\"flow\":\"upfront\",\"bindings\":[\"nostr:openagents:1\"],\"receivers\":[{\"network\":\"lnbtc:000000000933ea01ad0ee984209779ba\",\"pay_to\":\"0234ec9c1d85794e8b7f0aae04a1f257118aa267eb1c2ed8f58f7f6619f9a2ee0a\"}],\"merchant\":\"cjtest\",\"recovery\":\"native-record-v1\",\"recovery_contract\":null}}}","sig":"2361732a79751fce86ce5b9e6db7ed94e3ca56836392c49eb89a3b7e7399e896e7b122d95c5b13352c0d202551bcf0724b3ccf2ad531cb517c10bac00c7b1c04"}"""
     }
 }
