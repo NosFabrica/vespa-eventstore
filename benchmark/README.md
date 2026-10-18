@@ -2177,14 +2177,14 @@ array escaped a second time as a string field. A kind 3 carries hundreds of tags
 `tags` field in a single pass (`appendJsonTagsString`, each char's escape
 escaped again from a table). Byte-identity with the tree is the contract, since
 the `tags` string is stored and spliced verbatim into served events:
-`JsonTextTest` checks all 65,536 UTF-16 units against kotlinx and the feed body
+`JsonCharsTest` checks all 65,536 UTF-16 units against kotlinx and the feed body
 across kinds and near/edge gates.
 
 | 20,000 of ditto's newest kind 3s (avg 9.6 KB) | µs per feed body |
 |---|---|
 | `buildJsonObject { put("fields", indexFields()) }.toString()` | 320-360 |
 | `feedJson`, tags serialized then escaped (two passes) | 230-265 |
-| `feedJson`, tags escaped in one pass (shipped) | 183-206 |
+| `feedJson`, tags escaped in one pass | 183-206 |
 
 End to end it is small: the relay's CPU per published event went from
 1,330-1,380 µs to 1,280-1,300, within run-to-run noise on throughput on a box
@@ -2192,6 +2192,166 @@ where Vespa takes two thirds of the CPU. Most of what is left in the relay's
 write is the feed client's own HTTP/2 request per document. On the same runs,
 `VESPA_ACCESS_LOG=disabled` was worth 12% (610 to 684 ev/s, Vespa CPU per
 event 2.8 to 2.5 ms): one access-log line per fed document.
+
+A later relay profile (2026-10-18, 300k kind 3s) still had 15% of the relay's samples in
+`feedJson`, most of them inside `StringBuilder` itself: `append(CharSequence, start, end)`
+checks capacity and coder per run, and the escape scan paid `charAt` per char. `JsonChars`
+copies each value into a char array with one bulk `getChars` and scans it there; only a
+value with a char to escape is rewritten char by char. Same 20,000 docs, one core to
+itself, the same bytes (the sum of the bodies' hash codes matches, and `JsonCharsTest`
+still checks every UTF-16 unit):
+
+| writer | µs per feed body |
+|---|---|
+| `feedJson` through `StringBuilder` (the row above, re-measured on this box) | 122-131 |
+| `feedJson` through `JsonChars` (shipped) | **37-49** |
+
+End to end (vespa-relay's ingest benchmark, 300,000 of ditto's kind 3s, 3 cores, an 8,192-event
+publisher window, two alternating pairs): the relay's CPU per published event went from 550 and
+523 µs to 513 and 490, and throughput from 1,440 and 1,489 ev/s to 1,472 and 1,594. Vespa's
+CPU per event was unchanged (it parses the same bytes).
+
+## What one stored document costs Vespa (2026-10-18)
+
+Where the engine's share of a published event goes, measured without the relay: a scratch
+feeder on a core of its own put the first 100,000 of ditto's kind 3s straight into a fresh
+single-node Vespa (the bundled package, access log off, feed compression none) restricted to the
+other three cores, one body shape per run, and read the container's cgroup CPU over the feed. A
+fresh engine and a 30-50 s feed, so every row carries the same JIT warm-up and background services;
+compare rows, not absolutes.
+
+| body (each a `feedJson` with fields removed) | avg body | Vespa µs per doc |
+|---|---|---|
+| everything | 6.7 KB | 1,354 |
+| without `tag_index` | 3.9 KB | 1,217 |
+| without `tags` | 3.4 KB | 1,307 |
+| without either (`id`, `pubkey`, `created_at`, `kind`, `content`, `sig`, `owner`, `author_ref`, `expires_at`) | 0.6 KB | 979 |
+| that, without `author_ref` | 0.5 KB | 950 |
+| that, without any ONE of `content`, `sig`, `owner`, `created_at`, `kind`, `pubkey` | | 925-985 |
+
+The floor is the operation, not the document: a 600-byte put costs about three quarters of a
+6.7 KB one, and no single small field moves it beyond noise. The container is roughly half of it
+(the HTTP/2 request, the JSON parse into a `Document`, the indexing docproc, the messagebus hop to
+the content node, in a JFR profile of the relay arm), the distributor and proton the rest. A put
+that never reaches the content node still costs about 425 µs, which is how the next trap showed up.
+
+**A put without `expires_at` is dropped, and answered as a success.** The `event` document type is
+routed with `selection="event.expires_at > now()"` (services.xml, for NIP-40 garbage collection),
+and a document the selection does not match is never sent to the content cluster: the feed client
+gets a 200, no document is stored, and an existing document of that id is left as it was (checked:
+100,000 docs before, 100,000 after, the old fields intact). `feedJson` always writes `expires_at`
+(`NO_EXPIRATION` when the event has none), which is what keeps every put stored; anything else that
+feeds this schema has to as well.
+
+## Language detection on every document (2026-10-18)
+
+Every ingest number above came from ditto's kind 3s, which carry no search text. A 4.5-hour
+slice of the live relay (`search.brainstorm.world`, `include:spam`, 404,546 events) is a
+different workload: 56% kind 1 (~1 KB), 39% NIP-85 kind 30382 cards, 0.1% kind 3. Through
+vespa-relay's ingest benchmark it cost Vespa more per event than the 20 KB kind 3s did, and a
+JFR profile of the container put OpenNLP language detection at 14% of its samples (29% of the
+docproc threads), ahead of the 3-gram splitting (7%).
+
+The detection decided nothing. Every text field is `stemming: none`, and the default
+linguistics does not segment CJK, so the detected language changed no term a search can
+reach. `event.sd` now pins it (`field language { indexing: "en" | set_language }`, first in
+the document). Same slice, 3 cores, 8,192-event window, alternating arms:
+
+| document language | ev/s | relay µs/ev | Vespa µs/ev |
+|---|---|---|---|
+| detected (as shipped) | 1,091, 1,155, 1,167 | 517-541 | 1,701-1,767 |
+| pinned to "en" | **1,222, 1,337, 1,404** | 467-529 | **1,310-1,533** |
+
+Search parity, measured rather than argued: 1,575 NIP-50 searches sampled from the slice's
+own notes and profile names (single words, adjacent pairs, kinds 1, 0 and both), run through
+`NostrSemanticsStore` against each load. NIP-45 COUNT agreed on every one, so every search
+matched the same documents. The top-50 pages agreed on 958; two loads of the *same* schema
+agree on only 970, and a rerun on one load agrees on all 1,575 — so the remaining
+differences are tie order between loads, which this change does not touch.
+
+Deploying the pinned schema over a live store, and the old one back over it, is accepted
+with no validation override; since no term changes, stored documents need no reindex.
+
+## CJK words inside a note body (2026-10-18)
+
+Measured on the live-relay slice above: words sampled from its own Japanese (3,958 notes) and
+Chinese (703) bodies, each searched through `NostrSemanticsStore` restricted to up to 20 notes
+known to hold the word, so the number is exact recall. Vespa does not segment an unbroken CJK
+run, so these words are reached only through `search_text_gram`'s trigram phrase.
+
+| query | before | after |
+|---|---|---|
+| Japanese, 2 / 3 / 4 characters | 1.5% / 3.6% / 77% | 14.6% / **100%** / **97.8%** |
+| Chinese, 2 / 3 / 4 characters | 2.6% / 8.3% / 100% | 2.6% / **100%** / 100% |
+
+Two separate faults:
+
+- **The floor.** A phrase needed two trigrams (four characters), so a three-character word got
+  no clause at all. For Han, kana and Hangul the floor is now one (`MIN_PHRASE_GRAMS_DENSE`): a
+  CJK trigram is as rare as a word, and three characters usually is a word. Latin keeps two.
+- **The fold.** Vespa's `normalize` drops only the Combining Diacritical Marks block; a voiced
+  kana (ダ = タ + U+3099) keeps its mark, decomposed. The query side dropped every combining
+  mark, so `ヨルダン` was searched as `ヨルタン`, which no document holds. Every Japanese miss
+  above contained a voiced kana. `NearText.foldLikeNormalize` now folds exactly as `normalize`
+  does. Thai, Devanagari and Arabic marks sit outside that block too.
+
+Two-character words still yield no trigram (the remaining 2-character recall is words with a
+voiced kana, now three code points). Latin search is untouched: the 1,575-query COUNT set from
+the language-pin section returns the same counts before and after.
+
+## Stemmed body columns for `language:pt` / `language:es` (2026-10-18)
+
+The question was whether letting a searcher name a language makes non-English search better.
+Vespa's own stemming cannot answer it: it stems a field by the DOCUMENT's language, the query
+carries none, and turning it on made every non-English note unreachable (`stemming: none`).
+So the store stems instead (`engine/text/StemText`): Lucene 9.12's `PortugueseLightStemmer` and
+`SpanishLightStemmer`, written into `search_text_pt` / `search_text_es`, which Vespa indexes
+as plain tokens. The "en" pin above stays, and no existing term changes.
+
+Measured on the live-relay slice: words sampled from 400 notes per language, each searched in
+a form other than the one the note holds (singular for plural, accented or not), restricted to
+notes known to hold it, so the number is exact recall of the word's other forms:
+
+| query language | without `language:` | with it |
+|---|---|---|
+| Spanish | 27.2% | **54.8%** |
+| Portuguese | 28.2% | **48.5%** |
+| English, German, French (controls, as typed) | 100% | 100% |
+
+Total hits over the whole query set grew 2%. A stem-only hit takes `query(w_stem_rung)` (0.8)
+of the body rung, so it ranks below the typed form: relevance 440 against 550 and up on the
+same corpus.
+
+Decisions behind the shape:
+
+- **The document's language is guessed, by function words** (`StemText.guess`: two or more
+  distinct ones and a strict lead over English, German, French and Italian). Vespa's
+  detector cost 14% of its CPU, and the store needs only "Portuguese, Spanish, or neither".
+  A short note where only `para` votes ties the two and is not stemmed. Words in a URL, an
+  address or a bech32 string do not vote (`.com` is Portuguese "com", with), and no list
+  holds a word another voter also uses often (`que`, `es`, `una` out of French, German and
+  Italian; `por`, `todo`, `nos` in both Portuguese and Spanish). Against the first lists, on
+  the slice's 226k kind 1s: 311 notes newly stemmed, sampled almost all genuine; 54 no
+  longer, half of them not Portuguese at all (Japanese and Indonesian notes whose links
+  voted), half short Portuguese headlines that had only their `.com.br` to vote with.
+  The recall table above was measured before this change.
+- **Both spellings are stemmed.** The Portuguese stemmer is accent-sensitive (`eleições` →
+  `eleica`, `eleicoes` → `eleico`), and posters and searchers drop accents, so a document
+  carries the stems of its raw and its `normalize`-folded words. The query stems what was typed.
+- **Capped** at 1,024 distinct stems per document.
+- German was not done: Spanish and Portuguese came first, and Lucene's `GermanLightStemmer` would
+  slot in the same way (a column, a guess entry, a measurement).
+
+Ingest cost, one run on the same slice and box as the language-pin table: 1,207 ev/s, Vespa
+1,510 µs/ev, relay 554 µs/ev, against 1,222-1,404 ev/s, 1,310-1,533 and 467-529 with the pin
+alone. One run, so read it as "about the pin's own variance on Vespa, ~5-15% more relay CPU"
+(the stemming runs in the relay's feed writer). Most of that was the guess reading every word
+of every body to learn there was nothing to stem: it now reads the first 200 words in place,
+with one map lookup per word, and `SearchFields.stemFields` costs 4 µs per kind 1 on average
+over the slice where it cost 26 (the relay spends ~500 µs per event). A store fed before the columns existed reads
+them as empty until `reindexFullTextSearch()` re-puts its Portuguese and Spanish notes (the
+relay's `REINDEX_FTS_ON_START`); a Vespa without the
+fields is detected (`SchemaFallbacks`) and fed and queried without them.
 
 ## Feed compression (`VESPA_FEED_COMPRESSION`, 2026-10-16)
 

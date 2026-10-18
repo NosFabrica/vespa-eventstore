@@ -161,6 +161,32 @@ object NearText {
             .lowercase()
 
     /**
+     * EXACTLY what Vespa's `normalize` indexing expression does to a document, then
+     * lowercased the way the gram field matches: NFD, and only the COMBINING
+     * DIACRITICAL MARKS block (U+0300–U+036F) dropped. Every other combining mark
+     * stays, decomposed. The query side of `search_text_gram` has to fold this way and
+     * no other, because a trigram that differs by one code point is a different term.
+     *
+     * Why not [foldAccents]: that drops EVERY non-spacing mark, which agrees with
+     * Vespa on Latin accents and nowhere else. A Japanese voiced kana decomposes
+     * into its base plus U+3099/U+309A, outside that block, and Vespa KEEPS the mark:
+     * "ヨルダン" is indexed as the trigrams of "ヨルタ\u3099ン". Folded by
+     * [foldAccents] the query asked for "ヨルタン", which no document holds. MEASURED
+     * on a 404k-event slice of the live relay (2026-10-18): every Japanese body
+     * search that missed contained a voiced kana (ダ, が, ズ, で, ビ, ぶ…), about a
+     * quarter of the targets of 3- and 4-character Japanese words. Thai, Devanagari
+     * and Arabic marks sit outside that block too, so their words had the same gap.
+     */
+    fun foldLikeNormalize(word: String): String =
+        Normalizer
+            .normalize(word, Normalizer.Form.NFD)
+            .filterNot { it in COMBINING_DIACRITICAL_MARKS }
+            .lowercase()
+
+    /** The one block Vespa's `normalize` removes (`\p{InCombiningDiacriticalMarks}`). */
+    private val COMBINING_DIACRITICAL_MARKS = '\u0300'..'\u036F'
+
+    /**
      * Fold, drop what no dictionary should hold, de-duplicate, and STOP at
      * [MAX_ELEMENTS] — the output is bounded, so the work is too.
      *

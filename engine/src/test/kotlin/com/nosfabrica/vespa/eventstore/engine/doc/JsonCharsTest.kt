@@ -30,13 +30,13 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * [appendJsonString] and [EventDoc.feedJson] write the bytes kotlinx would: a feed body
+ * [JsonChars] and [EventDoc.feedJson] write the bytes kotlinx would: a feed body
  * or a stored `tags` string that differed would change what is served back.
  */
-class JsonTextTest {
+class JsonCharsTest {
     private fun kotlinx(value: String) = JsonPrimitive(value).toString()
 
-    private fun ours(value: String) = StringBuilder().appendJsonString(value).toString()
+    private fun ours(value: String) = JsonChars(0).string(value).toString()
 
     @Test
     fun `every UTF-16 unit is escaped as kotlinx escapes it`() {

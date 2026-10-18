@@ -1236,6 +1236,23 @@ class VespaEventIndexTest {
             }
         }
 
+    @Test
+    fun `a schema without the stemmed columns still accepts and finds a Portuguese body`() =
+        runBlocking {
+            mock.rejectStemFields = true
+            val fresh = VespaEventIndex(mock.url)
+            try {
+                val body = doc(kind = 1, search = SearchFields(text = "Não perca as notícias de hoje, elas são muito importantes para nós"))
+                fresh.put(body)
+                assertEquals(body.id, fresh.get(body.id)?.id, "the document landed without its stemmed column")
+                // A `language:pt` search against the same schema demotes rather than fails.
+                assertEquals(listOf(body.id), fresh.search(EventQuery(kinds = listOf(1), search = "notícias", stemLanguage = "pt")).map { it.id })
+            } finally {
+                mock.rejectStemFields = false
+                fresh.close()
+            }
+        }
+
     /** A schema missing BOTH fed columns names one per refusal: two demotions, then the write lands. */
     @Test
     fun `a schema missing the near tier and the edge column demotes twice on write`() =

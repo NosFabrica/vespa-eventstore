@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore.engine.query
 import com.nosfabrica.vespa.eventstore.engine.app.VespaApp
+import com.nosfabrica.vespa.eventstore.engine.text.StemText
 import java.io.ByteArrayInputStream
 import java.util.zip.ZipInputStream
 import kotlin.test.Test
@@ -746,6 +747,38 @@ class EventYqlTest {
         // Body-less kinds get neither; off by default, today's phrase is untouched.
         assertFalse("search_text_edge" in EventYql.build(EventQuery(kinds = listOf(0), search = "tarantella", bodyEdgeMatching = true))!!.yql)
         assertFalse("search_text_edge" in EventYql.build(EventQuery(search = "tarantella"))!!.yql)
+    }
+
+    @Test
+    fun `a three-character CJK word reaches the body on one trigram, a Latin one does not`() {
+        // Dense scripts take a one-trigram floor (MIN_PHRASE_GRAMS_DENSE): one term, no phrase.
+        assertTrue("(search_text_gram contains \"新幹線\")" in EventYql.build(EventQuery(search = "新幹線"))!!.yql)
+        assertTrue("(search_text_gram contains \"ラーメ\")" in EventYql.build(EventQuery(search = "ラーメ"))!!.yql)
+        // Latin keeps the two-trigram floor: "the" or "ing" is in most bodies.
+        assertFalse("search_text_gram" in EventYql.build(EventQuery(search = "bit"))!!.yql)
+        // Two CJK characters are no trigram at all.
+        assertFalse("search_text_gram" in EventYql.build(EventQuery(search = "東京"))!!.yql)
+        // A mixed word is not dense: "abc東" keeps the Latin floor and gets its phrase at 4.
+        assertTrue("search_text_gram contains phrase(" in EventYql.build(EventQuery(search = "ab東京"))!!.yql)
+    }
+
+    @Test
+    fun `the body trigrams fold like Vespa's normalize - Latin accents go, a voiced kana's mark stays`() {
+        // Vespa's `normalize` drops the Combining Diacritical Marks block and nothing else.
+        assertTrue("phrase(\"laz\", \"aza\", \"zar\", \"aro\")" in EventYql.build(EventQuery(search = "Lázaro"))!!.yql)
+        // ダ is タ + U+3099 after NFD, and the document side keeps the mark: so must the query.
+        val kana = EventYql.build(EventQuery(search = "ヨルダン"))!!.yql
+        assertTrue("phrase(\"ヨルタ\", \"ルタ\u3099\", \"タ\u3099ン\")" in kana, kana)
+    }
+
+    @Test
+    fun `a language hint adds the word's stem against that language's stemmed column, and only then`() {
+        val hinted = EventYql.build(EventQuery(kinds = listOf(1), search = "notícias", stemLanguage = "pt"))!!
+        assertTrue("(search_text_pt contains @sw0)" in hinted.yql, hinted.yql)
+        assertEquals(StemText.stemQuery("pt", "notícias"), hinted.params["sw0"])
+        assertFalse("search_text_pt" in EventYql.build(EventQuery(kinds = listOf(1), search = "notícias"))!!.yql)
+        // Where no kind can hold a body there is nothing to stem against.
+        assertFalse("search_text_pt" in EventYql.build(EventQuery(kinds = listOf(0), search = "notícias", stemLanguage = "pt"))!!.yql)
     }
 
     @Test

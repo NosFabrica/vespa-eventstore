@@ -79,12 +79,14 @@ data class EventDoc(
      * name (what NIP-01 `#x` filters can address) with a value. Everything else
      * still round-trips through [tags].
      */
-    fun tagIndex(): List<String> =
-        tags.mapNotNull { tag ->
-            val name = tag.getOrNull(0) ?: return@mapNotNull null
-            val value = tag.getOrNull(1) ?: return@mapNotNull null
-            if (isIndexableTagName(name)) "$name:$value" else null
+    fun tagIndex(): List<String> = ArrayList<String>(tags.size).apply { forEachIndexedTag { name, value -> add("$name:$value") } }
+
+    /** Each [tagIndex] entry as its name and value, unjoined: the one place the rule lives. */
+    private inline fun forEachIndexedTag(block: (name: String, value: String) -> Unit) {
+        for (tag in tags) {
+            if (tag.size > 1 && isIndexableTagName(tag[0])) block(tag[0], tag[1])
         }
+    }
 
     /**
      * The NIP-40 expiration; null = never. Direct scan matching Quartz's
@@ -132,10 +134,15 @@ data class EventDoc(
      * Unlike the near tier it can never read back as drift (it is index-only), so
      * a document written without it is repaired only by
      * `NostrSemanticsStore.backfillBodyEdge`.
+     *
+     * [includeStem] adds the stemmed body column of a Portuguese or Spanish body
+     * ([SearchFields.stemFields]), on its own gate for the same reason: its own
+     * schema generation, which a schema predating it refuses whole.
      */
     fun indexFields(
         includeNear: Boolean = true,
         includeEdge: Boolean = false,
+        includeStem: Boolean = true,
     ): JsonObject =
         buildJsonObject {
             put("id", id)
@@ -170,6 +177,9 @@ data class EventDoc(
                     put(field, JsonArray(elements.map(::JsonPrimitive)))
                 }
             }
+            if (includeStem) {
+                for ((field, value) in search.stemFields()) put(field, value)
+            }
             // Always written. An absent numeric attribute reads as 0 in Vespa,
             // which would make "not yet expired" range queries impossible.
             put("expires_at", expiresAt() ?: NO_EXPIRATION)
@@ -178,35 +188,50 @@ data class EventDoc(
     /**
      * The document a put feeds, `{"fields":{…}}`, written in one pass: the same
      * text `buildJsonObject { put("fields", indexFields(…)) }.toString()` gives
-     * (pinned by `JsonTextTest`), without building the tree. [indexFields] stays
+     * (pinned by `JsonCharsTest`), without building the tree. [indexFields] stays
      * the readable spec and what tests and the mock compare against.
      */
     fun feedJson(
         includeNear: Boolean = true,
         includeEdge: Boolean = false,
+        includeStem: Boolean = true,
     ): String {
         val tagChars = tags.sumOf { tag -> 2 + tag.sumOf { it.length + 5 } }
-        val out = StringBuilder(FEED_OVERHEAD + content.length + 2 * tagChars)
-        out.append("{\"fields\":{")
-        out.appendKey("id", first = true).appendJsonString(id)
-        out.appendKey("pubkey").appendJsonString(pubkey)
-        out.appendKey("created_at").append(createdAt)
-        out.appendKey("kind").append(kind)
-        out.appendKey("tags").appendJsonTagsString(tags)
-        out.appendKey("tag_index").appendJsonStrings(tagIndex())
-        out.appendKey("content").appendJsonString(content)
-        out.appendKey("sig").appendJsonString(sig)
-        out.appendKey("owner").appendJsonString(owner)
-        out.appendKey("author_ref").appendJsonString("id:reputation:reputation::$pubkey")
-        for ((field, value) in search.fields()) out.appendKey(field).appendJsonString(value)
+        // The search columns repeat the body (`search_text` is the content again for a note),
+        // and the stems are about as long again for a Portuguese or Spanish one: counted here,
+        // or nearly every body document outgrows the buffer once.
+        val searchFields = search.fields()
+        val stemFields = if (includeStem) search.stemFields() else emptyMap()
+        val searchChars = searchFields.values.sumOf { it.length } + stemFields.values.sumOf { it.length }
+        val out = JsonChars(FEED_OVERHEAD + content.length + searchChars + 2 * tagChars)
+        out.raw("{\"fields\":{")
+        out.key("id", first = true).string(id)
+        out.key("pubkey").string(pubkey)
+        out.key("created_at").raw(createdAt)
+        out.key("kind").raw(kind.toLong())
+        out.key("tags").tagsString(tags)
+        out.key("tag_index").raw('[')
+        var firstIndexed = true
+        forEachIndexedTag { name, value ->
+            if (!firstIndexed) out.raw(',')
+            firstIndexed = false
+            out.pair(name, value)
+        }
+        out.raw(']')
+        out.key("content").string(content)
+        out.key("sig").string(sig)
+        out.key("owner").string(owner)
+        out.key("author_ref").string("id:reputation:reputation::$pubkey")
+        for ((field, value) in searchFields) out.key(field).string(value)
         if (includeNear) {
-            for ((field, elements) in search.nearFieldsWritten()) out.appendKey(field).appendJsonStrings(elements)
+            for ((field, elements) in search.nearFieldsWritten()) out.key(field).strings(elements)
         }
         if (includeEdge) {
-            for ((field, elements) in search.edgeFields()) out.appendKey(field).appendJsonStrings(elements)
+            for ((field, elements) in search.edgeFields()) out.key(field).strings(elements)
         }
-        out.appendKey("expires_at").append(expiresAt() ?: NO_EXPIRATION)
-        return out.append("}}").toString()
+        for ((field, value) in stemFields) out.key(field).string(value)
+        out.key("expires_at").raw(expiresAt() ?: NO_EXPIRATION)
+        return out.raw("}}").toString()
     }
 
     /** The complete NIP-01 event JSON, rebuilt from the exact stored values via Quartz's canonical serializer. */
@@ -221,21 +246,13 @@ data class EventDoc(
     fun toRawEvent(): RawEvent = RawEvent(id, pubkey, createdAt, kind, tagsJson(), content, sig)
 
     /** [tags] as the JSON text the `tags` field stores: `[["p","…"],…]`, escaped as kotlinx escapes it. */
-    fun tagsJson(): String {
-        val out = StringBuilder(tags.sumOf { tag -> 2 + tag.sumOf { it.length + 3 } } + 2)
-        out.append('[')
-        for (i in tags.indices) {
-            if (i > 0) out.append(',')
-            out.appendJsonStrings(tags[i])
-        }
-        return out.append(']').toString()
-    }
+    fun tagsJson(): String = JsonChars(tags.sumOf { tag -> 2 + tag.sumOf { it.length + 3 } } + 2).tags(tags).toString()
 
     companion object {
         /** The `expires_at` value for an event with no NIP-40 expiration: far enough out to outlive every range check. */
         const val NO_EXPIRATION = Long.MAX_VALUE
 
-        /** [feedJson]'s keys, the fixed-width values and the quoting, so the builder rarely grows. */
+        /** [feedJson]'s keys, the fixed-width values and the quoting, so the buffer rarely grows. */
         private const val FEED_OVERHEAD = 600
 
         /**

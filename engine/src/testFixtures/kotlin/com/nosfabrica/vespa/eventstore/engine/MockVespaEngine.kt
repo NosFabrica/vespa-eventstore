@@ -26,6 +26,7 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventSelection
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.nosfabrica.vespa.eventstore.engine.query.FuzzyWordGroup
+import com.nosfabrica.vespa.eventstore.engine.text.StemText
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -171,6 +172,9 @@ class MockVespaEngine {
 
     /** A schema predating the PROTOTYPE `search_text_edge` column (#161): refuses documents and queries naming it. */
     @Volatile var rejectEdgeField: Boolean = false
+
+    /** A schema predating the stemmed body columns ([StemText.FIELDS]): refuses documents and queries naming one. */
+    @Volatile var rejectStemFields: Boolean = false
 
     /**
      * Document-API visit requests served. Both snapshot paths return the SAME
@@ -352,6 +356,10 @@ class MockVespaEngine {
                 if (rejectEdgeField && FuzzyWordGroup.EDGE_FIELD in fields) {
                     return Reply(400, """{"message":"Field '${FuzzyWordGroup.EDGE_FIELD}' is not defined in document type 'event'"}""")
                 }
+                val stemField = fields.keys.firstOrNull { it in StemText.FIELDS }
+                if (rejectStemFields && stemField != null) {
+                    return Reply(400, """{"message":"Field '$stemField' is not defined in document type 'event'"}""")
+                }
                 runBlocking { inner.put(EventDoc.fromSummary(fields)) }
                 Reply(200, """{"id":"$path"}""")
             }
@@ -434,6 +442,9 @@ class MockVespaEngine {
         }
         if (rejectEdgeField && FuzzyWordGroup.EDGE_FIELD in yql) {
             return Reply(400, """{"message":"Could not create query from YQL: Field '${FuzzyWordGroup.EDGE_FIELD}' does not exist."}""")
+        }
+        StemText.FIELDS.firstOrNull { rejectStemFields && it in yql }?.let { field ->
+            return Reply(400, """{"message":"Could not create query from YQL: Field '$field' does not exist."}""")
         }
         val hits = params["hits"]?.toIntOrNull() ?: 10
         // The exact-count query (EventYql.buildCount): "… limit 0 | all(output(count()))".
@@ -975,9 +986,12 @@ object MockYql {
                     // field-annotated userInput, behind a paren run whose depth varies
                     // with the word count — single word, AND'd words, AND'd words with
                     // pair coverage): reconstruct the term from the per-word
-                    // parameters (@w0..@wN — @wj/@wp* are derived variants).
+                    // parameters (@w0..@wN — @wj/@wp* are derived variants). A stemmed
+                    // column inside it (`search_text_pt contains @sw0`) is the query's
+                    // stemLanguage, which the reference matches the same way.
                     SEARCH_CLAUSE.containsMatchIn(clause) -> {
-                        q.copy(search = searchWords(params))
+                        val stemLanguage = StemText.LANGUAGES.firstOrNull { "${StemText.field(it)} contains @s" in clause }
+                        q.copy(search = searchWords(params), stemLanguage = stemLanguage)
                     }
 
                     // One required quoted phrase (EventQuery.phrases): a plain

@@ -32,6 +32,33 @@
 schema event {
 
     document event {
+        # THE DOCUMENT LANGUAGE IS PINNED, so Vespa never DETECTS it. Must stay
+        # the FIRST field: set_language applies to the fields indexed after it.
+        #
+        # Without it the indexing chain runs OpenNLP language detection on every
+        # text field of every document. With `stemming: none` on all of them
+        # (see "STEMMING IS OFF" below) and a default linguistics that does not
+        # segment CJK, the detected language changed nothing a search can see,
+        # so the detection was pure cost.
+        #
+        # MEASURED 2026-10-18 on a 404k-event slice of the live relay (56% kind
+        # 1, 39% kind 30382) through vespa-relay's ingest benchmark, 3 cores,
+        # alternating arms. A JFR profile put detection at 14% of the container's
+        # samples, 29% of its docproc threads; the A/B is what counts. Pinning cut Vespa's CPU per event from
+        # 1,701-1,767 µs to 1,310-1,533, and raised ingest from 1,091-1,167
+        # ev/s to 1,222-1,404. Searches stayed the same: NIP-50 COUNT matched
+        # exactly on all 1,575 searches sampled from the slice, and pages
+        # differed only as much as two loads of ONE schema differ (tie order).
+        #
+        # Redeploying it over a live cluster, either way, is accepted with no
+        # validation override (verified); with the terms unchanged, old
+        # documents need no reindex. "en" is a label for "the one analysis",
+        # not a claim about the content: the same pin docs/cjk-search.md's
+        # recipe needs. benchmark/README.md, "Language detection on every
+        # document".
+        field language type string {
+            indexing: "en" | set_language
+        }
 
         # The exact-match filter attributes (id/pubkey/owner/tag_index) share two
         # settings beyond fast-search:
@@ -135,10 +162,12 @@ schema event {
         # fields. The rest joined them on 2026-08-05, for a different and
         # bigger reason: Vespa stems a document's index terms with the
         # DOCUMENT's language — which it DETECTS — while a query carries no
-        # language and is stemmed as English. Nothing sets either side (no
+        # language and is stemmed as English. Nothing set either side then (no
         # `language` field, no set_language, no model.language), so on a
-        # multilingual corpus the two sides silently disagree and a document
-        # becomes unreachable by its own words. MEASURED on a live Vespa with
+        # multilingual corpus the two sides silently disagreed and a document
+        # became unreachable by its own words. (The `language` field at the
+        # top now pins documents to "en" — for cost: with stemming off the
+        # detected language was already inert.) MEASURED on a live Vespa with
         # a Portuguese note, same words, only the query language differing:
         #     default (en)        futebol 1, esposa 0, crise 0, desabafa 0
         #     model.language=pt   futebol 1, esposa 1, crise 1, desabafa 1
@@ -148,10 +177,11 @@ schema event {
         # desabafa" report needed more than the body rung to come back.
         #
         # `stemming: none` makes both sides raw (still folded and tokenized),
-        # so they agree by construction, in any language. The alternative —
-        # forcing one language on documents — also worked in measurement but
-        # pins TOKENIZATION too, which would foreclose ever segmenting CJK
-        # properly. What is given up here is nothing measurable: English
+        # so they agree by construction, in any language. Forcing one language
+        # on documents also worked in measurement; it was set aside then for
+        # pinning tokenization, but the CJK recipe (docs/cjk-search.md) pins
+        # it anyway, and the `language` field above now does, for the cost of
+        # detection. What is given up here is nothing measurable: English
         # stemming was already inert on this deployment ("wolf" does not find
         # "wolves", "run" does not find "running"), before and after.
         #
@@ -247,6 +277,31 @@ schema event {
         # attribute (~74 GiB modelled, see search_text_gram). Index-only: no
         # summary, no attribute, no bm25 — only matchCount() reads it.
         field search_text_edge type array<string> {
+            indexing: index
+            stemming: none
+        }
+
+        # STEMMED BODY COLUMNS, one per language with a stemmer: the body's words
+        # reduced to their stems, space-joined, FED by the store for a body it reads
+        # as Portuguese or Spanish (engine/text/StemText: Lucene's light stemmers, a
+        # function-word vote for the language). A search that says its language
+        # (NIP-50 `language:pt`) also matches each word's stem here, so "notícia"
+        # reaches a note saying "notícias": the exact column wants the whole token,
+        # and the trigram phrase is a substring test that cannot reach a LONGER
+        # inflection. MEASURED on the live-relay slice (2026-10-18): searching
+        # another form of a word found 28% (pt) and 27% (es) of the notes holding
+        # it. Stemmed by the store rather than here because Vespa stems with the
+        # document's language, and the document language is pinned (see `language`
+        # above) while a query carries none: doing it in one place keeps the two
+        # ends agreeing, as the near tier does. Index-only and unweighted: a hit
+        # counts in tier_body_match like the trigram and edge columns, so an exact
+        # hit (which also earns bm25(search_text)) still ranks above it.
+        field search_text_pt type string {
+            indexing: index
+            stemming: none
+        }
+
+        field search_text_es type string {
             indexing: index
             stemming: none
         }
@@ -605,6 +660,7 @@ schema event {
             # match ranks above gram noise, below real name matches.
             query(w_affil_tier) double: 10000000.0
             query(w_affil_tier_text) double: 550.0
+            query(w_stem_rung) double: 0.8
             # Default (search) §12 rewrite: IDF-diluted text × trust — where
             # trust is deliberately strong enough to CROSS text tiers, but
             # only on an overwhelming advantage.
@@ -1140,8 +1196,17 @@ schema event {
         # contains it), a genuine body match text_score_cutoff would otherwise
         # delete. It is fed only under VESPA_BODY_EDGE and queried only under
         # EventQuery.bodyEdgeMatching, so by default it contributes 0.
+        #
+        # search_text_pt / search_text_es join it ONE STEP DOWN: a hit is a body word
+        # sharing the query word's stem, matched only when the search names its
+        # language (EventQuery.stemLanguage), so a search without `language:` is
+        # unchanged. A stem-only hit scores query(w_stem_rung) of the body rung rather
+        # than the whole of it, because inside one rung the order belongs to trust and
+        # recency, and on the live-relay slice that interleaved "nueva" with "nuevo"
+        # and "partido" above "partidos" — while a stemmer also merges a few
+        # different words (`punto/punta`). Exact, substring and edge hits keep 1.
         function tier_body_match() {
-            expression: if(any_token_match() > 0 || any_near_match() > 0 || weak_match() > 0, 0, if(matchCount(search_text) > 0 || matchCount(search_location) > 0 || matchCount(search_text_gram) > 0 || matchCount(search_text_edge) > 0, 1, 0))
+            expression: if(any_token_match() > 0 || any_near_match() > 0 || weak_match() > 0, 0, if(matchCount(search_text) > 0 || matchCount(search_location) > 0 || matchCount(search_text_gram) > 0 || matchCount(search_text_edge) > 0, 1, if(matchCount(search_text_pt) > 0 || matchCount(search_text_es) > 0, query(w_stem_rung), 0)))
         }
 
         # A bio/website affiliation match WITHOUT any name-field token match.
@@ -1468,7 +1533,7 @@ schema event {
                 + matchCount(search_secondary) + matchCount(search_text) + matchCount(search_location)
                 + matchCount(affil_tokens) + matchCount(search_secondary_tokens)
                 + matchCount(about_gram) + matchCount(search_secondary_gram) + matchCount(search_text_gram)
-                + matchCount(search_text_edge)
+                + matchCount(search_text_edge) + matchCount(search_text_pt) + matchCount(search_text_es)
             }
         }
 

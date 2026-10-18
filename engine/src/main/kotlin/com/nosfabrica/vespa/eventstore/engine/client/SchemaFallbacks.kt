@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.eventstore.engine.client
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.nosfabrica.vespa.eventstore.engine.query.FuzzyWordGroup
+import com.nosfabrica.vespa.eventstore.engine.text.StemText
 
 /** Whether [this] recalls through one of the observer-gate profiles. */
 internal fun EventQuery.usesGatedProfile(): Boolean = ranking == EventYql.RANK_RECENCY_GATED || ranking == EventYql.RANK_RECENCY_GATED_EXACT
@@ -78,6 +79,10 @@ internal class SchemaFallbacks {
     @Volatile var bodyEdgeAvailable = true
         private set
 
+    /** Whether the serving schema has the stemmed body columns ([StemText.FIELDS]) — both directions. */
+    @Volatile var stemFieldsAvailable = true
+        private set
+
     @Volatile var dedupSummaryAvailable = true
         private set
 
@@ -120,12 +125,12 @@ internal class SchemaFallbacks {
 
     /**
      * Whether this feed refusal names a FED column the serving schema lacks —
-     * the near tier or the prototype edge column — and, if so, stop feeding it
-     * for the life of the client. The near predicate's exact-phrase rule applies
-     * to both: a false positive silently strips a column off every later write.
-     * The edge column has its own flag because it is its own schema generation:
-     * a schema with the near tier but not the edge column must keep the near
-     * tier, and vice versa.
+     * the near tier, the prototype edge column or the stemmed body columns —
+     * and, if so, stop feeding it for the life of the client. The near
+     * predicate's exact-phrase rule applies to all three: a false positive
+     * silently strips a column off every later write. Each has its own flag
+     * because each is its own schema generation: a schema with the near tier
+     * but not the edge column must keep the near tier, and so on.
      */
     fun isMissingFedColumn(message: String?): Boolean {
         if (isMissingNearField(message)) {
@@ -134,6 +139,10 @@ internal class SchemaFallbacks {
         }
         if (message != null && message.contains("400") && message.contains(NOT_IN_DOCUMENT_TYPE) && message.contains(FuzzyWordGroup.EDGE_FIELD)) {
             bodyEdgeAvailable = false
+            return true
+        }
+        if (message != null && message.contains("400") && message.contains(NOT_IN_DOCUMENT_TYPE) && StemText.FIELDS.any { message.contains(it) }) {
+            stemFieldsAvailable = false
             return true
         }
         return false
@@ -180,13 +189,17 @@ internal class SchemaFallbacks {
     /** [q] answering its body partial words with the phrase again, for a schema without `search_text_edge` (PROTOTYPE, #161). */
     fun demoteBodyEdge(q: EventQuery): EventQuery = if (!bodyEdgeAvailable && q.bodyEdgeMatching) q.copy(bodyEdgeMatching = false) else q
 
+    /** [q] without its `language:` stem clause, for a schema without the stemmed body columns — a no-op while they serve. */
+    fun demoteStem(q: EventQuery): EventQuery = if (!stemFieldsAvailable && q.stemLanguage != null) q.copy(stemLanguage = null) else q
+
     /**
-     * Both column demotions. They are SEPARATE schema generations — every schema
-     * carrying the near columns predates `search_text_gram` — so a schema can
-     * lack either, or both, and demoting them together would strip name/title
-     * prefix reach from a schema that still has it.
+     * Every column demotion. They are SEPARATE schema generations — every schema
+     * carrying the near columns predates `search_text_gram`, and the edge and
+     * stemmed columns came later still — so a schema can lack any of them, and
+     * demoting them together would strip name/title prefix reach from a schema
+     * that still has it.
      */
-    private fun demoteSchema(q: EventQuery): EventQuery = demoteBodyEdge(demoteBodyGram(demoteNear(q)))
+    private fun demoteSchema(q: EventQuery): EventQuery = demoteStem(demoteBodyEdge(demoteBodyGram(demoteNear(q))))
 
     /**
      * Run [attempt] with the rank-profile nets: a 400 naming the `recency` or
@@ -239,13 +252,13 @@ internal class SchemaFallbacks {
         q: EventQuery,
         attempt: suspend (EventQuery) -> T,
     ): T {
-        // THREE demotions are reachable, so the net retries three times: the near
-        // columns, `search_text_gram` and the prototype `search_text_edge` are
-        // independent schema generations and a schema old enough lacks all of
-        // them. Each pass can only ever flip a flag that was still set, and
-        // flipping one strips its clauses from the next attempt, so the loop
-        // cannot spin — a given column can be named at most once.
-        repeat(3) {
+        // FOUR demotions are reachable, so the net retries four times: the near
+        // columns, `search_text_gram`, the prototype `search_text_edge` and the
+        // stemmed columns are independent schema generations and a schema old
+        // enough lacks all of them. Each pass can only ever flip a flag that was
+        // still set, and flipping one strips its clauses from the next attempt,
+        // so the loop cannot spin — a given column can be named at most once.
+        repeat(4) {
             try {
                 return attempt(demoteSchema(q))
             } catch (e: IllegalArgumentException) {
@@ -297,6 +310,10 @@ internal class SchemaFallbacks {
         // demote on a round of its own if the schema predates that column too.
         if (q.bodyEdgeMatching && names(listOf(FuzzyWordGroup.EDGE_FIELD))) {
             bodyEdgeAvailable = false
+            return true
+        }
+        if (q.stemLanguage != null && names(StemText.FIELDS)) {
+            stemFieldsAvailable = false
             return true
         }
         return false

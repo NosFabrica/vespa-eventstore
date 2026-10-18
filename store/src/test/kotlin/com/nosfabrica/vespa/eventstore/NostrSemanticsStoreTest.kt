@@ -36,6 +36,7 @@ import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import com.vitorpamplona.quartz.nip01Core.store.RejectionReason
 import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
+import com.vitorpamplona.quartz.nip10Notes.TextNoteEvent
 import com.vitorpamplona.quartz.nip59Giftwrap.wraps.GiftWrapEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
@@ -462,6 +463,17 @@ open class NostrSemanticsStoreTest {
             assertEquals(listOf(MetadataEvent.KIND), hits.map { it.kind })
         }
 
+    /** `language:pt` reaches a word's other forms in a Portuguese body, on the reference as on Vespa (SearchBodyGramIT). */
+    @Test
+    fun `a language hint reaches the plural of a Portuguese word`() =
+        runBlocking {
+            val plural = TextNoteEvent(id(), alice, next(), emptyArray(), "As eleições municipais foram adiadas para o próximo ano, mas ainda não há data", "")
+            store.insert(plural)
+            assertEquals(emptyList(), store.query<Event>(Filter(search = "eleição")).map { it.id })
+            assertEquals(listOf(plural.id), store.query<Event>(Filter(search = "eleição language:pt")).map { it.id })
+            assertEquals(emptyList(), store.query<Event>(Filter(search = "eleição language:es")).map { it.id }, "the stems are per language")
+        }
+
     /** Multi-word search is AND: every word must be present on the same event. */
     @Test
     fun `multi-word search requires every word on the same event`() =
@@ -873,6 +885,40 @@ open class NostrSemanticsStoreTest {
             puts.clear()
             store.backfillBodyEdge(batchSize = 1)
             assertEquals(listOf(body.id), puts, "the note has a body and is re-put; the profile has none")
+        }
+
+    /**
+     * The stemmed body columns are fed and index-only, so the ordinary reindex is
+     * their backfill: it re-puts every body that reads as Portuguese or Spanish,
+     * on every walk (nothing can show those columns current), and nothing else.
+     */
+    @Test
+    fun `the reindex re-puts the bodies that carry stems, on every walk`() =
+        runBlocking {
+            val inner = InMemoryEventIndex()
+            val puts = mutableListOf<String>()
+            val engine =
+                object : EventIndex by inner {
+                    override suspend fun put(doc: EventDoc) {
+                        puts += doc.id
+                        inner.put(doc)
+                    }
+
+                    override suspend fun putAll(docs: List<EventDoc>) = docs.forEach { put(it) }
+
+                    override suspend fun putIfNewer(doc: EventDoc): Boolean = super.putIfNewer(doc)
+                }
+            val store = NostrSemanticsStore(engine, relay = "wss://sot.test/".normalizeRelayUrl())
+            val portuguese = EventFactory.create<Event>(id(), alice, next(), 1, emptyArray(), "As eleições foram adiadas para o próximo ano, mas ainda não há data", "")
+            val english = EventFactory.create<Event>(id(), alice, next(), 1, emptyArray(), "The elections were postponed to next year and there is no date yet", "")
+            store.insert(portuguese)
+            store.insert(english)
+
+            repeat(2) { walk ->
+                puts.clear()
+                store.reindexFullTextSearch()
+                assertEquals(listOf(portuguese.id), puts, "walk ${walk + 1}: the stemmed note is re-put, the English one is not")
+            }
         }
 
     /** A present limit <= 0 is the "matches nothing" sentinel on EVERY recall path — never an exception, never a full result. */

@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.eventstore.mapping
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.nosfabrica.vespa.eventstore.engine.text.IndexableChars
+import com.nosfabrica.vespa.eventstore.engine.text.StemText
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip50Search.SearchQuery
 import com.vitorpamplona.quartz.utils.Hex
@@ -60,6 +61,9 @@ import com.vitorpamplona.quartz.utils.Hex
  *    [INCLUDE_SPAM_MIN_RANK], never omitted: min_rank also anchors the default
  *    profile's trust boost, so it must still be sent for the order to stay
  *    trust-lensed.
+ *  - `language:pt` / `language:es` add the stemmed body column of that language
+ *    ([EventQuery.stemLanguage]): a hint that widens recall to other forms of
+ *    each word, never a filter. Other languages are ignored.
  *  - `observer:<64-hex>` names the pubkey whose web-of-trust ranks the hits
  *    (otherwise the relay supplies it from the NIP-42 connection); non-hex is
  *    ignored. With no observer, search degrades to pure-text relevance.
@@ -99,6 +103,15 @@ internal fun Filter.toEventQuery(): EventQuery? {
     val sort = parsed.extensions["sort"]?.let(::rankReputationOf)
     val floor = parsed.extensions["filter"]?.let(::rankFloorOf)
     val observer = parsed.extensions["observer"]?.lowercase()?.takeIf(Hex::isHex64)
+    // NIP-50 `language:<ISO-639-1>`: a hint that adds the stemmed body column for
+    // that language, where one exists. Never a filter (see EventQuery.stemLanguage).
+    // A regional tag (`pt-BR`, `es_419`) names its language by the primary subtag.
+    val stemLanguage =
+        parsed.language
+            ?.lowercase()
+            ?.substringBefore('-')
+            ?.substringBefore('_')
+            ?.takeIf { it in StemText.LANGUAGES }
     val ranked = parsed.hasText || sort != null
     return EventQuery(
         // Lowercased ONCE here: the engine matches hex keys uncased, but the
@@ -117,6 +130,7 @@ internal fun Filter.toEventQuery(): EventQuery? {
         phrases = parsed.phrases,
         notSearch = notSearch,
         observer = observer,
+        stemLanguage = stemLanguage,
         // A floor is just a floor: the profile stays whatever the query's shape
         // selects. The no-terms case resolves in the store, where the
         // out-of-band observer is known (see NostrSemanticsStore's gate).

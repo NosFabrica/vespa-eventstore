@@ -904,8 +904,8 @@ class RankRegressionIT {
                     // routes around it.
                     //
                     // WHERE THE BOUNDARY FALLS, and why this is half a fix:
-                    // FuzzyWordGroup.MIN_PHRASE_GRAMS is 2 trigrams, which is 4
-                    // characters. 中村太郎 (4) now reaches the body. 東京 and 会社
+                    // FuzzyWordGroup.MIN_PHRASE_GRAMS_DENSE is 1 trigram, which is 3
+                    // characters. 中村太郎 (4) reaches the body. 東京 and 会社
                     // are 2 characters — ZERO trigrams — so no clause is emitted
                     // at all and they stay unreachable. That is not an edge case:
                     // a large share of ordinary Chinese and Japanese vocabulary is
@@ -921,7 +921,7 @@ class RankRegressionIT {
                     assertEquals(
                         "body",
                         tierOfHit("中村太郎", id(46)),
-                        "4 CJK characters = 2 trigrams = the floor; the gram net must reach the body",
+                        "4 CJK characters = 2 trigrams; the gram net must reach the body",
                     )
                     val shortCjk = listOf("東京", "会社")
                     assertEquals(

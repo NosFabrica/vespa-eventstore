@@ -38,6 +38,9 @@ dependencies {
     // prior knowledge — which Vespa accepts — so concurrent reads multiplex over
     // one connection, the same win the feed client already gets on writes.
     implementation(libs.okhttp)
+    // The Portuguese and Spanish light stemmers behind the stemmed body columns
+    // (text/StemText). Only those two classes are used; nothing Lucene reaches the API.
+    implementation(libs.lucene.analysis.common)
     // MockVespaEngine serves HTTP/1.1 + clear-text HTTP/2 (h2c) on one Jetty
     // port: the feed client refuses HTTP/1.1. Pinned to the feed client's Jetty line.
     testFixturesImplementation(libs.kotlinx.serialization.json)

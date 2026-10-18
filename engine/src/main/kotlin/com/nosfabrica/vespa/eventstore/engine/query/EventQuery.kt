@@ -236,6 +236,15 @@ data class EventQuery(
      */
     val bodyEdgeMatching: Boolean = false,
     /**
+     * The language a search says it is written in (NIP-50 `language:pt`), when this
+     * store has a stemmed body column for it ([com.nosfabrica.vespa.eventstore.engine.text.StemText.LANGUAGES]);
+     * null otherwise. Each search word then also matches its STEM in that column, a
+     * body-rung hit, so "notícia" reaches a note saying "notícias". A hint, never a
+     * filter: every other clause is unchanged, and a note in another language loses
+     * nothing.
+     */
+    val stemLanguage: String? = null,
+    /**
      * THE ANSWER MUST BE PROVABLY EVERYTHING THAT MATCHES, or it is refused:
      * the engine's own `full` (documents searched == documents active) AND
      * every match served (`totalCount` == hits returned). For a reader that
