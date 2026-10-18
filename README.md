@@ -200,7 +200,9 @@ Spanish bodies itself, with Lucene's light stemmers, into columns of their own
 above changes. A note gets stems only when its function words name one of the two
 languages, which a short headline may not do. A hit through a stem alone ranks
 below one holding the word as typed. Other languages are ignored by the token, and
-a store fed before these columns existed finds nothing new until it is re-fed.
+a store fed before these columns existed fills them with `reindexFullTextSearch()`, which
+re-puts the notes that read as Portuguese or Spanish (on every walk, since nothing can read
+the columns back to see them current).
 
 **Partial words** reach every field, but by two different routes. Names, titles,
 subjects, hashtags and identity handles carry prefix and typo matching (`vitorp`

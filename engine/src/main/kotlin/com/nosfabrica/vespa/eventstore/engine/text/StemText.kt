@@ -112,7 +112,9 @@ object StemText {
         val out = LinkedHashSet<String>()
         for (m in WORD.findAll(text)) {
             out += stem(language, m.value)
-            out += stem(language, NearText.foldLikeNormalize(m.value))
+            if (out.size >= MAX_STEMS) break
+            // An ASCII word folds to its own lowercase, which [stem] already took.
+            if (m.value.any { it.code >= 0x80 }) out += stem(language, NearText.foldLikeNormalize(m.value))
             if (out.size >= MAX_STEMS) break
         }
         return out.takeIf { it.isNotEmpty() }?.joinToString(" ")
@@ -124,38 +126,99 @@ object StemText {
      * the reason Vespa's own detector (which cost ~16% of Vespa's CPU per event) is not used.
      * English, German, French and Italian take part only so their notes are not stemmed as
      * Portuguese or Spanish. A winner needs [MIN_VOTES] distinct words and a strict lead.
+     *
+     * Runs on every body the store feeds, nearly all of which end up unstemmed, so it reads
+     * only the first [GUESS_WORDS] words, in place: no lowercased copy of the body, no regex,
+     * and a word costs one lookup in [VOTES]. MEASURED on the live-relay slice's 226k kind 1s
+     * (2026-10-18): [SearchFields.stemFields] went from 26 to 4 us per note on average.
      */
     fun guess(text: String): String? {
-        val words = WORDS.findAll(text.lowercase()).map { it.value }.toHashSet()
-        if (words.size < MIN_VOTES) return null
-        var best: String? = null
+        val votes = IntArray(VOTING.size)
+        val counted = HashSet<String>()
+        var words = 0
+        var i = 0
+        while (i < text.length && words < GUESS_WORDS) {
+            if (!isWordChar(text[i])) {
+                i++
+                continue
+            }
+            val start = i
+            while (i < text.length && isWordChar(text[i])) i++
+            // A piece of a URL, a domain or a bech32 string is no word: `.com` voted Portuguese
+            // ("com", with) on every note carrying a link, and `nevent1qy28…` breaks into letter
+            // runs like `y` and `el` between its digits.
+            if (start > 0 && (text[start - 1] in URL_JOINERS || text[start - 1].isDigit())) continue
+            if (i < text.length && text[i].isDigit()) continue
+            if (i + 1 < text.length && text[i] in URL_JOINERS && text[i + 1].isLetterOrDigit()) continue
+            words++
+            val word = text.substring(start, i).lowercase()
+            val languages = VOTES[word] ?: continue
+            if (!counted.add(word)) continue
+            for (l in VOTING.indices) if (languages and (1 shl l) != 0) votes[l]++
+        }
+        var best = -1
         var bestVotes = 0
         var second = 0
-        for ((language, list) in FUNCTION_WORDS) {
-            val votes = list.count { it in words }
-            if (votes > bestVotes) {
+        for (l in VOTING.indices) {
+            if (votes[l] > bestVotes) {
                 second = bestVotes
-                bestVotes = votes
-                best = language
-            } else if (votes > second) {
-                second = votes
+                bestVotes = votes[l]
+                best = l
+            } else if (votes[l] > second) {
+                second = votes[l]
             }
         }
-        return best?.takeIf { bestVotes >= MIN_VOTES && bestVotes > second && it in LANGUAGES }
+        return VOTING.getOrNull(best)?.takeIf { bestVotes >= MIN_VOTES && bestVotes > second && it in LANGUAGES }
     }
 
     private const val MIN_VOTES = 2
 
-    private val WORDS = Regex("[\\p{L}\\p{M}']+")
+    /** What joins the parts of a URL, a domain, an address or a `nostr:` link: a word touching one is not prose. */
+    private const val URL_JOINERS = "./@:"
 
-    /** Distinctive function words, each also listed without its accents (searchers and posters drop them). */
+    /** A note decides in its first sentences; a long article is not read to the end to vote. */
+    private const val GUESS_WORDS = 200
+
+    /** Letters, combining marks and the apostrophe: `[\p{L}\p{M}']`. */
+    private fun isWordChar(c: Char): Boolean =
+        Character.isLetter(c) ||
+            c == '\'' ||
+            Character.getType(c).let { it == Character.NON_SPACING_MARK.toInt() || it == Character.COMBINING_SPACING_MARK.toInt() || it == Character.ENCLOSING_MARK.toInt() }
+
+    /**
+     * Distinctive function words, each also listed without its accents (searchers and posters drop
+     * them). The other languages' lists leave out every word that is also frequent in Portuguese or
+     * Spanish (`que`, `mais`, `les`, `es`, `una`): such a word voted against the note it came
+     * from, and with the strict lead a tie stems nothing ("Hoje tem mais gente que ontem" read
+     * as pt 2, fr 2). French keeps words of its own Portuguese and Spanish lack (`et`, `il`,
+     * `sans`, …) so that a French "mais" does not carry its note, and each language has its
+     * own frequent words no other voter shares (`em`, `sem`, `pra`; `el`, `y`, `sin`).
+     *
+     * MEASURED on the slice's 226k kind 1s against the first lists (2026-10-18), together with
+     * the URL and digit rules in [guess]: 311 notes newly stemmed, sampled almost all genuine
+     * Spanish or Portuguese; 54 no longer, about half of them not Portuguese at all (Japanese,
+     * Indonesian, Romanian notes whose links voted `com`) and half short Portuguese headlines
+     * that had only their `.com.br` link to vote with; 11 moved between the two, mostly
+     * Spanish read as Portuguese. Words Portuguese and Spanish share (`para`, `por`, `todo`, `nos`) are in BOTH
+     * lists, where they help either reach [MIN_VOTES] without deciding between them: listed for
+     * one alone, they handed a Portuguese note to Spanish.
+     */
     private val FUNCTION_WORDS: Map<String, Set<String>> =
         mapOf(
-            PORTUGUESE to "não uma para com você está mais isso muito mas tem são também já foi ele ela seu sua pelo pela nos aos isto essa esse ainda porque quando então aqui agora nós eles sobre depois fazer pode coisa",
-            SPANISH to "los las una para con está pero más esto muy por también ya fue él ella sus del al esta este aquí ahora nosotros ellos sobre después hacer puede cosa cuando porque entonces hay pues donde todo nada bien",
+            PORTUGUESE to "não uma para com você está mais isso muito mas tem são também já foi ele ela seu sua pelo pela nos aos isto essa esse ainda porque quando então aqui agora nós eles sobre depois fazer pode coisa por todo nada este em ao sem onde pra seus suas",
+            SPANISH to "los las una para con está pero más esto muy por también ya fue él ella sus del al esta este aquí ahora nosotros ellos sobre después hacer puede cosa cuando porque entonces hay pues donde todo nada bien nos el y sin",
             "en" to "the and is to of you that it in for this with my are not have was but just be they what so on at we",
-            "de" to "und nicht ist das ich die der ein mit auch sie es sind war wir aber noch nur wie auf für eine den dem",
-            "fr" to "les est pas une pour que dans avec mais vous je nous sont sur qui tout comme plus très aussi être cette ces des du au",
-            "it" to "che non per una sono questo anche come più della nel gli perché molto ancora tutto essere hanno questa",
+            "de" to "und nicht ist das ich die der ein mit auch sie sind war wir aber noch nur wie auf für eine den dem",
+            "fr" to "et il elle leur sans chez été où est pas une pour dans avec vous je nous sont sur qui tout comme plus très aussi être cette ces des du au",
+            "it" to "che non per sono questo anche come più della nel gli perché molto ancora tutto essere hanno questa",
         ).mapValues { (_, words) -> words.split(' ').flatMap { listOf(it, NearText.foldLikeNormalize(it)) }.toSet() }
+
+    /** The voting languages, in [FUNCTION_WORDS] order: a language's index is its bit in [VOTES]. */
+    private val VOTING: List<String> = FUNCTION_WORDS.keys.toList()
+
+    /** Each function word to the languages it votes for, as a bitmask over [VOTING]. */
+    private val VOTES: Map<String, Int> =
+        HashMap<String, Int>().apply {
+            VOTING.forEachIndexed { l, language -> FUNCTION_WORDS.getValue(language).forEach { merge(it, 1 shl l, Int::or) } }
+        }
 }

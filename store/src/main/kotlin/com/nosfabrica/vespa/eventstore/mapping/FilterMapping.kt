@@ -105,7 +105,13 @@ internal fun Filter.toEventQuery(): EventQuery? {
     val observer = parsed.extensions["observer"]?.lowercase()?.takeIf(Hex::isHex64)
     // NIP-50 `language:<ISO-639-1>`: a hint that adds the stemmed body column for
     // that language, where one exists. Never a filter (see EventQuery.stemLanguage).
-    val stemLanguage = parsed.language?.lowercase()?.takeIf { it in StemText.LANGUAGES }
+    // A regional tag (`pt-BR`, `es_419`) names its language by the primary subtag.
+    val stemLanguage =
+        parsed.language
+            ?.lowercase()
+            ?.substringBefore('-')
+            ?.substringBefore('_')
+            ?.takeIf { it in StemText.LANGUAGES }
     val ranked = parsed.hasText || sort != null
     return EventQuery(
         // Lowercased ONCE here: the engine matches hex keys uncased, but the

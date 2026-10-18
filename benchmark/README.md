@@ -2327,7 +2327,14 @@ Decisions behind the shape:
 - **The document's language is guessed, by function words** (`StemText.guess`: two or more
   distinct ones and a strict lead over English, German, French and Italian). Vespa's
   detector cost 14% of its CPU, and the store needs only "Portuguese, Spanish, or neither".
-  A short note where only `para` votes ties the two and is not stemmed.
+  A short note where only `para` votes ties the two and is not stemmed. Words in a URL, an
+  address or a bech32 string do not vote (`.com` is Portuguese "com", with), and no list
+  holds a word another voter also uses often (`que`, `es`, `una` out of French, German and
+  Italian; `por`, `todo`, `nos` in both Portuguese and Spanish). Against the first lists, on
+  the slice's 226k kind 1s: 311 notes newly stemmed, sampled almost all genuine; 54 no
+  longer, half of them not Portuguese at all (Japanese and Indonesian notes whose links
+  voted), half short Portuguese headlines that had only their `.com.br` to vote with.
+  The recall table above was measured before this change.
 - **Both spellings are stemmed.** The Portuguese stemmer is accent-sensitive (`eleições` →
   `eleica`, `eleicoes` → `eleico`), and posters and searchers drop accents, so a document
   carries the stems of its raw and its `normalize`-folded words. The query stems what was typed.
@@ -2338,8 +2345,12 @@ Decisions behind the shape:
 Ingest cost, one run on the same slice and box as the language-pin table: 1,207 ev/s, Vespa
 1,510 µs/ev, relay 554 µs/ev, against 1,222-1,404 ev/s, 1,310-1,533 and 467-529 with the pin
 alone. One run, so read it as "about the pin's own variance on Vespa, ~5-15% more relay CPU"
-(the stemming runs in the relay's feed writer). A store fed before the columns existed reads
-them as empty, so `language:` finds nothing new there until a re-feed; a Vespa without the
+(the stemming runs in the relay's feed writer). Most of that was the guess reading every word
+of every body to learn there was nothing to stem: it now reads the first 200 words in place,
+with one map lookup per word, and `SearchFields.stemFields` costs 4 µs per kind 1 on average
+over the slice where it cost 26 (the relay spends ~500 µs per event). A store fed before the columns existed reads
+them as empty until `reindexFullTextSearch()` re-puts its Portuguese and Spanish notes (the
+relay's `REINDEX_FTS_ON_START`); a Vespa without the
 fields is detected (`SchemaFallbacks`) and fed and queried without them.
 
 ## Feed compression (`VESPA_FEED_COMPRESSION`, 2026-10-16)

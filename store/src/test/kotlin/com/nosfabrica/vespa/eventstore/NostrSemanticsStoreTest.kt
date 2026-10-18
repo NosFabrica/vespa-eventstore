@@ -887,6 +887,40 @@ open class NostrSemanticsStoreTest {
             assertEquals(listOf(body.id), puts, "the note has a body and is re-put; the profile has none")
         }
 
+    /**
+     * The stemmed body columns are fed and index-only, so the ordinary reindex is
+     * their backfill: it re-puts every body that reads as Portuguese or Spanish,
+     * on every walk (nothing can show those columns current), and nothing else.
+     */
+    @Test
+    fun `the reindex re-puts the bodies that carry stems, on every walk`() =
+        runBlocking {
+            val inner = InMemoryEventIndex()
+            val puts = mutableListOf<String>()
+            val engine =
+                object : EventIndex by inner {
+                    override suspend fun put(doc: EventDoc) {
+                        puts += doc.id
+                        inner.put(doc)
+                    }
+
+                    override suspend fun putAll(docs: List<EventDoc>) = docs.forEach { put(it) }
+
+                    override suspend fun putIfNewer(doc: EventDoc): Boolean = super.putIfNewer(doc)
+                }
+            val store = NostrSemanticsStore(engine, relay = "wss://sot.test/".normalizeRelayUrl())
+            val portuguese = EventFactory.create<Event>(id(), alice, next(), 1, emptyArray(), "As eleições foram adiadas para o próximo ano, mas ainda não há data", "")
+            val english = EventFactory.create<Event>(id(), alice, next(), 1, emptyArray(), "The elections were postponed to next year and there is no date yet", "")
+            store.insert(portuguese)
+            store.insert(english)
+
+            repeat(2) { walk ->
+                puts.clear()
+                store.reindexFullTextSearch()
+                assertEquals(listOf(portuguese.id), puts, "walk ${walk + 1}: the stemmed note is re-put, the English one is not")
+            }
+        }
+
     /** A present limit <= 0 is the "matches nothing" sentinel on EVERY recall path — never an exception, never a full result. */
     @Test
     fun `a non-positive limit matches nothing instead of throwing`() =

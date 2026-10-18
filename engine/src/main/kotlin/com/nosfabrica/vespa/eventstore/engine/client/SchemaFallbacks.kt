@@ -125,12 +125,12 @@ internal class SchemaFallbacks {
 
     /**
      * Whether this feed refusal names a FED column the serving schema lacks —
-     * the near tier or the prototype edge column — and, if so, stop feeding it
-     * for the life of the client. The near predicate's exact-phrase rule applies
-     * to both: a false positive silently strips a column off every later write.
-     * The edge column has its own flag because it is its own schema generation:
-     * a schema with the near tier but not the edge column must keep the near
-     * tier, and vice versa.
+     * the near tier, the prototype edge column or the stemmed body columns —
+     * and, if so, stop feeding it for the life of the client. The near
+     * predicate's exact-phrase rule applies to all three: a false positive
+     * silently strips a column off every later write. Each has its own flag
+     * because each is its own schema generation: a schema with the near tier
+     * but not the edge column must keep the near tier, and so on.
      */
     fun isMissingFedColumn(message: String?): Boolean {
         if (isMissingNearField(message)) {
@@ -189,14 +189,16 @@ internal class SchemaFallbacks {
     /** [q] answering its body partial words with the phrase again, for a schema without `search_text_edge` (PROTOTYPE, #161). */
     fun demoteBodyEdge(q: EventQuery): EventQuery = if (!bodyEdgeAvailable && q.bodyEdgeMatching) q.copy(bodyEdgeMatching = false) else q
 
-    /**
-     * Both column demotions. They are SEPARATE schema generations — every schema
-     * carrying the near columns predates `search_text_gram` — so a schema can
-     * lack either, or both, and demoting them together would strip name/title
-     * prefix reach from a schema that still has it.
-     */
+    /** [q] without its `language:` stem clause, for a schema without the stemmed body columns — a no-op while they serve. */
     fun demoteStem(q: EventQuery): EventQuery = if (!stemFieldsAvailable && q.stemLanguage != null) q.copy(stemLanguage = null) else q
 
+    /**
+     * Every column demotion. They are SEPARATE schema generations — every schema
+     * carrying the near columns predates `search_text_gram`, and the edge and
+     * stemmed columns came later still — so a schema can lack any of them, and
+     * demoting them together would strip name/title prefix reach from a schema
+     * that still has it.
+     */
     private fun demoteSchema(q: EventQuery): EventQuery = demoteStem(demoteBodyEdge(demoteBodyGram(demoteNear(q))))
 
     /**

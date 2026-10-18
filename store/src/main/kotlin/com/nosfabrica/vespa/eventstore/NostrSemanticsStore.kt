@@ -1004,6 +1004,13 @@ class NostrSemanticsStore(
      * rejects the backfill puts outright, failing loudly instead of
      * backfilling nothing.
      *
+     * It also feeds the STEMMED body columns (`search_text_pt`, `search_text_es`)
+     * to the documents fed before they existed: those columns are fed and
+     * index-only, so no drift check can see them, and every body that reads as
+     * Portuguese or Spanish is re-put on every walk. A walk therefore never
+     * converges to zero puts on a corpus holding such notes; that is the price of
+     * a column nothing can read back, and it is a small one (about 1% of kind 1s).
+     *
      * THIS DOES NOT BACKFILL `search_text_gram`, and the symmetry with the near
      * tier is exactly inverted. That column is DERIVED BY VESPA
      * (`indexing: input search_text | index`), not fed, so nothing this method
@@ -1131,7 +1138,13 @@ class NostrSemanticsStore(
                     // [backfillBodyEdge]: a body is re-put unconditionally — its
                     // edge column is invisible to every drift check above.
                     val bodyRefeed = refeedBodies && fields.text != null
-                    if (columnsChanged || nearStale || bodyRefeed) changed += doc.copy(search = fields)
+                    // The stemmed body columns are FED and index-only too, so no visit
+                    // can show them missing or stale: a body that would carry stems is
+                    // re-put on every walk. That is how a corpus fed before the columns
+                    // existed gets them, at the cost of re-putting the Portuguese and
+                    // Spanish bodies (about 1% of kind 1s on the live relay) per walk.
+                    val stemRefeed = !columnsChanged && !nearStale && !bodyRefeed && fields.stemFields().isNotEmpty()
+                    if (columnsChanged || nearStale || bodyRefeed || stemRefeed) changed += doc.copy(search = fields)
                 }
                 // A page can carry cards, and the projection applies their
                 // cells INLINE on putAll — the same documents the drain

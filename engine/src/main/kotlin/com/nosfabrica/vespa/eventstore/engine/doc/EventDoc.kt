@@ -197,7 +197,13 @@ data class EventDoc(
         includeStem: Boolean = true,
     ): String {
         val tagChars = tags.sumOf { tag -> 2 + tag.sumOf { it.length + 5 } }
-        val out = JsonChars(FEED_OVERHEAD + content.length + 2 * tagChars)
+        // The search columns repeat the body (`search_text` is the content again for a note),
+        // and the stems are about as long again for a Portuguese or Spanish one: counted here,
+        // or nearly every body document outgrows the buffer once.
+        val searchFields = search.fields()
+        val stemFields = if (includeStem) search.stemFields() else emptyMap()
+        val searchChars = searchFields.values.sumOf { it.length } + stemFields.values.sumOf { it.length }
+        val out = JsonChars(FEED_OVERHEAD + content.length + searchChars + 2 * tagChars)
         out.raw("{\"fields\":{")
         out.key("id", first = true).string(id)
         out.key("pubkey").string(pubkey)
@@ -216,16 +222,14 @@ data class EventDoc(
         out.key("sig").string(sig)
         out.key("owner").string(owner)
         out.key("author_ref").string("id:reputation:reputation::$pubkey")
-        for ((field, value) in search.fields()) out.key(field).string(value)
+        for ((field, value) in searchFields) out.key(field).string(value)
         if (includeNear) {
             for ((field, elements) in search.nearFieldsWritten()) out.key(field).strings(elements)
         }
         if (includeEdge) {
             for ((field, elements) in search.edgeFields()) out.key(field).strings(elements)
         }
-        if (includeStem) {
-            for ((field, value) in search.stemFields()) out.key(field).string(value)
-        }
+        for ((field, value) in stemFields) out.key(field).string(value)
         out.key("expires_at").raw(expiresAt() ?: NO_EXPIRATION)
         return out.raw("}}").toString()
     }

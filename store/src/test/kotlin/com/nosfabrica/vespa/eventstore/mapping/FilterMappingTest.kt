@@ -52,6 +52,8 @@ class FilterMappingTest {
         assertEquals("pt", pt.stemLanguage)
         assertEquals("notícias", pt.search, "the hint is not a search word")
         assertEquals("es", map("canciones language:ES").stemLanguage)
+        assertEquals("pt", map("notícias language:pt-BR").stemLanguage, "a regional tag names its language")
+        assertEquals("es", map("canciones language:es_419").stemLanguage)
         assertNull(map("news language:en").stemLanguage)
         assertNull(map("notícias").stemLanguage)
     }

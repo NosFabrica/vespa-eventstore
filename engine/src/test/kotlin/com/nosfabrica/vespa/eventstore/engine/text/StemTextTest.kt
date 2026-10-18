@@ -37,6 +37,20 @@ class StemTextTest {
         assertNull(StemText.guess("bitcoin"))
         // Unaccented posts still count: the function words are listed both ways.
         assertEquals("pt", StemText.guess("nao sei se voce viu, mas isso e muito importante"))
+        // A word frequent in Portuguese and French ("mais", "que") no longer votes French, so
+        // this short note is not a tie that stems nothing.
+        assertEquals("pt", StemText.guess("Hoje tem mais gente que ontem"))
+        // ...and a French note with "mais" stays French.
+        assertNull(StemText.guess("Du soleil, mais un matin frais et il pleut sans arrêt"))
+    }
+
+    @Test
+    fun `a link, an address or a bech32 string casts no vote`() {
+        // `com` is Portuguese for "with", and `.com` used to say so on every note with a link.
+        assertNull(StemText.guess("Great thread https://example.com/para/com and https://news.com/sobre"))
+        // Letter runs between a bech32 string's digits are not words.
+        assertNull(StemText.guess("nostr:nevent1qy28wumn8ghj7un9d3el8shjtny9kh2y8uewd9hszrthwden5te0de"))
+        assertEquals("pt", StemText.guess("Não sei se você viu https://g1.globo.com/para, mas é muito importante"))
     }
 
     @Test
@@ -56,6 +70,14 @@ class StemTextTest {
         assertNull(StemText.stemQuery("pt", "2026"))
         assertNull(StemText.stemQuery("de", "häuser"))
         assertNull(StemText.stems("pt", "a é 12"))
+    }
+
+    @Test
+    fun `the stem cap holds when each word adds two stems`() {
+        // Accented words whose folded spelling stems differently: two stems per word, so the
+        // cap must be checked after each one, not after the pair.
+        val body = (1..2000).joinToString(" ") { "eleições" + ('a' + it % 26) + ('a' + it / 26 % 26) + ('a' + it / 676 % 26) }
+        assertEquals(StemText.MAX_STEMS, StemText.stems("pt", body)!!.split(' ').size)
     }
 
     @Test
