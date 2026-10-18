@@ -2230,7 +2230,9 @@ compare rows, not absolutes.
 | that, without any ONE of `content`, `sig`, `owner`, `created_at`, `kind`, `pubkey` | | 925-985 |
 
 The floor is the operation, not the document: a 600-byte put costs about three quarters of a
-6.7 KB one, and no single small field moves it beyond noise. The container is roughly half of it
+6.7 KB one, and no single small field moves it beyond noise. (These rows are a COLD engine: on a
+warm one the same put costs about 600 µs, not 950. See "The fixed cost of a put, on a warm
+engine" below.) The container is roughly half of it
 (the HTTP/2 request, the JSON parse into a `Document`, the indexing docproc, the messagebus hop to
 the content node, in a JFR profile of the relay arm), the distributor and proton the rest. A put
 that never reaches the content node still costs about 425 µs, which is how the next trap showed up.
@@ -2242,6 +2244,72 @@ gets a 200, no document is stored, and an existing document of that id is left a
 100,000 docs before, 100,000 after, the old fields intact). `feedJson` always writes `expires_at`
 (`NO_EXPIRATION` when the event has none), which is what keeps every put stored; anything else that
 feeds this schema has to as well.
+
+## The fixed cost of a put, on a warm engine (2026-10-18)
+
+The ~950 µs floor above was read on fresh engines, and most of it was the engine warming up. This
+section splits a put by Vespa process on a warm engine and tries every setting on the per-operation
+path that leaves search results alone. None moved the cost beyond run-to-run noise.
+
+**Method.** A scratch feeder on core 0 and a fresh single-node Vespa (the bundled package, access log
+off, feed compression none, the disk limit raised to 0.999 so a thin-provisioned disk does not
+feed-block) on cores 1-3. The feeder writes the "bare" body from the table above (no `tags`, no
+`tag_index`) for the first 100,000 of ditto's kind 3s, at most 2,048 in flight over the store's
+32 connections x 128 streams. It talks to the container's address directly: through the published
+port, `docker-proxy` burned ~12% of a core outside Vespa's cgroup, unpinned. CPU comes from each
+Vespa process's `/proc/<pid>/stat` read from the host, and per thread from `/proc/<pid>/task`.
+"Warm" means the same 100,000 bodies under other ids were fed first, then the measured 100,000.
+
+| | cold engine | warm engine |
+|---|---|---|
+| container (HTTP/2, JSON parse, indexing docproc, routing, messagebus) | 913 µs | 320-340 µs |
+| proton | 236 µs | 160-190 µs |
+| distributor | 99 µs | 60-80 µs |
+| everything else (config server, cluster controller, metrics proxy, logd) | ~90 µs | ~40 µs |
+| **total per put** | **1,339 µs** | **590-680 µs** |
+
+A full kind 3 (6.7 KB, every field) costs 774 µs warm, so the document's own fields add ~180 µs to
+a fixed ~550 µs (~40 µs of each row is background, paid whether or not anything is fed). The relay
+benchmark's Vespa figures above (1,310-1,530 µs per event on the live-relay slice) carry the same
+cold start, so they overstate what a long-running engine pays per event.
+
+**Where the container's share goes.** In a JFR profile of the warm container (profile settings
+inflate its CPU, so only the proportions count), about 14% of samples are the document itself:
+JSON parse 3.5%, the indexing language 4.1%, serialization 4.9%, the routing selection 1%. The
+rest is the request and the message around it: Jetty HTTP/2 ~28%, messagebus ~15%, jdisc request
+handling ~15%, the `/document/v1` handler ~10%, metrics ~4%. Garbage collection is 1-2% (young
+collections every 2-4 s, 10-20 ms). By thread, per put: messagebus network 107-115 µs, Jetty
+74-84 µs, the indexing docproc 35-38 µs, parse and dispatch 32-36 µs, messagebus RPC 19-30 µs.
+proton's and the distributor's threads all carry the process name, so they do not split this way.
+
+**Settings tried**, each one change over the bundled package, warm, µs per put:
+
+| setting | µs per put |
+|---|---|
+| bundled package (8 runs) | 592, 596, 621 (through `docker-proxy`), 624, 624, 635, 657, 681 |
+| container messagebus `optimize_for THROUGHPUT`, wake-up every 4 events | 797 |
+| content messagebus and RPC wake-up every 4 events | 616, 638 |
+| container messagebus 1 network thread instead of 2 | 650 |
+| transaction log LZ4 instead of ZSTD | 563, 702, 739 |
+| summary store LZ4 instead of ZSTD | 641, 674 |
+| 8 feed connections instead of 32 | 781 |
+
+Run-to-run noise is about +-8%, and whole runs move together (container, proton and distributor
+all faster or all slower), so a setting needs a larger effect than that to show. The two runs
+marked worse (797, 781) were single runs taken before the feeder bypassed `docker-proxy`: read
+them as "no gain". Not tried: the transaction log's fsync per commit (`usefsync`), which trades
+crash durability, and feed concurrency, already tuned for mixed read/write load below.
+
+**What is left.** The fixed cost is one HTTP/2 request plus one messagebus message per document.
+Three things reduce it, none of them a setting:
+- Fewer operations per event. Superseding a replaceable or addressable event is a search, a put
+  and a remove by default; `VESPA_ADDRESS_KEYED=1` makes it one conditional put. The live-relay
+  slice cannot price this (it holds only current versions), and the mode changes how ids are
+  looked up.
+- More than one document per request. `/document/v1` takes one; the container still serves the
+  pre-HTTP/2 batched endpoint (`/reserved-for-internal-use/feedapi`), internal and without a
+  maintained client.
+- More cores, or more content nodes.
 
 ## Language detection on every document (2026-10-18)
 
