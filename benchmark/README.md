@@ -2272,6 +2272,33 @@ differences are tie order between loads, which this change does not touch.
 Deploying the pinned schema over a live store, and the old one back over it, is accepted
 with no validation override; since no term changes, stored documents need no reindex.
 
+## CJK words inside a note body (2026-10-18)
+
+Measured on the live-relay slice above: words sampled from its own Japanese (3,958 notes) and
+Chinese (703) bodies, each searched through `NostrSemanticsStore` restricted to up to 20 notes
+known to hold the word, so the number is exact recall. Vespa does not segment an unbroken CJK
+run, so these words are reached only through `search_text_gram`'s trigram phrase.
+
+| query | before | after |
+|---|---|---|
+| Japanese, 2 / 3 / 4 characters | 1.5% / 3.6% / 77% | 14.6% / **100%** / **97.8%** |
+| Chinese, 2 / 3 / 4 characters | 2.6% / 8.3% / 100% | 2.6% / **100%** / 100% |
+
+Two separate faults:
+
+- **The floor.** A phrase needed two trigrams (four characters), so a three-character word got
+  no clause at all. For Han, kana and Hangul the floor is now one (`MIN_PHRASE_GRAMS_DENSE`): a
+  CJK trigram is as rare as a word, and three characters usually is a word. Latin keeps two.
+- **The fold.** Vespa's `normalize` drops only the Combining Diacritical Marks block; a voiced
+  kana (ダ = タ + U+3099) keeps its mark, decomposed. The query side dropped every combining
+  mark, so `ヨルダン` was searched as `ヨルタン`, which no document holds. Every Japanese miss
+  above contained a voiced kana. `NearText.foldLikeNormalize` now folds exactly as `normalize`
+  does. Thai, Devanagari and Arabic marks sit outside that block too.
+
+Two-character words still yield no trigram (the remaining 2-character recall is words with a
+voiced kana, now three code points). Latin search is untouched: the 1,575-query COUNT set from
+the language-pin section returns the same counts before and after.
+
 ## Feed compression (`VESPA_FEED_COMPRESSION`, 2026-10-16)
 
 The feed client compresses by default: `Compression.auto` gzips every body over 512 bytes, and

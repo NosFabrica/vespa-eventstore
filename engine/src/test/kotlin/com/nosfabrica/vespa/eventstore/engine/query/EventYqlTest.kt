@@ -749,6 +749,28 @@ class EventYqlTest {
     }
 
     @Test
+    fun `a three-character CJK word reaches the body on one trigram, a Latin one does not`() {
+        // Dense scripts take a one-trigram floor (MIN_PHRASE_GRAMS_DENSE): one term, no phrase.
+        assertTrue("(search_text_gram contains \"新幹線\")" in EventYql.build(EventQuery(search = "新幹線"))!!.yql)
+        assertTrue("(search_text_gram contains \"ラーメ\")" in EventYql.build(EventQuery(search = "ラーメ"))!!.yql)
+        // Latin keeps the two-trigram floor: "the" or "ing" is in most bodies.
+        assertFalse("search_text_gram" in EventYql.build(EventQuery(search = "bit"))!!.yql)
+        // Two CJK characters are no trigram at all.
+        assertFalse("search_text_gram" in EventYql.build(EventQuery(search = "東京"))!!.yql)
+        // A mixed word is not dense: "abc東" keeps the Latin floor and gets its phrase at 4.
+        assertTrue("search_text_gram contains phrase(" in EventYql.build(EventQuery(search = "ab東京"))!!.yql)
+    }
+
+    @Test
+    fun `the body trigrams fold like Vespa's normalize - Latin accents go, a voiced kana's mark stays`() {
+        // Vespa's `normalize` drops the Combining Diacritical Marks block and nothing else.
+        assertTrue("phrase(\"laz\", \"aza\", \"zar\", \"aro\")" in EventYql.build(EventQuery(search = "Lázaro"))!!.yql)
+        // ダ is タ + U+3099 after NFD, and the document side keeps the mark: so must the query.
+        val kana = EventYql.build(EventQuery(search = "ヨルダン"))!!.yql
+        assertTrue("phrase(\"ヨルタ\", \"ルタ\u3099\", \"タ\u3099ン\")" in kana, kana)
+    }
+
+    @Test
     fun `a word with inner punctuation gets no body phrase, because a dropped gram breaks adjacency`() {
         // Trigrams straddling the punctuation are not alphanumeric and are
         // filtered; keeping the survivors as a phrase would demand an adjacency

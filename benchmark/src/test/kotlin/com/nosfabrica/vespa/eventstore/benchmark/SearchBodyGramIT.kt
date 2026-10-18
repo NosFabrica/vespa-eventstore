@@ -228,8 +228,11 @@ class SearchBodyGramIT {
                         // assertion failed on a doc that legitimately matched.
                         val url = note(13, "Veja https://gq.globo.com/estilo/noticia/2026/08/festival-de-cinema-premiacao.ghtml")
                         val emoji = note(14, "😂🤙")
-                        index.putAll(listOf(cjk, diacritic, url, emoji))
-                        awaitCorpus(index, 4)
+                        // A voiced kana (ダ) decomposes under Vespa's `normalize` into
+                        // タ plus U+3099, and the mark STAYS in the gram field.
+                        val kana = note(15, "ヨルダン川西岸地区で新しい合意が発表された。")
+                        index.putAll(listOf(cjk, diacritic, url, emoji, kana))
+                        awaitCorpus(index, 5)
 
                         // ---- CJK: a gap the README documented as permanent ----
 
@@ -248,18 +251,38 @@ class SearchBodyGramIT {
                             index.search(EventQuery(search = "阻止用户与")).map { it.id },
                             "a CJK body word must be reachable through the gram net",
                         )
-                        // The floor is MIN_PHRASE_GRAMS = 2 trigrams = FOUR
-                        // characters, and for CJK that is a real word, not a
-                        // fragment — so it is where CJK body reach begins.
                         assertEquals(
                             listOf(cjk.id),
                             index.search(EventQuery(search = "阻止用户")).map { it.id },
-                            "4 CJK characters = 2 trigrams = the floor",
+                            "4 CJK characters = 2 trigrams",
                         )
+                        // A DENSE script's floor is ONE trigram
+                        // (MIN_PHRASE_GRAMS_DENSE): three characters is a whole CJK
+                        // word, and one CJK trigram is as rare as a word. It was 2,
+                        // which left every 3-character word unreachable.
+                        assertEquals(
+                            listOf(cjk.id),
+                            index.search(EventQuery(search = "阻止用")).map { it.id },
+                            "3 CJK characters = 1 trigram, the dense-script floor",
+                        )
+                        // Two characters still yield no trigram at all.
                         assertEquals(
                             emptyList(),
-                            index.search(EventQuery(search = "阻止用")).map { it.id },
-                            "3 characters is 1 trigram — below the floor, no clause at all",
+                            index.search(EventQuery(search = "阻止")).map { it.id },
+                            "2 CJK characters yield no trigram - the remaining gap",
+                        )
+                        // The query must fold the way `normalize` does: keep the
+                        // voiced-kana mark. Folding it away searched "ヨルタン",
+                        // which no document holds (NearText.foldLikeNormalize).
+                        assertEquals(
+                            listOf(kana.id),
+                            index.search(EventQuery(search = "ヨルダン")).map { it.id },
+                            "a voiced kana must match the gram field's decomposed form",
+                        )
+                        assertEquals(
+                            listOf(kana.id),
+                            index.search(EventQuery(search = "合意が")).map { it.id },
+                            "a 3-character word ending in a voiced kana",
                         )
 
                         // ---- diacritics: folded by Vespa, NOT by the query builder ----

@@ -139,6 +139,24 @@ internal object FuzzyWordGroup {
     const val MIN_PHRASE_GRAMS = 2
 
     /**
+     * [MIN_PHRASE_GRAMS] for a word written in a DENSE script (Han, kana, Hangul):
+     * ONE trigram, so a 3-character word reaches the body.
+     *
+     * The two-trigram floor exists because a single trigram is not selective: in
+     * Latin text "the" or "ing" sits in most bodies. That argument is about the
+     * alphabet, and a CJK alphabet runs to thousands of characters, so one CJK
+     * trigram is as rare as a whole word. And for these scripts three characters
+     * IS a whole word: 東京都, 新幹線, 中華街. Below the floor no clause was
+     * emitted at all, and since Vespa does not segment an unbroken CJK run, the
+     * exact column could not reach the word either. MEASURED on a 404k-event slice
+     * of the live relay (2026-10-18), 3-character searches found 8% of the Chinese
+     * and 4% of the Japanese notes holding the word; a single-trigram match finds
+     * all of the Chinese ones. Two-character words (東京, 会社) still yield no
+     * trigram and stay unreachable: that needs a second gram size in the index.
+     */
+    const val MIN_PHRASE_GRAMS_DENSE = 1
+
+    /**
      * The per-word groups AND'd into one parenthesized clause, filling
      * [params] with the out-of-band words.
      *
@@ -332,7 +350,7 @@ internal object FuzzyWordGroup {
      * false-positive rate climbs 0.5% -> 4.0% as the body grows 100 -> 2000
      * words (5-character words); the phrase form measures 0.0% at every length.
      *
-     * FOLDED through [NearText.foldAccents], not merely lowercased, and paired
+     * FOLDED through [NearText.foldLikeNormalize], not merely lowercased, and paired
      * with `normalize` in the field's indexing expression — see the field in
      * event.sd for the measurement. A gram field does NOT accent-fold the way a
      * normal index field does, so without the pair "lazar" cannot reach a body
@@ -341,7 +359,7 @@ internal object FuzzyWordGroup {
      * two sides must move together: normalize without folding breaks the
      * accented spelling, folding without normalize breaks the ascii one.
      *
-     * [NearText.foldAccents], not [NearText.fold]: `normalize` is accent-only,
+     * [NearText.foldLikeNormalize], not [NearText.fold]: `normalize` is accent-only,
      * so the NFKD fold the near attributes use would expand full-width forms and
      * ligatures the document side leaves intact, and the two ends could never
      * meet on that text.
@@ -370,10 +388,48 @@ internal object FuzzyWordGroup {
         word: String,
         gramField: String,
     ): String? {
-        val lower = NearText.foldAccents(word)
+        val lower = NearText.foldLikeNormalize(word)
         val all = (0..lower.length - 3).map { lower.substring(it, it + 3) }
-        if (all.size < MIN_PHRASE_GRAMS || all.any { gram -> !gram.all(Char::isLetterOrDigit) } || (all.size > PhraseRuns.MAX_RUN && !PhraseRuns.fits(all))) return null
+        val floor = if (isDenseScript(lower)) MIN_PHRASE_GRAMS_DENSE else MIN_PHRASE_GRAMS
+        if (all.size < floor || all.any { gram -> !gram.all(::isGramChar) } || (all.size > PhraseRuns.MAX_RUN && !PhraseRuns.fits(all))) return null
+        if (all.size == 1) return "($gramField contains \"${all[0]}\")"
         return all.joinToString(", ", prefix = "($gramField contains phrase(", postfix = "))") { "\"$it\"" }
+    }
+
+    /**
+     * What Vespa's gram tokenizer keeps inside a gram: letters, digits, and the
+     * combining marks [NearText.foldLikeNormalize] leaves in place (a voiced kana's
+     * U+3099, a Devanagari vowel sign). VERIFIED (2026-10-18): the document side
+     * of "ヨルダン" answers to the gram "ルタ\u3099", mark included.
+     */
+    private fun isGramChar(c: Char): Boolean =
+        c.isLetterOrDigit() ||
+            Character.getType(c).let { it == Character.NON_SPACING_MARK.toInt() || it == Character.COMBINING_SPACING_MARK.toInt() }
+
+    /**
+     * True when [folded] is written in Han, kana or Hangul alone (marks and the
+     * prolonged-sound sign ー allowed): the scripts [MIN_PHRASE_GRAMS_DENSE] is for.
+     */
+    private fun isDenseScript(folded: String): Boolean {
+        var dense = false
+        var i = 0
+        while (i < folded.length) {
+            val cp = folded.codePointAt(i)
+            when (Character.UnicodeScript.of(cp)) {
+                Character.UnicodeScript.HAN,
+                Character.UnicodeScript.HIRAGANA,
+                Character.UnicodeScript.KATAKANA,
+                Character.UnicodeScript.HANGUL,
+                -> dense = true
+
+                // Combining marks inherit their base's script; ー is COMMON.
+                Character.UnicodeScript.INHERITED, Character.UnicodeScript.COMMON -> if (!Character.isLetter(cp) && Character.getType(cp) != Character.NON_SPACING_MARK.toInt()) return false
+
+                else -> return false
+            }
+            i += Character.charCount(cp)
+        }
+        return dense
     }
 
     /** Alphanumeric-only trigrams — safe to embed in YQL without escaping. */
