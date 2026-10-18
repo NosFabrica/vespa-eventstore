@@ -73,6 +73,7 @@ tokens stay part of the search text:
 | `:shortcode:` | A NIP-30 custom emoji, searched as the picture it is: a word that is entirely a shortcode matches the accounts and events whose own `emoji` tags DECLARE that badge, never the word inside it (and `verified` never matches the badge). Undeclared runs are ordinary text, so a clock (`8:30:45`) is untouched; quoting (`":verified:"`) asks for the literal text instead. `-:verified:` excludes badge wearers. |
 | `"exact phrase"` | Google-style quotes: the words must appear adjacently, in order. Exact-match only — quoting a single word (`"vitor"`) is the opt-out from typo/prefix matching (not from prose-field stemming). Unlike exclusions, phrases are search text: a phrase-only query is a relevance-ranked search with the normal trust/spam treatment. `-"exact phrase"` excludes the phrase. An unclosed quote runs to the end; quotes protect extension-shaped tokens (`"sort:rank"` is a phrase, not a sort). A phrase Vespa refuses to run is run as close as it allows: more than five of one word in a row is cut to five, and one word more than ten times splits the phrase into pieces that must all match (adjacency kept within each). |
 | emoji | Searchable like words: `⚡` alone finds the notes carrying it, `zap ⚡` requires both, `-🔥` excludes. Each emoji is its own word (`zap⚡` is `zap` and `⚡`); a skin tone is ignored (`👍🏽` finds every 👍), and so is the colour selector where it stands alone (`❤️` finds a plain ❤) — glued to a letter or digit it is part of the word, as written (`1️⃣`, `⚡️zap`). Other symbols — currency (`₿`, `$`), math (`∞`), punctuation — are in no index: dropped from a search, and a search of only those matches nothing. |
+| `language:pt` / `language:es` | Also match the other forms of each word in a Portuguese or Spanish body (singular and plural, gender), ranked below the forms typed. Notes are stemmed only when they read as that language. Any other value is ignored. |
 | `word*` | Accepted and ignored: a word of three letters or more already matches as a prefix (`bitco` finds `bitcoin`), so a trailing star adds nothing. A star inside a word separates it, as the indexer did (`f*ck` searches `f` and `ck`); the same goes for a stray quote character. |
 
 **Where the observer comes from.** The `observer:` token is only one of two
@@ -178,19 +179,28 @@ name and identity fields. When you supply an observer, the matches are weighted
 and spam-gated by that observer's web of trust.
 
 Matching is **language-neutral**: text is folded and tokenized but never stemmed,
-so a note is findable by its own words whatever language it is written in. (The
-engine stems a document by the language it *detects* while queries carry none, so
-stemming would silently make every non-English note unreachable — see the
+so a note is findable by its own words whatever language it is written in. (Vespa
+stems a field by its document's language while a query carries none, so stemming
+there would silently make every non-English note unreachable — see the
 `stemming: none` note in `schemas/event.sd`.) Scripts the engine does not
 segment, CJK above all, used to be unreachable inside a body entirely. They are
-now reachable **from four characters up**, through the body's trigram index —
+now reachable **from three characters up**, through the body's trigram index —
 trigrams need no word segmentation, so they route around the gap rather than
-closing it (the exact path still cannot reach inside an unsegmented run). Read
-that as half a fix, not a fix: four characters is two trigrams, the minimum a
-trigram phrase can be, and a great deal of ordinary Chinese and Japanese
-vocabulary is *two* characters — 東京, 会社 — which yields no trigrams at all and
+closing it (the exact path still cannot reach inside an unsegmented run). One
+trigram is enough for Han, kana and Hangul, where three characters is usually a
+word; Latin text needs two. A great deal of ordinary Chinese and Japanese
+vocabulary is *two* characters — 東京, 会社 — which yields no trigram at all and
 stays unreachable in a body. CJK *names* are unaffected and always worked, since
 they ride the prefix attributes rather than the tokenizer.
+
+**`language:pt` and `language:es`** add one lower tier: the other forms of a word
+(`eleição` finds *eleições*, `luz` finds *luces*). The store stems Portuguese and
+Spanish bodies itself, with Lucene's light stemmers, into columns of their own
+(`search_text_pt`, `search_text_es`), so Vespa's own stemming stays off and nothing
+above changes. A note gets stems only when its function words name one of the two
+languages, which a short headline may not do. A hit through a stem alone ranks
+below one holding the word as typed. Other languages are ignored by the token, and
+a store fed before these columns existed finds nothing new until it is re-fed.
 
 **Partial words** reach every field, but by two different routes. Names, titles,
 subjects, hashtags and identity handles carry prefix and typo matching (`vitorp`

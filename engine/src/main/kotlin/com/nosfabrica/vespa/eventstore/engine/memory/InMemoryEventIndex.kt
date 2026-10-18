@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
+import com.nosfabrica.vespa.eventstore.engine.query.FuzzyWordGroup
 import com.nosfabrica.vespa.eventstore.engine.query.PhraseRuns
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import com.vitorpamplona.quartz.utils.Hex
@@ -254,6 +255,10 @@ class InMemoryEventIndex(
         private val phrasePieces = q.phrases.map { PhraseRuns.pieces(it) }
         private val exclusionPieces = q.notSearch.map(PhraseRuns::exclusionPieces)
 
+        // The stemmed column holds bodies only, so like EventYql it is searched only
+        // where a body can exist.
+        val bodyStem = q.stemLanguage?.takeIf { FuzzyWordGroup.bodyReachable(q.kinds) }
+
         fun matches(d: EventDoc): Boolean {
             if (unsatisfiable) return false
             val pairs = if (tagAny.isEmpty() && tagAll.isEmpty()) emptyList() else d.tagIndex()
@@ -269,7 +274,7 @@ class InMemoryEventIndex(
                 (q.until == null || d.createdAt <= q.until) &&
                 (q.expiresBefore == null || (d.expiresAt()?.let { it < q.expiresBefore } == true)) &&
                 (q.notExpiredAt == null || (d.expiresAt() ?: EventDoc.NO_EXPIRATION) > q.notExpiredAt) &&
-                (q.search.isNullOrBlank() || d.search.matches(q.search.trim())) &&
+                (q.search.isNullOrBlank() || d.search.matches(q.search.trim(), stemLanguage = bodyStem)) &&
                 // Phrases and exclusions share the exact-adjacency check, never
                 // the loose substring positive words get — mirroring the engine,
                 // where both are the same phrase-grammar term — in the same

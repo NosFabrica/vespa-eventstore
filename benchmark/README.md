@@ -2299,6 +2299,49 @@ Two-character words still yield no trigram (the remaining 2-character recall is 
 voiced kana, now three code points). Latin search is untouched: the 1,575-query COUNT set from
 the language-pin section returns the same counts before and after.
 
+## Stemmed body columns for `language:pt` / `language:es` (2026-10-18)
+
+The question was whether letting a searcher name a language makes non-English search better.
+Vespa's own stemming cannot answer it: it stems a field by the DOCUMENT's language, the query
+carries none, and turning it on made every non-English note unreachable (`stemming: none`).
+So the store stems instead (`engine/text/StemText`): Lucene 9.12's `PortugueseLightStemmer` and
+`SpanishLightStemmer`, written into `search_text_pt` / `search_text_es`, which Vespa indexes
+as plain tokens. The "en" pin above stays, and no existing term changes.
+
+Measured on the live-relay slice: words sampled from 400 notes per language, each searched in
+a form other than the one the note holds (singular for plural, accented or not), restricted to
+notes known to hold it, so the number is exact recall of the word's other forms:
+
+| query language | without `language:` | with it |
+|---|---|---|
+| Spanish | 27.2% | **54.8%** |
+| Portuguese | 28.2% | **48.5%** |
+| English, German, French (controls, as typed) | 100% | 100% |
+
+Total hits over the whole query set grew 2%. A stem-only hit takes `query(w_stem_rung)` (0.8)
+of the body rung, so it ranks below the typed form: relevance 440 against 550 and up on the
+same corpus.
+
+Decisions behind the shape:
+
+- **The document's language is guessed, by function words** (`StemText.guess`: two or more
+  distinct ones and a strict lead over English, German, French and Italian). Vespa's
+  detector cost 14% of its CPU, and the store needs only "Portuguese, Spanish, or neither".
+  A short note where only `para` votes ties the two and is not stemmed.
+- **Both spellings are stemmed.** The Portuguese stemmer is accent-sensitive (`eleições` →
+  `eleica`, `eleicoes` → `eleico`), and posters and searchers drop accents, so a document
+  carries the stems of its raw and its `normalize`-folded words. The query stems what was typed.
+- **Capped** at 1,024 distinct stems per document.
+- German was not done: Spanish and Portuguese came first, and Lucene's `GermanLightStemmer` would
+  slot in the same way (a column, a guess entry, a measurement).
+
+Ingest cost, one run on the same slice and box as the language-pin table: 1,207 ev/s, Vespa
+1,510 µs/ev, relay 554 µs/ev, against 1,222-1,404 ev/s, 1,310-1,533 and 467-529 with the pin
+alone. One run, so read it as "about the pin's own variance on Vespa, ~5-15% more relay CPU"
+(the stemming runs in the relay's feed writer). A store fed before the columns existed reads
+them as empty, so `language:` finds nothing new there until a re-feed; a Vespa without the
+fields is detected (`SchemaFallbacks`) and fed and queried without them.
+
 ## Feed compression (`VESPA_FEED_COMPRESSION`, 2026-10-16)
 
 The feed client compresses by default: `Compression.auto` gzips every body over 512 bytes, and

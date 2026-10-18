@@ -37,6 +37,7 @@ import org.testcontainers.containers.wait.strategy.Wait
 import java.time.Duration
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
@@ -390,6 +391,79 @@ class SearchBodyGramIT {
                         assertTrue(
                             repo.id in index.search(EventQuery(search = "localhost")).map { it.id },
                             "a non-profile kind filling `website` must still be reachable through it",
+                        )
+                    }
+                }
+            }
+    }
+
+    /**
+     * The `language:` hint's lower tier (StemText, `search_text_pt` / `search_text_es`):
+     * a Portuguese or Spanish word reaches the other number of the same word, only when
+     * the searcher asked for the language, and ranks below a note holding the word as typed.
+     *
+     * Measured on 400 real notes per language before shipping: recall of a word's other
+     * forms went from 27.2% to 54.8% (es) and 28.2% to 48.5% (pt), while the English,
+     * German and French controls held at 100% and the hit count grew by 2%.
+     */
+    @Test
+    fun `a language hint reaches the other forms of a Portuguese or Spanish word, below the typed form`() {
+        assumeTrue(dockerAvailable(), "Docker not available — skipping the stemmed-body IT")
+
+        GenericContainer("vespaengine/vespa:latest")
+            .withExposedPorts(QUERY_PORT, CONFIG_PORT)
+            .waitingFor(Wait.forHttp("/state/v1/health").forPort(CONFIG_PORT).forStatusCode(200))
+            .withStartupTimeout(Duration.ofMinutes(5))
+            .use { vespa ->
+                vespa.start()
+                val queryUrl = "http://${vespa.host}:${vespa.getMappedPort(QUERY_PORT)}"
+                SchemaDeployer("http://${vespa.host}:${vespa.getMappedPort(CONFIG_PORT)}").deployIfAbsent(queryUrl)
+                VespaEventIndex(queryUrl).use { index ->
+                    runBlocking {
+                        val typed = note(21, "Nova eleição marcada para o mês que vem, mas o tribunal ainda não confirmou")
+                        // The plural, accented: "eleicoes" folded holds no `ica` trigram, so the
+                        // body's gram net cannot bridge singular and plural on its own.
+                        val plural = note(22, "As eleições municipais foram adiadas para o próximo ano, mas ainda não há data")
+                        // The same plural inside an English note: the guess names no language, so
+                        // the note carries no stems. The stated trade-off of guessing per document.
+                        val english = note(23, "The eleições coverage is on the site and in the app")
+                        // -ces -> -z: no substring of "luces" is "luz".
+                        // (Every note here carries two or more of its language's function words:
+                        // a shorter one, where only "para" votes, ties Portuguese with Spanish and
+                        // is not stemmed at all. Real notes vote; a terse headline may not.)
+                        val spanish = note(24, "Las luces de la ciudad se apagaron, pero ya volvieron después de la tormenta")
+                        index.putAll(listOf(typed, plural, english, spanish))
+                        awaitCorpus(index, 4)
+
+                        assertEquals(
+                            listOf(typed.id),
+                            index.search(EventQuery(kinds = listOf(1), search = "eleição")).map { it.id },
+                            "without the hint the word reaches only its own form",
+                        )
+                        val hinted = index.searchRanked(EventQuery(kinds = listOf(1), search = "eleição", stemLanguage = "pt"))
+                        assertEquals(
+                            listOf(typed.id, plural.id),
+                            hinted.map { it.hit.id },
+                            "with language:pt the plural is found, ranked below the typed form",
+                        )
+                        val (typedScore, pluralScore) = hinted.map { assertNotNull(it.score, "a search answers with its relevance") }
+                        assertTrue(pluralScore < typedScore, "a stem-only hit takes w_stem_rung of the body rung: $pluralScore vs $typedScore")
+
+                        assertEquals(
+                            emptyList(),
+                            index.search(EventQuery(kinds = listOf(1), search = "luz")).map { it.id },
+                            "'luz' does not reach 'luces' without the hint",
+                        )
+                        assertEquals(
+                            listOf(spanish.id),
+                            index.search(EventQuery(kinds = listOf(1), search = "luz", stemLanguage = "es")).map { it.id },
+                            "with language:es it does",
+                        )
+                        // The column is per language: a Portuguese hint does not search Spanish stems.
+                        assertEquals(
+                            emptyList(),
+                            index.search(EventQuery(kinds = listOf(1), search = "luz", stemLanguage = "pt")).map { it.id },
+                            "a Portuguese hint does not reach a Spanish note's stems",
                         )
                     }
                 }

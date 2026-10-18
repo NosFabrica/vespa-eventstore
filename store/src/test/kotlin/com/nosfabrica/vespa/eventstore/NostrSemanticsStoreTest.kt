@@ -36,6 +36,7 @@ import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import com.vitorpamplona.quartz.nip01Core.store.RejectionReason
 import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
+import com.vitorpamplona.quartz.nip10Notes.TextNoteEvent
 import com.vitorpamplona.quartz.nip59Giftwrap.wraps.GiftWrapEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
@@ -460,6 +461,17 @@ open class NostrSemanticsStoreTest {
             store.insert(note(content = "satoshi wrote this"))
             val hits = store.query<Event>(Filter(search = "satoshi"))
             assertEquals(listOf(MetadataEvent.KIND), hits.map { it.kind })
+        }
+
+    /** `language:pt` reaches a word's other forms in a Portuguese body, on the reference as on Vespa (SearchBodyGramIT). */
+    @Test
+    fun `a language hint reaches the plural of a Portuguese word`() =
+        runBlocking {
+            val plural = TextNoteEvent(id(), alice, next(), emptyArray(), "As eleições municipais foram adiadas para o próximo ano, mas ainda não há data", "")
+            store.insert(plural)
+            assertEquals(emptyList(), store.query<Event>(Filter(search = "eleição")).map { it.id })
+            assertEquals(listOf(plural.id), store.query<Event>(Filter(search = "eleição language:pt")).map { it.id })
+            assertEquals(emptyList(), store.query<Event>(Filter(search = "eleição language:es")).map { it.id }, "the stems are per language")
         }
 
     /** Multi-word search is AND: every word must be present on the same event. */

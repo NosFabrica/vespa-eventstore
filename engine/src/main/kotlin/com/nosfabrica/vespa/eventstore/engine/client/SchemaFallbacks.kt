@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.eventstore.engine.client
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.nosfabrica.vespa.eventstore.engine.query.FuzzyWordGroup
+import com.nosfabrica.vespa.eventstore.engine.text.StemText
 
 /** Whether [this] recalls through one of the observer-gate profiles. */
 internal fun EventQuery.usesGatedProfile(): Boolean = ranking == EventYql.RANK_RECENCY_GATED || ranking == EventYql.RANK_RECENCY_GATED_EXACT
@@ -76,6 +77,10 @@ internal class SchemaFallbacks {
 
     /** PROTOTYPE (#161): whether the serving schema has `search_text_edge` — both directions, like [nearFieldsAvailable]. */
     @Volatile var bodyEdgeAvailable = true
+        private set
+
+    /** Whether the serving schema has the stemmed body columns ([StemText.FIELDS]) — both directions. */
+    @Volatile var stemFieldsAvailable = true
         private set
 
     @Volatile var dedupSummaryAvailable = true
@@ -136,6 +141,10 @@ internal class SchemaFallbacks {
             bodyEdgeAvailable = false
             return true
         }
+        if (message != null && message.contains("400") && message.contains(NOT_IN_DOCUMENT_TYPE) && StemText.FIELDS.any { message.contains(it) }) {
+            stemFieldsAvailable = false
+            return true
+        }
         return false
     }
 
@@ -186,7 +195,9 @@ internal class SchemaFallbacks {
      * lack either, or both, and demoting them together would strip name/title
      * prefix reach from a schema that still has it.
      */
-    private fun demoteSchema(q: EventQuery): EventQuery = demoteBodyEdge(demoteBodyGram(demoteNear(q)))
+    fun demoteStem(q: EventQuery): EventQuery = if (!stemFieldsAvailable && q.stemLanguage != null) q.copy(stemLanguage = null) else q
+
+    private fun demoteSchema(q: EventQuery): EventQuery = demoteStem(demoteBodyEdge(demoteBodyGram(demoteNear(q))))
 
     /**
      * Run [attempt] with the rank-profile nets: a 400 naming the `recency` or
@@ -239,13 +250,13 @@ internal class SchemaFallbacks {
         q: EventQuery,
         attempt: suspend (EventQuery) -> T,
     ): T {
-        // THREE demotions are reachable, so the net retries three times: the near
-        // columns, `search_text_gram` and the prototype `search_text_edge` are
-        // independent schema generations and a schema old enough lacks all of
-        // them. Each pass can only ever flip a flag that was still set, and
-        // flipping one strips its clauses from the next attempt, so the loop
-        // cannot spin — a given column can be named at most once.
-        repeat(3) {
+        // FOUR demotions are reachable, so the net retries four times: the near
+        // columns, `search_text_gram`, the prototype `search_text_edge` and the
+        // stemmed columns are independent schema generations and a schema old
+        // enough lacks all of them. Each pass can only ever flip a flag that was
+        // still set, and flipping one strips its clauses from the next attempt,
+        // so the loop cannot spin — a given column can be named at most once.
+        repeat(4) {
             try {
                 return attempt(demoteSchema(q))
             } catch (e: IllegalArgumentException) {
@@ -297,6 +308,10 @@ internal class SchemaFallbacks {
         // demote on a round of its own if the schema predates that column too.
         if (q.bodyEdgeMatching && names(listOf(FuzzyWordGroup.EDGE_FIELD))) {
             bodyEdgeAvailable = false
+            return true
+        }
+        if (q.stemLanguage != null && names(StemText.FIELDS)) {
+            stemFieldsAvailable = false
             return true
         }
         return false

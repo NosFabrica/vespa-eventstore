@@ -134,10 +134,15 @@ data class EventDoc(
      * Unlike the near tier it can never read back as drift (it is index-only), so
      * a document written without it is repaired only by
      * `NostrSemanticsStore.backfillBodyEdge`.
+     *
+     * [includeStem] adds the stemmed body column of a Portuguese or Spanish body
+     * ([SearchFields.stemFields]), on its own gate for the same reason: its own
+     * schema generation, which a schema predating it refuses whole.
      */
     fun indexFields(
         includeNear: Boolean = true,
         includeEdge: Boolean = false,
+        includeStem: Boolean = true,
     ): JsonObject =
         buildJsonObject {
             put("id", id)
@@ -172,6 +177,9 @@ data class EventDoc(
                     put(field, JsonArray(elements.map(::JsonPrimitive)))
                 }
             }
+            if (includeStem) {
+                for ((field, value) in search.stemFields()) put(field, value)
+            }
             // Always written. An absent numeric attribute reads as 0 in Vespa,
             // which would make "not yet expired" range queries impossible.
             put("expires_at", expiresAt() ?: NO_EXPIRATION)
@@ -186,6 +194,7 @@ data class EventDoc(
     fun feedJson(
         includeNear: Boolean = true,
         includeEdge: Boolean = false,
+        includeStem: Boolean = true,
     ): String {
         val tagChars = tags.sumOf { tag -> 2 + tag.sumOf { it.length + 5 } }
         val out = JsonChars(FEED_OVERHEAD + content.length + 2 * tagChars)
@@ -213,6 +222,9 @@ data class EventDoc(
         }
         if (includeEdge) {
             for ((field, elements) in search.edgeFields()) out.key(field).strings(elements)
+        }
+        if (includeStem) {
+            for ((field, value) in search.stemFields()) out.key(field).string(value)
         }
         out.key("expires_at").raw(expiresAt() ?: NO_EXPIRATION)
         return out.raw("}}").toString()

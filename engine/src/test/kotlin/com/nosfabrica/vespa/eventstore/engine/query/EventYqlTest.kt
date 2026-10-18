@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore.engine.query
 import com.nosfabrica.vespa.eventstore.engine.app.VespaApp
+import com.nosfabrica.vespa.eventstore.engine.text.StemText
 import java.io.ByteArrayInputStream
 import java.util.zip.ZipInputStream
 import kotlin.test.Test
@@ -768,6 +769,16 @@ class EventYqlTest {
         // ダ is タ + U+3099 after NFD, and the document side keeps the mark: so must the query.
         val kana = EventYql.build(EventQuery(search = "ヨルダン"))!!.yql
         assertTrue("phrase(\"ヨルタ\", \"ルタ\u3099\", \"タ\u3099ン\")" in kana, kana)
+    }
+
+    @Test
+    fun `a language hint adds the word's stem against that language's stemmed column, and only then`() {
+        val hinted = EventYql.build(EventQuery(kinds = listOf(1), search = "notícias", stemLanguage = "pt"))!!
+        assertTrue("(search_text_pt contains @sw0)" in hinted.yql, hinted.yql)
+        assertEquals(StemText.stemQuery("pt", "notícias"), hinted.params["sw0"])
+        assertFalse("search_text_pt" in EventYql.build(EventQuery(kinds = listOf(1), search = "notícias"))!!.yql)
+        // Where no kind can hold a body there is nothing to stem against.
+        assertFalse("search_text_pt" in EventYql.build(EventQuery(kinds = listOf(0), search = "notícias", stemLanguage = "pt"))!!.yql)
     }
 
     @Test

@@ -228,7 +228,7 @@ class VespaEventIndex(
     private fun putOp(doc: EventDoc) =
         feed.client.put(
             DocumentId.of(EVENT_NAMESPACE, EVENT_DOCTYPE, docIdOf(doc)),
-            doc.feedJson(includeNear = fallbacks.nearFieldsAvailable, includeEdge = feedsEdge()),
+            doc.feedJson(includeNear = fallbacks.nearFieldsAvailable, includeEdge = feedsEdge(), includeStem = fallbacks.stemFieldsAvailable),
             feedParams(),
         )
 
@@ -272,8 +272,9 @@ class VespaEventIndex(
             }
         }
         if (refused == null) return
-        // A refusal names ONE unknown field, so a schema missing both the near
-        // tier and the edge column takes two rounds; each flips one flag for good.
+        // A refusal names ONE unknown field, so a schema missing the near tier,
+        // the edge column and the stemmed columns takes three rounds; each flips
+        // one flag for good.
         var attempt = 0
         while (true) {
             val retry = docs.map { putOp(it) }
@@ -281,7 +282,7 @@ class VespaEventIndex(
                 retry.forEach { it.await() }
                 return
             } catch (e: Throwable) {
-                if (++attempt > 2 || !fallbacks.isMissingFedColumn(e.message)) throw e
+                if (++attempt > FED_COLUMN_GENERATIONS || !fallbacks.isMissingFedColumn(e.message)) throw e
                 retry.forEach { runCatching { it.await() } }
             }
         }
@@ -332,7 +333,7 @@ class VespaEventIndex(
             feed.client
                 .put(
                     DocumentId.of(EVENT_NAMESPACE, EVENT_DOCTYPE, address),
-                    doc.feedJson(includeNear = fallbacks.nearFieldsAvailable, includeEdge = feedsEdge()),
+                    doc.feedJson(includeNear = fallbacks.nearFieldsAvailable, includeEdge = feedsEdge(), includeStem = fallbacks.stemFieldsAvailable),
                     feedParams().createIfNonExistent(true).testAndSetCondition(condition),
                 ).await()
         var refusals = 0
@@ -342,8 +343,8 @@ class VespaEventIndex(
                 result = attempt()
                 break
             } catch (e: Throwable) {
-                // Each refusal names one unknown column; near and edge are two.
-                if (++refusals > 2 || !fallbacks.isMissingFedColumn(e.message)) throw e
+                // Each refusal names one unknown column; near, edge and stem are three.
+                if (++refusals > FED_COLUMN_GENERATIONS || !fallbacks.isMissingFedColumn(e.message)) throw e
             }
         }
         // A transport/engine failure completes the future exceptionally (never
@@ -1939,6 +1940,12 @@ class VespaEventIndex(
     override fun close() = feed.close()
 
     internal companion object {
+        /**
+         * The FED column generations a schema can predate — the near tier, the
+         * edge column, the stemmed columns — each refused on its own feed round.
+         */
+        const val FED_COLUMN_GENERATIONS = 3
+
         /** Concurrent document-API gets for a pure-id lookup. Gets are light (no summary stage to overrun), so this floats above QUERY_FANOUT. */
         const val ID_GET_FANOUT = 32
 

@@ -47,6 +47,16 @@ class FilterMappingTest {
     }
 
     @Test
+    fun `language names a stemmed column when there is one, and is otherwise ignored`() {
+        val pt = map("notícias language:pt")
+        assertEquals("pt", pt.stemLanguage)
+        assertEquals("notícias", pt.search, "the hint is not a search word")
+        assertEquals("es", map("canciones language:ES").stemLanguage)
+        assertNull(map("news language:en").stemLanguage)
+        assertNull(map("notícias").stemLanguage)
+    }
+
+    @Test
     fun `include spam lowers the floor to zero instead of dropping it`() {
         val q = map("vitor include:spam")
         assertEquals("vitor", q.search)

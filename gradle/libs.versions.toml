@@ -100,6 +100,10 @@ okhttp = "5.5.0"
 ktor = "3.5.1"
 # Vespa's official feed client: async document writes multiplexed over HTTP/2.
 vespa-feed = "8.714.25"
+# Lucene's analysis module, for its Portuguese and Spanish LIGHT stemmers (Savoy's,
+# the ones Lucene's own analyzers use) — engine/text/StemText. Apache-2.0 (checked
+# against the published POM); pulls in lucene-core.
+lucene = "9.12.2"
 # Test-only: a mock Vespa must speak h2c for the feed client (JDK HttpServer can't).
 # MUST match the Jetty line the feed client itself uses, or its client half breaks.
 jetty = "12.0.36"
@@ -115,6 +119,7 @@ kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-t
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
 androidx-sqlite-bundled = { module = "androidx.sqlite:sqlite-bundled", version.ref = "sqlite" }
 okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
+lucene-analysis-common = { module = "org.apache.lucene:lucene-analysis-common", version.ref = "lucene" }
 vespa-feed-client = { module = "com.yahoo.vespa:vespa-feed-client", version.ref = "vespa-feed" }
 jetty-server = { module = "org.eclipse.jetty:jetty-server", version.ref = "jetty" }
 jetty-http2-server = { module = "org.eclipse.jetty.http2:jetty-http2-server", version.ref = "jetty" }

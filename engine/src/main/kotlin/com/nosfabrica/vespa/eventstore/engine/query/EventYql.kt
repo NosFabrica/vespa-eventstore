@@ -837,8 +837,10 @@ object EventYql {
         if (matchable.isNotEmpty()) {
             // The body phrase only where a body can exist: on body-less kinds it
             // matches nothing and still costs seconds ([BODYLESS_KINDS]).
-            val bodyGram = q.bodyGramMatching && FuzzyWordGroup.bodyReachable(q.kinds)
-            clauses += FuzzyWordGroup.clause(matchable, params, nearFields = q.nearMatching, bodyGram = bodyGram, bodyEdge = q.bodyEdgeMatching)
+            val bodyReachable = FuzzyWordGroup.bodyReachable(q.kinds)
+            val bodyGram = q.bodyGramMatching && bodyReachable
+            val stem = q.stemLanguage?.takeIf { bodyReachable }
+            clauses += FuzzyWordGroup.clause(matchable, params, nearFields = q.nearMatching, bodyGram = bodyGram, bodyEdge = q.bodyEdgeMatching, stemLanguage = stem)
             // Short queries lean harder on the trigram safety net — judged by
             // the words that HAVE grams: an emoji beside "extraordinary" is no
             // reason to weight its trigrams up.

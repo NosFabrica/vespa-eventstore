@@ -281,6 +281,31 @@ schema event {
             stemming: none
         }
 
+        # STEMMED BODY COLUMNS, one per language with a stemmer: the body's words
+        # reduced to their stems, space-joined, FED by the store for a body it reads
+        # as Portuguese or Spanish (engine/text/StemText: Lucene's light stemmers, a
+        # function-word vote for the language). A search that says its language
+        # (NIP-50 `language:pt`) also matches each word's stem here, so "notícia"
+        # reaches a note saying "notícias": the exact column wants the whole token,
+        # and the trigram phrase is a substring test that cannot reach a LONGER
+        # inflection. MEASURED on the live-relay slice (2026-10-18): searching
+        # another form of a word found 28% (pt) and 27% (es) of the notes holding
+        # it. Stemmed by the store rather than here because Vespa stems with the
+        # document's language, and the document language is pinned (see `language`
+        # above) while a query carries none: doing it in one place keeps the two
+        # ends agreeing, as the near tier does. Index-only and unweighted: a hit
+        # counts in tier_body_match like the trigram and edge columns, so an exact
+        # hit (which also earns bm25(search_text)) still ranks above it.
+        field search_text_pt type string {
+            indexing: index
+            stemming: none
+        }
+
+        field search_text_es type string {
+            indexing: index
+            stemming: none
+        }
+
         # Place names, filled systemically from any kind's `location` tags
         # (classifieds, calendar events, pictures/videos). Free-text recall only;
         # geohash-proximity is a separate future column (docs/location-search-column.md).
@@ -635,6 +660,7 @@ schema event {
             # match ranks above gram noise, below real name matches.
             query(w_affil_tier) double: 10000000.0
             query(w_affil_tier_text) double: 550.0
+            query(w_stem_rung) double: 0.8
             # Default (search) §12 rewrite: IDF-diluted text × trust — where
             # trust is deliberately strong enough to CROSS text tiers, but
             # only on an overwhelming advantage.
@@ -1170,8 +1196,17 @@ schema event {
         # contains it), a genuine body match text_score_cutoff would otherwise
         # delete. It is fed only under VESPA_BODY_EDGE and queried only under
         # EventQuery.bodyEdgeMatching, so by default it contributes 0.
+        #
+        # search_text_pt / search_text_es join it ONE STEP DOWN: a hit is a body word
+        # sharing the query word's stem, matched only when the search names its
+        # language (EventQuery.stemLanguage), so a search without `language:` is
+        # unchanged. A stem-only hit scores query(w_stem_rung) of the body rung rather
+        # than the whole of it, because inside one rung the order belongs to trust and
+        # recency, and on the live-relay slice that interleaved "nueva" with "nuevo"
+        # and "partido" above "partidos" — while a stemmer also merges a few
+        # different words (`punto/punta`). Exact, substring and edge hits keep 1.
         function tier_body_match() {
-            expression: if(any_token_match() > 0 || any_near_match() > 0 || weak_match() > 0, 0, if(matchCount(search_text) > 0 || matchCount(search_location) > 0 || matchCount(search_text_gram) > 0 || matchCount(search_text_edge) > 0, 1, 0))
+            expression: if(any_token_match() > 0 || any_near_match() > 0 || weak_match() > 0, 0, if(matchCount(search_text) > 0 || matchCount(search_location) > 0 || matchCount(search_text_gram) > 0 || matchCount(search_text_edge) > 0, 1, if(matchCount(search_text_pt) > 0 || matchCount(search_text_es) > 0, query(w_stem_rung), 0)))
         }
 
         # A bio/website affiliation match WITHOUT any name-field token match.
@@ -1498,7 +1533,7 @@ schema event {
                 + matchCount(search_secondary) + matchCount(search_text) + matchCount(search_location)
                 + matchCount(affil_tokens) + matchCount(search_secondary_tokens)
                 + matchCount(about_gram) + matchCount(search_secondary_gram) + matchCount(search_text_gram)
-                + matchCount(search_text_edge)
+                + matchCount(search_text_edge) + matchCount(search_text_pt) + matchCount(search_text_es)
             }
         }
 

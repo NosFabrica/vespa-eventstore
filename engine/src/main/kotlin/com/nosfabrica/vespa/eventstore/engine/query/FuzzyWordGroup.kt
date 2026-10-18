@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.eventstore.engine.query
 import com.nosfabrica.vespa.eventstore.engine.text.EdgeText
 import com.nosfabrica.vespa.eventstore.engine.text.IndexableChars
 import com.nosfabrica.vespa.eventstore.engine.text.NearText
+import com.nosfabrica.vespa.eventstore.engine.text.StemText
 
 /**
  * Per-word recall over the schema's search fields and match ladder — the
@@ -174,11 +175,12 @@ internal object FuzzyWordGroup {
         nearFields: Boolean = true,
         bodyGram: Boolean = true,
         bodyEdge: Boolean = false,
+        stemLanguage: String? = null,
     ): String {
         val own =
             words.mapIndexed { i, word ->
                 params["w$i"] = word
-                wordGroup("w$i", word, params, synthetic = false, nearFields = nearFields, bodyGram = bodyGram, bodyEdge = bodyEdge)
+                wordGroup("w$i", word, params, synthetic = false, nearFields = nearFields, bodyGram = bodyGram, bodyEdge = bodyEdge, stemLanguage = stemLanguage)
             }
         if (words.size == 1) return "(${own[0]})"
         val coverers = List(words.size) { ArrayList<String>() }
@@ -229,6 +231,7 @@ internal object FuzzyWordGroup {
         nearFields: Boolean,
         bodyGram: Boolean,
         bodyEdge: Boolean,
+        stemLanguage: String? = null,
     ): String {
         val clauses = ArrayList<String>()
         for (field in SEARCH_FIELDS) clauses += exactClause(field, "@$name", roleOf(field))
@@ -262,6 +265,16 @@ internal object FuzzyWordGroup {
             } else if (bodyGram) {
                 for (gramField in PHRASE_GRAM_FIELDS) {
                     phraseGramClause(literal, gramField)?.let { clauses += it }
+                }
+            }
+            // The word's STEM in the stemmed body column of the language the search
+            // says it is in (EventQuery.stemLanguage): "notícia" reaching "notícias".
+            // A body-rung hit (event.sd, tier_body_match), so an exact hit, which also
+            // earns bm25(search_text), still ranks above it.
+            if (stemLanguage != null) {
+                StemText.stemQuery(stemLanguage, literal)?.let { stem ->
+                    params["s$name"] = stem
+                    clauses += "(${StemText.field(stemLanguage)} contains @s$name)"
                 }
             }
         }

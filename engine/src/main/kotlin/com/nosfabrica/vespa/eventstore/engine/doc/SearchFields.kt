@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.eventstore.engine.doc
 import com.nosfabrica.vespa.eventstore.engine.text.EdgeText
 import com.nosfabrica.vespa.eventstore.engine.text.IndexableChars
 import com.nosfabrica.vespa.eventstore.engine.text.NearText
+import com.nosfabrica.vespa.eventstore.engine.text.StemText
 import com.nosfabrica.vespa.eventstore.engine.text.WHITESPACE
 
 /**
@@ -87,8 +88,16 @@ data class SearchFields(
      * cleaned exactly as EventYql cleans what it sends
      * ([IndexableChars.queryText]: "bitcoin*" is bitcoin, "❤️" finds a plain ❤,
      * 👍🏽 is 👍).
+     *
+     * [stemLanguage] is [EventQuery.stemLanguage]: a word also matches when its
+     * stem is in this document's stemmed body column for that language, exactly
+     * the column a put writes ([stemFields]) — so "eleição" reaches "eleições",
+     * which no substring does.
      */
-    fun matches(term: String): Boolean {
+    fun matches(
+        term: String,
+        stemLanguage: String? = null,
+    ): Boolean {
         val words =
             IndexableChars
                 .queryText(term)
@@ -96,7 +105,11 @@ data class SearchFields(
                 .filter(IndexableChars::hasIndexable)
         if (words.isEmpty()) return false
         val values = fields().values
-        return words.all { word -> values.any { it.contains(word, ignoreCase = true) } }
+        val stems by lazy { stemLanguage?.let { stemFields()[StemText.field(it)] }?.split(' ')?.toHashSet() ?: emptySet() }
+        return words.all { word ->
+            values.any { it.contains(word, ignoreCase = true) } ||
+                (stemLanguage != null && StemText.stemQuery(stemLanguage, word)?.let { it in stems } == true)
+        }
     }
 
     /**
@@ -166,6 +179,18 @@ data class SearchFields(
      * read it back, so it would read as drift on every document.
      */
     fun edgeFields(): Map<String, List<String>> = text?.let { EdgeText.prefixes(it) }?.takeIf { it.isNotEmpty() }?.let { mapOf("search_text_edge" to it) } ?: emptyMap()
+
+    /**
+     * The STEMMED body column for this document's language ([StemText]), when the
+     * body reads as Portuguese or Spanish: `search_text_pt` / `search_text_es` to
+     * its space-joined stems. Index-only, like [edgeFields], and kept out of
+     * [nearFields] for the same reason (nothing can read it back to compare).
+     */
+    fun stemFields(): Map<String, String> {
+        val body = text ?: return emptyMap()
+        val language = StemText.guess(body) ?: return emptyMap()
+        return StemText.stems(language, body)?.let { mapOf(StemText.field(language) to it) } ?: emptyMap()
+    }
 
     /**
      * [nearFields] minus empty arrays — exactly what a put writes, so
