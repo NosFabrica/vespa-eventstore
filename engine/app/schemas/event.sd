@@ -32,6 +32,33 @@
 schema event {
 
     document event {
+        # THE DOCUMENT LANGUAGE IS PINNED, so Vespa never DETECTS it. Must stay
+        # the FIRST field: set_language applies to the fields indexed after it.
+        #
+        # Without it the indexing chain runs OpenNLP language detection on every
+        # text field of every document. With `stemming: none` on all of them
+        # (see "STEMMING IS OFF" below) and a default linguistics that does not
+        # segment CJK, the detected language changed nothing a search can see,
+        # so the detection was pure cost.
+        #
+        # MEASURED 2026-10-18 on a 404k-event slice of the live relay (56% kind
+        # 1, 39% kind 30382) through vespa-relay's ingest benchmark, 3 cores,
+        # alternating arms. A JFR profile put detection at 14% of the container's
+        # samples, 29% of its docproc threads; the A/B is what counts. Pinning cut Vespa's CPU per event from
+        # 1,701-1,767 µs to 1,310-1,533, and raised ingest from 1,091-1,167
+        # ev/s to 1,222-1,404. Searches stayed the same: NIP-50 COUNT matched
+        # exactly on all 1,575 searches sampled from the slice, and pages
+        # differed only as much as two loads of ONE schema differ (tie order).
+        #
+        # Redeploying it over a live cluster, either way, is accepted with no
+        # validation override (verified); with the terms unchanged, old
+        # documents need no reindex. "en" is a label for "the one analysis",
+        # not a claim about the content: the same pin docs/cjk-search.md's
+        # recipe needs. benchmark/README.md, "Language detection on every
+        # document".
+        field language type string {
+            indexing: "en" | set_language
+        }
 
         # The exact-match filter attributes (id/pubkey/owner/tag_index) share two
         # settings beyond fast-search:
@@ -135,10 +162,12 @@ schema event {
         # fields. The rest joined them on 2026-08-05, for a different and
         # bigger reason: Vespa stems a document's index terms with the
         # DOCUMENT's language — which it DETECTS — while a query carries no
-        # language and is stemmed as English. Nothing sets either side (no
+        # language and is stemmed as English. Nothing set either side then (no
         # `language` field, no set_language, no model.language), so on a
-        # multilingual corpus the two sides silently disagree and a document
-        # becomes unreachable by its own words. MEASURED on a live Vespa with
+        # multilingual corpus the two sides silently disagreed and a document
+        # became unreachable by its own words. (The `language` field at the
+        # top now pins documents to "en" — for cost: with stemming off the
+        # detected language was already inert.) MEASURED on a live Vespa with
         # a Portuguese note, same words, only the query language differing:
         #     default (en)        futebol 1, esposa 0, crise 0, desabafa 0
         #     model.language=pt   futebol 1, esposa 1, crise 1, desabafa 1
@@ -148,10 +177,11 @@ schema event {
         # desabafa" report needed more than the body rung to come back.
         #
         # `stemming: none` makes both sides raw (still folded and tokenized),
-        # so they agree by construction, in any language. The alternative —
-        # forcing one language on documents — also worked in measurement but
-        # pins TOKENIZATION too, which would foreclose ever segmenting CJK
-        # properly. What is given up here is nothing measurable: English
+        # so they agree by construction, in any language. Forcing one language
+        # on documents also worked in measurement; it was set aside then for
+        # pinning tokenization, but the CJK recipe (docs/cjk-search.md) pins
+        # it anyway, and the `language` field above now does, for the cost of
+        # detection. What is given up here is nothing measurable: English
         # stemming was already inert on this deployment ("wolf" does not find
         # "wolves", "run" does not find "running"), before and after.
         #

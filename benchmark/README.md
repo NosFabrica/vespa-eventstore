@@ -2243,6 +2243,35 @@ gets a 200, no document is stored, and an existing document of that id is left a
 (`NO_EXPIRATION` when the event has none), which is what keeps every put stored; anything else that
 feeds this schema has to as well.
 
+## Language detection on every document (2026-10-18)
+
+Every ingest number above came from ditto's kind 3s, which carry no search text. A 4.5-hour
+slice of the live relay (`search.brainstorm.world`, `include:spam`, 404,546 events) is a
+different workload: 56% kind 1 (~1 KB), 39% NIP-85 kind 30382 cards, 0.1% kind 3. Through
+vespa-relay's ingest benchmark it cost Vespa more per event than the 20 KB kind 3s did, and a
+JFR profile of the container put OpenNLP language detection at 14% of its samples (29% of the
+docproc threads), ahead of the 3-gram splitting (7%).
+
+The detection decided nothing. Every text field is `stemming: none`, and the default
+linguistics does not segment CJK, so the detected language changed no term a search can
+reach. `event.sd` now pins it (`field language { indexing: "en" | set_language }`, first in
+the document). Same slice, 3 cores, 8,192-event window, alternating arms:
+
+| document language | ev/s | relay µs/ev | Vespa µs/ev |
+|---|---|---|---|
+| detected (as shipped) | 1,091, 1,155, 1,167 | 517-541 | 1,701-1,767 |
+| pinned to "en" | **1,222, 1,337, 1,404** | 467-529 | **1,310-1,533** |
+
+Search parity, measured rather than argued: 1,575 NIP-50 searches sampled from the slice's
+own notes and profile names (single words, adjacent pairs, kinds 1, 0 and both), run through
+`NostrSemanticsStore` against each load. NIP-45 COUNT agreed on every one, so every search
+matched the same documents. The top-50 pages agreed on 958; two loads of the *same* schema
+agree on only 970, and a rerun on one load agrees on all 1,575 — so the remaining
+differences are tie order between loads, which this change does not touch.
+
+Deploying the pinned schema over a live store, and the old one back over it, is accepted
+with no validation override; since no term changes, stored documents need no reindex.
+
 ## Feed compression (`VESPA_FEED_COMPRESSION`, 2026-10-16)
 
 The feed client compresses by default: `Compression.auto` gzips every body over 512 bytes, and
