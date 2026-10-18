@@ -2177,14 +2177,14 @@ array escaped a second time as a string field. A kind 3 carries hundreds of tags
 `tags` field in a single pass (`appendJsonTagsString`, each char's escape
 escaped again from a table). Byte-identity with the tree is the contract, since
 the `tags` string is stored and spliced verbatim into served events:
-`JsonTextTest` checks all 65,536 UTF-16 units against kotlinx and the feed body
+`JsonCharsTest` checks all 65,536 UTF-16 units against kotlinx and the feed body
 across kinds and near/edge gates.
 
 | 20,000 of ditto's newest kind 3s (avg 9.6 KB) | µs per feed body |
 |---|---|
 | `buildJsonObject { put("fields", indexFields()) }.toString()` | 320-360 |
 | `feedJson`, tags serialized then escaped (two passes) | 230-265 |
-| `feedJson`, tags escaped in one pass (shipped) | 183-206 |
+| `feedJson`, tags escaped in one pass | 183-206 |
 
 End to end it is small: the relay's CPU per published event went from
 1,330-1,380 µs to 1,280-1,300, within run-to-run noise on throughput on a box
@@ -2192,6 +2192,56 @@ where Vespa takes two thirds of the CPU. Most of what is left in the relay's
 write is the feed client's own HTTP/2 request per document. On the same runs,
 `VESPA_ACCESS_LOG=disabled` was worth 12% (610 to 684 ev/s, Vespa CPU per
 event 2.8 to 2.5 ms): one access-log line per fed document.
+
+A later relay profile (2026-10-18, 300k kind 3s) still had 15% of the relay's samples in
+`feedJson`, most of them inside `StringBuilder` itself: `append(CharSequence, start, end)`
+checks capacity and coder per run, and the escape scan paid `charAt` per char. `JsonChars`
+copies each value into a char array with one bulk `getChars` and scans it there; only a
+value with a char to escape is rewritten char by char. Same 20,000 docs, one core to
+itself, the same bytes (the sum of the bodies' hash codes matches, and `JsonCharsTest`
+still checks every UTF-16 unit):
+
+| writer | µs per feed body |
+|---|---|
+| `feedJson` through `StringBuilder` (the row above, re-measured on this box) | 122-131 |
+| `feedJson` through `JsonChars` (shipped) | **37-49** |
+
+End to end (vespa-relay's ingest benchmark, 300,000 of ditto's kind 3s, 3 cores, an 8,192-event
+publisher window, two alternating pairs): the relay's CPU per published event went from 550 and
+523 µs to 513 and 490, and throughput from 1,440 and 1,489 ev/s to 1,472 and 1,594. Vespa's
+CPU per event was unchanged (it parses the same bytes).
+
+## What one stored document costs Vespa (2026-10-18)
+
+Where the engine's share of a published event goes, measured without the relay: a scratch
+feeder on a core of its own put the first 100,000 of ditto's kind 3s straight into a fresh
+single-node Vespa (the bundled package, access log off, feed compression none) restricted to the
+other three cores, one body shape per run, and read the container's cgroup CPU over the feed. A
+fresh engine and a 30-50 s feed, so every row carries the same JIT warm-up and background services;
+compare rows, not absolutes.
+
+| body (each a `feedJson` with fields removed) | avg body | Vespa µs per doc |
+|---|---|---|
+| everything | 6.7 KB | 1,354 |
+| without `tag_index` | 3.9 KB | 1,217 |
+| without `tags` | 3.4 KB | 1,307 |
+| without either (`id`, `pubkey`, `created_at`, `kind`, `content`, `sig`, `owner`, `author_ref`, `expires_at`) | 0.6 KB | 979 |
+| that, without `author_ref` | 0.5 KB | 950 |
+| that, without any ONE of `content`, `sig`, `owner`, `created_at`, `kind`, `pubkey` | | 925-985 |
+
+The floor is the operation, not the document: a 600-byte put costs about three quarters of a
+6.7 KB one, and no single small field moves it beyond noise. The container is roughly half of it
+(the HTTP/2 request, the JSON parse into a `Document`, the indexing docproc, the messagebus hop to
+the content node, in a JFR profile of the relay arm), the distributor and proton the rest. A put
+that never reaches the content node still costs about 425 µs, which is how the next trap showed up.
+
+**A put without `expires_at` is dropped, and answered as a success.** The `event` document type is
+routed with `selection="event.expires_at > now()"` (services.xml, for NIP-40 garbage collection),
+and a document the selection does not match is never sent to the content cluster: the feed client
+gets a 200, no document is stored, and an existing document of that id is left as it was (checked:
+100,000 docs before, 100,000 after, the old fields intact). `feedJson` always writes `expires_at`
+(`NO_EXPIRATION` when the event has none), which is what keeps every put stored; anything else that
+feeds this schema has to as well.
 
 ## Feed compression (`VESPA_FEED_COMPRESSION`, 2026-10-16)
 
