@@ -4,6 +4,17 @@
   <container id="default" version="1.0">
     <search />
     <document-api />
+    <!-- MANY puts per HTTP request, for the store's own writes (engine client VespaBatchFeed,
+         VESPA_FEED_BATCH). /document/v1 takes one document per request, and on a warm engine
+         most of what a put costs Vespa is that request rather than the document: batched 100
+         per request, Vespa's CPU per live-relay event fell by about 31%
+         (benchmark/README.md, "More than one document per request"). The handler dispatches
+         each operation through this container's own document API, so a batched document passes
+         the same indexing chain and routing selection as a /document/v1 one. The bundle is built
+         by the :bundle module and packed into components/ when vespa-app.zip is built. -->
+    <handler id="com.nosfabrica.vespa.eventstore.bundle.BatchFeedHandler" bundle="eventstore-bundle">
+      <binding>http://*/eventstore/v1/feed</binding>
+    </handler>
     <!-- This package SHIPS WITHOUT an <accesslog> element on purpose (if you
          are reading a deployed copy that has one, it was injected below):
          Vespa's default (JSON, one line

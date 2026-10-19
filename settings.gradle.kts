@@ -20,6 +20,7 @@ rootProject.name = "vespa-eventstore"
 //   :engine — document shapes, YQL query building, the Vespa clients, the bundled app package
 //   :store — Quartz IEventStore semantics on top, the trust projection, and the open() front door
 //   :benchmark — head-to-head insert/query benchmark vs Quartz's SQLite store (not published)
+include(":bundle")
 include(":engine")
 include(":store")
 include(":benchmark")

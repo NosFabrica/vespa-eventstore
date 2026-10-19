@@ -2306,10 +2306,80 @@ Three things reduce it, none of them a setting:
   and a remove by default; `VESPA_ADDRESS_KEYED=1` makes it one conditional put. The live-relay
   slice cannot price this (it holds only current versions), and the mode changes how ids are
   looked up.
-- More than one document per request. `/document/v1` takes one; the container still serves the
-  pre-HTTP/2 batched endpoint (`/reserved-for-internal-use/feedapi`), internal and without a
-  maintained client.
+- More than one document per request: measured in the next section, and the largest of the three.
 - More cores, or more content nodes.
+
+## More than one document per request (2026-10-18)
+
+`/document/v1` takes one document per request. To price batching without building anything, the
+same probe fed the container's pre-HTTP/2 batched endpoint, `/reserved-for-internal-use/feedapi`
+(protocol v3: `<operationId> <hex length>\n[{"put": "id:…", "fields": {…}}]` per operation,
+replies returned asynchronously on later responses of the same client id). It is the stock
+container's own batched handler, so it measures what batching does to Vespa. It is not a
+candidate to ship: it is internal, its only client (`vespa-http-client`) was removed from Vespa,
+and nothing promises it stays.
+
+Same method as the previous section (warm engine, cores 1-3, CPU per Vespa process), 8 HTTP/1.1
+connections for the batched arm. A batched feed is timed until every document is stored (an
+already-expired event is dropped by the routing selection on either path, and is discounted).
+
+| bodies | path | µs per put | container | proton | distributor | docs/s |
+|---|---|---|---|---|---|---|
+| bare kind 3 | `/document/v1` | 539-558 | 295-299 | 150-159 | 52-55 | 3,884-4,055 |
+| bare kind 3 | batched, 10 per request | 439 | 230 | 122 | 51 | 5,214 |
+| bare kind 3 | batched, 100 per request | 330-333 | 154-163 | 106-107 | 39-44 | 6,906-6,952 |
+| bare kind 3 | batched, 1,000 per request | 340 | 149 | 114 | 47 | 6,293 |
+| live relay | `/document/v1` | 925-968 | 456-509 | 319-342 | 88-98 | 2,414-2,687 |
+| live relay | batched, 100 per request | **649-657** | **290** | **250-257** | **66** | **4,153-4,192** |
+
+The live rows are the first 100,000 events of the live-relay slice (56% kind 1, 39% kind 30382),
+written by the store's own `SearchExtractors` and `feedJson`: on the real workload batching cuts
+Vespa's CPU per event by about 31% and raises what three cores absorb by about 60%. The gain
+flattens past 100 documents per request. It is not only the container: proton and the
+distributor fall too, consistent with their per-operation overhead shrinking as operations
+arrive in a steady stream rather than as many small wake-ups.
+
+**It stores and finds the same thing.** 20,000 live-relay events fed twice into one engine, once
+per document through `/document/v1` and once batched (100 per request), under two id prefixes:
+the stored fields of 2,000 sampled documents compared equal, field by field; and 142 of the
+store's own queries (80 NIP-50 searches, 20 `p`-tag, 20 `e`-tag, 20 author, 2 kind) returned
+every event exactly twice, with the same relevance, the same rank features (`matchfeatures`) and
+the same summary, 1,318 hits in all.
+
+**The bundled handler (prototype, `VESPA_FEED_BATCH`).** Not that endpoint, but the same thing
+through supported API: `BatchFeedHandler` (module `:bundle`, packed into `vespa-app.zip` under
+`components/` and bound at `/eventstore/v1/feed`) takes a JSON array of `/document/v1`-shaped
+operations, dispatches each through the container's own document API (`DocumentAccess`, one
+asynchronous session, the default route), and answers once every operation is answered, so a 200
+promises per document what a `/document/v1` 200 does. `VespaEventIndex.putAll` sends batches of
+`VESPA_FEED_BATCH` documents, 8 in flight (`VespaBatchFeed`); anything not confirmed stored is
+re-put through the feed client, a 404 (a package that predates the handler) switches the batch
+path off, and a batch the schema refuses (a fed column it lacks) takes the feed-client path whose
+schema-fallback net then leaves that column out of later batches. Off by default.
+
+Measured on another host than the tables above, after this session's container was recycled: the
+same arms cost 1.7-2x the CPU per put (the bundle is not why: the package WITHOUT it measured
+1,923 µs on that host), so only rows of one host compare. Same live-relay bodies, warm,
+interleaved:
+
+| path (second host) | µs per put | docs/s |
+|---|---|---|
+| `/document/v1` | 1,802, 1,935 | 1,411-1,492 |
+| bundled handler, 100 per request | 1,386, 1,351, 1,279 | 2,021-2,149 |
+| container's legacy batched endpoint, 100 per request | 1,330, 1,247 | 2,078-2,233 |
+
+The bundled handler takes 28% off `/document/v1` (1,339 against 1,868 µs on average) and lands
+within ~4% of the legacy endpoint. Its first version polled a full session window every 0.2 ms
+and burned 155 µs of handler-thread CPU per put; waiting on the next answer instead brought that
+to 43 (the legacy endpoint's handler threads: 77-82).
+
+The parity run, repeated through the bundled handler: the stored fields of 2,000 sampled
+documents equal, and the same 142 store queries returning both copies with equal relevance, rank
+features and summary. (One query, `kind 0`, flagged a pair split at its `limit` 200 cut; over the
+full 348-hit match set all 174 events came back from both paths.) `BatchFeedIT` pins the handler
+against a real Vespa: the package deploys with its bundle, puts go through it, each event reads
+back byte for byte with its search columns, and an already-expired event is dropped without
+failing its batch.
 
 ## Language detection on every document (2026-10-18)
 

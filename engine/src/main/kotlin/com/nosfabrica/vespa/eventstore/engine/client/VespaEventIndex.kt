@@ -148,6 +148,11 @@ class VespaEventIndex(
     private val bodyEdgeFeed: Boolean =
         System.getenv("VESPA_BODY_EDGE")?.let { it == "1" || it.equals("true", ignoreCase = true) } ?: false,
     /**
+     * PROTOTYPE: documents per request through the bundled batch handler ([VespaBatchFeed]),
+     * `VESPA_FEED_BATCH`; 0 (the default) writes every put through `/document/v1` as before.
+     */
+    feedBatch: Int = System.getenv("VESPA_FEED_BATCH")?.toIntOrNull() ?: 0,
+    /**
      * WHERE ENGINE-LEVEL COST IS PUBLISHED, or null to publish none.
      *
      * The rank profile, the documents matched and Vespa's own timing split are
@@ -183,6 +188,13 @@ class VespaEventIndex(
     private val visits = VespaVisits(http, ::endpoint, visitSlices, visitConcurrency, visitStreaming)
 
     private val fallbacks = SchemaFallbacks()
+
+    /** Null unless batching is on ([feedBatch]). */
+    internal val batchFeed: VespaBatchFeed? =
+        feedBatch.takeIf { it > 1 }?.let { VespaBatchFeed(http, ::endpoint, it, BATCH_CONCURRENCY) }
+
+    /** Batches the bundled batch handler has stored since this index opened; 0 while batching is off. */
+    val feedBatchesSent: Long get() = batchFeed?.batchesSent ?: 0
 
     private val planner = RecencyPlanner(queryPlanning, recencyStrategy, fallbacks) { count(it) }
 
@@ -304,7 +316,18 @@ class VespaEventIndex(
      * threw. A chunk the size of the admission window loses no pipelining.
      */
     override suspend fun putAll(docs: List<EventDoc>) {
-        docs.chunked(FEED_CHUNK).forEach { chunk -> awaitPuts(chunk, chunk.map { putOp(it) }) }
+        // Batched first when it is on: whatever it does not confirm stored goes the feed client's
+        // way below, which keeps that path's retries and schema-fallback net for those documents.
+        // A lone document gains nothing from a batch and takes the feed client directly.
+        val rest =
+            batchFeed?.takeIf { docs.size > 1 }?.let { batches ->
+                batches.putAll(
+                    docs,
+                    docId = ::docIdOf,
+                    body = { it.feedJson(includeNear = fallbacks.nearFieldsAvailable, includeEdge = feedsEdge(), includeStem = fallbacks.stemFieldsAvailable) },
+                )
+            } ?: docs
+        rest.chunked(FEED_CHUNK).forEach { chunk -> awaitPuts(chunk, chunk.map { putOp(it) }) }
     }
 
     /**
@@ -2059,5 +2082,8 @@ class VespaEventIndex(
          * deadline that starts when it is enqueued (see [putAll]).
          */
         const val FEED_CHUNK = 4_096
+
+        /** Batches in flight at once on the batched path ([VespaBatchFeed]). */
+        const val BATCH_CONCURRENCY = 8
     }
 }

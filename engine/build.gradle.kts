@@ -66,6 +66,9 @@ val vespaAppZip by tasks.registering(Zip::class) {
     archiveFileName.set("vespa-app.zip")
     destinationDirectory.set(layout.buildDirectory.dir("vespa-app"))
     from(layout.projectDirectory.dir("app"))
+    // The container bundle (:bundle) the package's services.xml declares handlers from; Vespa
+    // loads a package's bundles from components/.
+    from(project(":bundle").tasks.named("jar")) { into("components") }
 }
 
 tasks.named<Copy>("processResources") {
