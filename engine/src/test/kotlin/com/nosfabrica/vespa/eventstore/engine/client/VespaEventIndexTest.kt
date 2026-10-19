@@ -1253,6 +1253,63 @@ class VespaEventIndexTest {
             }
         }
 
+    @Test
+    fun `batched puts go through the batch handler, 100 to a request`() =
+        runBlocking {
+            val batched = VespaEventIndex(mock.url, feedBatch = 100)
+            try {
+                val docs = List(250) { doc(content = "batched $it") }
+                batched.putAll(docs)
+                assertEquals(3, mock.batchRequests, "250 documents are three requests")
+                for (d in docs) assertEquals(d.id, batched.get(d.id)?.id)
+                // A lone document gains nothing from a batch: it takes the feed client.
+                batched.putAll(listOf(doc()))
+                assertEquals(3, mock.batchRequests)
+            } finally {
+                batched.close()
+            }
+        }
+
+    @Test
+    fun `an application package without the batch handler falls back to the document API, for good`() =
+        runBlocking {
+            mock.batchHandlerAbsent = true
+            val batched = VespaEventIndex(mock.url, feedBatch = 100)
+            try {
+                val docs = List(150) { doc() }
+                batched.putAll(docs)
+                for (d in docs) assertEquals(d.id, batched.get(d.id)?.id, "every document landed through /document/v1")
+                assertEquals(false, batched.batchFeed?.available, "a 404 switches the batch path off")
+                batched.putAll(List(150) { doc() })
+                assertEquals(0, mock.batchRequests)
+            } finally {
+                mock.batchHandlerAbsent = false
+                batched.close()
+            }
+        }
+
+    @Test
+    fun `a batch the schema refuses lands through the document API, and later batches leave the column out`() =
+        runBlocking {
+            mock.rejectStemFields = true
+            val batched = VespaEventIndex(mock.url, feedBatch = 100)
+            try {
+                val portuguese = { doc(kind = 1, search = SearchFields(text = "Não perca as notícias de hoje, elas são muito importantes para nós")) }
+                val first = List(5) { portuguese() }
+                batched.putAll(first)
+                for (d in first) assertEquals(d.id, batched.get(d.id)?.id)
+                assertEquals(0, mock.batchRequests, "the refused batch was not stored by the handler")
+                // The feed client's refusal flipped the stem flag, so the next batch is built without it.
+                val second = List(5) { portuguese() }
+                batched.putAll(second)
+                assertEquals(1, mock.batchRequests)
+                for (d in second) assertEquals(d.id, batched.get(d.id)?.id)
+            } finally {
+                mock.rejectStemFields = false
+                batched.close()
+            }
+        }
+
     /** A schema missing BOTH fed columns names one per refusal: two demotions, then the write lands. */
     @Test
     fun `a schema missing the near tier and the edge column demotes twice on write`() =

@@ -2346,13 +2346,40 @@ store's own queries (80 NIP-50 searches, 20 `p`-tag, 20 `e`-tag, 20 author, 2 ki
 every event exactly twice, with the same relevance, the same rank features (`matchfeatures`) and
 the same summary, 1,318 hits in all.
 
-**What shipping it would take.** Not this endpoint. The supported form of the same thing is a
-request handler of our own in the application package, written against Vespa's public document
-API (`DocumentAccess`, an asynchronous session): one POST carries a batch, the handler dispatches
-each operation as the stock one does, and it answers once every operation is acknowledged, which
-keeps the store's acked-put-is-visible contract per batch. That is an OSGi bundle built with the
-`:engine` jar and shipped inside `vespa-app.zip`, plus a `putAll` that writes through it, with
-`/document/v1` kept as the fallback for a deployment whose application package predates it.
+**The bundled handler (prototype, `VESPA_FEED_BATCH`).** Not that endpoint, but the same thing
+through supported API: `BatchFeedHandler` (module `:bundle`, packed into `vespa-app.zip` under
+`components/` and bound at `/eventstore/v1/feed`) takes a JSON array of `/document/v1`-shaped
+operations, dispatches each through the container's own document API (`DocumentAccess`, one
+asynchronous session, the default route), and answers once every operation is answered, so a 200
+promises per document what a `/document/v1` 200 does. `VespaEventIndex.putAll` sends batches of
+`VESPA_FEED_BATCH` documents, 8 in flight (`VespaBatchFeed`); anything not confirmed stored is
+re-put through the feed client, a 404 (a package that predates the handler) switches the batch
+path off, and a batch the schema refuses (a fed column it lacks) takes the feed-client path whose
+schema-fallback net then leaves that column out of later batches. Off by default.
+
+Measured on another host than the tables above, after this session's container was recycled: the
+same arms cost 1.7-2x the CPU per put (the bundle is not why: the package WITHOUT it measured
+1,923 µs on that host), so only rows of one host compare. Same live-relay bodies, warm,
+interleaved:
+
+| path (second host) | µs per put | docs/s |
+|---|---|---|
+| `/document/v1` | 1,802, 1,935 | 1,411-1,492 |
+| bundled handler, 100 per request | 1,386, 1,351, 1,279 | 2,021-2,149 |
+| container's legacy batched endpoint, 100 per request | 1,330, 1,247 | 2,078-2,233 |
+
+The bundled handler takes 28% off `/document/v1` (1,339 against 1,868 µs on average) and lands
+within ~4% of the legacy endpoint. Its first version polled a full session window every 0.2 ms
+and burned 155 µs of handler-thread CPU per put; waiting on the next answer instead brought that
+to 43 (the legacy endpoint's handler threads: 77-82).
+
+The parity run, repeated through the bundled handler: the stored fields of 2,000 sampled
+documents equal, and the same 142 store queries returning both copies with equal relevance, rank
+features and summary. (One query, `kind 0`, flagged a pair split at its `limit` 200 cut; over the
+full 348-hit match set all 174 events came back from both paths.) `BatchFeedIT` pins the handler
+against a real Vespa: the package deploys with its bundle, puts go through it, each event reads
+back byte for byte with its search columns, and an already-expired event is dropped without
+failing its batch.
 
 ## Language detection on every document (2026-10-18)
 

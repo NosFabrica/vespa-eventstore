@@ -33,6 +33,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -175,6 +176,12 @@ class MockVespaEngine {
 
     /** A schema predating the stemmed body columns ([StemText.FIELDS]): refuses documents and queries naming one. */
     @Volatile var rejectStemFields: Boolean = false
+
+    /** Answer the batch handler's path with 404, as an application package that predates it does. */
+    @Volatile var batchHandlerAbsent: Boolean = false
+
+    /** Batches the batch handler stored. */
+    @Volatile var batchRequests: Int = 0
 
     /**
      * Document-API visit requests served. Both snapshot paths return the SAME
@@ -343,25 +350,21 @@ class MockVespaEngine {
                         .jsonObject
                         .getValue("fields")
                         .jsonObject
-                // A schema predating the near columns refuses the whole
-                // DOCUMENT, not just a query — and with a different message
-                // than the YQL parser's (verified against real Vespa 29:
-                // `Field 'name_near' is not defined in document type 'event'`).
-                // Feeding one of these is how a library upgrade meets a cluster
-                // whose schema was not redeployed.
-                val nearField = fields.keys.firstOrNull { it in FuzzyWordGroup.ALL_NEAR_FIELDS }
-                if (rejectNearFields && nearField != null) {
-                    return Reply(400, """{"message":"Field '$nearField' is not defined in document type 'event'"}""")
-                }
-                if (rejectEdgeField && FuzzyWordGroup.EDGE_FIELD in fields) {
-                    return Reply(400, """{"message":"Field '${FuzzyWordGroup.EDGE_FIELD}' is not defined in document type 'event'"}""")
-                }
-                val stemField = fields.keys.firstOrNull { it in StemText.FIELDS }
-                if (rejectStemFields && stemField != null) {
-                    return Reply(400, """{"message":"Field '$stemField' is not defined in document type 'event'"}""")
-                }
+                refusal(fields)?.let { return it }
                 runBlocking { inner.put(EventDoc.fromSummary(fields)) }
                 Reply(200, """{"id":"$path"}""")
+            }
+
+            // The bundled batch handler (BatchFeedHandler): a JSON array of `{"put": id, "fields": …}`.
+            // Like the real one, a field the schema lacks fails the WHOLE batch before anything is
+            // stored (the document parser refuses it), and the answer comes once every put is done.
+            method == "POST" && path == "/eventstore/v1/feed" -> {
+                if (batchHandlerAbsent) return Reply(404, """{"message":"no handler"}""")
+                val ops = Json.parseToJsonElement(body).jsonArray.map { it.jsonObject.getValue("fields").jsonObject }
+                ops.firstNotNullOfOrNull { refusal(it) }?.let { return it }
+                batchRequests++
+                runBlocking { ops.forEach { inner.put(EventDoc.fromSummary(it)) } }
+                Reply(200, """{"count":${ops.size},"failed":[]}""")
             }
 
             method == "DELETE" && path.startsWith(docPrefix) -> {
@@ -405,6 +408,27 @@ class MockVespaEngine {
                 Reply(400, """{"message":"unexpected request: $method $path"}""")
             }
         }
+    }
+
+    /**
+     * The 400 a schema predating a fed column answers a document carrying it — the whole
+     * DOCUMENT, not just a query, and with a different message than the YQL parser's (verified
+     * against real Vespa 29: `Field 'name_near' is not defined in document type 'event'`). Feeding
+     * one of these is how a library upgrade meets a cluster whose schema was not redeployed.
+     */
+    private fun refusal(fields: JsonObject): Reply? {
+        val nearField = fields.keys.firstOrNull { it in FuzzyWordGroup.ALL_NEAR_FIELDS }
+        if (rejectNearFields && nearField != null) {
+            return Reply(400, """{"message":"Field '$nearField' is not defined in document type 'event'"}""")
+        }
+        if (rejectEdgeField && FuzzyWordGroup.EDGE_FIELD in fields) {
+            return Reply(400, """{"message":"Field '${FuzzyWordGroup.EDGE_FIELD}' is not defined in document type 'event'"}""")
+        }
+        val stemField = fields.keys.firstOrNull { it in StemText.FIELDS }
+        if (rejectStemFields && stemField != null) {
+            return Reply(400, """{"message":"Field '$stemField' is not defined in document type 'event'"}""")
+        }
+        return null
     }
 
     private fun search(params: Map<String, String>): Reply {
