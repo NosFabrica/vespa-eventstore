@@ -279,6 +279,17 @@ class VespaEventStore internal constructor(
          * HTTP/2 connections across all of them, which beats one load-balancer
          * address (see docs/scaling.md).
          *
+         * A deployment that runs separate feed and query container clusters
+         * names each instead: [feedEndpoints] the `<document-api/>` containers
+         * (every write, the get by id, every visit — events and reputations
+         * alike), [queryEndpoints] the `<search/>` ones (every query, count and
+         * admission probe). Both default to [endpoints], and an empty list
+         * means [url]; so [url] only has to be a container that answers
+         * `/ApplicationStatus`, which every container does, for [autoDeploy]'s
+         * first-contact check. The bundled application package declares ONE
+         * cluster serving both, so a split cluster deploys its own package and
+         * opens with `autoDeploy = false` (docs/services-multinode-example.xml).
+         *
          * [deferTrustProjection] (default ON) moves the projection's read-based
          * reactions (a 10040's service walk can hold the writer lock for
          * minutes) onto a background drainer. Inserts get faster and reactions
@@ -318,6 +329,8 @@ class VespaEventStore internal constructor(
             autoDeploy: Boolean = true,
             configUrl: String = deriveConfigUrl(url),
             endpoints: List<String> = emptyList(),
+            feedEndpoints: List<String> = endpoints,
+            queryEndpoints: List<String> = endpoints,
             deferTrustProjection: Boolean = true,
             writers: WriterTopology = WriterTopology.SHARED_STRICT,
             guardRefreshSeconds: Long = DEFAULT_GUARD_REFRESH_MILLIS / 1000,
@@ -360,8 +373,8 @@ class VespaEventStore internal constructor(
             // The ledger reaches the engine client too: rank profile, docs
             // matched and Vespa's own timing are only knowable from inside the
             // thing that speaks to Vespa (docs/telemetry.md §3.5).
-            val eventIndex = VespaEventIndex(url, endpoints = endpoints, ledger = ledger)
-            val reputations = VespaReputationIndex(url)
+            val eventIndex = VespaEventIndex(url, feedEndpoints = feedEndpoints, queryEndpoints = queryEndpoints, ledger = ledger)
+            val reputations = VespaReputationIndex(url, endpoints = feedEndpoints)
             // METERED AT THE ENGINE SEAM: everything below this line is what
             // actually reached Vespa, whichever route asked for it — the
             // store's own reads, the projection's, a sweep's. Nothing above

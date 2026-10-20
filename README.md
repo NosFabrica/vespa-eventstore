@@ -498,7 +498,8 @@ For a commit snapshot, JitPack works:
   deployment out of band can pass `autoDeploy = false` — that is also the path to a
   multi-node cluster: [`docs/scaling.md`](docs/scaling.md) is the operator guide
   (own the topology, keep the schemas verbatim, name every container endpoint in
-  `open(endpoints = …)`).
+  `open(endpoints = …)`, or `feedEndpoints` / `queryEndpoints` for separate feed and
+  query container clusters).
 
 ## Where the resources go
 

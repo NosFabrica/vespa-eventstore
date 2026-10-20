@@ -92,10 +92,59 @@ deployment, that invariant must survive:
    The feed client spreads its HTTP/2 connections across all endpoints
    (better than funnelling writes through one load-balancer address —
    connections-per-endpoint applies per endpoint) and reads round-robin. A
-   single load-balancer URL also works.
+   single load-balancer URL also works. A topology with separate feed and
+   query container clusters names each list instead (`feedEndpoints`,
+   `queryEndpoints`; next section).
 5. **On every library upgrade**, re-extract the schemas from the new jar into
    your package and redeploy. Watch the deploy response: schema changes can
    carry *restart* or *re-index* actions (below).
+
+## Feed and query containers
+
+A container is a stateless JVM in front of the content nodes; which requests it
+serves is decided by the handlers its cluster declares. The bundled package
+declares one cluster with both `<search />` and `<document-api />`, so every
+feed request and every query shares the same threads, heap and direct-buffer
+pool — and when that pool runs out (below), the container dies for both.
+Declaring two clusters splits them (`services-multinode-example.xml` shows the
+whole package):
+
+| | feed cluster (`<document-api />`) | query cluster (`<search />`) |
+|---|---|---|
+| store requests | puts, updates, removes, the batch handler, the get by id, every visit (`/document/v1`) | every query, count and admission probe (`/search/`), the `/metrics/v2/values` headroom read |
+| work per request | parse the document, run indexing (docproc), route the operation to the content nodes that own its bucket, wait for their acks | parse the YQL, dispatch to the content nodes (one group, with groups), merge hits, fetch summaries, merge grouping |
+| scales with | bytes fed | queries and summary bytes served |
+
+The split does not line up with read/write: a get by id and every full-corpus
+visit (the guard-owner rebuild, the trust reconcile walks, the orphan sweep) are
+document-API reads, so they run on the feed side — which keeps those long walks
+off the containers serving users. And the writer is a heavy reader: its dedup,
+version and guard probes are `/search/` requests on the query side.
+
+Open the store with both lists:
+
+```kotlin
+VespaEventStore.open(
+    url = "http://query-0:8080",
+    autoDeploy = false,
+    feedEndpoints = listOf("http://feed-0:8080", "http://feed-1:8080"),
+    queryEndpoints = listOf("http://query-0:8080", "http://query-1:8080"),
+)
+```
+
+Both default to `endpoints`, and an empty list means `url`, so a single-cluster
+deployment changes nothing. The reputation index only makes document-API
+requests and takes the feed list. `url` itself is only the fallback and the
+`/ApplicationStatus` check `autoDeploy` makes, which every container answers.
+Nothing in the store's contract changes across the split: containers hold no
+state, so an acked put through a feed container is visible to the next search
+through a query container.
+
+Three things in the package must follow the roles: the `BatchFeedHandler`
+belongs on the feed cluster (it dispatches through its own container's document
+API); the content cluster names the feed cluster as its indexing cluster
+(`<document-processing cluster="feed" />` under `<documents>`), so indexing
+runs there and not on the query side; and both clusters keep the direct-memory `<jvm options>`.
 
 ## Schema migrations on a cluster that already holds data
 
@@ -157,9 +206,9 @@ size; when ingest outgrows it, shard the ingest by owner
 so lanes never need to coordinate. Full analysis:
 [multi-node-consistency.md](multi-node-consistency.md).
 
-Note the trust projection (`VespaReputationIndex`) writes through the single
-`url` endpoint; reputation updates are low-volume, so this does not need the
-endpoint fan-out.
+Note the trust projection (`VespaReputationIndex`) writes through the feed
+endpoints (`feedEndpoints`, else `endpoints`, else `url`); reputation updates
+are low-volume, so the fan-out matters less there than for events.
 
 ## The match-phase depth is per content node
 

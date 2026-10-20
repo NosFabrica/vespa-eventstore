@@ -115,6 +115,55 @@ class VespaEventIndexTest {
             }
         }
 
+    @Test
+    fun `split feed and query containers each get only their own role's requests`() =
+        runBlocking {
+            // Two containers over one content cluster: one declares only <document-api/>, the other
+            // only <search/>, and each answers the other's paths 404. Every request must land on
+            // the role that serves it, and the contract must hold across the split: an acked put
+            // through the feed side is visible to the next search through the query side.
+            val content = InMemoryEventIndex()
+            val feedSide = MockVespaEngine(content, servesSearch = false)
+            val querySide = MockVespaEngine(content, servesDocumentApi = false)
+            val split =
+                VespaEventIndex(
+                    "http://127.0.0.1:1",
+                    feedEndpoints = listOf(feedSide.url),
+                    queryEndpoints = listOf(querySide.url),
+                    feedBatch = 10,
+                )
+            try {
+                val one = doc(kind = 1, content = "split one")
+                split.put(one)
+                val many = List(25) { doc(kind = 1, content = "split batch $it") }
+                split.putAll(many)
+                assertEquals(3, feedSide.batchRequests, "the batch handler is on the feed side")
+                assertEquals(one.id, split.get(one.id)?.id, "get by id is a document-API read")
+                assertEquals(listOf(one.id), split.search(EventQuery(ids = listOf(one.id))).map { it.id })
+                assertEquals(26, split.count(EventQuery(kinds = listOf(1))))
+                var visited = 0
+                var resume: String? = null
+                do {
+                    val page = split.visitDocsPage(EventQuery(kinds = listOf(1)), resume, maxDocs = 100)
+                    visited += page.docs.size
+                    resume = page.continuation
+                } while (resume != null)
+                assertEquals(26, visited)
+                assertTrue(feedSide.visitRequests > 0, "a visit is a document-API read")
+                split.remove(one.id)
+                assertNull(split.get(one.id))
+
+                assertEquals(0, feedSide.wrongRoleRequests, "no query reached the feed container")
+                assertEquals(0, querySide.wrongRoleRequests, "no document-API request reached the query container")
+                assertTrue(feedSide.searchRequests.isEmpty())
+                assertTrue(querySide.searchRequests.isNotEmpty())
+            } finally {
+                split.close()
+                feedSide.stop()
+                querySide.stop()
+            }
+        }
+
     private fun doc(
         kind: Int = 1,
         pubkey: String = "a1".repeat(32),

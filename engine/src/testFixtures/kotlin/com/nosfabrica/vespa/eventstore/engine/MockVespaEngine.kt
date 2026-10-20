@@ -64,10 +64,20 @@ import java.util.zip.GZIPInputStream
  * Runs on Jetty with HTTP/1.1 AND clear-text HTTP/2 on the same port: the
  * feed client writes over h2c (it refuses HTTP/1.1) while the query side and
  * the feed client's `?dryRun=true` handshake stay plain.
+ *
+ * One mock is one container. By default it serves both roles, as the bundled
+ * package's single cluster does; [servesSearch] and [servesDocumentApi] turn one off, the
+ * way a container cluster declaring only `<document-api/>` or only `<search/>`
+ * answers the other role's paths with 404. Two mocks sharing one [inner] are
+ * then a split deployment over one content cluster.
  */
-class MockVespaEngine {
-    val inner = InMemoryEventIndex()
-
+class MockVespaEngine(
+    val inner: InMemoryEventIndex = InMemoryEventIndex(),
+    /** Whether this container serves `/search/` (`<search/>`). */
+    private val servesSearch: Boolean = true,
+    /** Whether this container serves `/document/v1` and the batch handler (`<document-api/>`). */
+    private val servesDocumentApi: Boolean = true,
+) {
     val url: String get() = "http://127.0.0.1:$port"
 
     /**
@@ -182,6 +192,9 @@ class MockVespaEngine {
 
     /** Batches the batch handler stored. */
     @Volatile var batchRequests: Int = 0
+
+    /** Requests for a role this container does not serve, answered 404 (see the class KDoc). */
+    @Volatile var wrongRoleRequests: Int = 0
 
     /**
      * Document-API visit requests served. Both snapshot paths return the SAME
@@ -339,6 +352,11 @@ class MockVespaEngine {
         rawQuery: String?,
         body: String,
     ): Reply {
+        val documentPath = path.startsWith("/document/v1/") || path == "/eventstore/v1/feed"
+        if ((documentPath && !servesDocumentApi) || (path == "/search/" && !servesSearch)) {
+            wrongRoleRequests++
+            return Reply(404, """{"message":"no handler for $path in this container"}""")
+        }
         // The feed client opens with a no-op handshake request (?dryRun=true).
         if (rawQuery.orEmpty().contains("dryRun=true")) return Reply(200, "{}")
         val docPrefix = "/document/v1/event/event/docid/"
