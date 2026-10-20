@@ -56,10 +56,12 @@ internal class VespaHttp {
     private val http =
         OkHttpClient
             .Builder()
-            // Every request goes to ONE host, so OkHttp's per-host default of 5
-            // was the real ceiling; with no read deadline (below), five wedged
-            // requests froze the store permanently (observed: snapshots stalled
-            // for minutes, relay idle at 2.5% CPU).
+            // A single-endpoint deployment sends every request to ONE host, so
+            // OkHttp's per-host default of 5 was the real ceiling; with no read
+            // deadline (below), five wedged requests froze the store permanently
+            // (observed: snapshots stalled for minutes, relay idle at 2.5% CPU).
+            // Both limits are the same number, so spreading over several
+            // endpoints (or feed and query clusters) changes neither.
             .dispatcher(
                 Dispatcher().apply {
                     maxRequests = MAX_CONCURRENT_REQUESTS
@@ -249,7 +251,7 @@ internal class VespaHttp {
     }
 
     internal companion object {
-        /** Concurrent engine requests, total and per host — one host, so the per-host limit is the one that binds. */
+        /** Concurrent engine requests, total and per host: equal, so the total binds however many endpoints there are. */
         const val MAX_CONCURRENT_REQUESTS = 1024
 
         /** Brief 5xx retries per query (transient engine load-shedding, not correctness). */

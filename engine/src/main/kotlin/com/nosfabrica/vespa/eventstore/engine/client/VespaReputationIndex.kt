@@ -43,19 +43,27 @@ import java.time.Duration
  * The real [ReputationIndex]: the `reputation` document type over Vespa HTTP —
  * writes through [VespaFeed], reads through [VespaHttp], same wiring as
  * [VespaEventIndex].
+ *
+ * Every request it makes is a document-API one (put, update, get, visit), so it
+ * only ever needs the containers serving `<document-api/>`: on a deployment that
+ * splits feed and query containers, [endpoints] are the FEED ones.
  */
 class VespaReputationIndex(
-    private val baseUrl: String = System.getenv("VESPA_URL") ?: "http://localhost:8080",
+    baseUrl: String = System.getenv("VESPA_URL") ?: "http://localhost:8080",
+    /** The document-API containers; empty = just [baseUrl]. Requests round-robin across them. */
+    endpoints: List<String> = emptyList(),
 ) : ReputationIndex {
-    private val feed = VespaFeed(listOf(baseUrl))
+    private val documentApi = EndpointRotation(endpoints, baseUrl)
+
+    private val feed = VespaFeed(documentApi.urls)
 
     private val http = VespaHttp()
 
     override suspend fun get(pubkey: String): ReputationDoc? = fields(pubkey)?.let(ReputationDoc::fromSummary)
 
     private suspend fun fields(pubkey: String): JsonObject? {
-        val resp = http.get("$baseUrl/document/v1/$NAMESPACE/$DOCTYPE/docid/$pubkey")
-        if (resp.statusCode() == 404) return null
+        val resp = http.get("${documentApi.next()}/document/v1/$NAMESPACE/$DOCTYPE/docid/$pubkey")
+        if (resp.statusCode() == 404 && isAbsentDocument(resp.body())) return null
         require(resp.statusCode() < 400) { "vespa reputation get ${resp.statusCode()}: ${resp.body().take(300)}" }
         return Json.parseToJsonElement(resp.body()).jsonObject["fields"]?.jsonObject
     }
@@ -179,7 +187,7 @@ class VespaReputationIndex(
      */
     override suspend fun visitPubkeys(onPage: suspend (List<String>) -> Boolean) {
         val base =
-            "$baseUrl/document/v1/$NAMESPACE/$DOCTYPE/docid" +
+            "${documentApi.next()}/document/v1/$NAMESPACE/$DOCTYPE/docid" +
                 "?selection=${URLEncoder.encode(DOCTYPE, "UTF-8")}" +
                 "&wantedDocumentCount=$VISIT_PAGE" +
                 "&fieldSet=${URLEncoder.encode("$DOCTYPE:pubkey", "UTF-8")}" +
@@ -205,7 +213,7 @@ class VespaReputationIndex(
 
     override suspend fun visitDocs(onPage: suspend (List<ReputationDoc>) -> Boolean) {
         val base =
-            "$baseUrl/document/v1/$NAMESPACE/$DOCTYPE/docid" +
+            "${documentApi.next()}/document/v1/$NAMESPACE/$DOCTYPE/docid" +
                 "?selection=${URLEncoder.encode(DOCTYPE, "UTF-8")}" +
                 "&wantedDocumentCount=$VISIT_PAGE" +
                 "&timeout=$VISIT_SERVER_TIMEOUT_SECONDS" +

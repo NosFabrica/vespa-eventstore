@@ -278,6 +278,24 @@ internal class DocEnvelope(
     val fields: VespaSummary? = null,
 )
 
+/**
+ * Whether a 404 from a document-API GET means the DOCUMENT is absent — the only
+ * 404 a caller may read as "not stored".
+ *
+ * Vespa answers two different things with the same status. A missing document
+ * is `{"pathId": …, "id": …}`; a container whose cluster declares no
+ * `<document-api/>` is `{"error-code": "NOT_FOUND", "message": "Document API is
+ * not configured in this cluster…"}` (both verified against Vespa 8 on a split
+ * feed/query deployment). Reading the second as the first is silent and wrong
+ * everywhere a get decides something: a kind-5 skips the targets it cannot
+ * "find" and they stay served, the duplicate check admits a stored id again,
+ * and a projection marker that reads as absent re-runs its migration. That is
+ * one query container in `feedEndpoints` away. So a 404 counts as absent only
+ * as a JSON object carrying no `error-code`; anything else (that body, or a
+ * proxy's HTML page) is the caller's failure to throw.
+ */
+internal fun isAbsentDocument(body: String): Boolean = runCatching { Json.parseToJsonElement(body) as? JsonObject }.getOrNull()?.containsKey("error-code") == false
+
 /** One projected doc off a visit page or stream — the lean carrier the visit walk hands its consumer. */
 internal class VisitedDoc(
     val id: String,

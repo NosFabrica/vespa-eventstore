@@ -7,8 +7,9 @@
      KEEP verbatim from the bundled package:
        * the GC selection on the event document (NIP-40 expiry, engine-side)
        * schemas/ and search/query-profiles/ (taken from the library jar)
-       * the container's <jvm options> (direct-buffer ceiling + cache cap —
-         without them the query container dies under load, see below)
+       * the containers' <jvm options> (direct-buffer ceiling + cache cap —
+         without them a container dies under load, see below)
+       * the BatchFeedHandler, on the cluster that serves <document-api />
      CHANGE for your deployment:
        * node lists (hostaliases come from your hosts.xml / infrastructure)
        * redundancy / searchable-copies
@@ -20,27 +21,60 @@
 
   <!-- Config servers are declared in your deployment tooling (3 for HA). -->
 
-  <container id="default" version="1.0">
-    <search />
+  <!-- TWO container clusters, one per role (docs/scaling.md, "Feed and query
+       containers"). Neither holds data, so they scale and fail independently:
+       a feed burst's parsing and buffers, or a container that dies of them,
+       no longer takes query serving with it. Open the store with each list:
+         VespaEventStore.open(
+             url = "http://query-0:8080", autoDeploy = false,
+             feedEndpoints = listOf("http://feed-0:8080", "http://feed-1:8080"),
+             queryEndpoints = listOf("http://query-0:8080", "http://query-1:8080"),
+         )
+       A deployment that keeps ONE cluster declares <search />, <document-api />
+       and the handler together, as the bundled package does, and passes
+       `endpoints` instead. -->
+
+  <!-- FEED: everything under /document/v1 (puts, updates, removes, the get by
+       id, every visit) plus the batch handler. Indexing runs here too (see
+       <document-processing> in the content cluster below). -->
+  <container id="feed" version="1.0">
     <document-api />
+    <document-processing />
+    <!-- KEEP, here and not on the query side: the handler dispatches through
+         THIS container's own document API (bundled services.xml). -->
+    <handler id="com.nosfabrica.vespa.eventstore.bundle.BatchFeedHandler" bundle="eventstore-bundle">
+      <binding>http://*/eventstore/v1/feed</binding>
+    </handler>
     <nodes>
       <!-- KEEP: the direct-buffer settings are AVAILABILITY config, not tuning.
            Vespa derives a ~208 MiB direct-memory ceiling and runs the container
            with -XX:+ExitOnOutOfMemoryError; because jrt reads into heap buffers,
            the JDK's per-thread cache of temporary DIRECT buffers retains them at
-           high-water size and saturates that ceiling under the store's own
-           read-heavy write path — one failed reservation then kills :8080 for
-           queries and feed alike. Dropping either flag brings that back; the
-           full argument is in the bundled services.xml. Raise the ceiling
-           further if your nodes are busier, and add allocated-memory below to
-           size the HEAP for your hardware (the bundled package leaves it at
-           Vespa's 1536m default, which is a laptop's number, not a cluster's). -->
+           high-water size and saturates that ceiling under load — one failed
+           reservation then kills the container. Dropping either flag brings
+           that back; the full argument is in the bundled services.xml. Raise
+           the ceiling further if your nodes are busier, and add
+           allocated-memory below to size the HEAP for your hardware (the
+           bundled package leaves it at Vespa's 1536m default, which is a
+           laptop's number, not a cluster's). Both clusters carry them. -->
       <jvm options="-XX:MaxDirectMemorySize=512m -Djdk.nio.maxCachedBufferSize=262144" />
-      <!-- Two+ stateless containers: pass ALL of them to
-           VespaEventStore.open(endpoints = [...]) so the feed client spreads
-           connections across them and reads round-robin. -->
-      <node hostalias="container-0" />
-      <node hostalias="container-1" />
+      <!-- Two+ containers: pass ALL of them as feedEndpoints so the feed
+           client spreads its HTTP/2 connections across them. -->
+      <node hostalias="feed-0" />
+      <node hostalias="feed-1" />
+    </nodes>
+  </container>
+
+  <!-- QUERY: every /search/ request — client reads, counts, and the writer's
+       own admission probes, which are most of a mirroring writer's requests. -->
+  <container id="query" version="1.0">
+    <search />
+    <nodes>
+      <!-- KEEP: the same direct-buffer settings as the feed cluster; the
+           summary reads that saturated them on staging are served here. -->
+      <jvm options="-XX:MaxDirectMemorySize=512m -Djdk.nio.maxCachedBufferSize=262144" />
+      <node hostalias="query-0" />
+      <node hostalias="query-1" />
     </nodes>
   </container>
 
@@ -56,6 +90,9 @@
     </engine>
 
     <documents garbage-collection="true">
+      <!-- With more than one container cluster, name the one that runs
+           indexing, so it is the feed side and never the query side. -->
+      <document-processing cluster="feed" />
       <!-- KEEP: NIP-40 expiry as a server-side constraint (docs/server-side-constraints.md). -->
       <document type="event" mode="index" selection="event.expires_at &gt; now()" />
       <!-- KEEP: global so event docs can import the trust tensors (parent/child). -->

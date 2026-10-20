@@ -81,8 +81,31 @@ class VespaEventIndex(
      * multi-container deployment, naming every endpoint here beats a load
      * balancer for the WRITE path: the feed client natively spreads its HTTP/2
      * connections across all of them. Reads round-robin per request.
+     *
+     * The default for both [feedEndpoints] and [queryEndpoints], so a cluster
+     * whose containers all serve both roles names them once, here.
      */
     endpoints: List<String> = emptyList(),
+    /**
+     * The containers serving the DOCUMENT API (`<document-api/>` and the
+     * bundled batch handler); empty = just [baseUrl]. Everything under
+     * `/document/v1` goes here — the feed client's puts, updates and removes,
+     * the batch feed, but also the get by id and every full-corpus visit,
+     * which are reads in Vespa's feed-side API. Keeping the visits here is a
+     * feature: a sweep's walk stays off the containers serving queries.
+     */
+    feedEndpoints: List<String> = endpoints,
+    /**
+     * The containers serving `<search/>`; empty = just [baseUrl]. Every
+     * `/search/` request goes here — client queries, counts, and the writer's
+     * own admission probes — plus the `/metrics/v2/values` headroom read.
+     * Splitting them from [feedEndpoints] keeps a feed burst's parsing and
+     * buffers (and a container that dies of them) out of query serving. The
+     * contract is unchanged across the split: containers hold no state, so an
+     * acked put through a feed container is visible to the next search through
+     * a query container (visibility is decided on the content nodes).
+     */
+    queryEndpoints: List<String> = endpoints,
     // Ids per cursor page of a snapshot walk (visitIds). Exposed so a test can
     // drive the multi-page and tie-group paths without seeding tens of
     // thousands of docs; production has no reason to change it.
@@ -164,16 +187,17 @@ class VespaEventIndex(
      */
     private val ledger: CostLedger? = null,
 ) : EventIndex {
-    private val urls: List<String> = endpoints.ifEmpty { listOf(baseUrl) }.map { it.trimEnd('/') }
+    private val documentApi = EndpointRotation(feedEndpoints, baseUrl)
 
-    private val nextUrl =
-        java.util.concurrent.atomic
-            .AtomicInteger()
+    private val searchApi = EndpointRotation(queryEndpoints, baseUrl)
 
-    /** The endpoint for one HTTP read — round-robin across [urls]. */
-    private fun endpoint(): String = urls[Math.floorMod(nextUrl.getAndIncrement(), urls.size)]
+    /** The endpoint for one document-API request (get, visit, batch feed) — round-robin across [feedEndpoints]. */
+    private fun documentEndpoint(): String = documentApi.next()
 
-    private val feed = VespaFeed(urls)
+    /** The endpoint for one `/search/` request — round-robin across [queryEndpoints]. */
+    private fun queryEndpoint(): String = searchApi.next()
+
+    private val feed = VespaFeed(documentApi.urls)
 
     private val http = VespaHttp()
 
@@ -183,15 +207,15 @@ class VespaEventIndex(
      * for the cluster. Built here because this is where `http` and the
      * endpoint rotation live.
      */
-    private val resources = EngineResources(http, ::endpoint)
+    private val resources = EngineResources(http, ::queryEndpoint)
 
-    private val visits = VespaVisits(http, ::endpoint, visitSlices, visitConcurrency, visitStreaming)
+    private val visits = VespaVisits(http, ::documentEndpoint, visitSlices, visitConcurrency, visitStreaming)
 
     private val fallbacks = SchemaFallbacks()
 
     /** Null unless batching is on ([feedBatch]). */
     internal val batchFeed: VespaBatchFeed? =
-        feedBatch.takeIf { it > 1 }?.let { VespaBatchFeed(http, ::endpoint, it, BATCH_CONCURRENCY) }
+        feedBatch.takeIf { it > 1 }?.let { VespaBatchFeed(http, ::documentEndpoint, it, BATCH_CONCURRENCY) }
 
     /** Batches the bundled batch handler has stored since this index opened; 0 while batching is off. */
     val feedBatchesSent: Long get() = batchFeed?.batchesSent ?: 0
@@ -221,8 +245,8 @@ class VespaEventIndex(
         // Address-keyed replaceables aren't at the id docid; resolve by the id
         // attribute instead (finds regular AND replaceable).
         if (addressKeyed) return searchById(id)
-        val resp = http.get("${endpoint()}/document/v1/$EVENT_NAMESPACE/$EVENT_DOCTYPE/docid/$id")
-        if (resp.statusCode() == 404) return null
+        val resp = http.get("${documentEndpoint()}/document/v1/$EVENT_NAMESPACE/$EVENT_DOCTYPE/docid/$id")
+        if (resp.statusCode() == 404 && isAbsentDocument(resp.body())) return null
         require(resp.statusCode() < 400) { "vespa get ${resp.statusCode()}: ${resp.body().take(300)}" }
         return VESPA_JSON.decodeFromString<DocEnvelope>(resp.body()).fields?.toDoc(withNearState = true)
     }
@@ -1758,7 +1782,7 @@ class VespaEventIndex(
         // A busy engine sheds load transiently (504 under heavy concurrent
         // summary fills); one failed page must not kill a multi-hour sync, so
         // 5xx gets brief retries inside VespaHttp.
-        val resp = http.postJson("${endpoint()}/search/", body)
+        val resp = http.postJson("${queryEndpoint()}/search/", body)
         require(resp.statusCode() < 400) { "vespa search ${resp.statusCode()}: ${resp.body().take(300)}" }
         return resp.body()
     }

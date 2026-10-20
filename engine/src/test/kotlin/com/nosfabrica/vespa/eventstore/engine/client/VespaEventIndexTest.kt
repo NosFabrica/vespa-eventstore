@@ -31,6 +31,7 @@ import kotlinx.coroutines.runBlocking
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -114,6 +115,90 @@ class VespaEventIndexTest {
                 multi.close()
             }
         }
+
+    @Test
+    fun `split feed and query containers each get only their own role's requests`() =
+        runBlocking {
+            // Two containers over one content cluster: one declares only <document-api/>, the other
+            // only <search/>, and each answers the other's paths 404. Every request must land on
+            // the role that serves it, and the contract must hold across the split: an acked put
+            // through the feed side is visible to the next search through the query side.
+            val content = InMemoryEventIndex()
+            val feedSide = MockVespaEngine(content, servesSearch = false)
+            val querySide = MockVespaEngine(content, servesDocumentApi = false)
+            val split =
+                VespaEventIndex(
+                    "http://127.0.0.1:1",
+                    feedEndpoints = listOf(feedSide.url),
+                    queryEndpoints = listOf(querySide.url),
+                    feedBatch = 10,
+                )
+            try {
+                val one = doc(kind = 1, content = "split one")
+                split.put(one)
+                val many = List(25) { doc(kind = 1, content = "split batch $it") }
+                split.putAll(many)
+                assertEquals(3, feedSide.batchRequests, "the batch handler is on the feed side")
+                assertEquals(one.id, split.get(one.id)?.id, "get by id is a document-API read")
+                assertEquals(listOf(one.id), split.search(EventQuery(ids = listOf(one.id))).map { it.id })
+                assertEquals(26, split.count(EventQuery(kinds = listOf(1))))
+                var visited = 0
+                var resume: String? = null
+                do {
+                    val page = split.visitDocsPage(EventQuery(kinds = listOf(1)), resume, maxDocs = 100)
+                    visited += page.docs.size
+                    resume = page.continuation
+                } while (resume != null)
+                assertEquals(26, visited)
+                assertTrue(feedSide.visitRequests > 0, "a visit is a document-API read")
+                split.remove(one.id)
+                assertNull(split.get(one.id))
+
+                assertEquals(0, feedSide.wrongRoleRequests, "no query reached the feed container")
+                assertEquals(0, querySide.wrongRoleRequests, "no document-API request reached the query container")
+                assertTrue(feedSide.searchRequests.isEmpty())
+                assertTrue(querySide.searchRequests.isNotEmpty())
+            } finally {
+                split.close()
+                feedSide.stop()
+                querySide.stop()
+            }
+        }
+
+    @Test
+    fun `a get that reaches a container without the document API throws instead of reading absent`() =
+        runBlocking {
+            // A query container in feedEndpoints, the misconfiguration a deployment walks into by
+            // keeping `endpoints = every container` after splitting its clusters. Its 404 is not a
+            // missing document, and a get that read it as one would let a kind 5 skip the targets it
+            // could not "find". The handshake passes (one endpoint answers it), so only the get can
+            // refuse.
+            val content = InMemoryEventIndex()
+            val feedSide = MockVespaEngine(content, servesSearch = false)
+            val querySide = MockVespaEngine(content, servesDocumentApi = false)
+            val mixed = VespaEventIndex("http://127.0.0.1:1", feedEndpoints = listOf(feedSide.url, querySide.url), queryEndpoints = listOf(querySide.url))
+            try {
+                val missing = "f".repeat(64)
+                val answers = List(4) { runCatching { mixed.get(missing) } }
+                assertEquals(2, answers.count { it.isSuccess && it.getOrNull() == null }, "the feed container's 404 is a missing document")
+                val refused = answers.mapNotNull { it.exceptionOrNull() }
+                assertEquals(2, refused.size, "the query container's 404 is not")
+                assertTrue(refused.all { "not configured" in it.message.orEmpty() }, refused.toString())
+                assertEquals(2, querySide.wrongRoleRequests)
+            } finally {
+                mixed.close()
+                feedSide.stop()
+                querySide.stop()
+            }
+        }
+
+    @Test
+    fun `only a document API body reads as absent`() {
+        assertTrue(isAbsentDocument("""{"pathId":"/document/v1/event/event/docid/x","id":"id:event:event::x"}"""))
+        assertFalse(isAbsentDocument("""{"error-code":"NOT_FOUND","message":"Document API is not configured in this cluster"}"""))
+        assertFalse(isAbsentDocument("<html><body>404 Not Found</body></html>"), "a proxy's page")
+        assertFalse(isAbsentDocument(""))
+    }
 
     private fun doc(
         kind: Int = 1,
