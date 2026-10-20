@@ -246,7 +246,7 @@ class VespaEventIndex(
         // attribute instead (finds regular AND replaceable).
         if (addressKeyed) return searchById(id)
         val resp = http.get("${documentEndpoint()}/document/v1/$EVENT_NAMESPACE/$EVENT_DOCTYPE/docid/$id")
-        if (resp.statusCode() == 404) return null
+        if (resp.statusCode() == 404 && isAbsentDocument(resp.body())) return null
         require(resp.statusCode() < 400) { "vespa get ${resp.statusCode()}: ${resp.body().take(300)}" }
         return VESPA_JSON.decodeFromString<DocEnvelope>(resp.body()).fields?.toDoc(withNearState = true)
     }

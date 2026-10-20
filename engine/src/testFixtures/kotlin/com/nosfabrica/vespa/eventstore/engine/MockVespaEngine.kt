@@ -355,7 +355,13 @@ class MockVespaEngine(
         val documentPath = path.startsWith("/document/v1/") || path == "/eventstore/v1/feed"
         if ((documentPath && !servesDocumentApi) || (path == "/search/" && !servesSearch)) {
             wrongRoleRequests++
-            return Reply(404, """{"message":"no handler for $path in this container"}""")
+            // What real Vespa answers: the document API's own refusal is JSON with an error code,
+            // an unbound path (a /search/ with no <search/>) is the HTTP server's HTML page.
+            return if (documentPath) {
+                Reply(404, """{"error-code":"NOT_FOUND","message":"Document API is not configured in this cluster"}""")
+            } else {
+                Reply(404, "<html><body>404 Not Found</body></html>", contentType = "text/html")
+            }
         }
         // The feed client opens with a no-op handshake request (?dryRun=true).
         if (rawQuery.orEmpty().contains("dryRun=true")) return Reply(200, "{}")
@@ -393,7 +399,8 @@ class MockVespaEngine(
             method == "GET" && path.startsWith(docPrefix) -> {
                 val doc = runBlocking { inner.get(path.removePrefix(docPrefix)) }
                 if (doc == null) {
-                    Reply(404, """{"message":"not found"}""")
+                    // Real Vespa's shape for a missing document: the path and the id, no error code.
+                    Reply(404, """{"pathId":"$path","id":"id:event:event::${path.removePrefix(docPrefix)}"}""")
                 } else {
                     Reply(
                         200,

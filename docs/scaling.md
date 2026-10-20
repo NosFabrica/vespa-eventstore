@@ -140,6 +140,13 @@ Nothing in the store's contract changes across the split: containers hold no
 state, so an acked put through a feed container is visible to the next search
 through a query container.
 
+A container listed under the wrong role fails loudly rather than answering
+wrong: a document get that reaches a container with no `<document-api />`
+throws ("Document API is not configured in this cluster") instead of reading
+as "not stored", and a query that reaches one with no `<search />` throws on
+its 404. The likeliest way to get there is keeping `endpoints = every
+container` after splitting the clusters.
+
 Three things in the package must follow the roles: the `BatchFeedHandler`
 belongs on the feed cluster (it dispatches through its own container's document
 API); the content cluster names the feed cluster as its indexing cluster

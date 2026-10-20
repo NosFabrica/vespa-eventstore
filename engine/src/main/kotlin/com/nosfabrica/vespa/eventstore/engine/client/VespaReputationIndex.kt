@@ -63,7 +63,7 @@ class VespaReputationIndex(
 
     private suspend fun fields(pubkey: String): JsonObject? {
         val resp = http.get("${documentApi.next()}/document/v1/$NAMESPACE/$DOCTYPE/docid/$pubkey")
-        if (resp.statusCode() == 404) return null
+        if (resp.statusCode() == 404 && isAbsentDocument(resp.body())) return null
         require(resp.statusCode() < 400) { "vespa reputation get ${resp.statusCode()}: ${resp.body().take(300)}" }
         return Json.parseToJsonElement(resp.body()).jsonObject["fields"]?.jsonObject
     }

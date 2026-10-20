@@ -31,6 +31,7 @@ import kotlinx.coroutines.runBlocking
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -163,6 +164,41 @@ class VespaEventIndexTest {
                 querySide.stop()
             }
         }
+
+    @Test
+    fun `a get that reaches a container without the document API throws instead of reading absent`() =
+        runBlocking {
+            // A query container in feedEndpoints, the misconfiguration a deployment walks into by
+            // keeping `endpoints = every container` after splitting its clusters. Its 404 is not a
+            // missing document, and a get that read it as one would let a kind 5 skip the targets it
+            // could not "find". The handshake passes (one endpoint answers it), so only the get can
+            // refuse.
+            val content = InMemoryEventIndex()
+            val feedSide = MockVespaEngine(content, servesSearch = false)
+            val querySide = MockVespaEngine(content, servesDocumentApi = false)
+            val mixed = VespaEventIndex("http://127.0.0.1:1", feedEndpoints = listOf(feedSide.url, querySide.url), queryEndpoints = listOf(querySide.url))
+            try {
+                val missing = "f".repeat(64)
+                val answers = List(4) { runCatching { mixed.get(missing) } }
+                assertEquals(2, answers.count { it.isSuccess && it.getOrNull() == null }, "the feed container's 404 is a missing document")
+                val refused = answers.mapNotNull { it.exceptionOrNull() }
+                assertEquals(2, refused.size, "the query container's 404 is not")
+                assertTrue(refused.all { "not configured" in it.message.orEmpty() }, refused.toString())
+                assertEquals(2, querySide.wrongRoleRequests)
+            } finally {
+                mixed.close()
+                feedSide.stop()
+                querySide.stop()
+            }
+        }
+
+    @Test
+    fun `only a document API body reads as absent`() {
+        assertTrue(isAbsentDocument("""{"pathId":"/document/v1/event/event/docid/x","id":"id:event:event::x"}"""))
+        assertFalse(isAbsentDocument("""{"error-code":"NOT_FOUND","message":"Document API is not configured in this cluster"}"""))
+        assertFalse(isAbsentDocument("<html><body>404 Not Found</body></html>"), "a proxy's page")
+        assertFalse(isAbsentDocument(""))
+    }
 
     private fun doc(
         kind: Int = 1,
