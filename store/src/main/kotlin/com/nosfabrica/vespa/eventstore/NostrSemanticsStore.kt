@@ -44,6 +44,7 @@ import com.nosfabrica.vespa.eventstore.runtime.DEFAULT_GUARD_REFRESH_MILLIS
 import com.nosfabrica.vespa.eventstore.runtime.DEFAULT_PROVIDER_REFRESH_MILLIS
 import com.nosfabrica.vespa.eventstore.runtime.WriteLocks
 import com.nosfabrica.vespa.eventstore.runtime.WriterTopology
+import com.nosfabrica.vespa.eventstore.runtime.readOnlyRefusal
 import com.nosfabrica.vespa.eventstore.search.PageAssembly
 import com.nosfabrica.vespa.eventstore.search.SearchExpansionLimits
 import com.nosfabrica.vespa.eventstore.search.SearchReferenceExpansion
@@ -121,6 +122,13 @@ class NostrSemanticsStore(
      * insert. See [WriterTopology].
      */
     writers: WriterTopology = WriterTopology.SHARED_STRICT,
+    /**
+     * A store that only READS: another process writes [index], and every write entry point here
+     * refuses before any work ([checkWritable]). `VespaEventStore.open(readOnly = true)` sets it,
+     * and also wraps the index in `ReadOnlyEventIndex`, the port-level backstop. A reader cannot
+     * be the only writer, so [WriterTopology.SINGLE_WRITER] with it is refused.
+     */
+    private val readOnly: Boolean = false,
     /** Guard-cache rebuild cadence under [WriterTopology.SHARED]; 0 disables the refresher. */
     guardRefreshMillis: Long = DEFAULT_GUARD_REFRESH_MILLIS,
     /**
@@ -180,6 +188,21 @@ class NostrSemanticsStore(
      */
     val metrics: CostLedger = CostLedger(),
 ) : IEventStore {
+    init {
+        require(!(readOnly && writers == WriterTopology.SINGLE_WRITER)) {
+            "readOnly with writers = SINGLE_WRITER: a store that writes nothing cannot be the only writer of its index"
+        }
+    }
+
+    /**
+     * Refuses [operation] on a [readOnly] store, before it takes a lock or reads anything: the
+     * per-event admission path turns some failures into `Failed` outcomes, and a reader's batch
+     * must not come back as a column of quiet failures.
+     */
+    private fun checkWritable(operation: String) {
+        if (readOnly) readOnlyRefusal(operation)
+    }
+
     /** The two writer mutexes and their wait/hold accounting — see [WriteLocks]. */
     private val locks = WriteLocks()
 
@@ -326,7 +349,10 @@ class NostrSemanticsStore(
         body: suspend () -> T,
     ): T = locks.gated(touchesTrust(event), WriteLocks.INGEST, body = body)
 
-    override suspend fun insert(event: Event) = withActivity(Activity.Insert) { insertOne(event) }
+    override suspend fun insert(event: Event) {
+        checkWritable("insert")
+        withActivity(Activity.Insert) { insertOne(event) }
+    }
 
     private suspend fun insertOne(event: Event) = lockedForWrite(event) { admission.admit(event) }
 
@@ -394,8 +420,9 @@ class NostrSemanticsStore(
      * replays it in order because a deletion may target an event earlier in
      * the same batch, and a kind 5 by id may be pointing at a card.
      */
-    override suspend fun batchInsert(events: List<Event>): List<IEventStore.InsertOutcome> =
-        withActivity(Activity.BatchInsert) {
+    override suspend fun batchInsert(events: List<Event>): List<IEventStore.InsertOutcome> {
+        checkWritable("batchInsert")
+        return withActivity(Activity.BatchInsert) {
             val outcomes = batchInsertUnder(events)
             // Every write path already reports a typed outcome per event; this
             // just keeps the tally. "81% of what this node is offered is
@@ -403,6 +430,7 @@ class NostrSemanticsStore(
             bookOutcomes(Activity.BatchInsert, outcomes)
             outcomes
         }
+    }
 
     /** [batchInsert]'s body; split because `withActivity` cannot express a non-local return. */
     private suspend fun batchInsertUnder(events: List<Event>): List<IEventStore.InsertOutcome> {
@@ -473,7 +501,8 @@ class NostrSemanticsStore(
     }
 
     /** No rollback: buffered inserts apply in order; the first rejection propagates and aborts the rest. */
-    override suspend fun transaction(body: IEventStore.ITransaction.() -> Unit) =
+    override suspend fun transaction(body: IEventStore.ITransaction.() -> Unit) {
+        checkWritable("transaction")
         withActivity(Activity.BatchInsert) {
             val buffered = ArrayList<Event>()
             object : IEventStore.ITransaction {
@@ -483,6 +512,7 @@ class NostrSemanticsStore(
             }.body()
             lockedForBatch(buffered) { buffered.forEach { admission.admit(it) } }
         }
+    }
 
     // ---- queries ------------------------------------------------------------
 
@@ -965,7 +995,10 @@ class NostrSemanticsStore(
      * Cheap where it matters: a sweep is periodic, not the client write path
      * the gate split exists to keep clear.
      */
-    override suspend fun delete(filters: List<Filter>) = withActivity(Activity.Delete) { deleteUnder(filters) }
+    override suspend fun delete(filters: List<Filter>) {
+        checkWritable("delete")
+        withActivity(Activity.Delete) { deleteUnder(filters) }
+    }
 
     /** [delete]'s body; split for the reason [batchInsertUnder] is. */
     private suspend fun deleteUnder(filters: List<Filter>) {
@@ -980,13 +1013,15 @@ class NostrSemanticsStore(
         }
     }
 
-    override suspend fun deleteExpiredEvents() =
+    override suspend fun deleteExpiredEvents() {
+        checkWritable("deleteExpiredEvents")
         withActivity(Activity.Delete) {
             // expiresBefore is strict (<): +1 makes "expires exactly now" due, per NIP-40.
             // Both locks, for the reason on [delete]: NIP-40 expiry does not ask
             // what kind it is reaping, so it can reap cards.
             locks.gated(trust = true, WriteLocks.SWEEP, WriteLocks.SWEEP_TRUST) { deletions.sweep(EventQuery(expiresBefore = nowSecs() + 1)) }
         }
+    }
 
     // ---- full-text reindex --------------------------------------------------
 
@@ -1119,6 +1154,8 @@ class NostrSemanticsStore(
         batchSize: Int,
         refeedBodies: Boolean = false,
     ): FtsReindexProgress {
+        // Every reindex and backfill overload pages through here.
+        checkWritable(if (refeedBodies) "backfillBodyEdge" else "reindexFullTextSearch")
         val (progress, trustDocs) =
             locks.underWrites(WriteLocks.REINDEX) {
                 val page = index.visitDocsPage(scope, resumeFrom, batchSize)

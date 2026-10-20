@@ -32,7 +32,10 @@ import com.nosfabrica.vespa.eventstore.engine.metrics.withActivity
 import com.nosfabrica.vespa.eventstore.runtime.BackgroundFailures
 import com.nosfabrica.vespa.eventstore.runtime.DEFAULT_GUARD_REFRESH_MILLIS
 import com.nosfabrica.vespa.eventstore.runtime.DEFAULT_PROVIDER_REFRESH_MILLIS
+import com.nosfabrica.vespa.eventstore.runtime.ReadOnlyEventIndex
+import com.nosfabrica.vespa.eventstore.runtime.ReadOnlyReputationIndex
 import com.nosfabrica.vespa.eventstore.runtime.WriterTopology
+import com.nosfabrica.vespa.eventstore.runtime.readOnlyRefusal
 import com.nosfabrica.vespa.eventstore.search.SearchExpansionLimits
 import com.nosfabrica.vespa.eventstore.trust.TrustCoverage
 import com.nosfabrica.vespa.eventstore.trust.TrustExplain
@@ -84,7 +87,13 @@ class VespaEventStore internal constructor(
     private val keying: kotlinx.coroutines.Deferred<TrustKeyingMigration.Migration>? = null,
     /** The keying migration's live view; a store built without one reports nothing rather than lying. */
     private val keyingProgress: TrustKeyingProgress = TrustKeyingProgress(),
+    /** Opened with `readOnly = true`: the trust repairs below refuse too, as the store's own writes do. */
+    private val readOnly: Boolean = false,
 ) : IEventStore by store {
+    private fun checkWritable(operation: String) {
+        if (readOnly) readOnlyRefusal(operation)
+    }
+
     /**
      * The engine read directly — un-lensed and un-metered; see [EngineReads]
      * for the two jobs that want that. Everything else should read through the
@@ -141,7 +150,8 @@ class VespaEventStore internal constructor(
      * so — see [BackgroundFailures] and [TrustKeyingProgress].
      */
     fun backgroundStatus(): String =
-        listOf(keyingProgress.line(), TrustProgress.line(), TrustCoverage.line(), DegradedReads.line(), BackgroundFailures.statusLine())
+        // A reader runs no migration; "notstarted" there would read as one still owed.
+        listOf(if (readOnly) "read-only (the writer migrates)" else keyingProgress.line(), TrustProgress.line(), TrustCoverage.line(), DegradedReads.line(), BackgroundFailures.statusLine())
             .filter { it.isNotBlank() }
             .joinToString("; ")
 
@@ -152,7 +162,10 @@ class VespaEventStore internal constructor(
      * means a corpus mirrored before its provider lists arrived stays silently
      * unprojected, and every ranked search comes back empty.
      */
-    suspend fun reconcileTrust(onProgress: ((inspected: Int, total: Int, rebuilt: Int, derivedInService: Int) -> Unit)? = null): TrustReconciler.Reconciliation = withActivity(Activity.Reconcile) { reconciler.reconcile(onProgress = onProgress) }
+    suspend fun reconcileTrust(onProgress: ((inspected: Int, total: Int, rebuilt: Int, derivedInService: Int) -> Unit)? = null): TrustReconciler.Reconciliation {
+        checkWritable("reconcileTrust")
+        return withActivity(Activity.Reconcile) { reconciler.reconcile(onProgress = onProgress) }
+    }
 
     /**
      * The trust view's health for a status page: coverage, and what is being
@@ -184,7 +197,10 @@ class VespaEventStore internal constructor(
      * hammer, bounded only by the corpus. [reconcileTrust] does the same repair
      * per affected service and normally finds nothing to do.
      */
-    suspend fun rebuildTrust(onProgress: ((derived: Int, sweptParents: Int) -> Unit)? = null) = withActivity(Activity.Reconcile) { reconciler.rebuildAll(onProgress) }
+    suspend fun rebuildTrust(onProgress: ((derived: Int, sweptParents: Int) -> Unit)? = null) {
+        checkWritable("rebuildTrust")
+        withActivity(Activity.Reconcile) { reconciler.rebuildAll(onProgress) }
+    }
 
     /**
      * Full audit: does every reputation doc match its 10040+30382 records?
@@ -197,7 +213,11 @@ class VespaEventStore internal constructor(
     suspend fun verifyTrust(
         repair: Boolean = false,
         onProgress: ((subjectsChecked: Int) -> Unit)? = null,
-    ): TrustReconciler.TrustAudit = withActivity(Activity.Reconcile) { reconciler.verify(repair, onProgress) }
+    ): TrustReconciler.TrustAudit {
+        // The audit alone only reads, so a reader may run it.
+        if (repair) checkWritable("verifyTrust(repair = true)")
+        return withActivity(Activity.Reconcile) { reconciler.verify(repair, onProgress) }
+    }
 
     /**
      * DELETE the orphan scores: every stored kind-30382 signed by a service no
@@ -216,7 +236,10 @@ class VespaEventStore internal constructor(
     suspend fun sweepOrphanScores(
         dryRun: Boolean = false,
         onProgress: ((servicesDone: Int, totalServices: Int, scoresSwept: Int, totalScores: Int) -> Unit)? = null,
-    ): TrustReconciler.OrphanSweep = withActivity(Activity.Sweep) { reconciler.sweepOrphanScores(dryRun, onProgress) }
+    ): TrustReconciler.OrphanSweep {
+        if (!dryRun) checkWritable("sweepOrphanScores")
+        return withActivity(Activity.Sweep) { reconciler.sweepOrphanScores(dryRun, onProgress) }
+    }
 
     /**
      * The deferred-projection barrier: drain every queued trust reaction so
@@ -225,7 +248,11 @@ class VespaEventStore internal constructor(
      * alongside the background drainer (draining is idempotent; both take the
      * writer lock per batch); a no-op with deferral off.
      */
-    suspend fun awaitTrustProjection() = trust.backlog.drain { store.withWriteLock(it) }
+    suspend fun awaitTrustProjection() {
+        // Draining writes the reputation documents; a reader's barrier is the writer's to call.
+        checkWritable("awaitTrustProjection")
+        trust.backlog.drain { store.withWriteLock(it) }
+    }
 
     /**
      * The guard-cache barrier, the counterpart to [awaitTrustProjection] for
@@ -320,6 +347,17 @@ class VespaEventStore internal constructor(
          * pass would put a `complete` read of every 10040 on every observer
          * query, and fail them all whenever coverage dips.
          *
+         * [readOnly] opens a store that WRITES NOTHING, for a process that only reads an index
+         * another process writes (vespa-relay's sync, once the relay is its only writer). Every
+         * write refuses with an `IllegalStateException` before any work: the `IEventStore`
+         * writes, the reindexes, [reconcileTrust], [rebuildTrust], [awaitTrustProjection], and
+         * the repairing forms of [verifyTrust] and [sweepOrphanScores] (their read-only forms
+         * still run). Neither background writer starts: no trust drainer, and no keying
+         * migration ([awaitTrustKeying] answers "nothing done here"). The engine ports are
+         * wrapped as well, so a write path added later fails at the port rather than writing.
+         * The provider pass keeps refreshing, since the writer stores the 10040s. A reader
+         * implies another writer, so [WriterTopology.SINGLE_WRITER] with it is refused.
+         *
          * The store imposes no result cap of its own: bounding a query's cost
          * belongs to whoever writes the filter.
          */
@@ -367,7 +405,11 @@ class VespaEventStore internal constructor(
              * where they are captured.
              */
             slowQueryThresholdMillis: Long? = null,
+            readOnly: Boolean = false,
         ): VespaEventStore {
+            require(!(readOnly && writers == WriterTopology.SINGLE_WRITER)) {
+                "readOnly with writers = SINGLE_WRITER: a store that writes nothing cannot be the only writer of its index"
+            }
             if (autoDeploy) SchemaDeployer(configUrl).deployIfAbsent(url)
             val ledger = CostLedger(slowQueryThresholdNanos = slowQueryThresholdMillis?.let { it * 1_000_000 })
             // The ledger reaches the engine client too: rank profile, docs
@@ -380,7 +422,13 @@ class VespaEventStore internal constructor(
             // store's own reads, the projection's, a sweep's. Nothing above
             // needs a call-site timer.
             val metered = MeteredEventIndex(ledger, eventIndex)
-            val trust = TrustProjection(metered, reputations)
+            // The port-level backstop of a reader; the store's own entry points refuse first.
+            val trust =
+                if (readOnly) {
+                    TrustProjection(ReadOnlyEventIndex(metered), ReadOnlyReputationIndex(reputations))
+                } else {
+                    TrustProjection(metered, reputations)
+                }
             val store =
                 NostrSemanticsStore(
                     trust,
@@ -391,6 +439,7 @@ class VespaEventStore internal constructor(
                     searchExpansion = searchExpansion,
                     maxHitsPerAuthor = maxHitsPerAuthor,
                     metrics = ledger,
+                    readOnly = readOnly,
                 )
             // GAUGES: instantaneous, pulled at snapshot time, and read from
             // their owners rather than mirrored — a queue depth has no
@@ -432,7 +481,7 @@ class VespaEventStore internal constructor(
             // nothing while Vespa was busy, which is the exact reading the page
             // exists to prevent.
             val reconciler = TrustReconciler(metered, reputations, trust.recompute, trust.backlog, gate = gate)
-            val drainScope = if (deferTrustProjection) startDrainer(trust, gate) else null
+            val drainScope = if (deferTrustProjection && !readOnly) startDrainer(trust, gate) else null
             // Once, for a store written under the observer-keyed model: every
             // named service walked into cells, the old cells swept, a marker
             // left. A store born on this model reads the marker and returns.
@@ -440,9 +489,14 @@ class VespaEventStore internal constructor(
             // this finish", which nothing could give while the instance lived
             // and died inside the async block.
             val keyingMigration = TrustKeyingMigration(reputations, reconciler, trust.recompute)
+            // A reader leaves the migration to the writer: it re-keys documents.
             val keying =
-                CoroutineScope(SupervisorJob() + Dispatchers.Default).async {
-                    keyingMigration.runUntilDone(BACKFILL_RETRY_MILLIS)
+                if (readOnly) {
+                    null
+                } else {
+                    CoroutineScope(SupervisorJob() + Dispatchers.Default).async {
+                        keyingMigration.runUntilDone(BACKFILL_RETRY_MILLIS)
+                    }
                 }
             // The gauges the migration was missing. Every layer already
             // reported; the store called each of them with `onProgress` left
@@ -454,7 +508,7 @@ class VespaEventStore internal constructor(
             ledger.gauge("trust.keying.visited") { keyingMigration.progress.visited.get() }
             ledger.gauge("trust.keying.total") { keyingMigration.progress.total.get() }
             ledger.gauge("trust.keying.keys.removed") { keyingMigration.progress.keysRemoved.get() }
-            return VespaEventStore(store, eventIndex, reconciler, trust, drainScope, keying, keyingMigration.progress)
+            return VespaEventStore(store, eventIndex, reconciler, trust, drainScope, keying, keyingMigration.progress, readOnly)
         }
 
         /**
