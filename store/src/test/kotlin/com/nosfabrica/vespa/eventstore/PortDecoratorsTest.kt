@@ -55,6 +55,9 @@ class PortDecoratorsTest {
         listOf(
             "store/src/main/kotlin/com/nosfabrica/vespa/eventstore/trust/TrustProjection.kt",
             "engine/src/main/kotlin/com/nosfabrica/vespa/eventstore/engine/metrics/MeteredEventIndex.kt",
+            // A reader's backstop: an inherited read default would answer slowly, an inherited
+            // write default (putIfNewer, putAll) would merely be refused one call later.
+            "store/src/main/kotlin/com/nosfabrica/vespa/eventstore/runtime/ReadOnlyIndexes.kt",
             // Not published, and it still counts: this one's whole job is
             // reporting what the store asks of the engine, so a member it
             // inherits is a measurement of the PORT's default round trips
