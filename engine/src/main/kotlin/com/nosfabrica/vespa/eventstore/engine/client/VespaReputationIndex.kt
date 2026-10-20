@@ -120,7 +120,7 @@ class VespaReputationIndex(
                         feedParams().createIfNonExistent(creates),
                     )
             }.forEach { (creates, op) ->
-                if (creates) op.await() else runCatching { op.await() }.onFailure { if (!it.isMissingDocument()) throw it }
+                if (creates) op.await() else runCatching { op.await() }.onFailure { if (!it.isAbsentDocumentFailure()) throw it }
             }
     }
 
@@ -151,9 +151,10 @@ class VespaReputationIndex(
                         }
                     feed.client.update(DocumentId.of(NAMESPACE, DOCTYPE, subject), buildJsonObject { put("fields", fields) }.toString(), feedParams())
                 }.forEach { op ->
-                    // A document that never existed answers 404 through the feed
-                    // client as a failure; nothing to remove is the intended outcome.
-                    runCatching { op.await() }.onFailure { if (!it.isMissingDocument()) throw it }
+                    // Nothing to remove from a document that never existed is the intended
+                    // outcome. Vespa 8 answers that 200; a Vespa that answered 404 is still
+                    // tolerated, in its missing-document shape only.
+                    runCatching { op.await() }.onFailure { if (!it.isAbsentDocumentFailure()) throw it }
                 }
         }
     }
@@ -230,9 +231,6 @@ class VespaReputationIndex(
     }
 
     override fun close() = feed.close()
-
-    /** Whether a feed failure is Vespa saying the document is not there (an update without create-if-missing). */
-    private fun Throwable.isMissingDocument(): Boolean = (message ?: "").let { it.contains("404") || it.contains("not found", ignoreCase = true) || it.contains("Document does not exist", ignoreCase = true) }
 
     private companion object {
         const val NAMESPACE = "reputation"
