@@ -1356,21 +1356,54 @@ class VespaEventIndexTest {
         }
 
     @Test
-    fun `an application package without the batch handler falls back to the document API, for good`() =
+    fun `an application package without the batch handler falls back to the document API, and says so`() =
         runBlocking {
             mock.batchHandlerAbsent = true
             val batched = VespaEventIndex(mock.url, feedBatch = 100)
             try {
+                assertTrue(batched.feedStatus().endsWith(" batch 0 sent"), batched.feedStatus())
                 val docs = List(150) { doc() }
                 batched.putAll(docs)
                 for (d in docs) assertEquals(d.id, batched.get(d.id)?.id, "every document landed through /document/v1")
-                assertEquals(false, batched.batchFeed?.available, "a 404 switches the batch path off")
+                assertEquals(false, batched.batchFeed?.available, "a 404 parks the batch path")
+                assertTrue(batched.feedBatchParked)
+                assertTrue(Regex(""" batch PARKED \(404 x\d\), retry in \d+s$""").containsMatchIn(batched.feedStatus()), batched.feedStatus())
+                // The put's two batches run concurrently, so both may meet the 404 before it parks.
+                val asked = batched.batchFeed!!.notFound
                 batched.putAll(List(150) { doc() })
-                assertEquals(0, mock.batchRequests)
+                assertEquals(0, mock.batchRequests, "parked: the next put does not try the handler")
+                assertEquals(asked, batched.batchFeed?.notFound, "parked: no 404 asked again")
             } finally {
                 mock.batchHandlerAbsent = false
                 batched.close()
             }
+        }
+
+    @Test
+    fun `a parked batch path tries the handler again once the interval is over`() =
+        runBlocking {
+            // A handler that arrives with a deploy, or a container back from a restart before its
+            // handlers bound: the 404 parks the path, it does not end it.
+            var now = 1_000_000L
+            val batches = VespaBatchFeed(VespaHttp(), { mock.url }, batchSize = 100, concurrency = 1, retryAfterMs = 60_000, clock = { now })
+            val body = { d: EventDoc -> d.feedJson(includeNear = true, includeEdge = false, includeStem = true) }
+            mock.batchHandlerAbsent = true
+            val first = List(150) { doc() }
+            assertEquals(first.toSet(), batches.putAll(first, { it.id }, body).toSet(), "every document handed back to the feed client")
+            assertFalse(batches.available)
+            assertEquals("batch PARKED (404 x1), retry in 60s", batches.statusLine())
+
+            mock.batchHandlerAbsent = false
+            now += 59_999
+            val second = List(150) { doc() }
+            assertEquals(second.toSet(), batches.putAll(second, { it.id }, body).toSet(), "still parked: not tried")
+            assertEquals(0, mock.batchRequests)
+
+            now += 1
+            assertTrue(batches.available)
+            assertEquals(emptyList(), batches.putAll(List(150) { doc() }, { it.id }, body), "the handler took them all")
+            assertEquals(2, mock.batchRequests)
+            assertEquals("batch 2 sent", batches.statusLine())
         }
 
     @Test

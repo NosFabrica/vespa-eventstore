@@ -1965,8 +1965,11 @@ class VespaEventIndex(
         )
     }
 
-    /** One-line feed-client health for status lines; see [VespaFeed.statusLine]. */
-    fun feedStatus(): String = feed.statusLine()
+    /** One-line feed health for status lines: the feed client's ([VespaFeed.statusLine]), then the batch path's when it is on. */
+    fun feedStatus(): String = feed.statusLine() + (batchFeed?.let { " " + it.statusLine() } ?: "")
+
+    /** Whether a 404 has the batch path parked right now ([VespaBatchFeed]); false while batching is off by configuration. */
+    val feedBatchParked: Boolean get() = batchFeed?.available == false
 
     /**
      * WHAT THE ENGINE HAS LEFT — proton's memory and disk against the limits
