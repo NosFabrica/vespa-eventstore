@@ -11,7 +11,7 @@ mavenPublish = "0.37.0"
 # 42 commits over 99d05ee122 (below) touching quartz/. Scanned per package this store imports (21):
 #  - nip01Core.core: Event's id and pubKey become `var … private set`, for a new shareStrings()
 #    that LocalCache calls; the getters and the constructor are unchanged.
-#  - the Jackson event parser stops interning id, pubkey and tag values (#4570: interning moved to
+#  - the Jackson event parser stops interning id, pubkey and tag values (#4583: interning moved to
 #    where a cache keeps an event); the parsed event is equal, only less is interned.
 #  - nip01Core.store: VerifyAndInsert checks for cancellation; relay.normalizer interns each relay
 #    url once and normalizes idempotently; relay.client is the #4589 outbox change.
