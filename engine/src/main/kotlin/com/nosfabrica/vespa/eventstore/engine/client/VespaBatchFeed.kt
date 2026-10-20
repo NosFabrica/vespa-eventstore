@@ -27,6 +27,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.serialization.Serializable
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * PUTS IN BATCHES, through the request handler this store ships in its application package
@@ -40,22 +41,46 @@ import kotlinx.serialization.Serializable
  * does not report stored is handed back to the caller, which re-puts it through the feed client:
  * a put is idempotent, so a document written twice is written once, and the feed client's own
  * retries and the schema-fallback net ([SchemaFallbacks]) stay the one place those decisions are
- * made. A deployment whose application package predates the handler answers 404, and this
- * client stops trying ([available]) for the life of the process.
+ * made.
+ *
+ * A container whose application package has no handler answers 404, and the batch path PARKS
+ * for [retryAfterMs] ([available] is false, [statusLine] and the `feed.batch.parked` gauge say
+ * so), then the next batch tries again. It used to switch off for the life of the process,
+ * silently: a 404 met once (a package that predates the handler, a container back from a restart
+ * before its handlers bound, one container of several mid-rollout) cost the ~30% for good, and
+ * nothing outside this object could tell. Parking costs a package that never gets the handler
+ * one 404'd batch per interval, re-put through the feed client like any refused batch.
  */
 internal class VespaBatchFeed(
     private val http: VespaHttp,
     private val endpoint: () -> String,
     val batchSize: Int,
     private val concurrency: Int,
+    /** How long a 404 parks the batch path; see the class KDoc. */
+    private val retryAfterMs: Long = RETRY_AFTER_MS,
+    /**
+     * Milliseconds on a MONOTONIC clock. The wall clock steps (an NTP correction, a VM resumed
+     * from suspend), and a park measured on it would last its interval plus the step, an hour's
+     * step an hour without batching. `nanoTime` has an arbitrary origin and may be negative, so
+     * times are only ever subtracted, never compared to a sentinel.
+     */
+    private val clock: () -> Long = { System.nanoTime() / 1_000_000 },
 ) {
-    /** False once the endpoint answered 404: the deployed application package has no handler. */
-    @Volatile var available = true
-        private set
+    /** When the batch path may be tried again, on [clock]; null until a 404 parks it. */
+    @Volatile private var parkedUntil: Long? = null
+
+    /** False while a 404 has the batch path parked: the documents go through the feed client instead. */
+    val available: Boolean get() = parkedUntil?.let { clock() - it >= 0 } ?: true
+
+    private val notFoundCount = AtomicLong()
+
+    /** 404s answered since this client opened; each one parked the batch path. */
+    val notFound: Long get() = notFoundCount.get()
+
+    private val sentCount = AtomicLong()
 
     /** Batches the handler answered, and the documents in them it reported stored. For tests and stats. */
-    @Volatile var batchesSent = 0L
-        private set
+    val batchesSent: Long get() = sentCount.get()
 
     /**
      * Writes [docs] in batches of [batchSize], [concurrency] in flight, each document as [body]
@@ -105,7 +130,8 @@ internal class VespaBatchFeed(
             200 -> {}
 
             404 -> {
-                available = false
+                notFoundCount.incrementAndGet()
+                parkedUntil = clock() + retryAfterMs
                 return batch
             }
 
@@ -117,7 +143,7 @@ internal class VespaBatchFeed(
         }
         val answer = runCatching { VESPA_JSON.decodeFromString<BatchAnswer>(resp.body()) }.getOrNull() ?: return batch
         if (answer.count != batch.size) return batch
-        batchesSent++
+        sentCount.incrementAndGet()
         return answer.failed.map { batch[it.index] }
     }
 
@@ -134,8 +160,25 @@ internal class VespaBatchFeed(
         val message: String? = null,
     )
 
+    /**
+     * The batch path for a status line: `batch 12 sent`, or `batch PARKED (404 x3), retry in 240s`
+     * while a 404 has it parked, so a feed that lost its batching shows it next to the feed
+     * client's own line ([VespaFeed.statusLine]).
+     */
+    fun statusLine(): String {
+        val wait = parkedUntil?.let { it - clock() } ?: 0
+        return if (wait > 0) "batch PARKED (404 x$notFound), retry in ${(wait + 999) / 1000}s" else "batch $batchesSent sent"
+    }
+
     companion object {
         /** Where `BatchFeedHandler` is bound (engine/app/services.xml). */
         const val PATH = "/eventstore/v1/feed"
+
+        /**
+         * Five minutes: a handler that arrives with a deploy, or a container back from a restart,
+         * is batching again within one interval, and a package that never gets one pays a 404 per
+         * interval, one batch re-put through the feed client.
+         */
+        const val RETRY_AFTER_MS = 300_000L
     }
 }

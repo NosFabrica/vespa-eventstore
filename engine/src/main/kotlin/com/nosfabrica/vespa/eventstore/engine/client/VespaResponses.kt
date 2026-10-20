@@ -296,6 +296,34 @@ internal class DocEnvelope(
  */
 internal fun isAbsentDocument(body: String): Boolean = runCatching { Json.parseToJsonElement(body) as? JsonObject }.getOrNull()?.containsKey("error-code") == false
 
+/**
+ * Whether a feed-client failure is Vespa saying the DOCUMENT is absent, the one failure an update
+ * or remove that may meet no document is allowed to swallow (a retraction with no parent, a cell
+ * removal from a parent that never existed).
+ *
+ * Vespa 8.763 never sends one: an update or a tensor `remove` against a document that does not
+ * exist answers 200, through the feed client and over raw HTTP alike, with `create` or without
+ * (measured). The feed client makes every status but 200, 412 and 502/504/507 a `FeedException`
+ * reading `(<document id>) Status <code> executing '<request>': <message>`, the message being
+ * the body's own, or the raw body when it has none (vespa-feed-client 8.714's
+ * `HttpFeedClient.toResult`; the id prefix is `FeedException`'s own). So a
+ * Vespa that answered a missing document with 404 would show its `{"pathId","id"}` body there,
+ * and [isAbsentDocument] already knows that shape. Anything else is a real failure and is thrown:
+ * a bad field, a type the schema lacks, a container serving no document API (the feed client does
+ * send there: under put load from a feed list naming a query container, measured), a transport
+ * error.
+ * The test this replaced matched "404" or "not found" anywhere in the message, which let all of
+ * those through as "nothing to remove".
+ */
+internal fun Throwable.isAbsentDocumentFailure(): Boolean {
+    val text = message?.let { if (it.startsWith("(")) it.substringAfter(") ", "") else it } ?: return false
+    if (!text.startsWith(FEED_404_PREFIX)) return false
+    return isAbsentDocument(text.substringAfter("': ", missingDelimiterValue = ""))
+}
+
+/** How the feed client opens a 404's message; see [isAbsentDocumentFailure]. */
+private const val FEED_404_PREFIX = "Status 404 executing '"
+
 /** One projected doc off a visit page or stream — the lean carrier the visit walk hands its consumer. */
 internal class VisitedDoc(
     val id: String,

@@ -2353,8 +2353,10 @@ operations, dispatches each through the container's own document API (`DocumentA
 asynchronous session, the default route), and answers once every operation is answered, so a 200
 promises per document what a `/document/v1` 200 does. `VespaEventIndex.putAll` sends batches of
 `VESPA_FEED_BATCH` documents, 8 in flight (`VespaBatchFeed`); anything not confirmed stored is
-re-put through the feed client, a 404 (a package that predates the handler) switches the batch
-path off, and a batch the schema refuses (a fed column it lacks) takes the feed-client path whose
+re-put through the feed client, a 404 (a package without the handler) parks the batch path for
+five minutes before the next batch tries again (`feedStatus()` and the `feed.batch.parked` gauge
+say so meanwhile; it used to switch the path off for the life of the process, silently), and a
+batch the schema refuses (a fed column it lacks) takes the feed-client path whose
 schema-fallback net then leaves that column out of later batches. Off by default.
 
 Measured on another host than the tables above, after this session's container was recycled: the

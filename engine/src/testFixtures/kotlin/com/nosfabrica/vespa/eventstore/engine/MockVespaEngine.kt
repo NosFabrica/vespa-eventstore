@@ -197,6 +197,17 @@ class MockVespaEngine(
     @Volatile var wrongRoleRequests: Int = 0
 
     /**
+     * How a document UPDATE is answered, as status and body; null answers it 400 like any other
+     * request this mock does not model. What a reputation update meets is the whole point of the
+     * tests that set it: Vespa 8 answers an update to a missing document 200, an older one might
+     * 404 with the missing-document body, and the client must tell either from a real failure.
+     */
+    @Volatile var updateReply: Pair<Int, String>? = null
+
+    /** Document updates answered through [updateReply]. */
+    @Volatile var updateRequests: Int = 0
+
+    /**
      * Document-API visit requests served. Both snapshot paths return the SAME
      * ids, so only this distinguishes which one ran — a correctness assertion
      * cannot, and the choice between them is worth 100x either way.
@@ -366,6 +377,10 @@ class MockVespaEngine(
         // The feed client opens with a no-op handshake request (?dryRun=true).
         if (rawQuery.orEmpty().contains("dryRun=true")) return Reply(200, "{}")
         val docPrefix = "/document/v1/event/event/docid/"
+        updateReply?.takeIf { method == "PUT" && path.startsWith("/document/v1/") }?.let { (status, reply) ->
+            updateRequests++
+            return Reply(status, reply)
+        }
         return when {
             method == "POST" && path.startsWith(docPrefix) -> {
                 val fields =

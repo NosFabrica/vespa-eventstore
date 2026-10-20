@@ -416,6 +416,9 @@ class VespaEventStore internal constructor(
             // is owed if another process names those signers.
             ledger.gauge("trust.skipped.dropped") { trust.recompute.skippedDropped() }
             ledger.gauge("feed.inflight") { eventIndex.feedInflight() }
+            // 1 while a 404 has the batch path parked and documents go one per request: the ~30%
+            // of Vespa CPU batching saves is being spent (VespaBatchFeed).
+            ledger.gauge("feed.batch.parked") { if (eventIndex.feedBatchParked) 1L else 0L }
             ledger.gauge("lock.held") { IngestStats.heldAll().size.toLong() }
             // The reconciler's and drainer's mutating batches take the store's
             // writer lock (the gate): repairs must not race live inserts'
