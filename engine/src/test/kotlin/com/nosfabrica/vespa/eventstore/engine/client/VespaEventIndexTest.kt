@@ -1384,9 +1384,12 @@ class VespaEventIndexTest {
         runBlocking {
             // A handler that arrives with a deploy, or a container back from a restart before its
             // handlers bound: the 404 parks the path, it does not end it.
-            var now = 1_000_000L
+            // Negative, as System.nanoTime() may be: a park must never be measured against a fixed origin.
+            var now = -1_000_000L
             val batches = VespaBatchFeed(VespaHttp(), { mock.url }, batchSize = 100, concurrency = 1, retryAfterMs = 60_000, clock = { now })
             val body = { d: EventDoc -> d.feedJson(includeNear = true, includeEdge = false, includeStem = true) }
+            assertTrue(batches.available, "nothing parked yet, whatever the clock reads")
+            assertEquals("batch 0 sent", batches.statusLine())
             mock.batchHandlerAbsent = true
             val first = List(150) { doc() }
             assertEquals(first.toSet(), batches.putAll(first, { it.id }, body).toSet(), "every document handed back to the feed client")

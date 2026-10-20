@@ -27,6 +27,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.serialization.Serializable
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * PUTS IN BATCHES, through the request handler this store ships in its application package
@@ -57,21 +58,29 @@ internal class VespaBatchFeed(
     private val concurrency: Int,
     /** How long a 404 parks the batch path; see the class KDoc. */
     private val retryAfterMs: Long = RETRY_AFTER_MS,
-    private val clock: () -> Long = System::currentTimeMillis,
+    /**
+     * Milliseconds on a MONOTONIC clock. The wall clock steps (an NTP correction, a VM resumed
+     * from suspend), and a park measured on it would last its interval plus the step, an hour's
+     * step an hour without batching. `nanoTime` has an arbitrary origin and may be negative, so
+     * times are only ever subtracted, never compared to a sentinel.
+     */
+    private val clock: () -> Long = { System.nanoTime() / 1_000_000 },
 ) {
-    /** When the batch path may be tried again; 0 until a 404 parks it. */
-    @Volatile private var parkedUntil = 0L
+    /** When the batch path may be tried again, on [clock]; null until a 404 parks it. */
+    @Volatile private var parkedUntil: Long? = null
 
     /** False while a 404 has the batch path parked: the documents go through the feed client instead. */
-    val available: Boolean get() = clock() >= parkedUntil
+    val available: Boolean get() = parkedUntil?.let { clock() - it >= 0 } ?: true
+
+    private val notFoundCount = AtomicLong()
 
     /** 404s answered since this client opened; each one parked the batch path. */
-    @Volatile var notFound = 0L
-        private set
+    val notFound: Long get() = notFoundCount.get()
+
+    private val sentCount = AtomicLong()
 
     /** Batches the handler answered, and the documents in them it reported stored. For tests and stats. */
-    @Volatile var batchesSent = 0L
-        private set
+    val batchesSent: Long get() = sentCount.get()
 
     /**
      * Writes [docs] in batches of [batchSize], [concurrency] in flight, each document as [body]
@@ -121,7 +130,7 @@ internal class VespaBatchFeed(
             200 -> {}
 
             404 -> {
-                notFound++
+                notFoundCount.incrementAndGet()
                 parkedUntil = clock() + retryAfterMs
                 return batch
             }
@@ -134,7 +143,7 @@ internal class VespaBatchFeed(
         }
         val answer = runCatching { VESPA_JSON.decodeFromString<BatchAnswer>(resp.body()) }.getOrNull() ?: return batch
         if (answer.count != batch.size) return batch
-        batchesSent++
+        sentCount.incrementAndGet()
         return answer.failed.map { batch[it.index] }
     }
 
@@ -157,7 +166,7 @@ internal class VespaBatchFeed(
      * client's own line ([VespaFeed.statusLine]).
      */
     fun statusLine(): String {
-        val wait = parkedUntil - clock()
+        val wait = parkedUntil?.let { it - clock() } ?: 0
         return if (wait > 0) "batch PARKED (404 x$notFound), retry in ${(wait + 999) / 1000}s" else "batch $batchesSent sent"
     }
 
