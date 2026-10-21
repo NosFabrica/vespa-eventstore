@@ -288,6 +288,29 @@ class NostrSemanticsStore(
     private suspend fun providers(): TrustProviders? = (index as? TrustProjection)?.recompute?.providerMap()
 
     /**
+     * The live gate's lens lookup, the same `lensOf(observer).rank` [lensed] stamps on a stored read,
+     * asked per event so a subscription follows its observer's 10040 (see [LiveGate]). It reads the
+     * newest provider pass while no 10040 write has invalidated it — empty included, so a store with
+     * no lists pays nothing per event — and after one it defers, and the deferred events share one
+     * rebuild. A store with no projection resolves no lens, as [lensed] leaves its queries.
+     */
+    private val liveLenses =
+        object : LiveGate.Lenses {
+            override fun now(observer: String): LiveGate.Resolved {
+                val recompute = (index as? TrustProjection)?.recompute ?: return LiveGate.Resolved.Service(null)
+                val providers = recompute.liveProviderMap() ?: return LiveGate.Resolved.Unknown
+                return LiveGate.Resolved.Service(providers.lensOf(observer).rank)
+            }
+
+            override suspend fun read(observer: String): String? =
+                (index as? TrustProjection)
+                    ?.recompute
+                    ?.liveProviderMapBuilt()
+                    ?.lensOf(observer)
+                    ?.rank
+        }
+
+    /**
      * The read path's page assembly — ordering, splicing, narrowing, the cap.
      * Handed the enrolment supplier rather than the projection: on a relay
      * holding no 10040s that read is never cached, so it resolves at most once
@@ -704,10 +727,10 @@ class NostrSemanticsStore(
                                 .map { w -> PhraseRuns.exclusionPieces(w).map(LiveGate.Text::words).filter { it.isNotEmpty() } }
                                 .filter { it.isNotEmpty() },
                     )
-                LiveGate.Rule(f, text.takeUnless { it.isEmpty() }, if (floor != null) q.rankKey else null, floor)
+                LiveGate.Rule(f, text.takeUnless { it.isEmpty() }, if (floor != null) q.observer else null, floor)
             }
         if (rules.none { it.floor != null || it.text != null }) return null
-        return LiveGate(rules, trustCells) { event ->
+        return LiveGate(rules, trustCells, liveLenses) { event ->
             SearchExtractors
                 .extract(event)
                 .fields()
