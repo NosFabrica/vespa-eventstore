@@ -5,7 +5,15 @@ app = "1.0.1"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"
 # Quartz from JitPack (amethyst @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
-# 98089642eb = amethyst main @ 2026-10-20: the amethyst #4589 merge (an OK, true or false, ends an
+# e7f23068e0 = amethyst main @ 2026-10-21: the amethyst #4591 merge, its two commits the only ones over
+# 98089642eb (below) touching quartz/, both in relay.client: NostrClient.keepConnected (a relay held
+# connected between bursts), an auth-required: no responder can answer ends an event's delivery, and
+# publishStream opens its window at once on an open socket. Taken for vespa-relay's sync, which
+# holds its relay with keepConnected. Inert here: this store imports nothing from relay.client, and
+# quartz/build.gradle.kts and amethyst's version catalog have no diff in the range.
+# 98089642eb is a strict ancestor (git merge-base --is-ancestor 98089642eb e7f23068e0).
+#
+# Prev 98089642eb = amethyst main @ 2026-10-20: the amethyst #4589 merge (an OK, true or false, ends an
 # event's delivery to that relay: the client outbox kept refused events until three refusals, so
 # vespa-relay's sync, forwarding to its relay, held every event the relay refused in memory).
 # 42 commits over 99d05ee122 (below) touching quartz/. Scanned per package this store imports (21):
@@ -106,7 +114,7 @@ mavenPublish = "0.37.0"
 # catch-all; SearchableEvent grows the read-path forEachIndexableField, no reindex).
 # Prev cecc3287b2 (2026-09-01: 17 catch-all kinds split into title/body roles, four
 # affiliation URLs, six doubled `t`-tag scans dropped; a ranking backfill).
-quartz = "98089642eb"
+quartz = "e7f23068e0"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 # Matches what Quartz brings transitively; Gradle would resolve to it regardless.
