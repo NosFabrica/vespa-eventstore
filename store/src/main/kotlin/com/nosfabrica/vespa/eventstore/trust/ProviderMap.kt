@@ -27,7 +27,12 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.mapping.toEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.tags.ProviderTypes
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * WHAT THE STORED 10040s SAY, in the two shapes the trust code reads. The
@@ -211,6 +216,57 @@ internal class ProviderMap(
         if (cached != null) build()
     }
 
+    /**
+     * The newest pass any build produced, an EMPTY one too, with the [generation] it was started
+     * under: what the live gate reads ([livePeek], [live]). [cached] cannot serve it, because an
+     * empty result is never cached — a store holding no 10040s would make every live event of a
+     * lensed subscription run the 10040 query — and an [invalidate] empties it until a reader
+     * rebuilds. Every build updates this, the refresher's ticks and the reads' cold builds alike.
+     */
+    private class Built(
+        val trust: TrustProviders,
+        val generation: Long,
+    )
+
+    @Volatile private var newest: Built? = null
+
+    /** The one rebuild [live] callers share while [livePeek] has nothing current. */
+    private val liveBuild = AtomicReference<CompletableDeferred<TrustProviders>?>(null)
+
+    /**
+     * The newest pass while no 10040 write has invalidated it since its build began; null before any
+     * build and after such a write. A volatile read: for the live gate on the ingest path, which
+     * defers to [live] on null.
+     */
+    fun livePeek(): TrustProviders? = newest?.takeIf { it.generation == generation.get() }?.trust
+
+    /**
+     * [livePeek], or else ONE build shared by every caller waiting at once: after a 10040 write
+     * every deferred live event asks, and a build per event is a 10040 query per event. A waiter
+     * whose builder was cancelled builds itself.
+     */
+    suspend fun live(): TrustProviders {
+        livePeek()?.let { return it }
+        val mine = CompletableDeferred<TrustProviders>()
+        val running = liveBuild.compareAndExchange(null, mine)
+        if (running != null) {
+            return try {
+                running.await()
+            } catch (e: CancellationException) {
+                currentCoroutineContext().ensureActive()
+                live()
+            }
+        }
+        try {
+            return build().trust.also { mine.complete(it) }
+        } catch (e: Throwable) {
+            mine.completeExceptionally(e)
+            throw e
+        } finally {
+            liveBuild.set(null)
+        }
+    }
+
     /** Seconds since the cached pass was issued, or null while nothing is cached — the staleness gauge. */
     fun ageSecs(): Long? = cached?.let { nowSecs() - it.builtAtSecs }
 
@@ -273,6 +329,8 @@ internal class ProviderMap(
         // cost of the pass the KDoc above promises is shared.
         val maps = docs.mapNotNull { it.toEvent() as? TrustProviderListEvent }
         val fresh = Pass(providersIn(maps), Delegations.delegationsOf(maps), issuedAt, seq)
+        // Newer build wins; a pass started under an older generation is never [livePeek]'s answer.
+        synchronized(swapLock) { if ((newest?.generation ?: -1L) <= startedUnder) newest = Built(fresh.trust, startedUnder) }
         // Emptiness is judged on the DOCUMENTS, not on either projection: the
         // ambiguity this rule records is "no 10040s" versus "the engine has not
         // finished serving them", and only the query's own answer distinguishes

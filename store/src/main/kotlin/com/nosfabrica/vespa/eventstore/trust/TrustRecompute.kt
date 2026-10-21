@@ -66,6 +66,12 @@ internal class TrustRecompute(
     /** The current attribution maps, rebuilding them once per pass (see [ProviderMap.get]). */
     suspend fun providerMap(): TrustProviders = providers.get()
 
+    /** The live gate's maps without building: null before any pass and after a 10040 write (see [ProviderMap.livePeek]). */
+    fun liveProviderMap(): TrustProviders? = providers.livePeek()
+
+    /** The live gate's maps, sharing one rebuild among every waiting caller (see [ProviderMap.live]). */
+    suspend fun liveProviderMapBuilt(): TrustProviders = providers.live()
+
     /**
      * The read-time gate off the same cached pass — who a reader has asked to
      * compute what. See [Delegations]; the write side's projection is above.

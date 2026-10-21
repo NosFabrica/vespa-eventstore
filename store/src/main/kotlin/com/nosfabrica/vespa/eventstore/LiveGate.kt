@@ -52,12 +52,40 @@ import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
  * says null when an author's trust has to be read first; [admits] reads it.
  * A caller delivers on `true`, drops on `false`, and on null defers the event
  * to [admits] off the ingest path — never delivers first and checks later.
+ *
+ * THE LENS IS LOOKED UP PER EVENT, NOT AT THE REQ. A rule keeps its observer
+ * and asks [lenses] which service their 10040 names now, so a subscription
+ * outlives the 10040 it opened under: one opened before its observer had a
+ * list (a new user, or a store still backfilling the list) used to trust nobody
+ * for as long as it stayed open — 0 of 300 notes delivered where a REQ opened
+ * after the list got all 300 — and one whose observer moved providers kept the
+ * old one. The stored page resolves its lens per REQ, so this is the live half
+ * agreeing with it. The lookup is the cached provider pass (a map read); with
+ * none cached, just after a 10040 write invalidated it, [admitsNow] defers.
  */
 class LiveGate internal constructor(
     private val rules: List<Rule>,
     private val trust: TrustCells,
+    private val lenses: Lenses,
     private val textOf: (Event) -> String,
 ) {
+    /** Which service an observer's rank lens reads: [now] off what is cached, [read] building it if it must. */
+    internal interface Lenses {
+        /** The service the observer's 10040 names for rank (null: "trusts nobody"), or [Resolved.Unknown] while no pass is cached. */
+        fun now(observer: String): Resolved
+
+        suspend fun read(observer: String): String?
+    }
+
+    /** [Lenses.now]'s answer: a [Service] (whose key may be null, an observer no 10040 names) or not known yet. */
+    internal sealed interface Resolved {
+        data class Service(
+            val key: String?,
+        ) : Resolved
+
+        data object Unknown : Resolved
+    }
+
     /**
      * A filter's text, as the live check reads it: lower-cased words. Phrases
      * and exclusions arrive as the PIECES the engine ran them as
@@ -104,13 +132,14 @@ class LiveGate internal constructor(
 
     /**
      * One filter's gate: its [text] (null when it searches nothing), the
-     * service whose rank cell its lens reads ([service]; null is an unresolved
-     * lens, "trusts nobody") and its [floor], or no floor when it is ungated.
+     * [observer] whose lens it reads (looked up per event through [Lenses]; a
+     * gated query always has one, `EventYql.gateFloor`) and its [floor], or no
+     * floor when it is ungated.
      */
     internal class Rule(
         val filter: Filter,
         val text: Text?,
-        val service: String?,
+        val observer: String?,
         val floor: Double?,
     )
 
@@ -128,7 +157,18 @@ class LiveGate internal constructor(
         for (rule in rules) {
             if (!rule.matches(event, words)) continue
             val floor = rule.floor ?: return true
-            val score = trust.cached(event.pubKey, rule.service)
+            val service =
+                when (val lens = rule.observer?.let(lenses::now) ?: Resolved.Service(null)) {
+                    is Resolved.Service -> {
+                        lens.key
+                    }
+
+                    Resolved.Unknown -> {
+                        unknown = true
+                        continue
+                    }
+                }
+            val score = trust.cached(event.pubKey, service)
             if (score == null) {
                 unknown = true
             } else if (score >= floor) {
@@ -144,7 +184,7 @@ class LiveGate internal constructor(
         for (rule in rules) {
             if (!rule.matches(event, words)) continue
             val floor = rule.floor ?: return true
-            if (trust.read(event.pubKey, rule.service) >= floor) return true
+            if (trust.read(event.pubKey, rule.observer?.let { lenses.read(it) }) >= floor) return true
         }
         return false
     }

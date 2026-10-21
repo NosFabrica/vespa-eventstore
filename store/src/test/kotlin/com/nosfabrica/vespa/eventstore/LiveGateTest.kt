@@ -20,10 +20,13 @@
  */
 package com.nosfabrica.vespa.eventstore
 
+import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
+import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryReputationIndex
+import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.trust.TrustProjection
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
@@ -192,6 +195,55 @@ class LiveGateTest {
         }
     }
 
+    @Test
+    fun `a store with no 10040s gates live events without a provider query each`() {
+        // An empty pass is never cached, so the gate must not lean on the cache for it.
+        val events = CountingProviderQueries(InMemoryEventIndex())
+        val bare = NostrSemanticsStore(TrustProjection(events, InMemoryReputationIndex()), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+        val g = assertNotNull(runBlocking { bare.liveGate(listOf(Filter(kinds = listOf(1), search = "observer:$observer"))) })
+        val before = events.providerQueries.get()
+        repeat(50) { assertFalse(g.admitsNow(note(trusted)) ?: runBlocking { g.admits(note(trusted)) }, "no lists: trusts nobody") }
+        assertTrue(events.providerQueries.get() - before <= 1, "at most one 10040 query for fifty live events, not one each")
+    }
+
+    @Test
+    fun `after a 10040 write, a burst of deferred live events shares one rebuild`() {
+        val events = CountingProviderQueries(InMemoryEventIndex())
+        val busy = NostrSemanticsStore(TrustProjection(events, InMemoryReputationIndex()), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+        runBlocking {
+            busy.batchInsert(listOf(UserAssertionEvent(id(), service, 1_000L, arrayOf(arrayOf("d", trusted), arrayOf("rank", "90")), "", "")))
+            val g = assertNotNull(busy.liveGate(listOf(Filter(kinds = listOf(1), search = "observer:$observer"))))
+            busy.insert(TrustProviderListEvent(id(), observer, 1_000L, arrayOf(arrayOf("30382:rank", service, "wss://scores.example.com/")), "", ""))
+            assertNull(g.admitsNow(note(trusted)), "the write made the pass stale: deferred")
+            events.providerQueries.set(0)
+            events.gate = CompletableDeferred()
+            val waiting = (1..50).map { async(Dispatchers.Default) { g.admits(note(trusted)) } }
+            delay(200)
+            events.gate?.complete(Unit)
+            assertTrue(waiting.awaitAll().all { it }, "the new list's lens admits rank 90")
+            // At most one: the write path may already have rebuilt the pass by the time the burst asks.
+            assertTrue(events.providerQueries.get() <= 1, "fifty deferred events, ${events.providerQueries.get()} provider queries")
+            assertEquals(true, g.admitsNow(note(trusted)), "and then it is a lookup again")
+        }
+    }
+
+    /** Counts the provider pass's 10040 queries, and can hold them open so callers pile up behind the first. */
+    private class CountingProviderQueries(
+        private val inner: InMemoryEventIndex,
+    ) : EventIndex by inner {
+        val providerQueries = AtomicInteger()
+
+        @Volatile var gate: CompletableDeferred<Unit>? = null
+
+        override suspend fun search(query: EventQuery): List<EventDoc> {
+            if (query.kinds == listOf(TrustProviderListEvent.KIND)) {
+                providerQueries.incrementAndGet()
+                gate?.await()
+            }
+            return inner.search(query)
+        }
+    }
+
     /** Counts gets, and can hold them open so readers pile up behind the first. */
     private class CountingReputations(
         private val inner: InMemoryReputationIndex,
@@ -242,6 +294,32 @@ class LiveGateTest {
     fun `an observer whose 10040 names nobody trusts nobody`() {
         val g = assertNotNull(gate("observer:$stranger"))
         assertFalse(g.admitted(trusted))
+    }
+
+    @Test
+    fun `a lens published after the subscription opened applies to its next live event`() {
+        // A long-lived REQ opened before its observer had a 10040: the gate trusted nobody, and kept on.
+        val g = assertNotNull(gate("observer:$stranger"))
+        assertFalse(g.admitted(trusted), "no 10040 yet: trusts nobody")
+        runBlocking { store.insert(TrustProviderListEvent(id(), stranger, 2_000L, arrayOf(arrayOf("30382:rank", service, "wss://scores.example.com/")), "", "")) }
+        val next = note(trusted)
+        assertNull(g.admitsNow(next), "the 10040 dropped the provider pass: deferred, not refused")
+        assertTrue(runBlocking { g.admits(next) }, "the lens now names the service that ranks this author 90")
+        assertFalse(g.admitted(spammer), "and its floor still applies")
+    }
+
+    @Test
+    fun `a lens moved to another provider follows the move`() {
+        val other = "6f".repeat(32)
+        val mover = "0d".repeat(32)
+        runBlocking {
+            store.insert(UserAssertionEvent(id(), other, 3_000L, arrayOf(arrayOf("d", trusted), arrayOf("rank", "1")), "", ""))
+            store.insert(TrustProviderListEvent(id(), mover, 1_000L, arrayOf(arrayOf("30382:rank", service, "wss://scores.example.com/")), "", ""))
+        }
+        val g = assertNotNull(gate("observer:$mover"))
+        assertTrue(g.admitted(trusted), "90 under the first provider")
+        runBlocking { store.insert(TrustProviderListEvent(id(), mover, 2_000L, arrayOf(arrayOf("30382:rank", other, "wss://other.example.com/")), "", "")) }
+        assertFalse(g.admitted(trusted), "1 under the provider the newer 10040 names")
     }
 
     @Test

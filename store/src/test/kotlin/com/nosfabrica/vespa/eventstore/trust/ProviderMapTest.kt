@@ -20,18 +20,31 @@
  */
 package com.nosfabrica.vespa.eventstore.trust
 
+import com.nosfabrica.vespa.eventstore.engine.EventIndex
+import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
+import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
+import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.mapping.toDoc
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
  * The two answers a stored set of 10040s gives: which services are NAMED (the
  * write side's gate — a card by a named service becomes a cell under that
  * service) and each observer's LENS (the read side's resolution — the one
- * service per dimension a query carries). Pure parsing, no store.
+ * service per dimension a query carries). Pure parsing, no store — and the
+ * live gate's read of the pass ([ProviderMap.live]), over a counting index.
  */
 class ProviderMapTest {
     private val observer = "0b".repeat(32)
@@ -83,5 +96,51 @@ class ProviderMapTest {
         assertTrue(p.isEmpty())
         assertFalse(p.maps(service) || p.maps(service2))
         assertEquals(TrustProviders.NO_LENS, p.lensOf(observer))
+    }
+
+    /** Counts the pass's 10040 queries, and can hold them open so callers pile up behind the first. */
+    private class CountingLists(
+        private val inner: InMemoryEventIndex = InMemoryEventIndex(),
+    ) : EventIndex by inner {
+        val queries = AtomicInteger()
+
+        @Volatile var gate: CompletableDeferred<Unit>? = null
+
+        override suspend fun search(query: EventQuery): List<EventDoc> {
+            queries.incrementAndGet()
+            gate?.await()
+            return inner.search(query)
+        }
+    }
+
+    @Test
+    fun `the live read keeps an empty pass, which the cache never does`() {
+        val index = CountingLists()
+        val map = ProviderMap(index) { 1_700_000_000L }
+        runBlocking {
+            repeat(20) { assertTrue(map.live().isEmpty()) }
+        }
+        assertEquals(1, index.queries.get(), "a store with no lists: one query, not one per live event")
+        assertTrue(map.livePeek()?.isEmpty() == true)
+    }
+
+    @Test
+    fun `after a 10040 write the live read is stale, and every waiting caller shares one rebuild`() {
+        val index = CountingLists()
+        runBlocking { index.put(list(observer, "30382:rank" to service)) }
+        val map = ProviderMap(index) { 1_700_000_000L }
+        runBlocking {
+            assertEquals(service, map.live().lensOf(observer).rank)
+            map.invalidate()
+            assertNull(map.livePeek(), "invalidated: not current")
+            index.queries.set(0)
+            index.gate = CompletableDeferred()
+            val waiting = (1..50).map { async(Dispatchers.Default) { map.live() } }
+            delay(200)
+            index.gate?.complete(Unit)
+            assertTrue(waiting.awaitAll().all { it.lensOf(observer).rank == service })
+        }
+        assertEquals(1, index.queries.get(), "fifty callers, one rebuild")
+        assertEquals(service, map.livePeek()?.lensOf(observer)?.rank)
     }
 }

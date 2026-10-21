@@ -96,7 +96,10 @@ and internal sync paths (sweeps, the store's own diffs) never resolve one. Two
 paths answer to the same lens as the page itself: a NIP-77 snapshot of a filter
 that names `observer:` holds exactly the set that filter's REQ serves (a reconcile
 carries no connection observer, so only the token counts), and `liveGate()` holds a
-subscription's live events to the same floor its stored page was served through.
+subscription's live events to the same floor its stored page was served through. The
+live gate looks the observer's lens up per event, not once at the REQ, so a
+subscription that outlives a 10040 (a list published after it opened, or moved to
+another provider) follows the list its next stored page would read.
 
 How they combine (`<hex>` = a 64-hex observer pubkey; the examples assume no
 context observer, so the token is the only source):
