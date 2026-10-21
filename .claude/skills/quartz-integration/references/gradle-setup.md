@@ -1,7 +1,7 @@
 # Quartz Gradle Dependency Setup
 
 > **vespa-eventstore note:** this repo does NOT follow this document. Quartz comes from
-> JitPack pinned by commit (`com.github.vitorpamplona.amethyst:quartz`, version in
+> JitPack pinned by commit (`com.github.vitorpamplona.quartz:quartz`, version in
 > `gradle/libs.versions.toml`). This reference describes the Maven Central path other
 > external projects use, and the transitive-dependency tables below still apply.
 

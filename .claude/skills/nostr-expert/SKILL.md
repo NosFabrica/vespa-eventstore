@@ -9,9 +9,9 @@ Practical patterns for working with Nostr in Quartz, AmethystMultiplatform's KMP
 
 > **In this repo (vespa-eventstore):** Quartz is a JitPack dependency pinned by commit
 > (`gradle/libs.versions.toml`) — its sources are NOT checked out here. To browse them or
-> run `scripts/nip-lookup.sh`, clone Amethyst and point `QUARTZ_PATH` at it, e.g.
-> `git clone --depth 1 https://github.com/vitorpamplona/amethyst /tmp/amethyst` then
-> `QUARTZ_PATH=/tmp/amethyst/quartz/src/commonMain/kotlin/com/vitorpamplona/quartz scripts/nip-lookup.sh 50`.
+> run `scripts/nip-lookup.sh`, clone Quartz and point `QUARTZ_PATH` at it, e.g.
+> `git clone https://github.com/vitorpamplona/quartz /tmp/quartz` then
+> `QUARTZ_PATH=/tmp/quartz/quartz/src/commonMain/kotlin/com/vitorpamplona/quartz scripts/nip-lookup.sh 50`.
 > Also note: this store deliberately **never verifies signatures** (it holds unsigned
 > rumors; verification is the caller's ingress job — see CLAUDE.md), so the "always
 > verify events" guidance below applies to clients, not to `NostrSemanticsStore`.
