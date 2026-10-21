@@ -106,10 +106,13 @@ class ProviderMapTest {
 
         @Volatile var gate: CompletableDeferred<Unit>? = null
 
+        /** An engine that answers but serves none of its lists: what a refresh must not take for "no lists". */
+        @Volatile var servesNothing = false
+
         override suspend fun search(query: EventQuery): List<EventDoc> {
             queries.incrementAndGet()
             gate?.await()
-            return inner.search(query)
+            return if (servesNothing) emptyList() else inner.search(query)
         }
     }
 
@@ -142,5 +145,19 @@ class ProviderMapTest {
         }
         assertEquals(1, index.queries.get(), "fifty callers, one rebuild")
         assertEquals(service, map.livePeek()?.lensOf(observer)?.rank)
+    }
+
+    @Test
+    fun `a refresh that reads no lists leaves the live read on the pass the stored reads keep`() {
+        val index = CountingLists()
+        runBlocking { index.put(list(observer, "30382:rank" to service)) }
+        val map = ProviderMap(index) { 1_700_000_000L }
+        runBlocking {
+            assertEquals(service, map.get().lensOf(observer).rank)
+            index.servesNothing = true
+            map.refresh()
+            assertEquals(service, map.get().lensOf(observer).rank, "the stored reads keep the pass, by design")
+            assertEquals(service, map.livePeek()?.lensOf(observer)?.rank, "and the live read must agree with them")
+        }
     }
 }

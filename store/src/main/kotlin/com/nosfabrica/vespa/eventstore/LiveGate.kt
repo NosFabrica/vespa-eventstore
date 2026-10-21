@@ -60,8 +60,9 @@ import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
  * for as long as it stayed open — 0 of 300 notes delivered where a REQ opened
  * after the list got all 300 — and one whose observer moved providers kept the
  * old one. The stored page resolves its lens per REQ, so this is the live half
- * agreeing with it. The lookup is the cached provider pass (a map read); with
- * none cached, just after a 10040 write invalidated it, [admitsNow] defers.
+ * agreeing with it. The lookup reads the newest provider pass (a map read);
+ * just after a 10040 write made it stale, [admitsNow] defers, and [admits]
+ * waits on the one rebuild every deferred event shares.
  */
 class LiveGate internal constructor(
     private val rules: List<Rule>,
@@ -71,7 +72,7 @@ class LiveGate internal constructor(
 ) {
     /** Which service an observer's rank lens reads: [now] off what is cached, [read] building it if it must. */
     internal interface Lenses {
-        /** The service the observer's 10040 names for rank (null: "trusts nobody"), or [Resolved.Unknown] while no pass is cached. */
+        /** The service the observer's 10040 names for rank (null: "trusts nobody"), or [Resolved.Unknown] while no current pass exists. */
         fun now(observer: String): Resolved
 
         suspend fun read(observer: String): String?

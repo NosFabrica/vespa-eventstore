@@ -226,6 +226,10 @@ internal class ProviderMap(
     private class Built(
         val trust: TrustProviders,
         val generation: Long,
+        /** [Pass.seq]: of two builds under one generation, the later-issued one wins, as for [cached]. */
+        val seq: Long,
+        /** Whether its query read any 10040 — an empty read never displaces one that did ([build]). */
+        val fromLists: Boolean,
     )
 
     @Volatile private var newest: Built? = null
@@ -249,6 +253,14 @@ internal class ProviderMap(
         livePeek()?.let { return it }
         val mine = CompletableDeferred<TrustProviders>()
         val running = liveBuild.compareAndExchange(null, mine)
+        if (running == null) {
+            // A flight may have landed between the peek and the exchange.
+            livePeek()?.let {
+                liveBuild.set(null)
+                mine.complete(it)
+                return it
+            }
+        }
         if (running != null) {
             return try {
                 running.await()
@@ -329,8 +341,15 @@ internal class ProviderMap(
         // cost of the pass the KDoc above promises is shared.
         val maps = docs.mapNotNull { it.toEvent() as? TrustProviderListEvent }
         val fresh = Pass(providersIn(maps), Delegations.delegationsOf(maps), issuedAt, seq)
-        // Newer build wins; a pass started under an older generation is never [livePeek]'s answer.
-        synchronized(swapLock) { if ((newest?.generation ?: -1L) <= startedUnder) newest = Built(fresh.trust, startedUnder) }
+        synchronized(swapLock) {
+            val prior = newest
+            // A newer build wins (generation, then issue order). An EMPTY read keeps lists this
+            // generation already holds, for the reason [cached] does below: the engine is not
+            // serving them. After an invalidate it is taken, as a stored read takes it then.
+            val newer = prior == null || prior.generation < startedUnder || (prior.generation == startedUnder && prior.seq < seq)
+            val keepsLists = docs.isEmpty() && prior != null && prior.fromLists && prior.generation == startedUnder
+            if (newer && !keepsLists) newest = Built(fresh.trust, startedUnder, seq, fromLists = docs.isNotEmpty())
+        }
         // Emptiness is judged on the DOCUMENTS, not on either projection: the
         // ambiguity this rule records is "no 10040s" versus "the engine has not
         // finished serving them", and only the query's own answer distinguishes
