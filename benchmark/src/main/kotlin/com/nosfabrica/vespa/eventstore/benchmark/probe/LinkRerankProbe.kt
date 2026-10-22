@@ -50,6 +50,11 @@ import java.nio.file.Path
  *
  *     VESPA_URL=http://localhost:8080 ./gradlew :benchmark:linkRerankProbe \
  *       --args="/tmp/links.json [limit=20] [reps=7] [strengths=0.25,0.5,1.0]"
+ *
+ * `LINK_PROBE_MODE=bands` prints the CALIBRATION view instead: per term, the
+ * match tiers in the engine's top window, the score spread inside each, and how
+ * many pairs the rerank inverts across tiers (`LINK_PROBE_SHOW=<term>` lists the
+ * window hit by hit).
  */
 object LinkRerankProbe {
     @JvmStatic
@@ -69,6 +74,8 @@ object LinkRerankProbe {
             val linkers = EventQuery(observer = observer, rankKey = provider, minRank = 2.0, ranking = EventYql.RANK_RECENCY_GATED)
 
             VespaEventStore.open(System.getenv("VESPA_URL") ?: "http://localhost:8080").use { vs ->
+                if (System.getenv("LINK_PROBE_MODE") == "bands") return@use bands(vs, terms, observer, provider, linkers, rerank)
+
                 suspend fun page(search: String) = vs.store.query<Event>(Filter(kinds = listOf(1), search = search, limit = limit))
 
                 suspend fun timed(search: String): Pair<List<Event>, Double> {
@@ -126,6 +133,102 @@ object LinkRerankProbe {
                 }
             }
         }
+
+    /**
+     * HOW FAR APART ARE THE ENGINE'S SCORES, and how often does the rerank cross a
+     * TEXT band — the calibration question (`LINK_PROBE_MODE=bands`). Per term,
+     * over the engine's top window: the distinct text scores (`text_score`, the
+     * band before trust and recency multiply in), the score ratio between
+     * neighbours, and how many pairs the rerank INVERTS against their text band
+     * (a hit with a strictly lower text score placed above one with a higher).
+     */
+    private suspend fun bands(
+        vs: VespaEventStore,
+        terms: List<String>,
+        observer: String,
+        provider: String,
+        linkers: EventQuery,
+        rerank: LinkRerank,
+    ) {
+        val now = System.currentTimeMillis() / 1000
+        println("term       hits tiers  match tiers (top text score x hits)                     nbr ratio p50/p90  top/last  tier inversions@0.5")
+        for (term in terms) {
+            val ranked =
+                vs.engine.searchRanked(
+                    EventQuery(kinds = listOf(1), search = term, observer = observer, rankKey = provider, followersKey = provider, minRank = 2.0, limit = rerank.window, nowSecs = now),
+                )
+            if (ranked.size < 2) continue
+            // TIERS, not raw text scores: inside one match tier text_score differs in
+            // the decimals (word positions and the like), between tiers by ~30x
+            // (measured: ~130,000 / ~4,000 / ~550). A tier is a run of the sorted
+            // distinct scores with no gap above 2x; its index is the band here.
+            val raw = ranked.map { it.textScore ?: 0.0 }
+            val cuts =
+                raw
+                    .distinct()
+                    .sortedDescending()
+                    .zipWithNext()
+                    .filter { (a, b) -> b <= 0.0 || a / b > 2.0 }
+                    .map { it.second }
+            val texts = raw.map { t -> -cuts.count { t <= it }.toDouble() }
+            val scores = ranked.map { it.score ?: 0.0 }
+            val bandHits =
+                raw
+                    .groupBy { t -> cuts.count { t <= it } }
+                    .entries
+                    .sortedBy { it.key }
+                    .map { (_, v) -> "%.0f".format(v.max()) to v.size }
+            val ratios = scores.zipWithNext { a, b -> if (b > 0) a / b else Double.NaN }.filter { it.isFinite() }.sorted()
+            val links = vs.engine.scoreLinks(ranked.map { "e:${it.hit.id}" }, linkers, rerank.weights)
+            val boosted = ranked.mapIndexed { i, r -> scores[i] * LinkRerank.multiplier(links["e:${r.hit.id}"]?.score ?: 0.0, rerank.strength) }
+            val order = boosted.indices.sortedByDescending { boosted[it] }
+            var inversions = 0
+            var pairs = 0
+            for (a in order.indices) {
+                for (b in a + 1 until order.size) {
+                    pairs++
+                    if (texts[order[a]] < texts[order[b]] - 1e-9) inversions++
+                }
+            }
+            // Within each tier: the best score over the tier's median and its worst —
+            // the spread author trust and recency already put there, which is what
+            // engagement competes with inside a tier.
+            val spread =
+                texts.indices.groupBy { texts[it] }.values.filter { it.size >= 3 }.joinToString(" ") { idx ->
+                    val s = idx.map { scores[it] }.sortedDescending()
+                    "%.1f/%.0f".format(s.first() / s[s.size / 2], s.first() / s.last())
+                }
+            if (System.getenv("LINK_PROBE_SHOW") == term) {
+                ranked.forEachIndexed { i, r ->
+                    println(
+                        "   %3d tier %d text %8.0f score %10.1f  %s".format(
+                            i + 1,
+                            -texts[i].toInt(),
+                            raw[i],
+                            scores[i],
+                            r.hit.content
+                                .replace(Regex("\\s+"), " ")
+                                .take(70),
+                        ),
+                    )
+                }
+            }
+            println(
+                "%-10s %4d %5d  %-55s %5.2f/%5.2f %9.1f  %d of %d".format(
+                    term,
+                    ranked.size,
+                    bandHits.size,
+                    bandHits.take(6).joinToString(" ") { "${it.first}x${it.second}" }.take(55),
+                    ratios[ratios.size / 2],
+                    ratios[(ratios.size * 9) / 10],
+                    scores.first() / scores.last(),
+                    inversions,
+                    pairs,
+                ),
+            )
+            println("   within-tier best/median and best/worst: $spread")
+        }
+    }
 
     /** The base read widened to the rerank window, timed — what widening alone costs. */
     private suspend fun timedWide(
