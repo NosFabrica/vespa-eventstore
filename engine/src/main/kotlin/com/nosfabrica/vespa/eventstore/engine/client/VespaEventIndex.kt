@@ -25,6 +25,8 @@ import ai.vespa.feed.client.Result
 import com.nosfabrica.vespa.eventstore.engine.DocRef
 import com.nosfabrica.vespa.eventstore.engine.DocsPage
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
+import com.nosfabrica.vespa.eventstore.engine.LinkScore
+import com.nosfabrica.vespa.eventstore.engine.LinkWeights
 import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.ScoredHit
 import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
@@ -1758,19 +1760,31 @@ class VespaEventIndex(
         }
 
     /**
-     * [EventIndex.countLinks] as ONE grouping ([EventYql.buildLinkCounts]):
-     * key, then kind, gated by [linkers]' lens where it has one. No near/profile
-     * fallback: the query carries no search text, and a schema predating the
-     * gated profiles predates everything a lensed rerank needs.
+     * [EventIndex.scoreLinks] as ONE grouping ([EventYql.buildLinkCounts]):
+     * key, then kind, gated and trust-summed by [linkers]' lens where it has one
+     * (the [EventYql.RANK_LINK_TRUST] profile scores a link by its author's rank
+     * cell; unranked, every linker counts 1.0), then folded by [weights] here — a handful of kinds per key, so the arithmetic costs
+     * nothing beside the round trip. No near/profile fallback: the query
+     * carries no search text, and a schema predating the gated profiles
+     * predates everything a lensed rerank needs.
      */
-    override suspend fun countLinks(
+    override suspend fun scoreLinks(
         keys: Collection<String>,
         linkers: EventQuery,
-    ): Map<String, Map<Int, Int>> {
-        if ((linkers.limit ?: 1) <= 0) return emptyMap()
-        val vq = EventYql.buildLinkCounts(keys, linkers) ?: return emptyMap()
+        weights: LinkWeights,
+    ): Map<String, LinkScore> {
+        val narrowed = weights.narrow(linkers)
+        if ((narrowed.limit ?: 1) <= 0) return emptyMap()
+        val vq = EventYql.buildLinkCounts(keys, narrowed) ?: return emptyMap()
         val root = queryRoot(vq, hits = 0) ?: return emptyMap()
-        return GroupingResults.keyKindCounts(root)
+        val lensed = vq.ranking == EventYql.RANK_LINK_TRUST
+        return GroupingResults.keyKindTallies(root).mapValues { (_, tallies) ->
+            val counts = tallies.mapValues { it.value.first }
+            // Unranked, relevance is 0 for every match and the sum says nothing:
+            // no lens is read, so every linker is fully trusted (see LinkScore).
+            val trust = tallies.mapValues { (_, t) -> if (lensed) (t.second ?: 0.0) / LinkScore.TRUST_SCALE else t.first.toDouble() }
+            weights.score(counts, trust)
+        }
     }
 
     // ---- transport funnels --------------------------------------------------

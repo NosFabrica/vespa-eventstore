@@ -57,14 +57,15 @@ class LinkRerankTest {
         assertEquals(10.0, LinkRerank.multiplier(99.0, 0.5), 1e-12)
         assertEquals(0.5, LinkRerank.multiplier(-3.0, 0.5), 1e-12)
         assertEquals(1.0, LinkRerank.multiplier(42.0, 0.0), "strength 0 is the engine's order")
-        val weighted = LinkRerank(kindWeight = { if (it == 1984) -5.0 else 1.0 })
-        assertEquals(-3.0, weighted.engagement(listOf(mapOf(7 to 2), mapOf(1984 to 1))))
+        assertEquals(-1.0, LinkRerank.DEFAULT_WEIGHTS.of(LinkRerank.REPORT_KIND), "a report hurts by default")
+        assertEquals(1.0, LinkRerank.DEFAULT_WEIGHTS.of(7))
     }
 
     /** A scripted engine: [scores] in engine order, [links] per hit id, and a record of what it was asked. */
     private class Engine(
         val scores: List<Pair<String, Double>>,
-        val links: Map<String, Int>,
+        /** Per hit id: its links by kind. */
+        val links: Map<String, Map<Int, Int>>,
     ) {
         val limits = ArrayList<Int?>()
         val linkCalls = ArrayList<Pair<Collection<String>, EventQuery>>()
@@ -79,9 +80,10 @@ class LinkRerankTest {
                 pointerOf = { null },
                 search = { q -> recall(q).map { it.hit } },
                 searchRanked = { q -> recall(q) },
-                countLinks = { keys, linkers ->
+                scoreLinks = { keys, linkers, weights ->
                     linkCalls += keys to linkers
-                    keys.mapNotNull { k -> links[k.removePrefix("e:")]?.let { k to mapOf(7 to it) } }.toMap()
+                    // Every linker fully trusted: the engine's trust sum is the reference's (LinkScore).
+                    keys.mapNotNull { k -> links[k.removePrefix("e:")]?.let { k to weights.score(it, it.mapValues { (_, n) -> n.toDouble() }) } }.toMap()
                 },
             )
 
@@ -97,7 +99,7 @@ class LinkRerankTest {
 
     private fun pages() = PageAssembly(SearchExpansionLimits(enabled = false), null, { Enrolment.NONE }, rerank)
 
-    private val engine = { Engine(listOf("a" to 10.0, "b" to 9.0, "c" to 8.0, "d" to 7.0), mapOf("d" to 99, "b" to 3)) }
+    private val engine = { Engine(listOf("a" to 10.0, "b" to 9.0, "c" to 8.0, "d" to 7.0), mapOf("d" to mapOf(7 to 99), "b" to mapOf(7 to 3))) }
 
     @Test
     fun `the recall widens to the window, trusted links reorder the head, and the page is cut back`() =
@@ -112,6 +114,14 @@ class LinkRerankTest {
             assertEquals(EventYql.RANK_RECENCY_GATED, linkers.ranking)
             assertEquals(lens, linkers.rankKey)
             assertEquals(2.0, linkers.minRank, "the read's own floor gates the linkers")
+        }
+
+    @Test
+    fun `a hit that drew only reports falls below one that drew nothing`() =
+        runBlocking {
+            // a: 10 x (1+3)^-0.5 = 5, under b (9) and c (8).
+            val e = Engine(listOf("a" to 10.0, "b" to 9.0, "c" to 8.0), mapOf("a" to mapOf(LinkRerank.REPORT_KIND to 3)))
+            assertEquals(listOf("b", "c"), pages().serve(listOf(query()), listOf(Filter(search = "zebra sort:links", limit = 2)), e.projection()))
         }
 
     @Test

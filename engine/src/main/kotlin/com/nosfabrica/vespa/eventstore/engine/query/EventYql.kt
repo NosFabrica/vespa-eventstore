@@ -152,6 +152,9 @@ object EventYql {
     /** The full-scan variant of [RANK_RECENCY_GATED]: exact for every shape, but ranks every match — the fallback and the unlimited/deep shape, not the hot path. */
     const val RANK_RECENCY_GATED_EXACT = "recency_gated_exact"
 
+    /** [buildLinkCounts]' lensed profile: the observer gate, scoring each link by its author's trust. */
+    const val RANK_LINK_TRUST = "link_trust"
+
     /** Trust-sorted within each match tier, descending (`sort:rank`). */
     const val RANK_DESC = "rank_desc"
 
@@ -695,7 +698,7 @@ object EventYql {
     fun buildDistinctTagValues(q: EventQuery): VespaQuery? = grouping(q, """all(group(tag_index) each(output(count())))""")
 
     /**
-     * [EventIndex.countLinks]' query: the documents [linkers] would serve that
+     * [EventIndex.scoreLinks]' query: the documents [linkers] would serve that
      * carry any of [keys] in `tag_index`, grouped by key and then by kind — one
      * engine round trip for a whole search page's links.
      *
@@ -710,12 +713,15 @@ object EventYql {
      * (benchmark/README.md, "Trusted links per search hit"), 6,137 groups for
      * the 26 that mattered, 117 ms against 17 ms with the filter.
      *
-     * GATED THE WAY A COUNT IS: [countProfileOf] picks the profile, so a lensed
-     * [linkers] (observer + floor, ranking [RANK_RECENCY_GATED]) runs on
+     * GATED AND TRUST-SCORED: a lensed [linkers] (a hex observer and the
+     * observer gate's ranking) runs on [RANK_LINK_TRUST] — the exact gate of
      * [RANK_RECENCY_GATED_EXACT], whose `rank-score-drop-limit` removes a
-     * below-floor author before the grouping sees it, and anything else runs
-     * unranked. That the drop happens before grouping even at `hits=0` is the
-     * engine's behavior, not a promise of this builder — `LinkCountsIT` pins it.
+     * below-floor author before the grouping sees it, with the author's trust
+     * as the score — and each kind group outputs `sum(relevance())` beside its
+     * count: the linkers' summed trust. Anything else runs unranked, where the
+     * sum is 0 and means nothing ([LINK_TRUST_SUM]'s reader knows which ran).
+     * That the drop happens before grouping even at `hits=0` is the engine's
+     * behavior, not a promise of this builder — `TrustedLinksIT` pins it.
      *
      * Null when nothing can match: no key a document could hold, or [linkers]
      * provably empty.
@@ -728,10 +734,14 @@ object EventYql {
         if (usable.isEmpty()) return null
         val keyClause = usable.joinToString(", ", prefix = "tag_index in (", postfix = ")") { quote(it) }
         val pattern = usable.joinToString("|", prefix = "^(?:", postfix = ")$") { regexLiteral(it) }
-        val pipeline = "all(group(tag_index) filter(regex(${quote(pattern)}, tag_index)) each(output(count()) all(group(kind) each(output(count())))))"
+        val pipeline = "all(group(tag_index) filter(regex(${quote(pattern)}, tag_index)) each(output(count()) all(group(kind) each(output(count(), $LINK_TRUST_SUM)))))"
         val q = linkers.copy(limit = null)
-        return grouping(q, pipeline, extra = keyClause, ranking = countProfileOf(q) ?: RANK_UNRANKED)
+        val lensed = q.observer?.lowercase()?.takeIf(Hex::isHex64) != null && (q.ranking == RANK_RECENCY_GATED || q.ranking == RANK_RECENCY_GATED_EXACT)
+        return grouping(q, pipeline, extra = keyClause, ranking = if (lensed) RANK_LINK_TRUST else RANK_UNRANKED)
     }
+
+    /** The grouping output [buildLinkCounts] sums each kind's linker trust with — also its key in the response's `fields`. */
+    const val LINK_TRUST_SUM = "sum(relevance())"
 
     /** A `"<letter>:<value>"` key `tag_index` could hold: an indexable one-letter name, a value, nothing [quote] cannot render. */
     private fun isLinkKey(key: String): Boolean = key.length > 2 && key[1] == ':' && isIndexableTagName(key.substring(0, 1)) && isQuotable(key)

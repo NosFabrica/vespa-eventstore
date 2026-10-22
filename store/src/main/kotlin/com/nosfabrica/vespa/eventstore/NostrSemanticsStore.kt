@@ -337,7 +337,7 @@ class NostrSemanticsStore(
             pointerOf = { if (it.kind in SearchReferences.KINDS) it.toEvent() else null },
             search = { index.search(it) },
             searchRanked = { index.searchRanked(it) },
-            countLinks = { keys, linkers -> index.countLinks(keys, linkers) },
+            scoreLinks = { keys, linkers, weights -> index.scoreLinks(keys, linkers, weights) },
         )
 
     /** The same, off a raw row — the projection the wire-serving path uses. */
@@ -351,7 +351,7 @@ class NostrSemanticsStore(
             pointerOf = { if (it.kind in SearchReferences.KINDS) it.toEvent() else null },
             search = { index.rawSearch(it) },
             searchRanked = { index.rawSearchRanked(it) },
-            countLinks = { keys, linkers -> index.countLinks(keys, linkers) },
+            scoreLinks = { keys, linkers, weights -> index.scoreLinks(keys, linkers, weights) },
         )
 
     private val bulkRecords = BulkRecordInsert(index, relay, guards)

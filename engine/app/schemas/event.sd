@@ -1931,6 +1931,35 @@ schema event {
         }
     }
 
+    # link_trust: the score of a LINK is its author's trust. EventIndex.scoreLinks
+    # groups the events that link to a search page's hits (e:<id> / a:<address>)
+    # by key and kind and reads `sum(relevance())` per group — the summed trust
+    # of the linkers — so a like from an author the observer trusts at 90 weighs
+    # forty-five times one from an author at 2, in the same single query.
+    #
+    # The gate is recency_gated_exact's, verbatim: below the floor maps to the
+    # sentinel and rank-score-drop-limit deletes the document before the
+    # grouping sees it (pinned at hits=0 by TrustedLinksIT). Full scan, no
+    # match-phase: a link set is small (thousands, not millions) and a cut
+    # would silently drop links from the sum. STANDALONE for the same reason
+    # recency_gated_exact is — no text features to compute per match — and its
+    # inputs mirror that profile's; keep them in sync.
+    rank-profile link_trust {
+        inputs {
+            query(user_q) tensor<float>(user{})
+            query(min_rank) double: -1000000000.0
+        }
+
+        function user_score() {
+            expression: sum(query(user_q) * attribute(author_influence_scores))
+        }
+
+        first-phase {
+            expression: if(user_score() >= query(min_rank), user_score(), -1000000000.0)
+            rank-score-drop-limit: -1000000.0
+        }
+    }
+
     # recency_gated: the hot-path variant for the dominant REQ shape ("kind 1,
     # limit 50, authenticated"). The match-phase keeps only the ~max-hits
     # newest candidates per node BEFORE the gate runs, so the cost matches the

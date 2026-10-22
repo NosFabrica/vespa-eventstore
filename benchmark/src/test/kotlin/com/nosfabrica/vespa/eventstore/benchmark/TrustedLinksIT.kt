@@ -21,9 +21,11 @@
 package com.nosfabrica.vespa.eventstore.benchmark
 
 import com.nosfabrica.vespa.eventstore.VespaEventStore
+import com.nosfabrica.vespa.eventstore.engine.LinkScore
 import com.nosfabrica.vespa.eventstore.engine.app.SchemaDeployer
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
+import com.nosfabrica.vespa.eventstore.search.LinkRerank
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
@@ -43,17 +45,20 @@ import kotlin.test.assertEquals
  * TRUSTED LINKS ON A REAL VESPA — what only the engine can answer about the
  * `sort:links` rerank (store/search/LinkRerank.kt):
  *
- *  - `EventIndex.countLinks`' grouping DEPLOYS and parses: the cross-letter key
- *    OR, the `filter(regex())` on the grouping, key then kind;
+ *  - `EventIndex.scoreLinks`' grouping DEPLOYS and parses: the cross-letter key
+ *    OR, the `filter(regex())` on the grouping, key then kind with each kind's
+ *    summed linker trust (the `link_trust` profile), folded by the weights into a
+ *    signed score: a like from an author trusted 100 is worth twice one from an
+ *    author at 50, and a trusted report alone scores below zero;
  *  - THE GATE REACHES THE GROUPING at `hits=0`: a below-floor author's link and
  *    an unranked author's link are not counted under the lens, and are without
  *    it. (A `totalCount` at `hits=0` skips the ranking pass on Vespa 8.731 —
  *    see VespaEventIndex.count — so this is pinned, not assumed);
  *  - a duplicated tag counts per entry, the contract the in-memory reference
- *    states (CountLinksTest);
+ *    states (ScoreLinksTest);
  *  - end to end through `open()`: a search page reorders by the trusted links
- *    alone — an under-ranked note with five trusted reactions overtakes one
- *    with twenty-one untrusted ones, even at `limit 1` (the widened recall is
+ *    alone — an under-ranked note with six trusted reactions overtakes one
+ *    with twenty-one untrusted ones and a trusted report, even at `limit 1` (the widened recall is
  *    what lets it in), and `sort:links:0` is the engine's order.
  *
  * Tagged `integration`; run with `-Pintegration` where Docker is available.
@@ -80,6 +85,7 @@ class TrustedLinksIT {
                             listOf(
                                 TrustProviderListEvent(hexId(), OBSERVER, now - 5_000, arrayOf(arrayOf("30382:rank", PROVIDER, "wss://scores.test/")), "", ""),
                                 card(TRUSTED, 50, now),
+                                card(HIGH, 100, now),
                                 card(LOW, 1, now),
                             ),
                         )
@@ -97,25 +103,38 @@ class TrustedLinksIT {
 
                         store.batchInsert(
                             List(5) { event(TRUSTED, 7, "+", now - 60 + it, arrayOf("e", under)) } +
+                                event(HIGH, 7, "+", now - 50, arrayOf("e", under)) +
                                 List(20) { event(LOW, 7, "+", now - 60 + it, arrayOf("e", top)) } +
                                 event(UNRANKED, 7, "+", now - 30, arrayOf("e", top)) +
                                 // A client that wrote the same `e` twice: two entries, two counts.
                                 event(TRUSTED, 1, "agreed", now - 20, arrayOf("e", under), arrayOf("e", under)) +
                                 event(TRUSTED, 1, "good read", now - 10, arrayOf("a", address)) +
-                                event(LOW, 1, "meh", now - 10, arrayOf("a", address)),
+                                event(LOW, 1, "meh", now - 10, arrayOf("a", address)) +
+                                // A trusted author REPORTS top: under the lens, top's only link.
+                                event(TRUSTED, 1984, "", now - 5, arrayOf("e", top, "spam")),
                         )
 
                         val keys = listOf("e:$top", "e:$under", "a:$address")
                         val lensed = EventQuery(observer = OBSERVER, rankKey = PROVIDER, minRank = 2.0, ranking = EventYql.RANK_RECENCY_GATED)
+                        val weights = LinkRerank.DEFAULT_WEIGHTS
                         assertEquals(
-                            mapOf("e:$under" to mapOf(7 to 5, 1 to 2), "a:$address" to mapOf(1 to 1)),
-                            store.engine.countLinks(keys, lensed),
-                            "under the lens only the trusted author's links count; top's 21 untrusted reactions are absent",
+                            mapOf(
+                                // Trust is the rank cell / 100: five likes at 0.5 and one at 1.0, two replies at 0.5.
+                                "e:$top" to LinkScore(-0.5, mapOf(1984 to 1), mapOf(1984 to 0.5)),
+                                "e:$under" to LinkScore(4.5, mapOf(7 to 6, 1 to 2), mapOf(7 to 3.5, 1 to 1.0)),
+                                "a:$address" to LinkScore(0.5, mapOf(1 to 1), mapOf(1 to 0.5)),
+                            ),
+                            store.engine.scoreLinks(keys, lensed, weights),
+                            "under the lens only trusted authors' links count, each at its author's trust: top's 21 untrusted reactions are gone and its report is all that is left",
                         )
                         assertEquals(
-                            mapOf("e:$top" to mapOf(7 to 21), "e:$under" to mapOf(7 to 5, 1 to 2), "a:$address" to mapOf(1 to 2)),
-                            store.engine.countLinks(keys, EventQuery()),
-                            "with no lens every link counts",
+                            mapOf(
+                                "e:$top" to LinkScore(20.0, mapOf(7 to 21, 1984 to 1), mapOf(7 to 21.0, 1984 to 1.0)),
+                                "e:$under" to LinkScore(8.0, mapOf(7 to 6, 1 to 2), mapOf(7 to 6.0, 1 to 2.0)),
+                                "a:$address" to LinkScore(2.0, mapOf(1 to 2), mapOf(1 to 2.0)),
+                            ),
+                            store.engine.scoreLinks(keys, EventQuery(), weights),
+                            "with no lens every link counts, every linker fully trusted",
                         )
 
                         assertEquals(base, store.query<Event>(Filter(kinds = listOf(1), search = search, limit = 2)).map { it.id }, "no token, the engine's order")
@@ -149,6 +168,7 @@ class TrustedLinksIT {
         val PROVIDER = "5e".repeat(32)
         val TRUSTED = "b1".repeat(32)
         val LOW = "b2".repeat(32)
+        val HIGH = "b4".repeat(32)
         val UNRANKED = "b3".repeat(32)
 
         private var seq = 0

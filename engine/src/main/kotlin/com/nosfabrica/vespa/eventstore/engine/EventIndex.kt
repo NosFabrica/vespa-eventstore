@@ -216,10 +216,12 @@ interface EventIndex : AutoCloseable {
     suspend fun countByAuthor(query: EventQuery): Map<String, Int> = search(query).groupingBy { it.pubkey }.eachCount()
 
     /**
-     * WHO LINKS TO WHAT: for each of [keys] — `"<letter>:<value>"` entries as
-     * [EventDoc.tagIndex] writes them, `e:<id>` / `a:<kind:pubkey:d>` for the
-     * links a search page reranks by — how many documents [linkers] would serve
-     * carry it, BY KIND. A key nothing links to is absent, not zero.
+     * WHAT EACH KEY'S LINKS ARE WORTH: for each of [keys] — `"<letter>:<value>"`
+     * entries as [EventDoc.tagIndex] writes them, `e:<id>` / `a:<kind:pubkey:d>`
+     * for the links a search page reranks by — the documents [linkers] would
+     * serve that carry it, counted by kind, each link weighed by its kind's
+     * [weights] TIMES its author's trust under [linkers]' lens, and summed into
+     * one signed [LinkScore]. A key nothing links to is absent: its score is 0.
      *
      * "Would serve", as in [count]: [linkers] is an ordinary filter over the
      * LINKING documents (kinds, a time window) and, above all, their lens — an
@@ -228,7 +230,8 @@ interface EventIndex : AutoCloseable {
      * OR'd across letters, which [EventQuery.tags] cannot say (it ANDs names,
      * as NIP-01 does), hence a parameter of their own; [linkers]' own `tags`
      * still AND on top. A positive limit is about hits and is ignored; a limit
-     * <= 0 is the "matches nothing" sentinel.
+     * <= 0 is the "matches nothing" sentinel. [weights] is the caller's policy,
+     * applied here, never chosen here ([LinkWeights]).
      *
      * COUNTS TAG ENTRIES, not documents: a document naming one key twice (a
      * client's duplicated `e`) counts twice under it, because the engine
@@ -239,31 +242,35 @@ interface EventIndex : AutoCloseable {
      *
      * The default materializes the linkers and tallies them — correct, and the
      * in-memory reference's answer (which, holding no reputation data, gates
-     * nobody, the same way its [count] does). The real client answers with one
-     * server-side grouping. A decorator MUST delegate to its inner index.
+     * nobody and trusts every linker fully, the same way its [count] gates
+     * nobody). The real client answers with one server-side grouping that sums
+     * the trust in the same pass. A decorator MUST delegate to its inner index.
      */
-    suspend fun countLinks(
+    suspend fun scoreLinks(
         keys: Collection<String>,
         linkers: EventQuery,
-    ): Map<String, Map<Int, Int>> {
-        if ((linkers.limit ?: 1) <= 0) return emptyMap()
+        weights: LinkWeights,
+    ): Map<String, LinkScore> {
+        val narrowed = weights.narrow(linkers)
+        if ((narrowed.limit ?: 1) <= 0) return emptyMap()
         val wanted = keys.filter { it.length > 2 && it[1] == ':' }.toSet()
         if (wanted.isEmpty()) return emptyMap()
-        val out = HashMap<String, HashMap<Int, Int>>()
+        val counts = HashMap<String, HashMap<Int, Int>>()
         // One recall per letter — the cross-letter OR the engine writes inline —
         // deduplicated by id so a document naming an `e` AND an `a` key is
         // tallied once, under both.
         val docs = HashMap<String, EventDoc>()
         for ((letter, entries) in wanted.groupBy { it.substring(0, 1) }) {
             val values = entries.map { it.substring(2) }
-            search(linkers.copy(limit = null, tags = linkers.tags + (letter to values))).forEach { docs[it.id] = it }
+            search(narrowed.copy(limit = null, tags = narrowed.tags + (letter to values))).forEach { docs[it.id] = it }
         }
         for (doc in docs.values) {
             for (entry in doc.tagIndex()) {
-                if (entry in wanted) out.getOrPut(entry) { HashMap() }.merge(doc.kind, 1, Int::plus)
+                if (entry in wanted) counts.getOrPut(entry) { HashMap() }.merge(doc.kind, 1, Int::plus)
             }
         }
-        return out
+        // No reputation data here: every linker is fully trusted (see LinkScore).
+        return counts.mapValues { (_, byKind) -> weights.score(byKind, byKind.mapValues { it.value.toDouble() }) }
     }
 
     /**

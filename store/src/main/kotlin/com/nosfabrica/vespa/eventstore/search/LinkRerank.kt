@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore.search
 
+import com.nosfabrica.vespa.eventstore.engine.LinkWeights
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.nosfabrica.vespa.eventstore.mapping.DEFAULT_MIN_RANK
@@ -39,17 +40,21 @@ import kotlin.math.sign
  * That says nothing about whether anyone the observer trusts cared about the
  * note. This reads it: the events that LINK to each hit — `e:<id>`, and
  * `a:<kind:pubkey:d>` for an addressable one — written by authors the same
- * lens clears ([EventQuery.minRank], the read's own floor), counted per kind in
- * ONE grouping for the whole window ([com.nosfabrica.vespa.eventstore.engine.EventIndex.countLinks]),
- * folded into an ENGAGEMENT number by [kindWeight], and turned into a
- * multiplier on the engine's own score ([multiplier]).
+ * lens clears ([EventQuery.minRank], the read's own floor), each link worth its
+ * kind's weight ([weights]) TIMES its author's trust under that lens (the rank
+ * cell, 0..1), scored in ONE grouping for the whole window
+ * ([com.nosfabrica.vespa.eventstore.engine.EventIndex.scoreLinks]) — a hit's
+ * ENGAGEMENT is the sum of its keys' scores — and turned into a multiplier on
+ * the engine's own score ([multiplier]). A like from an author trusted 90 is
+ * worth 0.9; from one barely over the floor, 0.02.
  *
  * WHY A MULTIPLIER ON THE ENGINE'S SCORE, not a new score: the engine's number
  * already carries the text tiers, the author's trust and recency on one
  * scale, and the store has no business re-deriving any of them. Scaling it
  * keeps every one of those decisions and lets engagement move a hit only as
- * far as [strength] allows — at the default a hit needs ~3 trusted links to
- * double, ~99 to go ×10.
+ * far as [strength] allows — at the default a hit needs ~3 links' worth of
+ * trust to double (three likes from fully trusted authors, six from authors at
+ * 50), ~99 to go ×10.
  *
  * WHY A WINDOW: the signal depends on the observer, so it cannot be stored per
  * event, and a rank profile cannot read another document's links — it is a
@@ -66,20 +71,20 @@ import kotlin.math.sign
  * popularity contest the gate exists to keep out — so it is served as if the
  * token were absent (still cut back to its limit).
  *
- * PER-KIND WEIGHTS are the seam for what comes next — zaps by amount, likes,
- * reports as a NEGATIVE weight, reposts, 5-star ratings. Today every kind
- * weighs 1 and engagement is a plain link count; a negative total shrinks the
- * score by the same curve it grows by ([multiplier]).
+ * PER-KIND WEIGHTS ([LinkWeights]) are where the policy lives, and the seam for
+ * what comes next — zaps by amount, likes, reposts, 5-star ratings. The default
+ * ([DEFAULT_WEIGHTS]) is the minimal one: every link +1, a NIP-56 report (kind
+ * 1984) −1, so a note that drew only reports scores BELOW one that drew nothing.
+ * A negative total shrinks the engine's score by the same curve a positive one
+ * grows it ([multiplier]): demoted, never sign-flipped, never dropped.
  */
 class LinkRerank(
     /** How many of the engine's top hits are rescored; a read asking for fewer is widened to this. */
     val window: Int = DEFAULT_WINDOW,
     /** The exponent on `1 + |engagement|` when the token names none (`sort:links`). */
     val strength: Double = DEFAULT_STRENGTH,
-    /** The linking kinds counted; empty = every kind. */
-    val kinds: List<Int> = emptyList(),
-    /** One link's worth by its kind. 1 for all today; see the class KDoc. */
-    val kindWeight: (Int) -> Double = { 1.0 },
+    /** What one link is worth by its kind — the policy; see the class KDoc. */
+    val weights: LinkWeights = DEFAULT_WEIGHTS,
 ) {
     init {
         require(window > 0) { "window must be positive" }
@@ -114,7 +119,6 @@ class LinkRerank(
     fun linkersOf(lens: EventQuery): EventQuery? {
         if (lens.observer == null || lens.rankKey == null) return null
         return EventQuery(
-            kinds = kinds,
             observer = lens.observer,
             rankKey = lens.rankKey,
             followersKey = lens.followersKey,
@@ -132,9 +136,6 @@ class LinkRerank(
         address: String?,
     ): List<String> = if (address == null) listOf("e:$id") else listOf("e:$id", "a:$address")
 
-    /** One hit's engagement: every link under every one of its keys, weighed by kind. */
-    fun engagement(byKind: Iterable<Map<Int, Int>>): Double = byKind.sumOf { counts -> counts.entries.sumOf { (kind, n) -> kindWeight(kind) * n } }
-
     companion object {
         /** The `sort:` value that asks for it. */
         const val TOKEN = "links"
@@ -144,6 +145,12 @@ class LinkRerank(
 
         /** See the class KDoc: ×2 at ~3 links, ×10 at ~99. */
         const val DEFAULT_STRENGTH = 0.5
+
+        /** NIP-56: a report names the event it reports with an `e` tag. */
+        const val REPORT_KIND = 1984
+
+        /** Every link +1, a report −1 — the minimal weighting; see the class KDoc. */
+        val DEFAULT_WEIGHTS = LinkWeights(byKind = mapOf(REPORT_KIND to -1.0))
 
         /**
          * `(1 + |e|) ^ (strength × sign(e))`: 1 at no engagement, growing with

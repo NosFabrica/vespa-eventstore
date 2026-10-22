@@ -20,10 +20,12 @@
  */
 package com.nosfabrica.vespa.eventstore.engine.client
 
+import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -56,15 +58,16 @@ internal object GroupingResults {
         }
 
     /**
-     * A two-level `group(<key>) each(… all(group(kind) each(output(count()))))`
-     * — [EventYql.buildLinkCounts]' shape — as key -> kind -> count.
+     * A two-level `group(<key>) each(… all(group(kind) each(output(count(), sum(relevance())))))`
+     * — [EventYql.buildLinkCounts]' shape — as key -> kind -> (count, summed
+     * relevance), the sum null where the response carries none.
      *
      * Read by grouplist LABEL rather than by depth: [groupCounts] collects every
      * `group:` node it meets, which on this shape would fold the kinds' leaf
      * groups ("1", "7") into the same map as the keys they sit under.
      */
-    fun keyKindCounts(root: JsonObject): Map<String, Map<Int, Int>> {
-        val out = LinkedHashMap<String, Map<Int, Int>>()
+    fun keyKindTallies(root: JsonObject): Map<String, Map<Int, Pair<Int, Double?>>> {
+        val out = LinkedHashMap<String, Map<Int, Pair<Int, Double?>>>()
 
         fun groupsUnder(
             node: JsonObject,
@@ -77,16 +80,12 @@ internal object GroupingResults {
 
         for (keyGroup in groupsUnder(root, "tag_index")) {
             val key = (keyGroup["value"] as? JsonPrimitive)?.content ?: continue
-            val byKind = LinkedHashMap<Int, Int>()
+            val byKind = LinkedHashMap<Int, Pair<Int, Double?>>()
             for (kindGroup in groupsUnder(keyGroup, "kind")) {
                 val kind = (kindGroup["value"] as? JsonPrimitive)?.content?.toIntOrNull() ?: continue
-                val count =
-                    kindGroup["fields"]
-                        ?.jsonObject
-                        ?.get("count()")
-                        ?.jsonPrimitive
-                        ?.intOrNull ?: continue
-                byKind[kind] = count
+                val fields = kindGroup["fields"]?.jsonObject ?: continue
+                val count = fields["count()"]?.jsonPrimitive?.intOrNull ?: continue
+                byKind[kind] = count to fields[EventYql.LINK_TRUST_SUM]?.jsonPrimitive?.doubleOrNull
             }
             if (byKind.isNotEmpty()) out[key] = byKind
         }

@@ -1345,9 +1345,9 @@ class EventYqlTest {
      * The link count is ONE query over every key of a page: a cross-letter OR in
      * the WHERE clause, a grouping filtered to exactly those keys (without the
      * filter every tag of every link becomes a group — the measured 117 ms vs
-     * 17 ms), key then kind, and the observer gate's FULL-SCAN profile when the
-     * linkers carry a lens — the match-phase variant would cut the set a count
-     * must see whole.
+     * 17 ms), key then kind with each kind's summed linker trust, and the
+     * gated, trust-scoring `link_trust` profile when the linkers carry a lens —
+     * full scan, since a match-phase cut would drop links from the sum.
      */
     @Test
     fun `link counts group the page's keys by kind, gated through the exact profile`() {
@@ -1364,10 +1364,11 @@ class EventYqlTest {
         val vq = EventYql.buildLinkCounts(listOf("e:$id", "a:$address", "e:$id"), lensed)!!
         assertTrue(vq.yql.contains("""tag_index in ("e:$id", "a:$address")"""), vq.yql)
         assertTrue(vq.yql.contains(" limit 0 | all(group(tag_index) filter(regex("), vq.yql)
-        assertTrue(vq.yql.contains("each(output(count()) all(group(kind) each(output(count()))))"), vq.yql)
+        assertTrue(vq.yql.contains("each(output(count()) all(group(kind) each(output(count(), sum(relevance())))))"), vq.yql)
         // Punctuation escaped (RE2 takes `\:` and `\.` as themselves), letters and digits never.
         assertTrue(vq.yql.contains("""^(?:e\\:$id|a\\:30023\\:${"cd".repeat(32)}\\:a\\.b\\(c\\))$"""), vq.yql)
-        assertEquals(EventYql.RANK_RECENCY_GATED_EXACT, vq.ranking)
+        // The trust-scoring twin of recency_gated_exact: the same gate, the linker's trust as the score.
+        assertEquals(EventYql.RANK_LINK_TRUST, vq.ranking)
         assertEquals("{${"5e".repeat(32)}:1.0}", vq.params["ranking.features.query(user_q)"])
         assertEquals("2.0", vq.params["ranking.features.query(min_rank)"])
         assertEquals(EventYql.UNLIMITED_GROUPS, vq.params["grouping.defaultMaxGroups"])

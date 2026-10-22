@@ -20,6 +20,8 @@
  */
 package com.nosfabrica.vespa.eventstore.search
 
+import com.nosfabrica.vespa.eventstore.engine.LinkScore
+import com.nosfabrica.vespa.eventstore.engine.LinkWeights
 import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.async.QUERY_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
@@ -86,8 +88,8 @@ internal class PageAssembly(
         val pointerOf: (R) -> Event?,
         val search: suspend (EventQuery) -> List<R>,
         val searchRanked: suspend (EventQuery) -> List<Ranked<R>>,
-        /** [com.nosfabrica.vespa.eventstore.engine.EventIndex.countLinks] — what the `sort:links` rerank reads. */
-        val countLinks: suspend (Collection<String>, EventQuery) -> Map<String, Map<Int, Int>>,
+        /** [com.nosfabrica.vespa.eventstore.engine.EventIndex.scoreLinks] — what the `sort:links` rerank reads. */
+        val scoreLinks: suspend (Collection<String>, EventQuery, LinkWeights) -> Map<String, LinkScore>,
     )
 
     /**
@@ -307,10 +309,12 @@ internal class PageAssembly(
         if (scores == null || linkers == null || scores.any { it == null } || page.hits.isEmpty()) return page.cut(asked)
         val head = minOf(rerank.window, page.hits.size)
         val keys = List(head) { rerank.keysOf(projection.idOf(page.hits[it]), projection.keys.addressOf(page.hits[it])) }
-        val links = projection.countLinks(keys.flatten(), linkers)
+        val links = projection.scoreLinks(keys.flatten(), linkers, rerank.weights)
         val boosted =
             List(head) { i ->
-                val engagement = rerank.engagement(keys[i].mapNotNull { links[it] })
+                // A hit's engagement is the sum over its keys (its id and, for an
+                // addressable, its address); a key nothing links to scores 0.
+                val engagement = keys[i].sumOf { links[it]?.score ?: 0.0 }
                 scores[i]!! * LinkRerank.multiplier(engagement, strength)
             }
         // Stable: equal rescored hits keep the engine's order between them.

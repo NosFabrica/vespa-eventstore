@@ -108,14 +108,20 @@ object LinkRerankProbe {
                 for ((term, pair) in pages) {
                     val (base, linked) = pair
                     val wide = vs.store.query<Event>(Filter(kinds = listOf(1), search = "$term observer:$observer", limit = rerank.window)).map(Event::id)
-                    val counts = vs.engine.countLinks(linked.map { "e:${it.id}" }, linkers)
-                    println("\n'$term' with sort:links (strength ${rerank.strength}): new pos <- engine pos, trusted links by kind")
+                    val scores = vs.engine.scoreLinks(linked.map { "e:${it.id}" }, linkers, rerank.weights)
+                    println("\n'$term' with sort:links (strength ${rerank.strength}): new pos <- engine pos, link score, trusted links by kind")
                     linked.take(10).forEachIndexed { i, e ->
                         val was = wide.indexOf(e.id).let { if (it < 0) "?" else (it + 1).toString() }
-                        val byKind = counts["e:${e.id}"].orEmpty()
-                        val mix = byKind.entries.sortedByDescending { it.value }.joinToString(" ") { "${it.key}:${it.value}" }
+                        val link = scores["e:${e.id}"]
+                        val mix =
+                            link
+                                ?.byKind
+                                .orEmpty()
+                                .entries
+                                .sortedByDescending { it.value }
+                                .joinToString(" ") { "${it.key}:${it.value}" }
                         val text = e.content.replace(Regex("\\s+"), " ").take(60)
-                        println("%3d <- %-4s %5d  %-26s %s".format(i + 1, was, byKind.values.sum(), mix.take(26), text))
+                        println("%3d <- %-4s %6.0f  %-26s %s".format(i + 1, was, link?.score ?: 0.0, mix.take(26), text))
                     }
                 }
             }

@@ -1390,6 +1390,57 @@ tens of ms on the live cluster. A store method on `EventIndex` would also be a
 port member — `TrustProjection` and `MeteredEventIndex` in the same commit
 (`PortDecoratorsTest`).
 
+### The rerank, prototyped: `sort:links` (`linkRerankProbe`, 2026-10-22)
+
+Built as above, opt-in per query. `EventIndex.scoreLinks` is one grouping over the
+head's `e:<id>` / `a:<address>` keys, key then kind, on the new `link_trust` profile
+(event.sd): the observer gate of `recency_gated_exact` verbatim, with the linking
+author's rank cell as the score, so each kind group's `sum(relevance())` is its
+linkers' summed TRUST. The store's `LinkWeights` (every link +1, a NIP-56 report −1)
+fold that into a SIGNED score: a link is worth its kind's weight × its author's trust
+(rank / 100). `store/search/LinkRerank` multiplies each of the top 100 hits' engine
+score by `(1 + |score|)^(±strength)`, re-sorts, and cuts back to the asked limit (a
+read asking for fewer is recalled at 100). `TrustedLinksIT` pins the engine side on a
+real Vespa: the gate reaches the grouping at `hits=0`, a like from an author at 100
+sums to exactly twice one at 50, a trusted report alone scores −0.5, and a note with
+six trusted reactions overtakes one with twenty-one untrusted ones — at `limit 1` too.
+
+Same capture, same local Vespa, through `open()`, the 12 search pages, median of 7 on
+an idle box:
+
+| page | base search | widened to 100, no rerank | `sort:links` | added | hits changed vs base |
+|---|---:|---:|---:|---:|---:|
+| top 20 | 16–52 ms | 27–82 ms | 55–108 ms | **+47 ms** median | 4–16 of 20 at strength 0.5 (1–16 at 0.25, 5–18 at 1.0) |
+| top 50 | 18–77 ms | 19–63 ms | 56–99 ms | **+38 ms** median | 6–24 of 50 |
+
+- **Where the time goes**: ~10 ms is the widened recall (summaries for 100
+  hits instead of 20), the rest the score query and its fold — the GROUPED_KIND
+  cost above plus the store's pipeline. Summing trust rides the same grouping:
+  the trust-weighted version costs what the count-only one did (+45 / +34 ms).
+- **Trust weighting is what keeps bots out of the head.** The trusted linkers'
+  ranks are spread wide (p10 3, p25 34, p50 81, p90 100), so weighting by them
+  is not a rescaling of the count. `amethyst`'s v1.17 note drew 400 trusted
+  links, 306 of them labels from low-ranked labelers: 400 counted, 71 weighted —
+  it fell from #2 to #3 behind notes people the observer trusts reacted to.
+  `bitcoin`'s 72-reply thread keeps most of its weight (45): its repliers are
+  trusted.
+- **It moves pages a lot.** Strength barely matters between 0.25 and 1.0: inside a
+  search's top 100 the engine's scores are close, so one multiplier ≥ ~1.4 (one
+  fully trusted link) reorders them. `amethyst`'s new #1 sat at #96; `freedom`'s
+  84-link quote rose from #10 to #5. A page of notes nobody engaged with barely
+  moves (`zap`, `lightning`: 1–5 of 20 changed).
+- **What is not right yet**: a zap receipt (9735) is signed by the RECIPIENT's
+  LNURL server, so it is weighed by the wallet service's trust (99 for the big
+  ones), not the zapper's — the sender is in the receipt's `P` tag, which needs a
+  feed-time attribute before the engine can read it. Zap AMOUNTS and report
+  REASONS are invisible for the same reason (`tag_index` keeps a tag's value
+  only). The capture held no reports, so the −1 never fired here. Per-kind
+  weights themselves are data (`LinkWeights`): a policy change, not a code change.
+
+`./gradlew :benchmark:linkRerankProbe --args="/tmp/links.json [limit] [reps] [strengths]"`
+prints the table and, per term, the reranked head: new position, engine position,
+link score, links by kind, and the note.
+
 Reproduce:
 
 ```
