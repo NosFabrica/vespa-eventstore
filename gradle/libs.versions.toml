@@ -4,8 +4,25 @@ kotlin = "2.4.0"
 app = "1.0.1"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"
-# Quartz from JitPack (amethyst @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
-# e7f23068e0 = amethyst main @ 2026-10-21: the amethyst #4591 merge, its two commits the only ones over
+# Quartz from JitPack (vitorpamplona/quartz @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
+# dfe281430a = vitorpamplona/quartz @ 2026-10-21, the first pin from Quartz's own repo: it left Amethyst
+# that day, so the coordinates move from com.github.vitorpamplona.amethyst:quartz to
+# com.github.vitorpamplona.quartz:quartz. Over e7f23068e0 (below) it carries vitorpamplona/quartz#3, the
+# outbox fix (a failed connection keeps an event pending, re-sent on the next one, and gives it up after
+# two minutes unreachable: a relay restart used to drop vespa-relay's whole RelayWriter window, stalling
+# its sync until a timeout), and vitorpamplona/quartz#6, whose head this is: a jitpack.yml that runs
+# Gradle without JitPack's $MAVEN_CENTRAL_MIRROR, a Google mirror that lags Central by days and had no
+# crypto-kmp or mls-kmp 1.0.0 (every JitPack build of Quartz failed from the crypto-kmp split on; this
+# repo's jitpack.yml does the same, for the same two). Scanned against this store's imports (a tree
+# diff of quartz/src between the pins, main sources): outside the client outbox (relay.client.pool,
+# NostrClient), every change in a package this store imports is an import line, because the crypto
+# primitives (utils/sha256, ciphers, mac, …) moved to crypto-kmp, MLS to mls-kmp and the chess engine
+# to Amethyst. That includes nip01Core.crypto's hasher, nip01Core.store.sqlite and the relay server.
+# Inert here: this store imports nothing from relay.client. The runtime classpath gains
+# com.vitorpamplona.crypto:crypto and com.vitorpamplona.mls:mls 1.0.0 (both MIT, from Maven Central)
+# and loses kchesslib, kotlinx-datetime and kotlinx-io.
+#
+# Prev e7f23068e0 = amethyst main @ 2026-10-21: the amethyst #4591 merge, its two commits the only ones over
 # 98089642eb (below) touching quartz/, both in relay.client: NostrClient.keepConnected (a relay held
 # connected between bursts), an auth-required: no responder can answer ends an event's delivery, and
 # publishStream opens its window at once on an open socket. Taken for vespa-relay's sync, which
@@ -114,7 +131,7 @@ mavenPublish = "0.37.0"
 # catch-all; SearchableEvent grows the read-path forEachIndexableField, no reindex).
 # Prev cecc3287b2 (2026-09-01: 17 catch-all kinds split into title/body roles, four
 # affiliation URLs, six doubled `t`-tag scans dropped; a ranking backfill).
-quartz = "e7f23068e0"
+quartz = "dfe281430a"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 # Matches what Quartz brings transitively; Gradle would resolve to it regardless.
@@ -140,7 +157,7 @@ ktlint = "1.8.0"
 testcontainers = "1.20.4"
 
 [libraries]
-quartz = { module = "com.github.vitorpamplona.amethyst:quartz", version.ref = "quartz" }
+quartz = { module = "com.github.vitorpamplona.quartz:quartz", version.ref = "quartz" }
 kotlinx-coroutines = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }

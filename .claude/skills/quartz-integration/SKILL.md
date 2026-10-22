@@ -12,7 +12,7 @@ Reference for integrating `com.vitorpamplona.quartz:quartz` into external Nostr 
 **License**: MIT
 
 > **In this repo (vespa-eventstore):** Quartz is NOT consumed from Maven Central.
-> It comes from **JitPack pinned by commit** — `com.github.vitorpamplona.amethyst:quartz`
+> It comes from **JitPack pinned by commit** — `com.github.vitorpamplona.quartz:quartz`
 > with `quartz = "<sha>"` in `gradle/libs.versions.toml` — and is exposed as `api(libs.quartz)`
 > from `:store`. Bumps are deliberate; the toml comment records what the new pin contains.
 > Ignore §1 (Gradle Setup) and the version numbers here; everything else (APIs, packages,
@@ -20,7 +20,8 @@ Reference for integrating `com.vitorpamplona.quartz:quartz` into external Nostr 
 > (`NostrSemanticsStore`), so §14's SQLite `EventStore` is the sibling implementation we
 > benchmark against — not something to use here.
 
-> Skill imported from `vitorpamplona/amethyst` `.claude/skills/quartz-integration`.
+> Skill imported from `vitorpamplona/amethyst` `.claude/skills/quartz-integration`; Quartz and its
+> client skill now live in `vitorpamplona/quartz` (`quartz/agent-skill/quartz/`).
 > If Quartz APIs drift after a pin bump, refresh this copy from upstream.
 
 ---
