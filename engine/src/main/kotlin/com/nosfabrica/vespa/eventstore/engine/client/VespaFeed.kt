@@ -23,6 +23,9 @@ package com.nosfabrica.vespa.eventstore.engine.client
 import ai.vespa.feed.client.FeedClient
 import ai.vespa.feed.client.FeedClientBuilder
 import java.net.URI
+import javax.net.ssl.KeyManager
+import javax.net.ssl.SSLContext
+import javax.net.ssl.TrustManager
 
 /**
  * The WRITE-side transport to Vespa: builds and tunes the official feed client
@@ -32,6 +35,14 @@ import java.net.URI
  */
 internal class VespaFeed(
     urls: List<String>,
+    /**
+     * Build the client now rather than on the first write. True for a store
+     * that writes, so a feed setting the client refuses (a connection budget
+     * past its thread pool) still fails the boot rather than the first write.
+     * False for a read-only store, which never writes and so never pays for
+     * the client's Jetty pool and HTTP/2 connections at all.
+     */
+    eager: Boolean = true,
 ) {
     /**
      * Connections per endpoint. The tuned 32 is a CLUSTER budget, split across
@@ -59,10 +70,23 @@ internal class VespaFeed(
                 ?: error("VESPA_FEED_COMPRESSION must be auto, gzip or none, was '$value'")
         } ?: FeedClientBuilder.Compression.auto
 
+    private val built: Lazy<FeedClient> = lazy { build(urls.map { URI.create(it) }) }
+
     /** The tuned client. Operations go straight through it; only construction and health live here. */
-    val client: FeedClient =
+    val client: FeedClient get() = built.value
+
+    init {
+        if (eager) built.value
+    }
+
+    private fun build(uris: List<URI>): FeedClient =
         FeedClientBuilder
-            .create(urls.map { URI.create(it) })
+            .create(uris)
+            // Every endpoint plaintext (h2c), so TLS is never spoken, but the client builds an
+            // SSL context whatever the scheme. Its own builder loads BouncyCastle and verifies the
+            // signed jars that ship it: profiled at a relay's boot, about 1 s of a 1.9 s store
+            // open. An inert JDK context costs next to nothing.
+            .apply { if (uris.all { it.scheme == "http" }) setSslContext(PLAINTEXT_ONLY) }
             // Bursty batched ingest idles at the throttle FLOOR (minInflight =
             // 2 x connectionsPerEndpoint) — the throttler never sustains its
             // upward probe. At 8 connections that floor was ~16 in flight,
@@ -88,6 +112,7 @@ internal class VespaFeed(
      * pushing" (tiny window, low latency) at a glance.
      */
     fun statusLine(): String {
+        if (!built.isInitialized()) return "feed idle (no writes yet)"
         val s = client.stats()
         // Non-2xx responses get retried and usually succeed (pushback, not
         // loss); only transport exceptions are worth shouting about.
@@ -98,8 +123,21 @@ internal class VespaFeed(
     }
 
     /** Feed operations in flight RIGHT NOW — a gauge, not a counter: it has no cumulative form. */
-    fun inflight(): Long = client.stats().inflight()
+    fun inflight(): Long = if (built.isInitialized()) client.stats().inflight() else 0
 
     /** Graceful: waits for in-flight feed operations before closing the connections. */
-    fun close() = client.close(true)
+    fun close() {
+        if (built.isInitialized()) client.close(true)
+    }
+
+    private companion object {
+        /**
+         * Trusts no certificate and presents none: for a client whose endpoints are all
+         * `http://`, where no handshake ever happens. Empty arrays, not nulls, which would load
+         * the default trust store for nothing.
+         */
+        val PLAINTEXT_ONLY: SSLContext by lazy {
+            SSLContext.getInstance("TLS").apply { init(arrayOf<KeyManager>(), arrayOf<TrustManager>(), null) }
+        }
+    }
 }
