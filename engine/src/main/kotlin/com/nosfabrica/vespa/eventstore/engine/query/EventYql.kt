@@ -152,8 +152,11 @@ object EventYql {
     /** The full-scan variant of [RANK_RECENCY_GATED]: exact for every shape, but ranks every match — the fallback and the unlimited/deep shape, not the hot path. */
     const val RANK_RECENCY_GATED_EXACT = "recency_gated_exact"
 
-    /** [buildLinkCounts]' lensed profile: the observer gate, scoring each link by its author's trust. */
+    /** [buildLinkPeople]' lensed profile: the observer gate, scoring each link by its author's trust. */
     const val RANK_LINK_TRUST = "link_trust"
+
+    /** `reputation.sd`'s profile scoring a pubkey by its rank cell under the lens ([buildTrustCells]). */
+    const val RANK_TRUST_CELL = "trust_cell"
 
     /** Trust-sorted within each match tier, descending (`sort:rank`). */
     const val RANK_DESC = "rank_desc"
@@ -698,9 +701,12 @@ object EventYql {
     fun buildDistinctTagValues(q: EventQuery): VespaQuery? = grouping(q, """all(group(tag_index) each(output(count())))""")
 
     /**
-     * [EventIndex.scoreLinks]' query: the documents [linkers] would serve that
-     * carry any of [keys] in `tag_index`, grouped by key and then by kind — one
-     * engine round trip for a whole search page's links.
+     * The PEOPLE half of [EventIndex.scoreLinks]: the documents [linkers] would
+     * serve that carry any of [keys] in `tag_index`, grouped key -> author ->
+     * kind, each kind group carrying its count and `sum(relevance())` — under the
+     * lens, the author's summed trust. Zap receipts are left out
+     * ([buildLinkZaps] reads them): their author is the recipient's LNURL server,
+     * not a person who engaged.
      *
      * The key clause is an OR over every letter at once (`tag_index in ("e:…",
      * "a:…")`), which no [EventQuery] can say — its `tags` AND across names, as
@@ -711,36 +717,99 @@ object EventYql {
      * document's array — a reply's whole `p` list, its thread root, its client
      * tag — and that is where the time goes: measured on real search pages
      * (benchmark/README.md, "Trusted links per search hit"), 6,137 groups for
-     * the 26 that mattered, 117 ms against 17 ms with the filter.
+     * the 26 that mattered, 117 ms against 17 ms with the filter. (Inside a key's
+     * group, `tag_index` is that key alone — Vespa binds a grouped multivalue
+     * attribute to the group's value — which is why the zapper, another element
+     * of the same array, cannot be grouped here and has a query of its own.)
      *
-     * GATED AND TRUST-SCORED: a lensed [linkers] (a hex observer and the
-     * observer gate's ranking) runs on [RANK_LINK_TRUST] — the exact gate of
-     * [RANK_RECENCY_GATED_EXACT], whose `rank-score-drop-limit` removes a
-     * below-floor author before the grouping sees it, with the author's trust
-     * as the score — and each kind group outputs `sum(relevance())` beside its
-     * count: the linkers' summed trust. Anything else runs unranked, where the
-     * sum is 0 and means nothing ([LINK_TRUST_SUM]'s reader knows which ran).
-     * That the drop happens before grouping even at `hits=0` is the engine's
-     * behavior, not a promise of this builder — `TrustedLinksIT` pins it.
+     * GATED AND TRUST-SCORED: a lensed [linkers] ([isLensed]) runs on
+     * [RANK_LINK_TRUST] — the exact gate of [RANK_RECENCY_GATED_EXACT], whose
+     * `rank-score-drop-limit` removes a below-floor author before the grouping
+     * sees it, with the author's rank cell as the score. Anything else runs
+     * unranked, where the sum is 0 and means nothing. That the drop happens
+     * before grouping even at `hits=0` is the engine's behavior, not a promise of
+     * this builder — `TrustedLinksIT` pins it.
      *
      * Null when nothing can match: no key a document could hold, or [linkers]
      * provably empty.
      */
-    fun buildLinkCounts(
+    fun buildLinkPeople(
         keys: Collection<String>,
         linkers: EventQuery,
     ): VespaQuery? {
         val usable = keys.filter(::isLinkKey).distinct()
         if (usable.isEmpty()) return null
-        val keyClause = usable.joinToString(", ", prefix = "tag_index in (", postfix = ")") { quote(it) }
         val pattern = usable.joinToString("|", prefix = "^(?:", postfix = ")$") { regexLiteral(it) }
-        val pipeline = "all(group(tag_index) filter(regex(${quote(pattern)}, tag_index)) each(output(count()) all(group(kind) each(output(count(), $LINK_TRUST_SUM)))))"
+        val pipeline =
+            "all(group(tag_index) filter(regex(${quote(pattern)}, tag_index)) " +
+                "each(all(group(pubkey) each(all(group(kind) each(output(count(), $LINK_TRUST_SUM)))))))"
         val q = linkers.copy(limit = null)
-        val lensed = q.observer?.lowercase()?.takeIf(Hex::isHex64) != null && (q.ranking == RANK_RECENCY_GATED || q.ranking == RANK_RECENCY_GATED_EXACT)
-        return grouping(q, pipeline, extra = keyClause, ranking = if (lensed) RANK_LINK_TRUST else RANK_UNRANKED)
+        val clause = "${keyClause(usable)} and !(kind = $ZAP_RECEIPT_KIND)"
+        return grouping(q, pipeline, extra = clause, ranking = if (isLensed(q)) RANK_LINK_TRUST else RANK_UNRANKED)
     }
 
-    /** The grouping output [buildLinkCounts] sums each kind's linker trust with — also its key in the response's `fields`. */
+    /**
+     * The ZAP half of [EventIndex.scoreLinks]: the zap receipts [linkers] would
+     * serve that carry any of [keys], as hits on the attribute-only `idtimetag`
+     * summary — `tag_index` is where the receipt's `P` (the zapper) and the keys
+     * it links to both live, and only a document read has both at once. Under
+     * the lens the same [RANK_LINK_TRUST] gate applies to the receipt's SIGNER
+     * (an LNURL server the observer does not trust is a receipt anyone could
+     * have forged), and the hit's relevance is that signer's cell. No `order by`
+     * and no limit: every receipt, one round trip.
+     */
+    fun buildLinkZaps(
+        keys: Collection<String>,
+        linkers: EventQuery,
+    ): VespaQuery? {
+        val usable = keys.filter(::isLinkKey).distinct()
+        if (usable.isEmpty()) return null
+        val q = linkers.copy(limit = null)
+        if (q.kinds.isNotEmpty() && ZAP_RECEIPT_KIND !in q.kinds) return null
+        val params = LinkedHashMap<String, String>()
+        val clauses = filterClauses(q, params) ?: return null
+        val ranking = if (isLensed(q)) RANK_LINK_TRUST else RANK_UNRANKED
+        if (ranking != RANK_UNRANKED) {
+            lensParams(q, params)
+            params.keys.removeAll(TEXT_RANK_FEATURES)
+        }
+        params["presentation.summary"] = SUMMARY_IDTIME_TAG
+        params[MATCH_THREADS] = SINGLE_MATCH_THREAD
+        return VespaQuery(
+            yql = "select id, tag_index from event where ${whereOf(clauses + keyClause(usable) + "kind = $ZAP_RECEIPT_KIND")}",
+            params = params,
+            ranking = ranking,
+            shape = clauseShape(q),
+        )
+    }
+
+    /**
+     * [pubkeys]' rank cells under [rankKey], as the hits' relevance — the
+     * `trust_cell` profile of `reputation.sd`, one query for a whole page's
+     * zappers. An author with no reputation document is simply not a hit.
+     */
+    fun buildTrustCells(
+        pubkeys: Collection<String>,
+        rankKey: String,
+    ): VespaQuery? {
+        val hexes = pubkeys.map { it.lowercase() }.filter(Hex::isHex64).distinct()
+        if (hexes.isEmpty() || !Hex.isHex64(rankKey)) return null
+        return VespaQuery(
+            yql = "select pubkey from reputation where pubkey in (${hexes.joinToString(", ") { "\"$it\"" }})",
+            params = mapOf("ranking.features.query(user_q)" to "{${rankKey.lowercase()}:1.0}", MATCH_THREADS to SINGLE_MATCH_THREAD),
+            ranking = RANK_TRUST_CELL,
+        )
+    }
+
+    /** Whether a link query reads trust: a hex observer, through the observer gate's ranking. */
+    fun isLensed(q: EventQuery): Boolean = q.observer?.lowercase()?.takeIf(Hex::isHex64) != null && (q.ranking == RANK_RECENCY_GATED || q.ranking == RANK_RECENCY_GATED_EXACT)
+
+    private fun keyClause(keys: List<String>): String = keys.joinToString(", ", prefix = "tag_index in (", postfix = ")") { quote(it) }
+
+    /** NIP-57's zap receipt — the link kind whose person is not its author ([buildLinkZaps]). */
+    const val ZAP_RECEIPT_KIND = 9735
+
+    /** The grouping output [buildLinkPeople] sums each kind's linker trust with — also its key in the response's `fields`. */
     const val LINK_TRUST_SUM = "sum(relevance())"
 
     /** A `"<letter>:<value>"` key `tag_index` could hold: an indexable one-letter name, a value, nothing [quote] cannot render. */
@@ -778,11 +847,11 @@ object EventYql {
     private fun grouping(
         q: EventQuery,
         pipeline: String,
-        /** One more WHERE clause the [EventQuery] cannot express ([buildLinkCounts]' cross-letter key OR). */
+        /** One more WHERE clause the [EventQuery] cannot express ([buildLinkPeople]' cross-letter key OR). */
         extra: String? = null,
         /**
          * The profile the grouping runs under — [RANK_UNRANKED] for every
-         * aggregation but a gated one ([buildLinkCounts]), whose drop-limit is
+         * aggregation but a gated one ([buildLinkPeople]), whose drop-limit is
          * what removes below-floor documents before they are grouped.
          */
         ranking: String = RANK_UNRANKED,

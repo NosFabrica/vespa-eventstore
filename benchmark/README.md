@@ -1392,54 +1392,94 @@ port member — `TrustProjection` and `MeteredEventIndex` in the same commit
 
 ### The rerank, prototyped: `sort:links` (`linkRerankProbe`, 2026-10-22)
 
-Built as above, opt-in per query. `EventIndex.scoreLinks` is one grouping over the
-head's `e:<id>` / `a:<address>` keys, key then kind, on the new `link_trust` profile
-(event.sd): the observer gate of `recency_gated_exact` verbatim, with the linking
-author's rank cell as the score, so each kind group's `sum(relevance())` is its
-linkers' summed TRUST. The store's `LinkWeights` (every link +1, a NIP-56 report −1)
-fold that into a SIGNED score: a link is worth its kind's weight × its author's trust
-(rank / 100). `store/search/LinkRerank` multiplies each of the top 100 hits' engine
-score by `(1 + |score|)^(±strength)`, re-sorts, and cuts back to the asked limit (a
-read asking for fewer is recalled at 100). `TrustedLinksIT` pins the engine side on a
-real Vespa: the gate reaches the grouping at `hits=0`, a like from an author at 100
-sums to exactly twice one at 50, a trusted report alone scores −0.5, and a note with
-six trusted reactions overtakes one with twenty-one untrusted ones — at `limit 1` too.
+Built as above, opt-in per query, and reshaped three times on the way; what ships:
 
-Same capture, same local Vespa, through `open()`, the 12 search pages, median of 7 on
-an idle box:
+- **`EventIndex.scoreLinks(targets, linkers, weights)`** scores each hit's links per
+  PERSON, in three engine reads per page (two concurrent):
+  1. people: one grouping, key → author → kind, every kind but zap receipts, on the
+     `link_trust` profile (event.sd) — `recency_gated_exact`'s observer gate verbatim
+     with the author's rank cell as the score, so `sum(relevance())` is the author's
+     trust and a below-floor author is gone before the grouping;
+  2. zaps: the receipts as documents on the attribute-only `idtimetag` summary,
+     signer-gated by the same profile. A receipt is signed by the RECIPIENT's LNURL
+     server, so its person is the zapper its `P` tag names — another element of the
+     same `tag_index` array the key lives in, which a grouping cannot reach (inside a
+     key's group Vespa binds the attribute to that key alone; tried, measured empty);
+  3. zapper trust: one query on `reputation.sd`'s new `trust_cell` profile.
+- **`LinkWeights`** (the store's policy, data): every link +1, a NIP-56 report −1;
+  per person and kind each repeat worth half the one before (≤ 2); per person the
+  kinds summed and clamped to ±5, times their trust (rank / 100); people summed; the
+  hit's own author left out. A receipt with no `P` (46% of the captured ones) counts
+  once at its signer's trust.
+- **`LinkRerank`**: each of the top 100 hits' engine score × `(1 + |E|)^(±0.5)`,
+  clamped to [⅓, 3], re-sorted, cut back to the asked limit (a read asking for fewer
+  is recalled at 100).
 
-| page | base search | widened to 100, no rerank | `sort:links` | added | hits changed vs base |
+`TrustedLinksIT` pins it on a real Vespa, every number against a hand-worked sum:
+the gate at `hits=0`, repeats halving, the author excluded, a zap at its zapper's
+trust (not the signer's), an untrusted zapper and an untrusted signer both counting
+nothing, a `P`-less receipt at its signer's trust, a lone trusted report at −0.5, and
+the end-to-end reorder, at `limit 1` too.
+
+**Why per person.** On the captured pages, trusted links per (note, person): 1 link
+for 3,534 pairs (46% of links), 2–5 for 1,216 (37%), 6+ for 80 pairs that carry 17%
+of all links. The 6+ were almost all zap receipts grouped by their SIGNER — a "person"
+with 241 links to one note was a wallet service carrying 85 different zappers. The
+humans who repeat are repliers (606 of 2,295 note-and-replier pairs reply more than
+once: conversations), and 10% of trusted links were a note's author in their own
+thread. Only 214 of 439 zappers clear the floor themselves, while the services
+signing for them sit at 56–99 — so the signer's trust let untrusted zappers through.
+
+**Why capped.** A page's text relevance comes in tiers (`LINK_PROBE_MODE=bands`):
+1–3 per page, a primary-field match (~130,000 text score) over a body match (~4,000),
+30–50× apart in the final score, while inside a tier neighbours are tied (median
+neighbour ratio 1.00; best/median 1.0–2.1× from author trust and recency). Crossings,
+counted as pairs where a worse tier ends above a better one, and how deep into the
+better tier the deepest goes (1 = its last hit):
+
+| page | uncapped (pairs, deepest) | capped at ×3 |
+|---|---:|---:|
+| lightning | 25, 3 | 17, 1 |
+| music | 4, 1 | 0 |
+| gm | 44, 1 | 44, 1 |
+| zap | **58, 30** | 20, 1 |
+| freedom | 1, 1 | 0 |
+| the other 7 | 0 | 0 |
+
+Capped, a crossing only ever passes the LAST hit of the better tier — `gm`'s 44 are
+all one low-trust primary-field news link already only 1.7× above the body tier —
+where uncapped, `zap`'s body matches climbed 30 places into the primary-field tier.
+Engagement decides among near-ties inside a tier and nudges across a border; it
+never overpowers the text match.
+
+**Cost** — same capture, same local Vespa (8.763, 4 vCPU), through `open()`, the 12
+search pages, median of 7:
+
+| page | base search | widened to 100, no rerank | `sort:links` | added (median) | hits changed vs base |
 |---|---:|---:|---:|---:|---:|
-| top 20 | 16–52 ms | 27–82 ms | 55–108 ms | **+47 ms** median | 4–16 of 20 at strength 0.5 (1–16 at 0.25, 5–18 at 1.0) |
-| top 50 | 18–77 ms | 19–63 ms | 56–99 ms | **+38 ms** median | 6–24 of 50 |
+| top 20 | 16–99 ms | 25–90 ms | 64–121 ms | **+64 ms** | 3–15 of 20 at strength 0.5 |
+| top 50 | 24–65 ms | 27–61 ms | 72–110 ms | **+59 ms** | 6–25 of 50 |
 
-- **Where the time goes**: ~10 ms is the widened recall (summaries for 100
-  hits instead of 20), the rest the score query and its fold — the GROUPED_KIND
-  cost above plus the store's pipeline. Summing trust rides the same grouping:
-  the trust-weighted version costs what the count-only one did (+45 / +34 ms).
-- **Trust weighting is what keeps bots out of the head.** The trusted linkers'
-  ranks are spread wide (p10 3, p25 34, p50 81, p90 100), so weighting by them
-  is not a rescaling of the count. `amethyst`'s v1.17 note drew 400 trusted
-  links, 306 of them labels from low-ranked labelers: 400 counted, 71 weighted —
-  it fell from #2 to #3 behind notes people the observer trusts reacted to.
-  `bitcoin`'s 72-reply thread keeps most of its weight (45): its repliers are
-  trusted.
-- **It moves pages a lot.** Strength barely matters between 0.25 and 1.0: inside a
-  search's top 100 the engine's scores are close, so one multiplier ≥ ~1.4 (one
-  fully trusted link) reorders them. `amethyst`'s new #1 sat at #96; `freedom`'s
-  84-link quote rose from #10 to #5. A page of notes nobody engaged with barely
-  moves (`zap`, `lightning`: 1–5 of 20 changed).
-- **What is not right yet**: a zap receipt (9735) is signed by the RECIPIENT's
-  LNURL server, so it is weighed by the wallet service's trust (99 for the big
-  ones), not the zapper's — the sender is in the receipt's `P` tag, which needs a
-  feed-time attribute before the engine can read it. Zap AMOUNTS and report
-  REASONS are invisible for the same reason (`tag_index` keeps a tag's value
-  only). The capture held no reports, so the −1 never fired here. Per-kind
-  weights themselves are data (`LinkWeights`): a policy change, not a code change.
+The steps that led here, on the same pages: one grouping key → kind, every link a
+plain count, +45 / +34 ms; trust-weighted, same grouping, +47 / +38 ms; per person
+with the zap read and the zapper-trust read, +64 / +59 ms. The per-person grouping
+is the larger share of the step (it pays per author group, ×2–3 on the heaviest
+notes), the zap and trust reads the rest.
+
+**What it does to the heads** (strength 0.5): `bitcoin`'s 55-reply thread scores 12
+from 13 people, where counting gave it 72; the Ditto trend bot (`pub.ditto.trends`,
+NIP-32 labels republished every ~15 minutes, 306 of them on one `amethyst` release
+note) is one person per note, ≤ 2 × its trust; past the ×3 ceiling (8 fully trusted
+people's worth) hits tie on engagement and the engine's own order decides among
+them. **Not visible yet**: zap AMOUNTS and report REASONS — `tag_index` keeps a
+tag's value only, so both need a feed-time attribute; the same feed-time pass could
+write a per-event "actor" (the zapper, also for the 46% of receipts without `P`,
+from the `description`) and fold the zap read into the grouping.
 
 `./gradlew :benchmark:linkRerankProbe --args="/tmp/links.json [limit] [reps] [strengths]"`
-prints the table and, per term, the reranked head: new position, engine position,
-link score, links by kind, and the note.
+prints the latency table and, per term, the reranked head (new position, engine
+position, link score, people, counted links by kind, the note);
+`LINK_PROBE_MODE=bands` prints the tier view above.
 
 Reproduce:
 

@@ -58,39 +58,44 @@ internal object GroupingResults {
         }
 
     /**
-     * A two-level `group(<key>) each(… all(group(kind) each(output(count(), sum(relevance())))))`
-     * — [EventYql.buildLinkCounts]' shape — as key -> kind -> (count, summed
-     * relevance), the sum null where the response carries none.
+     * `group(tag_index) each(all(group(pubkey) each(all(group(kind) each(output(count(), sum(relevance())))))))`
+     * — [EventYql.buildLinkPeople]' shape — as key -> person -> kind ->
+     * (count, summed relevance), the sum null where the response carries none.
      *
      * Read by grouplist LABEL rather than by depth: [groupCounts] collects every
-     * `group:` node it meets, which on this shape would fold the kinds' leaf
-     * groups ("1", "7") into the same map as the keys they sit under.
+     * `group:` node it meets, which on this shape would fold authors and kinds
+     * ("1", "7") into the same map as the keys they sit under.
      */
-    fun keyKindTallies(root: JsonObject): Map<String, Map<Int, Pair<Int, Double?>>> {
-        val out = LinkedHashMap<String, Map<Int, Pair<Int, Double?>>>()
-
-        fun groupsUnder(
-            node: JsonObject,
-            label: String,
-        ): List<JsonObject> =
-            node["children"]?.jsonArray.orEmpty().flatMap { child ->
-                val c = child.jsonObject
-                if (c["label"]?.jsonPrimitive?.content == label) c["children"]?.jsonArray.orEmpty().map { it.jsonObject } else groupsUnder(c, label)
-            }
-
+    fun keyPersonKinds(root: JsonObject): Map<String, Map<String, Map<Int, Pair<Int, Double?>>>> {
+        val out = LinkedHashMap<String, Map<String, Map<Int, Pair<Int, Double?>>>>()
         for (keyGroup in groupsUnder(root, "tag_index")) {
             val key = (keyGroup["value"] as? JsonPrimitive)?.content ?: continue
-            val byKind = LinkedHashMap<Int, Pair<Int, Double?>>()
-            for (kindGroup in groupsUnder(keyGroup, "kind")) {
-                val kind = (kindGroup["value"] as? JsonPrimitive)?.content?.toIntOrNull() ?: continue
-                val fields = kindGroup["fields"]?.jsonObject ?: continue
-                val count = fields["count()"]?.jsonPrimitive?.intOrNull ?: continue
-                byKind[kind] = count to fields[EventYql.LINK_TRUST_SUM]?.jsonPrimitive?.doubleOrNull
+            val people = LinkedHashMap<String, Map<Int, Pair<Int, Double?>>>()
+            for (personGroup in groupsUnder(keyGroup, "pubkey")) {
+                val person = (personGroup["value"] as? JsonPrimitive)?.content ?: continue
+                val byKind = LinkedHashMap<Int, Pair<Int, Double?>>()
+                for (kindGroup in groupsUnder(personGroup, "kind")) {
+                    val kind = (kindGroup["value"] as? JsonPrimitive)?.content?.toIntOrNull() ?: continue
+                    val fields = kindGroup["fields"]?.jsonObject ?: continue
+                    val count = fields["count()"]?.jsonPrimitive?.intOrNull ?: continue
+                    byKind[kind] = count to fields[EventYql.LINK_TRUST_SUM]?.jsonPrimitive?.doubleOrNull
+                }
+                if (byKind.isNotEmpty()) people[person] = byKind
             }
-            if (byKind.isNotEmpty()) out[key] = byKind
+            if (people.isNotEmpty()) out[key] = people
         }
         return out
     }
+
+    /** The groups of the first grouplist labelled [label] at or below [node]'s children. */
+    private fun groupsUnder(
+        node: JsonObject,
+        label: String,
+    ): List<JsonObject> =
+        node["children"]?.jsonArray.orEmpty().flatMap { child ->
+            val c = child.jsonObject
+            if (c["label"]?.jsonPrimitive?.content == label) c["children"]?.jsonArray.orEmpty().map { it.jsonObject } else groupsUnder(c, label)
+        }
 
     /** Every leaf `group:` node's string value under [root], with its `count()` — the distinct pubkeys of a `group(pubkey)` and their doc counts. */
     fun groupCounts(root: JsonObject): LinkedHashMap<String, Int> {

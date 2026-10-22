@@ -21,7 +21,7 @@
 package com.nosfabrica.vespa.eventstore.benchmark
 
 import com.nosfabrica.vespa.eventstore.VespaEventStore
-import com.nosfabrica.vespa.eventstore.engine.LinkScore
+import com.nosfabrica.vespa.eventstore.engine.LinkTarget
 import com.nosfabrica.vespa.eventstore.engine.app.SchemaDeployer
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
@@ -43,30 +43,32 @@ import kotlin.test.assertEquals
 
 /**
  * TRUSTED LINKS ON A REAL VESPA — what only the engine can answer about the
- * `sort:links` rerank (store/search/LinkRerank.kt):
+ * `sort:links` rerank (store/search/LinkRerank.kt, engine/LinkScore.kt):
  *
- *  - `EventIndex.scoreLinks`' grouping DEPLOYS and parses: the cross-letter key
- *    OR, the `filter(regex())` on the grouping, key then kind with each kind's
- *    summed linker trust (the `link_trust` profile), folded by the weights into a
- *    signed score: a like from an author trusted 100 is worth twice one from an
- *    author at 50, and a trusted report alone scores below zero;
- *  - THE GATE REACHES THE GROUPING at `hits=0`: a below-floor author's link and
- *    an unranked author's link are not counted under the lens, and are without
- *    it. (A `totalCount` at `hits=0` skips the ranking pass on Vespa 8.731 —
- *    see VespaEventIndex.count — so this is pinned, not assumed);
- *  - a duplicated tag counts per entry, the contract the in-memory reference
- *    states (ScoreLinksTest);
- *  - end to end through `open()`: a search page reorders by the trusted links
- *    alone — an under-ranked note with six trusted reactions overtakes one
- *    with twenty-one untrusted ones and a trusted report, even at `limit 1` (the widened recall is
- *    what lets it in), and `sort:links:0` is the engine's order.
+ *  - `EventIndex.scoreLinks`' three reads DEPLOY and parse: the people grouping
+ *    (key -> author -> kind, `filter(regex())`, the `link_trust` profile), the
+ *    zap receipts read as documents, and the zappers' cells off the
+ *    `reputation` schema's `trust_cell` profile;
+ *  - THE GATE REACHES THE GROUPING at `hits=0` — below-floor and unranked
+ *    authors are not people at all (a `totalCount` at `hits=0` skips the
+ *    ranking pass on Vespa 8.731, see VespaEventIndex.count, so this is pinned,
+ *    not assumed);
+ *  - the per-person policy, number for number against the hand-worked sums in
+ *    the comments: repeats halve, the author is no one, a person is their trust
+ *    times their capped links, a zap belongs to its `P` zapper at the ZAPPER's
+ *    trust, an untrusted zapper or an untrusted LNURL signer counts nothing, a
+ *    receipt without `P` counts once at its signer's trust, a report is −1;
+ *  - end to end through `open()`: a search page reorders by those scores — an
+ *    under-ranked note people engaged with overtakes one with twenty untrusted
+ *    reactions and a trusted report, even at `limit 1` (the widened recall is
+ *    what lets it in) — and `sort:links:0` is the engine's order.
  *
  * Tagged `integration`; run with `-Pintegration` where Docker is available.
  */
 @Tag("integration")
 class TrustedLinksIT {
     @Test
-    fun `links are counted per key and kind through the lens, and a page reorders by them`() {
+    fun `links are scored per person through the lens, zaps by their zapper, and a page reorders by them`() {
         assumeTrue(dockerAvailable(), "Docker not available - skipping the trusted links IT")
 
         GenericContainer("vespaengine/vespa:latest")
@@ -84,14 +86,18 @@ class TrustedLinksIT {
                         store.batchInsert(
                             listOf(
                                 TrustProviderListEvent(hexId(), OBSERVER, now - 5_000, arrayOf(arrayOf("30382:rank", PROVIDER, "wss://scores.test/")), "", ""),
+                                card(AUTHOR, 50, now),
                                 card(TRUSTED, 50, now),
                                 card(HIGH, 100, now),
                                 card(LOW, 1, now),
+                                card(ZAP_SERVICE, 80, now),
+                                card(BAD_SERVICE, 1, now),
+                                card(ZAPPER, 50, now),
                             ),
                         )
-                        val dusk = event(TRUSTED, 1, "zebra crossing at dusk", now - 3_600)
-                        val dawn = event(TRUSTED, 1, "zebra crossing at dawn", now - 30 * 86_400)
-                        val article = event(TRUSTED, 30023, "a zebra guide", now - 7_200, arrayOf("d", "zebra-guide"))
+                        val dusk = event(AUTHOR, 1, "zebra crossing at dusk", now - 3_600)
+                        val dawn = event(AUTHOR, 1, "zebra crossing at dawn", now - 30 * 86_400)
+                        val article = event(AUTHOR, 30023, "a zebra guide", now - 7_200, arrayOf("d", "zebra-guide"))
                         store.batchInsert(listOf(dusk, dawn, article))
                         store.awaitTrustProjection()
 
@@ -99,43 +105,50 @@ class TrustedLinksIT {
                         val base = store.query<Event>(Filter(kinds = listOf(1), search = search, limit = 2)).map { it.id }
                         assertEquals(2, base.size, "both notes recall through the lens: $base")
                         val (top, under) = base
-                        val address = "30023:$TRUSTED:zebra-guide"
+                        val address = "30023:$AUTHOR:zebra-guide"
 
+                        fun zap(
+                            signer: String,
+                            target: String,
+                            zapper: String?,
+                        ) = event(signer, 9735, "", now - 40, arrayOf("e", target), *listOfNotNull(zapper?.let { arrayOf("P", it) }).toTypedArray())
                         store.batchInsert(
-                            List(5) { event(TRUSTED, 7, "+", now - 60 + it, arrayOf("e", under)) } +
-                                event(HIGH, 7, "+", now - 50, arrayOf("e", under)) +
-                                List(20) { event(LOW, 7, "+", now - 60 + it, arrayOf("e", top)) } +
-                                event(UNRANKED, 7, "+", now - 30, arrayOf("e", top)) +
-                                // A client that wrote the same `e` twice: two entries, two counts.
-                                event(TRUSTED, 1, "agreed", now - 20, arrayOf("e", under), arrayOf("e", under)) +
-                                event(TRUSTED, 1, "good read", now - 10, arrayOf("a", address)) +
-                                event(LOW, 1, "meh", now - 10, arrayOf("a", address)) +
-                                // A trusted author REPORTS top: under the lens, top's only link.
-                                event(TRUSTED, 1984, "", now - 5, arrayOf("e", top, "spam")),
+                            // under:
+                            List(5) { event(TRUSTED, 7, "+", now - 60 + it, arrayOf("e", under)) } + // 1.9375 ...
+                                List(2) { event(TRUSTED, 1, "agreed $it", now - 50 + it, arrayOf("e", under)) } + // ... + 1.5 = 3.4375 x 0.5 = 1.71875
+                                event(HIGH, 7, "+", now - 50, arrayOf("e", under)) + // 1 x 1.0
+                                List(3) { event(AUTHOR, 1, "thanks $it", now - 45 + it, arrayOf("e", under)) } + // the author: no one
+                                List(3) { zap(ZAP_SERVICE, under, ZAPPER) } + // the zapper's: 1.75 x 0.5 = 0.875
+                                zap(ZAP_SERVICE, under, null) + // no P: 1 x the signer's 0.8
+                                zap(ZAP_SERVICE, under, UNRANKED) + // a zapper the lens does not rank: nothing
+                                zap(BAD_SERVICE, under, ZAPPER) + // an untrusted signer: nothing
+                                zap(ZAP_SERVICE, under, AUTHOR) + // a self-zap: no one
+                                // top:
+                                List(20) { event(LOW, 7, "+", now - 60 + it, arrayOf("e", top)) } + // below the floor: nothing
+                                event(UNRANKED, 7, "+", now - 30, arrayOf("e", top)) + // unranked: nothing
+                                event(TRUSTED, 1984, "", now - 5, arrayOf("e", top, "spam")) + // a report: -1 x 0.5
+                                // the article, by its address:
+                                event(TRUSTED, 1, "good read", now - 10, arrayOf("a", address)) + // 1 x 0.5
+                                event(LOW, 1, "meh", now - 10, arrayOf("a", address)),
                         )
 
-                        val keys = listOf("e:$top", "e:$under", "a:$address")
+                        val targets = listOf(LinkTarget(top, AUTHOR), LinkTarget(under, AUTHOR), LinkTarget(article.id, AUTHOR, address))
                         val lensed = EventQuery(observer = OBSERVER, rankKey = PROVIDER, minRank = 2.0, ranking = EventYql.RANK_RECENCY_GATED)
-                        val weights = LinkRerank.DEFAULT_WEIGHTS
-                        assertEquals(
-                            mapOf(
-                                // Trust is the rank cell / 100: five likes at 0.5 and one at 1.0, two replies at 0.5.
-                                "e:$top" to LinkScore(-0.5, mapOf(1984 to 1), mapOf(1984 to 0.5)),
-                                "e:$under" to LinkScore(4.5, mapOf(7 to 6, 1 to 2), mapOf(7 to 3.5, 1 to 1.0)),
-                                "a:$address" to LinkScore(0.5, mapOf(1 to 1), mapOf(1 to 0.5)),
-                            ),
-                            store.engine.scoreLinks(keys, lensed, weights),
-                            "under the lens only trusted authors' links count, each at its author's trust: top's 21 untrusted reactions are gone and its report is all that is left",
-                        )
-                        assertEquals(
-                            mapOf(
-                                "e:$top" to LinkScore(20.0, mapOf(7 to 21, 1984 to 1), mapOf(7 to 21.0, 1984 to 1.0)),
-                                "e:$under" to LinkScore(8.0, mapOf(7 to 6, 1 to 2), mapOf(7 to 6.0, 1 to 2.0)),
-                                "a:$address" to LinkScore(2.0, mapOf(1 to 2), mapOf(1 to 2.0)),
-                            ),
-                            store.engine.scoreLinks(keys, EventQuery(), weights),
-                            "with no lens every link counts, every linker fully trusted",
-                        )
+                        val scored = store.engine.scoreLinks(targets, lensed, LinkRerank.DEFAULT_WEIGHTS)
+                        assertEquals(1.71875 + 1.0 + 0.875 + 0.8, scored.getValue(under).score, 1e-9, "under: ${scored[under]}")
+                        assertEquals(4, scored.getValue(under).people, "trusted, high, the zapper, and one unnamed zap")
+                        assertEquals(mapOf(7 to 6, 1 to 2, 9735 to 4), scored.getValue(under).byKind)
+                        assertEquals(-0.5, scored.getValue(top).score, 1e-9, "top's twenty-one reactions are below the floor; its report is all that counts")
+                        assertEquals(0.5, scored.getValue(article.id).score, 1e-9, "linked by address")
+
+                        // No lens: everyone fully trusted, nothing gated — but the
+                        // author, the decay and the per-zapper attribution all still hold.
+                        val open = store.engine.scoreLinks(targets, EventQuery(), LinkRerank.DEFAULT_WEIGHTS)
+                        // under: trusted 3.4375 + high 1 + the zapper's four receipts (3 + the bad
+                        // signer's) 1.875 + no-P 1 + the unranked zapper 1.
+                        assertEquals(3.4375 + 1.0 + 1.875 + 1.0 + 1.0, open.getValue(under).score, 1e-9)
+                        // top: low's twenty (2 − 2^-19) + unranked 1 − the report 1.
+                        assertEquals(2.0 - Math.pow(2.0, -19.0), open.getValue(top).score, 1e-9)
 
                         assertEquals(base, store.query<Event>(Filter(kinds = listOf(1), search = search, limit = 2)).map { it.id }, "no token, the engine's order")
                         assertEquals(listOf(under, top), store.query<Event>(Filter(kinds = listOf(1), search = "$search sort:links", limit = 2)).map { it.id })
@@ -166,10 +179,14 @@ class TrustedLinksIT {
 
         val OBSERVER = "c".repeat(64)
         val PROVIDER = "5e".repeat(32)
+        val AUTHOR = "a0".repeat(32)
         val TRUSTED = "b1".repeat(32)
         val LOW = "b2".repeat(32)
-        val HIGH = "b4".repeat(32)
         val UNRANKED = "b3".repeat(32)
+        val HIGH = "b4".repeat(32)
+        val ZAP_SERVICE = "d1".repeat(32)
+        val BAD_SERVICE = "d2".repeat(32)
+        val ZAPPER = "f1".repeat(32)
 
         private var seq = 0
 

@@ -1933,9 +1933,11 @@ schema event {
 
     # link_trust: the score of a LINK is its author's trust. EventIndex.scoreLinks
     # groups the events that link to a search page's hits (e:<id> / a:<address>)
-    # by key and kind and reads `sum(relevance())` per group — the summed trust
-    # of the linkers — so a like from an author the observer trusts at 90 weighs
-    # forty-five times one from an author at 2, in the same single query.
+    # by key, author and kind and reads `sum(relevance())` per group — that
+    # author's trust — so a like from an author the observer trusts at 90 weighs
+    # forty-five times one from an author at 2, in the same single query. The
+    # zap-receipts read rides it too: there the score is the receipt SIGNER's
+    # trust, the gate that keeps an untrusted LNURL server's receipts out.
     #
     # The gate is recency_gated_exact's, verbatim: below the floor maps to the
     # sentinel and rank-score-drop-limit deletes the document before the

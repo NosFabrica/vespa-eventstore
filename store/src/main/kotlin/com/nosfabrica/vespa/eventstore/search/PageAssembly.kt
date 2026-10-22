@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.eventstore.search
 
 import com.nosfabrica.vespa.eventstore.engine.LinkScore
+import com.nosfabrica.vespa.eventstore.engine.LinkTarget
 import com.nosfabrica.vespa.eventstore.engine.LinkWeights
 import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.async.QUERY_FANOUT
@@ -89,7 +90,7 @@ internal class PageAssembly(
         val search: suspend (EventQuery) -> List<R>,
         val searchRanked: suspend (EventQuery) -> List<Ranked<R>>,
         /** [com.nosfabrica.vespa.eventstore.engine.EventIndex.scoreLinks] — what the `sort:links` rerank reads. */
-        val scoreLinks: suspend (Collection<String>, EventQuery, LinkWeights) -> Map<String, LinkScore>,
+        val scoreLinks: suspend (List<LinkTarget>, EventQuery, LinkWeights) -> Map<String, LinkScore>,
     )
 
     /**
@@ -308,14 +309,13 @@ internal class PageAssembly(
         val linkers = queries.firstNotNullOfOrNull { rerank.linkersOf(it) }
         if (scores == null || linkers == null || scores.any { it == null } || page.hits.isEmpty()) return page.cut(asked)
         val head = minOf(rerank.window, page.hits.size)
-        val keys = List(head) { rerank.keysOf(projection.idOf(page.hits[it]), projection.keys.addressOf(page.hits[it])) }
-        val links = projection.scoreLinks(keys.flatten(), linkers, rerank.weights)
+        val targets = List(head) { i -> page.hits[i].let { LinkTarget(projection.idOf(it), projection.authorOf(it), projection.keys.addressOf(it)) } }
+        val links = projection.scoreLinks(targets, linkers, rerank.weights)
         val boosted =
             List(head) { i ->
-                // A hit's engagement is the sum over its keys (its id and, for an
-                // addressable, its address); a key nothing links to scores 0.
-                val engagement = keys[i].sumOf { links[it]?.score ?: 0.0 }
-                scores[i]!! * LinkRerank.multiplier(engagement, strength)
+                // A hit nothing scorable links to is absent from the answer: engagement 0, multiplier 1.
+                val engagement = links[targets[i].id]?.score ?: 0.0
+                scores[i]!! * LinkRerank.multiplier(engagement, strength, rerank.maxBoost)
             }
         // Stable: equal rescored hits keep the engine's order between them.
         val order = (0 until head).sortedByDescending { boosted[it] } + (head until page.hits.size)

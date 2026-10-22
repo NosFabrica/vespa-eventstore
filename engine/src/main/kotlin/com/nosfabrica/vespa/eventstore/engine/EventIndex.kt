@@ -216,61 +216,75 @@ interface EventIndex : AutoCloseable {
     suspend fun countByAuthor(query: EventQuery): Map<String, Int> = search(query).groupingBy { it.pubkey }.eachCount()
 
     /**
-     * WHAT EACH KEY'S LINKS ARE WORTH: for each of [keys] — `"<letter>:<value>"`
-     * entries as [EventDoc.tagIndex] writes them, `e:<id>` / `a:<kind:pubkey:d>`
-     * for the links a search page reranks by — the documents [linkers] would
-     * serve that carry it, counted by kind, each link weighed by its kind's
-     * [weights] TIMES its author's trust under [linkers]' lens, and summed into
-     * one signed [LinkScore]. A key nothing links to is absent: its score is 0.
+     * WHAT EACH HIT'S LINKS ARE WORTH: for each of [targets], the documents
+     * [linkers] would serve that LINK to it — an `e` tag naming its id, an `a`
+     * tag naming its address — scored by [weights] into one signed [LinkScore]:
+     * per PERSON (diminishing repeats within a kind, a cap across kinds, times
+     * that person's trust under [linkers]' lens), summed over people, the hit's
+     * own author left out. A hit nothing scorable links to is absent: its score
+     * is 0. [weights] is the caller's policy, applied here, never chosen here
+     * ([LinkWeights] spells the three layers out).
      *
      * "Would serve", as in [count]: [linkers] is an ordinary filter over the
      * LINKING documents (kinds, a time window) and, above all, their lens — an
      * observer with a floor (ranking `EventYql.RANK_RECENCY_GATED`) counts only
-     * the links whose author that observer's web of trust clears. The keys are
-     * OR'd across letters, which [EventQuery.tags] cannot say (it ANDs names,
-     * as NIP-01 does), hence a parameter of their own; [linkers]' own `tags`
-     * still AND on top. A positive limit is about hits and is ignored; a limit
-     * <= 0 is the "matches nothing" sentinel. [weights] is the caller's policy,
-     * applied here, never chosen here ([LinkWeights]).
+     * the people that observer's web of trust clears. A positive limit is about
+     * hits and is ignored; a limit <= 0 is the "matches nothing" sentinel.
      *
-     * COUNTS TAG ENTRIES, not documents: a document naming one key twice (a
-     * client's duplicated `e`) counts twice under it, because the engine
-     * groups an array attribute per ELEMENT and de-duplicating would mean
-     * materializing every linking document — the cost this member exists to
-     * avoid. A document naming two keys counts under each, as it should. Over
-     * real search pages the duplicates add ~1–3% (benchmark/README.md).
+     * A ZAP RECEIPT's person is the zapper its `P` tag names, not its author
+     * (the recipient's LNURL server) — so its trust is the zapper's, and the
+     * receipt is counted only when BOTH clear the floor: an untrusted signer's
+     * receipt is one anyone could have forged. A receipt with no `P` counts once,
+     * on its own, at its signer's trust. Receipts are counted per DOCUMENT; every
+     * other kind per tag ENTRY — the engine groups an array attribute by
+     * element, so a client's duplicated `e` is two links (a repeat, which the
+     * decay already discounts), and de-duplicating would mean materializing
+     * every linking document, the cost the grouping exists to avoid.
      *
      * The default materializes the linkers and tallies them — correct, and the
      * in-memory reference's answer (which, holding no reputation data, gates
-     * nobody and trusts every linker fully, the same way its [count] gates
-     * nobody). The real client answers with one server-side grouping that sums
-     * the trust in the same pass. A decorator MUST delegate to its inner index.
+     * nobody and trusts every person fully, the same way its [count] gates
+     * nobody). The real client answers with a grouping, a receipts read and a
+     * zapper-trust read. A decorator MUST delegate to its inner index.
      */
     suspend fun scoreLinks(
-        keys: Collection<String>,
+        targets: List<LinkTarget>,
         linkers: EventQuery,
         weights: LinkWeights,
     ): Map<String, LinkScore> {
         val narrowed = weights.narrow(linkers)
-        if ((narrowed.limit ?: 1) <= 0) return emptyMap()
-        val wanted = keys.filter { it.length > 2 && it[1] == ':' }.toSet()
-        if (wanted.isEmpty()) return emptyMap()
-        val counts = HashMap<String, HashMap<Int, Int>>()
+        if ((narrowed.limit ?: 1) <= 0 || targets.isEmpty()) return emptyMap()
+        val byKey = HashMap<String, MutableList<LinkTarget>>()
+        targets.forEach { t -> t.keys.forEach { byKey.getOrPut(it) { ArrayList() }.add(t) } }
         // One recall per letter — the cross-letter OR the engine writes inline —
-        // deduplicated by id so a document naming an `e` AND an `a` key is
-        // tallied once, under both.
+        // deduplicated by id so a document naming an `e` AND an `a` key is read once.
         val docs = HashMap<String, EventDoc>()
-        for ((letter, entries) in wanted.groupBy { it.substring(0, 1) }) {
+        for ((letter, entries) in byKey.keys.groupBy { it.substring(0, 1) }) {
             val values = entries.map { it.substring(2) }
             search(narrowed.copy(limit = null, tags = narrowed.tags + (letter to values))).forEach { docs[it.id] = it }
         }
+        val people = HashMap<String, HashMap<String, HashMap<Int, Int>>>()
+        val unattributed = HashMap<String, MutableList<Linker>>()
         for (doc in docs.values) {
-            for (entry in doc.tagIndex()) {
-                if (entry in wanted) counts.getOrPut(entry) { HashMap() }.merge(doc.kind, 1, Int::plus)
+            if (doc.kind == LinkWeights.ZAP_RECEIPT_KIND) {
+                val zapper = doc.tags.firstOrNull { it.size > 1 && it[0] == "P" }?.get(1)
+                for (t in doc.tagIndex().flatMap { byKey[it].orEmpty() }.distinctBy { it.id }) {
+                    if (zapper == null) {
+                        unattributed.getOrPut(t.id) { ArrayList() }.add(Linker(1.0, mapOf(doc.kind to 1)))
+                    } else {
+                        people.getOrPut(t.id) { HashMap() }.getOrPut(zapper) { HashMap() }.merge(doc.kind, 1, Int::plus)
+                    }
+                }
+            } else {
+                for (entry in doc.tagIndex()) {
+                    for (t in byKey[entry].orEmpty()) people.getOrPut(t.id) { HashMap() }.getOrPut(doc.pubkey) { HashMap() }.merge(doc.kind, 1, Int::plus)
+                }
             }
         }
-        // No reputation data here: every linker is fully trusted (see LinkScore).
-        return counts.mapValues { (_, byKind) -> weights.score(byKind, byKind.mapValues { it.value.toDouble() }) }
+        // No reputation data here: every person is fully trusted (see LinkScore).
+        return targets
+            .associate { t -> t.id to weights.score(t, people[t.id].orEmpty().mapValues { (_, byKind) -> Linker(1.0, byKind) }, unattributed[t.id].orEmpty()) }
+            .filterValues { it.people > 0 }
     }
 
     /**

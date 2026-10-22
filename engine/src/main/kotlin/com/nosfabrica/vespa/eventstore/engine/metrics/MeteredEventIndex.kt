@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.eventstore.engine.DocRef
 import com.nosfabrica.vespa.eventstore.engine.DocsPage
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.LinkScore
+import com.nosfabrica.vespa.eventstore.engine.LinkTarget
 import com.nosfabrica.vespa.eventstore.engine.LinkWeights
 import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
@@ -223,10 +224,10 @@ class MeteredEventIndex(
     override suspend fun countByAuthor(query: EventQuery): Map<String, Int> = meterResult(PortCall.Group, { inner.countByAuthor(query) }, { it.size.toLong() })
 
     override suspend fun scoreLinks(
-        keys: Collection<String>,
+        targets: List<LinkTarget>,
         linkers: EventQuery,
         weights: LinkWeights,
-    ): Map<String, LinkScore> = meterResult(PortCall.Group, { inner.scoreLinks(keys, linkers, weights) }, { it.size.toLong() })
+    ): Map<String, LinkScore> = meterResult(PortCall.Group, { inner.scoreLinks(targets, linkers, weights) }, { it.size.toLong() })
 
     override suspend fun scanAuthors(query: EventQuery): Set<String> = meterResult(PortCall.Group, { inner.scanAuthors(query) }, { it.size.toLong() })
 

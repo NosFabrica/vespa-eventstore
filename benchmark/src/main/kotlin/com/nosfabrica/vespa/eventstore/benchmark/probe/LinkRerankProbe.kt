@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.eventstore.benchmark.probe
 
 import com.nosfabrica.vespa.eventstore.VespaEventStore
+import com.nosfabrica.vespa.eventstore.engine.LinkTarget
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.nosfabrica.vespa.eventstore.search.LinkRerank
@@ -115,11 +116,11 @@ object LinkRerankProbe {
                 for ((term, pair) in pages) {
                     val (base, linked) = pair
                     val wide = vs.store.query<Event>(Filter(kinds = listOf(1), search = "$term observer:$observer", limit = rerank.window)).map(Event::id)
-                    val scores = vs.engine.scoreLinks(linked.map { "e:${it.id}" }, linkers, rerank.weights)
-                    println("\n'$term' with sort:links (strength ${rerank.strength}): new pos <- engine pos, link score, trusted links by kind")
+                    val scores = vs.engine.scoreLinks(linked.map { LinkTarget(it.id, it.pubKey) }, linkers, rerank.weights)
+                    println("\n'$term' with sort:links (strength ${rerank.strength}): new pos <- engine pos, link score, people, counted links by kind")
                     linked.take(10).forEachIndexed { i, e ->
                         val was = wide.indexOf(e.id).let { if (it < 0) "?" else (it + 1).toString() }
-                        val link = scores["e:${e.id}"]
+                        val link = scores[e.id]
                         val mix =
                             link
                                 ?.byKind
@@ -128,7 +129,7 @@ object LinkRerankProbe {
                                 .sortedByDescending { it.value }
                                 .joinToString(" ") { "${it.key}:${it.value}" }
                         val text = e.content.replace(Regex("\\s+"), " ").take(60)
-                        println("%3d <- %-4s %6.0f  %-26s %s".format(i + 1, was, link?.score ?: 0.0, mix.take(26), text))
+                        println("%3d <- %-4s %6.1f %4d  %-26s %s".format(i + 1, was, link?.score ?: 0.0, link?.people ?: 0, mix.take(26), text))
                     }
                 }
             }
@@ -151,7 +152,7 @@ object LinkRerankProbe {
         rerank: LinkRerank,
     ) {
         val now = System.currentTimeMillis() / 1000
-        println("term       hits tiers  match tiers (top text score x hits)                     nbr ratio p50/p90  top/last  tier inversions@0.5")
+        println("term       hits tiers  match tiers (top text score x hits)                     nbr ratio p50/p90  top/last  crossings: pairs, deepest (capped | uncapped)")
         for (term in terms) {
             val ranked =
                 vs.engine.searchRanked(
@@ -179,17 +180,31 @@ object LinkRerankProbe {
                     .sortedBy { it.key }
                     .map { (_, v) -> "%.0f".format(v.max()) to v.size }
             val ratios = scores.zipWithNext { a, b -> if (b > 0) a / b else Double.NaN }.filter { it.isFinite() }.sorted()
-            val links = vs.engine.scoreLinks(ranked.map { "e:${it.hit.id}" }, linkers, rerank.weights)
-            val boosted = ranked.mapIndexed { i, r -> scores[i] * LinkRerank.multiplier(links["e:${r.hit.id}"]?.score ?: 0.0, rerank.strength) }
-            val order = boosted.indices.sortedByDescending { boosted[it] }
-            var inversions = 0
-            var pairs = 0
-            for (a in order.indices) {
-                for (b in a + 1 until order.size) {
-                    pairs++
-                    if (texts[order[a]] < texts[order[b]] - 1e-9) inversions++
+            val links = vs.engine.scoreLinks(ranked.map { LinkTarget(it.hit.id, it.hit.pubkey) }, linkers, rerank.weights)
+
+            // A crossing, measured by how DEEP it goes: for each hit of a better tier
+            // that some worse-tier hit now sits above, its place counted from the
+            // BOTTOM of its own tier (1 = the tier's last hit). Shallow crossings
+            // pass a tier's weakest; deep ones would mean engagement overpowering
+            // the text match.
+            fun crossings(maxBoost: Double): Pair<Int, Int> {
+                val boosted = ranked.mapIndexed { i, r -> scores[i] * LinkRerank.multiplier(links[r.hit.id]?.score ?: 0.0, rerank.strength, maxBoost) }
+                val order = boosted.indices.sortedByDescending { boosted[it] }
+                val fromBottom = texts.indices.associateWith { i -> texts.indices.count { j -> texts[j] == texts[i] && scores[j] <= scores[i] } }
+                var pairs = 0
+                var deepest = 0
+                for (a in order.indices) {
+                    for (b in a + 1 until order.size) {
+                        if (texts[order[a]] < texts[order[b]] - 1e-9) {
+                            pairs++
+                            deepest = maxOf(deepest, fromBottom.getValue(order[b]))
+                        }
+                    }
                 }
+                return pairs to deepest
             }
+            val (inversions, deepest) = crossings(rerank.maxBoost)
+            val (uncappedInversions, uncappedDeepest) = crossings(Double.MAX_VALUE)
             // Within each tier: the best score over the tier's median and its worst —
             // the spread author trust and recency already put there, which is what
             // engagement competes with inside a tier.
@@ -214,7 +229,7 @@ object LinkRerankProbe {
                 }
             }
             println(
-                "%-10s %4d %5d  %-55s %5.2f/%5.2f %9.1f  %d of %d".format(
+                "%-10s %4d %5d  %-55s %5.2f/%5.2f %9.1f  %4d, %2d | %4d, %2d".format(
                     term,
                     ranked.size,
                     bandHits.size,
@@ -223,7 +238,9 @@ object LinkRerankProbe {
                     ratios[(ratios.size * 9) / 10],
                     scores.first() / scores.last(),
                     inversions,
-                    pairs,
+                    deepest,
+                    uncappedInversions,
+                    uncappedDeepest,
                 ),
             )
             println("   within-tier best/median and best/worst: $spread")

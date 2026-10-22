@@ -27,13 +27,14 @@ import kotlin.test.assertEquals
 
 class GroupingResultsTest {
     /**
-     * The two-level shape `EventYql.buildLinkCounts` asks for, as Vespa 8.763
-     * answered it (trimmed; `sum(relevance())` is the linkers' summed trust): the kinds' leaf groups sit UNDER each key's group,
-     * so a reader that collected every `group:` node — as [GroupingResults.groupCounts]
-     * does — would mix "7" in among the keys.
+     * The three-level shape `EventYql.buildLinkPeople` asks for, as Vespa 8.763
+     * answered it (trimmed; `sum(relevance())` is the author's summed trust):
+     * authors and kinds sit UNDER each key's group, so a reader that collected
+     * every `group:` node — as [GroupingResults.groupCounts] does — would mix
+     * pubkeys and "7" in among the keys.
      */
     @Test
-    fun `key-then-kind groups read as key to kind to count`() {
+    fun `key then person then kind groups read as nested maps`() {
         val root =
             Json
                 .parseToJsonElement(
@@ -41,18 +42,20 @@ class GroupingResultsTest {
                     {"id":"toplevel","relevance":1.0,"fields":{"totalCount":5},"children":[
                       {"id":"group:root:0","relevance":1.0,"children":[
                         {"id":"grouplist:tag_index","label":"tag_index","children":[
-                          {"id":"group:string:e:aa","relevance":1.0,"value":"e:aa","fields":{"count()":3},"children":[
-                            {"id":"grouplist:kind","label":"kind","children":[
-                              {"id":"group:long:7","relevance":1.0,"value":"7","fields":{"count()":2,"sum(relevance())":133.0}},
-                              {"id":"group:long:9735","relevance":1.0,"value":"9735","fields":{"count()":1,"sum(relevance())":99.0}}]}]},
-                          {"id":"group:string:a:30023:bb:d","relevance":1.0,"value":"a:30023:bb:d","fields":{"count()":2},"children":[
-                            {"id":"grouplist:kind","label":"kind","children":[
-                              {"id":"group:long:1","relevance":1.0,"value":"1","fields":{"count()":2}}]}]}]}]}]}
+                          {"id":"group:string:e:aa","relevance":1.0,"value":"e:aa","children":[
+                            {"id":"grouplist:pubkey","label":"pubkey","children":[
+                              {"id":"group:string:bob","relevance":90.0,"value":"bob","children":[
+                                {"id":"grouplist:kind","label":"kind","children":[
+                                  {"id":"group:long:7","relevance":90.0,"value":"7","fields":{"count()":2,"sum(relevance())":180.0}},
+                                  {"id":"group:long:6","relevance":90.0,"value":"6","fields":{"count()":1,"sum(relevance())":90.0}}]}]},
+                              {"id":"group:string:carol","relevance":3.0,"value":"carol","children":[
+                                {"id":"grouplist:kind","label":"kind","children":[
+                                  {"id":"group:long:1","relevance":3.0,"value":"1","fields":{"count()":1}}]}]}]}]}]}]}]}
                     """.trimIndent(),
                 ).jsonObject
         assertEquals(
-            mapOf("e:aa" to mapOf(7 to (2 to 133.0), 9735 to (1 to 99.0)), "a:30023:bb:d" to mapOf(1 to (2 to null))),
-            GroupingResults.keyKindTallies(root),
+            mapOf("e:aa" to mapOf("bob" to mapOf(7 to (2 to 180.0), 6 to (1 to 90.0)), "carol" to mapOf(1 to (1 to null)))),
+            GroupingResults.keyPersonKinds(root),
             "a sum the response does not carry (an unranked grouping) reads as null, not 0",
         )
     }
@@ -60,6 +63,6 @@ class GroupingResultsTest {
     @Test
     fun `no groups is no links`() {
         val root = Json.parseToJsonElement("""{"id":"toplevel","fields":{"totalCount":0},"children":[{"id":"group:root:0"}]}""").jsonObject
-        assertEquals(emptyMap(), GroupingResults.keyKindTallies(root))
+        assertEquals(emptyMap(), GroupingResults.keyPersonKinds(root))
     }
 }

@@ -1342,31 +1342,23 @@ class EventYqlTest {
     }
 
     /**
-     * The link count is ONE query over every key of a page: a cross-letter OR in
-     * the WHERE clause, a grouping filtered to exactly those keys (without the
-     * filter every tag of every link becomes a group — the measured 117 ms vs
-     * 17 ms), key then kind with each kind's summed linker trust, and the
-     * gated, trust-scoring `link_trust` profile when the linkers carry a lens —
-     * full scan, since a match-phase cut would drop links from the sum.
+     * A page's links take three queries ([EventYql.buildLinkPeople],
+     * [EventYql.buildLinkZaps], [EventYql.buildTrustCells]). The PEOPLE grouping
+     * is one query over every key of the page: a cross-letter OR in the WHERE
+     * clause, zap receipts left out, a grouping filtered to exactly those keys
+     * (without the filter every tag of every link becomes a group — the measured
+     * 117 ms vs 17 ms), key -> author -> kind with each kind's summed trust, and
+     * the gated, trust-scoring `link_trust` profile when the linkers carry a lens
+     * — full scan, since a match-phase cut would drop links from the sum.
      */
     @Test
-    fun `link counts group the page's keys by kind, gated through the exact profile`() {
-        val id = "ab".repeat(32)
-        val address = "30023:${"cd".repeat(32)}:a.b(c)"
-        val lensed =
-            EventQuery(
-                observer = "ee".repeat(32),
-                rankKey = "5e".repeat(32),
-                minRank = 2.0,
-                ranking = EventYql.RANK_RECENCY_GATED,
-                limit = 20,
-            )
-        val vq = EventYql.buildLinkCounts(listOf("e:$id", "a:$address", "e:$id"), lensed)!!
-        assertTrue(vq.yql.contains("""tag_index in ("e:$id", "a:$address")"""), vq.yql)
+    fun `the people grouping is key then author then kind, gated through link_trust`() {
+        val vq = EventYql.buildLinkPeople(listOf("e:$linkId", "a:$linkAddress", "e:$linkId"), lensedLinkers)!!
+        assertTrue(vq.yql.contains("""tag_index in ("e:$linkId", "a:$linkAddress") and !(kind = 9735)"""), vq.yql)
         assertTrue(vq.yql.contains(" limit 0 | all(group(tag_index) filter(regex("), vq.yql)
-        assertTrue(vq.yql.contains("each(output(count()) all(group(kind) each(output(count(), sum(relevance())))))"), vq.yql)
+        assertTrue(vq.yql.contains("each(all(group(pubkey) each(all(group(kind) each(output(count(), sum(relevance())))))))"), vq.yql)
         // Punctuation escaped (RE2 takes `\:` and `\.` as themselves), letters and digits never.
-        assertTrue(vq.yql.contains("""^(?:e\\:$id|a\\:30023\\:${"cd".repeat(32)}\\:a\\.b\\(c\\))$"""), vq.yql)
+        assertTrue(vq.yql.contains("""^(?:e\\:$linkId|a\\:30023\\:${"cd".repeat(32)}\\:a\\.b\\(c\\))$"""), vq.yql)
         // The trust-scoring twin of recency_gated_exact: the same gate, the linker's trust as the score.
         assertEquals(EventYql.RANK_LINK_TRUST, vq.ranking)
         assertEquals("{${"5e".repeat(32)}:1.0}", vq.params["ranking.features.query(user_q)"])
@@ -1374,13 +1366,48 @@ class EventYqlTest {
         assertEquals(EventYql.UNLIMITED_GROUPS, vq.params["grouping.defaultMaxGroups"])
 
         // No lens: an unranked grouping, no trust features at all.
-        val open = EventYql.buildLinkCounts(listOf("e:$id"), EventQuery(kinds = listOf(7)))!!
+        val open = EventYql.buildLinkPeople(listOf("e:$linkId"), EventQuery(kinds = listOf(7)))!!
         assertEquals(EventYql.RANK_UNRANKED, open.ranking)
-        assertTrue(open.yql.contains("kind in (7) and tag_index in (\"e:$id\")"), open.yql)
+        assertTrue(open.yql.contains("kind in (7) and tag_index in (\"e:$linkId\")"), open.yql)
         assertNull(open.params["ranking.features.query(user_q)"])
 
         // Nothing a document could hold: no query.
-        assertNull(EventYql.buildLinkCounts(listOf("not-a-key", "ee:x", "e:"), EventQuery()))
-        assertNull(EventYql.buildLinkCounts(emptyList(), EventQuery()))
+        assertNull(EventYql.buildLinkPeople(listOf("not-a-key", "ee:x", "e:"), EventQuery()))
+        assertNull(EventYql.buildLinkPeople(emptyList(), EventQuery()))
     }
+
+    /**
+     * The ZAP read is documents, not groups — a receipt's zapper (`P`) and the
+     * hit it names are two elements of one `tag_index` array, which only a
+     * document read holds together — on the attribute-only summary, gated by the
+     * receipt's SIGNER through the same profile. The zappers' own trust is then
+     * one `trust_cell` query against the reputation documents.
+     */
+    @Test
+    fun `zap receipts are read as documents, and zappers' trust as reputation cells`() {
+        val zaps = EventYql.buildLinkZaps(listOf("e:$linkId"), lensedLinkers)!!
+        assertEquals("select id, tag_index from event where tag_index in (\"e:$linkId\") and kind = 9735", zaps.yql)
+        assertEquals(EventYql.SUMMARY_IDTIME_TAG, zaps.params["presentation.summary"])
+        assertEquals(EventYql.RANK_LINK_TRUST, zaps.ranking)
+        assertEquals("2.0", zaps.params["ranking.features.query(min_rank)"])
+        // A kinds filter without receipts in it asks for no zap read at all.
+        assertNull(EventYql.buildLinkZaps(listOf("e:$linkId"), lensedLinkers.copy(kinds = listOf(7))))
+
+        val cells = EventYql.buildTrustCells(listOf("AB".repeat(32), "ab".repeat(32), "not-hex"), "5e".repeat(32))!!
+        assertEquals("select pubkey from reputation where pubkey in (\"${"ab".repeat(32)}\")", cells.yql, "lowercased, deduplicated, hex only")
+        assertEquals(EventYql.RANK_TRUST_CELL, cells.ranking)
+        assertEquals("{${"5e".repeat(32)}:1.0}", cells.params["ranking.features.query(user_q)"])
+        assertNull(EventYql.buildTrustCells(listOf("not-hex"), "5e".repeat(32)))
+    }
+
+    private val linkId = "ab".repeat(32)
+    private val linkAddress = "30023:${"cd".repeat(32)}:a.b(c)"
+    private val lensedLinkers =
+        EventQuery(
+            observer = "ee".repeat(32),
+            rankKey = "5e".repeat(32),
+            minRank = 2.0,
+            ranking = EventYql.RANK_RECENCY_GATED,
+            limit = 20,
+        )
 }

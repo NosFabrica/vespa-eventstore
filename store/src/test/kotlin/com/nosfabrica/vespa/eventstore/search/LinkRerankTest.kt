@@ -20,6 +20,8 @@
  */
 package com.nosfabrica.vespa.eventstore.search
 
+import com.nosfabrica.vespa.eventstore.engine.LinkScore
+import com.nosfabrica.vespa.eventstore.engine.LinkTarget
 import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
@@ -51,24 +53,26 @@ class LinkRerankTest {
     }
 
     @Test
-    fun `the multiplier grows with diminishing returns and mirrors for negative engagement`() {
+    fun `the multiplier grows with diminishing returns up to the cap and mirrors for negative engagement`() {
         assertEquals(1.0, LinkRerank.multiplier(0.0, 0.5))
         assertEquals(2.0, LinkRerank.multiplier(3.0, 0.5), 1e-12)
-        assertEquals(10.0, LinkRerank.multiplier(99.0, 0.5), 1e-12)
+        assertEquals(3.0, LinkRerank.multiplier(8.0, 0.5), 1e-12, "the ceiling is reached at 8")
+        assertEquals(3.0, LinkRerank.multiplier(99.0, 0.5), 1e-12, "and nothing passes it")
+        assertEquals(10.0, LinkRerank.multiplier(99.0, 0.5, maxBoost = 100.0), 1e-12, "the curve under a looser cap")
         assertEquals(0.5, LinkRerank.multiplier(-3.0, 0.5), 1e-12)
+        assertEquals(1.0 / 3, LinkRerank.multiplier(-99.0, 0.5), 1e-12, "the floor is the ceiling's reciprocal")
         assertEquals(1.0, LinkRerank.multiplier(42.0, 0.0), "strength 0 is the engine's order")
         assertEquals(-1.0, LinkRerank.DEFAULT_WEIGHTS.of(LinkRerank.REPORT_KIND), "a report hurts by default")
         assertEquals(1.0, LinkRerank.DEFAULT_WEIGHTS.of(7))
     }
 
-    /** A scripted engine: [scores] in engine order, [links] per hit id, and a record of what it was asked. */
+    /** A scripted engine: [scores] in engine order, [engagement] per hit id, and a record of what it was asked. */
     private class Engine(
         val scores: List<Pair<String, Double>>,
-        /** Per hit id: its links by kind. */
-        val links: Map<String, Map<Int, Int>>,
+        val engagement: Map<String, Double>,
     ) {
         val limits = ArrayList<Int?>()
-        val linkCalls = ArrayList<Pair<Collection<String>, EventQuery>>()
+        val linkCalls = ArrayList<Pair<List<LinkTarget>, EventQuery>>()
 
         fun projection() =
             PageAssembly.Projection<String>(
@@ -80,10 +84,9 @@ class LinkRerankTest {
                 pointerOf = { null },
                 search = { q -> recall(q).map { it.hit } },
                 searchRanked = { q -> recall(q) },
-                scoreLinks = { keys, linkers, weights ->
-                    linkCalls += keys to linkers
-                    // Every linker fully trusted: the engine's trust sum is the reference's (LinkScore).
-                    keys.mapNotNull { k -> links[k.removePrefix("e:")]?.let { k to weights.score(it, it.mapValues { (_, n) -> n.toDouble() }) } }.toMap()
+                scoreLinks = { targets, linkers, _ ->
+                    linkCalls += targets to linkers
+                    targets.mapNotNull { t -> engagement[t.id]?.let { t.id to LinkScore(it, emptyMap(), 1) } }.toMap()
                 },
             )
 
@@ -95,32 +98,43 @@ class LinkRerankTest {
 
     private val lens = "5e".repeat(32)
 
-    private fun query(rankKey: String? = lens) = EventQuery(search = "zebra", observer = "c".repeat(64), rankKey = rankKey, minRank = 2.0, limit = 2)
+    private fun query(
+        rankKey: String? = lens,
+        limit: Int = 2,
+    ) = EventQuery(search = "zebra", observer = "c".repeat(64), rankKey = rankKey, minRank = 2.0, limit = limit)
 
     private fun pages() = PageAssembly(SearchExpansionLimits(enabled = false), null, { Enrolment.NONE }, rerank)
 
-    private val engine = { Engine(listOf("a" to 10.0, "b" to 9.0, "c" to 8.0, "d" to 7.0), mapOf("d" to mapOf(7 to 99), "b" to mapOf(7 to 3))) }
+    private val engine = { Engine(listOf("a" to 10.0, "b" to 9.0, "c" to 8.0, "d" to 7.0), mapOf("d" to 99.0, "b" to 3.0)) }
 
     @Test
     fun `the recall widens to the window, trusted links reorder the head, and the page is cut back`() =
         runBlocking {
             val e = engine()
             val page = pages().serve(listOf(query()), listOf(Filter(search = "zebra sort:links", limit = 2)), e.projection())
-            // d: 7 x (1+99)^0.5 = 70; b: 9 x 2 = 18; a stays 10; c stays 8.
+            // d: 7 x min(3, (1+99)^0.5) = 21; b: 9 x 2 = 18; a stays 10; c stays 8.
             assertEquals(listOf("d", "b"), page)
             assertEquals(listOf<Int?>(LinkRerank.DEFAULT_WINDOW), e.limits, "one recall, widened to the window")
-            val (keys, linkers) = e.linkCalls.single()
-            assertEquals(listOf("e:a", "e:b", "e:c", "e:d"), keys.toList(), "one count for the whole head")
+            val (targets, linkers) = e.linkCalls.single()
+            assertEquals(listOf("a", "b", "c", "d").map { LinkTarget(it, "author") }, targets, "one call for the whole head, each hit with its author")
             assertEquals(EventYql.RANK_RECENCY_GATED, linkers.ranking)
             assertEquals(lens, linkers.rankKey)
             assertEquals(2.0, linkers.minRank, "the read's own floor gates the linkers")
         }
 
     @Test
+    fun `the cap keeps engagement from overpowering a hit more than three times stronger`() =
+        runBlocking {
+            // d's 1,000 trusted people take it to 7 x 3 = 21 — past b (9), never past a (40).
+            val e = Engine(listOf("a" to 40.0, "b" to 9.0, "c" to 8.0, "d" to 7.0), mapOf("d" to 1_000.0))
+            assertEquals(listOf("a", "d", "b"), pages().serve(listOf(query(limit = 3)), listOf(Filter(search = "zebra sort:links", limit = 3)), e.projection()))
+        }
+
+    @Test
     fun `a hit that drew only reports falls below one that drew nothing`() =
         runBlocking {
             // a: 10 x (1+3)^-0.5 = 5, under b (9) and c (8).
-            val e = Engine(listOf("a" to 10.0, "b" to 9.0, "c" to 8.0), mapOf("a" to mapOf(LinkRerank.REPORT_KIND to 3)))
+            val e = Engine(listOf("a" to 10.0, "b" to 9.0, "c" to 8.0), mapOf("a" to -3.0))
             assertEquals(listOf("b", "c"), pages().serve(listOf(query()), listOf(Filter(search = "zebra sort:links", limit = 2)), e.projection()))
         }
 

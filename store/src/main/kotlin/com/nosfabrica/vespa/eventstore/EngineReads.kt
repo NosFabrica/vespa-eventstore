@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.eventstore
 
 import com.nosfabrica.vespa.eventstore.engine.LinkScore
+import com.nosfabrica.vespa.eventstore.engine.LinkTarget
 import com.nosfabrica.vespa.eventstore.engine.LinkWeights
 import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.client.VespaEventIndex
@@ -66,15 +67,15 @@ class EngineReads internal constructor(
     suspend fun count(query: EventQuery): Int = index.count(query)
 
     /**
-     * Each of [keys]' links among the documents [linkers] serves, by kind and
+     * Each of [targets]' links among the documents [linkers] serves, per person and
      * scored by [weights] (see `EventIndex.scoreLinks`) — what the `sort:links`
      * rerank weighed, read back by the harness that reports why a hit moved.
      */
     suspend fun scoreLinks(
-        keys: Collection<String>,
+        targets: List<LinkTarget>,
         linkers: EventQuery,
         weights: LinkWeights,
-    ): Map<String, LinkScore> = index.scoreLinks(keys, linkers, weights)
+    ): Map<String, LinkScore> = index.scoreLinks(targets, linkers, weights)
 
     /**
      * Which of [ids] the engine already holds — a pure membership read, and

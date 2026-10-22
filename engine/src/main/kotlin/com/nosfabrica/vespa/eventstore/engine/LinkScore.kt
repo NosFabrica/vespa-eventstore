@@ -21,32 +21,76 @@
 package com.nosfabrica.vespa.eventstore.engine
 
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
+import kotlin.math.pow
 
 /**
- * WHAT ONE LINK IS WORTH, by the LINKING event's kind — the input
- * [EventIndex.scoreLinks] folds a key's links with. A link scores its kind's
- * weight TIMES its author's trust under the lens ([LinkScore]): a like from an
- * author the observer trusts at 90 is worth 0.9, a report from one at 40 is
- * worth −0.4 under a weight of −1. DATA, handed in by the
- * caller: which links help a hit and which hurt it is relay POLICY (the store
- * owns it; see store/search/LinkRerank), while the engine only applies it.
+ * One hit whose links [EventIndex.scoreLinks] scores: its id (linked by `e`),
+ * its address when it has one (linked by `a`), and its AUTHOR — whose own links
+ * to it are not engagement and never count (a reply in one's own thread).
+ */
+data class LinkTarget(
+    val id: String,
+    val author: String,
+    /** `kind:pubkey:d` for an addressable hit, else null. */
+    val address: String? = null,
+) {
+    /** The `tag_index` entries that link to this hit. */
+    val keys: List<String> get() = if (address == null) listOf("e:$id") else listOf("e:$id", "a:$address")
+}
+
+/**
+ * One PERSON's links to one hit, as the engine saw them: their trust under the
+ * lens (0..1, the rank cell over [LinkScore.TRUST_SCALE]) and how many links of
+ * each kind they made.
+ */
+data class Linker(
+    val trust: Double,
+    val byKind: Map<Int, Int>,
+)
+
+/**
+ * HOW LINKS BECOME A SCORE — the policy [EventIndex.scoreLinks] applies, DATA
+ * handed in by the caller: which links help a hit and which hurt it is relay
+ * POLICY (the store owns it; see store/search/LinkRerank), while the engine
+ * only applies it. Three layers, each with one job:
  *
- * Per kind and nothing finer, because that is what the engine can see:
- * `tag_index` keeps a tag's VALUE, so a NIP-56 report's reason (`["e", id,
- * "spam"]`) and a zap's amount are invisible to it. Weighing those needs an
- * attribute written at feed time (the amount from the receipt's `bolt11`, a
- * rating from its tag), summed by the same grouping — a schema change, and
- * the reason this is a type rather than a bare map: it is where those
- * per-unit weights will go.
+ *  1. WITHIN ONE PERSON AND ONE KIND, DIMINISHING: the first link counts its
+ *     kind's weight, each further one [repeatDecay] times the one before — at
+ *     0.5 a person's ten replies in a thread are worth ~2 replies, their second
+ *     like barely more than one.
+ *  2. WITHIN ONE PERSON, ACROSS KINDS: summed, then clamped to ±[personCap] —
+ *     a like, a repost and a zap from one person (3) beat a like alone (1), and
+ *     nothing past [personCap] counts. Then TIMES that person's trust.
+ *  3. ACROSS PEOPLE: summed. The caller's own curve (LinkRerank's multiplier)
+ *     is where many people saturate; a third decay here would double it.
+ *
+ * The hit's own author is not a person here at all ([LinkTarget.author]).
+ *
+ * WHO A "PERSON" IS: a link's author — except a zap receipt (9735), which is
+ * signed by the RECIPIENT's LNURL server, so its person is the zapper the
+ * receipt's `P` tag names (NIP-57; it equals the zap request's signer on every
+ * receipt that carries it). A receipt without `P` (~half of them, measured) has
+ * no nameable person: it counts once, on its own, at its SIGNER's trust.
+ *
+ * Per kind and nothing finer below the person, because that is what the
+ * engine can see: `tag_index` keeps a tag's VALUE, so a NIP-56 report's reason
+ * and a zap's amount are invisible to it — weighing those needs an attribute
+ * written at feed time.
  */
 data class LinkWeights(
     /** A link's worth for each listed kind. */
     val byKind: Map<Int, Double> = emptyMap(),
     /** A link's worth for every kind not in [byKind]; 0 makes [byKind] an allow-list. */
     val otherwise: Double = 1.0,
+    /** Each further same-kind link from one person is worth this times the one before (0..1; 1 = plain count). */
+    val repeatDecay: Double = DEFAULT_REPEAT_DECAY,
+    /** One person's links to one hit, in weight units, are clamped to ±this before their trust multiplies in. */
+    val personCap: Double = DEFAULT_PERSON_CAP,
 ) {
     init {
         require(otherwise.isFinite() && byKind.values.all { it.isFinite() }) { "link weights must be finite" }
+        require(repeatDecay in 0.0..1.0) { "repeatDecay must be within 0..1" }
+        require(personCap > 0.0 && personCap.isFinite()) { "personCap must be positive" }
     }
 
     fun of(kind: Int): Double = byKind[kind] ?: otherwise
@@ -65,46 +109,65 @@ data class LinkWeights(
         return if (kinds.isEmpty()) linkers.copy(limit = 0) else linkers.copy(kinds = kinds.sorted())
     }
 
-    /** One key's score: each kind's summed linker trust ([trustByKind]), weighed by [of]. */
+    /** What [n] same-kind links from one person add up to, in units of one: 1 + d + d² + … (n terms). */
+    fun repeats(n: Int): Double = if (repeatDecay >= 1.0) n.toDouble() else (1.0 - repeatDecay.pow(n)) / (1.0 - repeatDecay)
+
+    /** One person's worth to one hit (layers 1 and 2), trust included. */
+    fun person(linker: Linker): Double {
+        val raw = linker.byKind.entries.sumOf { (kind, n) -> of(kind) * repeats(n) }
+        return raw.coerceIn(-personCap, personCap) * linker.trust
+    }
+
+    /**
+     * [target]'s score from the people who linked to it and the links no person
+     * could be named for (each its own one-link [Linker]): layer 3, with the
+     * author left out.
+     */
     fun score(
-        byKind: Map<Int, Int>,
-        trustByKind: Map<Int, Double>,
-    ): LinkScore = LinkScore(trustByKind.entries.sumOf { (kind, trust) -> of(kind) * trust }, byKind, trustByKind)
+        target: LinkTarget,
+        people: Map<String, Linker>,
+        unattributed: List<Linker> = emptyList(),
+    ): LinkScore {
+        val counted = people.filterKeys { it != target.author }
+        val byKind = HashMap<Int, Int>()
+        (counted.values + unattributed).forEach { l -> l.byKind.forEach { (k, n) -> byKind.merge(k, n, Int::plus) } }
+        val score = counted.values.sumOf(::person) + unattributed.sumOf(::person)
+        return LinkScore(score, byKind, counted.size + unattributed.size)
+    }
 
     companion object {
-        /** Every link weighs 1: the score is the linkers' summed trust. */
-        val COUNT = LinkWeights()
+        /** Plain counting: every link of every kind worth 1, no decay, no cap that a count could reach. */
+        val COUNT = LinkWeights(repeatDecay = 1.0, personCap = Double.MAX_VALUE)
+
+        /** Each repeat worth half the one before: at most 2 per person per kind. */
+        const val DEFAULT_REPEAT_DECAY = 0.5
+
+        /** Five weight units per person per hit — "a like, a repost, a zap, a reply" and then no more. */
+        const val DEFAULT_PERSON_CAP = 5.0
+
+        /** NIP-57: the receipt a zapper's LNURL server signs — the one kind whose person is not its author. */
+        const val ZAP_RECEIPT_KIND = 9735
     }
 }
 
 /**
- * One key's links, scored: Σ over its linking kinds of the kind's weight times
- * the TRUST its linkers carry under the lens, and so possibly NEGATIVE — a note
+ * One hit's links, scored ([LinkWeights] says how): possibly NEGATIVE — a note
  * that drew only reports scores below one that drew nothing.
  *
- * Trust is the lens's rank cell over [TRUST_SCALE]: 0..1, so a link from a
- * fully trusted author is worth exactly its weight. Below the floor a linker is
- * not in the sum at all (the gate drops it before the grouping). An engine
- * reading NO lens — the in-memory reference, which holds no reputation data, or
- * an un-lensed [EventIndex.scoreLinks] — counts every linker fully trusted (1.0
- * each), the same way it gates nobody: there the score is the weighed count.
+ * Trust is the lens's rank cell over [TRUST_SCALE]: 0..1, so a person fully
+ * trusted is worth exactly their (capped) weight. Below the floor a linker is not
+ * counted at all. An engine reading NO lens — the in-memory reference, which
+ * holds no reputation data, or an un-lensed [EventIndex.scoreLinks] — counts
+ * every person fully trusted (1.0), the same way it gates nobody.
  *
- * WHOSE trust: the linking EVENT's author. For most kinds that is the person
- * who engaged; a zap receipt (9735) is signed by the recipient's LNURL server,
- * so a zap is weighed by the wallet service's trust, not the zapper's (NIP-57
- * puts the sender in the receipt's `P` tag, which needs a feed-time attribute
- * before the engine can read it).
- *
- * [byKind] and [trustByKind] are what [score] was computed from, kept because a
- * ranking nobody can explain is a ranking nobody can debug, and the grouping
- * hands them back for free.
+ * [byKind] (the links that counted, by kind) and [people] (how many people, plus
+ * unattributed zaps, they came from) are what [score] was computed from — kept
+ * because a ranking nobody can explain is a ranking nobody can debug.
  */
 data class LinkScore(
     val score: Double,
-    /** How many links of each kind. */
     val byKind: Map<Int, Int>,
-    /** The summed trust (0..1 each) of each kind's linkers. */
-    val trustByKind: Map<Int, Double>,
+    val people: Int,
 ) {
     companion object {
         /** The NIP-85 rank scale a lens's cells are written on (0..100); trust = cell / this. */
