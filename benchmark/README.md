@@ -1299,6 +1299,105 @@ query counts for the busy and narrow cases; a ranked count asks for one hit),
 `RecencyStrategyIT`, which checks every strategy against the page computed from
 the corpus itself on a real Vespa, gate and tie group included.
 
+## Trusted links per search hit — can a page afford them? (`links_probe.py`, 2026-10-22)
+
+The question: search ranks a hit by text × the AUTHOR's trust (`search`'s
+`floored_text_score() * wot_mult() * recency_mult()`). The candidate signal is
+how much the observer's NETWORK engaged with the hit — the events that LINK to
+it (`e`/`E`/`q` naming its id: replies, reactions, reposts, zap receipts,
+quotes, NIP-22 comments) whose author clears the lens's trust floor, counted
+per hit, for a whole result page, on every search. Before it can be a ranking
+input it has to fit in a search's budget. This measures only that cost; no
+ranking was changed.
+
+**The corpus** (`benchmark/capture_links.py`, read-only against
+`search.brainstorm.world`, canonical observer `460c25e6…`, its one provider
+`7d7ffd72…`): the live relay's own top-100 page for 12 content searches
+(bitcoin, nostr, lightning, coffee, amethyst, primal, esposa, music, gm, zap,
+freedom, privacy) plus a `popular` page (the 100 notes most named by the
+newest 5,000 reactions — search pages lean young and lightly linked, the cost
+lives in the tail), then EVERY event linking to those 1,262 hits UNGATED, then
+the provider's 30382 for every author present. 20,105 events, fed through
+`exportLoad` into a fresh local Vespa 8.763 (4 vCPU) — all accepted, and the
+rebuilt lens reproduces the relay's: the store's per-hit gated COUNT equals the
+live relay's on 255/260 hits, and each of the other 5 is a popular note that
+gained one or two links between the link fetch and the COUNT (live ungated
+count exactly that much above what was captured). Links per hit: median 0–5 on
+search pages, up to 962 trusted (1,392 total) on one `amethyst` hit; the
+`popular` top 100 carry 2,501 trusted of 6,133 — the gate keeps ~40–85%.
+
+**Five ways to get the numbers** (median of 7 per page, single match thread,
+one keep-alive connection per thread; a page is the top-N as the relay served it):
+
+| strategy | what it issues |
+|---|---|
+| PER_HIT | one gated count per hit (`recency_gated_exact`, `hits=1` → post-gate `totalCount`, the store's NIP-45 shape), 16 concurrent |
+| GROUPED | ONE gated query, `tag_index in ("e:<h1>","E:<h1>","q:<h1>", …)`, `all(group(tag_index) filter(regex(<page keys>)) each(output(count())))` |
+| GROUPED_KIND | GROUPED with each key's group split by `kind` (the reaction / reply / repost / zap mix) |
+| BY_AUTHOR | ungated, grouped by tag_index then pubkey; the lens's trusted set (`docs/gated-count.md`) picks whom to add |
+| LOAD | the gated link documents themselves (attribute-only `idtimetag` summary), tallied client-side |
+
+| page | PER_HIT | GROUPED | GROUPED_KIND | BY_AUTHOR | LOAD | GROUPED ungated |
+|---|---:|---:|---:|---:|---:|---:|
+| top 20 — median / p90 | 25.5 / 28.4 ms | **9.9 / 12.4** | 11.6 / 16.1 | 13.2 / 24.3 | **9.9** / 23.7 | 10.0 / 19.1 |
+| top 50 | 53.8 / 60.1 | **15.3 / 20.5** | 19.7 / 22.2 | 21.8 / 39.1 | 14.8 / 56.5 | 16.7 / 21.7 |
+| top 100 | 79.5 / 87.0 | **22.3 / 31.0** | 27.2 / 38.2 | 30.4 / 55.8 | 14.8 / 57.8 | 21.8 / 30.5 |
+| heaviest (`amethyst` 100: 2,354 trusted / 4,699) | 86.3 | 31.0 | 41.1 | 55.8 | 104.9 | 45.6 |
+
+What it says:
+
+- **One grouped query per page is the shape.** Flat at 10–40 ms from 20 to 100
+  hits and from a few dozen to 6k links; PER_HIT is 2.5–3.5× slower here, and
+  on a multi-node cluster it is N queries each fanning out to every content
+  node. GROUPED_KIND adds ~2–5 ms for the per-kind breakdown a real ranking
+  would weigh.
+- **The `filter(regex())` is not optional.** `group(tag_index)` groups an array
+  attribute by EVERY element, so without it each link's whole tag list becomes
+  groups (a reply's `p` list, its thread root, …): 6,137 groups for the 26 that
+  matter on the `popular` top 20, 117 ms → 17 ms with the filter.
+- **The gate is free at these sizes.** GROUPED gated and ungated cost the same:
+  ranking a few thousand matches is noise next to the grouping. BY_AUTHOR —
+  the winner for 5.7M-match COUNTs — is a loss here (it pays per author
+  group), and so is the trusted set it needs in memory.
+- **GROUPED is not exact: +2.6%** (net +493 over 18,682 links, 168 hit-pages
+  affected). Grouping counts array ELEMENTS, so a link naming the hit twice is
+  counted twice: NIP-22's `E`+`e` on every top-level comment, `e`+`q` on a
+  quote-reply, a client's duplicated `e`. LOAD and PER_HIT are exact (0
+  differ). For a log-scaled ranking input 2.6% is noise; if it is not, LOAD is
+  exact and as cheap on a typical page — but it grows with the links it returns
+  (105 ms on the heaviest page) where GROUPED does not.
+- **What the trusted links are**: kind 1 38%, 7 21%, **1985 18%**, 9735 13%,
+  6 7%, 1111 2%, bookmark lists 10003 1% (top 100). The NIP-32 labels are
+  almost a fifth of all trusted links — a ranking would want to choose its
+  kinds and weights rather than count every link alike.
+
+**Production scale, one sanity point.** The local corpus is 20k documents, so
+it measures the link sets, not 211M documents across nodes. Against the live
+relay (read-only, median of 3): ONE gated COUNT whose filters name a whole
+page's links — the same match-and-gate work GROUPED does, minus the grouping —
+takes 62–137 ms for a top 20 and 100–155 ms for a top 100, against 60 ms for a
+gated COUNT matching nothing (the wire + relay floor). So roughly 0–95 ms of
+engine work at production scale, with the floor dominating. One per-hit COUNT
+there is 56 ms median / 103 ms p90, serial — 20 of them is out of budget.
+
+**What building it would take** (not done): the signal depends on the observer,
+so it cannot be precomputed per event, and a rank profile cannot reach another
+document's links — it has to be a second query over a candidate window: the
+search's top K (its first phase already orders ~50k matches; K = page or
+`rerank-count`-sized), one GROUPED_KIND query over those K, re-scored in the
+store. Expected cost ≈ one extra engine round trip of 20–40 ms locally,
+tens of ms on the live cluster. A store method on `EventIndex` would also be a
+port member — `TrustProjection` and `MeteredEventIndex` in the same commit
+(`PortDecoratorsTest`).
+
+Reproduce:
+
+```
+python3 benchmark/capture_links.py /tmp/links.json                 # ~15 min, read-only
+VESPA_URL=http://localhost:8080 ./gradlew :benchmark:exportLoad --args=/tmp/links.json
+python3 benchmark/links_probe.py --capture /tmp/links.json --reps 7
+```
+
 ## Replaying a pin bump on real data (`pinReplayProbe`, 2026-10-06)
 
 The `d792ebc4bf` → `68268da413` Quartz bump ships with a 61-kind
