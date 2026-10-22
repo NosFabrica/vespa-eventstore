@@ -60,6 +60,9 @@ class SchemaDeployer(
         awaitServing(queryUrl)
     }
 
+    /** [configUrl] without a trailing slash, so a path appended to it has exactly one. */
+    private val root = configUrl.trimEnd('/')
+
     /**
      * Deploy [zip] unless Vespa already has it active ([serves]), then wait until every service
      * runs it ([awaitConverged]) and the container answers. Returns whether it deployed.
@@ -89,15 +92,17 @@ class SchemaDeployer(
     fun serves(zip: ByteArray = VespaApp.zipBytes()): Boolean =
         runCatching {
             val wanted = files(zip)
-            val content = "$configUrl$INSTANCE/content/"
-            val listed =
+            val content = "$root$INSTANCE/content/"
+            val active =
                 (Json.parseToJsonElement(get("$content?recursive=true").decodeToString()) as JsonArray)
                     .map { it.jsonPrimitive.content }
                     // Directories are listed with a trailing slash; the package is its files.
                     .filterNot { it.endsWith("/") }
-            val active = listed.map { url -> url.removePrefix(content) }
-            // The same names, and no url outside the content root it was asked for.
-            active.toSet() == wanted.keys && listed.all { it.startsWith(content) } &&
+                    // Each url names the host the config server thinks it is, which a proxy or a
+                    // different spelling of [configUrl] does not match: the path after the content
+                    // root is the file, and it is read back through [configUrl] like the listing.
+                    .map { url -> url.substringAfter("$INSTANCE/content/", missingDelimiterValue = "") }
+            "" !in active && active.size == wanted.size && active.toSet() == wanted.keys &&
                 active.all { path -> get(content + path).contentEquals(wanted.getValue(path)) }
         }.getOrDefault(false)
 
@@ -134,7 +139,7 @@ class SchemaDeployer(
 
     private fun converged(generation: Long?): Boolean =
         runCatching {
-            val state = Json.parseToJsonElement(get("$configUrl$INSTANCE/serviceconverge").decodeToString()) as JsonObject
+            val state = Json.parseToJsonElement(get("$root$INSTANCE/serviceconverge").decodeToString()) as JsonObject
             val current = state["currentGeneration"]?.jsonPrimitive?.longOrNull ?: return false
             state["converged"]?.jsonPrimitive?.booleanOrNull == true && (generation == null || current >= generation)
         }.getOrDefault(false)
@@ -185,7 +190,7 @@ class SchemaDeployer(
     fun deploy(zip: ByteArray = VespaApp.zipBytes()): String {
         val req =
             HttpRequest
-                .newBuilder(URI.create("$configUrl/application/v2/tenant/default/prepareandactivate"))
+                .newBuilder(URI.create("$root/application/v2/tenant/default/prepareandactivate"))
                 .header("Content-Type", "application/zip")
                 .POST(HttpRequest.BodyPublishers.ofByteArray(zip))
                 .build()

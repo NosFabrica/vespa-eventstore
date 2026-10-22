@@ -86,7 +86,7 @@ internal class VespaFeed(
             // SSL context whatever the scheme. Its own builder loads BouncyCastle and verifies the
             // signed jars that ship it: profiled at a relay's boot, about 1 s of a 1.9 s store
             // open. An inert JDK context costs next to nothing.
-            .apply { if (uris.all { it.scheme == "http" }) setSslContext(PLAINTEXT_ONLY) }
+            .apply { if (uris.all { it.scheme.equals("http", ignoreCase = true) }) setSslContext(PLAINTEXT_ONLY) }
             // Bursty batched ingest idles at the throttle FLOOR (minInflight =
             // 2 x connectionsPerEndpoint) — the throttler never sustains its
             // upward probe. At 8 connections that floor was ~16 in flight,

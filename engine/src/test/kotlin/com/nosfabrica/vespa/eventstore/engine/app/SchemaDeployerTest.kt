@@ -37,6 +37,9 @@ class SchemaDeployerTest {
     /** What the fake config server holds ACTIVE, path to bytes. */
     @Volatile private var active: Map<String, ByteArray> = SchemaDeployer.files(pkg)
 
+    /** The host the fake config server names in its content listing; null names itself. */
+    @Volatile private var listingHost: String? = null
+
     @Volatile private var current = 15L
 
     @Volatile private var wanted = 15L
@@ -70,7 +73,8 @@ class SchemaDeployerTest {
                         }
 
                         path.endsWith("/content/") -> {
-                            val listing = active.keys.map { "\"$base$INSTANCE/content/$it\"" } + "\"$base$INSTANCE/content/schemas/\""
+                            val host = listingHost ?: base
+                            val listing = active.keys.map { "\"$host$INSTANCE/content/$it\"" } + "\"$host$INSTANCE/content/schemas/\""
                             200 to "[${listing.joinToString(",")}]".toByteArray()
                         }
 
@@ -100,6 +104,14 @@ class SchemaDeployerTest {
         assertTrue(deployer.serves(pkg))
         assertFalse(deployer.deployIfChanged(base, pkg), "the active package is this one")
         assertEquals(0, deploys.get())
+    }
+
+    @Test
+    fun theListingIsReadByPathWhateverHostItNames() {
+        // A config server behind a proxy, or reached by another name, lists urls on its own host.
+        listingHost = "http://vespa-config.internal:19071"
+        assertTrue(deployer.serves(pkg), "the same files, listed under another host")
+        assertTrue(SchemaDeployer("$base/").serves(pkg), "a trailing slash on the config url")
     }
 
     @Test
