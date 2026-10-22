@@ -695,6 +695,63 @@ object EventYql {
     fun buildDistinctTagValues(q: EventQuery): VespaQuery? = grouping(q, """all(group(tag_index) each(output(count())))""")
 
     /**
+     * [EventIndex.countLinks]' query: the documents [linkers] would serve that
+     * carry any of [keys] in `tag_index`, grouped by key and then by kind — one
+     * engine round trip for a whole search page's links.
+     *
+     * The key clause is an OR over every letter at once (`tag_index in ("e:…",
+     * "a:…")`), which no [EventQuery] can say — its `tags` AND across names, as
+     * NIP-01 does — so it is written here rather than smuggled through [linkers].
+     *
+     * The grouping carries a `filter(regex())` naming exactly [keys]. Without it
+     * `group(tag_index)` builds a group for EVERY element of every matched
+     * document's array — a reply's whole `p` list, its thread root, its client
+     * tag — and that is where the time goes: measured on real search pages
+     * (benchmark/README.md, "Trusted links per search hit"), 6,137 groups for
+     * the 26 that mattered, 117 ms against 17 ms with the filter.
+     *
+     * GATED THE WAY A COUNT IS: [countProfileOf] picks the profile, so a lensed
+     * [linkers] (observer + floor, ranking [RANK_RECENCY_GATED]) runs on
+     * [RANK_RECENCY_GATED_EXACT], whose `rank-score-drop-limit` removes a
+     * below-floor author before the grouping sees it, and anything else runs
+     * unranked. That the drop happens before grouping even at `hits=0` is the
+     * engine's behavior, not a promise of this builder — `LinkCountsIT` pins it.
+     *
+     * Null when nothing can match: no key a document could hold, or [linkers]
+     * provably empty.
+     */
+    fun buildLinkCounts(
+        keys: Collection<String>,
+        linkers: EventQuery,
+    ): VespaQuery? {
+        val usable = keys.filter(::isLinkKey).distinct()
+        if (usable.isEmpty()) return null
+        val keyClause = usable.joinToString(", ", prefix = "tag_index in (", postfix = ")") { quote(it) }
+        val pattern = usable.joinToString("|", prefix = "^(?:", postfix = ")$") { regexLiteral(it) }
+        val pipeline = "all(group(tag_index) filter(regex(${quote(pattern)}, tag_index)) each(output(count()) all(group(kind) each(output(count())))))"
+        val q = linkers.copy(limit = null)
+        return grouping(q, pipeline, extra = keyClause, ranking = countProfileOf(q) ?: RANK_UNRANKED)
+    }
+
+    /** A `"<letter>:<value>"` key `tag_index` could hold: an indexable one-letter name, a value, nothing [quote] cannot render. */
+    private fun isLinkKey(key: String): Boolean = key.length > 2 && key[1] == ':' && isIndexableTagName(key.substring(0, 1)) && isQuotable(key)
+
+    /**
+     * [s] as a regex matching only itself. ASCII punctuation is escaped and
+     * nothing else: a hex id needs no escape at all, an address only its
+     * colons' neighbours (`kind:pubkey:d`, where `d` is caller text), and
+     * escaping a letter or a non-ASCII character would turn it INTO a regex
+     * escape sequence rather than out of one.
+     */
+    private fun regexLiteral(s: String): String =
+        buildString(s.length) {
+            for (c in s) {
+                if (c.code < 128 && !c.isLetterOrDigit() && c != ' ') append('\\')
+                append(c)
+            }
+        }
+
+    /**
      * The shared shape of every aggregation query: the filter WHERE clause,
      * `limit 0`, the [pipeline] grouping, NO `order by` (attribute sorting
      * trips match-phase and caps totals), unranked. Null when the filter
@@ -711,20 +768,33 @@ object EventYql {
     private fun grouping(
         q: EventQuery,
         pipeline: String,
+        /** One more WHERE clause the [EventQuery] cannot express ([buildLinkCounts]' cross-letter key OR). */
+        extra: String? = null,
+        /**
+         * The profile the grouping runs under — [RANK_UNRANKED] for every
+         * aggregation but a gated one ([buildLinkCounts]), whose drop-limit is
+         * what removes below-floor documents before they are grouped.
+         */
+        ranking: String = RANK_UNRANKED,
     ): VespaQuery? {
         // A present limit <= 0 is the "matches nothing" sentinel (as in [build]);
         // a positive limit is about hits, not the grouping, so it is ignored.
         if (q.limit != null && q.limit <= 0) return null
         val params = LinkedHashMap<String, String>()
         val clauses = filterClauses(q, params) ?: return null
-        val where = whereOf(clauses)
+        val where = whereOf(if (extra == null) clauses else clauses + extra)
+        if (ranking != RANK_UNRANKED && q.observer?.lowercase()?.takeIf(Hex::isHex64) != null) {
+            lensParams(q, params)
+            // The gated profiles read no text signal (see [build]).
+            params.keys.removeAll(TEXT_RANK_FEATURES)
+        }
         params["grouping.defaultMaxGroups"] = UNLIMITED_GROUPS
         params["grouping.defaultMaxHits"] = UNLIMITED_GROUPS
         params[MATCH_THREADS] = SINGLE_MATCH_THREAD
         return VespaQuery(
             yql = "select * from event where $where limit 0 | $pipeline",
             params = params,
-            ranking = RANK_UNRANKED,
+            ranking = ranking,
             shape = clauseShape(q),
         )
     }

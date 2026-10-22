@@ -45,6 +45,7 @@ import com.nosfabrica.vespa.eventstore.runtime.DEFAULT_PROVIDER_REFRESH_MILLIS
 import com.nosfabrica.vespa.eventstore.runtime.WriteLocks
 import com.nosfabrica.vespa.eventstore.runtime.WriterTopology
 import com.nosfabrica.vespa.eventstore.runtime.readOnlyRefusal
+import com.nosfabrica.vespa.eventstore.search.LinkRerank
 import com.nosfabrica.vespa.eventstore.search.PageAssembly
 import com.nosfabrica.vespa.eventstore.search.SearchExpansionLimits
 import com.nosfabrica.vespa.eventstore.search.SearchReferenceExpansion
@@ -176,6 +177,13 @@ class NostrSemanticsStore(
      * making a judgement that a cap can participate in.
      */
     private val maxHitsPerAuthor: Int? = null,
+    /**
+     * The `sort:links[:<strength>]` rerank — a PROTOTYPE, see [LinkRerank]: a
+     * search page's head rescored by how many links each hit drew from the
+     * observer's web of trust. Per query, by token; a read without the token
+     * is untouched. Null makes the token a no-op.
+     */
+    private val linkRerank: LinkRerank? = LinkRerank(),
     /**
      * WHERE THIS STORE'S RESOURCES GO — see docs/telemetry.md.
      *
@@ -316,7 +324,7 @@ class NostrSemanticsStore(
      * holding no 10040s that read is never cached, so it resolves at most once
      * per observer, and only on the paths that consult the gate.
      */
-    private val pages = PageAssembly(searchExpansion, maxHitsPerAuthor, { observer -> if (observer == null) Enrolment.NONE else delegations().of(observer) })
+    private val pages = PageAssembly(searchExpansion, maxHitsPerAuthor, { observer -> if (observer == null) Enrolment.NONE else delegations().of(observer) }, linkRerank)
 
     /** How the page assembly reads and recalls a stored document. */
     private val docPage =
@@ -329,6 +337,7 @@ class NostrSemanticsStore(
             pointerOf = { if (it.kind in SearchReferences.KINDS) it.toEvent() else null },
             search = { index.search(it) },
             searchRanked = { index.searchRanked(it) },
+            countLinks = { keys, linkers -> index.countLinks(keys, linkers) },
         )
 
     /** The same, off a raw row — the projection the wire-serving path uses. */
@@ -342,6 +351,7 @@ class NostrSemanticsStore(
             pointerOf = { if (it.kind in SearchReferences.KINDS) it.toEvent() else null },
             search = { index.rawSearch(it) },
             searchRanked = { index.rawSearchRanked(it) },
+            countLinks = { keys, linkers -> index.countLinks(keys, linkers) },
         )
 
     private val bulkRecords = BulkRecordInsert(index, relay, guards)

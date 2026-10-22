@@ -64,6 +64,16 @@ class EngineReads internal constructor(
     suspend fun count(query: EventQuery): Int = index.count(query)
 
     /**
+     * The links to each of [keys] by kind, among the documents [linkers] serves
+     * (see `EventIndex.countLinks`) — what the `sort:links` rerank weighed, read
+     * back by the harness that reports why a hit moved.
+     */
+    suspend fun countLinks(
+        keys: Collection<String>,
+        linkers: EventQuery,
+    ): Map<String, Map<Int, Int>> = index.countLinks(keys, linkers)
+
+    /**
      * Which of [ids] the engine already holds — a pure membership read, and
      * the cheapest one the index offers (an id-only summary, no documents).
      *

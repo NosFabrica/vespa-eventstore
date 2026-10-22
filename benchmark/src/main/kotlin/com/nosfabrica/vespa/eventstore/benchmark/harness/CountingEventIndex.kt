@@ -168,5 +168,13 @@ class CountingEventIndex(
         return inner.countByAuthor(query)
     }
 
+    override suspend fun countLinks(
+        keys: Collection<String>,
+        linkers: EventQuery,
+    ): Map<String, Map<Int, Int>> {
+        searches.incrementAndGet()
+        return inner.countLinks(keys, linkers)
+    }
+
     override fun close() = inner.close()
 }

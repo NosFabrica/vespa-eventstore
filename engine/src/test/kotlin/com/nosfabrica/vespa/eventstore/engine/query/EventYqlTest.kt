@@ -1340,4 +1340,46 @@ class EventYqlTest {
         val newline = EventYql.build(EventQuery(tags = mapOf("t" to listOf("a\nb\\c"))))!!
         assertTrue("tag_index contains \"t:a\\nb\\\\c\"" in newline.yql)
     }
+
+    /**
+     * The link count is ONE query over every key of a page: a cross-letter OR in
+     * the WHERE clause, a grouping filtered to exactly those keys (without the
+     * filter every tag of every link becomes a group — the measured 117 ms vs
+     * 17 ms), key then kind, and the observer gate's FULL-SCAN profile when the
+     * linkers carry a lens — the match-phase variant would cut the set a count
+     * must see whole.
+     */
+    @Test
+    fun `link counts group the page's keys by kind, gated through the exact profile`() {
+        val id = "ab".repeat(32)
+        val address = "30023:${"cd".repeat(32)}:a.b(c)"
+        val lensed =
+            EventQuery(
+                observer = "ee".repeat(32),
+                rankKey = "5e".repeat(32),
+                minRank = 2.0,
+                ranking = EventYql.RANK_RECENCY_GATED,
+                limit = 20,
+            )
+        val vq = EventYql.buildLinkCounts(listOf("e:$id", "a:$address", "e:$id"), lensed)!!
+        assertTrue(vq.yql.contains("""tag_index in ("e:$id", "a:$address")"""), vq.yql)
+        assertTrue(vq.yql.contains(" limit 0 | all(group(tag_index) filter(regex("), vq.yql)
+        assertTrue(vq.yql.contains("each(output(count()) all(group(kind) each(output(count()))))"), vq.yql)
+        // Punctuation escaped (RE2 takes `\:` and `\.` as themselves), letters and digits never.
+        assertTrue(vq.yql.contains("""^(?:e\\:$id|a\\:30023\\:${"cd".repeat(32)}\\:a\\.b\\(c\\))$"""), vq.yql)
+        assertEquals(EventYql.RANK_RECENCY_GATED_EXACT, vq.ranking)
+        assertEquals("{${"5e".repeat(32)}:1.0}", vq.params["ranking.features.query(user_q)"])
+        assertEquals("2.0", vq.params["ranking.features.query(min_rank)"])
+        assertEquals(EventYql.UNLIMITED_GROUPS, vq.params["grouping.defaultMaxGroups"])
+
+        // No lens: an unranked grouping, no trust features at all.
+        val open = EventYql.buildLinkCounts(listOf("e:$id"), EventQuery(kinds = listOf(7)))!!
+        assertEquals(EventYql.RANK_UNRANKED, open.ranking)
+        assertTrue(open.yql.contains("kind in (7) and tag_index in (\"e:$id\")"), open.yql)
+        assertNull(open.params["ranking.features.query(user_q)"])
+
+        // Nothing a document could hold: no query.
+        assertNull(EventYql.buildLinkCounts(listOf("not-a-key", "ee:x", "e:"), EventQuery()))
+        assertNull(EventYql.buildLinkCounts(emptyList(), EventQuery()))
+    }
 }

@@ -1757,6 +1757,22 @@ class VespaEventIndex(
             GroupingResults.groupCounts(root)
         }
 
+    /**
+     * [EventIndex.countLinks] as ONE grouping ([EventYql.buildLinkCounts]):
+     * key, then kind, gated by [linkers]' lens where it has one. No near/profile
+     * fallback: the query carries no search text, and a schema predating the
+     * gated profiles predates everything a lensed rerank needs.
+     */
+    override suspend fun countLinks(
+        keys: Collection<String>,
+        linkers: EventQuery,
+    ): Map<String, Map<Int, Int>> {
+        if ((linkers.limit ?: 1) <= 0) return emptyMap()
+        val vq = EventYql.buildLinkCounts(keys, linkers) ?: return emptyMap()
+        val root = queryRoot(vq, hits = 0) ?: return emptyMap()
+        return GroupingResults.keyKindCounts(root)
+    }
+
     // ---- transport funnels --------------------------------------------------
 
     /**

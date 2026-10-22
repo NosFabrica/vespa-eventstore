@@ -55,6 +55,44 @@ internal object GroupingResults {
             }
         }
 
+    /**
+     * A two-level `group(<key>) each(… all(group(kind) each(output(count()))))`
+     * — [EventYql.buildLinkCounts]' shape — as key -> kind -> count.
+     *
+     * Read by grouplist LABEL rather than by depth: [groupCounts] collects every
+     * `group:` node it meets, which on this shape would fold the kinds' leaf
+     * groups ("1", "7") into the same map as the keys they sit under.
+     */
+    fun keyKindCounts(root: JsonObject): Map<String, Map<Int, Int>> {
+        val out = LinkedHashMap<String, Map<Int, Int>>()
+
+        fun groupsUnder(
+            node: JsonObject,
+            label: String,
+        ): List<JsonObject> =
+            node["children"]?.jsonArray.orEmpty().flatMap { child ->
+                val c = child.jsonObject
+                if (c["label"]?.jsonPrimitive?.content == label) c["children"]?.jsonArray.orEmpty().map { it.jsonObject } else groupsUnder(c, label)
+            }
+
+        for (keyGroup in groupsUnder(root, "tag_index")) {
+            val key = (keyGroup["value"] as? JsonPrimitive)?.content ?: continue
+            val byKind = LinkedHashMap<Int, Int>()
+            for (kindGroup in groupsUnder(keyGroup, "kind")) {
+                val kind = (kindGroup["value"] as? JsonPrimitive)?.content?.toIntOrNull() ?: continue
+                val count =
+                    kindGroup["fields"]
+                        ?.jsonObject
+                        ?.get("count()")
+                        ?.jsonPrimitive
+                        ?.intOrNull ?: continue
+                byKind[kind] = count
+            }
+            if (byKind.isNotEmpty()) out[key] = byKind
+        }
+        return out
+    }
+
     /** Every leaf `group:` node's string value under [root], with its `count()` — the distinct pubkeys of a `group(pubkey)` and their doc counts. */
     fun groupCounts(root: JsonObject): LinkedHashMap<String, Int> {
         val out = LinkedHashMap<String, Int>()

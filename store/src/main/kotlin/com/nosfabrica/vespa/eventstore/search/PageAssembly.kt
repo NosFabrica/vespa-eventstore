@@ -67,6 +67,8 @@ internal class PageAssembly(
     private val maxHitsPerAuthor: Int?,
     /** Whose declarations one observer may unpack; resolved at most once per observer, and only on the paths that consult the gate. */
     private val enrolments: suspend (String?) -> Enrolment,
+    /** The `sort:links` rerank ([LinkRerank]), or null to ignore the token. */
+    private val linkRerank: LinkRerank? = null,
 ) {
     /**
      * How to read one row type, and how to recall it — everything the pipeline
@@ -84,6 +86,8 @@ internal class PageAssembly(
         val pointerOf: (R) -> Event?,
         val search: suspend (EventQuery) -> List<R>,
         val searchRanked: suspend (EventQuery) -> List<Ranked<R>>,
+        /** [com.nosfabrica.vespa.eventstore.engine.EventIndex.countLinks] — what the `sort:links` rerank reads. */
+        val countLinks: suspend (Collection<String>, EventQuery) -> Map<String, Map<Int, Int>>,
     )
 
     /**
@@ -100,15 +104,19 @@ internal class PageAssembly(
         projection: Projection<R>,
     ): List<R> {
         val expansion = expansionOf(queries)
+        // The rerank widens the RECALL, never the answer: the asked size is
+        // taken before widening and the page is cut back to it once rescored.
+        val strength = linkRerank?.takeIf { queries.isNotEmpty() && queries.all { it.keepsEngineOrder() } }?.requested(filters)
+        val recall = if (strength != null) queries.map(linkRerank!!::widened) else queries
         val recalled =
             recallOrdered(
-                queries + companionsOf(expansion, queries),
+                recall + companionsOf(expansion, recall),
                 projection.newestFirst,
                 projection.idOf,
                 projection.search,
                 projection.searchRanked,
-                expansion != null,
-            )
+                expansion != null || strength != null,
+            ).let { page -> if (strength == null) page else reranked(page, queries, strength, projection) }
         return spliced(expansion, recalled, projection.keys, projection.pointerOf, projection.searchRanked)
             .asked(expansion, filters, projection.kindOf, projection.idOf, projection.authorOf)
             .diverse(queries.all { it.keepsEngineOrder() }, projection.authorOf)
@@ -269,6 +277,52 @@ internal class PageAssembly(
     }
 
     /**
+     * [page] with its head rescored by trusted links and re-sorted, cut back to
+     * the size [queries] asked for — see [LinkRerank] for the signal and why it
+     * is shaped this way.
+     *
+     * BEFORE THE SPLICE, deliberately: a Trusted List's member is placed by
+     * comparing its member-profile score against the hits' scores, and the hits'
+     * scores are now the reranked ones. A member is not itself rescored — it was
+     * found through its pointer, and the pointer's links are what moved.
+     *
+     * A page with no scores (a mixed or concatenated recall, an engine that does
+     * not rank) cannot be rescored and keeps its order; a read with no resolved
+     * lens has no web of trust to filter the links by and keeps it too. Both are
+     * still cut back, since the recall was widened either way.
+     */
+    private suspend fun <R> reranked(
+        page: Page<R>,
+        queries: List<EventQuery>,
+        strength: Double,
+        projection: Projection<R>,
+    ): Page<R> {
+        val rerank = linkRerank ?: return page
+        // Each NIP-01 filter's limit is its own, and the page is their union:
+        // the largest asked limit is what the union could have held. One
+        // unlimited filter makes the whole read unlimited.
+        val asked = if (queries.any { it.limit == null }) null else queries.maxOf { it.limit!! }
+        val scores = page.scores
+        val linkers = queries.firstNotNullOfOrNull { rerank.linkersOf(it) }
+        if (scores == null || linkers == null || scores.any { it == null } || page.hits.isEmpty()) return page.cut(asked)
+        val head = minOf(rerank.window, page.hits.size)
+        val keys = List(head) { rerank.keysOf(projection.idOf(page.hits[it]), projection.keys.addressOf(page.hits[it])) }
+        val links = projection.countLinks(keys.flatten(), linkers)
+        val boosted =
+            List(head) { i ->
+                val engagement = rerank.engagement(keys[i].mapNotNull { links[it] })
+                scores[i]!! * LinkRerank.multiplier(engagement, strength)
+            }
+        // Stable: equal rescored hits keep the engine's order between them.
+        val order = (0 until head).sortedByDescending { boosted[it] } + (head until page.hits.size)
+        return Page(
+            order.map { page.hits[it] },
+            order.map { if (it < head) boosted[it] else scores[it] },
+            page.texts?.let { texts -> order.map { texts[it] } },
+        ).cut(asked)
+    }
+
+    /**
      * ONE ORDERED PAGE, AND THE RELEVANCE BEHIND IT — [scores] index-aligned
      * with [hits], or NULL for the pages that have none: a recency-ordered
      * recall, two ranking profiles concatenated, an engine that does not rank.
@@ -291,6 +345,9 @@ internal class PageAssembly(
          */
         val texts: List<Double?>? = null,
     ) {
+        /** The first [limit] rows, scores aligned; the same page when nothing is cut. */
+        fun cut(limit: Int?): Page<R> = if (limit == null || hits.size <= limit) this else Page(hits.take(limit), scores?.take(limit), texts?.take(limit))
+
         companion object {
             fun <R> of(ranked: List<Ranked<R>>) = Page(ranked.map { it.hit }, ranked.map { it.score }, ranked.map { it.textScore })
         }

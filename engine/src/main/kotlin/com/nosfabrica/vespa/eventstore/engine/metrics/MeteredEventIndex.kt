@@ -220,6 +220,11 @@ class MeteredEventIndex(
 
     override suspend fun countByAuthor(query: EventQuery): Map<String, Int> = meterResult(PortCall.Group, { inner.countByAuthor(query) }, { it.size.toLong() })
 
+    override suspend fun countLinks(
+        keys: Collection<String>,
+        linkers: EventQuery,
+    ): Map<String, Map<Int, Int>> = meterResult(PortCall.Group, { inner.countLinks(keys, linkers) }, { it.size.toLong() })
+
     override suspend fun scanAuthors(query: EventQuery): Set<String> = meterResult(PortCall.Group, { inner.scanAuthors(query) }, { it.size.toLong() })
 
     /**

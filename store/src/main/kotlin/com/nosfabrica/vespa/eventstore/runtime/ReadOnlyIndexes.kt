@@ -93,6 +93,11 @@ internal class ReadOnlyEventIndex(
 
     override suspend fun countByAuthor(query: EventQuery): Map<String, Int> = inner.countByAuthor(query)
 
+    override suspend fun countLinks(
+        keys: Collection<String>,
+        linkers: EventQuery,
+    ): Map<String, Map<Int, Int>> = inner.countLinks(keys, linkers)
+
     override suspend fun scanAuthors(query: EventQuery): Set<String> = inner.scanAuthors(query)
 
     override suspend fun put(doc: EventDoc) = readOnlyRefusal("put")
