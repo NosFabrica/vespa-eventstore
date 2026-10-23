@@ -193,5 +193,101 @@
     "intent": "topical",
     "need": "TOPICAL: content about coffee. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
     "note": "RECENCY baseline, same run: trust lens median 1098d, 49/50 over a year, newest 208d. Kept beside the profile case 'coffee' above on purpose — the same word ranks a kind-0 ladder AND a kind-1 page, so the two rows read together say whether a config moved the pages or moved the ladder."
+  },
+  {
+    "query": "ai",
+    "expect": "",
+    "intent": "topical",
+    "need": "TOPICAL: artificial intelligence (AI, machine learning, LLMs). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated. The Portuguese/Spanish interjection \"aí\" and letters inside other words are 0.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23): chosen by name frequency on the production sample (benchmark/name_df.json), before any page was seen, to confirm the name-frequency rung (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "music",
+    "expect": "",
+    "intent": "topical",
+    "need": "TOPICAL: music (songs, artists, albums, making or sharing music). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23): chosen by name frequency on the production sample (benchmark/name_df.json), before any page was seen, to confirm the name-frequency rung (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "news",
+    "expect": "",
+    "intent": "topical",
+    "need": "TOPICAL: news (current-events reporting, news outlets and their stories). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23): chosen by name frequency on the production sample (benchmark/name_df.json), before any page was seen, to confirm the name-frequency rung (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "crypto",
+    "expect": "",
+    "intent": "topical",
+    "need": "TOPICAL: cryptocurrency (bitcoin and other coins, markets, wallets). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated. Cryptography in the security sense is a different sense (1).",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23): chosen by name frequency on the production sample (benchmark/name_df.json), before any page was seen, to confirm the name-frequency rung (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "art",
+    "expect": "",
+    "intent": "topical",
+    "need": "TOPICAL: art (artworks, artists, visual and creative art). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23): chosen by name frequency on the production sample (benchmark/name_df.json), before any page was seen, to confirm the name-frequency rung (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "film",
+    "expect": "",
+    "intent": "topical",
+    "need": "TOPICAL: film as cinema (movies, filmmaking, film festivals). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated. Photographic film is a different sense (1).",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23): chosen by name frequency on the production sample (benchmark/name_df.json), before any page was seen, to confirm the name-frequency rung (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "privacy",
+    "expect": "",
+    "intent": "topical",
+    "need": "TOPICAL: privacy (personal and digital privacy, privacy tools, surveillance). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23): chosen by name frequency on the production sample (benchmark/name_df.json), before any page was seen, to confirm the name-frequency rung (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "damus",
+    "expect": "",
+    "intent": "navigational",
+    "need": "NAVIGATIONAL: Damus, the iOS Nostr client. 3 = the app itself (its official profile, app handler or app listing); 2 = content about Damus (releases, guides, reviews), its project channels or repository; 1 = mentions, profiles merely using a damus.io address; 0 = unrelated, or impersonators.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23): chosen by name frequency on the production sample (benchmark/name_df.json), before any page was seen, to confirm the name-frequency rung (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "alby",
+    "expect": "",
+    "intent": "navigational",
+    "need": "NAVIGATIONAL: Alby, the bitcoin Lightning wallet and browser extension (getalby.com). 3 = the product itself (its official profile, app handler or app listing); 2 = content about Alby (releases, guides); 1 = profiles merely using an @getalby.com address, mentions; 0 = unrelated, or impersonators.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23): chosen by name frequency on the production sample (benchmark/name_df.json), before any page was seen, to confirm the name-frequency rung (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "fountain",
+    "expect": "",
+    "intent": "navigational",
+    "need": "NAVIGATIONAL: Fountain, the bitcoin podcast app (fountain.fm). 3 = the app itself (its official profile, app handler or app listing); 2 = content about the Fountain app; 1 = mentions, links to episodes hosted on fountain.fm, other senses (a water fountain); 0 = unrelated, or impersonators.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23): chosen by name frequency on the production sample (benchmark/name_df.json), before any page was seen, to confirm the name-frequency rung (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "iris",
+    "expect": "",
+    "intent": "navigational",
+    "need": "NAVIGATIONAL: Iris, the Nostr web client (iris.to). 3 = the client itself (its official profile, app handler or app listing); 2 = content about the Iris client; 1 = other senses (the flower, the eye, people named Iris), mentions; 0 = unrelated, or impersonators.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23): chosen by name frequency on the production sample (benchmark/name_df.json), before any page was seen, to confirm the name-frequency rung (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "zeus",
+    "expect": "",
+    "intent": "navigational",
+    "need": "NAVIGATIONAL: ZEUS, the bitcoin Lightning wallet app. 3 = the app itself (its official profile, app handler or app listing); 2 = content about the ZEUS wallet; 1 = other senses (the Greek god), mentions; 0 = unrelated, or impersonators.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23): chosen by name frequency on the production sample (benchmark/name_df.json), before any page was seen, to confirm the name-frequency rung (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
   }
 ]

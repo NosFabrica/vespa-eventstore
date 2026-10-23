@@ -544,6 +544,30 @@ value to hold on held-out topics first, and there is no `test` split yet. Enabli
 two-line default change in `event.sd`, once held-out topics with common-as-a-name words
 (`music`, `news`, `art`, `photography`…) confirm it, and once the grades are audited.
 
+**Held-out confirmation, pre-registered (2026-10-23).** This was written and committed before any
+held-out page was captured, graded or scored. Twelve `split: test` topics were chosen by name
+frequency on the production sample alone:
+
+- **Acted on** (frequency inside the ramp): `ai` 4.4e-4, `music` 3.9e-4, `news` 2.5e-4, `crypto` 2.3e-4.
+- **Controls** (just below `lo`): `art` 1.4e-4, `film` 1.2e-4, `privacy` 1.2e-4.
+- **Navigational, with ordinary-word names**: `damus`, `alby`, `iris` (1.3–2.7e-5), `fountain`
+  and `zeus` (0). These are the adversarial case, and the measurement already says the damping
+  cannot reach them. No navigational name among 36 candidates reached `lo`.
+
+`security` (1.9e-4) was left out because rounding on a small evaluation cluster would place it
+in the ramp, a harness artifact rather than production behaviour.
+
+*The one candidate*: `name_df_2e4_6e4`, (lo, hi) = (2e-4, 6e-4), compared once against the
+branch with the damping off (`baseline`) on `--split test` with `--name-df`. It passes, and the
+default is switched on, only if all four of these hold:
+
+1. the nDCG@10 95% CI's low end is ≥ −0.01 over the 12 topics;
+2. no navigational topic loses any nDCG@10 or RR;
+3. the four acted-on topics improve on average (mean nDCG@10 Δ > 0);
+4. the three controls do not move by more than 0.01 nDCG@10.
+
+Production's pages are reported beside it for reference and do not enter the criteria.
+
 **What is next.** (1) A human audits the 208-row sample and reports κ (`rankAb --agreement`).
 (2) Grow toward the §3.2 target of 50 or more topics, adding multilingual and topical topics
 first, since those are the strata where the levers disagree. (3) A/B the two hypotheses above
