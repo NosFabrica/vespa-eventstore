@@ -453,6 +453,36 @@ something false:
 - The worksheet showed no tags, so a judge could not see which NIP-29 group a post belonged
   to. It now carries the first 16 tags and the case's `need`.
 
+**Studied, not shipped: a per-kind perfect-match rung (2026-10-23).** This tested the first
+trade-off above. The candidate kept the whole rung for **entities** (kinds 0, 40, 41, 30617,
+31990, 32267, 34550: a person, channel, repository, app or community whose name *is* the
+thing) and gave **labels** (sets, lists, content titled with the word) a share
+`w_perfect_label` of it on one-word queries. Multi-word queries kept it whole. It was swept at
+0, 0.25 and 0.5, with the 33 documents the sweep surfaced judged first, so judged@10 was 1.000:
+
+| config | nDCG@10 Δ vs production | 95% CI | navigational | ambiguous | topical |
+|---|---:|---|---:|---:|---:|
+| `perfect_off` (rung gone) | +0.020 | [−0.015, +0.057] | −0.053 (RR −0.256) | +0.067 | **+0.126** |
+| `perfect_label_0` | +0.010 | [−0.013, +0.035] | +0.010 (RR 0.000) | **+0.092** | −0.005 (`nostr` −0.18) |
+| `perfect_label_05` | +0.005 | [−0.010, +0.023] | +0.009 | +0.085 | −0.031 |
+
+It protects the navigational queries completely and helps the ambiguous names ("Jack",
+"Vitor"), but it recovers **none** of the topical gain. Once labels lose the rung, the topical
+pages fill with *entities* named after the topic word: profiles called "Bitcoin" or "nostr",
+"Nostr" channels, "bitcoin" repos, all graded 1–2. On `bitcoin`, a profile named "Bitcoin" has
+exactly the shape ODELL's profile has on `odell`, so no per-document kind test can separate
+them. It fails §6.3 (CI low end −0.013, an unexplained `nostr` loss) and was not merged.
+
+What separates the two queries is **how many things share the name**: one ODELL against
+thousands of things called "Bitcoin". That is name-field document frequency. Vespa holds it
+per field (it is the IDF inside `bm25(name)`), so a rung damped by it is expressible in
+`event.sd`. Two things this experiment ruled out on the way: all-field frequency (production
+COUNTs: `primal` 2.6M, `lightning` 1.6M, `odell` 0.48M, `bitcoiners` 0.13M) and profile
+frequency (`primal` 341k, inflated by `@primal.net` addresses; `odell` 6.7k against `bitcoiners`
+10k). Neither orders names below topics. Testing name-field frequency needs a corpus whose
+names are a fair sample of production's: a random sample of profiles and labelled kinds, not
+this query-drawn capture, whose name frequencies are biased toward its own queries.
+
 **What is next.** (1) A human audits the 208-row sample and reports κ (`rankAb --agreement`).
 (2) Grow toward the §3.2 target of 50 or more topics, adding multilingual and topical topics
 first, since those are the strata where the levers disagree. (3) A/B the two hypotheses above
