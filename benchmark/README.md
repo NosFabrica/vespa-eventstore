@@ -1635,6 +1635,13 @@ crossings, and per query a tie with w 30 (nDCG 10–10, 10–9), but first only 
 Freshness is what is rewarded; keeping the tiers strict is a design choice these readers
 did not ask for.
 
+**Shipped (2026-10-23): a search for notes alone ranks at `w_recency` 30.** The store
+sends `EventQuery.recencyWeight` = `NOTE_RECENCY_WEIGHT` when a search's kinds are
+exactly `[1]` (`mapping/FilterMapping.kt`); the engine sends it only on the `search`
+profile, and every other shape — no kinds, profiles, mixed kinds, other kinds — keeps
+event.sd's 0.1. At 31× a fresh note crosses at most one rung, never two (weak → exact
+is 32.5×); `RankRegressionIT` claim 6 pins both sides at this weight.
+
     python3 benchmark/capture_links.py /tmp/eval.json --per-term 300 --popular 0 --no-oracle --terms "bitcoin,nostr,…"
     VESPA_URL=http://localhost:8080 ./gradlew :benchmark:exportLoad --args=/tmp/eval.json
     LINK_PROBE_MODE=dump LINK_PROBE_OUT=/tmp/eval.dump.json ./gradlew :benchmark:linkRerankProbe --args="/tmp/eval.json 10"

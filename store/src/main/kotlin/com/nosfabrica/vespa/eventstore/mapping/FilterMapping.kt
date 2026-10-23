@@ -142,8 +142,44 @@ internal fun Filter.toEventQuery(): EventQuery? {
                 else -> DEFAULT_MIN_RANK
             },
         includeSpam = parsed.includeSpam,
+        // A search for NOTES ranks fresher than any other shape (see
+        // NOTE_RECENCY_WEIGHT); the engine sends it only on the default profile.
+        recencyWeight = NOTE_RECENCY_WEIGHT.takeIf { ranked && kinds?.toSet() == NOTE_KINDS },
     )
 }
+
+/**
+ * The kinds a search must ask for, and ONLY these, to rank at [NOTE_RECENCY_WEIGHT]:
+ * kind 1, the one kind the weight was measured on. Widening it (comments, articles,
+ * pictures) is a re-measurement, not an edit.
+ */
+val NOTE_KINDS: Set<Int> = setOf(1)
+
+/**
+ * The recency weight (`query(w_recency)`) of a search whose kinds are exactly
+ * [NOTE_KINDS] — every other search keeps the 0.1 event.sd ships.
+ *
+ * MEASURED 2026-10-23 (benchmark/README.md, "Does the order make sense?"): 20 real
+ * note searches, the live relay's top 300 each under the canonical observer, judged
+ * blind by two readers over four rounds. Judged quality rose at every step from 0.1
+ * to 30 (nDCG@10 0.52 -> 0.59) and the median top-10 note went from ~2 years old to
+ * ~4 months; 100 and 300 made pages younger and were judged no better. The stale
+ * pages were a NIP-14 `subject` artifact: old clients wrote subjects, a subject match
+ * sits on the 130,000 rung, and current clients' hashtags land 30x lower.
+ *
+ * Why only notes: the same 30 on EVERY search slipped known profiles (`Primal` #3 ->
+ * #5 in rankAb's pinned cases) and put San Jose meetup calendar events above every
+ * "jose" profile; exempting replaceable kinds instead (per-kind, the split event.sd
+ * rejected) sank profiles under fresh notes (`Primal` #36). A query that asks for
+ * notes alone has no profile to sink.
+ *
+ * What it costs, deliberately: 1 + 30 = 31x is past event.sd's 4.5 "never cross a
+ * rung" ceiling, so a same-day note can pass an older one ONE rung up (a fresh body
+ * match over an old weak-tier match, a fresh weak match over an old near match). Never
+ * two: the smallest two-rung span on the ladder is weak -> exact, 4,000 -> 130,100 =
+ * 32.5x > 31. RankRegressionIT pins both sides of that bound at this weight.
+ */
+const val NOTE_RECENCY_WEIGHT = 30.0
 
 /**
  * The default observer trust floor for search: min_rank=2 on the 0..100 rank

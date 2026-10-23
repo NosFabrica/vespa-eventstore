@@ -1001,6 +1001,17 @@ schema event {
             # crossing at 21x), which proves the bound is a fact about the
             # WEIGHT rather than about a fixture that could never cross.
             #
+            # ONE QUERY SHAPE IS SENT PAST IT, on purpose (2026-10-23): the
+            # store asks for 30 on a search whose kinds are exactly [1]
+            # (EventQuery.recencyWeight; the measurement is at the store's
+            # NOTE_RECENCY_WEIGHT). Blind-judged on 20 real note searches,
+            # 30 beat 0.1 at every step; the same 30 on profile searches
+            # broke pinned cases, so it is the QUERY's choice, never a
+            # kind's. At 31x a fresh note crosses ONE rung and never two
+            # (weak -> exact, the tightest two-rung span, is 32.5x);
+            # RankRegressionIT pins both sides of that at 30. This default
+            # stays what every other shape ranks with.
+            #
             # The USEFUL range is nowhere near the ceiling. MEASURED
             # 2026-08-22 against a 4 596-event staging slice fed into a local
             # Vespa with its real 30382 trust cards (benchmark/README.md):

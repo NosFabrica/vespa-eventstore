@@ -185,6 +185,23 @@ data class EventQuery(
      */
     val nowSecs: Long? = null,
     /**
+     * The default `search` profile's recency weight for THIS query
+     * (`query(w_recency)`: recency_mult() in [1, 1 + w]); null = the weight
+     * event.sd ships. Sent only when the query ranks on [EventYql.RANK_SEARCH],
+     * the one profile that reads it — a trust sort, `sort:recent` or pure text
+     * keeps its own order.
+     *
+     * Not a harness knob like [rankFeatures] (which still overrides it, last):
+     * this is POLICY, chosen by the store from the query's SHAPE — a notes-only
+     * search gets a stronger weight than a profile or mixed-kind one, because
+     * the same weight that freshens a page of notes sinks known profiles under
+     * fresh non-profiles (store `mapping/FilterMapping`'s NOTE_RECENCY_WEIGHT
+     * holds the measurement). Per query, not per kind: every document a query
+     * matches still scales by the same continuous factor of its age, so the
+     * per-kind split event.sd rejected stays rejected.
+     */
+    val recencyWeight: Double? = null,
+    /**
      * Extra rank features layered onto the request
      * (`ranking.features.query(<name>)`), overriding the profile's own
      * defaults. HARNESS KNOB, like [rerankCount]: RankAb sweeps w_recency /

@@ -29,6 +29,7 @@ import com.nosfabrica.vespa.eventstore.engine.doc.SearchFields
 import com.nosfabrica.vespa.eventstore.engine.doc.serviceCells
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
+import com.nosfabrica.vespa.eventstore.mapping.NOTE_RECENCY_WEIGHT
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assumptions.assumeTrue
@@ -379,6 +380,11 @@ class RankRegressionIT {
             doc(53, kind = 1, pubkey = pk(50), createdAt = IT_NOW + 27_010 * DAY, search = SearchFields(primary = "recencyprobe")),
             doc(56, kind = 1, pubkey = pk(50), createdAt = IT_NOW - 1825 * DAY, search = SearchFields(secondary = "recencyrung")),
             doc(57, kind = 1, pubkey = pk(50), createdAt = IT_NOW, search = SearchFields(text = "a body that mentions recencyrung once")),
+            // Claim 6's TWO-rung pair: an exact (primary) match five years old and a
+            // same-day weak (secondary) one — weak -> exact is the ladder's tightest
+            // two-rung span (32.5x), the one the store's note weight must not close.
+            doc(54, kind = 1, pubkey = pk(50), createdAt = IT_NOW - 1825 * DAY, search = SearchFields(primary = "tierclimb")),
+            doc(55, kind = 1, pubkey = pk(50), createdAt = IT_NOW, search = SearchFields(secondary = "tierclimb")),
             // A kind-0 doc on the same author and the same probe word: the
             // CONTINUITY control. A per-kind weight was tried and rejected
             // (event.sd) because exempting kind 0 gives every other kind a
@@ -1008,6 +1014,30 @@ class RankRegressionIT {
                         )
                         assertTrue(note > 1.0, "and the factor must actually be doing something (w=$w): x$note")
                     }
+
+                    // 6. THE STORE'S NOTE WEIGHT CROSSES ONE RUNG, NEVER TWO. A
+                    // search for notes alone ranks at NOTE_RECENCY_WEIGHT (30,
+                    // past claim 4's ceiling ON PURPOSE — FilterMapping holds the
+                    // blind-judged measurement). At 31x a fresh body hit DOES pass
+                    // the five-year-old weak-tier one, the trade that freshens a
+                    // page of notes; but no fresh hit may pass an old one TWO rungs
+                    // up, and weak -> exact (32.5x) is the tightest such span. The
+                    // last half proves that bound is the weight's: at 301x it falls.
+                    assertEquals(
+                        id(57),
+                        searchRecency("recencyrung", NOTE_RECENCY_WEIGHT).map { it.doc.id }.firstOrNull(),
+                        "at the note weight a same-day body hit crosses ONE rung, over a five-year-old weak-tier hit",
+                    )
+                    assertEquals(
+                        id(54),
+                        searchRecency("tierclimb", NOTE_RECENCY_WEIGHT).map { it.doc.id }.firstOrNull(),
+                        "at the note weight a same-day weak-tier hit must NOT cross two rungs, over a five-year-old exact hit",
+                    )
+                    assertEquals(
+                        id(55),
+                        searchRecency("tierclimb", 300.0).map { it.doc.id }.firstOrNull(),
+                        "at 301x it does — so claim 6 is a bound on the note weight, not an artifact of the fixture",
+                    )
 
                     // --- typo bound: over-budget hits never match ---
                     absent("odelll", "Odessa")

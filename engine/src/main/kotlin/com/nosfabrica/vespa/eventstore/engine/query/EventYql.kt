@@ -620,6 +620,10 @@ object EventYql {
         if (ranking == RANK_RECENCY_GATED || ranking == RANK_RECENCY_GATED_EXACT) {
             params.keys.removeAll(TEXT_RANK_FEATURES)
         }
+        // The store's per-shape recency weight (EventQuery.recencyWeight) — on the
+        // one profile whose recency_mult() reads it, so no other profile is sent
+        // an input it does not declare.
+        if (ranking == RANK_SEARCH) q.recencyWeight?.let { params[F_W_RECENCY] = it.toString() }
         // Two-phase profiles only; the engine ignores it elsewhere.
         q.rerankCount?.let { params["ranking.rerankCount"] = it.toString() }
         // Harness overrides last, so a sweep can also move a feature the
@@ -886,6 +890,9 @@ object EventYql {
 
     /** The query instant recency ranking reads (text_relevance's `now_secs`). */
     private const val F_NOW_SECS = "ranking.features.query(now_secs)"
+
+    /** [EventQuery.recencyWeight]'s parameter: the `search` profile's `query(w_recency)`. */
+    private const val F_W_RECENCY = "ranking.features.query(w_recency)"
 
     /** The text-weighting features a search term brings — meaningless on the recency profiles, which read no text signal. */
     private val TEXT_RANK_FEATURES = setOf(F_W_GRAM, F_N_WORDS, F_NOW_SECS)

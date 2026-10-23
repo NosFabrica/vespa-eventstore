@@ -582,6 +582,24 @@ class EventYqlTest {
     }
 
     @Test
+    fun `a recency weight rides the default search profile only, under any harness override`() {
+        val notes = EventQuery(kinds = listOf(1), search = "bitcoin", observer = hexA, minRank = 2.0, recencyWeight = 30.0)
+        val sent = EventYql.build(notes)!!
+        assertEquals(EventYql.RANK_SEARCH, sent.ranking)
+        assertEquals("30.0", sent.params["ranking.features.query(w_recency)"])
+
+        // Unset, the profile's shipped default stands: nothing is sent.
+        assertNull(EventYql.build(notes.copy(recencyWeight = null))!!.params["ranking.features.query(w_recency)"])
+        // Profiles that never read recency_mult() are not sent an input they do not declare.
+        for (other in listOf(notes.copy(observer = null), notes.copy(ranking = EventYql.RANK_DESC), notes.copy(ranking = EventYql.RANK_RECENCY_GATED))) {
+            val built = EventYql.build(other)!!
+            assertNull(built.params["ranking.features.query(w_recency)"], "${built.ranking} must not carry w_recency")
+        }
+        // A sweep still has the last word.
+        assertEquals("1.0", EventYql.build(notes.copy(rankFeatures = mapOf("w_recency" to 1.0)))!!.params["ranking.features.query(w_recency)"])
+    }
+
+    @Test
     fun `rank feature overrides land on the request, and their names are validated`() {
         val swept =
             EventYql.build(
