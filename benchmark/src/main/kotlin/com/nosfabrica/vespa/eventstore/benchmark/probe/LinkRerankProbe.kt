@@ -186,6 +186,9 @@ object LinkRerankProbe {
                     // RECENCY SWEEP (LINK_PROBE_RECENCY="0.1,1,3"): the engine's window at each
                     // `w_recency`, with its link scores — the orders themselves (default,
                     // reranked, author-capped) are rebuilt offline from these windows.
+                    // LINK_PROBE_NAME_TIER moves the subject rung for the whole sweep (the
+                    // FLAT variant above, crossed with recency).
+                    val nameTier = System.getenv("LINK_PROBE_NAME_TIER")?.toDouble()
                     val sweep =
                         System
                             .getenv("LINK_PROBE_RECENCY")
@@ -195,7 +198,7 @@ object LinkRerankProbe {
                             .associateWith { w ->
                                 val win =
                                     vs.engine.searchRanked(
-                                        EventQuery(kinds = listOf(1), search = term, observer = observer, rankKey = provider, followersKey = provider, minRank = 2.0, limit = rerank.window, nowSecs = now, rankFeatures = mapOf("w_recency" to w)),
+                                        EventQuery(kinds = listOf(1), search = term, observer = observer, rankKey = provider, followersKey = provider, minRank = 2.0, limit = rerank.window, nowSecs = now, rankFeatures = mapOf("w_recency" to w) + listOfNotNull(nameTier?.let { "w_name_tier" to it })),
                                     )
                                 win to vs.engine.scoreLinks(win.map { LinkTarget(it.hit.id, it.hit.pubkey) }, linkers, rerank.weights)
                             }

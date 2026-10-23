@@ -48,6 +48,8 @@ ap.add_argument("--per-term", type=int, default=100)
 ap.add_argument("--terms", default=",".join(TERMS))
 ap.add_argument("--popular", type=int, default=100, help="size of the 'popular' page (0 skips it)")
 ap.add_argument("--no-oracle", action="store_true", help="skip the per-hit live COUNTs (two round trips per hit)")
+ap.add_argument("--kinds", default="1", help="the search pages' kinds, comma-separated, or 'all' (rank_cases.json's profile searches recall every kind)")
+ap.add_argument("--no-links", action="store_true", help="capture the pages and the lens only — what an order that reads no links needs")
 a = ap.parse_args()
 
 
@@ -123,7 +125,8 @@ async def main():
         r = Relay(ws)
         hits = {}
         for term in a.terms.split(","):
-            page = (await r.req({"kinds": [1], "search": f"{term} observer:{OBSERVER}", "limit": a.per_term}))[: a.per_term]
+            kinds = {} if a.kinds == "all" else {"kinds": [int(k) for k in a.kinds.split(",")]}
+            page = (await r.req({**kinds, "search": f"{term} observer:{OBSERVER}", "limit": a.per_term}))[: a.per_term]
             meta["pages"][term] = [e["id"] for e in page]
             add(page)
             hits.update({e["id"]: e for e in page})
@@ -152,7 +155,7 @@ async def main():
 
         # Every link, ungated. Chunked so one REQ never names more ids than a relay will take.
         hit_list = list(hits.values())
-        for i in range(0, len(hit_list), 50):
+        for i in range(0, 0 if a.no_links else len(hit_list), 50):
             chunk = hit_list[i : i + 50]
             for t in ID_TAGS:
                 got = await r.req_all({f"#{t}": [h["id"] for h in chunk], "search": "include:spam"})

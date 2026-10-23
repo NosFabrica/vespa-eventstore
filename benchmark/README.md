@@ -1581,6 +1581,60 @@ Round 2 — combinations:
   alternative if profiles regress (a per-kind split was tried and rejected 2026-08-22 on
   a time-flat corpus — this corpus is not time-flat).
 
+Round 3 — recency past 30, and a DEMOTE author rule (`+demote`: greedily, each further
+hit of an author already on the page scores × 0.5 per hit it already has; nothing is
+dropped, nothing refilled). Ages here and below are the median across queries of each
+page's median top-10 age:
+
+| order (all `sort:links`) | nDCG@10 (r1 / r2) | mean place | best (r1 / r2) | repeated authors / 10 | median age |
+|---|---:|---:|---:|---:|---:|
+| w 30 | 0.644 / 0.631 | 3.35 / 3.05 | 3 / 4 | 3.9 | 110 d |
+| w 100 | 0.650 / 0.632 | 2.75 / 3.15 | 2 / 2 | 4.2 | 59 d |
+| w 300 | 0.643 / 0.622 | 2.80 / 3.20 | 4 / 2 | 4.2 | 23 d |
+| w 30 + demote | 0.602 / 0.612 | 3.25 / 2.85 | 5 / 3 | 0.9 | 87 d |
+| w 100 + demote | 0.600 / 0.607 | 2.85 / 2.75 | **6 / 9** | 1.0 | 44 d |
+
+- **Recency plateaus at 30**: 100 and 300 keep making pages younger and are not judged
+  better.
+- **Demote is mixed**: it nearly removes repeats and is the list most often picked first
+  at w 100, but its nDCG drops on 13 / 12 queries (rises on 7 / 8) — the readers like a
+  varied page and mark down the weaker hits variety brings up. Not a default.
+
+**What a global `w_recency` does to profile search** (`rankAb --rank-key`, the 27
+`rank_cases.json` cases over a fresh relay capture of them — `capture_links.py --kinds all
+--no-links` — in a second local Vespa). `--rank-key` is new: `rankAb` sits below the store,
+so without the lens's service key an observer's query trusted nobody and every case read
+MISS. Of the 8 cases with an expected id, 4 are absent from the capture (replaced profiles,
+the "Verified Human" splice the store adds, odell past the relay's top 300); of the rest,
+`Primal` goes #3 → #5 at w 10 and 30, #6 at w 100, and the median top-10 age 700 d → 87 /
+78 / 77 d. Read as pages (`--dump`), w 30 puts San Jose meetup calendar events (kind
+31923) above every "Jose" profile, and a Josh above the Joses. Recency on REGULAR kinds
+only (a temporary schema knob, reverted) fixed "jose" but sank profiles under fresh notes:
+a note saying "Vitor" at #1, `Primal` at #36. And `RankRegressionIT`'s ladder claim pins
+that at w 2 a same-day body hit must not cross a five-year-old weak-tier hit (at w 20 it
+does). So a stronger recency weight is a property of the QUERY — a notes-only search,
+which all 20 evaluation queries were — not of a document kind; profile and mixed-kind
+searches keep 0.1.
+
+Round 4 — can the tiers stay intact and the pages still be fresh? `fw<x>`: a note's
+subject match moved to the body rung (`LINK_PROBE_NAME_TIER=4000`), at a moderate
+`w_recency`:
+
+| order (all `sort:links`) | nDCG@10 (r1 / r2) | mean place | best (r1 / r2) | median age | hits off the top text tier / 10 |
+|---|---:|---:|---:|---:|---:|
+| w 0.1 | 0.619 / 0.666 | 3.30 / 3.00 | 4 / 4 | 841 d | 4.2 |
+| w 3 | 0.632 / 0.660 | 3.25 / 3.25 | 0 / 0 | 593 d | 4.4 |
+| **w 30** | 0.645 / 0.647 | **2.50 / 2.55** | **9 / 8** | 110 d | 5.5 |
+| flat, w 1 | 0.611 / 0.636 | 2.90 / 2.95 | 4 / 5 | 417 d | 1.9 |
+| flat, w 3 | 0.598 / 0.608 | 3.05 / 3.25 | 3 / 3 | 147 d | 2.6 |
+
+The readers pick the same best list on 19 of 20 queries. w 30 is the list they pick
+(placed above w 0.1 on 14 / 13 queries, above w 3 on 13 / 13; p ≈ 0.1–0.3 each), while
+nDCG barely separates any of the five. Flat w 3 is nearly as fresh with half the tier
+crossings, and per query a tie with w 30 (nDCG 10–10, 10–9), but first only 3 times.
+Freshness is what is rewarded; keeping the tiers strict is a design choice these readers
+did not ask for.
+
     python3 benchmark/capture_links.py /tmp/eval.json --per-term 300 --popular 0 --no-oracle --terms "bitcoin,nostr,…"
     VESPA_URL=http://localhost:8080 ./gradlew :benchmark:exportLoad --args=/tmp/eval.json
     LINK_PROBE_MODE=dump LINK_PROBE_OUT=/tmp/eval.dump.json ./gradlew :benchmark:linkRerankProbe --args="/tmp/eval.json 10"

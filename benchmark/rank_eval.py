@@ -161,13 +161,32 @@ def rebuild(spec, recency, events, size=10):
     `w<x>` the default order at `w_recency` = x; `+links` the sort:links rerank
     (score x the capped multiplier, as LinkRerank does); `+cap<k>` at most k hits per
     author, WITH REFILL — a dropped repeat is replaced by the next hit down the window,
-    so the page stays full (the store's maxHitsPerAuthor drops without refilling)."""
+    so the page stays full (the store's maxHitsPerAuthor drops without refilling);
+    `+demote[<d>]` each further hit of an author on the page scored x d (default 0.5),
+    chosen greedily — it sinks a repeat instead of replacing it."""
     parts = spec.split("+")
-    w = float(parts[0][1:])
-    window = recency[next(k for k in recency if float(k) == w)]
+    # `fw<x>`: the same, over the FLAT sweep (the subject rung on the body's, merged in
+    # under "flat:<x>" keys from a second dump taken with LINK_PROBE_NAME_TIER).
+    flat = parts[0].startswith("fw")
+    w = float(parts[0][2:] if flat else parts[0][1:])
+    window = recency[next(k for k in recency if k.startswith("flat:") == flat and float(k.split(":")[-1]) == w)]
     ids = sorted(window, key=lambda i: window[i]["pos"])
     if "links" in parts:
         ids = sorted(ids, key=lambda i: -window[i]["score"] * multiplier(window[i]["link"]))
+    demote = next((float(p[6:] or "0.5") for p in parts if p.startswith("demote")), None)
+    if demote:
+        # DEMOTE, don't drop: greedily take the best hit at score x demote^(hits its
+        # author already has on the page). A third post from one author still lands
+        # where its score earns it — just below anything within 1/demote^2 of it —
+        # and nothing weaker has to be pulled up from the bottom to fill its slot.
+        base = {i: window[i]["score"] * (multiplier(window[i]["link"]) if "links" in parts else 1.0) for i in ids}
+        left, picked, seen = list(ids), [], {}
+        while left:
+            best = max(left, key=lambda i: base[i] * demote ** seen.get(events[i]["pubkey"], 0))
+            left.remove(best)
+            picked.append(best)
+            seen[events[best]["pubkey"]] = seen.get(events[best]["pubkey"], 0) + 1
+        ids = picked
     cap = next((int(p[3:]) for p in parts if p.startswith("cap")), None)
     if cap:
         seen, kept = {}, []
