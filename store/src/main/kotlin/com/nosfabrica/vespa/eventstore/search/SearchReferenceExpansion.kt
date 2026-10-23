@@ -307,7 +307,11 @@ internal class SearchReferenceExpansion(
             if (q.ids.isNotEmpty()) continue
             val missing = SearchReferences.convertibleInto(q.kinds)
             val labels = if (q.kinds.isEmpty()) emptyList() else missing.filterNot(SearchReferences::isDeclaration)
-            if (labels.isNotEmpty()) out.add(q.copy(kinds = labels))
+            // A companion searches OTHER kinds, so it drops the read's per-shape
+            // recency weight (a notes-only weight, FilterMapping's NOTE_KINDS):
+            // a label search ranks as any label search would, and a companion
+            // that equals a sibling filter must still compare equal to it.
+            if (labels.isNotEmpty()) out.add(q.copy(kinds = labels, recencyWeight = null))
             val declarations = missing.filter(SearchReferences::isDeclaration)
             if (declarations.isEmpty()) continue
             // The one companion path that needs the gate — an anonymous read
@@ -322,7 +326,7 @@ internal class SearchReferenceExpansion(
                     val authors = if (q.authors.isEmpty()) signers.toList() else q.authors.filter { it in signers }
                     if (authors.isNotEmpty()) {
                         val floor = if (q.minRank == DEFAULT_MIN_RANK) INCLUDE_SPAM_MIN_RANK else q.minRank
-                        out.add(q.copy(kinds = kinds, authors = authors, minRank = floor))
+                        out.add(q.copy(kinds = kinds, authors = authors, minRank = floor, recencyWeight = null))
                     }
                 }
         }
