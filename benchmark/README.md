@@ -1481,6 +1481,65 @@ prints the latency table and, per term, the reranked head (new position, engine
 position, link score, people, counted links by kind, the note);
 `LINK_PROBE_MODE=bands` prints the tier view above.
 
+### Does the order make sense? A blind judgment on real searches (`rank_eval.py`, 2026-10-23)
+
+**Setup.** 20 queries (the 12 above plus pizza, linux, photography, bom dia, election,
+football, "lightning wallet", "nostr client"): the live relay's top 300 per query under
+the canonical observer, every event linking to them, and the provider's cards for every
+author AND every zapper (62,458 events), fed into a fresh local Vespa. The local default
+top 10 reproduces the relay's: 6–10 of 10 shared, 10 on most queries. Four orders per
+query, top 10 each: the default (`base`), `sort:links` (`links`), and both again with a
+note's subject match moved from the 130,000 rung (`w_name_tier`, shared with a profile's
+name match) to the body's ~4,000 (`flat`, `flat_links`). Two independent readers saw
+only the query and the four unlabeled lists (post text, date, short author id; order
+shuffled per query, independently per reader, key kept apart), graded every result 0–2
+and ranked the lists.
+
+| order | nDCG@10 (reader 1 / 2) | mean place | best list (r1 / r2) |
+|---|---:|---:|---:|
+| default | 0.578 / 0.545 | 2.80 / 2.75 | 0 / 1 |
+| **sort:links** | **0.694 / 0.647** | **2.00 / 1.60** | **8 / 13** |
+| flat | 0.549 / 0.500 | 3.15 / 3.30 | 3 / 2 |
+| flat + links | 0.669 / 0.587 | 2.05 / 2.35 | 9 / 4 |
+
+- **`sort:links` is better**: higher nDCG than the default on 17 of 20 queries for one
+  reader and 15 of 20 for the other (sign test p = 0.003 / 0.04), placed above it on 14 /
+  17. The readers agree on the best list for 14 of 20 queries. Where it lost (lightning,
+  coffee, and one reader's zap/freedom), it lifted an engaged but lightly relevant post
+  ("stickers from the lightning store" over an ACINQ explainer) — and the default
+  lightning page carried an 11th, spliced-in result that padded its nDCG.
+- **Demoting subject matches alone makes it WORSE** (`flat` vs default: better on 5,
+  worse on 10, same on 5, both readers). A note with a NIP-14 subject naming the query is
+  usually a headline post — a good result. What is wrong with those pages is their AGE,
+  not their subjects; see the next point.
+- **The default is stale.** Median top-10 age is ~2 years (704 days; bitcoin, nostr,
+  lightning, zap, "nostr client" ~3 years) although the candidate pools are young —
+  "bitcoin"'s median candidate is 51 days old and 101 are under 30 days, yet none reaches
+  the engine's top 100: every hit there matches in a subject tag (old clients wrote them;
+  current ones write hashtags, which land on the body rung, 30× lower). Flattening the
+  rung did not bring the fresh ones up either: the old notes match in the body too. A
+  stronger recency term is the next thing to sweep (`rankAb`, `query(w_recency)`).
+- **One author takes a page.** 3.3 repeated authors per top 10 on average, in every
+  order: one account's #bomdia posts (7 of 10), a podcast's show notes ("lightning
+  wallet": 5), a quote bot, Mostro's release notes. Both readers named it as the main
+  reason a page lost. Engagement can deepen it (bitcoin under `sort:links`: one
+  Portuguese author's posts, 6 repeats). The store's per-author cap exists and is off
+  by default (`maxHitsPerAuthor`); it is the cheapest fix left untested here.
+- **Junk that still reaches a top 10**: exact cross-posted duplicates, bare image
+  links and hashtag-only posts, reply stubs whose subject is a `nostr:note…` reference
+  ("Ok" at #3 for "nostr"), and off-topic word matches ("Electron apps" for "election").
+
+**Caveats.** The readers are language models (one model family, two independent
+packets), the sample is 20 queries at top 10, and the local candidate pool is the
+relay's top 300 per query — a hit the relay ranks past 300 cannot surface here.
+
+    python3 benchmark/capture_links.py /tmp/eval.json --per-term 300 --popular 0 --no-oracle --terms "bitcoin,nostr,…"
+    VESPA_URL=http://localhost:8080 ./gradlew :benchmark:exportLoad --args=/tmp/eval.json
+    LINK_PROBE_MODE=dump LINK_PROBE_OUT=/tmp/eval.dump.json ./gradlew :benchmark:linkRerankProbe --args="/tmp/eval.json 10"
+    python3 benchmark/rank_eval.py packets /tmp/eval.json /tmp/eval.dump.json /tmp/eval-out
+    # two readers grade packet-1.json / packet-2.json into grades-1.json / grades-2.json
+    python3 benchmark/rank_eval.py score /tmp/eval-out
+
 Reproduce:
 
 ```
