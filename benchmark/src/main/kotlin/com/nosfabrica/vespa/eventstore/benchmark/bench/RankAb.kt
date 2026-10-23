@@ -26,6 +26,8 @@ import com.nosfabrica.vespa.eventstore.benchmark.harness.PairedComparison
 import com.nosfabrica.vespa.eventstore.benchmark.harness.RelevanceMetrics
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
+import com.nosfabrica.vespa.eventstore.engine.text.StemText
+import com.vitorpamplona.quartz.nip50Search.SearchQuery
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -399,6 +401,8 @@ object RankAb {
         val query: String,
         val expect: String?,
         val intent: String,
+        // What an assessor grades against (TREC's narrative), carried onto every worksheet row.
+        val need: String?,
         val split: String,
         val observer: String?,
         val kinds: List<Int>,
@@ -416,6 +420,7 @@ object RankAb {
             query = query,
             expect = str("expect"),
             intent = str("intent") ?: "unclassified",
+            need = str("need"),
             split = str("split") ?: "dev",
             observer =
                 when (val o = str("observer")) {
@@ -563,12 +568,18 @@ object RankAb {
                                 put("topic", topic.key)
                                 put("query", topic.query)
                                 put("intent", topic.intent)
+                                put("need", topic.need ?: "(no `need` on this case — write one in rank_cases.json before grading)")
                                 put("id", id)
                                 put("kind", hit.kind)
                                 put("label", hit.label)
                                 put("author", hit.pubkey)
                                 put("created_at", hit.createdAt)
                                 put("content", hit.content.take(POOL_CONTENT_CHARS))
+                                // The first tags, values cut short: a NIP-29 `h` (which group), a
+                                // `title`, the `t` hashtags are often what a grade turns on, and the
+                                // first round had to be corrected for lacking them. Capped, because a
+                                // follow list's tags are its whole content.
+                                put("tags", worksheetTags(hit.tags))
                                 put("grade", JsonNull)
                                 put("by", JsonNull)
                             },
@@ -580,6 +591,14 @@ object RankAb {
         println("\npool: ${rows.size} unjudged hit(s) in the top $depth of ${pages.size} config(s) over ${topics.size} topic(s) -> $out")
         println("grade each row 0-3 per docs/search-evaluation.md §4, set `by`, then: rankAb --merge $out")
     }
+
+    private fun worksheetTags(raw: String): JsonArray =
+        JsonArray(
+            runCatching { Json.parseToJsonElement(raw).jsonArray }
+                .getOrDefault(JsonArray(emptyList()))
+                .take(POOL_TAGS)
+                .map { tag -> JsonArray(tag.jsonArray.take(3).map { JsonPrimitive(it.jsonPrimitive.content.take(POOL_TAG_CHARS)) }) },
+        )
 
     /** Folds every graded row of a `--pool` worksheet into the judgments file. */
     private fun merge(
@@ -725,6 +744,10 @@ object RankAb {
     /** How much of each pooled event's content the worksheet carries — enough to grade, not the whole article. */
     private const val POOL_CONTENT_CHARS = 600
 
+    /** How many of each pooled event's tags the worksheet shows, and how much of each value. */
+    private const val POOL_TAGS = 16
+    private const val POOL_TAG_CHARS = 80
+
     @OptIn(ExperimentalSerializationApi::class)
     private val PRETTY =
         Json {
@@ -830,21 +853,40 @@ object RankAb {
         nowSecs: Long?,
         kinds: List<Int>,
     ): List<Hit> {
-        // Case text feeds EventQuery.search RAW — below the store's syntax
-        // parser, so `-word`/quotes in a rank case would be loose words here,
-        // not exclusions/phrases. Deliberate (this A/Bs engine profiles on
-        // identical recall); route cases through FilterMapping if they ever
-        // adopt the term syntax.
+        // Case text goes through the relay's GRAMMAR first — Quartz's
+        // SearchQuery, the same parse the store's FilterMapping.toEventQuery
+        // starts from (that function is `internal` to :store, so its policies
+        // are mirrored here, not called): `-word` / `-"phrase"` exclude,
+        // `"quoted"` spans are phrases, `include:spam` drops the gate but keeps
+        // the trust curve anchored at 0, `language:pt|es` adds the stemmed
+        // body column, and an unknown `key:value` extension is IGNORED, as
+        // NIP-50 asks. Until 2026-10-23 the text went in RAW, so a case like
+        // `group:rspuyeetackckp92 testin` required the literal token
+        // `group:rspuyeetackckp92`, matched nothing, and scored a page the
+        // relay never serves — invisible until production's pages became a
+        // baseline (docs/search-evaluation.md §8.5). Not mirrored: NIP-30
+        // shortcode rewriting, `sort:` / `filter:` (the profile and floor are
+        // this harness's own knobs).
+        val parsed = SearchQuery.parse(text)
         val vq =
             EventYql.build(
                 EventQuery(
-                    search = text,
+                    search = parsed.terms.ifEmpty { null },
+                    phrases = parsed.phrases,
+                    notSearch = parsed.notTerms + parsed.notPhrases,
+                    includeSpam = parsed.includeSpam,
+                    stemLanguage =
+                        parsed.language
+                            ?.lowercase()
+                            ?.substringBefore('-')
+                            ?.substringBefore('_')
+                            ?.takeIf { it in StemText.LANGUAGES },
                     kinds = kinds,
                     observer = observer,
                     rankKey = observer?.let { lensOf(base, it).first },
                     followersKey = observer?.let { lensOf(base, it).second },
                     ranking = profile,
-                    minRank = observer?.let { 2.0 },
+                    minRank = observer?.let { if (parsed.includeSpam) 0.0 else 2.0 },
                     nowSecs = nowSecs,
                 ),
             ) ?: return emptyList()

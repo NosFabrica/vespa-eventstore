@@ -43,7 +43,11 @@ measures what the emitted query actually does:
   paired per-topic VERDICT (randomization test, Holm-adjusted, with the minimum
   detectable effect and every topic that lost > 0.1 by name). `--pool <file>`
   writes the blind worksheet of what nobody has graded yet; `--merge <file>`
-  folds the grades back. **The protocol — what to run, how to grade, what counts
+  folds the grades back. `--run production=<file>` scores a captured page set
+  (`capture_eval.py` writes production's) as a config, `--write-runs <dir>`
+  saves this cluster's pages for a later two-cluster comparison, and
+  `--agreement <sheet>` reports weighted κ for a human audit of LLM grades.
+  **The protocol — what to run, how to grade, what counts
   as a win — is [`docs/search-evaluation.md`](../docs/search-evaluation.md).**
 
   ```bash

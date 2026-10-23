@@ -81,10 +81,16 @@ scores are aggregated. Three facts about this store shape how it applies:
 A "system" in this vocabulary is a `rankAb` config: `query()` overrides layered on what
 production sends, built by `EventYql` itself so the YQL is byte-identical. A change that
 cannot be expressed as overrides (schema, extraction, `EventYql`) is a pair of clusters
-instead (§8.4). One gap is inherited from `rankAb`: case text goes to `EventQuery.search`
-RAW, below the store's syntax parser. A topic using `-word`, `"phrases"` or `sort:` is
-measured as loose words, so it evaluates the engine and not the grammar. Such a topic has to
-go through the store's `FilterMapping` before it can be graded meaningfully.
+instead (§8.4).
+
+Case text goes through the NIP-50 grammar the relay applies (Quartz's `SearchQuery`, mirrored
+from the store's `FilterMapping`): `-word` excludes, `"quotes"` make phrases, `include:spam` and
+`language:` apply, and an unknown `key:value` extension is ignored. What `rankAb` does **not**
+reproduce is the store's page assembly: reference expansion, which splices a Trusted List's
+members onto the page, and the companion declarations. It measures the **engine's** ranking. A
+topic whose answer arrives by splicing reads differently on the relay. On the first
+measurement (§9), the "Verified Human" member production serves at #8 is absent from the
+`rankAb` page, and the case's `expect` reads LOST against production for that reason alone.
 
 ## 3. Topics
 
@@ -159,6 +165,13 @@ fragments.
 | **2** | **Relevant**: clearly serves the intent, but is not *the* answer | `Avi Burra` → a review of his novel, a live stream he hosts; `amethyst` → the "Amethyst Devs" channel |
 | **1** | **Marginal**: mentions the query, but is not about it, or matches another sense | `amethyst` → the wiki page about the gemstone; `Jack` → "Jack Everitt"; a note with `#bitcoin` and nothing else |
 | **0** | **Not relevant**: an accidental match, or bad | `vitor` → "take a vitamin and open the editor" (trigram noise); an impersonator or name-squatter; spam; an event that is empty for this query |
+
+Each case carries a **`need`**: one or two sentences saying what the user wants and what
+earns each grade for *this* query (TREC's narrative). It names the real entity, by pubkey
+when an impersonator is plausible ("Vitor Pamplona, pubkey 460c25…"). The worksheet copies it
+onto every row, so any assessor, human or model, grades against the same statement, and a
+later round grades the same way as an earlier one. A case without a `need` should not be
+graded.
 
 Rules that keep grades reusable:
 
@@ -383,26 +396,67 @@ cadence, so name its NIP-11 `version` and the capture time beside the verdict.
 
 ## 9. First measurement (2026-10-23)
 
-This was a local Vespa loaded with the §8.1 capture, under the canonical observer. It is
-recorded to show the machinery working and the limits it exposes, not as a quality baseline.
+This run used a local Vespa loaded with `capture_eval.py`'s capture: 6 072 events, the 27
+topics' production pages plus unranked slices, and the trust cards of 2 172 authors. It ran
+under the canonical observer with `--now` pinned to the capture. **Production was the
+baseline**, as its served pages (relay NIP-11 version 0.1.0, captured 2026-10-23), against
+this branch (`baseline`) and four lever configs.
 
-- **Fixed on the way**: `rankAb --observer` had been sending the *observer* as the trust key
-  ever since trust went service-keyed. That matches no cell, so the `min_rank` gate emptied
-  every lensed page: 27 topics, 0 hits. `rankAb` now resolves the 10040 like the store does.
-- **Known-item (8 topics, RR)**: `perfect_off` Δ −0.079 [−0.204, 0.000], p 0.5 (only two topics
-  moved, so half of all sign assignments are as extreme; 1.0 after Holm over two candidates), W/T/L
-  0/6/2, MDE 0.175. Losses: `Avi Burra` −0.50 (#1→#2) and `Primal` −0.13 (#3→#5).
-  `no_trust` Δ −0.021, MDE 0.058. The losses are real and visible, and **eight topics cannot
-  establish them**. That is §3.2 in one line.
-- **Pool**: 476 unjudged documents in the union of three configs' top 10 across 27 topics,
-  about 18 per topic. That is the first judging round.
-- **Grading two topics' pools** (`amethyst`, `Avi Burra`; a demonstration only, not
-  committed) moved `amethyst` from an uncountable MISS on its stale `expect` (§5.4) to
-  nDCG@10 0.83, and showed `no_trust` losing on both graded topics. That is the reading
-  `rankAb` could not produce before.
+**Judgments.** 1 021 grades: the blind pool of all six configs' top 20 (999 rows), plus 22
+documents a fix below surfaced. Grade counts are 85 × 3, 386 × 2, 346 × 1 and 182 × 0. Five
+parallel model judges did the grading, grouped by topic family so related queries were graded
+by the same judge, against §4 and each case's `need`. Provenance is `llm:claude`. After the
+round, judged@10 is **1.000** for every config on every topic. **Not yet audited**:
+`benchmark/search_judgments_audit.json` is the blind 20% sample (208 rows, at least 3 per
+topic) a human must re-grade before these numbers support a ship decision (§5.3).
 
-`benchmark/search_judgments.json` does not exist yet. Creating it, by judging that first
-pool with provenance, is the next step.
+**The verdict, nDCG@10 versus production** (27 topics, Holm over 5 candidates):
+
+| config | Δ mean | 95% CI | W/T/L | MDE | where it moves |
+|---|---:|---|---:|---:|---|
+| `baseline` (this branch) | −0.001 | [−0.006, +0.002] | 2/23/2 | 0.006 | nowhere: the branch ranks as production does |
+| `perfect_off` | +0.020 | [−0.015, +0.057] | 11/9/7 | 0.053 | topical **+0.126**, ambiguous +0.067; navigational −0.053 (`odell` RR −0.90, `Avi Burra` −0.50) |
+| `no_trust` | +0.019 | [−0.097, +0.133] | 15/1/11 | 0.170 | multilingual **+0.350**, fuzzy +0.332; prefix −0.232 (`Vitor P` −0.81) |
+| `pre_split` | −0.001 | [−0.039, +0.026] | 7/16/4 | 0.048 | `Vitor P` −0.40; ambiguous S@1 up |
+| `recency_off` | +0.001 | [−0.025, +0.028] | 8/14/5 | 0.039 | `amethyst` −0.22 (RR −0.67): recency is what puts the current app listing first |
+
+Nothing is significant after Holm, and with 27 topics nothing modest could be. What the
+per-intent split shows instead is two **trade-offs inside shipped levers**, each now a
+measured hypothesis rather than an anecdote:
+
+1. **The perfect-match rung (`w_perfect_pop`) helps names and hurts topics.** With it off,
+   topical nDCG@10 rises from 0.32 to 0.58 on `bitcoin`, 0.41 to 0.72 on `lightning` and 0.48
+   to 0.66 on `coffee`. On a one-word topical query, the rung lifts profiles, sets and app
+   listings whose name *is* the word (graded 1–2) above articles about the subject (graded
+   3). The same rung is what wins `odell`, `Avi Burra` and `Primal`. A rung that applied to
+   naming fields only when the query is name-shaped, or one damped by the word's document
+   frequency, is the experiment this suggests.
+2. **The trust curve outweighs text on non-English queries.** With trust off, `中村` goes from
+   0.38 to 0.76, `esposa` from 0.45 to 0.88 and `divórcio e desabafa` from 0.38 to 0.60,
+   while the as-you-type ladders collapse (`Vitor P` 0.93 → 0.12). The likely mechanism, not
+   yet measured: the lens's most-trusted authors write mostly in English, so for a Portuguese
+   or Japanese query their marginal matches outrank strong matches from less-trusted authors,
+   because within a band trust is worth
+   more than any text signal (the same saturation `docs/recency-ranking.md` measured). Only 3
+   multilingual topics stand behind this, so the first step is more of them.
+
+**Fixed on the way.** These are three harness bugs, each of which made a verdict say
+something false:
+
+- `rankAb --observer` sent the *observer* as the trust key ever since trust went service-keyed.
+  That key matches no cell, so the `min_rank` gate emptied every lensed page (27 topics, 0
+  hits). `rankAb` now resolves the observer's kind 10040, as the store does.
+- Case text went to the engine raw. `group:rspuyeetackckp92 testin` therefore required the
+  literal token `group:rspuyeetackckp92`, returned **nothing**, and showed as a −0.58 loss
+  against production. The relay ignores the unknown extension and searches `testin`. Text
+  now goes through the grammar (§2). The topic now reads RBO 1.00 against production.
+- The worksheet showed no tags, so a judge could not see which NIP-29 group a post belonged
+  to. It now carries the first 16 tags and the case's `need`.
+
+**What is next.** (1) A human audits the 208-row sample and reports κ (`rankAb --agreement`).
+(2) Grow toward the §3.2 target of 50 or more topics, adding multilingual and topical topics
+first, since those are the strata where the levers disagree. (3) A/B the two hypotheses above
+as candidate configs against this judgment set.
 
 ## 10. References
 

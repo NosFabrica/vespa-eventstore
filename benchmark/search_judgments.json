@@ -1,0 +1,5162 @@
+{
+  "_doc": "Graded relevance judgments for benchmark/rank_cases.json topics: topic -> event id -> grade (0 not relevant, 1 marginal, 2 relevant, 3 the answer). Protocol and grading guide: docs/search-evaluation.md. Tool-managed: add rows with `rankAb --pool` + `rankAb --merge`, not by hand-editing at scale.",
+  "Verified Human": {
+    "0000075be13abd064525c7292fef1dff9c03c2318d3ac88d4fd12ebf1494c9b1": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "04a1476acaa4dee15aca584038e39447a0dd91830fbae1735d3a96ae88ad8fa5": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "065fee22826ae9e10894f1f39d3caad222b3e1ae9d2a830d55996c6d2ceb4c60": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "0c6f939000c587b198d9dd3e4dd4e982f95cc72cd9fa56ae1f6e1d446f56c06a": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "122b8f3f18a53b944575caf6fad3304d09bcd34e458aaa87f2162d19f9dc657d": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "1a5623225d702ed41fd66a7b0ca2dd4b380fc2acc13ac39c0b2718853e2ddd43": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "1e48216a8510b8f06a13be6726a0b7622d06bb17687fb6e6d718eb57f5464546": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "1e63f275c7f0997d394a1e6512d52a37f493206721c723417604ea5240d94e1f": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "22bc436b55b30f32d28fc68a2c378b1fb21eb86120655d3a9f6420af5bdb3116": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "326e6b02bc95297ad43eb32ed3166d7b69823a5b83f6f008c38b019b0e0753a3": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "38bbe805c7254863c97db46829501c77ed0417948081f79e558cbb93c4ef20c0": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "4424c7637bbdb12827c39a58a045474deff1de36d116553dd84601e066d352d2": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "4fddb9a974b4fd104866a81d648e04bfedd95e157eff75b226427c15503a12ba": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5611862970012796baa88d7f3257c65fc894e4fc8c3d2dab3762a0e00859bfbb": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "57cec54228610e550896bdcefc38b2a858c1944a664157c60cfb877517181e9a": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5f8ce2c07bcb4aec09083f054874765cd581d383b8efc8dffbfec6b2b3707f43": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5ffa161032f08b9ab6daefa8f2667d1ccdc90c6367634db1b2fdd7ac384c9ded": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "60ff580a50a9074bcebe33714f9736c72ec3b05bd1c55b2ee3024c96edca73e8": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "610095ff67dc01cede0ada36127070e455f085ade11a971eb4802fc0bc64379f": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "672c8192f48d3eee6d0fd473fc731eef14e83550ece39cfe70f59776f4fbe4c8": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "68fbcd5a11e9818e99052325cdf073db16496544746eb5b4bb878fcf40d1b1e4": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "6a0890bd63cf2f446f6c3d25ed65568c539398b2f20494bc85d162300cfc43ce": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "707ed8a65ab2c203cdd0b0c4b1a437ca5cede38197991a9c13f77d756a926b3d": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "71de95c9d126ea74dcc1d6503752ceb107f5aae00468b6fee81c348fc26c5b5e": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "801593e5eb56a98e724b999e1916da550a807f9a4fbc0f3b66bb833ec2bc09f3": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "8093137a2388edac185fe7209c3885a4805e59459901a6c7bffecd2b8dec7bf0": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "8211b80da1e7e950d52c77b8cfcfbe799aa2c9798cd6193307c0cd25075c254d": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "8b27d57b153a897ad6fa3609d8257a6a2121bf03381eac8b2e565d9a6dbaba5f": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "8e1ec47ee246b68b85fc5c35ff19e098e2061eef16dd8c2321fcc02d9cb3d45b": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "90840ef279748c2ce7ca4f46dd153b6a20af65098ebf899c307f6116c27a90b0": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "953e1407828ca882c4ad558c0cb53fffee8ca05b3f1e996b86c75ff0736bce94": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9babe3fd443439078e9459f0d210fd98d973063d55ada73158570c70858dde25": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9e0f0ddaa1ecdad4714bb21dbdc9b71f3cfa7f7fdbc92f40565ff0396c19b7c2": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "a734efcc5421a46406423a0e6bd96b0055aa4989cc9a0f42f732e9281f4ad5d1": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "a7f9b0607fc4375c572b4516f54d14ed3d0d78373875e5704e539f006d627fae": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "aa790a94d1ab4600dcacc464f701e452fbd9c78a6c0ef9645aa94e46348c940a": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "bea685797797b29bd5bf5e2f46ede526f3afdc26f72f0fe68280c9613c8e7f55": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "bf0a6753ef3261ab3e8a6e5e81f466152c4abf09b8a62b9b1af24cdbe59f2838": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "d130ffb1c678d19b99a9526ec0fa910f6e9529b94e38997ed8f8d24f58649d00": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "dd7c853836416a583ec40816ac8e6916460098dfdd7c212b93d41b9eb72d1254": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "ddbc6d83c85e1f1c8836019441fc616fd5e329dc58db2675a1ee667837d26d22": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "efcc0043a0351cac665fe4fc60c3313e4fb1e59ad496bd860c9b141aa95ce125": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "f6cf5d79d11e5073fac9c17563876dc5db34f2c1c0eea8a9e8474a950881de37": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "f7bb67564ae12d898949f1c75119571a81cb699af120063cc9265fa419097af8": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "f7ec59c48c469c51371348dccf1e7cf047f46c43da571e61dce1e5eef700fdfb": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "f82b6fe28567a35e9fbb62d8d6e2371118c00b4cab8eb3599f11cc97cb5e63a6": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "fea274041d1feabe11070470d7921f969d6077bd25327c6bdfc7e067046f0d6d": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "feeb4e5386adcc51f3af8f6621b2a12a88134060fe0c2f252b6d5e0367c50cd5": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    }
+  },
+  "Ode": {
+    "1c649d8a0ed272983e1b1ae1af020893d9515be85b19e15eea9b3051f976b06a": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "1fead805b4d2e3b5ba41208466227358b7480ceb6ea259b906e65cc7f54937ee": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "24ac0e0b524268e65c3a382dab9bdefc0655923cfc30f426908fb10a14c1f20e": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "34e3eeb52e7427b6af4d71e34b0ed5ab6c00b942bb68c4ad8d3d17fb8e428ba8": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "37932999eb8bf279fad2e7614610194f4c0dd637e329e615008a11495acbe8f5": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "3b3c5d5564c601ed50841e91c61afab7659e70e914159e80520a26127c82502b": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "446f17d8b53b2cd5d9aecad425fda0cfbb16635eef652d0d1e0d8923421c2da8": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5315bd29606167cdb9b8bdf6790e3de632ce2984475a3181be7686161c7ae45d": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5ec965742a52f5e3c34036b97848d0f10438dab194838175b363f84621add871": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5f3c96b2811846b3059a0e90ce27c0f5d9f6c6da95cf43515b5d1757bee31c78": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "620cbc88be9c85054621487ec113332dffdc0d3149abc09d24148efaeefb34af": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "6ee0b4bc67fb2c8dfc94e87eb395818c5f3179243014089e43145dc87d1837a6": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "88c4642294a30f6053521d998831cbaf144ed8744386edbfb01d62ac7d6d8d82": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "99807f6d0df17a86c1eac208ee2ee17a2b8450b67f798b408bc9331bd4b8ade2": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9daf2fa77864d9f7c323a698678aaa67d5d3226ccda5d67f7d24fea671695b20": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9ecf8ecd2bf9220ca204604874119effbf8c281494630f54c1615c3e2fcc5d36": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "a0f2158182fa865dfdda595f5d96744c9abec980514e3ef1a336c16b5885d64c": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "aaaaf7f9e9b0c4cd2229be873363e7a280b2d2bfd9b82603fef9ab4628f138f1": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "aaab1b0f1afce3d704a0154a16d26d0450ebfb5f7f0d3d2611e55e6b5c944ce5": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b2738462acfcb3883d152de9191ae570adb1c66c8b6dcb127b666fe5ed1bc9bf": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b9781854b08e627e31bbeae789ca110685eb8826726d549f0362a3c5d2a74865": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "bf3bf0e3ba33c0923c114bd10db6b7ae2dba71e80854c6fe2f5759d0cde8db99": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "cca68fb0abc21a89f257abbab5c3b3b0761948f934ad6edf7f628f62f5e9e2c9": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "d26a1a7cb5f4783d6fdd19a6a0b564187fc7d0945bc2dbe9f091f84da8736874": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "d6297ba7431191dcac495905caeb0724d7228fecb9766e35459e60b4d78c31fe": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "defee8ac5b038fc6ad96f4c8b3e799d0db6034eafc6d5a9d5462bf8f43291924": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "e59d2e4223824c35cddfd2ba490142ea90f9693009657144f03401b12030c276": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "ee57d4d4cfcbb39bfbed5e7d5eada3b6d346d73e1c48963998f98080afaa59d1": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "f9e9391828b180cb358c330efaab2979434c64193c15cb5d4277c70f65beccd8": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "fa567aa2a925f1b000bd7041df7fa3223208ab328fd816379d9e86b0db912f1b": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "fd2ca471f6a38f024f9d44f23723556b0961dfb6929650af028e57de585222b7": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "ff82b4beaa866abbdbf0ea2253d2dff82be83b1856e709b3930230eb4dfb1dad": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    }
+  },
+  "Odel": {
+    "0087557430296a57ffc2472b6050d0cd0e99cb3f55be11ba7a022779d18e08b8": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "0449504add3578b8179de7b863765f204a875735908428ec81bb9c652fb058b9": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "1c649d8a0ed272983e1b1ae1af020893d9515be85b19e15eea9b3051f976b06a": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "1fead805b4d2e3b5ba41208466227358b7480ceb6ea259b906e65cc7f54937ee": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "24ac0e0b524268e65c3a382dab9bdefc0655923cfc30f426908fb10a14c1f20e": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "25aee489b7085d48e6f3ca665a08b77e6a458ca5fbe32c557153cd8e87a585fb": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "28b7c04b21536e0bda40d29ea1f3552625bdaa32bb8f9ad7b569612b0f53e00d": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "34e3eeb52e7427b6af4d71e34b0ed5ab6c00b942bb68c4ad8d3d17fb8e428ba8": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "36de01854707ce075ed4619e5dc9db49c53e2a83f1f2d3921b64ef65dcfd6c51": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "37932999eb8bf279fad2e7614610194f4c0dd637e329e615008a11495acbe8f5": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "3b3c5d5564c601ed50841e91c61afab7659e70e914159e80520a26127c82502b": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "4ed4cfad073abe8fddc5a08a16c507372c11b4ca688b9a8ced698fc6c4a64f7c": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5315bd29606167cdb9b8bdf6790e3de632ce2984475a3181be7686161c7ae45d": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "58de793bbff3bebf580b53e1e43b88f24936535bbb99278eec9ae813ec14c250": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5ec965742a52f5e3c34036b97848d0f10438dab194838175b363f84621add871": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5f3c96b2811846b3059a0e90ce27c0f5d9f6c6da95cf43515b5d1757bee31c78": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "6ee0b4bc67fb2c8dfc94e87eb395818c5f3179243014089e43145dc87d1837a6": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "7ed9d95c35cbd8f97fdef1b065bb5c184c248454640e3f966c992fb11c840d4e": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "808f585454066ceb2e08b00590d608f62b0b567c6968efe5957ece5c3f203bf0": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "879fc51e4f3d83258872b49154b9655f27d54e66507307a6677239576b11282d": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "88c4642294a30f6053521d998831cbaf144ed8744386edbfb01d62ac7d6d8d82": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "8d1e94afc36076b46b692f3bc8a9e1caf59836f9143d706b84ab31092a0da07a": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "903a8dc0523c03b8c60b1e9dd438eb4a3533be36c0976063a64ed9c8adce6e51": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "99807f6d0df17a86c1eac208ee2ee17a2b8450b67f798b408bc9331bd4b8ade2": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9daf2fa77864d9f7c323a698678aaa67d5d3226ccda5d67f7d24fea671695b20": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "a0f2158182fa865dfdda595f5d96744c9abec980514e3ef1a336c16b5885d64c": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "aaab1b0f1afce3d704a0154a16d26d0450ebfb5f7f0d3d2611e55e6b5c944ce5": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b2738462acfcb3883d152de9191ae570adb1c66c8b6dcb127b666fe5ed1bc9bf": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b299332bf0afe51506590b033cee89cbd3287fffe3e4bfc86711a618e7192c1f": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b9781854b08e627e31bbeae789ca110685eb8826726d549f0362a3c5d2a74865": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "bf3bf0e3ba33c0923c114bd10db6b7ae2dba71e80854c6fe2f5759d0cde8db99": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "cca68fb0abc21a89f257abbab5c3b3b0761948f934ad6edf7f628f62f5e9e2c9": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "dbb082bfa6e295d317d46c829b59b0a7cb971509dfa64c057b6f4e15c4375329": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "e59d2e4223824c35cddfd2ba490142ea90f9693009657144f03401b12030c276": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "f165af795484630aca70f9c031c31f5263807d4f22696af049a6de626a556f20": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "fa567aa2a925f1b000bd7041df7fa3223208ab328fd816379d9e86b0db912f1b": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "fd2ca471f6a38f024f9d44f23723556b0961dfb6929650af028e57de585222b7": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    }
+  },
+  "dell": {
+    "12dbfa57dcfb3203d9cb1d1114ada35df9bdeb39a91001ce0f9f58dac8973758": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "1e167be32559c14b3304a5ccf404538a6c1299cc8fc8d14e41768fef6a9baac0": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "1f5b7f0e90cf729c071da6d35db1ca54c3ce76e9237a01452170410a5163b7c9": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "46c377a5c5718daafdb8d3a8d257aa14e95d22806c68880cda36a4655d31cd22": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "48da1ad07a344c26a5c7136c43c60914b370583016116ed842d9cefd574dcfb5": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "493bbba8ea2fe20037a35c6a1fa7291345e054db6ca56b7a0add16cc47ec6c61": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "4ee690ab6c7e98fa15541dcbfc4e1b4b47958a33cf7692786c7c743d241bfbb0": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "54ec90784857d5f0188555d4a7a5abb9f64fba2425539823452fb2e48870c7c8": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "6445f38b470510b54224df1cbbe1623609defa42d8d51b1d513a1665c6ffb32a": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "7022e220e6cb00e273dcf33eaa209d2be566d1b1690a2ea025a4024a5ccbc218": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "79416a3512173f3926f10db7d2a3e74fe36b11e95cd69572424b4e0fd39e6914": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "7d5b7475fbd3771588f269731a0382750cfc506da70294dab0595d8bc590f0c6": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "a98288d4f5ce30c61240fcd8dae49a2fe03cddde97fb50e2f151eabe98335178": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "afb2e8ed0016044b2219019e7674683b2321ea4652754b5106b8abc2104609ad": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "c4654ea992625cb9ca9267b6ee6f586444f797f9547a3d309c00629e49a9a103": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "ce38f186e1da70acfd6306e36fce4b9c355a4145aa9a7caaf7a62bc7866ed8dc": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "d5a84aa09bbd5080fe60708455e3b6ca38649badeeab1c96f08aa3e553114180": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "de976bd762ef2157a1fde96c67d257e794ba34449fef797ca54671af78cb8fa2": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "ea127b31eb19a54632427e86d23351b95f075a11c4ff59b2ef282a76c447c9b9": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "eab7c5ed48db4ff503d0d384dd0385a19cb803b3a947e07ada063dacf8411eba": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "eb3c5f64655416731fb5e09d124e6810a64f0fef0813f9a96fa13fa77f4bcef1": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "f039db472d19d454be7b1f218a35c43bb47dc4b3ef537653d6e442200ab7c644": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "f2285a417fbe83238f7dc41049b472d5eb55d8860714ef51a6484c30d9f035b8": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    }
+  },
+  "vitorp": {
+    "02057dc0c168f9f3c24bf36da1455f9e06c15140ae4fd66689c9e04e7f63ba3a": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "0a0bb9c389ca52930fc04c361760cca900f727a7fecb1702ad1b76d3fa56e48a": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "0c39d56088c159c0037b438cb378e70e62ebf4333db96f0194c0af08042f010a": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "11de25f3d72874cec7008fc5e60c51efdf074f2b0bb31bbf6488e0a26196e682": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "120c7cae9ccc55fce2f26aeb701d3ee4897030f9fa4d32422123a9d437158717": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "1a241d6000d6483d0d8859926ecd2e23b35f6626c4e5721cf45c9b011d2d8a92": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "1ebde55528404822435f8558075c3980af549bf1ccf08ca70f07d7f777f0e7b2": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "2385e5208b973dd5b58e42a95d7b06fac0c7a9e958c94b9649775f96b79f1fc6": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "24418f468fb2383ed32b0c1240c8753f3587924c8a3fb638dc858534f6c2f5b5": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "29d86983bce6368fc373e000ca5e21716daa7bff862076beb816e8aa7bcfe2bd": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "2d9841cdb0591f96619ecd0e0731ad8c111904637d264a8e63580c9e6980f466": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "2e2538b04f8f8ace6300b0fc6b743c9920da9708c06072624d4cdf7600fbe3c9": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "32fd34fdebb0639754bb5601a138bbec9ad6ae47fa91055754911870eb82a329": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "340de9d927541f3c13c661dcf28d85cc4092a2e7675c1a9f69633a1b4b1bef2c": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "348d21edac028e7d1cb0b3ce9eafdb957caa0bc75261eb68e3b856a9ecf22aac": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "3e69c13e1cdbecb5284f8034d839eb6308abda24324b33e5e703aab298f79fe3": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "3f99d6037192c3ebaed1affdb546dad825f00e3f730dfba4f6117561cc840d24": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "479be063322f5478af3ce72e72660784e2965bd9c61ca9a0acbd8cf41479b42e": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "53e08fc778af0f5667dca4445a6360f2f8fac74e667fbf66ffdad2acf93dea42": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "63b26b729fb979ddc028b1e0cc38eb10df3f92165837d328813e6ff9335a635c": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "678c13086ac366302bd967459749d86bb592b6c438b8e721f7a7b3199a534b5f": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "6eea1a0efb463e3f444be7aee3e6c51cac0620eee2a7387965ee5d82607645af": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "7ca215c444573262fed2d24df02190c11a218f8b9547874dced6dd23ef9414e0": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "8442287cef13c0cc41e7a45140eb1d62420a10bf8e9bbc53435f370b82184fe9": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "89a7c6490058bbd84800c6f6397b170880c21642c8a760d64b32974e3c570fc8": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "90ef4f3d994a22b1199ded3479acf6491781bfb0ea712c204e98ba66db0efa26": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9221b36fa6b3f602645e921c0a27b78d52119dc73072a80ae60422544dae32e4": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9cf11bbfc43c07c516648eaf3de43dc401c938992fb8fba1dba2130bc39d3e8e": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9fcf7f41e3904770a37affaff09e5fb40bf3379a856f9cddbdb741fc175d897f": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "a4a33e2a83bc75c805f85251595e2f27dbfa0c1491e069816ab08cb8b0d6c44e": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "a959836e55d469c14b7a7669ffb7eacbfbbccf877104562e67119fa8d89caf10": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "adfc9981469109557311a878c821bb90d9a6e927369ab57b95ccf4676a6577e1": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b107ab0550f8e667d935334cd8c3fe4709ffc57e562a4d5198b3bdd70c3bebec": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b48187a7aa20d1607f8767c46f8656ad01d18d66a91ebb33efda712860be91d5": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b87bb7e4a5cd383a8ce644ec0b3242b02fd01061fafcb22c2ac8b6e9571508a7": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "d9c185383922a1de14912155a0e72200264f6db9ce9afa962ab351d09d8e8d46": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "e1bf0ee98f37222e1674fe5376a2056665fd37f1292ce7c20457013498d2619f": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "e2e88c9277fa918a22d4369de2a2035037cfc98283fbc470f276ee87396a7235": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "ed3b1c01d35a45efb67e182c10222fb8451ec446ec2a8cacb685c69ae8a2a395": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    }
+  },
+  "jose": {
+    "002971f5645e1419c9fe75d8e7cd67e47bb70344631eb51ccaff45ef83de5570": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "008f42a8ccc718238d1599fa0279de788e8e1348beb38881e005dbe646b70f01": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "0b99aa4647d1df8f1853b388a40fb558ebd07b15dddcc4b364b53c1113b998a0": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "0ecaec4bc8e67c5322c2454e6ff433b0f8ac97e8254c3d92b473405983539c33": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "12058c3767a14bd1137226062a463d97204f2819e324faaa63d5e7cd435f3421": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "29879b7dff244ca02261b05c85087188a83276692faa6c827cb6119df76f6c03": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "31108789092a40e7c72b0d9b254769d0f5e3fd8ee7598971f374b39d7b2486de": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "349ecac8f1204968caf6bda89e093c8cb20b0faf8c5765e7ef08a2b00125b36d": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "375d063ef94257fe86398c030dd6f57a806f1affac5586ba70bf452d38d2e195": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "4091161334815d0ce6bdd41161640cbd23a70d74d22636ae01b2bfc5f7736d7e": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "47bfc0df8671809e5b14560695bcc5e3669d4e5afb5a1354e5c9d42e85445515": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "50af97881696223333cc5660d86ac89ebcb22a739ddc2e540075f57ee05aed9e": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5a8bdf98c75ac71bd77f867ec92daa659a6b5a4bb88086035b7d07fb840a5799": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5bdf6802e5350d5f43c14e768ad17607973becebf8a5b51a602730b9409f83e1": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5cc38d50aa4bc0d07de092c1449f75e7f3e416607a070f9eb40b3552729c4cd1": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "60a48a4b15bb61faf2cefc63e825299ca72061dbd4bd0a2ad9a54dfb3b1ebe9b": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "67b6673e73f0e31cbb4620732605ffa098127b98daf4abf96541b4b6b3295463": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "6c91ebee22c5f991c1d5d785d43923c8bb2c7eded6dc124c24ea68f45b652f14": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "72c6229b6da330eb33e54bba9cc18e468b624dc012753442d407a61dfad422c3": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "75090eba89a0a7ac23381650d523a2d6f3fb932b677ef5fca47b682e1e4ca672": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "76e7716e41123d07a344237ff0899124b1837ef1f42132175f1cc150ac28c6cb": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "78610af2dacb4fd3d6f77a12fcc1b3a2924b69990ff5ccd516438519b87b0e48": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "78c94ff82c39245e93c19ab144bf9c5f66060454536c37a0e401d40e3a6004e5": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "7f2ef9c1913efbcc4548bdd7c16701bad7046289946c0f7d5adf682a569cffac": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "7f471f20939e9a9b55469325b2742d85d4af36f28eca2bf76202d2a138531644": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "8574e7933be23ae4065f0038b28423c2ef8d1d5b08f536532d3b1da22ba77090": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "8c99f5a349eb5a9615268dfb45841b5d03e4307a4ee2e0372c1214171106353a": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9a62b56179c968afec40c516fcb15be3a8cd51ed2715b04452c17cbe3461bd66": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "a1b3e1fda0e2047d7e9eadd2cb1c485d35c371f4adf6ad50ad68f8b561cd116b": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "a434640851776c1f9def6853876c0023d13a8c292cea864a85aa51a32fe44ad8": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "ac32b70150505b01f444c31d4c9c88105c6df12d5405a3475741c0de51a2182e": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "ace4383df39d47260abede8a67c58113b7a8ff2e2c09e9084447e39766c86d70": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "afb83aa3812dca305b1e54a828a1e0528fd8c38644ce40436b3793cbd4f89504": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "bacae5ff173882b10f8a9609ca5a9fa2eb29266e9a9328fd3584b12784b12d25": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "bd6ebaa66db0e808c280bed3dc91ffa250d95b4600c01a360052f231c46317b0": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "bfa09095f229158864adba66fbd19784a957ac9d8794b28bf67a845976b1662e": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "cf0dbf2c2ec5c2581978154b0f18e6dcb21af945898b49ba18a2e9537e694eb0": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "e13d73f3dc939d27ae6c85a273197ba6e930a80470aec2ee5291a054bf762ec7": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "ea776e900b4a1aa66f82a7ad20b08b7c23b9c863b2fcca22ef9d4a2cb3c3f9c5": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "f3026209ce3e125177702b686365c44ac7f4bd38a3b65987e1be2891997999b6": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "f797700538184337448b3f80d45f257e2da863ac3b06b113eb002a10dd9bbd00": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "fbba18eeb648152d4c32860d9f69f07b2bb2c341c6b72e7067e0048dfcabac1f": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "fdada59259e5f138d780e7ec4181c0ccd75381fe80aaa3adc3ac8c118a65583f": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    }
+  },
+  "中村": {
+    "05cf98d6301e3c01b2505085a5f8e216b4a204541212511f8580cb983b1a8b07": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "0779861babe1ac3d96c85006eb5f58e13cb48146844ab7372a32b34d6b1b8599": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "0c3c3bea19679e0a0dd7748aa377ed55039cc3dc86f8977e1aa1bc2c0c29cdc1": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "1064ec7018bc4f6bf50a7a51542fd91e736fd31c94596030bd25075f532bb232": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "19c19b90b72c1186b17df568a3acf46e03a312f66468c2d3a95a523d121f5f50": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "1abc0908613713e69247760a01bf2a5b493f4ce88b3190f24ea2b307882b6ad9": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "1c499b806c848cc76c1f32f0c7d17194f169ada44b0cf39805340adf9ac6e18f": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "1f0e3c3d8a36b7e4aaad93598106a7de0123796416c1b59c5c17b0889d59074a": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "21c9b3fb61b7e82b6e9cb981f4e19d6c9bc89b497c989d01b1d69bdff0ac029a": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "2ad17c64445e82789329f32bff8598203c0556523eefe06a1bb100f36eb07ab9": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "2b1ef16e0dcb8194d99a5b57f36f2499ccd327be1d6ecf35db1ddcb3b84bade6": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "3660e06821e6a750756b08f57476b7624e6dc3bc653691e5688c1c2d1345b9cf": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "3965923f2b707e6b66f2e31ffa1fc8391827e3a9d162c885865b5c27850d3900": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "3c03f92615ec1669694e71fcb6459190d701f0e3bd1e599f64f36301afa713ec": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "3c7e603dd57af275a0d47466fb077c5956c7470ba533d89adf9bc084f5a750db": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "3d863d1cfea7315de69e03bd2f02c3c6f6611f5406423b3052ef88051460d0cd": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "41ff47648394eb70d3b0ca0928fb17257f66a0ef20e113b038b93970eba7acaa": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "50919da9e65cfeb83f09871fbf3f210bced28d457673f2037e57f94954fd817a": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "52f5fb95c358a4cb84b2b563f6d1ccae464d61e07b1ae74c913b5f5010a04e3e": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5cbf9364dd42acc71456f2e37053bd0d8707597bb37a3568b2dded0e78725fb0": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "678b26d8d399a3d893f0ac12db2d8953a0e7c1b4bc1229a98d62903be567f1a5": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "6b4ad14788c0f46368be61aaf7da61d151944c921318450944e8b4693fbabe5b": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "6c9d17d2e4e432d5bab16193cc44dd29ccebf187c809b1384954f9112e8d8b3d": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "763e7fb4a2c4a12a4e092450ca45012fc12d530c9f7fcdc7d281565a822e7659": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "77b9b0f47edd6852f98b9933720ecd234b864986f6c3e49d048ad621c0715c0e": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "81554fa7495c67c0d76d6e765b80e6c12b00142beee54352269d6472c43a5af6": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "81c9f3c9c08bfd34c41667c9c6c1fdeffbcd63e70eebede42c160461dcb9eb4d": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "90bcc09d671c2b675d2b5bcbdfb480ea55041d0f217ec6b8fe0374eed2fd2aee": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9abd3a1171c93ab0eb7e11afb733d222646b43e506425307211385f05ce278d7": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9bddec54f8b77db5cb099bdfc131eb209f981b1c17088a3d58b53fff5bb6efac": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9dc4a12c5d19bb71ef040df9c5082cd9ab3008aa4473cafec67a1282bd723d2d": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "aeffd2fa8752d2539b52b1bbbf71b8f152f14d64028531b775828e943bcee3fa": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b018907f18a1d3887cde1f6ed88be46f63cad413e8fce7798f781b512abf5c07": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b476ee00520744f93789ece18c9bd5935cd73d3632b3b72fb324317fbdf648cf": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b50f5ada592be03bd798de1d31a2075bedfca7ab9954bd9d4b61c77d61a09fec": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b550cbd070288af334d8bfed2aa32b954443016c2b95693988c619f4ee367e9a": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b75d958fcbe2c11ede68744a43a42b7e76931d266a6ae0386666d8b0cf2fa02d": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "d54ba7b0a719b8725f02e1f93506eb245ed77f172d4154339491a2151ce9c255": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "ddfb0cb762075792a7ec1eb9c36e492fad45ac98e5efe9ba699d8260dfddf9c0": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "e894fd8fe78346acdfa38658a6a405f71e864cf4fb90875444847e54f4b7d9aa": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "e992509ff7136252f0d86abbe18a3280f9bd0a7080fa6029adff54127095cf54": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "eeed14fd5f0309f0ef8c3b5eea6343aeab3ebe10c660fa18049d7faf32192093": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "f23b5b9246a198c6e576329567a274d5cee2f5417a41022dbee246f8197a5411": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "f774dc395affdad782b72bb56f9ad3b8cba5b1055e091b37879efaee3dfb993b": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "fe8f624cfff873490e7a07e3f6e2df6a397cc8c6f52e57bb95f7fc73e4937fa6": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    }
+  },
+  "Vitor P": {
+    "0962ae62f2c819685b83705411aba5468fca6da4591bef6aa795ee81fd74a1e3": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "0d28cdbb084ff0e27fe372e657ff52b737137affc19bbd03c2c2e5a92e5521dc": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "0d5eedbcbc4264144837181d5e359f655f2cdef8239a4fe5f3fa42b6d1d92f6c": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "10734b5bfa348c07d21b705eb4ddc4c487c26dc7cef4522775d147558bbd6b6a": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "11de25f3d72874cec7008fc5e60c51efdf074f2b0bb31bbf6488e0a26196e682": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "13285410ace9ce2373335cf14388086a3e59132f0399cdd267a3d371138ccaef": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "2385e5208b973dd5b58e42a95d7b06fac0c7a9e958c94b9649775f96b79f1fc6": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "24bb66bbaf5a601796e79045ff95eedb2cdf04c2b7b808f051712421ec6a46c3": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "24dd34aca14405ae2d400976d3ff744411c5e649282009989f4a0d5917a7dc04": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "2a53f57e5626eb273e0f70cf60ff4ac24b4aac2be1b5dec834ad23c29cd04ff9": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "350c4ef47089292db4f74962d5fe76579148fc3ded7079db2ef218c3cfdaf9e5": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "39cea3c595754b82c1eedff406d59caf0825335f9012c31740523f9a3f391254": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "437f695f2c862e198f42374b26f0078cd82bce501b71dd70909e2f2b9be7613c": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5d60ea183a8a87d4fcf6c97a2e6be4e3399936b98e165534e4ff728f5b15ef31": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5dbeae24c1ce8219867e03c920a7967e785d1b07c529c32e0b8344edfb566892": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "6d3e41dcbeab81149f871cebec4f22e176fb9f9e80898a87c1aa1a8b5ac273ea": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "6eea1a0efb463e3f444be7aee3e6c51cac0620eee2a7387965ee5d82607645af": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "6f433442bcb49c1aacb616dc6e1d6a04bbd832b779f357b7c5b5518ce66845a4": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "6ff81eb8d01d5d4744f7a96fff03fa0867fba8b9b82717eea7d6cac4f90a97f8": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "89a7c6490058bbd84800c6f6397b170880c21642c8a760d64b32974e3c570fc8": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "90ef4f3d994a22b1199ded3479acf6491781bfb0ea712c204e98ba66db0efa26": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "91e8700bcf4f5894cee00b10bfb0386990000e23f9a10e3fc0c01a6f927b0044": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "a4a33e2a83bc75c805f85251595e2f27dbfa0c1491e069816ab08cb8b0d6c44e": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "a91a41cbab35819fbf5905dc8598c69826c3b0948769a78de79f82db232da133": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b48187a7aa20d1607f8767c46f8656ad01d18d66a91ebb33efda712860be91d5": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b87bb7e4a5cd383a8ce644ec0b3242b02fd01061fafcb22c2ac8b6e9571508a7": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "d9c185383922a1de14912155a0e72200264f6db9ce9afa962ab351d09d8e8d46": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "e0f18cb7852a5a76f1a0c772714af9efc70645d96e43c554280861b239b33a64": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "e1bf0ee98f37222e1674fe5376a2056665fd37f1292ce7c20457013498d2619f": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "ef9133ea7ae1ef75fff4f4c36bea1bd34d4ed6f6c0b47919c7aeac4f7086f795": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "f6962a5e1cc4680b1617db32afaae0445f204e0167b97d8e9d9d08c49937a8d4": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    }
+  },
+  "Vitor Pamp": {
+    "0ca77019fd9d72ca48c89f814d64243b6b29b8e4c649613cc380ebf33f0723ed": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "0f2c3763193a68b3afa85466b951d41cc6ba5b81a2f5e7df9734700b94de3f71": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "11de25f3d72874cec7008fc5e60c51efdf074f2b0bb31bbf6488e0a26196e682": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "210b9889e5c4236d83b9bda76c4c248a403bc0d7cd329ff6b62920ed5c59207c": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "2328dced0896194a0a4993b56ac5fec79da2613eed6d2524653965796bc5cd83": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "2385e5208b973dd5b58e42a95d7b06fac0c7a9e958c94b9649775f96b79f1fc6": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "29a1c75a51b5ab89d25d331f34afa133617b0ca1d2f114e82f5307a74debbe36": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "2e2538b04f8f8ace6300b0fc6b743c9920da9708c06072624d4cdf7600fbe3c9": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "340de9d927541f3c13c661dcf28d85cc4092a2e7675c1a9f69633a1b4b1bef2c": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "3d3dd4239b0ce42ab8fd70d191066ef7b1be87847f2f269ac89713b632e0fbea": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "3f99d6037192c3ebaed1affdb546dad825f00e3f730dfba4f6117561cc840d24": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5749abfcca0fee4b3650dc2f4211e94f763c8bde55f912efb7dbf74c000f0c5f": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "589de74aaccd309197c7e977566da02c8f73d887f704b5fc578ee0033c79a1b2": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5b58ab1caf818431821fb8ee06d3b2dd9d10e019493b89cf45769ae6c7ccc258": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "6eea1a0efb463e3f444be7aee3e6c51cac0620eee2a7387965ee5d82607645af": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "6f433442bcb49c1aacb616dc6e1d6a04bbd832b779f357b7c5b5518ce66845a4": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "89a7c6490058bbd84800c6f6397b170880c21642c8a760d64b32974e3c570fc8": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "90ef4f3d994a22b1199ded3479acf6491781bfb0ea712c204e98ba66db0efa26": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "957f188bd72024d2349066427496cfe7c28d584881237b9ec90f289ad98c3600": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9d27c36aca283b80ada86041f733d93cdea8e5e9424200af5818990f90c548a0": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "a2f1b81bbdcd95eeba453ab471292a93c574e0f0e1433eabc14e5e1239e24685": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "a40e373b489b2d5b1bbee02b63ac83bde835e111c3fd18facfb9103e76c45617": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "a4a33e2a83bc75c805f85251595e2f27dbfa0c1491e069816ab08cb8b0d6c44e": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "a56ec5c811ee055448b0184df23ac4c6c078150d6d650cf50173f98704100a4c": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b2e6e895b2ed6c4c0ae2972d160985f1e98b0345c665d3740beaa05ce123486f": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b48187a7aa20d1607f8767c46f8656ad01d18d66a91ebb33efda712860be91d5": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b87bb7e4a5cd383a8ce644ec0b3242b02fd01061fafcb22c2ac8b6e9571508a7": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "c35a34e50cb83d01153a516b1451fd7acdcc8737c112cde39dbc196861d02fb7": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "c830b5c4b608ce50ae56affbc7761673b4dd8b944fc1cae04db24b0d7f2caa17": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "d68ceedb98ec087a6312d1e7ab9c7b4a4890d9400c97ad8458e2962d8fc32dde": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "d9c185383922a1de14912155a0e72200264f6db9ce9afa962ab351d09d8e8d46": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "e1bf0ee98f37222e1674fe5376a2056665fd37f1292ce7c20457013498d2619f": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "f1eb7fce8d2d8354d4e4eed640e1501bd402b6f02e1800798c2e28b06fb6665f": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "fe725ed3fef19a9db09a04a95d5ad686f0f4d3e7a7be5b33ff10d36490753306": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    }
+  },
+  "odell": {
+    "0087557430296a57ffc2472b6050d0cd0e99cb3f55be11ba7a022779d18e08b8": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "0569ace870e7f3f0e1c25e67b767a36c13df2d430a8cc7c4e6e16d52687095fb": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "05c897adc05980e6a22d0254e1d98952804b68f8126705d8adbf2d05ab90dfcf": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "09e2a3db3f8f645dab2dd6225960fc5100320cd0fc4c70ba4c9398bab84aa603": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "0b8fc90570166e7c09fe640d2f75309c2200dc3a600852285988963f298c9146": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "151cb7985d210e5ac1236066760d0e2e09db7ae7c3d19d8f1a8b6ae2cf6f7697": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "1fead805b4d2e3b5ba41208466227358b7480ceb6ea259b906e65cc7f54937ee": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "1ff9417cc6f78a4cce1f445130d7775196af34191cf1b9f3da5d51e1bde647d6": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "24ac0e0b524268e65c3a382dab9bdefc0655923cfc30f426908fb10a14c1f20e": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "2edae5e4a8c94a967614e4a481bf4a532f1c0fd37178e0d100a738de5269cb90": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "34e3eeb52e7427b6af4d71e34b0ed5ab6c00b942bb68c4ad8d3d17fb8e428ba8": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "36900ac79b9b5bcf14f7eeb309c4e2897ab65a88d3ef2c7f42ea8e5900d257a1": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "36de01854707ce075ed4619e5dc9db49c53e2a83f1f2d3921b64ef65dcfd6c51": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "37932999eb8bf279fad2e7614610194f4c0dd637e329e615008a11495acbe8f5": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "48ea9db28e2c0c4a377788bbb796f821fb65745df1f9b01d9acb48b8efc04c92": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "4a8439baa9664626189425b09315756a7eea63bc7d337b968d69d1d9195447da": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "4d84b8fd1c7c1c2177fc844502566b838398593d27c5aadbd701f07f2f5cfa3a": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "51cbdedbc8466f7d4a85f3f14d033f557c9e03b0076e828e9fcfe1fc75b4c449": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5315bd29606167cdb9b8bdf6790e3de632ce2984475a3181be7686161c7ae45d": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "57a0ed1b508f37c3f4960258933287ea9643d6eebf98971891b21fa4e805260b": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5ec965742a52f5e3c34036b97848d0f10438dab194838175b363f84621add871": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5f3c96b2811846b3059a0e90ce27c0f5d9f6c6da95cf43515b5d1757bee31c78": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "6c629b8f8d2bfc50b5b712907ea4a9aa1ada08290ec626068ed79df7b15839f8": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "72218345efe7659285ed8d3092ffce66373a1a7580dbd13b562bd3e0e28350a5": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "7f2201baa422c3bf3f4093d9f9818c229393a7dab891471718f9b0297be868ae": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "879fc51e4f3d83258872b49154b9655f27d54e66507307a6677239576b11282d": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "88c4642294a30f6053521d998831cbaf144ed8744386edbfb01d62ac7d6d8d82": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "8d2869028e1f51626f500503696b3d03fac0c0a94553a1d33800b2d7ebff91f9": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "98a604d4825b215200f16e9738066916cb654edc17d1c064d5ecf0c98a534651": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9ac775bf936fe742bd48022b80b3265762cf0a5e11339c7e1712333cd1087040": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9e68f0481470fff131c460013f0ad040be477de413f43e9e4973f7318e3d6b6b": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "aaab1b0f1afce3d704a0154a16d26d0450ebfb5f7f0d3d2611e55e6b5c944ce5": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b2738462acfcb3883d152de9191ae570adb1c66c8b6dcb127b666fe5ed1bc9bf": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b9781854b08e627e31bbeae789ca110685eb8826726d549f0362a3c5d2a74865": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "bf3bf0e3ba33c0923c114bd10db6b7ae2dba71e80854c6fe2f5759d0cde8db99": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "c1a1ac7f769da8d2fb8e9175ee303280ac586224bd193a3448e837e18c6ba1f3": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "c67289e0c63183d2b0fa557ae4bdbdbc97d8ac64e01b4df03a7d587b0bdda332": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "c8abff6dd6524b76e62e8c80a999a10450142a07cc9dddbd7ce0b5b8ad998922": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "cb3eec2c6ecf59e3141edf829dcf036f79cfd3b940ef95f4a62952c8041e0f05": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "dbb082bfa6e295d317d46c829b59b0a7cb971509dfa64c057b6f4e15c4375329": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "dff6d1b9b380e90a649ee9ff577a676c5162d2f22eed08407b17036bea2c8630": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "f165af795484630aca70f9c031c31f5263807d4f22696af049a6de626a556f20": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    }
+  },
+  "Vitor": {
+    "02057dc0c168f9f3c24bf36da1455f9e06c15140ae4fd66689c9e04e7f63ba3a": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "0a0bb9c389ca52930fc04c361760cca900f727a7fecb1702ad1b76d3fa56e48a": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "0c39d56088c159c0037b438cb378e70e62ebf4333db96f0194c0af08042f010a": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "120c7cae9ccc55fce2f26aeb701d3ee4897030f9fa4d32422123a9d437158717": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "131613fcd81a9cc1e9a7ad2f7787c7da26829bf283fa3b6b230934a593341efa": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "13851c8ae26c84b6fd04e7e6e4c52ae9b826d1c3c271de79c87cc70b36f8c70e": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "1a241d6000d6483d0d8859926ecd2e23b35f6626c4e5721cf45c9b011d2d8a92": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "1ebde55528404822435f8558075c3980af549bf1ccf08ca70f07d7f777f0e7b2": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "2163c8eebdb4b813cb007b121e0df6a1183b19b62ed6e0a366d758cfdfa15226": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "24418f468fb2383ed32b0c1240c8753f3587924c8a3fb638dc858534f6c2f5b5": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "29d86983bce6368fc373e000ca5e21716daa7bff862076beb816e8aa7bcfe2bd": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "2b76b7aef275053bc5848f1be2e43ee6233d6cd222a05570b2240f91a191b1da": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "2e2538b04f8f8ace6300b0fc6b743c9920da9708c06072624d4cdf7600fbe3c9": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "32d9fbb1a41fbaafb73e58c94c7fa7bd7ad0e89fc64e919c61fff837e603a5c2": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "32fd34fdebb0639754bb5601a138bbec9ad6ae47fa91055754911870eb82a329": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "340de9d927541f3c13c661dcf28d85cc4092a2e7675c1a9f69633a1b4b1bef2c": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "3f99d6037192c3ebaed1affdb546dad825f00e3f730dfba4f6117561cc840d24": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "43217f4c32c59ea30d14257fe631e963f4f965f408c2a33a87a7feb72d3f922b": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "437f695f2c862e198f42374b26f0078cd82bce501b71dd70909e2f2b9be7613c": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "479be063322f5478af3ce72e72660784e2965bd9c61ca9a0acbd8cf41479b42e": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "53e08fc778af0f5667dca4445a6360f2f8fac74e667fbf66ffdad2acf93dea42": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "63b26b729fb979ddc028b1e0cc38eb10df3f92165837d328813e6ff9335a635c": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "6478852520f5c159b11a0f8ec9427ecec311835be4de163a74aa9cd2859d4d41": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "678c13086ac366302bd967459749d86bb592b6c438b8e721f7a7b3199a534b5f": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "67f65b3b245f30d3837c584dabedc8e4c52e8e484fc2ad3312457ae9449c1582": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "7ca215c444573262fed2d24df02190c11a218f8b9547874dced6dd23ef9414e0": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "806a5f9349e703dcfdd2806b4c4ff51047a11f1310bec0dbe7dd4d42b335a42d": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "829ef4780d571f85247cfa2322ff36e4536ee24396d636b11329c73809b7c13b": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "8442287cef13c0cc41e7a45140eb1d62420a10bf8e9bbc53435f370b82184fe9": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9221b36fa6b3f602645e921c0a27b78d52119dc73072a80ae60422544dae32e4": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9cf11bbfc43c07c516648eaf3de43dc401c938992fb8fba1dba2130bc39d3e8e": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9fcf7f41e3904770a37affaff09e5fb40bf3379a856f9cddbdb741fc175d897f": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "a959836e55d469c14b7a7669ffb7eacbfbbccf877104562e67119fa8d89caf10": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "adfc9981469109557311a878c821bb90d9a6e927369ab57b95ccf4676a6577e1": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b48187a7aa20d1607f8767c46f8656ad01d18d66a91ebb33efda712860be91d5": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b87bb7e4a5cd383a8ce644ec0b3242b02fd01061fafcb22c2ac8b6e9571508a7": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "bb71da52d0e928f6d8dad3cfe62942a70f9de5d8ccd862a9a1687bf4700909d1": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "bc8d9f52270fa00dcf3e0ff2924b839995652aabe341ec564122e93352cfd923": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "c15816236896967f085954726a12101de466f6353c89a4932fe79df49d8c6849": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    }
+  },
+  "divórcio e desabafa": {
+    "1a5f3ea5f832614a2dd857b6d8fc9b55ac5be56464550e4580f01c3aaf431915": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "1be834bea1fcdd7243a0729f313525f1a4baea8aa52d317ba9f1c81eb15ae14e": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "320a764d9b8c549c22c62acf48cb19f937d4d91ba2add9c04db71b87b61e2f86": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "3313d1976cec0fb8b363a96e6b8709413981374704f7cf121547dfc55c22d7d6": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "34dd3997b2d2f69fc7368c79792606bca286fbaffe257c29d04186dda2003125": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "93407bc0173c622db5cd400b5fea4b7c24a978834997fbe5aaec2a4355a43d4b": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9a3864ecbf5ccfae8cf44ef8a618970348195f0b3ebd1a7b931e9485feb4a057": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9e1d43b7b27094e706eaff652a2bc869b9dbff3a6b9a6fa627695a9fc3b9b6d2": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "a9f8df0e3f21d820bfd494d61f0b51c9acc72328ed537151244cacc47d3b1da7": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b5aee465371c6192db770675dbf8883acad747ad95c330bc46cbc00c8fe49ee8": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b5c3d21d29f2ba25139342b768cefc2a34b5e64cff5d35f7a274addea6b8316c": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "c2735cf25c0c5715095ea1d4c1461fae43d162b7f948670e4c76e1d1a291d698": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "d280d2befcd0ef1d2b7cdcffd1f90d5091e5a09d920a3319cb41cb3208bcd738": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "d48ae763d9beadd351ec50654a77d8d5de5a345e56cb5115891cf74d4b4021d8": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "d6090820c719b9f82da017762d057cc1ee130bb55439af045543e2f3b8ca1b51": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "ddda7f56601c5f3b603cc04933a8032510370ac13cc92d27dfde73a2c4aaee81": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "de2b88b48a2d81ca0f616a1fb6b220f6428cd1501d127f9e750bb94ba8ba6500": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "e01307f4b672b3c9f114a6b31b494d537eacec1f32ba7bb92a6b96a598475e0b": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "febfaf5082d69ae98d2787f1d12b04fd94d3e3cd38efb34a3300729f33475db4": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    }
+  },
+  "bitcoiners": {
+    "05ded273b178e874860e224345fc28f5bc9979eeda545bdd748205478929f531": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "06d2c300846c20fbe7a07a6242ebac2b9d8b6b4811929e85d2ee976e4da92e84": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "0b92352f84e663361a0cade171a1b0075dcdab7b66841326b2c3bd6e29da68de": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "0be7d9d9c2bcd1a86dec22ec56516340fe7bd66f56b2f99f92573c1f9adc6602": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "0e57a7d0fe64dac02123e9463a7939c8ff69343c6a1740d78d222761e2d4d309": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "0fc67b0dba7d694ee54b2e75219b661cafe63dfe17abfc508db527c346591d64": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "165be8eebb6536866714f2a2ca332f404ec10f1ed39516816604f7f7ff66135d": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "198336068e019a6bd33f88daf6eee903be456c5db6da9f211b5086d42c442de4": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "245317b7083e5d1d370cbd6d133e2a1883578e35da10bd518064ee4642583d78": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "254342a9ae1c869cf7128e97488848405aab0b9180013d518aaab7a87b1c7866": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "29366b7ea8cda34b537842d339fca3b391e95860cca375029b76027a7d766dc9": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "2c5a384a40e19d9b65de1527138166a32b6dcf380b80f1755c051e4055f3cd43": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "33df6540cc081daa7e0f981bc16d862815945ca5584971a3cf2618e2addd8106": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "3d749d94820dad31fd993ff5fe1776f9911cadfc53cff342cf314031af8a1793": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "532be9e426c3f44e6b011d04153da6ecb8296b13b2b767c24a6c4f2af00f553a": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5fc3ba499818d200ddc9a34a4b3d2159f9e3350003458f6924f73a1a35a2609d": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "61da76db49eeeea51b77ff5c23f41633ec92bee83d58306a216c5f40677789ce": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "620ba24d71293f4263f8381e4f7893764751a584914b20c3f39ab29c95b39980": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "65c591dca566eb83443ee70871d712dd56a53a10a3e06387d53a190fa22511a0": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "6a5941cb8bf213c7b63f1355f042a9493e94f3249154a34d1cb120a4cb02d94e": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "6f4a2f3b852db26391403b94f33ad481a8adcfdfbcd87b20f9efbfeadbe386d0": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "6f950d4d1d613110e9dce47b54c48ce31f4c650514101c8b88d5eeefc6b5eb02": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "784fa9c1876d186d9efe8f91ceb3d19f5fb94254e8a165167978d79db5e32aee": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "7eb65bfb8666e7bf5c6bdc698956b3764853c906f53b68b813c801707d17b5dd": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "83562b96de0a0e358b52201ee9c7fbbec8fc7a91bb17f13dbc1642b87a065f7c": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "83ac08a7baee8a6c8a3644885c052b2c2498e921e2cb0799dc734f14e1bf4db9": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "860313837bbda808fc130bbbeb83020cdf106480aa0509aebc32ac73ed9b042c": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "89742f4a538aacda4f6332c8487233eabfcd916a132d1bbc4b4f450c20427d3f": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "8eaf3f8adfacbfd15920831ef06691aa747df42719e985d88a2f10484e2a5f16": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "94ce2cd089af48014f26a91d39d959eab66099f8c2350b24506167926956ef42": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "979e3e20d44532bbadfddda68765aa341eda05f29fb0771c42f73858e286bc60": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9d8ca224d10633e8e3c5034670dbe58cebe01cc4c1572e35559877a459d532c7": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "afabb1cfa929825672fcf2e2a265e3b420fd920dbfcf0973abcc6afd9c6362b4": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "bc7b9c497674bc0f5f623486d20e7fdde23dcdb1667a0f621c7d28329620478c": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "be7b40d8fe0192a50e49508e28c83d738ed596e2d0f65d9ba07798b492417de7": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "c4f6315e2dd7892f8c2c9960803637277cfc47a804f4507efd812e3c08319b8a": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "c9298d4a819c4aaf9e4db59b7f38eab2494aaa7feae3dd84a970e38f276a0b53": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "cbb80fbf818802c5bbe083426380b8b4db94f006cbbd27507391de61c9d30be1": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "ce4ab0bb1ca79a7db516dce7b64b9168786178707c515304f276a7cd3f64f057": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "e986903f000cbee1434b698ab314feb7a920dc3c5c8032c7d4c1ffc7a915ae48": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "f043b0430466b345132de15f300524d99f305336b105a84c1203f28283157489": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "f2b6a04454dcd21ab03c94b0031d8285fa02f2a79e94eb0aeeb3e47bf7e0af00": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "f4fd6b024cd5d47c29c2c96015801d9b26fbae22761fe40e3534df9ffb1a5e99": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "fa79a53ef1315e1cbf62fb45865a81baca381723e276321a376d8f0715197296": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "fe5c1b6e667f94f2f90a3cc3b53587368a892ab09a3fdbb7ade74cd9b8779035": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    }
+  },
+  "primal.net": {
+    "01774aca5e5e819ae9a05c2be27ac83613d21a4033c52f40d618b2d093cfa039": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "09d4692dca87f660d3b1f6ae587ab6ca7f340dbbf3338d8cf3bb730f2870ae2c": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "0eb0b99ddc676327f799845956eef1ecd24d6b247fcbfa9eb7f500370c3b59c1": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "187ec56ea0eb2dee06753cae339456ad93481ee9ba41a0b5c17fdc3e2350d1e6": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "1d6520ac3bb4294d8bcfaa295505e154af66f91c047175c29c7140de9f422685": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "1fe31b8ca991cd05bf24e2c84f0d1af13f01d3d7f3b625c3dc2977fad2adc000": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "249046a58aac7002f4b916e7e917c7b1dd6ae3bf77a865cc7170787567080a6d": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "3a8acccf30bb8e49abb86069e1856357abc7a7bdcadb4f7c93c1ff4e885b11f7": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "459718e2a29ecfe1f2c8e8ac62d68e4a0bbe1fdd03585cb2cc277530a0f52f17": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "48ef5a02663f75302b99811b7552b6b659e307bf4f479392ccff4205b3a819cb": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "4a3a49dc23cf893ef9d0d104caede88064a7ff9d2263821d5e27f75e2c46b1de": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5806886a8d45ee54dad669a68010a5712e96947520d8e6942b62a39030c6d9a1": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5a3feb24b39fb4498d24bbe87eb4f7fd057dd8079f7b5260e3e159e0f89f29bb": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5ad6e0b221df48d3c3a9f184a3a69ebd28b32b653b98a710b544084ce92b1ab4": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "7865e23fef4a7534e63c06155737990e3e0ec6be0b34a337fed6c932b8d5c465": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "83a8d9d9b20fd084eafeb3688ae56c6fc6490786e1a021b03e17302f13834bd6": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "87706bf2244ff07b810bed376134d2bbd30ef197a3b15703371740842ea44c81": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9754472e58ee01f4d2dc5bf6e5a394ee7e2cff5e1be80ab6ffce74570791e298": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "a5dea0d40276d7f5cedaaf1b2d68dbbdc19633a49989f7813efdb15bc1cc071f": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "a8e3d78f7962a364671e97be4328184d82bc30a39881b322501a6ac357f51ce2": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b3a8602f10aca03ce05e166bd44533ee986ad76d783dc940593b04194a34942c": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b582c8ffd262f6ae98fc941b82250a77ad13a7f37234c56d271ad4cb8f79a860": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b7ace32f5e0b2c83b9076f15ab81b35f21e882a87b307818eabcf171abf1a3ad": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "ba5982921f15013cc1968a7af7981bceb97cff28c6a5e57da1b3051291ed6ce5": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "bacb29141ad04deff8fb6db086befa4267e97f0f47f975c57793cb7d1944002e": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "cda0cafa7fd9b73a0911ba7c1d018205036f90f1dd44bef2cda51ecd9deeacd2": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "d8ca10d13fbe2e1070c55d27d4762970ed7f5b2e3a75d8532772b4b4e89e3f92": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "d9004d8b80abcb8729d702870dbc4f0f800385722e6a6933422aa2d2a661bb6e": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "d9db2c714b1811f3295cfa31d7fa3988ce2a8daa836559991ff09baba762593a": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    }
+  },
+  "amethyst": {
+    "02712c65e85b2a8aed1b91d58ee4a4794e2de8e088b41e23af4c8da94da2e9f0": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "03a85ddec4395872b601198499ff302c229678fa35d8f37bc09c8dd79008c282": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "075568e1d45ce0ae6a67280f37faf4142cbdf1af159fabae6d50c1563400a173": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "084734d35c78629f44026ebbca20fa3d301ed756c1344e1e8d0ba70501c88388": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "11de25f3d72874cec7008fc5e60c51efdf074f2b0bb31bbf6488e0a26196e682": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "14d809a570d265da2932971a661d766b9f55503bdb57a046935a6c2574456b36": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "17f37e03f2ecc4aed95df4628b9b54ac6e8b14bff13ebf7caefd1e06c834a7a3": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "1dfa622708a98dfd8fc75df8e7df9a570c54cfb6a4974278176ee182eadd129e": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "2385e5208b973dd5b58e42a95d7b06fac0c7a9e958c94b9649775f96b79f1fc6": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "239a940fe2086078640c281bc80ea15e448aa990c9f42eb624e091a22e0bc889": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "2661cfbbb64d7ac49d81ca8f46c2329a5837fc314f3c03a26d56211cb67956e7": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "2f1fade01b857b23b6f39a895b70ef5923ce44595f35fedc1774432025574134": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "2f7da28124d3110e279540583395566c1a5c233e60acad3b2d735e6e1fc96cb2": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "39c665ff1355979efd986433bc5137b6e969ac82fe412c31c7c486dcf63d4207": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "4af7991c2b4a10cc952046f4c5e13d2385b2719b684008ba184be7802493bdd8": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "4b4c79400d121259ccc1b7cf37b66ab09654e555b1ace497400c9216fd253c6b": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "65c2e4169f63f9b9e4eb3de77708b3bf7d9cf5de6a777f43dcc1cf2fd53a4510": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "6c0c152b850df220b14101ddc426a95a03a7f5edc60da91dd1a87e367a17a5f0": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "6f82441bd30b1583c56a54027be89c2bb3699b3a8772cfee2809dfcf77affcaa": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "7a14a6e36b2ddfd20edefae04ae6f5aec96a32ba3edf8d9704ba21d10ac82df0": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "7cffa08821a31d00758a7445266ef8724f4c5d1b05235b638b4b7d07310cead8": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "86e40bd69a7f0bb8eaf51c4236fcef3f2b8ad9adb165f421b8450c81d6bc9635": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "89b9c20216de8fa443e1e10d808befd8cd0569f53158796b45202c82e1659b02": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "8b04615c356004607ad9bc0f481fa0c0c2f055f1031b02982b3af11831caf667": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "90ef4f3d994a22b1199ded3479acf6491781bfb0ea712c204e98ba66db0efa26": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9b742ac5f322260eb10cddba87a7e2cbdf1e8204162eed37874b121d862f8278": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9ea96123b3eaae25ed09e8004dbee9ea438b1f0596460af7f88b5cdf9028c667": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "a4a33e2a83bc75c805f85251595e2f27dbfa0c1491e069816ab08cb8b0d6c44e": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "a592cdcf4e2ea206eb14f3f9d9281010ebc9b5bc6c9ba0b38ebf653c1cb0cf4d": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "a9fef2ec3a6235fc6fc056ba6589df74bb46605c75c7e5a7ac9619460c28c4e2": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b48187a7aa20d1607f8767c46f8656ad01d18d66a91ebb33efda712860be91d5": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "cbf638f483dd51018583a2294611ce8ff9fe6d74c02c4b1cc0644e3bc4340080": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "d7ccf97430597944f9b21168a46e7b970b7e21f28252b262417f2784c99cbdc0": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "d9c185383922a1de14912155a0e72200264f6db9ce9afa962ab351d09d8e8d46": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "e0121ac19a3f89d87dc09583f905bfed3d2aac6445dda251b9552cf190a9a0d8": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "e2f5c8d319c2fbede3bf10fabf917766ef14c2abe22dacf950b08a3dbeadf62e": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "e58d1e73a9e3701944411c078df63720ac3d0be461ac030994c4fa521cf5bde8": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "e75a55e21e45c5d94996e9bfef3005282a096fdbe3d0f4cba597b9f03a47adcf": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "e89d7c2b4e1aa72e41979b5b1acf5dc4aceeaa97d0c40aaeebcde5cd4ff56271": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "feeafbded1e7dc76c686931da16c30e8ecc53269406625f5d260e67ed490091f": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    }
+  },
+  "Avi Burra": {
+    "11d4ef0d6b56fa0c483a23b3a6a3fd6922b391fa89d4512e4679abd35a7795b9": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "1ea46da45f771f35a53b19eac0e4b1ed5b5b1394c5edd9f3ba286b6937584b75": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "23c144b6ae061136d9fea7491cf25492ad26804e524bdb7e8b0e81edf65dbcd3": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "253049739541d4309e7b4a9c82d453187f601c39b702d78e2e619b5b6e36ff7e": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "2dc602d28ae616e414de2e024f81dae4cf828997b965ff6c721d72b4163ce5d4": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "3709cb013b24d6a805a16ab4238b716f265e1f07a1971af70db215dfc0b502da": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "3b268821660a652670b07df3d97a4c20b94594b5591c61acb5db6652d8f09a8c": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "48f63a7cac1daee077db579d9be87ccde1114d3089663205a404cb3ea9c4df9c": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "48feb1f7520ca5deb3fa1fc70250c1492e7d5a5628340aca24c97bceec439978": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "4dc74f54fe75c98981b664913b2db5e81f00b1b2358c3052f344b33e9e635b30": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "52bd833f0838332bb7612757e95843b9ba58f2f72f17f08cf5f014fe05034d9e": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5c6e0ebc3a0df1dc9c581fe62e496180498e5e94ef9d928c7f14d79942c30db1": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5e836c9a1195d17427af043a2a2919c87c290168b2f730b009623923365fc650": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "79ad5a3d8677fd5394c16ba7975da37240f3250d861b555ec8da18cde65b6cbd": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "7f1bd830564fa195a345f34c0acb1d63de1d17c9697c09960d56c6d37f605a45": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "837c6901f78855249e937b8905480bd6e7a789cffff09b2d33c586415ca62a8a": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "8c77adb6af40480e58d6827518a496b1861c4e016444d8e2eb3146ee4a88ab02": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "983e8249e92868c16d6197966447bd80979c838e624f2359e47caedf6cfe67d4": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9dba5ce2406adef2be65bf66043518f569516316fcc2ddb8eb429324f1a943c6": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b47bafdfa043e6101015ccd6dd58fca123b1c75a38095e5278af0cf304c21353": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b4beaf54c06b15374ecb6416a3ed65241e93b3ac83f7bff2fdf5d02a113f86b0": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b9ba68db9186fff79fd557ca0975c139263823adf0474b2271632ac7fb35f15a": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "c7b7cdf75f57eea5a91154945bda2f1ee5b291ed5e79e20cab10b029013cbf60": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "cafe7e9b3aa40a94a3b1d19721d46bf456b2702065dbf1ce2b69ff06d3875d4a": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "f2836deb15962202581deaef47fe589157aff568fe940db0035d3ab522002881": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "f6a6c74d02be167d88820a48052556033a76aea6e1f8471e37d9008bbf479846": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    }
+  },
+  "Jon Gordon": {
+    "0562d6dd6db8c6a32fec67ff3b879b4f0647442b3358445f9847b0c108722f9b": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "1ea0412c1a86125c3e86830f0599b694fb0081d5983c8135a42159d4e7d48406": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "215417d7564dc8796933c834508957b944cb57477330f9943d40e67d62c94d93": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "3a2033c6458958db4cd760b9f1e11e4003f955e343a967e9a315dcfb3c9ede05": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "528383fda7c06316c24263db1b8e4efb1fefc788578a65926c4942d2a934d3bc": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "58bb4fce5c81fdd36553766fd36a13fef6c12de970c34b1fa669c319eca1d7d5": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "59d13b37df503bb6e5eb565932b88596ec80e77f91ff3a442f360f567522f514": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5aa29e993c763e8381b2a5561b0582f666d159df50a2416c5d70e8c2a2823131": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5d01f844f03e0ee4394646bc5bcf45e4cf907d66f6b768aa27bfab83062fb8a0": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "615db38f95fd709b2f1499e81f27701a6f8d3f3dfd628f8d33c9c2f2344562e3": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "6390876a104e661c4825a18ab31719cb935a8256424a8902f7befad9448e1314": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "64bbffb30cbc2567eac08caa5425511c23cf17a4faa5f676ec8eaa71fd543183": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "69b2651a7a1e325f4e098199bee76bc64b54b1c549825a3c6404c472b1972b65": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "6e2762e8a7fee669fdc0ffddd0d65d2cf035d2a4c2372d3c07cc1743b65626ce": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "71c0a092ba12d39684d8ed43974afb4ad5037720d4922d612f8c50e46f336d47": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "7fe257d9d6a6d16fbc4dc3c65ce5e6b7c31c8a228d03bed9e89c48ce0abadc21": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "8c425e2e779e3a178ff3ebaa311c661a8f8ddd2e762f91e78046e9b18cc3be8f": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "a823641db2e6287590da3b63bb294dc8ec318e13b83b9926817147337cd3931c": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "ab7e32027e4567871df6b27ea24e72cd702963b0ccacb1f9b94d6a7d5e865847": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "aec9e6e51a1f2814c6cd5bf3a3ee3e54350240296f0a2035d9d47985ac47cd31": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b514413793b8c7708f066cc5ed4242f0dedfdc24b985aceb6ec6cfb57495eced": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "c0b667bec1c0ea6a4b47fd28f8fc788d8ef184fa3a21c00ab3ae274784359778": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "c432ab7bd40028bf3398b7a0f2796f564c92d03f541b9429b4e9f03368754c66": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "d88506048e4c479b565d15d7996d2b7da859b4755756638d7632ac0adb7061f7": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "e230bdde85cf1e2856460566013dd8be498244c83c891a6763d7a98f861acabd": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "e6e68a746a7d8e07dfbc6ad942f8ab1039fe11dcf32055d32555d694d41a26a1": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "e8be6443cec9da4f53175ab48780dda4499cccfd340f6d330e1f54f716560236": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "f8d59fcd8ca457aa6760c999787f9d6caec90eeb8cdbaab1be11482effb0327f": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "fd722cf78fbb71e4137c47037ffc022df2647948185ee2ce8ba6e9cf762c5797": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    }
+  },
+  "Primal": {
+    "0a9277c280a53aaccc18eadd00b549d1fcada0d8e863220263301852664600e0": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "139a2ae65d293cb0c64747dc4f334939194610c40059ea3f63bb252693d29222": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "1d74c5e70819b08710c8abc057f022f56e33d86fdb530b16d66c53339edc6849": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "242bf85d7d94a338594b05dc6da8f396abb13a92ea3acc4340e9ccfb48d423eb": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "25055772320bf3ffad23f57d11d0dde1d9272e3afda5ca56122edcf57b5d0ef6": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "29a0ef6dea35bb0c6ceaebf2c177a5d7280d15f7e2a8185373c1397c63517c61": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "2c3fd1ad4a8901e35f588169c7870cb390b27890361297882c5daf74092c5154": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "2f0ea2701ebca7b9fdd5fb8e52ccf6dab044e13f1b401be49e782deeb3d03139": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "47e10c1e8a3fc5f8828ef3e77ff14a5b37a63094bea19cc0fae53dd22a65a09b": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "48a637e5922c03072209e470adfa6346c1866779b55b659f3fc50cc849db7db7": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "48ef5a02663f75302b99811b7552b6b659e307bf4f479392ccff4205b3a819cb": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "580d0725177a59517ad7fe9c7443a69eab569ad2a64fcb27e96bfc0b5ae4244f": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "64d5188ccef343a6c751aec7ea4e5860677e5ad45c2abc60e82158f5aa342c97": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "655a1c3d6f44155dc5a647873f5bf2c901c784634879a377574146e5769fd608": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "7514ad419acb7e1567264e27ae9f31a77f77127645be27d275fe5a03cbfe2c14": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "783fcf2bcdda3c40c426d2b12f388592c42f7ddc4d3b9fe4ddb17d5747db28bb": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "7b20383f98c9efe66f4bb3f39560921e878b17f7da041ce11c48b170b497bc0d": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "7eb4523e6f43d5b5b3767af4e091a82b77a67ce663611413ff1e4fe06b480f3d": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "85673630366b6747de936eee275f133fb005f8bb0c04b8ca85e4650ddd26fa0b": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "866dc1b9b9ad28e8fb0e87ddd0f5d3c7f25837eb882195fbe992e84f646edd95": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "87a584e8088772407e7b2dc16efa7e9146b8277c27da520e631e424d1aa10b6a": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "89fa9b5ace2d4f09103b1f6117c296bed75ad230ce69cc1f7a0c091273fa611e": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9408a781e9230ad00da1238aa051fb3993ca86159a6a4bb7e3206e350bf78ab8": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9422f17917c2046473f0d4f19564f9567194b26f3d703313044230b50fa5bb70": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9709b4fad9139bb8ed06bd4d84015e460644b1ea7462f98a5755a51bea37e406": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "99e52e7db578d9d38ca065a1e439e7e17e5d74c2333007c62541b69beba306e6": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "a2ca8e37c164a7316c400374343821c861ca7430ace2a34a493e6356954348ce": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b0dccf8b9cb7ca37b408525a974f2604af850a5752d7960036744a71f5b62815": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b4ce62830464484a376f8db46789011521c7be00690cf385b67fe2a984801912": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b5b8ea4b8ef45e7e04ab6cf08b4b8546e065f8437a73df53b445432036ce7726": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b8a814e38daa7ad845abfa398036d6d59942b7987f5fd121cd1d377a51b09904": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "c7c3807412ed08ff4e68f2843d241c0587e5b2420debd1d54cc2250affdb953e": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "dcfab488f472b0f539bc108390d3bef1abfb2b8c6dfaa0e8ec944cac79b2f3a1": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "e5f104c3f2e5a040cdc75eb44d98648f4ab65d559d22785abb04da1ee963aefc": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "f1e4eaf6636e18b0e808996d878116945038f23f580a8356ecd24f8750421ee5": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "f26c08bb2fe9511af622ee8b07ffa4f0188190808279968cf3bcbd6d2bd61618": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "f3201dafefce5596da883763585c77949f96cfd91efd33d9a7fffe87b6983dc2": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "f865a08cf228854747b59e30daedcc1515f1a8336eee8f372a2a4987fdfa43ae": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    }
+  },
+  "Jack": {
+    "0572c7d10f07906fe02d669e085d166af08defa5c5698df377c49cfe7cf9b4e0": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "07de191cbe87c034ff4ff6252ac9a1de7e9129e23bf69362c42283a1837a5872": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "0c8622e1e744b088cf4132f16420f95f2d760d07f9a1ab970f7bf28199e78022": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "134696a95259133237a9ef5d53bedb1cae0b9c2c059feb40b1cdc83d5c000066": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "18596f5d1837182895b1cc458d454b9141774bbce40e400eb2e571e834cc0326": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "1f70369be5cf9e3c315fa08ad6254ce4a589424f8248c70f0eb96b654dc32883": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "2cc6266bc60583b4edae74366c65da896605dd5c0e4a0de4257b1df3af2adc3b": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "2f9e2b5999de7f7c5d8c76e97c8d1a9d6e4e36a3ce30319c4f7eb646f55c1cc9": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "2ffe4d10bc6a86a2ecb1f650f6b28e40fb6e1e6a82b69a712c589ccad4e659c5": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "31bb005ce7f1d2e6db7661d60f04c7236a9a9a61ac74004238a71940bc2680df": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "32d903007a236eb597ca13c45a3aada8901ae27186539a005183091a8b23f89c": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "369e8acb4cad4f4b91d6831a27c06d15e2bb07644a42f937d9faee213e968f81": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "4ddaa8a90848ad6ed147dff37b13790df4716181fc2ce6f9537863f4e8be4ee7": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "4eee6e03ec022d36ee80e5ef4f0ae6b39485a8929df9d1fa50df919224fb188e": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "4f05c99e243c163a8beeae80cba8401d7478636b5c0f0dcac921e3c0a2dacd1c": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "53eecbffb96d279f069df1eafa0cc7b8c050cf6751e5f87d200fe12e076dcca0": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5755cb79943a8dcdbed3f03521dcec520dc643cce868962f376ed1739e0b1cf5": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "59694697870810d2bd640238188cdd9eeac4f096d83f1d812ef608220f0d08b4": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5df9771027e02d745070738192bf96a046a71d280279048cd0b86e5fafc9bd1a": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "614196d70112a02ffe29846e225cdf6744b98e522cac0a48ff8e04d47e9f74d2": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "6696375da6cd012b17cd07256259c07e0d9dee7bcd810653c791cc2e1ab8c41f": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "6b613d7d7a08c47c43f4c0ea67fbf491ac1e352b59bc785df3831493384e4199": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "6d870315a8db2c1c3c3d0a618353a1ffc0cfec1dabe1eee9091bd7f4d36f210b": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "7989939e4b6782605471c15c926e8f469aab1a39a3983eecf3db32b215d85ea0": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "7afd986a82639eed5b3025dc6ed901262d59bb5bb8520086cc663304ba00dd43": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "8354212b4c2cbe0be9895fd99cd6531cb6e64ec4e1cfa5993e6e87ed28e54188": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "886b311c68ada3d839153221a0b3379c966ac495fad04d6b02ff8003ab9a3dcd": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "8b7c58d1820b6064891093842d199dfff8062d3685b6dd02da0835dd6afca9c1": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "8df232d58facc49ca63f69fb95ce9570c25baa9f840826ab4d7f6a568cf8fd85": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9a890edb52326ea269e1b6469d672e8a0091d137a9f31d24aea8ad771f89a3b9": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9d94c53ff3984605c1334eb1856a25e79751df41b1dae4eb8588764b194feaf3": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "aaab1b0f1afce3d704a0154a16d26d0450ebfb5f7f0d3d2611e55e6b5c944ce5": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "ad55b49006ba5587e7ff6cf2b0786d96ca8fbf904a090f2a9f672f37fd1cd637": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "ada4f5cff3e6eb5723c804695d3e3cb77e0ecc564e4022cf42fb0601af7770fb": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b187f7c04fc4b07883d25c99816f4d04ff7a78e33dd3415c3bfe17140b6718ac": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b65bf78c5691ffa3c94743b4cf987dc316ac1a32a7013de40412f9f43797bbc0": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b75a5845278b44a03467e96f0c92e9f5bc0b57ded0c5315d593a362923848053": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "bd61fe55146d55adea00168421b23283bd4988a53ab0064031e8ac3bf71abf50": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "e754ba0968e7ecc970b0310be07a01492f99129b13ac714d6acb81a39f7dd622": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "eb74dfd8ce28b705318cf6cd9cfd4c888cab1c00c6d2174affe363d7073f378a": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "ee3ecfa4ab685f4ef49e9afb0c6857355b3c03cdf18b3cb7b6480b44d2e38364": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "efae23ccad8018404fe9012fee175411379080b9eb0b2de870ffe87d70e0a2e9": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "f00db84119aa6f6d013b6985637f2b2d0347caad43499882663a43ef040e01c4": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "fc3fd0faf484da6097a1ccc4af7921bcdf8a0b216de860114d144f338d5dd73b": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    }
+  },
+  "esposa": {
+    "09506d8293cb1c51b2a557603ce6fdb9002c8b163726d190d3468b6e04bef657": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "0badb1feaff3bb909aef7167beb4720aff5b2ecf38612c055e74992ab60c3423": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "0ef4d492e23359d631081bdb8bf0d1b1127ecafcd5e7391965140336cfb9db45": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "281d01d450e3a41982e9b5c6c0a3b5089c92d9785dd7bcb53fb43cab55184bbe": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "2f021ccb093cf2664471317e3f9ea781877c2d2478ab2e3d95e2036610bbce39": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "31223754c2ccb13eb9797ffe4eefd1043646c8e03bec3f7426e3dd875ca33d89": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "35c33569dfa123f5469c3e37462c1b90d7a61fcc4f263d1ff19ada71ffee1b6f": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "537baa8a8d7cc262a5c23d8abcc5d3dd0ebf254be7b257308e8f0406685f5b5b": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5a362f1560208cea06c2829d887c6eb629357ab80c496672834cf7aa03a0cabc": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "64cb4c61b6777524159f9de7daa561df3e1834f934329871ffecd90a4f9e6420": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "68d4609c95a873e67910b234ce37cfa5aa10392d034088211ff4fffef35c6947": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "749ad4c49ff0cc8c212cc67fc7cba3c448e091764dcc4e0e6aa5621ae93465d7": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "7950e0da3235105ca6ac9b933eacd2b5101bf6a5cc79760567c7c6536f94d61a": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "7b8621ff11cf65965c272ec1b7f83fa8f36ff4841ad76981aee17ffd760043f2": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "808c2f31a5ad3a0cdbcb84b325e9daaedbd6ba2d940883243d569f9368bfa486": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "81711369dced6f13b09f2312ef39bac699af615397f66fb579fdd778b518c53a": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "81be36b23d3d8e27d4bb21cbf7fdcea46d2289309587a86c70c5cc7efc75f285": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "85b6627e35e6dd3a8e24aff5137235f5e2eca255c2c0de6d120f1d923c1d1ad6": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "8b6fb76a7ee3c9c7661f534bec1a035140fee2d617847858e72a4671125304d8": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "97fc112a06f6d1c381a91fdf1677425df0d01bd70ab6ec3e7478c7efbc2a062b": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9be7d0560225c92f219919c4f950b75ebf5505c1d31ddcc47131bef70a0c0e33": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "a3f3b34e262db78ce682d64310bc8c0b6d876c16f3c9b84a9e5c3232af9bbb97": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "a5b1f42e046b09ae383cb54a130fdbda01a1697047ee8aa8da2cef583b645987": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "a737b6bc41293aadb59e06d28211844e73125a5cf96a0dc8a90103778e6c80c9": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "a82ce8e138e3e088920e4e8cb45f21612b63e1412204ff84a7fedd91342bb02e": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b0afd8fc0b2c789f335e4c90dbcc8a6572223e6eb1afe473b8e0335f99738461": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "ba963a4b1f6cbdcb0a9558a58b8dc45f187e31d8b39b740414b752709a2db506": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "c4016d87c94b2c3178c3e18dbc50d3c39ee42a733570a26fa22d25bceced2625": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "e3feb4862158dd7d8c281f778c83e6abef568506554eafec4cdd61bdca734476": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "f77bc130269cc8f24b5080e9bb33615aff8b69eb4ba736d465891a68ac4772c2": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    }
+  },
+  "de extraordinary": {
+    "01b5ea2ca491ecae33d86a089b18c099ff6abd4df273cd2c82f5abc105b057c5": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "07cf785443a42b799a08bef6974fcf984d238a0fb673825d1f3ff25e0ef24a67": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "0ad61e15a3fdb87125a2b3b8e7d7fd9e6e80e282fd3bf3ca1aecab741a384e24": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "0bea27181f47c6e44a8a7d45e7daf08ae95dd6aa52eb73725da665ff1231d4fa": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "1430158765dbf546090294df0927f0452c974481972e10a0b64f189eee4c46db": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "156ba1366776ac843ca6fa4b8fa28bb1fd32257f60b870ba607598722e05e689": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "1e660f7278b2cc30e6dedff18ecc262c964ad8435312e0c00e45d2d037c536e7": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "25e5804e45acd83969442bfa3a1e590239bbfa86341aadf95396bd02bfba994a": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "2cd7bedf623666e37aba288f8fb8379496a6786d22896afe1761ae5932bef247": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "3fdce566ab7de8d7780e06b8bcf71fc6a7a98d95ac88c8a6bd2b2e5b30471e55": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "460916176c8161aa92b7b5e66151c4d316469efd6138237e169205ca0a6aa388": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "56b5287bc0fa35d19f31f29acb98883ae565ad465152d3b090fd33af14551e7d": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5c9236712a804a778f90e207acec0989cb81aaeabe8d24969004f56b2d2ca050": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5cb906bb5da21509530e4400455866682588754b3ebd22c588d704ceed3f1d5a": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "777866660bc18a6c8a48966c5a2aefaed36adcaf392a0ef92f90f89d19c19844": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "79e66ec7a73e1d50b5005e2c8388d44cb67423b525a1b2982d804befcc1af6b7": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "7b8f1416fb0c077b5caad7d60575e9bd11cc30b9a09b58f23d9333e384ba5d92": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "812ed0326043ca4ee9a36da41d8b6ccbd47b8b9bea542832f80d39e4c3c69391": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "8597146b2b564b5c4e59cd2b42d1f990bedcec36cdda7a79081add74c7bf1545": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "8ade5e3abd9a2a87f3d0db8cff4d17f715a19b04dd4e12f7f51dc95969020939": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "8e594bd47321c338b22dd95af2e5e4ef814cb19fe3049e5c035cfb5afe9d76d7": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9545ddc2ffd53f441d946d56be88253bfb43e9bd39515ba985c4d917796033a3": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9fcccb150ebcfac6a64afad5d4c488f268665c0deb62d61e3a86ac81036e8819": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "a40c5816c6d45c796f0746c792641ba0a2d03e629b535c2f2a2a82da30d05870": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "a4391a94f36eafe5ab9d8912cb1e71fdc4966400fce30de4c13db19766f3a4b6": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "a71c645688d5d414c4ea35799c727b659743b7ed680ce75a3691056c9e2febdd": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "a903eb6465f0a5b1625522e1ba3d5e79e8c0f2529b4434cca1a766e6ede04123": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "ae046f647a1fef6609ba33f4ec4a62ec4b31c6907a316744ca61244a3f71684d": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b269733d55a7301b9e8553ba2f07b71d2613b5847c38768db722ebfff1201c0f": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b2c0c50d68fb07e26e191b48ff4dfd7b4664218706615e2fcce82fb447fe9aa3": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "bf3274651a45ebdf6579bcbbe1254c9559ed34d148dcf5cf483d278829683cd7": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "c40ba074d4332eedebe514773b1b515bf383bb2cdcf572ec4bbba34a61dd75f7": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "cc43fc7811ed6ae2fd77223b9c9ab4e23e234e59d97f62c6c80a14cf96678f49": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "d7f39c6fc2634188c2389c12d746231a474d0560adb87390d57e2d804c53c0aa": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "d81e53d23394c2e3764752233f8772551c5807b4f486ec2f7b3912fed15ec26c": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "d9c277b04bd9572b8f33a8252ac191018caa9b27fc8dfa8958d62fd96b3d4916": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "e2043b52e75d7b0d1b49714ee6c1fc7a049171986d08cf97e23ef659f1877f2d": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "e44a02125a640a4739dba55393fc4b8a10125c4e661ce6d70e3a2c5c262ded59": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "eb691c564914cff449f07b91e6d77c280ce4c58dc1c27d7a2cb8d62055c9be69": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "f23aacd70efa22224ae60ded1f763aa6e2e700dc6d9e2eecbe9843c95206d167": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "ff8d16f321b36cfc0c741f20cd016e285eb5811517be86a051bc0d5797f64318": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    }
+  },
+  "group:rspuyeetackckp92 testin": {
+    "0a83362c673071b78c202525bbe90a9988ee1d869823d67dec7ee46adfe09182": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "0ae6aab54ae15cf43353857730dce5b10bae522a8119bddf797301483a979a19": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "0f8c84a48e0089aaaf53caf1f410ccbc9fcae6e027256076404a1b5c6fef8d21": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "1ae43ccfc9724e63e93c730ae1e97d11ed23fedec556826483ac7b8ef8f8ec02": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "23525c6c3c83f6826f7f5c0d244d4313c988dc810d8e4e82e291ac271075dd2d": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "29da16f487b3f76d7b393037aa99ede0460e299c4661a4dd6b47994c3ca7d20b": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "2aa35f3fd1efa1df4aa84c601516039af7c78c60a1884762a8fccb81973f1509": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "3e582b554c6537a11784648df682d439f9292848328359b1fba871275f26a593": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "4af7991c2b4a10cc952046f4c5e13d2385b2719b684008ba184be7802493bdd8": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "4c7ef8009033a03c03ee7b616f4e954c8a2ab8e845bb9e2e5e668343cfe00ca1": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "57369d112bc595cb87acefec31a80419801e6c3fe9612254c493b77ef91497b3": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5cba5455b3cd17897f41f11ee06cbed92354b077d25dcb9980aa5ddaaf1fead5": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "8c4d30d719d8630cc010ae7fd3990d33bdf6bd0c18b1eaa17734dc1baa172a93": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "8e5e1fc392dfc4d58b0aa13ecae4edf3f07b3034753646271886cbc2970cb7b6": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "94486df216a3d39f8752e9a227faf25586cfcf0c2daac1e9e1276e99741bcdbe": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9b37039b269164b0c866e97f15e9dd233d6f9b7812ac778c0a5f9a59b757e7a3": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9cd4bc308b8ad5f4a8b6eaf495ec4eb4a22bef55ddf8f6c1f35535d37118dd4c": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "bd95f3dfc9d8e308d9761901ade5a522075347ccbfbc6fd285e94c42b80fcb3c": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "d2dbd5c8db2a64221512667a7367ba9f9f09759d5f1aa3b535e6db33a7a60b40": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "f6ea8893c723eeb7c9d1a6ba0ac522c6993625c7c02b389c22ccc9f07e8ddc06": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "0e38880964b9c494ef1f6ad8cb0477121617ffbc73313d416c3b9e3282bf07fb": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "148276cf4cef101399e4be92430d5efdff0e27bd1897de00a7e334db8864f843": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "1a836c804171c54c71111a4f842d8354730b4c4e170f8a7e4f7d7f8868deaff8": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "1a85257f5d4a8deb7aeb08dfa89f9880f693151b954ec914ace3faec414cc77d": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "3e5fe8f6c282d695663f6c3adcb7d13f5203601586ca7aefa11a215701daf369": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "3ec1c76187afe45493690b1e39e0a4b9b4c5d0d7794fdc7becc67a5b2a0ae784": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "44e7a877038f4aaa74dc7daee7551965325debf65d06ede496b7ee620eaa418c": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "45952a16dbb3719ba3b0643ade6c5bb9040c299fb412b86bbaad33099902bc38": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "47e705d99d3a0865f20df65d8a756dd38f3a6c1d95e736061a2dfc497dcbb469": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "4d27e57d8447742b6a0aab456b8464c276e7583aa60a0809e7b93bcc621428d1": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "543a99e90592093e035eb5eb82070cdf38b2abe5159e5894000feb1e8c860175": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5460551a643011a074ab04700f6ae6ee3b48c688056c5d2ca7b0bef6fbcadc5e": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "57fbfc79d97f37e001215e911cfaea7223a524955e89cc336209aa55d023c0e6": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "720e345c400abdd51b019addd0a9e0317bc913a8eaeecc46ee470ce95f51d7b9": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "7afb9ee79fa7bc0d594107f54c54cbc7ce7fe12817cda491e4ba4a268c7f1cc9": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "7cddd77054d1b2d278afea8de1384a02355953fa172585d313de7088179ec7ff": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "907d3f02726ea2d37103e9d9d01155b438eba4cef2ac8d4550fb54a1d6a8786e": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "c1a7757ea38adcd5b134e69710f49d6f1956037c8d610c004477c3df157763ee": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "c9c95796036ad2cceba0abe3880fece2bb53a480952a52dd130fd08c7f7fb650": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "d7cd5a99bf9983d5812f0242a44d5d2925f9372f96ce6b624d1c05f11f297705": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "da2caa5826179da28cc39d007648c9ac1dbd886d00c7956dee1dd46983cbcfa0": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "daec5004af468f39e72ad0c0c3a47f8c2bec6e4d89bd77428d0eae3167992a58": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    }
+  },
+  "vitor": {
+    "02057dc0c168f9f3c24bf36da1455f9e06c15140ae4fd66689c9e04e7f63ba3a": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "0a0bb9c389ca52930fc04c361760cca900f727a7fecb1702ad1b76d3fa56e48a": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "0c39d56088c159c0037b438cb378e70e62ebf4333db96f0194c0af08042f010a": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "120c7cae9ccc55fce2f26aeb701d3ee4897030f9fa4d32422123a9d437158717": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "131613fcd81a9cc1e9a7ad2f7787c7da26829bf283fa3b6b230934a593341efa": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "13851c8ae26c84b6fd04e7e6e4c52ae9b826d1c3c271de79c87cc70b36f8c70e": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "1a241d6000d6483d0d8859926ecd2e23b35f6626c4e5721cf45c9b011d2d8a92": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "1ebde55528404822435f8558075c3980af549bf1ccf08ca70f07d7f777f0e7b2": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "2163c8eebdb4b813cb007b121e0df6a1183b19b62ed6e0a366d758cfdfa15226": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "24418f468fb2383ed32b0c1240c8753f3587924c8a3fb638dc858534f6c2f5b5": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "29d86983bce6368fc373e000ca5e21716daa7bff862076beb816e8aa7bcfe2bd": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "2b76b7aef275053bc5848f1be2e43ee6233d6cd222a05570b2240f91a191b1da": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "2e2538b04f8f8ace6300b0fc6b743c9920da9708c06072624d4cdf7600fbe3c9": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "32d9fbb1a41fbaafb73e58c94c7fa7bd7ad0e89fc64e919c61fff837e603a5c2": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "32fd34fdebb0639754bb5601a138bbec9ad6ae47fa91055754911870eb82a329": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "340de9d927541f3c13c661dcf28d85cc4092a2e7675c1a9f69633a1b4b1bef2c": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "3f99d6037192c3ebaed1affdb546dad825f00e3f730dfba4f6117561cc840d24": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "43217f4c32c59ea30d14257fe631e963f4f965f408c2a33a87a7feb72d3f922b": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "437f695f2c862e198f42374b26f0078cd82bce501b71dd70909e2f2b9be7613c": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "479be063322f5478af3ce72e72660784e2965bd9c61ca9a0acbd8cf41479b42e": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "53e08fc778af0f5667dca4445a6360f2f8fac74e667fbf66ffdad2acf93dea42": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "63b26b729fb979ddc028b1e0cc38eb10df3f92165837d328813e6ff9335a635c": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "6478852520f5c159b11a0f8ec9427ecec311835be4de163a74aa9cd2859d4d41": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "678c13086ac366302bd967459749d86bb592b6c438b8e721f7a7b3199a534b5f": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "67f65b3b245f30d3837c584dabedc8e4c52e8e484fc2ad3312457ae9449c1582": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "7ca215c444573262fed2d24df02190c11a218f8b9547874dced6dd23ef9414e0": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "806a5f9349e703dcfdd2806b4c4ff51047a11f1310bec0dbe7dd4d42b335a42d": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "829ef4780d571f85247cfa2322ff36e4536ee24396d636b11329c73809b7c13b": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "8442287cef13c0cc41e7a45140eb1d62420a10bf8e9bbc53435f370b82184fe9": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9221b36fa6b3f602645e921c0a27b78d52119dc73072a80ae60422544dae32e4": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9cf11bbfc43c07c516648eaf3de43dc401c938992fb8fba1dba2130bc39d3e8e": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9fcf7f41e3904770a37affaff09e5fb40bf3379a856f9cddbdb741fc175d897f": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "a959836e55d469c14b7a7669ffb7eacbfbbccf877104562e67119fa8d89caf10": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "adfc9981469109557311a878c821bb90d9a6e927369ab57b95ccf4676a6577e1": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b48187a7aa20d1607f8767c46f8656ad01d18d66a91ebb33efda712860be91d5": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b87bb7e4a5cd383a8ce644ec0b3242b02fd01061fafcb22c2ac8b6e9571508a7": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "bb71da52d0e928f6d8dad3cfe62942a70f9de5d8ccd862a9a1687bf4700909d1": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "bc8d9f52270fa00dcf3e0ff2924b839995652aabe341ec564122e93352cfd923": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "c15816236896967f085954726a12101de466f6353c89a4932fe79df49d8c6849": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    }
+  },
+  "bitcoin": {
+    "0004d521537ece971a535b213e6e473f268213a7651e01b82680608be80b5e0a": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "01815199f20c9247e305810ef24285db67fe832208d39a2bf074c0eb658b3d1e": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "06014b31523465d3516b826ed5800d2a5310030190f9e3e70b8eb02c388243c3": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "0b6f90da07270c87c712323681ec8c9dcff0f7d022814666a074a7508170bd14": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "0bf52df29d8db49b19a2ba9d281c2b892a09f69705f5667c28464ddba9abaa22": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "0bfcde12aee628f85338fe7e79edb31257182c04e0f2a11023891caa090a0ead": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "13b4a65ed9ab235708504ca8416deb246f29922c61a242e4a7768049d9b93ece": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "13dde0009576c1c660bf3a33ace3a56d8e24e7c47354c5995ca1744b9652ff51": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "15c43a58e12820451712a3074a1178a5f87274f6001c9e06392a727ca57b41d5": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "1eff4d83206e0ac81ff31fe67a352a27de522707309d479e13bca9de5a21600e": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "220147fd22b1ccbe519a3488e2e64dd8791762d3613d7b25196288f4885f2296": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "2bc040d120e1e966d2ed27e6a424bf2c168f91c33f0b4e82ff126077764623bd": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "2bfc54d1e3387742bc4c145dc2091eb1cba569213757897f3612577e479a7743": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "38689b1d37cc6567b56d5d4c333c0189b54fd134ac33995d09984ab229cbc9c4": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "427d9d72e68dd58005e322b5a6b7377f50df03e062b7da2962096d56dabff49f": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "4bbfa80e5c242e3d2721e475754aa54b123c32a3029d87222d6820c6280298e0": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "4fa5527257ef3f41d80db2ba2fce7db08690be71291e0d46b2eb9601cb457d30": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "57456c990bfa685a702682194a4263a3f015ef213c081959fab68a05c64c32a6": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "584f49aeeeb6e8bccb5058a5609c359475dc76d09fb55a9a8a3a34a8ea0eef97": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5934326c82e7564209fdad1b0e5c9d9fbab4469145cb9410b19b824beb67a063": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5b67be315f9f5c3fe1f34ee5cfa9d8b9fe25faa40844d5552c73040ea55042fa": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5b93ca4d314756000120b60431b33e44395317838708f0744a72a80a6065a4b5": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "60376b075ab5dcd8ec8d561fdfb68c457397947d26602cb4a82287e601041852": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "63fddf40b43d4c986bcc625f9ed898dca70d296e24b8e3e4ee67cc5a2c3f8482": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "67e02b4cbc6a0485028c1646537a59d2725d9b009edd63b6357b8c8f21fc8c61": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "69665112b75a3081767f178ed4e2faef4056356683ddecf23ed763c97187e2a5": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "71892ae41c2d34a463c233fa4cd449cc390bdf5307cdfba5903307e83cd9022d": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "775d918822ef2950b082cd91df7e6e9ddcf1a23eb97b983a65e4fce811d83be8": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "77b6197ce9a2bf6b88594bc49c87db853f08185e40ca8cab1ff2102deacfbc4e": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "7aa89af9c7374bc59f002a4e568ccace7a94ab2c0d87955240bf12fcfd9cb6af": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "7b5b1837e5615172f2595fdc37cfe8243c6fa527b1db2ac71639d3ecd1221b46": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "7bf21eccbe321dfe4505a0871f2a95b4006c166a427b5bd8372457dc7a89f9a1": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "7f138d346c32a88c758bc61b82b6607efc3615c1229338dd7f8709a4916b2018": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9091e283be6bfc6f432c365b8b3436b30042f25b71a9f70d84950b3d007c3438": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "96077d297485f77573b4d1a932fb69256bffb2e2caa025ed6dc8b70c4341cfdf": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9ce1f82308192ada11afd1a144ced0b4ea66a6eba3a88496e5ccbc0b27976a34": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "a79336c96c4aa9341be3682a2ed82dbe5409e47e03f73f532ac703b03864dca9": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b58aea67565bdf4384d5ce76c39070897e09cc42b6e406720616f5aafd6b9a19": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b6678be5e0a6719df7f0f29062d040bad3257c52dd30facc43907bc2a95f9eea": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b9432a45c671f7bad99853c11abacd0af0431b5cbb7f6387e9d62635b051edcd": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "befd8de166c61e08deb14abeadbaa8f9e799bebe17e3914c6e6c841ac3dc9a24": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "c1c6f5593da0a36f0bf43825415b9c006028ef66f2f25e44c45e4f6257299cfd": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "c5a5b2d82286213aa0e5e01dd01318af832e6b693072e15879fd847780c9cc6f": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "c763f198dbbb76c8eb55c9f08600805cb360cdaef1240e522e5a63de5200825d": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "cf4854f248427acdb580a5dd897109d53ce524305536b4c99448bf882a3ae760": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "ddf01cf7ecb38f2550e49ed7eeabe275d33cfc6f8e05254830d45f7d65935ead": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "e2666aeb491f26662d7b651e61c73dffa3b20501d1e89909642b2b78883380c6": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "e41b7f18f7a7b2108f3e98021d2a29f537bb80446bfdfe905a56a25b6efc2d68": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "ef1271f63f607258f426cba1616fcad27bbc49444c9985cd033c72db34a50d6d": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "f7424f89413a836566fdc150578428d44fcc47cf554c39fa9214a36153777a7f": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    }
+  },
+  "nostr": {
+    "00128aafa2be56349673591c6fc5551131e0c4ce7a2c8d1aa1cb4e0973d67e2c": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "0e43b172cbbde31dd8cdd61581fd807985321f1b37d5442e532b916051cfe3d1": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "150084eca30ea816d31dc007d9a6f41bf2b88f4f446ce730ef0942394c28894f": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "1b2bb557a867ef2a162c1a363a0f701385b741bf4a34d935c410dec6c9c469e3": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "20d7cd3d4c7ca181f2ca2d6ffab945e2f4561be55e1109586d6068e8140942a0": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "21f061a54d5dba88b058cb9ae8a608ab81f89aa090b3bf17f5292f9eda25f3f6": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "2209f050ff5f42532dbd236e2b4e795c535d3d831bbdcb4e583610b976f2f54b": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "22eacae8a3fb7065bab428b82dc0cdf5c009a6f7c0191b4339149970822210bc": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "2359f4bdfe0bd2353aa7702dc1af23279197694823b8b4916b904a9940334192": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "24615d8422daef15257375ebcec7867237c8db96df7071ec0828edf4541889e5": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "25e5c82273a271cb1a840d0060391a0bf4965cafeb029d5ab55350b418953fbb": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "290db80dfb6b0da302e581716f51ee2fc762b1f4e0a147ffdeb0a85262b23fe9": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "2a2e8993c310adbae8a2750f6e6c0ee34f8b838870d0be7dbdacb4bd61f561c7": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "2b39259998ed1b3a8f00a4e773d8f2d0ee993323469e42280c3449713bd53df6": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "2c9460408740d9f53c94077d2f01d92af809453fbc20035ad61cb6a0e2766634": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "3cd82a98b6576463c3a084bf4b9d65770c95918deb69dba1b0914532c690e77c": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "3ff3e5d01a03431a864a5d213955c5242e100d23763ca9b9075ebdb7426c8cb5": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "427f8613ee22c9c2f39d318663827f21fa66f8c89763968eca34294b21224165": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "456b67d2468b1d59d4df9e2318cc9cea95a9c2ae453f62f1c6114b44a6bac2d5": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "464060ac39ab04a4aabc688929f295a60c8e2104c1e5a32ced6e99bdc222e30c": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "55f79066fea90ca22caa5685c0d10ca787c5a499b805b29fdd6288a450d41569": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5727739e72a6d9b8ee9489df55ab968f9cfa6b74761ca2c5d7b6d314efd957b1": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "64b5f3b4db39b12a248d440e47e7ef77b0211c58747fa4e9d4e3593524e1239f": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "714835e21f3af2f0bc2007726ae81c8b32d72e0d549a58b93c20bcd442a280a7": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "7bd3556d4289ef10df14097043619331c150f478ba683ae532d38d56339df16b": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "7cbe667aeaf1c743b5c799b713aa2b15023d0729b35021d7eaffa3dc6d8876e3": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "84ac721d426147c48ea7afbace2bcc0608d0d5632972a9eb68160da482fc1dea": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "88d16cc9fd85e1b1449910137d96a025f713af030c933c69d707f924cde6a14d": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "8c8bc70a42559d9d9a747e8dcb96db70acba0945d2a0b98b35afa0299f8418da": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "8e4298ff0dff2e127e646f94e712545a66ca626caa265c526fcb5f93b21ad642": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "8fdc8542cee17bf6f7ee511350a2d3b8d8c262c24fde630cf994398ed38d9fd4": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "94dad98974ad001d9452d16994d0ac54b3649aafd88583db0a5b70bbb84cdddc": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "953fe65f921fb19e43a820884c4af1b08befcc24607ae4f4f4f903e76d5dfe6f": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "955b1a4aa2af6fa6474abadfd4b52649ce82b65daf663c077948604e42f28072": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "96d56131306f7127b2b79bedb81421eed5ffea014d311797d844af5677b28d11": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9e486b8f2fa0eb8cc81fad5fe93168baf87472725c50ba4f479c6007bdcb79b6": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "a1da962bde1f94a9e0c725f658af30ca7f8160fe46d432607fa3c3ab4b534459": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "aaace55de8dc1e56d850d80d54e28954482a210b31fe6c165c52ad68ec246642": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b1309c0d291ac2e0ac879b632e26135b1112fe691271cfa7121c1dd2f974e61a": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b8e57575739d8acf040c8700b879ba112180d0590b4439b2bf4f2b1481e9700b": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "cb5892408f969b7002118b108c95ebccfa094087fc4946b7f630a4da61c6848e": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "ce8ae37c64052d4149cccfa5325ac7f5e8776642df4fb921483eb7c48bbf69d5": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "d2d440f0c718de48cb6f34b7249c0a6ee46d0cbafbd1d08d27b570c9f49159d5": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "d5d880944c00426dda91506dd18d453ef055f71fa29ff337ade1d7c7c4d71a7e": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "dfedcf1bd0556ba748b31a162650bc40acc8d3a509cd09a7001a1b0970dabb95": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "e18d01b20e02c1eaf34e32d1ac351331148e3e953f9e955676f7fb47a6d76391": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "e782838345f93c899450fe8aa1ef116e5ed08e26c97ca0ea9f0fa296d074f64d": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "e8f8513568c2ee6fbf897dd4245ccbf3afd6bf84a300e119ae551861acabfecd": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "ea8e1830efe59ab3b8189526f1409d998690b7417711aaf2d368f9164657771a": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "ef1271f63f607258f426cba1616fcad27bbc49444c9985cd033c72db34a50d6d": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    }
+  },
+  "lightning": {
+    "002f6f17e77312c7ff6219df3f7350334f40403ec266d6ed515b77a16577efa8": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "05adf9bf061f05f6c90023a7dc3e28187c804b16df5a3376cce52a37d7b98951": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "0bd1164b5fd7d2f54631bf9eec1788110036d0594cd4ae9cedcbe9526390480b": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "2455af6e14316a7d270cdd96865731e50a344a8cf8a67c560496f38070b87859": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "3f732769d6a1d856aeee6ec99e15ef3d77130310e4cd400d18f60b24feb15dca": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "4373e5bff379f6d2b074f7c0bba951a8d18db727dc51b725fd61fce8ba37b2d5": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "49acf7d6ba7e53a5a9b7586d78f5f886903fab2afe9fc5e7ad99289cb7aa544b": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "49fa8111c30bc3dcaa93bf76e0c1a5b9554e01dc1234c1e14d1d717eb1b15e1f": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "4ed060ba74c3bf8cdc485ea2adf271132ee98eb73ea77e8a4bc97eaebe28c5fb": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "549d6d7afa9c6ed0ac630fe381a316e32172265ce670d1054c3d61ec76de311f": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "57410b509d75fc4487cacc6836dd1822323d0409638e6d7651d4391ce70e8778": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5758d2a84a45dfab91bafdccaaae0b1a87441e506b1afef4b4de7a1718730738": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "580996dbdffde930e1ab0dceb34cd2284accd4a0e750a19e0e330fb2a0c32235": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "6071da28cc642b0c2f4a6aca5177843b881a86e9da200e95158a56aa76998158": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "6315e6ec62e0c5b12d5d0e6110c7e4a57b0f015f1dc2021792b9d56bd07297bf": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "64f1f26caa04a14cc26ef2c3c7613a421f00fd47d5789d70b7043b84d04fe61c": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "73536239d43fdc8fe66b5fecb979e4eb86bee8280ac674f791f3651ae740537d": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "87ec41a9c2c1021209674ceffb74a0bded54087875b485538c5cf919bcbf1e82": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "88489048c35038702dbb01a78e8783f5b3e75a78cd43513f027bbacf2a887ce9": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "8d58e0e98effa423257231d54f45cb09fa2cae115281e8b4b8365be0d428bf33": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9153f9fa3af7fc9ccd9a8a0726806211e5ab375c5649b1ffff7227a06b6f0a3b": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "95c986d7dc1a13ab891f9b29f3cf894b6d335c0bd58f1e5bae9708090e9a8382": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9834634b2ae0762bfc488d61f41b8524427b667b98717ade746cc5fa601de21a": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "999d923de06f498c9080f0d004f3a207e40f3803108f11f09d5313079adc167d": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9af1835257a2d2b5dae45f58cdc3d738a6dd443ac84b6f1e83fedd8aff16c7d1": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9b8f683834e40d5bf81a3418378991469d8d7014a6705b1acaf6b2b1e4d93a5e": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9fa6c0fe2feed60b160a70f342389bf2d08afa3e40dccfb299bb86fde4991b10": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "a1754e7080d5ae5ca2a0def46516923c180e9a0283da3d2b3e3e4b2dc9da2937": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b4ac75004466b170bf39a24dcdcf6454b0d31aaaa0e3f25db82e8174ff753d04": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "b8e0d776887762f7ff0a029a105977302e140f20ff5fd15aad580ae638e74aa5": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "bc3c26383fc61d7cf2ad1d703f466f5369422a82cf3d28a2ac5e8b3927ef0a58": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "bcb31d46c22ac786b6b1ff097a960c274b579bc258ffaf5491f3ec8a7415d5b5": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "c0597eb26f1e424767aa4628ab4af4a6c94f44c66e84bda1b8d5fc19fa491305": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "c20e558b830366c34d708b22bbb993c154b46dbb17f23859c8bbd52f93f20ac8": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "c4d78fdd8c257456c85dd47a384d68c51b5644702e874d0ac16a3625e62a9fea": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "c98a464e822ddc19a05cd75977b84aa2d1cf0e480add6e8abfa33c41126ffc10": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "d2a9ef640ae4b0ddb195ad1d5ddeefbcd503f31baeb923b80171f8399845ac17": {
+      "grade": 0,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "d9d01eb2606ebedaefa61c86bd8300387c016f03ba9a0f265ff3f53b1f1f0b02": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "dfbb2f8c0db0eb1ef7348150d03a37aa64c33c84392e176fa05ba58171bfd196": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "e80a701c77248e3c0d011df98ed2d37b553b2071453b6d9495078eafd6f8b872": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "e88a849bf960dd81366fa38f56be3b55a52258576844718010a9468383d19014": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "e8d5ec59331444df99d7ece080304a77a7441bc3e3c8eb0a05e8b21d3db43c3c": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "f0fd1f983cf0a5d0cdf1d222b83234aa326c7415c619164226bbb900d530c592": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "f85847cc1877a9d0418d89156ec72cd3aabeab4b62e8b7c707f2624bd6d796cc": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "f99722b110f1ac8d1b2662c95583a0d7a3d4546ff24e709925bcca1c23886bb7": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "ff2250a5e4ea51eea799501c824d752e6b91e0d7429ba167de33af75d8cc7f75": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "ff509e008ba4439515f27de0632ed56676e19cba728aaec4ee6be61824ac8917": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    }
+  },
+  "coffee": {
+    "0bccebcc5c4797207779e79c0d9b027255b3cfce1152bccf3b462e1a4983fd7e": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "0f04cadf8039a5060956a833ed5baae44ca2caf0411d823266418da233115173": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "10b31e35e1f33f9bd992a6072aa0f56a0a46b27e972f016c9b92ddb9bcc25ff8": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "1516d903cfdf8ef5e76cc0d67a040d87785b1802954b78d5a6d960e116e7863b": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "1de401a06873489a708b37f6442b2b302d7a2e04eafaa8991a33a0598c1f737f": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "1f3d825759ca3cf243b50ef60081ad1c8f4995b65002c1ba4f216fe136a450aa": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "23cb3c0e1d8a8ccbd4e49c2497acaafdd8f4017cb0e18bbe6f2aa77cb6639b49": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "2bbf598289cef061219e238c786aaadfcffe39a6c04097d223adc4972d749d19": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "2bd7c898d0e79a493249fdaec4e4e00db6aa6a4198ddaefecad8a0d8be4b7100": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "33ee35bd8671f192636b9056b0df0b1f4d69d8f0bd218bb1765521ced461785a": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "35e9a281938a21ca3ec1aaf68d0cb3a772ab2aa5850d7ecb0be12c039232e891": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "37da9441e48384e25214b08e9323ca95978c646a0206caee5fedb0270997115a": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "3b4ff94552c02ddb5e7b8bbfdbde802ebc492c1e830492ac26d2422273e037d9": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "3d9eb0c981a9b5e53f5f2446a302ec431c0ad7ef9d01fb8eb037f0d1b9d3f666": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "4118817b504ac5e0bdaf3d1b31efc8d75e018132e8c54b856e066f8bce44c12d": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "48bed0e8ef3ba746a9313bdec0be932eea075d0873a156a08c798b996b8a14b1": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "49726d8bd1ee2faac3fe69b7b23e44f33fc6e865c02935d7098ccef42cbf8861": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "4a319ab7d7d452a36aaae88971f7ab11746759cca19e241c03d0e4f189b0cc37": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5343957491d14898404b3ed8bc7d40f7b2cc0e4c88660d057561e4bea901cad4": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5347d86c76019982caabc8be965d501c905aa56cd5cb6c31cdebf2f8a4476010": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "5a84f217155a0bbb5e8f9d6300717bd9aa2722d9432e8e48c1f94cecab0d0dc4": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "6516278094dd05eeca5f534a41551e80a8f56e73de2357b99e896e1f13693031": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "7237856a74878b3b4d9001fd479094933eb6972a439320fc0854d31451034acb": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "7a984952828e662a2adc2905cee55bdb1aad7f4370946ed80b78aac35ed3b354": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "7e76ab697f344b3a6e039f3fe875d55bd3a5ca57f04afcb76c35dd6c87f7c76a": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "83db93d3a42693a74db3cfd3f7081790d6cdbbc9ab040e09508bcc10f440a7e5": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "85cb56cd6f5f3f3897b66042e15fe73345271c16cf47b4bf5e9c0b6dbb9e0915": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "88c697fc3157ac20e8d75315994889fb8facac3f96b469e0a39594c2b166715b": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "8a2517cb4a82dcf3c05b12ceb463fc6a8e6f0b166730938d42c7ae841d11d7b4": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "8f5a760672d47906f7a82df4f0662afec4add1c565433823a4a2067aed719f15": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "9729f7384e9fb38ffffa7b6573900ded52ddb3fcf1c3e945e941424b4b67e7cc": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "973955ad0ef129a6555ea0a440f07ca0fe876296c537739e77bff2632beea666": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "ba4d231b8a187bb0ba37fbd5a06451d5a7bf27c8f66e558553766b65cfaa14fd": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "d0baea08bc3f1b59bf4e11f083c5a353863eaad6729f0d8f1c31102498c681b9": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "d97d1e9fc991c700e5ebfeb1acd018070753ad872063d9e6e6857d7d663a2889": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "dd0c9fd1dab950856590b89a91c072002f51327fc75837e0dcd85e16611979fc": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "f465c0ca1b74c9bbee6f77f108e7211cc96d8f158f18c18d00dada71e19b2d11": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "fa1a714b5971740c59fbe1e2bb903cd7c26fccd791067a71b19d0e99e1a7c79e": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    },
+    "fa932a4dff7dfaeaffd20fbff7f9e996f33db70d5258c89ef359f4d91bd5d61e": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-10-23"
+    }
+  }
+}
