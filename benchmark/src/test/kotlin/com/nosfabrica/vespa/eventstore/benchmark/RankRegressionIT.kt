@@ -1021,8 +1021,11 @@ class RankRegressionIT {
                     // blind-judged measurement). At 31x a fresh body hit DOES pass
                     // the five-year-old weak-tier one, the trade that freshens a
                     // page of notes; but no fresh hit may pass an old one TWO rungs
-                    // up, and weak -> exact (32.5x) is the tightest such span. The
-                    // last half proves that bound is the weight's: at 301x it falls.
+                    // up, and weak -> exact (32.5x, floor to floor) is the tightest
+                    // such span. This fixture's exact hit sits higher, 54x over its
+                    // weak one (measured, w=0), so with the old hit's own boost the
+                    // pair stays apart until w ~440; the last assertion proves the
+                    // bound is the weight's, not the fixture's: at 3,001x it falls.
                     assertEquals(
                         id(57),
                         searchRecency("recencyrung", NOTE_RECENCY_WEIGHT).map { it.doc.id }.firstOrNull(),
@@ -1035,8 +1038,8 @@ class RankRegressionIT {
                     )
                     assertEquals(
                         id(55),
-                        searchRecency("tierclimb", 300.0).map { it.doc.id }.firstOrNull(),
-                        "at 301x it does — so claim 6 is a bound on the note weight, not an artifact of the fixture",
+                        searchRecency("tierclimb", 3000.0).map { it.doc.id }.firstOrNull(),
+                        "at 3,001x it does — so claim 6 is a bound on the note weight, not an artifact of the fixture",
                     )
 
                     // --- typo bound: over-budget hits never match ---
