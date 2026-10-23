@@ -1406,14 +1406,18 @@ Built as above, opt-in per query, and reshaped three times on the way; what ship
      same `tag_index` array the key lives in, which a grouping cannot reach (inside a
      key's group Vespa binds the attribute to that key alone; tried, measured empty);
   3. zapper trust: one query on `reputation.sd`'s new `trust_cell` profile.
-- **`LinkWeights`** (the store's policy, data): every link +1, a NIP-56 report −1;
-  per person and kind each repeat worth half the one before (≤ 2); per person the
-  kinds summed and clamped to ±5, times their trust (rank / 100); people summed; the
-  hit's own author left out. A receipt with no `P` (46% of the captured ones) counts
-  once at its signer's trust.
+- **`LinkWeights`** (the store's policy, data): every link +1, a NIP-56 report −1,
+  someone else's deletion request (kind 5) and a mute list (10000) 0; per person and
+  kind each repeat worth half the one before (≤ 2); per person the kinds summed and
+  clamped to ±5, times their trust (rank / 100); people summed; the hit's own author
+  left out. One link naming a hit by `e` AND `a` (a like on an article) is one link:
+  counted per key, then the max across a hit's keys. A receipt with no `P` (46% of the
+  captured ones) counts once at its signer's trust. Only `e` and `a` link: a quote's
+  `q` and NIP-22's uppercase roots are not read (a comment carries a lowercase `e` too).
 - **`LinkRerank`**: each of the top 100 hits' engine score × `(1 + |E|)^(±0.5)`,
-  clamped to [⅓, 3], re-sorted, cut back to the asked limit (a read asking for fewer
-  is recalled at 100).
+  clamped to [⅓, 3], the whole page re-sorted, each filter cut back to its own limit
+  (a read asking for fewer is recalled at 100 — only when a lens resolves; without
+  one nothing is widened).
 
 `TrustedLinksIT` pins it on a real Vespa, every number against a hand-worked sum:
 the gate at `hits=0`, repeats halving, the author excluded, a zap at its zapper's
@@ -1639,8 +1643,11 @@ did not ask for.
 sends `EventQuery.recencyWeight` = `NOTE_RECENCY_WEIGHT` when a search's kinds are
 exactly `[1]` (`mapping/FilterMapping.kt`); the engine sends it only on the `search`
 profile, and every other shape — no kinds, profiles, mixed kinds, other kinds — keeps
-event.sd's 0.1. At 31× a fresh note crosses at most one rung, never two (weak → exact
-is 32.5×); `RankRegressionIT` claim 6 pins both sides at this weight.
+event.sd's 0.1. One REQ is one scale: its searches are merged on their scores, so when
+they disagree (`kinds:[0]` beside `kinds:[1]`) every one drops back to 0.1
+(`PageAssembly.oneRecencyScale`) — or the notes would bury the profiles in the merge.
+At 31× a fresh note crosses at most one rung, never two (weak → exact is 32.5×);
+`RankRegressionIT` claim 6 pins both sides at this weight.
 
     python3 benchmark/capture_links.py /tmp/eval.json --per-term 300 --popular 0 --no-oracle --terms "bitcoin,nostr,…"
     VESPA_URL=http://localhost:8080 ./gradlew :benchmark:exportLoad --args=/tmp/eval.json

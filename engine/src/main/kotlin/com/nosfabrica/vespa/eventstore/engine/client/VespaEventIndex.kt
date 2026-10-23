@@ -1806,9 +1806,10 @@ class VespaEventIndex(
                 trust: Double,
                 kind: Int,
                 n: Int,
+                merge: (Int, Int) -> Int = Int::plus,
             ) {
                 val (_, byKind) = people.getOrPut(target) { HashMap() }.getOrPut(person) { trust to HashMap() }
-                byKind.merge(kind, n, Int::plus)
+                byKind.merge(kind, n, merge)
             }
             peopleRead.await()?.let { root ->
                 for ((key, persons) in GroupingResults.keyPersonKinds(root)) {
@@ -1817,7 +1818,13 @@ class VespaEventIndex(
                         // relevance, so any group's sum / count is the person's trust.
                         val (n, sum) = byKind.values.first()
                         val trust = if (lensed) (sum ?: 0.0) / n / LinkScore.TRUST_SCALE else 1.0
-                        for (t in byKey[key].orEmpty()) byKind.forEach { (kind, c) -> add(t.id, person, trust, kind, c.first) }
+                        // MAX across a hit's keys, never the sum: a like on an addressable
+                        // names it by `e` AND by `a` (NIP-25), and the grouping puts that one
+                        // document in both key groups. Per key, a (person, kind) group is one
+                        // count; across keys the max is exact whenever a person linked through
+                        // one key — the common case — and a lower bound, never a double count,
+                        // when they linked twice through different ones.
+                        for (t in byKey[key].orEmpty()) byKind.forEach { (kind, c) -> add(t.id, person, trust, kind, c.first) { a, b -> maxOf(a, b) } }
                     }
                 }
             }

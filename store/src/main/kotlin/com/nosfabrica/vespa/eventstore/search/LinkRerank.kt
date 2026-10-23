@@ -74,7 +74,7 @@ import kotlin.math.sign
  * event, and a rank profile cannot read another document's links — it is a
  * second query over the first one's head. The read is widened to [window]
  * hits (when it asked for fewer), the head is rescored and re-sorted, and the
- * page is cut back to what was asked. A hit outside the engine's top [window]
+ * page is cut back to what each filter asked for. A hit outside the engine's top [window]
  * can never be lifted in: that is the price of one round trip instead of a
  * corpus-wide join. Measured cost of the extra query: 10–40 ms for a 20–100
  * hit window on a local Vespa, tens of ms at production scale
@@ -83,12 +83,15 @@ import kotlin.math.sign
  * NO LENS, NO SIGNAL: a read with no resolved trust service has no web of
  * trust to filter the links by, and an unfiltered count is exactly the
  * popularity contest the gate exists to keep out — so it is served as if the
- * token were absent (still cut back to its limit).
+ * token were absent, and not widened either.
  *
  * PER-KIND WEIGHTS ([LinkWeights]) are where the policy lives, and the seam for
  * what comes next — zaps by amount, likes, reposts, 5-star ratings. The default
  * ([DEFAULT_WEIGHTS]) is the minimal one: every link +1, a NIP-56 report (kind
- * 1984) −1, so a note that drew only reports scores BELOW one that drew nothing.
+ * 1984) −1, so a note that drew only reports scores BELOW one that drew nothing —
+ * and 0 for the two kinds whose `e` tag is not engagement at all: someone else's
+ * NIP-09 deletion request (kind 5, which only the author's own may honor) and a
+ * NIP-51 mute list (kind 10000, a muted thread).
  * A negative total shrinks the engine's score by the same curve a positive one
  * grows it ([multiplier]): demoted, never sign-flipped, never dropped.
  */
@@ -163,8 +166,14 @@ class LinkRerank(
         /** NIP-56: a report names the event it reports with an `e` tag. */
         const val REPORT_KIND = 1984
 
-        /** Every link +1, a report −1 — the minimal weighting; see the class KDoc. */
-        val DEFAULT_WEIGHTS = LinkWeights(byKind = mapOf(REPORT_KIND to -1.0))
+        /** NIP-09: a deletion request names what it deletes with an `e` tag. */
+        const val DELETION_KIND = 5
+
+        /** NIP-51: a mute list names muted threads with `e` tags. */
+        const val MUTE_LIST_KIND = 10000
+
+        /** Every link +1, a report −1, a deletion request or a mute 0 — the minimal weighting; see the class KDoc. */
+        val DEFAULT_WEIGHTS = LinkWeights(byKind = mapOf(REPORT_KIND to -1.0, DELETION_KIND to 0.0, MUTE_LIST_KIND to 0.0))
 
         /**
          * `(1 + |e|) ^ (strength × sign(e))`, clamped to [1/maxBoost, maxBoost]:

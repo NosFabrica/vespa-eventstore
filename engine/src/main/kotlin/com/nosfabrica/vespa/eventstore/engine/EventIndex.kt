@@ -265,9 +265,19 @@ interface EventIndex : AutoCloseable {
         }
         val people = HashMap<String, HashMap<String, HashMap<Int, Int>>>()
         val unattributed = HashMap<String, MutableList<Linker>>()
+        // (hit, person, kind) -> key -> links: counted per KEY, as the engine's
+        // grouping counts, then folded by MAX across a hit's keys — one like naming
+        // an addressable by `e` and by `a` is one link, not two.
+        val perKey = HashMap<Triple<String, String, Int>, HashMap<String, Int>>()
         for (doc in docs.values) {
             if (doc.kind == LinkWeights.ZAP_RECEIPT_KIND) {
-                val zapper = doc.tags.firstOrNull { it.size > 1 && it[0] == "P" }?.get(1)
+                // Lowercased as the engine reads it off `tag_index`: an upper-case `P`
+                // naming the hit's own author is still the author, and still excluded.
+                val zapper =
+                    doc.tags
+                        .firstOrNull { it.size > 1 && it[0] == "P" }
+                        ?.get(1)
+                        ?.lowercase()
                 for (t in doc.tagIndex().flatMap { byKey[it].orEmpty() }.distinctBy { it.id }) {
                     if (zapper == null) {
                         unattributed.getOrPut(t.id) { ArrayList() }.add(Linker(1.0, mapOf(doc.kind to 1)))
@@ -277,9 +287,12 @@ interface EventIndex : AutoCloseable {
                 }
             } else {
                 for (entry in doc.tagIndex()) {
-                    for (t in byKey[entry].orEmpty()) people.getOrPut(t.id) { HashMap() }.getOrPut(doc.pubkey) { HashMap() }.merge(doc.kind, 1, Int::plus)
+                    for (t in byKey[entry].orEmpty()) perKey.getOrPut(Triple(t.id, doc.pubkey, doc.kind)) { HashMap() }.merge(entry, 1, Int::plus)
                 }
             }
+        }
+        for ((at, byEntry) in perKey) {
+            people.getOrPut(at.first) { HashMap() }.getOrPut(at.second) { HashMap() }.merge(at.third, byEntry.values.max(), Int::plus)
         }
         // No reputation data here: every person is fully trusted (see LinkScore).
         return targets

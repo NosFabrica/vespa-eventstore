@@ -81,14 +81,17 @@ class ScoreLinksTest {
                     doc(7, bob, e),
                     doc(7, bob, e), // bob's second like: +0.5
                     doc(6, bob, e), // bob's repost: a new kind, a full 1
-                    doc(1, carol, e, listOf("a", address)), // ONE reply naming both keys: two entries, so 1 + 0.5
+                    doc(1, carol, e, listOf("a", address)), // ONE reply naming both keys: one link, 1
                     doc(1, author, e),
                     doc(1, author, e),
                     doc(7, author, e), // the author's own thread: none of it counts
                 )!!
-            assertEquals(2.5 + 1.5, s.score, 1e-12)
+            assertEquals(2.5 + 1.0, s.score, 1e-12)
             assertEquals(2, s.people)
-            assertEquals(mapOf(7 to 2, 6 to 1, 1 to 2), s.byKind, "the links that counted — the author's are not among them")
+            assertEquals(mapOf(7 to 2, 6 to 1, 1 to 1), s.byKind, "the links that counted — the author's are not among them")
+            // Two separate replies through the two keys are two links (per key, then the
+            // engine's max: the second one is the lower bound the grouping can see).
+            assertEquals(1.0, score(doc(1, carol, e), doc(1, carol, listOf("a", address)))!!.score, 1e-12)
         }
 
     @Test
@@ -118,8 +121,9 @@ class ScoreLinksTest {
                     doc(9735, zapService, e, listOf("P", frank)),
                     // A receipt naming no zapper: its own one-link "person" — 1.
                     doc(9735, zapService, e),
-                    // The author zapping their own note: no one.
+                    // The author zapping their own note: no one — upper-cased or not.
                     doc(9735, zapService, e, listOf("P", author)),
+                    doc(9735, zapService, e, listOf("P", author.uppercase())),
                     // One receipt naming the id AND the address is still one zap.
                     doc(9735, zapService, e, listOf("a", address), listOf("P", carol)),
                 )!!

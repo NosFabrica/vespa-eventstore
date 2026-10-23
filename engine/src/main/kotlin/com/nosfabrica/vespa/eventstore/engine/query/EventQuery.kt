@@ -198,7 +198,9 @@ data class EventQuery(
      * fresh non-profiles (store `mapping/FilterMapping`'s NOTE_RECENCY_WEIGHT
      * holds the measurement). Per query, not per kind: every document a query
      * matches still scales by the same continuous factor of its age, so the
-     * per-kind split event.sd rejected stays rejected.
+     * per-kind split event.sd rejected stays rejected. And per READ in the end:
+     * a REQ's searches are merged on their scores, so the store keeps one weight
+     * across them (PageAssembly's `oneRecencyScale`).
      */
     val recencyWeight: Double? = null,
     /**

@@ -127,9 +127,12 @@ class TrustedLinksIT {
                                 List(20) { event(LOW, 7, "+", now - 60 + it, arrayOf("e", top)) } + // below the floor: nothing
                                 event(UNRANKED, 7, "+", now - 30, arrayOf("e", top)) + // unranked: nothing
                                 event(TRUSTED, 1984, "", now - 5, arrayOf("e", top, "spam")) + // a report: -1 x 0.5
+                                event(HIGH, 10000, "", now - 5, arrayOf("e", top)) + // a mute list naming it: nothing
                                 // the article, by its address:
                                 event(TRUSTED, 1, "good read", now - 10, arrayOf("a", address)) + // 1 x 0.5
-                                event(LOW, 1, "meh", now - 10, arrayOf("a", address)),
+                                event(LOW, 1, "meh", now - 10, arrayOf("a", address)) +
+                                // ONE like naming it by id AND address (NIP-25): in both key groups, counted once — 1 x 1.0
+                                event(HIGH, 7, "+", now - 10, arrayOf("e", article.id), arrayOf("a", address)),
                         )
 
                         val targets = listOf(LinkTarget(top, AUTHOR), LinkTarget(under, AUTHOR), LinkTarget(article.id, AUTHOR, address))
@@ -139,7 +142,7 @@ class TrustedLinksIT {
                         assertEquals(4, scored.getValue(under).people, "trusted, high, the zapper, and one unnamed zap")
                         assertEquals(mapOf(7 to 6, 1 to 2, 9735 to 4), scored.getValue(under).byKind)
                         assertEquals(-0.5, scored.getValue(top).score, 1e-9, "top's twenty-one reactions are below the floor; its report is all that counts")
-                        assertEquals(0.5, scored.getValue(article.id).score, 1e-9, "linked by address")
+                        assertEquals(0.5 + 1.0, scored.getValue(article.id).score, 1e-9, "linked by address, and a two-key like once: ${scored[article.id]}")
 
                         // No lens: everyone fully trusted, nothing gated — but the
                         // author, the decay and the per-zapper attribution all still hold.

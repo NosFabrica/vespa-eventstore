@@ -64,12 +64,16 @@ class LinkRerankTest {
         assertEquals(1.0, LinkRerank.multiplier(42.0, 0.0), "strength 0 is the engine's order")
         assertEquals(-1.0, LinkRerank.DEFAULT_WEIGHTS.of(LinkRerank.REPORT_KIND), "a report hurts by default")
         assertEquals(1.0, LinkRerank.DEFAULT_WEIGHTS.of(7))
+        assertEquals(0.0, LinkRerank.DEFAULT_WEIGHTS.of(LinkRerank.DELETION_KIND), "someone else's deletion request is not engagement")
+        assertEquals(0.0, LinkRerank.DEFAULT_WEIGHTS.of(LinkRerank.MUTE_LIST_KIND), "nor is a muted thread")
     }
 
     /** A scripted engine: [scores] in engine order, [engagement] per hit id, and a record of what it was asked. */
     private class Engine(
         val scores: List<Pair<String, Double>>,
         val engagement: Map<String, Double>,
+        /** A hit's kind; a query recalls only the kinds it names. */
+        val kindOf: (String) -> Int = { 1 },
     ) {
         val limits = ArrayList<Int?>()
         val linkCalls = ArrayList<Pair<List<LinkTarget>, EventQuery>>()
@@ -79,7 +83,7 @@ class LinkRerankTest {
                 newestFirst = compareBy { it },
                 keys = SubjectKeys(idOf = { it }, authorOf = { "author" }, addressOf = { null }),
                 idOf = { it },
-                kindOf = { 1 },
+                kindOf = kindOf,
                 authorOf = { "author" },
                 pointerOf = { null },
                 search = { q -> recall(q).map { it.hit } },
@@ -92,7 +96,8 @@ class LinkRerankTest {
 
         private fun recall(q: EventQuery): List<Ranked<String>> {
             limits += q.limit
-            return scores.take(q.limit ?: scores.size).map { (id, s) -> Ranked(id, s) }
+            val mine = scores.filter { (id, _) -> q.kinds.isEmpty() || kindOf(id) in q.kinds }
+            return mine.take(q.limit ?: mine.size).map { (id, s) -> Ranked(id, s) }
         }
     }
 
@@ -101,9 +106,10 @@ class LinkRerankTest {
     private fun query(
         rankKey: String? = lens,
         limit: Int = 2,
-    ) = EventQuery(search = "zebra", observer = "c".repeat(64), rankKey = rankKey, minRank = 2.0, limit = limit)
+        kinds: List<Int> = emptyList(),
+    ) = EventQuery(search = "zebra", observer = "c".repeat(64), rankKey = rankKey, minRank = 2.0, limit = limit, kinds = kinds)
 
-    private fun pages() = PageAssembly(SearchExpansionLimits(enabled = false), null, { Enrolment.NONE }, rerank)
+    private fun pages(rerank: LinkRerank = this.rerank) = PageAssembly(SearchExpansionLimits(enabled = false), null, { Enrolment.NONE }, rerank)
 
     private val engine = { Engine(listOf("a" to 10.0, "b" to 9.0, "c" to 8.0, "d" to 7.0), mapOf("d" to 99.0, "b" to 3.0)) }
 
@@ -148,10 +154,47 @@ class LinkRerankTest {
         }
 
     @Test
-    fun `no lens no signal, so the engine order is served, still cut to the asked size`() =
+    fun `no lens no signal, so the engine order is served and nothing is widened`() =
         runBlocking {
             val e = engine()
             assertEquals(listOf("a", "b"), pages().serve(listOf(query(rankKey = null)), listOf(Filter(search = "zebra sort:links", limit = 2)), e.projection()))
+            assertEquals(listOf<Int?>(2), e.limits, "a recall nothing will rescore is read at its own limit")
             assertTrue(e.linkCalls.isEmpty())
         }
+
+    @Test
+    fun `each filter is cut back to its own limit, not the largest one`() =
+        runBlocking {
+            val kinds = mapOf("n1" to 1, "n2" to 1, "n3" to 1, "n4" to 1, "r1" to 30023, "r2" to 30023, "r3" to 30023)
+            val e = Engine(listOf("n1" to 10.0, "n2" to 9.0, "n3" to 8.0, "n4" to 7.0, "r1" to 6.0, "r2" to 5.0, "r3" to 4.0), mapOf("n4" to 99.0), kinds::getValue)
+            val filters = listOf(Filter(kinds = listOf(1), search = "zebra sort:links", limit = 2), Filter(kinds = listOf(30023), search = "zebra sort:links", limit = 2))
+            val page = pages().serve(listOf(query(kinds = listOf(1)), query(kinds = listOf(30023))), filters, e.projection())
+            // n4: 7 x 3 = 21 leads; then each filter's own top two survive — the articles
+            // too, though every note outscores them (a single cut at 2 served no article).
+            assertEquals(listOf("n4", "n1", "r1", "r2"), page)
+        }
+
+    @Test
+    fun `past the window the whole page is re-sorted, so a demoted head hit falls below the tail`() =
+        runBlocking {
+            // Window 2, limit 3: a and b are rescored, c is not. a drew only reports:
+            // 10 / 3 = 3.33, under c's untouched 8.
+            val e = Engine(listOf("a" to 10.0, "b" to 9.0, "c" to 8.0), mapOf("a" to -99.0))
+            val page = pages(LinkRerank(window = 2)).serve(listOf(query(limit = 3)), listOf(Filter(search = "zebra sort:links", limit = 3)), e.projection())
+            assertEquals(listOf("b", "c", "a"), page)
+        }
+
+    @Test
+    fun `one read ranks on one recency scale`() {
+        val notes = EventQuery(kinds = listOf(1), search = "jose", recencyWeight = 30.0)
+        val profiles = EventQuery(kinds = listOf(0), search = "jose")
+        val plain = EventQuery(kinds = listOf(0))
+        assertEquals(listOf(notes, notes), listOf(notes, notes).oneRecencyScale(), "agreeing searches keep their weight")
+        assertEquals(listOf(notes, plain), listOf(notes, plain).oneRecencyScale(), "a plain recall is not on the score scale")
+        assertEquals(
+            listOf(notes.copy(recencyWeight = null), profiles),
+            listOf(notes, profiles).oneRecencyScale(),
+            "notes beside profiles: merged on one scale, so the schema's — fresh notes must not bury the Joses",
+        )
+    }
 }
