@@ -132,7 +132,9 @@ class TrustedLinksIT {
                                 event(TRUSTED, 1, "good read", now - 10, arrayOf("a", address)) + // 1 x 0.5
                                 event(LOW, 1, "meh", now - 10, arrayOf("a", address)) +
                                 // ONE like naming it by id AND address (NIP-25): in both key groups, counted once — 1 x 1.0
-                                event(HIGH, 7, "+", now - 10, arrayOf("e", article.id), arrayOf("a", address)),
+                                event(HIGH, 7, "+", now - 10, arrayOf("e", article.id), arrayOf("a", address)) +
+                                // a quote-reply naming it by `e` AND `q`: one more kind, one link — 1 x 1.0
+                                event(HIGH, 1, "worth reading", now - 8, arrayOf("e", article.id), arrayOf("q", article.id)),
                         )
 
                         val targets = listOf(LinkTarget(top, AUTHOR), LinkTarget(under, AUTHOR), LinkTarget(article.id, AUTHOR, address))
@@ -142,7 +144,7 @@ class TrustedLinksIT {
                         assertEquals(4, scored.getValue(under).people, "trusted, high, the zapper, and one unnamed zap")
                         assertEquals(mapOf(7 to 6, 1 to 2, 9735 to 4), scored.getValue(under).byKind)
                         assertEquals(-0.5, scored.getValue(top).score, 1e-9, "top's twenty-one reactions are below the floor; its report is all that counts")
-                        assertEquals(0.5 + 1.0, scored.getValue(article.id).score, 1e-9, "linked by address, and a two-key like once: ${scored[article.id]}")
+                        assertEquals(0.5 + 1.0 + 1.0, scored.getValue(article.id).score, 1e-9, "linked by address, a two-key like and a quote-reply once each: ${scored[article.id]}")
 
                         // No lens: everyone fully trusted, nothing gated — but the
                         // author, the decay and the per-zapper attribution all still hold.

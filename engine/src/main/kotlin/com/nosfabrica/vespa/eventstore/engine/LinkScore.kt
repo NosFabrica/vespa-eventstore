@@ -24,9 +24,15 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import kotlin.math.pow
 
 /**
- * One hit whose links [EventIndex.scoreLinks] scores: its id (linked by `e`),
- * its address when it has one (linked by `a`), and its AUTHOR — whose own links
- * to it are not engagement and never count (a reply in one's own thread).
+ * One hit whose links [EventIndex.scoreLinks] scores: its id (linked by `e`,
+ * and by a NIP-18 quote's `q`), its address when it has one (linked by `a`, and
+ * by a `q` quoting the address), and its AUTHOR — whose own links to it are not
+ * engagement and never count (a reply in one's own thread).
+ *
+ * A link naming a hit through several of these keys (a quote-reply's `e` and
+ * `q`, a like's `e` and `a` on an article) is still ONE link: scoreLinks counts
+ * per key and keeps the max across a hit's keys. NIP-22's uppercase roots are
+ * not keys — a top-level comment carries a lowercase `e` as well.
  */
 data class LinkTarget(
     val id: String,
@@ -35,7 +41,7 @@ data class LinkTarget(
     val address: String? = null,
 ) {
     /** The `tag_index` entries that link to this hit. */
-    val keys: List<String> get() = if (address == null) listOf("e:$id") else listOf("e:$id", "a:$address")
+    val keys: List<String> get() = if (address == null) listOf("e:$id", "q:$id") else listOf("e:$id", "q:$id", "a:$address", "q:$address")
 }
 
 /**

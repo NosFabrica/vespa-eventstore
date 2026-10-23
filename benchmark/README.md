@@ -1412,8 +1412,9 @@ Built as above, opt-in per query, and reshaped three times on the way; what ship
   clamped to ±5, times their trust (rank / 100); people summed; the hit's own author
   left out. One link naming a hit by `e` AND `a` (a like on an article) is one link:
   counted per key, then the max across a hit's keys. A receipt with no `P` (46% of the
-  captured ones) counts once at its signer's trust. Only `e` and `a` link: a quote's
-  `q` and NIP-22's uppercase roots are not read (a comment carries a lowercase `e` too).
+  captured ones) counts once at its signer's trust. `e`, `a` and a NIP-18 quote's `q`
+  (by id, or by address on an addressable) link; NIP-22's uppercase roots are not read
+  (a comment carries a lowercase `e` too), and a quote-reply's `e` + `q` is one link.
 - **`LinkRerank`**: each of the top 100 hits' engine score × `(1 + |E|)^(±0.5)`,
   clamped to [⅓, 3], the whole page re-sorted, each filter cut back to its own limit
   (a read asking for fewer is recalled at 100 — only when a lens resolves; without

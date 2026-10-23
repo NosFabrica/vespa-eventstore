@@ -95,6 +95,22 @@ class ScoreLinksTest {
         }
 
     @Test
+    fun `a quote links by q, by id or by address, and a quote-reply is still one link`() =
+        runBlocking {
+            val q = listOf("q", note)
+            val s =
+                score(
+                    doc(1, bob, q), // a quote post: one link
+                    doc(1, carol, e, q), // a quote-reply naming the note by e AND q: one link
+                    doc(1, dave, listOf("q", address)), // a quote of the article's address: one link
+                )!!
+            assertEquals(3.0, s.score, 1e-12)
+            assertEquals(3, s.people)
+            assertEquals(mapOf(1 to 3), s.byKind)
+            assertEquals(listOf("e:$note", "q:$note"), LinkTarget(note, author).keys, "a plain note is linked by id alone")
+        }
+
+    @Test
     fun `one person stops counting at the cap, and reports pull below zero`() =
         runBlocking {
             // Six different kinds from dave: 6 units, clamped to 5.
