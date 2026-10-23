@@ -216,6 +216,91 @@ interface EventIndex : AutoCloseable {
     suspend fun countByAuthor(query: EventQuery): Map<String, Int> = search(query).groupingBy { it.pubkey }.eachCount()
 
     /**
+     * WHAT EACH HIT'S LINKS ARE WORTH: for each of [targets], the documents
+     * [linkers] would serve that LINK to it — an `e` tag naming its id, an `a`
+     * tag naming its address — scored by [weights] into one signed [LinkScore]:
+     * per PERSON (diminishing repeats within a kind, a cap across kinds, times
+     * that person's trust under [linkers]' lens), summed over people, the hit's
+     * own author left out. A hit nothing scorable links to is absent: its score
+     * is 0. [weights] is the caller's policy, applied here, never chosen here
+     * ([LinkWeights] spells the three layers out).
+     *
+     * "Would serve", as in [count]: [linkers] is an ordinary filter over the
+     * LINKING documents (kinds, a time window) and, above all, their lens — an
+     * observer with a floor (ranking `EventYql.RANK_RECENCY_GATED`) counts only
+     * the people that observer's web of trust clears. A positive limit is about
+     * hits and is ignored; a limit <= 0 is the "matches nothing" sentinel.
+     *
+     * A ZAP RECEIPT's person is the zapper its `P` tag names, not its author
+     * (the recipient's LNURL server) — so its trust is the zapper's, and the
+     * receipt is counted only when BOTH clear the floor: an untrusted signer's
+     * receipt is one anyone could have forged. A receipt with no `P` counts once,
+     * on its own, at its signer's trust. Receipts are counted per DOCUMENT; every
+     * other kind per tag ENTRY — the engine groups an array attribute by
+     * element, so a client's duplicated `e` is two links (a repeat, which the
+     * decay already discounts), and de-duplicating would mean materializing
+     * every linking document, the cost the grouping exists to avoid.
+     *
+     * The default materializes the linkers and tallies them — correct, and the
+     * in-memory reference's answer (which, holding no reputation data, gates
+     * nobody and trusts every person fully, the same way its [count] gates
+     * nobody). The real client answers with a grouping, a receipts read and a
+     * zapper-trust read. A decorator MUST delegate to its inner index.
+     */
+    suspend fun scoreLinks(
+        targets: List<LinkTarget>,
+        linkers: EventQuery,
+        weights: LinkWeights,
+    ): Map<String, LinkScore> {
+        val narrowed = weights.narrow(linkers)
+        if ((narrowed.limit ?: 1) <= 0 || targets.isEmpty()) return emptyMap()
+        val byKey = HashMap<String, MutableList<LinkTarget>>()
+        targets.forEach { t -> t.keys.forEach { byKey.getOrPut(it) { ArrayList() }.add(t) } }
+        // One recall per letter — the cross-letter OR the engine writes inline —
+        // deduplicated by id so a document naming an `e` AND an `a` key is read once.
+        val docs = HashMap<String, EventDoc>()
+        for ((letter, entries) in byKey.keys.groupBy { it.substring(0, 1) }) {
+            val values = entries.map { it.substring(2) }
+            search(narrowed.copy(limit = null, tags = narrowed.tags + (letter to values))).forEach { docs[it.id] = it }
+        }
+        val people = HashMap<String, HashMap<String, HashMap<Int, Int>>>()
+        val unattributed = HashMap<String, MutableList<Linker>>()
+        // (hit, person, kind) -> key -> links: counted per KEY, as the engine's
+        // grouping counts, then folded by MAX across a hit's keys — one like naming
+        // an addressable by `e` and by `a` is one link, not two.
+        val perKey = HashMap<Triple<String, String, Int>, HashMap<String, Int>>()
+        for (doc in docs.values) {
+            if (doc.kind == LinkWeights.ZAP_RECEIPT_KIND) {
+                // Lowercased as the engine reads it off `tag_index`: an upper-case `P`
+                // naming the hit's own author is still the author, and still excluded.
+                val zapper =
+                    doc.tags
+                        .firstOrNull { it.size > 1 && it[0] == "P" }
+                        ?.get(1)
+                        ?.lowercase()
+                for (t in doc.tagIndex().flatMap { byKey[it].orEmpty() }.distinctBy { it.id }) {
+                    if (zapper == null) {
+                        unattributed.getOrPut(t.id) { ArrayList() }.add(Linker(1.0, mapOf(doc.kind to 1)))
+                    } else {
+                        people.getOrPut(t.id) { HashMap() }.getOrPut(zapper) { HashMap() }.merge(doc.kind, 1, Int::plus)
+                    }
+                }
+            } else {
+                for (entry in doc.tagIndex()) {
+                    for (t in byKey[entry].orEmpty()) perKey.getOrPut(Triple(t.id, doc.pubkey, doc.kind)) { HashMap() }.merge(entry, 1, Int::plus)
+                }
+            }
+        }
+        for ((at, byEntry) in perKey) {
+            people.getOrPut(at.first) { HashMap() }.getOrPut(at.second) { HashMap() }.merge(at.third, byEntry.values.max(), Int::plus)
+        }
+        // No reputation data here: every person is fully trusted (see LinkScore).
+        return targets
+            .associate { t -> t.id to weights.score(t, people[t.id].orEmpty().mapValues { (_, byKind) -> Linker(1.0, byKind) }, unattributed[t.id].orEmpty()) }
+            .filterValues { it.people > 0 }
+    }
+
+    /**
      * Every distinct author, STREAMED: complete like [countByAuthor]'s key set,
      * but paged through visit continuations instead of one engine response. The
      * guard-owner preload needs full-corpus completeness without that

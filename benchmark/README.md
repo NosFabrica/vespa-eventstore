@@ -1323,6 +1323,372 @@ query counts for the busy and narrow cases; a ranked count asks for one hit),
 `RecencyStrategyIT`, which checks every strategy against the page computed from
 the corpus itself on a real Vespa, gate and tie group included.
 
+## Trusted links per search hit — can a page afford them? (`links_probe.py`, 2026-10-22)
+
+The question: search ranks a hit by text × the AUTHOR's trust (`search`'s
+`floored_text_score() * wot_mult() * recency_mult()`). The candidate signal is
+how much the observer's NETWORK engaged with the hit — the events that LINK to
+it (`e`/`E`/`q` naming its id: replies, reactions, reposts, zap receipts,
+quotes, NIP-22 comments) whose author clears the lens's trust floor, counted
+per hit, for a whole result page, on every search. Before it can be a ranking
+input it has to fit in a search's budget. This measures only that cost; no
+ranking was changed.
+
+**The corpus** (`benchmark/capture_links.py`, read-only against
+`search.brainstorm.world`, canonical observer `460c25e6…`, its one provider
+`7d7ffd72…`): the live relay's own top-100 page for 12 content searches
+(bitcoin, nostr, lightning, coffee, amethyst, primal, esposa, music, gm, zap,
+freedom, privacy) plus a `popular` page (the 100 notes most named by the
+newest 5,000 reactions — search pages lean young and lightly linked, the cost
+lives in the tail), then EVERY event linking to those 1,262 hits UNGATED, then
+the provider's 30382 for every author present. 20,105 events, fed through
+`exportLoad` into a fresh local Vespa 8.763 (4 vCPU) — all accepted, and the
+rebuilt lens reproduces the relay's: the store's per-hit gated COUNT equals the
+live relay's on 255/260 hits, and each of the other 5 is a popular note that
+gained one or two links between the link fetch and the COUNT (live ungated
+count exactly that much above what was captured). Links per hit: median 0–5 on
+search pages, up to 962 trusted (1,392 total) on one `amethyst` hit; the
+`popular` top 100 carry 2,501 trusted of 6,133 — the gate keeps ~40–85%.
+
+**Five ways to get the numbers** (median of 7 per page, single match thread,
+one keep-alive connection per thread; a page is the top-N as the relay served it):
+
+| strategy | what it issues |
+|---|---|
+| PER_HIT | one gated count per hit (`recency_gated_exact`, `hits=1` → post-gate `totalCount`, the store's NIP-45 shape), 16 concurrent |
+| GROUPED | ONE gated query, `tag_index in ("e:<h1>","E:<h1>","q:<h1>", …)`, `all(group(tag_index) filter(regex(<page keys>)) each(output(count())))` |
+| GROUPED_KIND | GROUPED with each key's group split by `kind` (the reaction / reply / repost / zap mix) |
+| BY_AUTHOR | ungated, grouped by tag_index then pubkey; the lens's trusted set (`docs/gated-count.md`) picks whom to add |
+| LOAD | the gated link documents themselves (attribute-only `idtimetag` summary), tallied client-side |
+
+| page | PER_HIT | GROUPED | GROUPED_KIND | BY_AUTHOR | LOAD | GROUPED ungated |
+|---|---:|---:|---:|---:|---:|---:|
+| top 20 — median / p90 | 25.5 / 28.4 ms | **9.9 / 12.4** | 11.6 / 16.1 | 13.2 / 24.3 | **9.9** / 23.7 | 10.0 / 19.1 |
+| top 50 | 53.8 / 60.1 | **15.3 / 20.5** | 19.7 / 22.2 | 21.8 / 39.1 | 14.8 / 56.5 | 16.7 / 21.7 |
+| top 100 | 79.5 / 87.0 | **22.3 / 31.0** | 27.2 / 38.2 | 30.4 / 55.8 | 14.8 / 57.8 | 21.8 / 30.5 |
+| heaviest (`amethyst` 100: 2,354 trusted / 4,699) | 86.3 | 31.0 | 41.1 | 55.8 | 104.9 | 45.6 |
+
+What it says:
+
+- **One grouped query per page is the shape.** Flat at 10–40 ms from 20 to 100
+  hits and from a few dozen to 6k links; PER_HIT is 2.5–3.5× slower here, and
+  on a multi-node cluster it is N queries each fanning out to every content
+  node. GROUPED_KIND adds ~2–5 ms for the per-kind breakdown a real ranking
+  would weigh.
+- **The `filter(regex())` is not optional.** `group(tag_index)` groups an array
+  attribute by EVERY element, so without it each link's whole tag list becomes
+  groups (a reply's `p` list, its thread root, …): 6,137 groups for the 26 that
+  matter on the `popular` top 20, 117 ms → 17 ms with the filter.
+- **The gate is free at these sizes.** GROUPED gated and ungated cost the same:
+  ranking a few thousand matches is noise next to the grouping. BY_AUTHOR —
+  the winner for 5.7M-match COUNTs — is a loss here (it pays per author
+  group), and so is the trusted set it needs in memory.
+- **GROUPED is not exact: +2.6%** (net +493 over 18,682 links, 168 hit-pages
+  affected). Grouping counts array ELEMENTS, so a link naming the hit twice is
+  counted twice: NIP-22's `E`+`e` on every top-level comment, `e`+`q` on a
+  quote-reply, a client's duplicated `e`. LOAD and PER_HIT are exact (0
+  differ). For a log-scaled ranking input 2.6% is noise; if it is not, LOAD is
+  exact and as cheap on a typical page — but it grows with the links it returns
+  (105 ms on the heaviest page) where GROUPED does not.
+- **What the trusted links are**: kind 1 38%, 7 21%, **1985 18%**, 9735 13%,
+  6 7%, 1111 2%, bookmark lists 10003 1% (top 100). The NIP-32 labels are
+  almost a fifth of all trusted links — a ranking would want to choose its
+  kinds and weights rather than count every link alike.
+
+**Production scale, one sanity point.** The local corpus is 20k documents, so
+it measures the link sets, not 211M documents across nodes. Against the live
+relay (read-only, median of 3): ONE gated COUNT whose filters name a whole
+page's links — the same match-and-gate work GROUPED does, minus the grouping —
+takes 62–137 ms for a top 20 and 100–155 ms for a top 100, against 60 ms for a
+gated COUNT matching nothing (the wire + relay floor). So roughly 0–95 ms of
+engine work at production scale, with the floor dominating. One per-hit COUNT
+there is 56 ms median / 103 ms p90, serial — 20 of them is out of budget.
+
+**What building it would take** (not done): the signal depends on the observer,
+so it cannot be precomputed per event, and a rank profile cannot reach another
+document's links — it has to be a second query over a candidate window: the
+search's top K (its first phase already orders ~50k matches; K = page or
+`rerank-count`-sized), one GROUPED_KIND query over those K, re-scored in the
+store. Expected cost ≈ one extra engine round trip of 20–40 ms locally,
+tens of ms on the live cluster. A store method on `EventIndex` would also be a
+port member — `TrustProjection` and `MeteredEventIndex` in the same commit
+(`PortDecoratorsTest`).
+
+### The rerank, prototyped: `sort:links` (`linkRerankProbe`, 2026-10-22)
+
+Built as above, opt-in per query, and reshaped three times on the way; what ships:
+
+- **`EventIndex.scoreLinks(targets, linkers, weights)`** scores each hit's links per
+  PERSON, in three engine reads per page (two concurrent):
+  1. people: one grouping, key → author → kind, every kind but zap receipts, on the
+     `link_trust` profile (event.sd) — `recency_gated_exact`'s observer gate verbatim
+     with the author's rank cell as the score, so `sum(relevance())` is the author's
+     trust and a below-floor author is gone before the grouping;
+  2. zaps: the receipts as documents on the attribute-only `idtimetag` summary,
+     signer-gated by the same profile. A receipt is signed by the RECIPIENT's LNURL
+     server, so its person is the zapper its `P` tag names — another element of the
+     same `tag_index` array the key lives in, which a grouping cannot reach (inside a
+     key's group Vespa binds the attribute to that key alone; tried, measured empty);
+  3. zapper trust: one query on `reputation.sd`'s new `trust_cell` profile.
+- **`LinkWeights`** (the store's policy, data): every link +1, a NIP-56 report −1,
+  someone else's deletion request (kind 5) and a mute list (10000) 0; per person and
+  kind each repeat worth half the one before (≤ 2); per person the kinds summed and
+  clamped to ±5, times their trust (rank / 100); people summed; the hit's own author
+  left out. One link naming a hit by `e` AND `a` (a like on an article) is one link:
+  counted per key, then the max across a hit's keys. A receipt with no `P` (46% of the
+  captured ones) counts once at its signer's trust. `e`, `a` and a NIP-18 quote's `q`
+  (by id, or by address on an addressable) link; NIP-22's uppercase roots are not read
+  (a comment carries a lowercase `e` too), and a quote-reply's `e` + `q` is one link.
+- **`LinkRerank`**: each of the top 100 hits' engine score × `(1 + |E|)^(±0.5)`,
+  clamped to [⅓, 3], the whole page re-sorted, each filter cut back to its own limit
+  (a read asking for fewer is recalled at 100 — only when a lens resolves; without
+  one nothing is widened).
+
+`TrustedLinksIT` pins it on a real Vespa, every number against a hand-worked sum:
+the gate at `hits=0`, repeats halving, the author excluded, a zap at its zapper's
+trust (not the signer's), an untrusted zapper and an untrusted signer both counting
+nothing, a `P`-less receipt at its signer's trust, a lone trusted report at −0.5, and
+the end-to-end reorder, at `limit 1` too.
+
+**Why per person.** On the captured pages, trusted links per (note, person): 1 link
+for 3,534 pairs (46% of links), 2–5 for 1,216 (37%), 6+ for 80 pairs that carry 17%
+of all links. The 6+ were almost all zap receipts grouped by their SIGNER — a "person"
+with 241 links to one note was a wallet service carrying 85 different zappers. The
+humans who repeat are repliers (606 of 2,295 note-and-replier pairs reply more than
+once: conversations), and 10% of trusted links were a note's author in their own
+thread. Only 214 of 439 zappers clear the floor themselves, while the services
+signing for them sit at 56–99 — so the signer's trust let untrusted zappers through.
+
+**Why capped.** A page's text relevance comes in tiers (`LINK_PROBE_MODE=bands`):
+1–3 per page, a primary-field match (~130,000 text score) over a body match (~4,000),
+30–50× apart in the final score, while inside a tier neighbours are tied (median
+neighbour ratio 1.00; best/median 1.0–2.1× from author trust and recency). Crossings,
+counted as pairs where a worse tier ends above a better one, and how deep into the
+better tier the deepest goes (1 = its last hit):
+
+| page | uncapped (pairs, deepest) | capped at ×3 |
+|---|---:|---:|
+| lightning | 25, 3 | 17, 1 |
+| music | 4, 1 | 0 |
+| gm | 44, 1 | 44, 1 |
+| zap | **58, 30** | 20, 1 |
+| freedom | 1, 1 | 0 |
+| the other 7 | 0 | 0 |
+
+Capped, a crossing only ever passes the LAST hit of the better tier — `gm`'s 44 are
+all one low-trust primary-field news link already only 1.7× above the body tier —
+where uncapped, `zap`'s body matches climbed 30 places into the primary-field tier.
+Engagement decides among near-ties inside a tier and nudges across a border; it
+never overpowers the text match.
+
+**Cost** — same capture, same local Vespa (8.763, 4 vCPU), through `open()`, the 12
+search pages, median of 7:
+
+| page | base search | widened to 100, no rerank | `sort:links` | added (median) | hits changed vs base |
+|---|---:|---:|---:|---:|---:|
+| top 20 | 16–99 ms | 25–90 ms | 64–121 ms | **+64 ms** | 3–15 of 20 at strength 0.5 |
+| top 50 | 24–65 ms | 27–61 ms | 72–110 ms | **+59 ms** | 6–25 of 50 |
+
+The steps that led here, on the same pages: one grouping key → kind, every link a
+plain count, +45 / +34 ms; trust-weighted, same grouping, +47 / +38 ms; per person
+with the zap read and the zapper-trust read, +64 / +59 ms. The per-person grouping
+is the larger share of the step (it pays per author group, ×2–3 on the heaviest
+notes), the zap and trust reads the rest.
+
+**What it does to the heads** (strength 0.5): `bitcoin`'s 55-reply thread scores 12
+from 13 people, where counting gave it 72; the Ditto trend bot (`pub.ditto.trends`,
+NIP-32 labels republished every ~15 minutes, 306 of them on one `amethyst` release
+note) is one person per note, ≤ 2 × its trust; past the ×3 ceiling (8 fully trusted
+people's worth) hits tie on engagement and the engine's own order decides among
+them. **Not visible yet**: zap AMOUNTS and report REASONS — `tag_index` keeps a
+tag's value only, so both need a feed-time attribute; the same feed-time pass could
+write a per-event "actor" (the zapper, also for the 46% of receipts without `P`,
+from the `description`) and fold the zap read into the grouping.
+
+`./gradlew :benchmark:linkRerankProbe --args="/tmp/links.json [limit] [reps] [strengths]"`
+prints the latency table and, per term, the reranked head (new position, engine
+position, link score, people, counted links by kind, the note);
+`LINK_PROBE_MODE=bands` prints the tier view above.
+
+### Does the order make sense? A blind judgment on real searches (`rank_eval.py`, 2026-10-23)
+
+**Setup.** 20 queries (the 12 above plus pizza, linux, photography, bom dia, election,
+football, "lightning wallet", "nostr client"): the live relay's top 300 per query under
+the canonical observer, every event linking to them, and the provider's cards for every
+author AND every zapper (62,458 events), fed into a fresh local Vespa. The local default
+top 10 reproduces the relay's: 6–10 of 10 shared, 10 on most queries. Four orders per
+query, top 10 each: the default (`base`), `sort:links` (`links`), and both again with a
+note's subject match moved from the 130,000 rung (`w_name_tier`, shared with a profile's
+name match) to the body's ~4,000 (`flat`, `flat_links`). Two independent readers saw
+only the query and the four unlabeled lists (post text, date, short author id; order
+shuffled per query, independently per reader, key kept apart), graded every result 0–2
+and ranked the lists.
+
+| order | nDCG@10 (reader 1 / 2) | mean place | best list (r1 / r2) |
+|---|---:|---:|---:|
+| default | 0.578 / 0.545 | 2.80 / 2.75 | 0 / 1 |
+| **sort:links** | **0.694 / 0.647** | **2.00 / 1.60** | **8 / 13** |
+| flat | 0.549 / 0.500 | 3.15 / 3.30 | 3 / 2 |
+| flat + links | 0.669 / 0.587 | 2.05 / 2.35 | 9 / 4 |
+
+- **`sort:links` is better**: higher nDCG than the default on 17 of 20 queries for one
+  reader and 15 of 20 for the other (sign test p = 0.003 / 0.04), placed above it on 14 /
+  17. The readers agree on the best list for 14 of 20 queries. Where it lost (lightning,
+  coffee, and one reader's zap/freedom), it lifted an engaged but lightly relevant post
+  ("stickers from the lightning store" over an ACINQ explainer) — and the default
+  lightning page carried an 11th, spliced-in result that padded its nDCG.
+- **Demoting subject matches alone makes it WORSE** (`flat` vs default: better on 5,
+  worse on 10, same on 5, both readers). A note with a NIP-14 subject naming the query is
+  usually a headline post — a good result. What is wrong with those pages is their AGE,
+  not their subjects; see the next point.
+- **The default is stale.** Median top-10 age is ~2 years (704 days; bitcoin, nostr,
+  lightning, zap, "nostr client" ~3 years) although the candidate pools are young —
+  "bitcoin"'s median candidate is 51 days old and 101 are under 30 days, yet none reaches
+  the engine's top 100: every hit there matches in a subject tag (old clients wrote them;
+  current ones write hashtags, which land on the body rung, 30× lower). Flattening the
+  rung did not bring the fresh ones up either: the old notes match in the body too. A
+  stronger recency term is the next thing to sweep (`rankAb`, `query(w_recency)`).
+- **One author takes a page.** 3.3 repeated authors per top 10 on average, in every
+  order: one account's #bomdia posts (7 of 10), a podcast's show notes ("lightning
+  wallet": 5), a quote bot, Mostro's release notes. Both readers named it as the main
+  reason a page lost. Engagement can deepen it (bitcoin under `sort:links`: one
+  Portuguese author's posts, 6 repeats). The store's per-author cap exists and is off
+  by default (`maxHitsPerAuthor`); it is the cheapest fix left untested here.
+- **Junk that still reaches a top 10**: exact cross-posted duplicates, bare image
+  links and hashtag-only posts, reply stubs whose subject is a `nostr:note…` reference
+  ("Ok" at #3 for "nostr"), and off-topic word matches ("Electron apps" for "election").
+
+**Caveats.** The readers are language models (one model family, two independent
+packets), the sample is 20 queries at top 10, and the local candidate pool is the
+relay's top 300 per query — a hit the relay ranks past 300 cannot surface here.
+
+**Follow-up: a stronger recency term, and a per-author cap (2026-10-23).** Same corpus,
+same blind protocol, orders rebuilt offline from the engine's top-100 window
+(`LINK_PROBE_RECENCY`, `rank_eval.py packets … "<specs>"`; the rebuilt default and
+`sort:links` pages match the store's served pages hit for hit). The cap keeps at most
+2 hits per author and REFILLS from further down the window, which the store's
+`maxHitsPerAuthor` does not (it drops, and the page comes back short).
+
+Round 1 — the default order at five `query(w_recency)` values (`recency_mult()` is
+`1 + w × freshness`, freshness halving at 30 days; 0.1 ships):
+
+| `w_recency` | nDCG@10 (r1 / r2) | mean place | best (r1 / r2) | median top-10 age |
+|---|---:|---:|---:|---:|
+| 0.1 | 0.512 / 0.528 | 3.55 / 3.75 | 4 / 4 | 707 d |
+| 1 | 0.539 / 0.537 | 3.30 / 3.55 | 3 / 1 | 632 d |
+| 3 | 0.543 / 0.543 | 3.05 / 3.15 | 2 / 2 | 575 d |
+| 10 | 0.569 / 0.576 | 2.75 / 2.65 | 4 / 3 | 442 d |
+| **30** | **0.590 / 0.594** | **2.35 / 1.90** | **7 / 10** | **386 d** |
+
+Monotone for both readers, still rising at the top of the range; per query 30 beats
+0.1 on 13 / 14 of 20 (p = 0.26 / 0.12 — the trend across five weights and two readers
+is the stronger evidence). Even at 30 the median top-10 note is a year old: the subject
+rung (30×) still holds the head.
+
+Round 2 — combinations:
+
+| order | nDCG@10 (r1 / r2) | mean place | best (r1 / r2) | repeated authors / 10 |
+|---|---:|---:|---:|---:|
+| `sort:links` (w 0.1) | 0.622 / 0.599 | 3.15 / 3.15 | 1 / 3 | 3.2 |
+| `sort:links` + cap 2 | 0.621 / 0.593 | 2.75 / 3.00 | 6 / 3 | 1.7 |
+| **`sort:links`, w 30** | **0.644 / 0.591** | **2.50 / 2.55** | **9 / 7** | 3.9 |
+| `sort:links`, w 30, + cap 2 | 0.607 / 0.574 | 2.85 / 2.70 | 2 / 4 | 2.1 |
+| w 30 + cap 2, no links | 0.561 / 0.537 | 3.75 / 3.60 | 2 / 3 | 2.1 |
+
+- **Recency and engagement compound**: `sort:links` at w 30 is placed above `sort:links`
+  at 0.1 on 13 / 14 of 20 queries, and engagement still adds on top of recency + cap
+  (better on 13 / 13, placed above on 14 / 14).
+- **The author cap does not pay**, although both readers name single-author pages as the
+  commonest failure: at w 30 it is worse than no cap on 10 / 9 queries and better on 5 /
+  5. The hits that refill a capped page come from further down the window and are weaker
+  than the third post they replace. Not worth turning on as is; a cap that only demotes
+  (a repeat sinks a few places) rather than replaces is the variant left untested.
+- **Before shipping a recency change**: `w_recency` is shared by every kind, and the kind-0
+  profile searches `rank_cases.json` pins were calibrated at 0.1 (see the comment above
+  the input in event.sd). Run `rankAb` over the cases at the new weight, and keep
+  `RankRegressionIT` green, before changing the default; a note-only weight is the
+  alternative if profiles regress (a per-kind split was tried and rejected 2026-08-22 on
+  a time-flat corpus — this corpus is not time-flat).
+
+Round 3 — recency past 30, and a DEMOTE author rule (`+demote`: greedily, each further
+hit of an author already on the page scores × 0.5 per hit it already has; nothing is
+dropped, nothing refilled). Ages here and below are the median across queries of each
+page's median top-10 age:
+
+| order (all `sort:links`) | nDCG@10 (r1 / r2) | mean place | best (r1 / r2) | repeated authors / 10 | median age |
+|---|---:|---:|---:|---:|---:|
+| w 30 | 0.644 / 0.631 | 3.35 / 3.05 | 3 / 4 | 3.9 | 110 d |
+| w 100 | 0.650 / 0.632 | 2.75 / 3.15 | 2 / 2 | 4.2 | 59 d |
+| w 300 | 0.643 / 0.622 | 2.80 / 3.20 | 4 / 2 | 4.2 | 23 d |
+| w 30 + demote | 0.602 / 0.612 | 3.25 / 2.85 | 5 / 3 | 0.9 | 87 d |
+| w 100 + demote | 0.600 / 0.607 | 2.85 / 2.75 | **6 / 9** | 1.0 | 44 d |
+
+- **Recency plateaus at 30**: 100 and 300 keep making pages younger and are not judged
+  better.
+- **Demote is mixed**: it nearly removes repeats and is the list most often picked first
+  at w 100, but its nDCG drops on 13 / 12 queries (rises on 7 / 8) — the readers like a
+  varied page and mark down the weaker hits variety brings up. Not a default.
+
+**What a global `w_recency` does to profile search** (`rankAb --rank-key`, the 27
+`rank_cases.json` cases over a fresh relay capture of them — `capture_links.py --kinds all
+--no-links` — in a second local Vespa). `--rank-key` is new: `rankAb` sits below the store,
+so without the lens's service key an observer's query trusted nobody and every case read
+MISS. Of the 8 cases with an expected id, 4 are absent from the capture (replaced profiles,
+the "Verified Human" splice the store adds, odell past the relay's top 300); of the rest,
+`Primal` goes #3 → #5 at w 10 and 30, #6 at w 100, and the median top-10 age 700 d → 87 /
+78 / 77 d. Read as pages (`--dump`), w 30 puts San Jose meetup calendar events (kind
+31923) above every "Jose" profile, and a Josh above the Joses. Recency on REGULAR kinds
+only (a temporary schema knob, reverted) fixed "jose" but sank profiles under fresh notes:
+a note saying "Vitor" at #1, `Primal` at #36. And `RankRegressionIT`'s ladder claim pins
+that at w 2 a same-day body hit must not cross a five-year-old weak-tier hit (at w 20 it
+does). So a stronger recency weight is a property of the QUERY — a notes-only search,
+which all 20 evaluation queries were — not of a document kind; profile and mixed-kind
+searches keep 0.1.
+
+Round 4 — can the tiers stay intact and the pages still be fresh? `fw<x>`: a note's
+subject match moved to the body rung (`LINK_PROBE_NAME_TIER=4000`), at a moderate
+`w_recency`:
+
+| order (all `sort:links`) | nDCG@10 (r1 / r2) | mean place | best (r1 / r2) | median age | hits off the top text tier / 10 |
+|---|---:|---:|---:|---:|---:|
+| w 0.1 | 0.619 / 0.666 | 3.30 / 3.00 | 4 / 4 | 841 d | 4.2 |
+| w 3 | 0.632 / 0.660 | 3.25 / 3.25 | 0 / 0 | 593 d | 4.4 |
+| **w 30** | 0.645 / 0.647 | **2.50 / 2.55** | **9 / 8** | 110 d | 5.5 |
+| flat, w 1 | 0.611 / 0.636 | 2.90 / 2.95 | 4 / 5 | 417 d | 1.9 |
+| flat, w 3 | 0.598 / 0.608 | 3.05 / 3.25 | 3 / 3 | 147 d | 2.6 |
+
+The readers pick the same best list on 19 of 20 queries. w 30 is the list they pick
+(placed above w 0.1 on 14 / 13 queries, above w 3 on 13 / 13; p ≈ 0.1–0.3 each), while
+nDCG barely separates any of the five. Flat w 3 is nearly as fresh with half the tier
+crossings, and per query a tie with w 30 (nDCG 10–10, 10–9), but first only 3 times.
+Freshness is what is rewarded; keeping the tiers strict is a design choice these readers
+did not ask for.
+
+**Shipped (2026-10-23): a search for notes alone ranks at `w_recency` 30.** The store
+sends `EventQuery.recencyWeight` = `NOTE_RECENCY_WEIGHT` when a search's kinds are
+exactly `[1]` (`mapping/FilterMapping.kt`); the engine sends it only on the `search`
+profile, and every other shape — no kinds, profiles, mixed kinds, other kinds — keeps
+event.sd's 0.1. One REQ is one scale: its searches are merged on their scores, so when
+they disagree (`kinds:[0]` beside `kinds:[1]`) every one drops back to 0.1
+(`PageAssembly.oneRecencyScale`) — or the notes would bury the profiles in the merge.
+At 31× a fresh note crosses at most one rung, never two (weak → exact is 32.5×);
+`RankRegressionIT` claim 6 pins both sides at this weight.
+
+    python3 benchmark/capture_links.py /tmp/eval.json --per-term 300 --popular 0 --no-oracle --terms "bitcoin,nostr,…"
+    VESPA_URL=http://localhost:8080 ./gradlew :benchmark:exportLoad --args=/tmp/eval.json
+    LINK_PROBE_MODE=dump LINK_PROBE_OUT=/tmp/eval.dump.json ./gradlew :benchmark:linkRerankProbe --args="/tmp/eval.json 10"
+    python3 benchmark/rank_eval.py packets /tmp/eval.json /tmp/eval.dump.json /tmp/eval-out
+    # two readers grade packet-1.json / packet-2.json into grades-1.json / grades-2.json
+    python3 benchmark/rank_eval.py score /tmp/eval-out
+
+Reproduce:
+
+```
+python3 benchmark/capture_links.py /tmp/links.json                 # ~15 min, read-only
+VESPA_URL=http://localhost:8080 ./gradlew :benchmark:exportLoad --args=/tmp/links.json
+python3 benchmark/links_probe.py --capture /tmp/links.json --reps 7
+```
+
 ## Replaying a pin bump on real data (`pinReplayProbe`, 2026-10-06)
 
 The `d792ebc4bf` → `68268da413` Quartz bump ships with a 61-kind

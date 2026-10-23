@@ -20,6 +20,9 @@
  */
 package com.nosfabrica.vespa.eventstore.search
 
+import com.nosfabrica.vespa.eventstore.engine.LinkScore
+import com.nosfabrica.vespa.eventstore.engine.LinkTarget
+import com.nosfabrica.vespa.eventstore.engine.LinkWeights
 import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.async.QUERY_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
@@ -41,6 +44,22 @@ internal fun EventQuery.isRanked(): Boolean = search != null || phrases.isNotEmp
  * come back in the same `created_at desc, id asc` order a plain filter's do.
  */
 internal fun EventQuery.keepsEngineOrder(): Boolean = isRanked() && ranking != EventYql.RANK_RECENCY_GATED && ranking != EventYql.RANK_RECENCY_GATED_EXACT
+
+/**
+ * ONE RECENCY SCALE PER READ. [EventQuery.recencyWeight] is chosen per filter
+ * (a notes-only search ranks fresher; see FilterMapping's NOTE_RECENCY_WEIGHT),
+ * but a REQ's searches are MERGED on their scores when they share a profile —
+ * so `[{kinds:[0], search:"jose"}, {kinds:[1], search:"jose"}]` would put every
+ * fresh note (up to 31x) above every Jose profile (1.1x), the very regression
+ * the per-shape weight exists to avoid. When the searches of one read disagree,
+ * every one of them drops back to the schema's weight; when they agree, the
+ * weight stands, and the companions built from them inherit it, so the whole
+ * read is still ONE scale.
+ */
+internal fun List<EventQuery>.oneRecencyScale(): List<EventQuery> {
+    val weights = filter { it.search != null || it.phrases.isNotEmpty() }.mapTo(HashSet()) { it.recencyWeight }
+    return if (weights.size <= 1) this else map { if (it.recencyWeight == null) it else it.copy(recencyWeight = null) }
+}
 
 /**
  * FROM A READ'S QUERIES TO THE PAGE IT SERVES: recall them all, put the union
@@ -67,6 +86,8 @@ internal class PageAssembly(
     private val maxHitsPerAuthor: Int?,
     /** Whose declarations one observer may unpack; resolved at most once per observer, and only on the paths that consult the gate. */
     private val enrolments: suspend (String?) -> Enrolment,
+    /** The `sort:links` rerank ([LinkRerank]), or null to ignore the token. */
+    private val linkRerank: LinkRerank? = null,
 ) {
     /**
      * How to read one row type, and how to recall it — everything the pipeline
@@ -84,6 +105,8 @@ internal class PageAssembly(
         val pointerOf: (R) -> Event?,
         val search: suspend (EventQuery) -> List<R>,
         val searchRanked: suspend (EventQuery) -> List<Ranked<R>>,
+        /** [com.nosfabrica.vespa.eventstore.engine.EventIndex.scoreLinks] — what the `sort:links` rerank reads. */
+        val scoreLinks: suspend (List<LinkTarget>, EventQuery, LinkWeights) -> Map<String, LinkScore>,
     )
 
     /**
@@ -95,20 +118,34 @@ internal class PageAssembly(
      * row about to be dropped cannot spend an author's slots.
      */
     suspend fun <R> serve(
-        queries: List<EventQuery>,
+        read: List<EventQuery>,
         filters: List<Filter>,
         projection: Projection<R>,
     ): List<R> {
+        val queries = read.oneRecencyScale()
         val expansion = expansionOf(queries)
+        // The rerank widens the RECALL, never the answer: each filter's own
+        // limit is cut back to once the page is rescored. Only a read that
+        // resolves a lens is widened at all — without one there is no web of
+        // trust to filter the links by, and a widened recall would be read
+        // five times over only to be cut back unchanged.
+        val strength =
+            linkRerank
+                ?.takeIf { rerank -> queries.isNotEmpty() && queries.all { it.keepsEngineOrder() } && queries.any { rerank.linkersOf(it) != null } }
+                ?.requested(filters)
+        val recall = if (strength != null) queries.map(linkRerank!!::widened) else queries
         val recalled =
             recallOrdered(
-                queries + companionsOf(expansion, queries),
+                // Companions are deduplicated against the UNWIDENED queries they
+                // were built from: a sibling filter they duplicate is in the
+                // recall widened, which covers the companion's own limit.
+                recall + companionsOf(expansion, queries),
                 projection.newestFirst,
                 projection.idOf,
                 projection.search,
                 projection.searchRanked,
-                expansion != null,
-            )
+                expansion != null || strength != null,
+            ).let { page -> if (strength == null) page else reranked(page, queries, filters, strength, projection) }
         return spliced(expansion, recalled, projection.keys, projection.pointerOf, projection.searchRanked)
             .asked(expansion, filters, projection.kindOf, projection.idOf, projection.authorOf)
             .diverse(queries.all { it.keepsEngineOrder() }, projection.authorOf)
@@ -269,6 +306,76 @@ internal class PageAssembly(
     }
 
     /**
+     * [page] with its head rescored by trusted links and re-sorted, cut back to
+     * the size [queries] asked for — see [LinkRerank] for the signal and why it
+     * is shaped this way.
+     *
+     * BEFORE THE SPLICE, deliberately: a Trusted List's member is placed by
+     * comparing its member-profile score against the hits' scores, and the hits'
+     * scores are now the reranked ones. A member is not itself rescored — it was
+     * found through its pointer, and the pointer's links are what moved.
+     *
+     * A page with no scores (a mixed or concatenated recall, an engine that does
+     * not rank) cannot be rescored and keeps its order; it is still cut back,
+     * since the recall was widened either way.
+     */
+    private suspend fun <R> reranked(
+        page: Page<R>,
+        queries: List<EventQuery>,
+        filters: List<Filter>,
+        strength: Double,
+        projection: Projection<R>,
+    ): Page<R> {
+        val rerank = linkRerank ?: return page
+        val scores = page.scores
+        val linkers = queries.firstNotNullOfOrNull { rerank.linkersOf(it) }
+        if (scores == null || linkers == null || scores.any { it == null } || page.hits.isEmpty()) {
+            return page.cutPerFilter(filters, projection.kindOf, projection.idOf, projection.authorOf)
+        }
+        val head = minOf(rerank.window, page.hits.size)
+        val targets = List(head) { i -> page.hits[i].let { LinkTarget(projection.idOf(it), projection.authorOf(it), projection.keys.addressOf(it)) } }
+        val links = projection.scoreLinks(targets, linkers, rerank.weights)
+        val boosted =
+            List(head) { i ->
+                // A hit nothing scorable links to is absent from the answer: engagement 0, multiplier 1.
+                val engagement = links[targets[i].id]?.score ?: 0.0
+                scores[i]!! * LinkRerank.multiplier(engagement, strength, rerank.maxBoost)
+            }
+        // The WHOLE page, not just its head: a head hit that drew reports can
+        // fall below a tail hit nothing rescored, and a page past the window
+        // must still come out in score order — the splice places members by it.
+        // Stable: equal rescored hits keep the engine's order between them.
+        val order = page.hits.indices.sortedByDescending { if (it < head) boosted[it] else scores[it]!! }
+        return Page(
+            order.map { page.hits[it] },
+            order.map { if (it < head) boosted[it] else scores[it] },
+            page.texts?.let { texts -> order.map { texts[it] } },
+        ).cutPerFilter(filters, projection.kindOf, projection.idOf, projection.authorOf)
+    }
+
+    /**
+     * What one filter admits by the fields a ROW carries — kinds, ids, authors —
+     * and the limit it asked for. Terms, tags and time are the engine's to have
+     * applied; these three are what a page assembled from several queries plus
+     * their companions can still be sorted back into "whose row is this".
+     */
+    private class FilterKey(
+        filter: Filter,
+    ) {
+        val kinds = filter.kinds?.toSet()
+        val ids = filter.ids?.mapTo(HashSet()) { it.lowercase() }
+        val authors = filter.authors?.mapTo(HashSet()) { it.lowercase() }
+        val limit = filter.limit
+
+        fun <R> admits(
+            row: R,
+            kindOf: (R) -> Int,
+            idOf: (R) -> String,
+            authorOf: (R) -> String,
+        ): Boolean = (kinds == null || kindOf(row) in kinds) && (ids == null || idOf(row) in ids) && (authors == null || authorOf(row) in authors)
+    }
+
+    /**
      * ONE ORDERED PAGE, AND THE RELEVANCE BEHIND IT — [scores] index-aligned
      * with [hits], or NULL for the pages that have none: a recency-ordered
      * recall, two ranking profiles concatenated, an engine that does not rank.
@@ -291,6 +398,37 @@ internal class PageAssembly(
          */
         val texts: List<Double?>? = null,
     ) {
+        /**
+         * The widened recall cut back to what each FILTER asked for: NIP-01 gives
+         * every filter its own limit, and the page is their union. A row counts
+         * against every filter whose kinds / ids / authors admit it ([FilterKey],
+         * the same keys [asked] reads) and is kept while one of them has room —
+         * so two filters on different kinds keep their own top N each, as an
+         * unwidened recall would have. A row NO filter admits is a companion's
+         * pointer (recalled at its own, unwidened limit): it takes no filter's
+         * room and is left for the splice and [asked] exactly as an unreranked
+         * read leaves it. Filters that differ only in their search words share
+         * one key here, and so share their room.
+         */
+        fun cutPerFilter(
+            filters: List<Filter>,
+            kindOf: (R) -> Int,
+            idOf: (R) -> String,
+            authorOf: (R) -> String,
+        ): Page<R> {
+            val keys = filters.map(::FilterKey)
+            val taken = IntArray(keys.size)
+            val kept = ArrayList<Int>(hits.size)
+            for (i in hits.indices) {
+                val admitting = keys.indices.filter { keys[it].admits(hits[i], kindOf, idOf, authorOf) }
+                if (admitting.isNotEmpty() && admitting.none { keys[it].limit.let { limit -> limit == null || taken[it] < limit } }) continue
+                admitting.forEach { taken[it]++ }
+                kept += i
+            }
+            if (kept.size == hits.size) return this
+            return Page(kept.map { hits[it] }, scores?.let { s -> kept.map { s[it] } }, texts?.let { t -> kept.map { t[it] } })
+        }
+
         companion object {
             fun <R> of(ranked: List<Ranked<R>>) = Page(ranked.map { it.hit }, ranked.map { it.score }, ranked.map { it.textScore })
         }
@@ -477,12 +615,9 @@ internal class PageAssembly(
         authorOf: (R) -> String,
     ): List<R> {
         if (expansion == null) return this
-        val keys = filters.map { Triple(it.kinds?.toSet(), it.ids?.mapTo(HashSet()) { id -> id.lowercase() }, it.authors?.mapTo(HashSet()) { a -> a.lowercase() }) }
+        val keys = filters.map(::FilterKey)
 
-        fun admitted(row: R): Boolean =
-            keys.any { (kinds, ids, authors) ->
-                (kinds == null || kindOf(row) in kinds) && (ids == null || idOf(row) in ids) && (authors == null || authorOf(row) in authors)
-            }
+        fun admitted(row: R): Boolean = keys.any { it.admits(row, kindOf, idOf, authorOf) }
         // ONE PASS, and no copy unless something is actually dropped. `all`
         // then `filter` judged every surviving row TWICE — and `admitted` is a
         // scan of every filter's key sets per row — on a path that already runs

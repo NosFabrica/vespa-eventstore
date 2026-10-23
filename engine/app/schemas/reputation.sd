@@ -39,4 +39,23 @@ schema reputation {
             indexing: attribute
         }
     }
+
+    # trust_cell: a pubkey's rank cell under one lens, as the hit's relevance —
+    # `select pubkey from reputation where pubkey in (...)` with
+    # query(user_q) = {<service>: 1.0} reads a whole batch of authors' trust in
+    # one query. EventIndex.scoreLinks uses it for ZAPPERS: a zap receipt is
+    # signed by the recipient's LNURL server, so the person behind it (the
+    # receipt's `P` tag) is not the document's author and the imported
+    # author_influence_scores cannot answer for them. An author with no
+    # document, or no cell under the lens, is absent / 0 — the same 0 the event
+    # profiles read for an unranked author.
+    rank-profile trust_cell {
+        inputs {
+            query(user_q) tensor<float>(user{})
+        }
+
+        first-phase {
+            expression: sum(query(user_q) * attribute(influence_scores))
+        }
+    }
 }
