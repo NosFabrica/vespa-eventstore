@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore.benchmark.bench
 
+import com.nosfabrica.vespa.eventstore.benchmark.harness.Agreement
 import com.nosfabrica.vespa.eventstore.benchmark.harness.Judgments
 import com.nosfabrica.vespa.eventstore.benchmark.harness.PairedComparison
 import com.nosfabrica.vespa.eventstore.benchmark.harness.RelevanceMetrics
@@ -218,9 +219,19 @@ object RankAb {
                         return
                     }
                 }.orEmpty()
-        val names = opts["--configs"]?.split(",") ?: CONFIGS.keys.toList()
-        names.firstOrNull { it !in CONFIGS }?.let {
-            System.err.println("unknown config '$it'; known: ${CONFIGS.keys}")
+        // `--run name=path[,name=path]`: rankings computed ELSEWHERE — the
+        // production relay's served pages, another cluster's `--write-runs`
+        // output — scored as configs beside the live ones, against the same
+        // judgments (docs/search-evaluation.md §8.4). Named in `--configs`
+        // like any other; put one FIRST to make it the baseline.
+        val runs =
+            opts["--run"]
+                ?.split(",")
+                ?.associate { spec -> spec.substringBefore("=") to loadRun(Path.of(spec.substringAfter("="))) }
+                .orEmpty()
+        val names = opts["--configs"]?.split(",") ?: (CONFIGS.keys.toList() + runs.keys)
+        names.firstOrNull { it !in CONFIGS && it !in runs }?.let {
+            System.err.println("unknown config '$it'; known: ${CONFIGS.keys + runs.keys}")
             return
         }
         // The graded judgments (docs/search-evaluation.md). A missing file is
@@ -234,6 +245,15 @@ object RankAb {
             return
         }
 
+        // ---- --agreement: a blind re-grade against the stored grades ------
+        // The audit an LLM-judged batch owes (§5.3). Run it BEFORE merging the
+        // audit sheet: --merge overwrites, so afterwards the two assessors
+        // agree by construction.
+        opts["--agreement"]?.let { sheet ->
+            agreement(Path.of(sheet), Judgments.load(judgmentsPath))
+            return
+        }
+
         // ---- --dump: ONE query, the whole page, per config ----------------
         // The case table answers "did the pinned doc move"; this answers "what
         // is on the page and why it is there" — kind, name, the band
@@ -242,7 +262,7 @@ object RankAb {
         // MRR: just the page, side by side, from the same request the library
         // sends.
         opts["--dump"]?.let { text ->
-            for (config in names) {
+            for (config in names.filter { it in CONFIGS }) {
                 println("\n=== $config === $text")
                 dumpPage(search(vespa, text, profile, observer, hits, CONFIGS.getValue(config), nowSecs, kinds))
             }
@@ -289,8 +309,18 @@ object RankAb {
         val clock = nowSecs ?: (System.currentTimeMillis() / 1000)
         val pages = LinkedHashMap<String, List<List<Hit>>>()
         for (config in names) {
-            pages[config] = topics.map { search(vespa, it.query, profile, it.observer, hits, CONFIGS.getValue(config), nowSecs, it.kinds) }
+            val run = runs[config]
+            pages[config] =
+                if (run != null) {
+                    topics.filter { it.key !in run }.takeIf { it.isNotEmpty() }?.let { missing ->
+                        System.err.println("run '$config' has no page for ${missing.map { it.key }} — scored as EMPTY pages")
+                    }
+                    topics.map { run[it.key].orEmpty().take(hits) }
+                } else {
+                    topics.map { search(vespa, it.query, profile, it.observer, hits, CONFIGS.getValue(config), nowSecs, it.kinds) }
+                }
         }
+        opts["--write-runs"]?.let { dir -> writeRuns(Path.of(dir), topics, pages) }
         val results =
             pages.mapValues { (_, ranked) ->
                 ranked.mapIndexed { i, hitsOf ->
@@ -580,6 +610,106 @@ object RankAb {
         println("merged $added judgment(s) into $judgmentsPath ($ungraded row(s) left ungraded)")
     }
 
+    /**
+     * A RUN FILE: `{ "<topic>": [ <event>, … ] }` in served order — what a
+     * relay's NIP-50 REQ returns, captured as-is, or what [writeRuns] wrote.
+     * Plain Nostr events (a `sig` is ignored), so a capture needs no
+     * conversion. Keys starting with `_` are documentation.
+     */
+    private fun loadRun(path: Path): Map<String, List<Hit>> =
+        Json
+            .parseToJsonElement(Files.readString(path))
+            .jsonObject
+            .filterKeys { !it.startsWith("_") }
+            .mapValues { (_, page) ->
+                page.jsonArray.map { e ->
+                    val o = e.jsonObject
+
+                    fun str(k: String) = (o[k] as? JsonPrimitive)?.content
+                    val tags = o["tags"]?.toString() ?: "[]"
+                    Hit(
+                        id = str("id")!!,
+                        createdAt = str("created_at")?.toLongOrNull() ?: 0L,
+                        kind = str("kind") ?: "?",
+                        label = labelOf(str("kind"), tags, str("content")) ?: str("id")!!.take(8),
+                        pubkey = str("pubkey").orEmpty(),
+                        content = str("content").orEmpty(),
+                        tags = tags,
+                    )
+                }
+            }
+
+    /** One run file per config, so a ranking from THIS cluster can be scored against another's later (§8.4). */
+    private fun writeRuns(
+        dir: Path,
+        topics: List<Topic>,
+        pages: Map<String, List<List<Hit>>>,
+    ) {
+        Files.createDirectories(dir)
+        for ((config, ranked) in pages) {
+            val run =
+                buildJsonObject {
+                    put("_doc", "rankAb run '$config': served order per topic (docs/search-evaluation.md §8.4)")
+                    topics.forEachIndexed { i, topic ->
+                        put(
+                            topic.key,
+                            buildJsonArray {
+                                ranked[i].forEach { h ->
+                                    add(
+                                        buildJsonObject {
+                                            put("id", h.id)
+                                            put("pubkey", h.pubkey)
+                                            put("created_at", h.createdAt)
+                                            put("kind", h.kind.toIntOrNull() ?: -1)
+                                            put("tags", runCatching { Json.parseToJsonElement(h.tags) }.getOrDefault(JsonArray(emptyList())))
+                                            put("content", h.content)
+                                        },
+                                    )
+                                }
+                            },
+                        )
+                    }
+                }
+            Files.writeString(dir.resolve("run_$config.json"), Json.encodeToString(JsonObject.serializer(), run) + "\n")
+        }
+        println("wrote ${pages.size} run file(s) to $dir")
+    }
+
+    /**
+     * Grades in [sheet] (a --pool-shaped worksheet a second assessor filled)
+     * against the stored ones, on the documents both graded.
+     */
+    private fun agreement(
+        sheet: Path,
+        qrels: Judgments,
+    ) {
+        val rows = Json.parseToJsonElement(Files.readString(sheet)).jsonArray.map { it.jsonObject }
+        val pairs = ArrayList<Pair<Int, Int>>()
+        val byTopic = LinkedHashMap<String, MutableList<Pair<Int, Int>>>()
+        for (row in rows) {
+            val second = (row["grade"] as? JsonPrimitive)?.content?.toIntOrNull() ?: continue
+            val topic = row.getValue("topic").jsonPrimitive.content
+            val first = qrels.gradeOf(topic, row.getValue("id").jsonPrimitive.content) ?: continue
+            pairs += first to second
+            byTopic.getOrPut(topic) { ArrayList() } += first to second
+        }
+        val r = Agreement.of(pairs)
+        println("agreement over ${r.n} document(s) graded in both (stored = first assessor, $sheet = second)")
+        println("  exact %.2f   within one %.2f   quadratic-weighted kappa %s".format(r.exact, r.withinOne, if (r.kappa.isNaN()) "-" else "%.3f".format(r.kappa)))
+        println("  confusion (rows: stored grade 0..3, columns: second assessor 0..3)")
+        r.matrix.forEachIndexed { g, row -> println("    $g  " + row.joinToString(" ") { "%4d".format(it) }) }
+        val higher = pairs.count { it.second > it.first }
+        val lower = pairs.count { it.second < it.first }
+        println("  second assessor higher on $higher, lower on $lower — a lenient first assessor shows as 'lower' mass")
+        val worst =
+            byTopic
+                .mapValues { (_, p) -> p.count { it.first != it.second } }
+                .filterValues { it > 0 }
+                .entries
+                .sortedByDescending { it.value }
+        if (worst.isNotEmpty()) println("  disagreements by topic: " + worst.joinToString("  ") { "'${it.key}' ${it.value}/${byTopic.getValue(it.key).size}" })
+    }
+
     /** Judgments a topic needs before nDCG means anything (see [scoreOf]). */
     private const val GRADED_MIN = 5
 
@@ -668,6 +798,8 @@ object RankAb {
         // For the quality columns: the author-share guardrail and the --pool worksheet.
         val pubkey: String = "",
         val content: String = "",
+        // The raw tag array, so --write-runs saves an event a run file can be re-read from.
+        val tags: String = "[]",
     )
 
     /**
@@ -762,6 +894,7 @@ object RankAb {
                     perfect = feature("perfect_match"),
                     pubkey = str("pubkey").orEmpty(),
                     content = str("content").orEmpty(),
+                    tags = str("tags") ?: "[]",
                 )
             }
     }

@@ -221,6 +221,12 @@ or `expect` for a case's pinned doc) and `at`.
   in the PR (Cohen's weighted κ). Human assessors are measurably stricter than LLMs
   (Upadhyay et al.), so expect drift toward leniency. (2) The prompt gets exactly the
   worksheet row and this section's §4 table, and nothing about rank or config.
+  The audit runs as `rankAb --agreement <sheet>`, where `<sheet>` is the human's blind
+  re-grade of a sample in worksheet form. It prints exact and within-one agreement, the
+  quadratic-weighted κ, the confusion matrix (mass on one side of the diagonal is a
+  lenient or strict assessor) and the topics that disagree. Run it **before**
+  `--merge`-ing the same sheet, because a merge overwrites the LLM grade with the human
+  one, which is the right resolution of a disagreement and also erases it.
 - **Never let the judge and the ranker share a model.** Clarke & Dietz (2024–26) showed that
   once an LLM is both a system component and the evaluator, evaluation becomes circular:
   re-ranking with the judge model inflated scores on its own labels, and system-pair
@@ -326,7 +332,8 @@ from the live relay (CLAUDE.md: never feed it, never point a test at it), then l
 `exportLoad`. A capture is a plain JSON array of events. The 2026-10-23 run used, for every
 case query, the lensed page (`<q> observer:460c25…065c`, limit 150), the unranked page
 (`<q> include:spam`, limit 60), the observer's 10040, and the provider's 30382s for every
-author seen. That came to 6 076 events. `benchmark/capture_staging.py` shows the REQ shapes.
+author seen. That came to about 6 000 events. **`benchmark/capture_eval.py`** does exactly
+this, and also writes production's served pages as a run file (§8.5).
 
 ### 8.2 The run
 
@@ -356,10 +363,23 @@ the table.
 ### 8.4 Changes `query()` overrides cannot express
 
 A schema, extraction or `EventYql` change needs two clusters (or one cluster, before and
-after), each loaded from **the same capture**. Run `rankAb --configs baseline` against each,
-keep the output, and compare the two runs' per-topic rows. The judgments are by event id, so
-they apply to both. A paired comparison tool across two runs does not exist yet. Until it
-does, compare per-topic rows by hand and state n, W/T/L and the losses in the PR.
+after), each loaded from **the same capture**. Against the *before* cluster, run
+`rankAb --configs baseline --write-runs /tmp/before`. That saves every config's pages as a
+**run file**: per topic, the served events in order. Against the *after* cluster, run
+`rankAb --run before=/tmp/before/run_baseline.json --configs before,baseline`. The before
+pages are then the baseline, and the verdict is the same paired one as for overrides. The
+judgments are by event id, so they apply to both clusters.
+
+### 8.5 Against production
+
+The relay is a cluster this repo cannot redeploy, but its pages can be captured, and a
+captured page is a run. `benchmark/capture_eval.py` writes `run_production.json`, the
+relay's served order for every topic under the canonical observer.
+`rankAb --run production=<file> --configs production,baseline,…` then scores production
+first, as the baseline, so every local config reads as "versus what users get today". Two
+caveats are inherent. The local cluster only holds what the capture pulled, so this compares
+**orderings over production's candidates**, not recall. And the relay deploys on its own
+cadence, so name its NIP-11 `version` and the capture time beside the verdict.
 
 ## 9. First measurement (2026-10-23)
 
