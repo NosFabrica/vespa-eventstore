@@ -183,7 +183,39 @@ object LinkRerankProbe {
                         flatWindow
                             .sortedByDescending { r -> (r.score ?: 0.0) * LinkRerank.multiplier(flatLinks[r.hit.id]?.score ?: 0.0, rerank.strength, rerank.maxBoost) }
                             .take(limit)
+                    // RECENCY SWEEP (LINK_PROBE_RECENCY="0.1,1,3"): the engine's window at each
+                    // `w_recency`, with its link scores — the orders themselves (default,
+                    // reranked, author-capped) are rebuilt offline from these windows.
+                    val sweep =
+                        System
+                            .getenv("LINK_PROBE_RECENCY")
+                            ?.split(',')
+                            ?.map { it.trim().toDouble() }
+                            .orEmpty()
+                            .associateWith { w ->
+                                val win =
+                                    vs.engine.searchRanked(
+                                        EventQuery(kinds = listOf(1), search = term, observer = observer, rankKey = provider, followersKey = provider, minRank = 2.0, limit = rerank.window, nowSecs = now, rankFeatures = mapOf("w_recency" to w)),
+                                    )
+                                win to vs.engine.scoreLinks(win.map { LinkTarget(it.hit.id, it.hit.pubkey) }, linkers, rerank.weights)
+                            }
                     putJsonObject(term) {
+                        putJsonObject("recency") {
+                            for ((w, pair) in sweep) {
+                                val (win, wl) = pair
+                                putJsonObject(w.toString()) {
+                                    win.forEachIndexed { i, r ->
+                                        putJsonObject(r.hit.id) {
+                                            put("pos", i + 1)
+                                            put("score", r.score ?: 0.0)
+                                            put("text", r.textScore ?: 0.0)
+                                            put("link", wl[r.hit.id]?.score ?: 0.0)
+                                            put("people", wl[r.hit.id]?.people ?: 0)
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         put("base", JsonArray(base.map { JsonPrimitive(it) }))
                         put("links", JsonArray(linked.map { JsonPrimitive(it) }))
                         put("flat", JsonArray(flatWindow.take(limit).map { JsonPrimitive(it.hit.id) }))

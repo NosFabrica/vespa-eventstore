@@ -8,6 +8,9 @@
     # ... judges grade /tmp/eval-out/packet-*.json into /tmp/eval-out/grades-*.json ...
     python3 benchmark/rank_eval.py score /tmp/eval-out                                        # unblind and score
 
+    # Orders no store serves yet, rebuilt from the dump's recency windows (LINK_PROBE_RECENCY):
+    python3 benchmark/rank_eval.py packets /tmp/eval.json /tmp/eval.dump.json /tmp/eval-rec "w0.1,w1,w3,w10,w30"
+
 Two kinds of evidence, kept apart:
 
   PROXIES, computed here from the data: duplicate texts and repeated authors in a
@@ -99,18 +102,28 @@ ORDERS = {
 }
 
 
-def packets(capture, dump, out):
+def packets(capture, dump, out, specs=None):
+    """Blind packets over a set of orders: the store-served ones in ORDERS, or, with
+    [specs] ("w0.1,w1+links,w0.1+links+cap2"), orders REBUILT from the dump's recency
+    windows by [rebuild] — what an untested setting would serve, without deploying it."""
     events, meta, pages, rank = load(capture, dump)
     now = meta.get("captured_at", int(time.time()))
     os.makedirs(out, exist_ok=True)
-    orders = [o for o, (key, _) in ORDERS.items() if all(key in p for p in pages.values())]
-    report, keys = {}, {}
     rows = {}
-    for term, page in pages.items():
-        for o in orders:
-            key, win = ORDERS[o]
-            rows[term, o] = features(term, page[key], events, page[win], tiers(page[win]), rank, now)
-        report[term] = {o: proxies(rows[term, o]) for o in orders}
+    if specs:
+        orders = specs.split(",")
+        for term, page in pages.items():
+            for o in orders:
+                ids, window = rebuild(o, page["recency"], events)
+                rows[term, o] = features(term, ids, events, window, tiers(window), rank, now)
+    else:
+        orders = [o for o, (key, _) in ORDERS.items() if all(key in p for p in pages.values())]
+        for term, page in pages.items():
+            for o in orders:
+                key, win = ORDERS[o]
+                rows[term, o] = features(term, page[key], events, page[win], tiers(page[win]), rank, now)
+    report = {term: {o: proxies(rows[term, o]) for o in orders} for term in pages}
+    keys = {}
     for seed in (1, 2):
         rnd = random.Random(seed)
         packet = []
@@ -127,14 +140,44 @@ def packets(capture, dump, out):
     json.dump(keys, open(f"{out}/key.json", "w"), indent=1)
     json.dump(report, open(f"{out}/proxies.json", "w"), indent=1)
 
-    cols = ["dup_texts", "repeat_authors", "author_rank_p50", "age_days_p50", "engaged", "people_p50"]
-    print(f"{'query':<18} " + " ".join(f"{c:>26}" for c in cols))
-    for term, r in report.items():
-        print(f"{term:<18} " + " ".join(f"{' / '.join(str(round(r[o][c])) for o in orders):>26}" for c in cols))
-    print(f"(each cell: {' / '.join(orders)}, over the top 10)")
+    cols = ["dup_texts", "repeat_authors", "author_rank_p50", "age_days_p50", "engaged", "people_p50", "off_top_tier"]
+    print(f"orders: {orders}")
     for c in cols:
         print(f"  {c:<16} " + "  ".join(f"{o} {statistics.mean(report[t][o][c] for t in report):.1f}" for o in orders))
     print(f"\nwrote {out}/packet-1.json, packet-2.json (blind), key.json, proxies.json")
+
+
+#: The store's rerank constants (store/search/LinkRerank), replayed offline.
+STRENGTH, MAX_BOOST = 0.5, 3.0
+
+
+def multiplier(engagement):
+    m = (1.0 + abs(engagement)) ** (STRENGTH * (1 if engagement > 0 else -1 if engagement < 0 else 0))
+    return min(MAX_BOOST, max(1.0 / MAX_BOOST, m))
+
+
+def rebuild(spec, recency, events, size=10):
+    """One order from its spec, over the engine's window at that recency weight:
+    `w<x>` the default order at `w_recency` = x; `+links` the sort:links rerank
+    (score x the capped multiplier, as LinkRerank does); `+cap<k>` at most k hits per
+    author, WITH REFILL — a dropped repeat is replaced by the next hit down the window,
+    so the page stays full (the store's maxHitsPerAuthor drops without refilling)."""
+    parts = spec.split("+")
+    w = float(parts[0][1:])
+    window = recency[next(k for k in recency if float(k) == w)]
+    ids = sorted(window, key=lambda i: window[i]["pos"])
+    if "links" in parts:
+        ids = sorted(ids, key=lambda i: -window[i]["score"] * multiplier(window[i]["link"]))
+    cap = next((int(p[3:]) for p in parts if p.startswith("cap")), None)
+    if cap:
+        seen, kept = {}, []
+        for i in ids:
+            a = events[i]["pubkey"]
+            if seen.get(a, 0) < cap:
+                kept.append(i)
+                seen[a] = seen.get(a, 0) + 1
+        ids = kept
+    return ids[:size], window
 
 
 def dcg(grades):
@@ -179,6 +222,6 @@ def score(out):
 
 if __name__ == "__main__":
     if sys.argv[1] == "packets":
-        packets(*sys.argv[2:5])
+        packets(*sys.argv[2:6])
     elif sys.argv[1] == "score":
         score(sys.argv[2])
