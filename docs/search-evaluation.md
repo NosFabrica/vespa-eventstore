@@ -394,6 +394,26 @@ caveats are inherent. The local cluster only holds what the capture pulled, so t
 **orderings over production's candidates**, not recall. And the relay deploys on its own
 cadence, so name its NIP-11 `version` and the capture time beside the verdict.
 
+### 8.6 Two tools: `rankAb` and `rank_eval.py`
+
+`main` grew a second blind-judgment workflow alongside this one, `benchmark/rank_eval.py`
+(its results are in `benchmark/README.md`, "Does the order make sense?"), built to judge
+`sort:links` and the notes-only recency weight. They answer different questions, and a
+change may need both.
+
+| | `rankAb` + `search_judgments.json` | `rank_eval.py` |
+|---|---|---|
+| what it ranks | the engine: rank profiles and their `query()` knobs, through `EventYql` | whole orders as the store assembles them, including `sort:links` and spliced members |
+| judgments | per document, 0–3, **kept**: they accumulate across changes, with provenance and an audit | per document 0–2 plus a best-to-worst ranking of the lists, kept per run |
+| verdict | paired per-topic nDCG / S@k, randomization test, Holm, MDE, named losses (§6) | per-reader nDCG, sign test, list preference, page proxies (duplicates, repeated authors, age) |
+| use it for | every rank-profile, schema or extraction change, and the ship rule | a store-side reordering, and a reader's whole-page preference |
+
+They connect through run files. A store-side order exported as a run (`{topic: [events…]}`,
+§8.4) scores against the persistent judgments with `rankAb --run name=<file>`, so a
+`sort:links` page can be held to §6's paired verdict as well. Grades do not convert one-to-one
+(0–2 against 0–3), so do not merge `rank_eval.py` grades into `search_judgments.json`;
+re-grade the pool instead.
+
 ## 9. First measurement (2026-10-23)
 
 This run used a local Vespa loaded with `capture_eval.py`'s capture: 6 072 events, the 27
