@@ -684,6 +684,29 @@ days), on two topics: `lightning network` (+479 days), where an older explainer 
 replaced a newer bookmark list and nDCG rose by 0.074, and `the art of war`, whose pool holds
 nothing relevant. It is better content that happens to be older, not a staleness regression.
 
+*Latency.* Main's app with main's YQL against this app with this YQL, alternating deploys,
+`searchTrace` FULL row, kind 1, limit 50, p50 of 25 per round, three rounds each. On the
+evaluation cluster (11 588 documents, the real lens), every topic tried matches under 1 000
+documents and the two agree within noise (±2 ms at 7–45 ms), with identical match counts. That
+does not reach production's worst case, where a common word fills the 1 000-document rerank
+window per node and the new second-phase `fieldMatch(search_text)` runs on every slot. So the
+second run used the 149 875-event stratified production sample (`sample_names.py`), with the
+gate opened (`SEARCH_MIN_RANK=-1e9`, since the sample has no trust cards and a closed gate
+drops every hit before the second phase):
+
+| term (matches) | main, 3 rounds | this, 3 rounds |
+| --- | --- | --- |
+| `nostr` (12 569, window full) | 58, 30, 31 ms | 36, 32, 39 ms |
+| `bitcoin` (2 740, window full) | 24, 21, 20 | 22, 18, 24 |
+| `nostr bitcoin` (593) | 22, 18, 29 | 26, 21, 27 |
+| `bitcoin lightning network` (47) | 22, 20, 21 | 25, 21, 28 |
+| `book of daniel` (7) | 53, 41, 35 | 49, 47, 39 |
+| `the art of war` (5) | 16, 18, 19 | 17, 18, 22 |
+
+The cost is a few milliseconds per node at most, and the round-to-round spread is as large. The
+reported slow searches on production (seconds for `bitcoin` and `nostr`, `benchmark/README.md`)
+are matching, which neither change touches. The guardrail holds.
+
 `event.sd` ships `w_split_min_coverage` 0.5 and `w_phrase_pop` 4 000. `ThinSplitPhraseIT`
 pins the behaviour on a real Vespa: a thin split scores on the body rung, a body phrase reads
 1 and outranks it, the exact title leads, and a two-word query is untouched.
