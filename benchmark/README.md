@@ -1533,6 +1533,54 @@ and ranked the lists.
 packets), the sample is 20 queries at top 10, and the local candidate pool is the
 relay's top 300 per query — a hit the relay ranks past 300 cannot surface here.
 
+**Follow-up: a stronger recency term, and a per-author cap (2026-10-23).** Same corpus,
+same blind protocol, orders rebuilt offline from the engine's top-100 window
+(`LINK_PROBE_RECENCY`, `rank_eval.py packets … "<specs>"`; the rebuilt default and
+`sort:links` pages match the store's served pages hit for hit). The cap keeps at most
+2 hits per author and REFILLS from further down the window, which the store's
+`maxHitsPerAuthor` does not (it drops, and the page comes back short).
+
+Round 1 — the default order at five `query(w_recency)` values (`recency_mult()` is
+`1 + w × freshness`, freshness halving at 30 days; 0.1 ships):
+
+| `w_recency` | nDCG@10 (r1 / r2) | mean place | best (r1 / r2) | median top-10 age |
+|---|---:|---:|---:|---:|
+| 0.1 | 0.512 / 0.528 | 3.55 / 3.75 | 4 / 4 | 707 d |
+| 1 | 0.539 / 0.537 | 3.30 / 3.55 | 3 / 1 | 632 d |
+| 3 | 0.543 / 0.543 | 3.05 / 3.15 | 2 / 2 | 575 d |
+| 10 | 0.569 / 0.576 | 2.75 / 2.65 | 4 / 3 | 442 d |
+| **30** | **0.590 / 0.594** | **2.35 / 1.90** | **7 / 10** | **386 d** |
+
+Monotone for both readers, still rising at the top of the range; per query 30 beats
+0.1 on 13 / 14 of 20 (p = 0.26 / 0.12 — the trend across five weights and two readers
+is the stronger evidence). Even at 30 the median top-10 note is a year old: the subject
+rung (30×) still holds the head.
+
+Round 2 — combinations:
+
+| order | nDCG@10 (r1 / r2) | mean place | best (r1 / r2) | repeated authors / 10 |
+|---|---:|---:|---:|---:|
+| `sort:links` (w 0.1) | 0.622 / 0.599 | 3.15 / 3.15 | 1 / 3 | 3.2 |
+| `sort:links` + cap 2 | 0.621 / 0.593 | 2.75 / 3.00 | 6 / 3 | 1.7 |
+| **`sort:links`, w 30** | **0.644 / 0.591** | **2.50 / 2.55** | **9 / 7** | 3.9 |
+| `sort:links`, w 30, + cap 2 | 0.607 / 0.574 | 2.85 / 2.70 | 2 / 4 | 2.1 |
+| w 30 + cap 2, no links | 0.561 / 0.537 | 3.75 / 3.60 | 2 / 3 | 2.1 |
+
+- **Recency and engagement compound**: `sort:links` at w 30 is placed above `sort:links`
+  at 0.1 on 13 / 14 of 20 queries, and engagement still adds on top of recency + cap
+  (better on 13 / 13, placed above on 14 / 14).
+- **The author cap does not pay**, although both readers name single-author pages as the
+  commonest failure: at w 30 it is worse than no cap on 10 / 9 queries and better on 5 /
+  5. The hits that refill a capped page come from further down the window and are weaker
+  than the third post they replace. Not worth turning on as is; a cap that only demotes
+  (a repeat sinks a few places) rather than replaces is the variant left untested.
+- **Before shipping a recency change**: `w_recency` is shared by every kind, and the kind-0
+  profile searches `rank_cases.json` pins were calibrated at 0.1 (see the comment above
+  the input in event.sd). Run `rankAb` over the cases at the new weight, and keep
+  `RankRegressionIT` green, before changing the default; a note-only weight is the
+  alternative if profiles regress (a per-kind split was tried and rejected 2026-08-22 on
+  a time-flat corpus — this corpus is not time-flat).
+
     python3 benchmark/capture_links.py /tmp/eval.json --per-term 300 --popular 0 --no-oracle --terms "bitcoin,nostr,…"
     VESPA_URL=http://localhost:8080 ./gradlew :benchmark:exportLoad --args=/tmp/eval.json
     LINK_PROBE_MODE=dump LINK_PROBE_OUT=/tmp/eval.dump.json ./gradlew :benchmark:linkRerankProbe --args="/tmp/eval.json 10"
