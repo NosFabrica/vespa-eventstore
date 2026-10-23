@@ -677,7 +677,7 @@ judges (`llm:claude`; 64 rows were added to the audit sheet), and `rankAb --spli
 |---|---|
 | 1. nDCG@10 CI low end ≥ −0.01 | Δ **+0.017**, CI **[+0.004, +0.032]**, W/T/L 5/5/1 (11 topics: `the art of war` has no relevant document in its pool, all 29 graded 0, so its nDCG is undefined) |
 | 2. no navigational loss | `jack dorsey`, `matt odell`, `lyn alden`, `preston pysh`: nDCG@10 and RR identical |
-| 3. topical improves on average | **+0.026**: `lightning network` +0.074, `lord of the rings` +0.046, `web of trust` +0.040, `proof of work` +0.017, `freedom of speech` +0.009, `proof of stake` 0, `bitcoin white paper` −0.002 (the one loss) |
+| 3. topical improves on average | **+0.026**: `lightning network` +0.074, `lord of the rings` +0.046, `web of trust` +0.040, `proof of work` +0.017, `freedom of speech` +0.009, `proof of stake` 0, `bitcoin white paper` −0.002 (the one loss: a one-slot swap. The grade-2 meetup "BCE#3 : Bitcoin White Paper Day" carries the typed words in order and rises 9 → 7, past the grade-3 "Das Bitcoin-Whitepaper für Kinder", whose one-word "Whitepaper" holds no phrase) |
 
 *Guardrails.* Top-author share fell (0.433 → 0.383). Median top-10 age rose (692 → 787
 days), on two topics: `lightning network` (+479 days), where an older explainer article
