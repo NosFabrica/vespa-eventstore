@@ -483,6 +483,67 @@ frequency (`primal` 341k, inflated by `@primal.net` addresses; `odell` 6.7k agai
 names are a fair sample of production's: a random sample of profiles and labelled kinds, not
 this query-drawn capture, whose name frequencies are biased toward its own queries.
 
+**Built, not yet enabled: the perfect-match rung damped by name frequency (2026-10-23).** This
+follows the per-kind result above. `event.sd` gains `name_df_ratio()`, the share of indexed
+documents carrying the query word in `name`, `display_name` or `search_primary`. It is read in
+place from Vespa's per-field statistics (`queryTermDocumentFrequency` over `num_docs_indexed`),
+so it costs no extra round trip. `perfect_share()` scales the rung on one-word queries:
+whole at or below `perfect_df_lo`, gone at or above `perfect_df_hi`, log-linear between. The
+default is lo = hi = 1, which disables it, so the ranking is unchanged until a value is chosen.
+
+*Measuring production's ratio.* The evaluation corpus cannot measure it, because it is drawn
+from the topics' pages and every topic word names 1–7% of it. `benchmark/sample_names.py`
+builds a **kind-stratified random sample** of production: 149 875 events, with profiles,
+wikis, articles and sets at their production shares. A plain time-random sample had profiles
+at half and wikis at an eighth of production. The script reads the ratio off a Vespa loaded
+with it (`benchmark/name_df.json`):
+
+| word | documents naming it, per 150k | ratio | intent |
+|---|---:|---:|---|
+| bitcoin | 100 | 6.7e-4 | topical |
+| nostr | 96 | 6.4e-4 | topical |
+| jack | 24 | 1.6e-4 | ambiguous |
+| primal | 18 | 1.2e-4 | navigational |
+| lightning | 5 | 3.3e-5 | topical |
+| odell | 4 | 2.7e-5 | navigational |
+| coffee, bitcoiners | 2 | 1.3e-5 | topical |
+| amethyst, vitor, dell, esposa | 1 | 6.7e-6 | various |
+
+`rankAb --name-df benchmark/name_df.json` makes the evaluation cluster read these ratios. For a
+one-word query it rewrites the three naming-field clauses to carry a `documentFrequency`
+annotation, scaled to the local document count. The `baseline` row reproduces the earlier
+baseline exactly, which shows the rewrite changes no matching.
+
+*The sweep* (production baseline, judged@10 1.000):
+
+| config (lo, hi) | nDCG@10 Δ | 95% CI | W/T/L | navigational | topical | `bitcoin` | `nostr` |
+|---|---:|---|---:|---:|---:|---:|---:|
+| `perfect_off` | +0.020 | [−0.015, +0.057] | 11/9/7 | −0.053 | +0.126 | 0.32 → 0.58 | 0.65 → 0.66 |
+| **`name_df_2e4_6e4`** | **+0.006** | **[−0.008, +0.026]** | 4/21/2 | **0.000** | **+0.035** (RR +0.094) | 0.32 → **0.58** | 0.65 → 0.66 |
+| `name_df_2e4_2e3` | −0.004 | [−0.012, +0.001] | 2/22/3 | 0.000 | −0.011 | — | — |
+| `name_df_1e4_1e3` | −0.004 | [−0.012, +0.001] | 2/22/3 | 0.000 | −0.011 | — | — |
+
+At (2e-4, 6e-4) the rung is gone for `bitcoin` and `nostr` and whole for every name.
+`bitcoin` gets the entire gain that switching the rung off had (0.32 → 0.58, and its top 10
+goes from a median 536 days old to 16), with no navigational or ambiguous query moving. The
+softer ramps leave the two words half their rung, which is not enough. The one listed loss,
+`primal.net` −0.081, is a harness artifact: its punctuation keeps `rankAb` from injecting it,
+so it ran on the corpus's own 3% ratio. On the production sample it names 1.2e-4, below
+`lo`, so production would keep its rung and its page unchanged. The other loss in W/T/L, `lightning`
+(0.45 → 0.41), is the baseline's own difference from production, the same with or without
+the damping. Against this branch, the candidate moves exactly three topics: `bitcoin`,
+`nostr` and the `primal.net` artifact.
+
+*What it does not do.* `lightning`, `coffee` and `bitcoiners` are as rare as names as `odell`
+is (1–5 per 150k), so name frequency cannot tell them from a navigational query. Their pages
+keep the rung and its cost, and they need a different signal.
+
+*Why not enabled.* It clears §6.3 on these topics. But (lo, hi) was chosen on the same
+27 topics it is scored on, and only two of them fall above `lo`. §6.3 rule 5 asks a tuned
+value to hold on held-out topics first, and there is no `test` split yet. Enabling it is a
+two-line default change in `event.sd`, once held-out topics with common-as-a-name words
+(`music`, `news`, `art`, `photography`…) confirm it, and once the grades are audited.
+
 **What is next.** (1) A human audits the 208-row sample and reports κ (`rankAb --agreement`).
 (2) Grow toward the §3.2 target of 50 or more topics, adding multilingual and topical topics
 first, since those are the strata where the levers disagree. (3) A/B the two hypotheses above

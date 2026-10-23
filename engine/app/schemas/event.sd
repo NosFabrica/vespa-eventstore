@@ -905,6 +905,31 @@ schema event {
             # delta to be crossed instead of ~7%, in the order the linear rung
             # already had. 1.0 restores that linear rung exactly.
             query(w_perfect_pow) double: 2.0
+            # perfect_df_lo / perfect_df_hi — how COMMON the query word is AS A
+            # NAME decides how much of the perfect-match rung a one-word query
+            # pays (perfect_share()). The rung exists for navigational queries,
+            # whose answer is the one entity named the query ("odell",
+            # "amethyst"); on a topical word ("bitcoin", "lightning") it lifts
+            # every profile, channel, repo and set NAMED the word over the
+            # content ABOUT it (docs/search-evaluation.md §9: nDCG@10 bitcoin
+            # 0.32 vs 0.58 without the rung, lightning 0.41 vs 0.72). The kind
+            # of the document cannot tell the two apart — a profile named
+            # "Bitcoin" has exactly the shape ODELL's has on "odell" (measured,
+            # the per-kind rung of §9). What can is how many documents carry
+            # the word in a naming field: one ODELL against thousands of things
+            # called "Bitcoin". Word frequency over ALL fields cannot (production
+            # COUNTs: `primal` 2.6M documents, `lightning` 1.6M), which is why
+            # the ratio reads the naming fields only.
+            #
+            # The ratio is name_df_ratio(): documents with the word in name,
+            # display_name or search_primary, over the documents indexed. At or
+            # below lo the rung is whole; at or above hi it is gone; between,
+            # it falls linearly in log(ratio). lo >= hi disables the damping —
+            # the default, which is the rung exactly as it shipped. Multi-word
+            # queries keep the whole rung: an exact multi-word name or title is
+            # specific evidence whatever its words' frequency ("Verified Human").
+            query(perfect_df_lo) double: 1.0
+            query(perfect_df_hi) double: 1.0
             # Word count as TYPED, sent by EventYql on every search with terms
             # (see the n_words comment there). 1.0 is the fail-safe default: a
             # sender that omits it degrades perfect_match() to "the field is
@@ -1475,6 +1500,35 @@ schema event {
             expression: max(max(field_perfect(name), field_perfect(display_name)), field_perfect(search_primary))
         }
 
+        # How common the query is AS A NAME: the largest share of indexed
+        # documents carrying a query term in one naming field. Per content node
+        # (queryTermDocumentFrequency and num_docs_indexed are local statistics),
+        # which at production scale is a sample of millions per node. Only the
+        # exact per-field term searches these fields — the prefix, fuzzy and gram
+        # nets search their own columns — so a one-word query contributes one
+        # cell per field. max(…, 0) because an empty tensor reduces to no value.
+        function name_df_ratio() {
+            expression {
+                max(max(max(reduce(queryTermDocumentFrequency(name), max),
+                            reduce(queryTermDocumentFrequency(display_name), max)),
+                        reduce(queryTermDocumentFrequency(search_primary), max)), 0)
+                / max(num_docs_indexed, 1)
+            }
+        }
+
+        # The share of the perfect-match rung a document earns — see
+        # query(perfect_df_lo). Whole on a multi-word query, whole with the
+        # damping disabled (lo >= hi), else linear in log(ratio) from 1 at lo
+        # to 0 at hi.
+        function perfect_share() {
+            expression {
+                if (query(n_words) > 1 || query(perfect_df_hi) <= query(perfect_df_lo), 1.0,
+                    max(0.0, min(1.0,
+                        1.0 - (log(max(name_df_ratio(), 1e-12)) - log(query(perfect_df_lo)))
+                              / (log(query(perfect_df_hi)) - log(query(perfect_df_lo))))))
+            }
+        }
+
         # §12.3: the whole-field rung, and ONLY on a multi-word query — see
         # query(w_perfect_tier) for why the gate is the safety argument rather
         # than a refinement of it. > 0.999 rather than == 1 because
@@ -1572,7 +1626,7 @@ schema event {
             expression {
                 query(w_words_pop) * words_coverage()
                 + query(w_exactness_pop) * exactness()
-                + query(w_perfect_pop) * pow(perfect_match(), query(w_perfect_pow))
+                + query(w_perfect_pop) * perfect_share() * pow(perfect_match(), query(w_perfect_pow))
             }
         }
 
@@ -2074,6 +2128,10 @@ schema event {
             freshness
             recency_mult
             perfect_match
+            # How common the query is as a name, and the share of the
+            # perfect-match rung that bought (query(perfect_df_lo)).
+            name_df_ratio
+            perfect_share
             name_match
             identity_match
             identity_text

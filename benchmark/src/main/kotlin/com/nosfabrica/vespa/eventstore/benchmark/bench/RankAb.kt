@@ -120,6 +120,16 @@ object RankAb {
             // turn. Sweep it against the odell crossing bound, whose ceiling
             // (98306) was MEASURED on a live Vespa, not derived on paper.
             "perfect_off" to mapOf("w_perfect_pop" to 0.0),
+            // The rung damped by how common the word is AS A NAME (event.sd,
+            // query(perfect_df_lo)): whole below lo, gone above hi, log-linear
+            // between. Pair with --name-df on a corpus drawn from the topics.
+            // Ranges from the 2026-10-23 measurement on a kind-stratified random
+            // sample of production: one-word topics name 0..1.6e-4 of documents
+            // (jack 1.6e-4, primal 1.2e-4, odell 2.7e-5), bitcoin and nostr
+            // ~6.5e-4, lightning / coffee / bitcoiners 1-3e-5.
+            "name_df_2e4_6e4" to mapOf("perfect_df_lo" to 2e-4, "perfect_df_hi" to 6e-4),
+            "name_df_2e4_2e3" to mapOf("perfect_df_lo" to 2e-4, "perfect_df_hi" to 2e-3),
+            "name_df_1e4_1e3" to mapOf("perfect_df_lo" to 1e-4, "perfect_df_hi" to 1e-3),
             // Word order off — what the default profile did before the audit.
             "order_off" to mapOf("w_order_floor" to 1.0),
             // ---- §12.2 the split rung + the perfect exponent ----
@@ -201,6 +211,20 @@ object RankAb {
         val profile = opts["--profile"] ?: "search"
         val observer = opts["--observer"]
         lensOverride = opts["--lens-key"]
+        // `--name-df <file>`: how common each word is AS A NAME on production,
+        // measured on a random sample (docs/search-evaluation.md §9). See [withNameDf].
+        nameDf =
+            opts["--name-df"]
+                ?.let { path ->
+                    Json
+                        .parseToJsonElement(Files.readString(Path.of(path)))
+                        .jsonObject
+                        .filterKeys { !it.startsWith("_") }
+                        .mapValues {
+                            it.value.jsonPrimitive.content
+                                .toDouble()
+                        }
+                }.orEmpty()
         val hits = (opts["--hits"] ?: "100").toInt()
         // The instant recency is measured against. Pinning it makes a sweep
         // reproducible across days (and lets one be replayed at the moment a
@@ -892,7 +916,7 @@ object RankAb {
             ) ?: return emptyList()
         val body =
             buildJsonObject {
-                put("yql", vq.yql)
+                put("yql", withNameDf(base, vq.yql, parsed))
                 put("hits", hits.toString())
                 put("ranking", vq.ranking)
                 vq.params.forEach { (k, v) -> put(k, v) }
@@ -996,6 +1020,76 @@ object RankAb {
         }
 
     private val lensCache = HashMap<String, Pair<String?, String?>>()
+
+    /** `--name-df`: word -> share of production documents carrying it in a naming field. */
+    private var nameDf: Map<String, Double> = emptyMap()
+
+    /**
+     * Makes this cluster's NAME-FIELD document frequency read as production's.
+     * `event.sd`'s perfect_share() damps the perfect-match rung by how common
+     * the query word is as a name (queryTermDocumentFrequency over name,
+     * display_name and search_primary, over num_docs_indexed). Those are
+     * statistics of the LOCAL index, and an evaluation corpus is drawn from
+     * the topics' own pages, so its names are full of the very words it
+     * queries: "bitcoin" names 7% of it, against a fraction of a percent of
+     * production. So, for a one-word query with a measured [nameDf], the three
+     * naming-field clauses are rewritten from `userInput` to `contains` with a
+     * `documentFrequency` annotation, the per-query override Vespa's
+     * statistics honour. The frequency is scaled to THIS cluster's document
+     * count because the expression divides by the local num_docs_indexed, not
+     * by the override's count. The label is kept: itemRawScore(mtch_exact)
+     * reads it. Matching is unchanged for a single plain word, the only shape
+     * rewritten; anything with punctuation is left alone.
+     */
+    private fun withNameDf(
+        base: String,
+        yql: String,
+        parsed: SearchQuery,
+    ): String {
+        val word = parsed.terms.trim()
+        val ratio = nameDf[word.lowercase()] ?: return yql
+        if (parsed.phrases.isNotEmpty() || !word.all { it.isLetterOrDigit() }) return yql
+        val docs = localDocs.getOrPut(base) { countDocs(base) }
+        val frequency = Math.round(ratio * docs)
+        var out = yql
+        for (field in listOf("name", "display_name", "search_primary")) {
+            val clause = "({defaultIndex:\"$field\",label:\"mtch_exact\"}userInput(@w0))"
+            check(clause in out) { "--name-df: no `$field` exact clause to annotate in the YQL; EventYql changed shape" }
+            out =
+                out.replace(
+                    clause,
+                    "($field contains ({label:\"mtch_exact\",documentFrequency:{frequency:$frequency,count:$docs}}\"$word\"))",
+                )
+        }
+        return out
+    }
+
+    private val localDocs = HashMap<String, Long>()
+
+    private fun countDocs(base: String): Long {
+        val body =
+            buildJsonObject {
+                put("yql", "select * from event where true")
+                put("hits", "0")
+            }.toString()
+        val resp =
+            HTTP.send(
+                HttpRequest
+                    .newBuilder(URI.create("$base/search/"))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(body))
+                    .build(),
+                HttpResponse.BodyHandlers.ofString(),
+            )
+        return Json
+            .parseToJsonElement(resp.body())
+            .jsonObject["root"]!!
+            .jsonObject["fields"]!!
+            .jsonObject["totalCount"]!!
+            .jsonPrimitive
+            .content
+            .toLong()
+    }
 
     /** `--lens-key`, when given: the service key to rank by, whatever the 10040 says. */
     private var lensOverride: String? = null

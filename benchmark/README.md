@@ -47,6 +47,9 @@ measures what the emitted query actually does:
   (`capture_eval.py` writes production's) as a config, `--write-runs <dir>`
   saves this cluster's pages for a later two-cluster comparison, and
   `--agreement <sheet>` reports weighted κ for a human audit of LLM grades.
+  `--name-df benchmark/name_df.json` makes a query-drawn corpus read
+  production's NAME frequencies (measured by `sample_names.py`), which the
+  `name_df_*` configs' damped perfect-match rung depends on.
   **The protocol — what to run, how to grade, what counts
   as a win — is [`docs/search-evaluation.md`](../docs/search-evaluation.md).**
 
