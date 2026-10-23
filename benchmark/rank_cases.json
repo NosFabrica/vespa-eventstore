@@ -296,5 +296,101 @@
     "intent": "topical",
     "need": "The Book of Daniel, the biblical book. 3 = a document about it (an article or wiki page on the book, a note discussing its text or prophecies); 2 = clearly relevant (a page on something named after it, the novel, film or album titled 'The Book of Daniel', a study of one of its chapters); 1 = mentions it in passing; 0 = matches the words only scattered (a book signing, a title holding 'of', a person named Daniel) without being about the book.",
     "note": "reported 2026-10-23 (production, observer 460c25…065c): the UNQUOTED query put 21 results ahead of any `book of daniel` hit — each matched ONE word in its title, mostly the stopword `of` ('The Praxeology of Privacy') or `book` ('Book Signing'), the rest scattered through a long body, by authors ranked 92-100 — while the Wikipedia mirror's pages whose titles ARE the query sat at #26+ (author rank 32), and trust-99 notes saying 'the book of Daniel' verbatim at #95, #100 or beyond. The QUOTED query is clean. Reproduced locally (rankAb --dump): the whole top 15 is split matches (naming_coverage 0.33, scattered 1, text ~23 100 = the split rung). Three stacked causes: (1) a stopword buys a naming-surface match, so any title holding `of` reaches the split rung; (2) the trust curve's ~24x for 98-vs-30 outweighs the ~9x the token + perfect rungs hold over the split rung, so even an exact title from a rank-32 author loses; (3) the body rung has no proximity, so the words IN ORDER in a note earn nothing over the same words scattered. §12.3's w_perfect_tier (rankAb perfect_tier_400k) lifts only the one page titled exactly `Book of Daniel` to #1 and leaves the rest — not the fix on its own. Grade this topic's pool before testing a fix."
+  },
+  {
+    "query": "proof of work",
+    "expect": "",
+    "intent": "topical",
+    "need": "TOPICAL: proof of work, the consensus mechanism (bitcoin mining, PoW). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23, round 2): multi-word, chosen before any page was seen to confirm the split-coverage and body-phrase fixes for the 'book of daniel' report (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "proof of stake",
+    "expect": "",
+    "intent": "topical",
+    "need": "TOPICAL: proof of stake, the consensus mechanism (and critiques of it). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23, round 2): multi-word, chosen before any page was seen to confirm the split-coverage and body-phrase fixes for the 'book of daniel' report (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "web of trust",
+    "expect": "",
+    "intent": "topical",
+    "need": "TOPICAL: web of trust (trust graphs, WoT in Nostr or PGP, reputation by who-trusts-whom). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23, round 2): multi-word, chosen before any page was seen to confirm the split-coverage and body-phrase fixes for the 'book of daniel' report (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "lightning network",
+    "expect": "",
+    "intent": "topical",
+    "need": "TOPICAL: the Bitcoin Lightning Network. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23, round 2): multi-word, chosen before any page was seen to confirm the split-coverage and body-phrase fixes for the 'book of daniel' report (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "freedom of speech",
+    "expect": "",
+    "intent": "topical",
+    "need": "TOPICAL: freedom of speech (free expression, censorship, its defence). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23, round 2): multi-word, chosen before any page was seen to confirm the split-coverage and body-phrase fixes for the 'book of daniel' report (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "lord of the rings",
+    "expect": "",
+    "intent": "topical",
+    "need": "TOPICAL: The Lord of the Rings (Tolkien's books, the films, its world). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23, round 2): multi-word, chosen before any page was seen to confirm the split-coverage and body-phrase fixes for the 'book of daniel' report (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "the art of war",
+    "expect": "",
+    "intent": "topical",
+    "need": "TOPICAL: The Art of War, Sun Tzu's treatise (its text, quotes, commentary). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23, round 2): multi-word, chosen before any page was seen to confirm the split-coverage and body-phrase fixes for the 'book of daniel' report (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "bitcoin white paper",
+    "expect": "",
+    "intent": "topical",
+    "need": "TOPICAL: the Bitcoin white paper (Satoshi Nakamoto's 2008 paper, its text, its anniversary, commentary). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23, round 2): multi-word, chosen before any page was seen to confirm the split-coverage and body-phrase fixes for the 'book of daniel' report (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "jack dorsey",
+    "expect": "",
+    "intent": "navigational",
+    "need": "NAVIGATIONAL: Jack Dorsey (co-founder of Twitter and Block, Nostr supporter). 3 = his own profile; 2 = content about him, interviews; 1 = mentions, quote pictures attributed to him; 0 = impersonators, unrelated.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23, round 2): multi-word, chosen before any page was seen to confirm the split-coverage and body-phrase fixes for the 'book of daniel' report (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "matt odell",
+    "expect": "",
+    "intent": "navigational",
+    "need": "NAVIGATIONAL: Matt Odell (ODELL), bitcoin podcaster (Citadel Dispatch, Rabbit Hole Recap). 3 = his own profile; 2 = his shows' profiles or episodes, content about him; 1 = mentions; 0 = impersonators, mirrors, unrelated.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23, round 2): multi-word, chosen before any page was seen to confirm the split-coverage and body-phrase fixes for the 'book of daniel' report (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "lyn alden",
+    "expect": "",
+    "intent": "navigational",
+    "need": "NAVIGATIONAL: Lyn Alden, macro analyst and author of Broken Money. 3 = her own profile; 2 = content about her or her work (articles, interviews, reviews of Broken Money); 1 = mentions; 0 = impersonators, unrelated.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23, round 2): multi-word, chosen before any page was seen to confirm the split-coverage and body-phrase fixes for the 'book of daniel' report (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "preston pysh",
+    "expect": "",
+    "intent": "navigational",
+    "need": "NAVIGATIONAL: Preston Pysh, investor and podcast host (The Investor's Podcast, Bitcoin Fundamentals). 3 = his own profile; 2 = content about him, his shows; 1 = mentions; 0 = impersonators, unrelated.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23, round 2): multi-word, chosen before any page was seen to confirm the split-coverage and body-phrase fixes for the 'book of daniel' report (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
   }
 ]

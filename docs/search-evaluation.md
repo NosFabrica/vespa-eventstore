@@ -616,6 +616,28 @@ OFF. The `name_df_*` configs lift the guard (`perfect_df_min_docs` 0) and must b
 `--name-df`, which makes the corpus's name statistics production's. `NameFrequencyRungIT` pins
 the guard, the damping, the multi-word exemption and the off switch on a real Vespa.
 
+**Pre-registered: the `book of daniel` fixes (2026-10-23, round 2).** This was written and
+committed before any page of these topics was captured and before either fix was tuned.
+Two candidate fixes for the report recorded on that case:
+
+- **Split coverage** (`w_split_min_coverage`): a scattered match keeps the split rung only if
+  its naming surface carried at least this share of the typed words. Otherwise it falls to the
+  body band. At 0.5 a two-word query is untouched, because one word of two is 0.5.
+- **Body phrase** (`w_phrase_pop`): a second-phase band for a body holding every typed word
+  adjacent and in order (`fieldMatch(search_text).longestSequence` ≥ the words typed).
+
+Both are tuned on the dev topics only (`book of daniel` and the existing multi-word cases).
+The chosen combination is then compared **once** against `baseline` on these 12 held-out
+multi-word topics (`split: test`, round 2): `proof of work`, `proof of stake`,
+`web of trust`, `lightning network`, `freedom of speech`, `lord of the rings`,
+`the art of war`, `bitcoin white paper` (topical), and `jack dorsey`, `matt odell`,
+`lyn alden`, `preston pysh` (navigational names, the guard). It ships only if all of these
+hold:
+
+1. the nDCG@10 95% CI's low end is ≥ −0.01 over the 12 topics;
+2. no navigational topic loses any nDCG@10 or RR;
+3. the eight topical topics improve on average (mean nDCG@10 Δ > 0).
+
 **What is next.** (1) A human audits the 208-row sample and reports κ (`rankAb --agreement`).
 (2) Grow toward the §3.2 target of 50 or more topics, adding multilingual and topical topics
 first, since those are the strata where the levers disagree. (3) A/B the two hypotheses above
