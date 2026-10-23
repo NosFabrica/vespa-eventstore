@@ -1155,10 +1155,19 @@ object RankAb {
                     .build(),
                 HttpResponse.BodyHandlers.ofString(),
             )
-        return Json
-            .parseToJsonElement(resp.body())
-            .jsonObject["root"]!!
-            .jsonObject["fields"]!!
+        val root = Json.parseToJsonElement(resp.body()).jsonObject["root"]!!.jsonObject
+        // The schema divides by num_docs_indexed, a PER-NODE count, and this is
+        // the cluster's: on two content nodes every injected ratio would read
+        // double and the sweep's verdict would be biased without a sign of it.
+        val nodes =
+            root["coverage"]
+                ?.jsonObject
+                ?.get("nodes")
+                ?.jsonPrimitive
+                ?.content
+                ?.toInt() ?: 1
+        check(nodes == 1) { "--name-df needs a single-content-node evaluation cluster; this one answered from $nodes" }
+        return root["fields"]!!
             .jsonObject["totalCount"]!!
             .jsonPrimitive
             .content

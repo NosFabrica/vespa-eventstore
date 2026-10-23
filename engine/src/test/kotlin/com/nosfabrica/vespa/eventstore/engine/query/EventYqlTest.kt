@@ -32,6 +32,65 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class EventYqlTest {
+    @Test
+    fun `a multi-word search carries the typed words as a rank-only body phrase`() {
+        // event.sd's body_phrase() needs the typed words ADJACENT in the query
+        // tree, and the word groups interleave synthetic joined pairs between
+        // them; the rank() item restores the run without changing recall.
+        val lens = "c".repeat(64)
+
+        fun search(
+            text: String,
+            kinds: List<Int> = emptyList(),
+        ) = EventYql.build(EventQuery(search = text, kinds = kinds, observer = lens, minRank = 0.0))!!
+        val multi = search("book of daniel")
+        assertEquals(EventYql.RANK_SEARCH, multi.ranking)
+        assertTrue(multi.yql.contains("rank(("), multi.yql)
+        assertTrue(multi.yql.contains("""{label:"body_phrase",defaultIndex:"search_text",grammar:"phrase"}userInput(@bp)"""), multi.yql)
+        assertEquals("book of daniel", multi.params["bp"])
+        assertEquals("3", multi.params["ranking.features.query(phrase_terms)"])
+        // The threshold is the phrase's TOKENS, not its words: "don't" is two.
+        assertEquals("3", search("don't trust").params["ranking.features.query(phrase_terms)"])
+
+        // One word has no order to keep, and a body-less kind has no body.
+        val single = search("daniel")
+        assertFalse(single.yql.contains("body_phrase"), single.yql)
+        assertFalse("bp" in single.params)
+        assertFalse(search("book of daniel", listOf(EventYql.BODYLESS_KINDS.first())).yql.contains("body_phrase"))
+
+        // A phrase Vespa refuses (one word six times in a row: a 400 for the
+        // whole REQ) gets no rank-only item rather than a failed search.
+        assertFalse(search("x no no no no no no").yql.contains("body_phrase"))
+
+        // Only the `search` profile reads it. Anywhere else it is a search_text
+        // term that moves bm25 (an unlensed `text` page reordered) or a
+        // positional iterator a count or an id walk pays for nothing.
+        val text = EventYql.build(EventQuery(search = "book of daniel"))!!
+        assertEquals(EventYql.RANK_TEXT, text.ranking)
+        assertFalse(text.yql.contains("body_phrase"), text.yql)
+        assertFalse(EventYql.buildCount(EventQuery(search = "book of daniel", observer = lens, minRank = 0.0))!!.yql.contains("body_phrase"))
+        assertFalse(EventYql.buildIdTime(EventQuery(search = "book of daniel", kinds = listOf(1)))!!.yql.contains("body_phrase"))
+    }
+
+    @Test
+    fun `phraseTokens counts what Vespa's tokenizer cuts, erring only high`() {
+        // Each row read off Vespa's own query tokenization (2026-10-23).
+        assertEquals(3, EventYql.phraseTokens("book of daniel"))
+        assertEquals(3, EventYql.phraseTokens("don't trust")) // don t trust
+        assertEquals(3, EventYql.phraseTokens("e-cash wallet")) // e cash wallet
+        assertEquals(3, EventYql.phraseTokens("21.5 million")) // 21 5 million
+        assertEquals(3, EventYql.phraseTokens("foo_bar baz")) // foo bar baz
+        assertEquals(2, EventYql.phraseTokens("#nostr tips")) // nostr tips
+        // A run of letters, digits and marks is one token in any script.
+        assertEquals(2, EventYql.phraseTokens("web3 wallet"))
+        assertEquals(2, EventYql.phraseTokens("bitcoin比特币 x"))
+        assertEquals(2, EventYql.phraseTokens("café crème"))
+        assertEquals(2, EventYql.phraseTokens("नमस्ते दुनिया"))
+        // An emoji is a token of its own; a symbol is never under-counted.
+        assertEquals(2, EventYql.phraseTokens("🔥 bitcoin"))
+        assertTrue(EventYql.phraseTokens("❤️ nostr") >= 2)
+    }
+
     /**
      * THE ID WALK NEVER RANKS ON A MATCH-PHASE PROFILE — the load-bearing fact
      * under the whole partial-answer ladder, and nothing pinned it. A plain walk
@@ -50,29 +109,6 @@ class EventYqlTest {
      * pins the flag; the halving budget in `VespaEventIndex` is insurance
      * behind both.
      */
-    @Test
-    fun `a multi-word search carries the typed words as a rank-only body phrase`() {
-        // event.sd's body_phrase() needs the typed words ADJACENT in the query
-        // tree, and the word groups interleave synthetic joined pairs between
-        // them; the rank() item restores the run without changing recall.
-        val multi = EventYql.build(EventQuery(search = "book of daniel"))!!
-        assertTrue(multi.yql.contains("rank(("), multi.yql)
-        assertTrue(multi.yql.contains("""{label:"body_phrase",defaultIndex:"search_text",grammar:"phrase"}userInput(@bp)"""), multi.yql)
-        assertEquals("book of daniel", multi.params["bp"])
-
-        // One word has no order to keep, and a body-less kind has no body.
-        val single = EventYql.build(EventQuery(search = "daniel"))!!
-        assertFalse(single.yql.contains("body_phrase"), single.yql)
-        assertFalse("bp" in single.params)
-        val bodyless = EventYql.build(EventQuery(search = "book of daniel", kinds = listOf(EventYql.BODYLESS_KINDS.first())))!!
-        assertFalse(bodyless.yql.contains("body_phrase"), bodyless.yql)
-
-        // A phrase Vespa refuses (one word six times in a row: a 400 for the
-        // whole REQ) gets no rank-only item rather than a failed search.
-        val refused = EventYql.build(EventQuery(search = "x no no no no no no"))!!
-        assertFalse(refused.yql.contains("body_phrase"), refused.yql)
-    }
-
     @Test
     fun `the id walk ranks unranked, whatever an ungated query asks for`() {
         val shapes =

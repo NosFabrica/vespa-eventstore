@@ -707,6 +707,12 @@ The cost is a few milliseconds per node at most, and the round-to-round spread i
 reported slow searches on production (seconds for `bitcoin` and `nostr`, `benchmark/README.md`)
 are matching, which neither change touches. The guardrail holds.
 
+*Two corrections after review, neither moving a number above.*
+- **The phrase threshold counts tokens, not words.** `body_phrase()` compared the body's longest run against `n_words`. Vespa splits a typed word at punctuation, so `don't` is the two tokens `don t`. On `don't trust`, 58 of 74 matches took the band, and 1 of them held the phrase. The threshold is now the phrase's Vespa token count, `query(phrase_terms)` (`EventYql.phraseTokens`, counted to err only high). With it, the bands on that query are the two notes that say it, and `book of daniel` is unchanged (28 of 28).
+- **The rank-only phrase rides only on the `search` profile.** It is a `search_text` term, so elsewhere it moves `bm25(search_text)`. It reordered observer-less `text` pages that nothing here evaluated, and cost counts and id walks a phrase iterator for nothing.
+
+No topic in `rank_cases.json` is a punctuated multi-word query, and `rankAb` ranks on `search`, so every result above stands as measured.
+
 `event.sd` ships `w_split_min_coverage` 0.5 and `w_phrase_pop` 4 000. `ThinSplitPhraseIT`
 pins the behaviour on a real Vespa: a thin split scores on the body rung, a body phrase reads
 1 and outranks it, the exact title leads, and a two-word query is untouched.

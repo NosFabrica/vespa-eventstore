@@ -34,7 +34,8 @@ import kotlin.test.assertTrue
  * production shape, so the shape comes from the builder, never a fixture.
  */
 class SearchTraceTest {
-    private fun built(term: String) = assertNotNull(EventYql.build(EventQuery(kinds = listOf(1), limit = 50, search = term))).yql
+    // With a lens: the rank-only wrapper rides only on the `search` profile, which is what production runs.
+    private fun built(term: String) = assertNotNull(EventYql.build(EventQuery(kinds = listOf(1), limit = 50, search = term, observer = "c".repeat(64), minRank = 0.0))).yql
 
     @Test
     fun `a multi-word term is ablated inside its rank-only wrapper`() {

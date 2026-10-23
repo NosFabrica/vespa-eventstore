@@ -943,6 +943,14 @@ schema event {
             # rank 32) and cost `Verified Human` up to 0.10 (dev, §9). At 4 000
             # it breaks ties between otherwise equal hits and costs nothing.
             query(w_phrase_pop) double: 4000.0
+            # phrase_terms — how many TOKENS the typed words are to Vespa, the
+            # run body_phrase() must find. Not n_words: Vespa splits a word at
+            # punctuation ("don't" is two tokens), so a run as long as the WORD
+            # count is a fragment of a punctuated query — on `don't trust` 58 of
+            # 74 matches read as holding the phrase, 1 of them did. EventYql
+            # counts it (phraseTokens) and sends it only with the rank-only
+            # phrase item; unsent, 0 switches the band off.
+            query(phrase_terms) double: 0.0
             # perfect_df_lo / perfect_df_hi — how COMMON the query word is AS A
             # NAME decides how much of the perfect-match rung a one-word query
             # pays (perfect_share()). The rung exists for navigational queries,
@@ -1576,10 +1584,11 @@ schema event {
         # query(w_phrase_pop). longestSequence counts the longest run of query
         # terms adjacent in both query and field; only the per-word exact
         # clause searches search_text (the gram net is its own column), so on
-        # an unquoted query a run as long as query(n_words) is the phrase as
-        # typed. Gated on n_words > 1: a one-word query has no order to keep.
+        # an unquoted query a run as long as the phrase's TOKEN count
+        # (query(phrase_terms), not n_words — see there) is the phrase as typed.
+        # Gated on more than one token: a single token has no order to keep.
         function body_phrase() {
-            expression: if (query(n_words) > 1, if (fieldMatch(search_text).longestSequence >= query(n_words), 1, 0), 0)
+            expression: if (query(phrase_terms) > 1, if (fieldMatch(search_text).longestSequence >= query(phrase_terms), 1, 0), 0)
         }
 
         # How common the query is AS A NAME: the largest share of indexed

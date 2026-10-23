@@ -64,7 +64,10 @@ import kotlin.test.assertTrue
  *    depends on EventYql's rank-only phrase item, since the word groups put
  *    synthetic joined pairs between the typed words — and the scattered one 0;
  *  - the title that IS the query still leads;
- *  - a TWO-word query is untouched: one word of two is coverage 0.5, the floor.
+ *  - a TWO-word query is untouched: one word of two is coverage 0.5, the floor;
+ *  - a PUNCTUATED word is several tokens: on `don't trust` a body saying
+ *    "don't" with "trust" elsewhere is not the phrase (EventYql's
+ *    phraseTokens; against the word count, 58 of 74 real matches read as it).
  *
  * Tagged `integration`, excluded from the default `:benchmark:test`; run with
  * `-Pintegration` where Docker is available. Skips cleanly without a daemon.
@@ -95,9 +98,12 @@ class ThinSplitPhraseIT {
                                 doc(3, kind = 30818, primary = "Book of Daniel", text = "The Book of Daniel is a biblical apocalypse"),
                                 // For the two-word check: one of two words in a title, the other in the body.
                                 doc(4, kind = 30023, primary = "Book Signing", text = "signed copies, hosted by Daniel"),
+                                // For the punctuated query: "don't" without the phrase, then with it.
+                                doc(5, kind = 1, text = "I don't know who to trust any more"),
+                                doc(6, kind = 1, text = "rule one: don't trust, verify"),
                             ),
                         )
-                        awaitCorpus(index, 4)
+                        awaitCorpus(index, 6)
 
                         val page = page(queryUrl, "book of daniel")
                         val ids = page.map { it.id }
@@ -109,6 +115,10 @@ class ThinSplitPhraseIT {
 
                         val two = page(queryUrl, "book daniel")
                         assertEquals(0.0, two.first { it.id == id(4) }.thinSplit, "one word of two is the floor itself, not thin")
+
+                        val punctuated = page(queryUrl, "don't trust")
+                        assertEquals(0.0, punctuated.first { it.id == id(5) }.bodyPhrase, "`don t` alone is two tokens of three, not the phrase")
+                        assertEquals(1.0, punctuated.first { it.id == id(6) }.bodyPhrase, "the body holding `don't trust` is the phrase")
                     }
                 }
             }
