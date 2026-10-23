@@ -135,6 +135,21 @@ object RankAb {
             // sample of production: one-word navigational topics name 0..1.6e-4
             // of documents (jack 1.6e-4, primal 1.2e-4, odell 2.7e-5), bitcoin and
             // nostr ~6.5e-4, lightning / coffee / bitcoiners 1-3e-5.
+            // ---- the `book of daniel` report (event.sd, query(w_split_min_coverage)
+            // and query(w_phrase_pop)) ----
+            // A scattered match whose naming surface carried under half the
+            // query is scored as the body match it is; 0.5 leaves two-word
+            // queries alone.
+            "split_cov_05" to mapOf("w_split_min_coverage" to 0.5),
+            // A body holding the words adjacent and in order, banded at the weak
+            // rung, the split rung, and between split and token. Never the token
+            // rung: a note quoting a name would then contest the name's profile.
+            "phrase_4k" to mapOf("w_phrase_pop" to 4000.0),
+            "phrase_23k" to mapOf("w_phrase_pop" to 23000.0),
+            "phrase_60k" to mapOf("w_phrase_pop" to 60000.0),
+            "both_4k" to mapOf("w_split_min_coverage" to 0.5, "w_phrase_pop" to 4000.0),
+            "both_23k" to mapOf("w_split_min_coverage" to 0.5, "w_phrase_pop" to 23000.0),
+            "both_60k" to mapOf("w_split_min_coverage" to 0.5, "w_phrase_pop" to 60000.0),
             "name_df_off" to mapOf("perfect_df_lo" to 1.0, "perfect_df_hi" to 1.0),
             "name_df_2e4_6e4" to mapOf("perfect_df_lo" to 2e-4, "perfect_df_hi" to 6e-4, "perfect_df_min_docs" to 0.0),
             "name_df_2e4_2e3" to mapOf("perfect_df_lo" to 2e-4, "perfect_df_hi" to 2e-3, "perfect_df_min_docs" to 0.0),
@@ -620,6 +635,13 @@ object RankAb {
                                 put("author", hit.pubkey)
                                 put("created_at", hit.createdAt)
                                 put("content", hit.content.take(POOL_CONTENT_CHARS))
+                                // Where the query actually matched, when that is past the
+                                // excerpt: a long note holding "the book of Daniel" in
+                                // its third paragraph was graded 0 for showing nothing
+                                // relevant in its first 600 characters (2026-10-23), and
+                                // those are exactly the documents a body-phrase change
+                                // promotes. Keyword-in-context, as assessors are shown.
+                                put("context", keywordsInContext(hit.content, topic.query))
                                 // The first tags, values cut short: a NIP-29 `h` (which group), a
                                 // `title`, the `t` hashtags are often what a grade turns on, and the
                                 // first round had to be corrected for lacking them. Capped, because a
@@ -635,6 +657,33 @@ object RankAb {
         Files.writeString(out, PRETTY.encodeToString(JsonArray.serializer(), rows) + "\n")
         println("\npool: ${rows.size} unjudged hit(s) in the top $depth of ${pages.size} config(s) over ${topics.size} topic(s) -> $out")
         println("grade each row 0-3 per docs/search-evaluation.md §4, set `by`, then: rankAb --merge $out")
+    }
+
+    /**
+     * Up to [KWIC_WINDOWS] windows of the content around the query — the whole
+     * typed phrase first, then each word — that lie BEYOND the excerpt. Empty
+     * when every match is already inside it.
+     */
+    private fun keywordsInContext(
+        content: String,
+        query: String,
+    ): String {
+        val words =
+            SearchQuery
+                .parse(query)
+                .terms
+                .split(Regex("\\s+"))
+                .filter { it.length > 2 }
+        val needles = listOf(words.joinToString(" ")).filter { words.size > 1 } + words
+        val windows = ArrayList<IntRange>()
+        for (needle in needles) {
+            var at = content.indexOf(needle, POOL_CONTENT_CHARS, ignoreCase = true)
+            while (at >= 0 && windows.size < KWIC_WINDOWS) {
+                if (windows.none { at in it }) windows += (at - KWIC_SPAN).coerceAtLeast(0)..(at + needle.length + KWIC_SPAN).coerceAtMost(content.length - 1)
+                at = content.indexOf(needle, at + needle.length, ignoreCase = true)
+            }
+        }
+        return windows.sortedBy { it.first }.joinToString(" … ") { "…" + content.substring(it.first, it.last + 1).replace('\n', ' ') + "…" }
     }
 
     private fun worksheetTags(raw: String): JsonArray =
@@ -788,6 +837,10 @@ object RankAb {
 
     /** How much of each pooled event's content the worksheet carries — enough to grade, not the whole article. */
     private const val POOL_CONTENT_CHARS = 600
+
+    /** Keyword-in-context windows past the excerpt: how many, and how much text either side. */
+    private const val KWIC_WINDOWS = 3
+    private const val KWIC_SPAN = 200
 
     /** How many of each pooled event's tags the worksheet shows, and how much of each value. */
     private const val POOL_TAGS = 16

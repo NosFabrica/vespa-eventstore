@@ -760,6 +760,22 @@ schema event {
             # jack, primal, amethyst) sits exactly where it did. Set to
             # query(w_name_tier) to switch the rung off.
             query(w_split_tier) double: 23000.0
+            # w_split_min_coverage — the least of the query a scattered match's
+            # NAMING surface must carry to keep the split rung at all. Below it
+            # the doc is scored as the body match it is (split_rung(): the
+            # body rung, w_affil_tier_text). Why: any naming-field match, even
+            # of a stopword, flips any_token_match(), which switches the body,
+            # weak and affiliation bands OFF for that doc and puts it on the
+            # split rung instead — so a title holding just "of" outranked
+            # every body match on a three-word query (`book of daniel`,
+            # reported 2026-10-23: the whole top 15 was titles like "The
+            # Praxeology of Privacy", naming_coverage 0.33). A share, not a
+            # stopword list, so it is language-agnostic and a title holding
+            # one CONTENT word of three is demoted too: one word of three in a
+            # name is not a naming answer. 0.5 leaves every two-word query
+            # alone (one of two IS 0.5), and with it the `Verified Human`
+            # calibration above. 0.0 ships it inert.
+            query(w_split_min_coverage) double: 0.0
             # ---- §12.3 THE PERFECT RUNG, FOR MULTI-WORD QUERIES ONLY --------
             #
             # A field that IS the query, whole and in order, on a query of more
@@ -905,6 +921,18 @@ schema event {
             # delta to be crossed instead of ~7%, in the order the linear rung
             # already had. 1.0 restores that linear rung exactly.
             query(w_perfect_pow) double: 2.0
+            # w_phrase_pop — a band for a BODY that holds the query's words
+            # adjacent and in order (body_phrase()), on an UNQUOTED multi-word
+            # query. The body rung has no proximity: a note saying "the book of
+            # Daniel" scored exactly like one with the three words scattered
+            # through a thousand words, and on the `book of daniel` report
+            # (2026-10-23) such notes from trust-99 authors sat at #95, #100 or
+            # beyond. Second phase only: fieldMatch over a long body is too
+            # costly for every match, and once w_split_min_coverage demotes the
+            # one-stopword titles these notes are inside the rerank window. At
+            # the `search` profile's scale, multiplied by trust and recency
+            # like precision_boost_pop(). 0.0 ships it inert.
+            query(w_phrase_pop) double: 0.0
             # perfect_df_lo / perfect_df_hi — how COMMON the query word is AS A
             # NAME decides how much of the perfect-match rung a one-word query
             # pays (perfect_share()). The rung exists for navigational queries,
@@ -1534,6 +1562,16 @@ schema event {
             expression: max(max(field_perfect(name), field_perfect(display_name)), field_perfect(search_primary))
         }
 
+        # The body holds every typed word adjacent and in order — see
+        # query(w_phrase_pop). longestSequence counts the longest run of query
+        # terms adjacent in both query and field; only the per-word exact
+        # clause searches search_text (the gram net is its own column), so on
+        # an unquoted query a run as long as query(n_words) is the phrase as
+        # typed. Gated on n_words > 1: a one-word query has no order to keep.
+        function body_phrase() {
+            expression: if (query(n_words) > 1, if (fieldMatch(search_text).longestSequence >= query(n_words), 1, 0), 0)
+        }
+
         # How common the query is AS A NAME: the largest share of indexed
         # documents carrying a query term in one naming field. Per content node
         # (queryTermDocumentFrequency and num_docs_indexed are local statistics),
@@ -1645,12 +1683,21 @@ schema event {
         # title that answered half the query is treated exactly like a name
         # that did.
         function token_tier() {
-            expression: if (scattered_match() > 0, query(w_split_tier), query(w_name_tier))
+            expression: if (scattered_match() > 0, if (thin_split() > 0, query(w_affil_tier_text), query(w_split_tier)), query(w_name_tier))
         }
 
         # The same choice on the pure-text ladder.
         function token_tier_text() {
-            expression: if (scattered_match() > 0, query(w_split_tier_text), query(w_token_tier_text))
+            expression: if (scattered_match() > 0, if (thin_split() > 0, query(w_affil_tier_text), query(w_split_tier_text)), query(w_token_tier_text))
+        }
+
+        # A scattered match whose naming surface carried too little of the
+        # query to count as a naming answer — see query(w_split_min_coverage).
+        # It lands on the BODY rung rather than nowhere: any_token_match() has
+        # already switched the body band off for it, so zeroing the rung would
+        # sink it below every plain body hit, which is the opposite error.
+        function thin_split() {
+            expression: if (naming_coverage() < query(w_split_min_coverage), 1, 0)
         }
 
         # The precision rules at the `search` profile's scale — see
@@ -2173,7 +2220,7 @@ schema event {
             # precision rules would mean something measurably different for a
             # fresh document than for an old one. Scaling by the same factor
             # the bands carry is what keeps "reorders within a band" true.
-            expression: firstPhase + precision_boost_pop() * wot_mult() * recency_mult()
+            expression: firstPhase + (precision_boost_pop() + body_phrase() * query(w_phrase_pop)) * wot_mult() * recency_mult()
             rerank-count: 1000
         }
 
@@ -2198,6 +2245,10 @@ schema event {
             # perfect-match rung that bought (query(perfect_df_lo)).
             name_df_ratio
             perfect_share
+            # The two `book of daniel` levers (query(w_split_min_coverage),
+            # query(w_phrase_pop)).
+            thin_split
+            body_phrase
             name_match
             identity_match
             identity_text

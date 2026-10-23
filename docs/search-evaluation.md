@@ -638,6 +638,35 @@ hold:
 2. no navigational topic loses any nDCG@10 or RR;
 3. the eight topical topics improve on average (mean nDCG@10 Δ > 0).
 
+*The dev phase, and the one candidate (recorded before the confirmation was scored).* Two
+things were found and fixed on the way:
+
+- **The body phrase could not fire.** `fieldMatch(search_text).longestSequence` counts runs
+  adjacent in the query as well as the field, and `EventYql` interleaves synthetic joined
+  pairs ("bookof") between the typed words. It read 0 on all 28 notes holding the phrase.
+  `EventYql` now adds the typed words as a **rank-only** phrase item (`rank(words, phrase)`:
+  recall unchanged). With it, 28 of 28 read 1 and none of the 14 holding the words apart do.
+  With the band at 0 the item changes no dev page.
+- **The worksheet hid matches past its 600-character excerpt.** 40 of the 58 graded
+  `book of daniel` documents matched further in, and notes discussing the book were graded 0
+  for showing nothing relevant up front. The worksheet now carries keyword-in-context
+  windows (`context`), and the whole topic was re-graded from it.
+
+Dev verdict (28 topics, against `baseline`):
+
+| config | Δ nDCG@10 | W/T/L | `book of daniel` | moves |
+|---|---:|---:|---:|---|
+| `split_cov_05` | +0.017 | 1/27/0 | 0.00 → 0.47 | that topic only |
+| **`both_4k`** | **+0.019** | **3/25/0** | 0.00 → 0.47 | + `Jon Gordon` +0.06, `divórcio e desabafa` +0.01 |
+| `both_23k` | +0.008 | 3/24/1 | 0.00 → 0.15 | `Verified Human` −0.04 |
+| `both_60k` | +0.010 | 3/24/1 | 0.00 → 0.22 | `Verified Human` −0.10 |
+
+A strong phrase band hurts the query that motivated it: it lifts notes that merely *mention*
+"the book of Daniel" (graded 1) from authors ranked 90+ over the Wikipedia pages *about* the
+book (graded 2–3, rank 32), since a phrase in a body is weak evidence of aboutness and trust
+multiplies it. At the weak rung (4 000) it only breaks ties. **`both_4k` is the candidate**:
+`w_split_min_coverage` 0.5 and `w_phrase_pop` 4 000.
+
 **What is next.** (1) A human audits the 208-row sample and reports κ (`rankAb --agreement`).
 (2) Grow toward the §3.2 target of 50 or more topics, adding multilingual and topical topics
 first, since those are the strata where the levers disagree. (3) A/B the two hypotheses above

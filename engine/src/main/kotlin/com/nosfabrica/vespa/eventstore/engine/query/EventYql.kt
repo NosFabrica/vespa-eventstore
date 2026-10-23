@@ -885,6 +885,9 @@ object EventYql {
     /** The trigram-net weight for the query's words (text_relevance's `w_gram`). */
     private const val F_W_GRAM = "ranking.features.query(w_gram)"
 
+    /** The typed words as one body phrase, for the rank-only item behind event.sd's body_phrase(). */
+    private const val P_BODY_PHRASE = "bp"
+
     /** How many things the user asked for — words plus quoted phrases (text_relevance's `n_words`). */
     private const val F_N_WORDS = "ranking.features.query(n_words)"
 
@@ -996,7 +999,25 @@ object EventYql {
             val bodyReachable = FuzzyWordGroup.bodyReachable(q.kinds)
             val bodyGram = q.bodyGramMatching && bodyReachable
             val stem = q.stemLanguage?.takeIf { bodyReachable }
-            clauses += FuzzyWordGroup.clause(matchable, params, nearFields = q.nearMatching, bodyGram = bodyGram, bodyEdge = q.bodyEdgeMatching, stemLanguage = stem)
+            val words = FuzzyWordGroup.clause(matchable, params, nearFields = q.nearMatching, bodyGram = bodyGram, bodyEdge = q.bodyEdgeMatching, stemLanguage = stem)
+            // The body PHRASE, as a RANK-ONLY item: `rank(match, extra)` matches
+            // exactly what `match` matches and only adds `extra`'s match data.
+            // event.sd's body_phrase() reads fieldMatch(search_text).longestSequence,
+            // which counts a run of query terms adjacent in the FIELD and in the
+            // QUERY — and in the word groups the synthetic joined pairs
+            // ("bookof") sit between the typed words, so without this item no
+            // body ever read as holding the phrase (measured 2026-10-23: 0 of
+            // the 28 notes saying "book of daniel"; with it, 28 of 28 and no
+            // false positive among the 14 that hold the words apart). Only
+            // where it can mean something: two or more words, and a kind that
+            // can carry a body. Quoted phrases need none — they are required.
+            clauses +=
+                if (matchable.size > 1 && bodyReachable) {
+                    params[P_BODY_PHRASE] = matchable.joinToString(" ")
+                    "rank($words, ({label:\"body_phrase\",defaultIndex:\"search_text\",grammar:\"phrase\"}userInput(@$P_BODY_PHRASE)))"
+                } else {
+                    words
+                }
             // Short queries lean harder on the trigram safety net — judged by
             // the words that HAVE grams: an emoji beside "extraordinary" is no
             // reason to weight its trigrams up.

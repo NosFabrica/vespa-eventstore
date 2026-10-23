@@ -51,6 +51,24 @@ class EventYqlTest {
      * behind both.
      */
     @Test
+    fun `a multi-word search carries the typed words as a rank-only body phrase`() {
+        // event.sd's body_phrase() needs the typed words ADJACENT in the query
+        // tree, and the word groups interleave synthetic joined pairs between
+        // them; the rank() item restores the run without changing recall.
+        val multi = EventYql.build(EventQuery(search = "book of daniel"))!!
+        assertTrue(multi.yql.contains("rank(("), multi.yql)
+        assertTrue(multi.yql.contains("""{label:"body_phrase",defaultIndex:"search_text",grammar:"phrase"}userInput(@bp)"""), multi.yql)
+        assertEquals("book of daniel", multi.params["bp"])
+
+        // One word has no order to keep, and a body-less kind has no body.
+        val single = EventYql.build(EventQuery(search = "daniel"))!!
+        assertFalse(single.yql.contains("body_phrase"), single.yql)
+        assertFalse("bp" in single.params)
+        val bodyless = EventYql.build(EventQuery(search = "book of daniel", kinds = listOf(EventYql.BODYLESS_KINDS.first())))!!
+        assertFalse(bodyless.yql.contains("body_phrase"), bodyless.yql)
+    }
+
+    @Test
     fun `the id walk ranks unranked, whatever an ungated query asks for`() {
         val shapes =
             listOf(
