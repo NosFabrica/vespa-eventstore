@@ -1011,9 +1011,15 @@ object EventYql {
             // false positive among the 14 that hold the words apart). Only
             // where it can mean something: two or more words, and a kind that
             // can carry a body. Quoted phrases need none — they are required.
+            // And only a phrase Vespa ACCEPTS as typed: one word repeated past
+            // [PhraseRuns.MAX_RUN] in a row is refused with a 400 that fails the
+            // whole REQ (SearchExactTextIT's "x no no no no no no" caught this),
+            // so such a query simply gets no phrase band — a tie-breaker it can
+            // do without — rather than the cut pieces a REQUIRED phrase needs.
+            val bodyPhrase = matchable.joinToString(" ")
             clauses +=
-                if (matchable.size > 1 && bodyReachable) {
-                    params[P_BODY_PHRASE] = matchable.joinToString(" ")
+                if (matchable.size > 1 && bodyReachable && PhraseRuns.pieces(bodyPhrase) == listOf(bodyPhrase)) {
+                    params[P_BODY_PHRASE] = bodyPhrase
                     "rank($words, ({label:\"body_phrase\",defaultIndex:\"search_text\",grammar:\"phrase\"}userInput(@$P_BODY_PHRASE)))"
                 } else {
                     words

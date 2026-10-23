@@ -5255,6 +5255,286 @@
   "by": null
  },
  {
+  "topic": "bitcoin white paper",
+  "query": "bitcoin white paper",
+  "intent": "topical",
+  "need": "TOPICAL: the Bitcoin white paper (Satoshi Nakamoto's 2008 paper, its text, its anniversary, commentary). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "2425a68b7fe5d0842df3544424e3a53f6089005656331eac6c7a6f1e875c20b4",
+  "kind": "31923",
+  "label": "Whitepaper Day 2026 by Northants Bitcoin",
+  "author": "c44ab6eeeb3a0e5d5c8d8ae82afad0e397bdfbc9200d7d8fc3ee14a69e9f740c",
+  "created_at": 1792471342,
+  "content": "Meetup at The Dog & Gun with community walk, live music from Longy & sats market\n\nmore details TBC...\n\nWalk 2pm\nMusic 4pm\nSats market 5pm\nRaffle 6pm - buy a ticket to enter remotely\n\nSponsored by Bitfest: IRL attendees get the chance to win a free conference ticket! We will also have 21% discount codes available to give away on the day (prices increase November 1st)",
+  "context": "",
+  "tags": [
+   [
+    "d",
+    "9dfa3068-c27d-4acd-a499-25ea18a0670a"
+   ],
+   [
+    "t",
+    "Meetup"
+   ],
+   [
+    "r",
+    ""
+   ],
+   [
+    "title",
+    "Whitepaper Day 2026 by Northants Bitcoin"
+   ],
+   [
+    "image",
+    "https://cdn.satlantis.io/1me67k8t6vcncq75dlu8mxd70euvful56lz4ky20k3rmxgugvxq2qy2"
+   ],
+   [
+    "start",
+    "1793455200"
+   ],
+   [
+    "end",
+    "1793469600"
+   ],
+   [
+    "start_tzid",
+    "Europe/London"
+   ],
+   [
+    "g",
+    ""
+   ],
+   [
+    "summary",
+    "Meetup at The Dog & Gun with community walk, live music from Longy & sats market"
+   ],
+   [
+    "url",
+    ""
+   ],
+   [
+    "calendar_event_tags",
+    "bitcoin, meetup, bitcoin event, event"
+   ],
+   [
+    "website",
+    "https://www.northantsbitcoin.com"
+   ],
+   [
+    "autoFollowHosts",
+    "true"
+   ],
+   [
+    "rsvp_gated_enabled",
+    "false"
+   ],
+   [
+    "allowCohostsToDownloadAttendeeList",
+    "true"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "bitcoin white paper",
+  "query": "bitcoin white paper",
+  "intent": "topical",
+  "need": "TOPICAL: the Bitcoin white paper (Satoshi Nakamoto's 2008 paper, its text, its anniversary, commentary). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "4ab69a3540ff67f63f4f9192da9ba695c4f18967d16e5236b05730555c0b575a",
+  "kind": "0",
+  "label": "Whitepaper Books",
+  "author": "c7ab3a2a1342f78cf0ba41b70f7e09c345140209ff4b0761a85f9d8781da3d44",
+  "created_at": 1788983485,
+  "content": "{\"name\":\"Whitepaper Books\",\"about\":\"DEAD!! various State regulations and licensing requirements have made it infeasible to run this business profitably in it's previous form. but i've got a new angle i'm going to try. stay tuned..\\n\\nBuy (almost) any book with bitcoin\\n\\nbrought to you by vinney...axkl\",\"picture\":\"https://image.nostr.build/55d1d7e7cfa07816c30414813be9960bc1d3103fd9067ecf0f9eef8126f19a58.jpg\",\"website\":\"https://whitepaperbooks.com/\",\"display_name\":\"Whitepaper Books\",\"displayName\":\"Whitepaper Books\",\"nip05\":\"notes@nostr.whitepaperbooks.com\",\"banner\":\"https://image.nostr.build/b6",
+  "context": "…er Books\",\"displayName\":\"Whitepaper Books\",\"nip05\":\"notes@nostr.whitepaperbooks.com\",\"banner\":\"https://image.nostr.build/b6885b8cdb20b36d511e2192ab2884c1d05272ce2073e37befd08f406611b17d.png\",\"lud16\":\"WhitepaperBooks@coinos.io\"}…",
+  "tags": [
+   [
+    "alt",
+    "User profile for Whitepaper Books"
+   ],
+   [
+    "name",
+    "Whitepaper Books"
+   ],
+   [
+    "display_name",
+    "Whitepaper Books"
+   ],
+   [
+    "picture",
+    "https://image.nostr.build/55d1d7e7cfa07816c30414813be9960bc1d3103fd9067ecf0f9eef"
+   ],
+   [
+    "banner",
+    "https://image.nostr.build/b6885b8cdb20b36d511e2192ab2884c1d05272ce2073e37befd08f"
+   ],
+   [
+    "website",
+    "https://whitepaperbooks.com/"
+   ],
+   [
+    "about",
+    "DEAD!! various State regulations and licensing requirements have made it infeasi"
+   ],
+   [
+    "nip05",
+    "notes@nostr.whitepaperbooks.com"
+   ],
+   [
+    "lud16",
+    "books@lightning.whitepaperbooks.com"
+   ],
+   [
+    "client",
+    "Amethyst"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "bitcoin white paper",
+  "query": "bitcoin white paper",
+  "intent": "topical",
+  "need": "TOPICAL: the Bitcoin white paper (Satoshi Nakamoto's 2008 paper, its text, its anniversary, commentary). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "770bf0e48a147039d7d2b4c448bbd36e768b5f7e56a870c477d42617502a9c32",
+  "kind": "31923",
+  "label": "Northants Bitcoin Whitepaper Day 2026",
+  "author": "664e070fe25e76ddcefa54929c0de42ecad0810093507e24de46220751cdb7aa",
+  "created_at": 1792237807,
+  "content": "Meetup at The Dog & Gun with community walk, live music from Longy & sats market\n\nmore details TBC...\n\nWalk 2pm\nMusic 4pm\nSats market 5pm\n\nhttps://app.cluborange.org/dBJ0hjmQ",
+  "context": "",
+  "tags": [
+   [
+    "d",
+    "6ad221259f524a251adaca20"
+   ],
+   [
+    "title",
+    "Northants Bitcoin Whitepaper Day 2026"
+   ],
+   [
+    "start",
+    "1793455200"
+   ],
+   [
+    "start_tzid",
+    "Europe/London"
+   ],
+   [
+    "end",
+    "1793469600"
+   ],
+   [
+    "end_tzid",
+    "Europe/London"
+   ],
+   [
+    "location",
+    "Dog & Gun, Walton, High St, Walton, Leicester, Lutterworth LE17 5RG, UK"
+   ],
+   [
+    "g",
+    "gcr4w3tsq"
+   ],
+   [
+    "r",
+    "https://app.cluborange.org/dBJ0hjmQ"
+   ],
+   [
+    "image",
+    "https://orange-pill-app-dev.s3.amazonaws.com/events/22ea513f-6b8d-46c1-91b8-baf9"
+   ],
+   [
+    "t",
+    "OrangePillApp"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "bitcoin white paper",
+  "query": "bitcoin white paper",
+  "intent": "topical",
+  "need": "TOPICAL: the Bitcoin white paper (Satoshi Nakamoto's 2008 paper, its text, its anniversary, commentary). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "d268cdd79f739a7df25831452c5dda5cc9a815c000491804b499c995f5542c3f",
+  "kind": "31923",
+  "label": "Whitepaper Day 2026 by Northants Bitcoin",
+  "author": "c44ab6eeeb3a0e5d5c8d8ae82afad0e397bdfbc9200d7d8fc3ee14a69e9f740c",
+  "created_at": 1792230009,
+  "content": "Meetup at The Dog & Gun with community walk, live music from Longy & sats market\n\nmore details TBC...\n\nWalk 2pm\nMusic 4pm\nSats market 5pm",
+  "context": "",
+  "tags": [
+   [
+    "d",
+    "8720d50e-d823-4fcc-9890-e93fea7ed3dd"
+   ],
+   [
+    "t",
+    "Meetup"
+   ],
+   [
+    "r",
+    ""
+   ],
+   [
+    "title",
+    "Whitepaper Day 2026 by Northants Bitcoin"
+   ],
+   [
+    "image",
+    "https://cdn.satlantis.io/1me67k8t6vcncq75dlu8mxd70euvful56lz4ky20k3rmxgugvxq2qy2"
+   ],
+   [
+    "start",
+    "1793455200"
+   ],
+   [
+    "end",
+    "1793469600"
+   ],
+   [
+    "start_tzid",
+    "Europe/London"
+   ],
+   [
+    "g",
+    "gcr4w3mm9"
+   ],
+   [
+    "summary",
+    "Meetup at The Dog & Gun with community walk, live music from Longy & sats market"
+   ],
+   [
+    "url",
+    ""
+   ],
+   [
+    "calendar_event_tags",
+    "bitcoin, meetup, bitcoin event, event"
+   ],
+   [
+    "website",
+    ""
+   ],
+   [
+    "autoFollowHosts",
+    "true"
+   ],
+   [
+    "rsvp_gated_enabled",
+    "false"
+   ],
+   [
+    "allowCohostsToDownloadAttendeeList",
+    "true"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
   "topic": "bitcoiners",
   "query": "bitcoiners",
   "intent": "topical",
@@ -8428,6 +8708,438 @@
   "by": null
  },
  {
+  "topic": "freedom of speech",
+  "query": "freedom of speech",
+  "intent": "topical",
+  "need": "TOPICAL: freedom of speech (free expression, censorship, its defence). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "09fcd2f23ead289c8276e5cdc2723cc541054f9aa57568cbb3714562741267d3",
+  "kind": "30023",
+  "label": "The Dangerous Politicization of Freedom, Privacy, and Censorship-resistant technologies  ",
+  "author": "d5415a313d38461ff93a8c170f941b2cd4a66a5cfdbb093406960f6cb317849f",
+  "created_at": 1691840294,
+  "content": "Below is a sample of my article on nostr...\n\n*A dangerous trend has emerged in the United States where terms like free speech, censorship- resistant, privacy, and more have been co-opted by those on the political right, and tools enabling these principles argued or fought against by those on the political left. The truth is, freedom, privacy, and censorship resistant technologies are important for everyone regardless of political leanings and should not be politicized, lest we head down the path toward a dystopian future with no privacy or free speech guarantees, and only centralized instituti",
+  "context": "… path toward a dystopian future with no privacy or free speech guarantees, and only centralized institutions controlled by people with the ability to censor, revoke and remove important guarantees of freedom promoted in the spirit and language of the constitution. Just as bitcoin has falsely become politicized as a more right wing/libertarian thing, having no value, or a tool for criminals and those who d… … …itcoin, if you can access the internet, you can access nostr. I know many progressive friends of mine have been very frustrated with twitter/x’s/Elon’s selective control of who gets to practice “free speech” and who doesn’t on the platform. Many other self-described “free speech” platforms have been created, such as Trump’s Truth Social, Rumble, and more. But these platforms are FSINO, “Free Speech in Na… … …, ideologies, people, and movements can flourish and utilize the protocol however they wish. I believe it is technology and an internet enabled protocol as the cypherpunk movement intended: promoting freedom, censorship resistance, and the ability to be private and promote anonymity when needed (no KYC, government checks to use).  …",
+  "tags": [
+   [
+    "d",
+    "1691840057330"
+   ],
+   [
+    "title",
+    "The Dangerous Politicization of Freedom, Privacy, and Censorship-resistant techn"
+   ],
+   [
+    "summary",
+    "A brief synopsis of what nostr is, why it's important, and how it's dangerous to"
+   ],
+   [
+    "published_at",
+    "1691840294"
+   ],
+   [
+    "t",
+    "nostr"
+   ],
+   [
+    "t",
+    "progressives"
+   ],
+   [
+    "t",
+    "privacy"
+   ],
+   [
+    "t",
+    "freedom tech"
+   ],
+   [
+    "a",
+    "34550:1994d4f4498d914b3d1e89dc747508640f7b10d45a20bb5c3f690b66ebdfb786:politics"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "freedom of speech",
+  "query": "freedom of speech",
+  "intent": "topical",
+  "need": "TOPICAL: freedom of speech (free expression, censorship, its defence). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "0bf4274bc3004e0e852f1e25e1da46f9a3652178dbfc1afc7abac5af59aade2e",
+  "kind": "30023",
+  "label": "Financial Freedom Report #125",
+  "author": "f1989a96d75aa386b4c871543626cbb362c03248b220dc9ae53d7cefbcaaf2c1",
+  "created_at": 1781800190,
+  "content": "Welcome to this week’s Financial Freedom Report.\n\nIn Burma, the military junta proposed a new law that would allow officials to monitor financial activity, freeze accounts, and target alternative payment networks used by dissidents and civil society. It’s just the latest step out of countless such steps that dictators around the world are taking to abuse the monetary system to stop their opponents.\n\nIn freedom tech news, Second, a company building payment tools on Bitcoin, launched Bark, a new implementation of the Ark protocol. Bark lets users make bitcoin payments without managing payment ch",
+  "context": "…accounts and property belonging to two shareholders of the outlet, extending a years-long campaign against the independent Salvadoran newspaper.  ## [SUBSCRIBE HERE](https://hrf.org/program/financial-freedom/financial-freedom-reports/)  ## GLOBAL NEWS  #### **Burma | Proposed Anti-Fraud Law Expands Financial Surveillance**  Burma’s ruling military junta has [proposed](https://humanrightsmyanmar.org/regime… … …ays a more surveillable and censorable one. As China helps build new global CBDC rails, authoritarian and hybrid-authoritarian regimes gain better ways to move money while also reducing the financial freedom of other users.*  #### **India | Frozen Account Leaves Savings Out of Reach**  In India, a man named Shiva spent years [building](https://www.moneycontrol.com/news/opinion/the-frozen-account-when-bank… … …ndependent media — similar to when Hong Kong officials froze the bank accounts of pro-democracy newspaper Apple Daily.  ————————————————————————————————————————   #### **Become Unstoppable: Financial Freedom Webinar**  HRF will host a free, three-day [webinar](https://docs.google.com/forms/d/e/1FAIpQLSf0sjqwSFQo8HGMsWIIDRyhx34TsoonOSTfYoWSy-aaBbLeSw/viewform) on June 22–24 from 10:30 a.m.–12:00 p.m. ET, g…",
+  "tags": [
+   [
+    "title",
+    "Financial Freedom Report #125"
+   ],
+   [
+    "summary",
+    "In Burma, the military junta proposed a new law that would allow officials to mo"
+   ],
+   [
+    "image",
+    "https://blossom.primal.net/0b1ba08057a746e738e09e15d58f26a475dd9526f5ec193db902e"
+   ],
+   [
+    "t",
+    "Bitcoin"
+   ],
+   [
+    "t",
+    "Human Rights"
+   ],
+   [
+    "t",
+    "Financial Freedom"
+   ],
+   [
+    "t",
+    "Freedom Tech"
+   ],
+   [
+    "published_at",
+    "1781800190"
+   ],
+   [
+    "d",
+    "Financial-Freedom-Report-125-09k313"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "freedom of speech",
+  "query": "freedom of speech",
+  "intent": "topical",
+  "need": "TOPICAL: freedom of speech (free expression, censorship, its defence). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "1252ce931fcf76a07db1fefdeb301110ff8eeaf054c80b23e2b52ee83a606ca1",
+  "kind": "30023",
+  "label": "Financial Freedom Report #93",
+  "author": "f1989a96d75aa386b4c871543626cbb362c03248b220dc9ae53d7cefbcaaf2c1",
+  "created_at": 1760031963,
+  "content": "Good morning, readers!\n\nIn China, the central bank has opened a new international operations center for the digital yuan in Shanghai to expand the central bank digital currencies’ (CBDCs) role in global finance. The initiative aims to extend Beijing’s model of programmable, state-controlled money beyond its borders, providing an authoritarian blueprint for CBDCs. Through this, China is positioning the digital yuan as both a financial innovation and a vehicle for state power.\n\nMeanwhile, in Nicaragua, a new report details how the Ortega-Murillo dictatorship has stripped away the country’s most ",
+  "context": "…ture, and enforced disappearances of dissidents. The result is hundreds of Nicaraguans denationalized or expelled, and civil society gutted through regime asset seizures and financial repression.  In freedom tech news, Sparrow Wallet, an open-source and self-custodial Bitcoin wallet, released support for sending to Silent Payment addresses. This privacy tool creates a way for users to share a single stati… … …firms to track incoming funds or donation networks.  We end with an essay from HRF’s chief strategy officer, Alex Gladstein, who explains in the Journal of Democracy why Bitcoin is best thought of as freedom money. He traces how governments have used modern financial systems to surveil and repress, and how Bitcoin provides an alternative. We highly encourage you to read this piece to understand why, in an… … …s, and how Bitcoin provides an alternative. We highly encourage you to read this piece to understand why, in an age of financial surveillance, Bitcoin represents a pathway to individual and financial freedom.  **Now, let’s get into it.**  ## [**SUBSCRIBE HERE**](https://hrf.org/program/financial-freedom/financial-freedom-reports/)  ## **GLOBAL NEWS**  #### **China | Opens International Operations Center f…",
+  "tags": [
+   [
+    "title",
+    "Financial Freedom Report #93"
+   ],
+   [
+    "image",
+    "https://blossom.primal.net/b4de892662abb1be1f6e2b5b7cf419e67e1b5bc21653cccb4ad9e"
+   ],
+   [
+    "summary",
+    "In China, the central bank has opened a new international operations center for "
+   ],
+   [
+    "t",
+    "Bitcoin"
+   ],
+   [
+    "t",
+    "Human Rights"
+   ],
+   [
+    "t",
+    "Financial Freedom"
+   ],
+   [
+    "published_at",
+    "1760031963"
+   ],
+   [
+    "d",
+    "Financial-Freedom-Report-93-cftqf0"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "freedom of speech",
+  "query": "freedom of speech",
+  "intent": "topical",
+  "need": "TOPICAL: freedom of speech (free expression, censorship, its defence). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "3b75ee43b505a0c3b29e74d3c336a4f939dbc0b5788dbb55b52eb40f2476ccbb",
+  "kind": "30023",
+  "label": "What is freedom of speech without 'freedom of reach'?",
+  "author": "4234223996ce6549720e66dd6bc4bb7efb9f25c60c4816d7bc47a65e1d80db24",
+  "created_at": 1724740195,
+  "content": "\nAfter Elon Musk's acquisition of Twitter (now X) in autumn 2022, there has been plenty of turmoil surrounding the platform. For instance, some groups were upset after the team responsible for \"moderation\" has been shut down. Instead of limiting freedom of speech, X primarily limits users ability to reach others. (\"[Freedom of speech does not mean freedom of reach](https://www.youtube.com/shorts/R9TuhTz0vmo)\"). Even so, some argue that the platform falls short in ensuring a respectable tone and combating the spread of disinformation (intentional spread of false information) as well as misinfor",
+  "context": "…ton and Ramberg seem to argue X is not moderating enough (removal of damaging or improper content), others perceive X is censoring too much, as in suppressing speech for political or other reasons.  \"Freedom of reach\" is a fairly new concept. It refers to how far content spreads on digital platforms. While you can say (almost) whatever you want on X, it's a different matter how far your message will reach… … …n that few - or no one at all - will receive your message, regardless of how effective and truthful it is.  X is likely best in class among major centralised platforms in terms of standing up for the freedom of speech, a freedom that forms the cornerstone of liberal societies. For instance, John Stuart Mill warned in one of liberalism's most central works *On Liberty* of \"silencing the expression of an op… … … in one of liberalism's most central works *On Liberty* of \"silencing the expression of an opinion is (...) [robbing the human race](https://underorion.se/en/posts/robbing/)\".   \"Merely\" limiting the freedom of reach is however far from unproblematic.  A well-known philosophical thought experiment is the question, \"If a tree falls in the forest and no one is there, does it still make a sound?\" Translated …",
+  "tags": [
+   [
+    "client",
+    "Yakihonne",
+    "31990:20986fb83e775d96d188ca5c9df10ce6d613e0eb7e5768a0f0b12b37cdac21b3:170073287"
+   ],
+   [
+    "published_at",
+    "1724740195"
+   ],
+   [
+    "d",
+    "1wAbQlDYuBlrxSWkMdWYz"
+   ],
+   [
+    "image",
+    "https://yakihonne.s3.ap-east-1.amazonaws.com/4234223996ce6549720e66dd6bc4bb7efb9"
+   ],
+   [
+    "title",
+    "What is freedom of speech without 'freedom of reach'?"
+   ],
+   [
+    "summary",
+    "Elon Musk's X limits users ability to reach others (freedom of speech does not m"
+   ],
+   [
+    "zap",
+    "4234223996ce6549720e66dd6bc4bb7efb9f25c60c4816d7bc47a65e1d80db24",
+    ""
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "freedom of speech",
+  "query": "freedom of speech",
+  "intent": "topical",
+  "need": "TOPICAL: freedom of speech (free expression, censorship, its defence). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "b2ec446e09a36facac2a4c0f3f0681529664e84a46251c2edd1b313f8ef7452e",
+  "kind": "30402",
+  "label": "Freedom T-Shirt",
+  "author": "b7274d28e3e983bf720db4b4a12a31f5c7ef262320d05c25ec90489ac99628cb",
+  "created_at": 1758604109,
+  "content": "Freedom truly is just a key-pair away, and that applies to both #Bitcoin and #Nostr.\n\nThis eye-catching design was custom designed by me. You will not find it anywhere else. \n\nShow your love for freedom money and freedom of speech!\n\nFor those who prefer large prints on the back of their shirts, you can have a \"GM Nostr\" pocket print on the front, with \"Freedom Is Only A Key-Pair Away\" on the back for an additional $5.\n\nAll sizes are unisex. Free shipping only within the USA. Overseas shipping by request at additional cost.\n\nSizes: S, M, L, XL, 2X, 3X\nColors: Just about any color you could want",
+  "context": "",
+  "tags": [
+   [
+    "d",
+    "95051aba43dc6ac63226537e2b29a4e3bdcb9d81de2f7becc90b5901de0580a7"
+   ],
+   [
+    "alt",
+    "Product listing: Freedom T-Shirt"
+   ],
+   [
+    "client",
+    "Shopstr",
+    "31990:b7274d28e3e983bf720db4b4a12a31f5c7ef262320d05c25ec90489ac99628cb:95051aba4"
+   ],
+   [
+    "title",
+    "Freedom T-Shirt"
+   ],
+   [
+    "summary",
+    "Freedom truly is just a key-pair away, and that applies to both #Bitcoin and #No"
+   ],
+   [
+    "price",
+    "25",
+    "USD"
+   ],
+   [
+    "location",
+    "US & Canada"
+   ],
+   [
+    "shipping",
+    "Free",
+    "0"
+   ],
+   [
+    "image",
+    "https://relay.brightbolt.net/4e54f6aa583abfe6a4948f1dd2068202579fa4f57aa4c9ccbd9"
+   ],
+   [
+    "image",
+    "https://relay.brightbolt.net/81ab842caa9020278ffdd42038ddbf3a79307dc7b75f3082c1a"
+   ],
+   [
+    "image",
+    "https://relay.brightbolt.net/640e80356edb6fc973d20635dc27d223d07309cd1d9ae1d6b36"
+   ],
+   [
+    "image",
+    "https://relay.brightbolt.net/78624fb8965ba49affadc6fc7f29489bf5ea659c872060fe485"
+   ],
+   [
+    "t",
+    "Clothing"
+   ],
+   [
+    "t",
+    "shopstr"
+   ],
+   [
+    "condition",
+    "New"
+   ],
+   [
+    "status",
+    "active"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "freedom of speech",
+  "query": "freedom of speech",
+  "intent": "topical",
+  "need": "TOPICAL: freedom of speech (free expression, censorship, its defence). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "b6f7fe62a4b669b754ae6181a7e73ab8a84574a577bc10b26a88b8765b9d2a4e",
+  "kind": "30023",
+  "label": "Achilles' Heel of Freedom: Education",
+  "author": "2cadc27dee40e47b630015d4c9c33907cac29c2b19aaff63a504a031d4d49157",
+  "created_at": 1762031938,
+  "content": "Einstein said to make everything as simple as possible, but not simpler. In that spirit, here's my simple framework connecting education and freedom.\n\n**No Excuse**\n\nMy wife Tali and I had a conversation recently that really exposed a blind spot in my thinking. We were talking about teaching sound money principles, you know, Bitcoin, Austrian economics, gold-standard stuff. And to me, it seems pretty obvious this matters right now. National debt just passed $38 trillion. Inflation is constantly in the headlines. Banks are loading up on gold. The warning signs are everywhere.\n\nBut here's what T",
+  "context": "…ly happening, they'd never be able to unsee it.  No excuse. I should know better.  And honestly? This isn't the first time I've made this mistake. Here's another example.  **Parenting, Happiness, and Freedom**  Parents want what's best for their kids. That's pretty much universal. We want our children to live long, healthy, happy, fulfilling lives. Our incentives are aligned with theirs in a way that no o… … …rnment and third parties have their fingers in every aspect of our lives. His quote was basically a warning: a free society depends on its citizens staying alert, not on its rulers being nice. We had freedoms unlike anything the world had ever seen. And we're losing more of them every single day.  Here's the thing about vigilance: it's really hard to maintain across generations. People need to understand … … …hy I make a distinction between sound education, real and unbiased learning, and fiat education, which is based on arbitrary standards or worse, third-party incentives.  Sound education is crucial to freedom and human flourishing, but it takes real work. It'd be awesome if we could just download skills like they do in The Matrix, but that's not reality. Education isn't a one-time thing. We learn and grow …",
+  "tags": [
+   [
+    "title",
+    "Achilles' Heel of Freedom: Education"
+   ],
+   [
+    "summary",
+    "Sound education creates fertile soil, ready for the seeds of sound money, sound "
+   ],
+   [
+    "image",
+    "https://blossom.primal.net/5cd4c3a79b9c34c26be42c7c31ad395597a65c223c8ddc867d353"
+   ],
+   [
+    "d",
+    "achilles-heel-of-freedom-education"
+   ],
+   [
+    "r",
+    "wss://eden.nostr.land/",
+    "write"
+   ],
+   [
+    "r",
+    "wss://nos.lol/",
+    "write"
+   ],
+   [
+    "r",
+    "wss://nostr-pub.semisol.dev/",
+    "write"
+   ],
+   [
+    "r",
+    "wss://nostr.bitcoiner.social/",
+    "write"
+   ],
+   [
+    "r",
+    "wss://nostr.oxtr.dev/",
+    "write"
+   ],
+   [
+    "r",
+    "wss://nostr.semisol.dev/",
+    "write"
+   ],
+   [
+    "r",
+    "wss://puravida.nostr.land/",
+    "write"
+   ],
+   [
+    "r",
+    "wss://relay.minds.com/nostr/v1/ws",
+    "write"
+   ],
+   [
+    "r",
+    "wss://relay.damus.io/",
+    "write"
+   ],
+   [
+    "r",
+    "wss://relay.snort.social/",
+    "write"
+   ],
+   [
+    "r",
+    "wss://nostr-verified.wellorder.net/",
+    "write"
+   ],
+   [
+    "r",
+    "wss://nostr-pub.wellorder.net/",
+    "write"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "freedom of speech",
+  "query": "freedom of speech",
+  "intent": "topical",
+  "need": "TOPICAL: freedom of speech (free expression, censorship, its defence). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "ea853d554cb2e2aa61625bc24e51aaf2c88e6cd116926decd42362c65890c88c",
+  "kind": "30023",
+  "label": "Financial Freedom Report #140",
+  "author": "f1989a96d75aa386b4c871543626cbb362c03248b220dc9ae53d7cefbcaaf2c1",
+  "created_at": 1790865518,
+  "content": "**Welcome back to the Financial Freedom Report.**\n\nThis week reminds us how fragile financial access can be in difficult political environments. In Iran, Tehran prosecutor Ali Salehi announced that the regime had identified and frozen 2,191 bank accounts belonging to 394 people accused of collaborating with a “hostile enemy.” This is the latest expansion of an asset seizure campaign that has already targeted journalists, opposition media workers, and other public figures critical of the Iranian dictatorship.\n\nTo a similar tune, in Malaysia, officials froze the personal bank accounts of human r",
+  "context": "…y directly, save privately, and control their wealth in an environment where women have little financial independence.  **Now, let’s explore this week’s full news.**  ## [**SUBSCRIBE HERE**](financialfreedomreport.org)  ## **GLOBAL NEWS**  #### **Iran | Regime Freezes 2,191 Bank Accounts in Expanding Crackdown**  Iranian officials are [expanding](https://www.euronews.com/2026/09/14/iran-seizes-assets-of-2… … …tions-2026-08-17/) Russian officials with identity and transaction data later used in a criminal case against a user who donated cryptocurrency to Ukrainian causes. The central question for financial freedom in Russia is whether citizens buying bitcoin through regulated intermediaries will face the same surveillance and political risks as in the rest of the financial system.*   #### **North Korea | $387 M… … … how to use the money. Read how [here](https://partners.wsj.com/the-nakamoto-project/bitcoin-reframed/what-bitcoin-gave-afghan-women-that-banks-could-not/?utm_source=clientpromotion).  ## BITCOIN AND FREEDOM TECH NEWS  #### **Alloc Init | New Research on Shielded Bitcoin**  Researchers at [Alloc Init](https://www.allocinit.xyz/), a cryptography group developing protocols for Bitcoin, have [proposed](https…",
+  "tags": [
+   [
+    "title",
+    "Financial Freedom Report #140"
+   ],
+   [
+    "image",
+    "https://blossom.primal.net/f66ecc92381388ef6d51352124258d5834d6ac4a97ae397278557"
+   ],
+   [
+    "summary",
+    "This week reminds us how fragile financial access can be in difficult political "
+   ],
+   [
+    "t",
+    "Bitcoin"
+   ],
+   [
+    "t",
+    "Freedom Tech"
+   ],
+   [
+    "t",
+    "Human Rights"
+   ],
+   [
+    "t",
+    "Financial Freedom"
+   ],
+   [
+    "published_at",
+    "1790865518"
+   ],
+   [
+    "d",
+    "Financial-Freedom-Report-140-pxosx8"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
   "topic": "group:rspuyeetackckp92 testin",
   "query": "group:rspuyeetackckp92 testin",
   "intent": "prefix",
@@ -8807,6 +9519,231 @@
   "created_at": 1678543200,
   "content": "{\"lud16\":\"sketchyfrance62@walletofsatoshi.com\",\"nip05\":\"4tanned@iris.to\",\"picture\":\"https://nostr.build/i/nostr.build_e31050ca747fd605ee8f1e933295cdebcb2a794f0a38d3794d6faa92bc42c43f.jpg\",\"display_name\":\"4tanned\",\"about\":\"#Nostr and  #Bitcoin\",\"banner\":\"https://nostr.build/i/nostr.build_143400196f80eaead55d0b1aeced52df5c35510889cf5a8783dce4be6e8e762d.jpg\",\"name\":\"4tanned@iris.to\",\"username\":\"iris.to\",\"displayName\":\"4tanned\",\"website\":\"\",\"lud06\":\"\",\"nip05valid\":true}",
   "tags": [],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "jack dorsey",
+  "query": "jack dorsey",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: Jack Dorsey (co-founder of Twitter and Block, Nostr supporter). 3 = his own profile; 2 = content about him, interviews; 1 = mentions, quote pictures attributed to him; 0 = impersonators, unrelated.",
+  "id": "05c2d4a2328881d291c3ff5015336b526a3e1c9a8caeaf0a531df58eaf345c71",
+  "kind": "30023",
+  "label": "Jack Fields Questions on Bluesky",
+  "author": "5fd693e61a7969ecf5c11dbf5ce20aedac1cea71721755b037955994bf6061bb",
+  "created_at": 1682814191,
+  "content": "Why am i writing/compiling this?\n\n![why](https://i.imgur.com/h3o4SJc.png)\nI'll take this one for ya Jack. Currently, as bluesky is still in invite-only beta, anyone on bluesky can join and read Nostr, but not everyone on Nostr can access this conversation on bluesky. Thus, I've compiled a collection of interactions from yesterday's thread I thought were interesting to share with Nostr. \n___\n## NOSTR:\n![not using bluesky](https://i.imgur.com/CBMGHcN.png)\n*in the comments of that i found*\n\n![fragmentation](https://i.imgur.com/8flkme4.png)\n___\n\n![doesn't matter what i think](https://i.imgur.com/S",
+  "context": "…ttps://i.imgur.com/TchL9by.png) ___  ![complete context brah](https://i.imgur.com/5ZXqwzX.png) ![nah b](https://i.imgur.com/uRSrryY.png) ___  ![why u here b?](https://i.imgur.com/0bmmEQW.png) ___  As jack says, **\"it doesn't matter what (he) thinks\"** but i think it's important to consider what others platforms are saying and questioning around decentralized media. I plan to make other collections of p…",
+  "tags": [
+   [
+    "d",
+    "1682812901199"
+   ],
+   [
+    "title",
+    "Jack Fields Questions on Bluesky"
+   ],
+   [
+    "summary",
+    "\"it doesn't matter what I think\" - Jack"
+   ],
+   [
+    "published_at",
+    "1682814191"
+   ],
+   [
+    "t",
+    "#nostr #bluesky #jack #jackdorsey"
+   ],
+   [
+    "image",
+    "https://i.imgur.com/cNa85RR.jpg"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "jack dorsey",
+  "query": "jack dorsey",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: Jack Dorsey (co-founder of Twitter and Block, Nostr supporter). 3 = his own profile; 2 = content about him, interviews; 1 = mentions, quote pictures attributed to him; 0 = impersonators, unrelated.",
+  "id": "6ca8e8742d751621635e58866d070878fdf09f4d1ff9191a34a33fba36babd8b",
+  "kind": "30023",
+  "label": "Buzz, il nuovo alveare di Jack Dorsey contro Slack e GitHub",
+  "author": "a90415ce2cb26a3eb13f2b6fca94220061d0c774cec595674caaf84c66ebf2b2",
+  "created_at": 1784887074,
+  "content": "- Slack per parlare.\n- GitHub per scrivere e revisionare il codice.\n- Un servizio separato per la continuous integration.\n\nAltri software ancora per documenti, automazioni e agenti di intelligenza artificiale.\n\nIl lavoro digitale moderno è diventato una sequenza di finestre aperte, notifiche, integrazioni e autorizzazioni concesse a piattaforme che non comunicano realmente tra loro.\n\nOgni strumento conserva soltanto una parte della storia. La conversazione che ha generato una decisione rimane su Slack, il codice finisce su GitHub, il risultato dei test appare in una dashboard separata e l’agen",
+  "context": "…n una dashboard separata e l’agente AI chiamato ad aiutare il team riceve soltanto il frammento di contesto che qualcuno ha deciso di fornirgli.  È questo il problema che Block, la società guidata da Jack Dorsey, vuole affrontare con Buzz.  Buzz è un workspace open source nel quale persone, agenti, conversazioni, codice e automazioni convivono sullo stesso livello, sotto un unico sistema di identità crittogra… … …’attribuzione.  Non risolve automaticamente l’intenzionalità, la responsabilità o la riservatezza.  ## L’identità prima della piattaforma  Da Twitter a Nostr, da Bluesky ai progetti legati a Bitcoin, Jack Dorsey ha costruito una parte importante della propria visione intorno a un’idea ricorrente: l’identità digitale non dovrebbe appartenere alla piattaforma.  Dovrebbe appartenere all’utente.  Buzz applica que…",
+  "tags": [
+   [
+    "d",
+    "buzz-il-nuovo-alveare-di-jack-dorsey-contro-slack-e-github"
+   ],
+   [
+    "title",
+    "Buzz, il nuovo alveare di Jack Dorsey contro Slack e GitHub"
+   ],
+   [
+    "summary",
+    "Block lancia una piattaforma open source costruita su Nostr che riunisce chat, c"
+   ],
+   [
+    "image",
+    "https://blossom.primal.net/a2332587a3a199a3a698aaf31bd35b687df290ee0a23ed2f744ed"
+   ],
+   [
+    "published_at",
+    "1784887009"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "jack dorsey",
+  "query": "jack dorsey",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: Jack Dorsey (co-founder of Twitter and Block, Nostr supporter). 3 = his own profile; 2 = content about him, interviews; 1 = mentions, quote pictures attributed to him; 0 = impersonators, unrelated.",
+  "id": "8b7c58d1820b6064891093842d199dfff8062d3685b6dd02da0835dd6afca9c1",
+  "kind": "30000",
+  "label": "Jack Dorsey",
+  "author": "3f1f611ebf95162da08e73795ddfbd3a2ebfe5b3edc0495356032af3fd251aa2",
+  "created_at": 1705779474,
+  "content": "",
+  "context": "",
+  "tags": [
+   [
+    "p",
+    "2d29c92b93c030a147f507af42dd203e12100405d99d9f947ceffa4cdcb09658"
+   ],
+   [
+    "p",
+    "82341f882b6eabcd2ba7f1ef90aad961cf074af15b9ef44a09f9d2a8fbfbe6a2"
+   ],
+   [
+    "title",
+    "Jack Dorsey"
+   ],
+   [
+    "d",
+    "Man With Beard"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "jack dorsey",
+  "query": "jack dorsey",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: Jack Dorsey (co-founder of Twitter and Block, Nostr supporter). 3 = his own profile; 2 = content about him, interviews; 1 = mentions, quote pictures attributed to him; 0 = impersonators, unrelated.",
+  "id": "9f67bd5e2395e585926ab53079580b3c56fd4d3a744df96d59423c357ff5acb4",
+  "kind": "30023",
+  "label": "BitChat: Jack Dorsey’s Leap Into Decentralized, Off-Grid Communication",
+  "author": "e6bedd48f962f49eb83e27f36b880958a3fd99263cadd32d202a2f8687ebabb3",
+  "created_at": 1755930532,
+  "content": "### Jack Dorsey’s Decentralized Vision\n\nJack Dorsey , co-founder of Twitter and current CEO of Block, has consistently pushed for decentralization in digital communication. From launching **Bluesky** as an open protocol for social networking to donating **14 BTC** to the developers of **Nostr**, a censorship-resistant messaging protocol, his work shows a strong belief that the future of communication should not be controlled by corporations or governments.\n\nIn July 2025, Dorsey personally coded and released **BitChat**, a peer-to-peer messenger designed to work without internet, cell service, ",
+  "context": "… Telegram for everyday messaging. It is a complementary tool: an emergency walkie-talkie, an off-grid IRC, a way to stay connected when everything else fails. What makes it remarkable is who built it—Jack Dorsey, one of Silicon Valley’s most prominent figures, choosing to write and release code that hands communication back to individuals.  As with Bitcoin itself, BitChat shows that true sovereignty comes wit… … …che tool or grows into a larger movement, BitChat is an important step toward communications that are decentralized, censorship-resistant, and free.  **Sources**  * Amanda Silberling, *TechCrunch* – [Jack Dorsey’s Bluetooth messaging app BitChat now on App Store](https://techcrunch.com/2025/07/29/jack-dorseys-bluetooth-messaging-app-bitchat-now-on-app-store/)  * Vinay Patel, *IBTimes UK* – J[ack Dorsey Drops … … …rts Say the ‘Private’ App Is Alarmingly Easy to Hack](https://www.ibtimes.co.uk/quick-facts-harry-jowsey-dating-history-glaring-age-gap-rumoured-flame-sia-1738844)  * *Cointelegraph Explained* – [How Jack Dorsey’s new app lets you chat without the internet and why it matters](https://cointelegraph.com/explained/jack-dorsey-bitchat-offline-messaging)  * *BitChat GitHub (PermissionlessTech)* – [Repository](http…",
+  "tags": [
+   [
+    "title",
+    "BitChat: Jack Dorsey’s Leap Into Decentralized, Off-Grid Communication"
+   ],
+   [
+    "summary",
+    "Jack Dorsey’s latest project, BitChat, is a decentralized messaging app that ena"
+   ],
+   [
+    "image",
+    "https://blossom.primal.net/24fe13398d042590d300bfca5dc595c7ac2a7ecbbace93a32f65b"
+   ],
+   [
+    "d",
+    "bitchat-jack-dorseys-leap-into-decentralized-off-grid-communication"
+   ],
+   [
+    "t",
+    "#Decentralization"
+   ],
+   [
+    "t",
+    "#BitChat"
+   ],
+   [
+    "t",
+    "#JackDorsey"
+   ],
+   [
+    "t",
+    "#Bitcoin"
+   ],
+   [
+    "t",
+    "#Privacy"
+   ],
+   [
+    "t",
+    "#MeshNetworking"
+   ],
+   [
+    "t",
+    "#Sovereignty"
+   ],
+   [
+    "t",
+    "#Independence"
+   ],
+   [
+    "t",
+    "#FutureOfCommunication"
+   ],
+   [
+    "t",
+    "#TwentyOneLife"
+   ],
+   [
+    "t",
+    "#BrickByBrick"
+   ],
+   [
+    "r",
+    "wss://nos.lol/"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "jack dorsey",
+  "query": "jack dorsey",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: Jack Dorsey (co-founder of Twitter and Block, Nostr supporter). 3 = his own profile; 2 = content about him, interviews; 1 = mentions, quote pictures attributed to him; 0 = impersonators, unrelated.",
+  "id": "f9f9abba4748bb97b985e70692b6d2f4a1e835bdbd6a2dc0be0becabca2d6e02",
+  "kind": "9802",
+  "label": "f9f9abba",
+  "author": "17e2889fba01021d048a13fd0ba108ad31c38326295460c21e69c43fa8fbe515",
+  "created_at": 1748802021,
+  "content": "A year ago today, a single tweet from Jack Dorsey set in motion a cascade of events that would redefine my life.",
+  "context": "",
+  "tags": [
+   [
+    "p",
+    "3f770d65d3a764a9c5cb503ae123e62ec7598ad035d836e2a810f3877a745b24"
+   ],
+   [
+    "a",
+    "30023:3f770d65d3a764a9c5cb503ae123e62ec7598ad035d836e2a810f3877a745b24:one-year-"
+   ],
+   [
+    "context",
+    "A year ago today, a single tweet from Jack Dorsey set in motion a cascade of eve"
+   ],
+   [
+    "alt",
+    "This highlight was made by https://primal.net web client"
+   ]
+  ],
   "grade": null,
   "by": null
  },
@@ -9491,6 +10428,1237 @@
    [
     "a",
     "30017:6a6be47bb12f21dd80f1ef3fdf284d12a29314cea0c69db5ecd04ab53e74e3e1:samhainsa"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "lightning network",
+  "query": "lightning network",
+  "intent": "topical",
+  "need": "TOPICAL: the Bitcoin Lightning Network. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "17d1a3ceb2b76dd91a875ce3775dfef002d93fe0ccc8ab1e4ca4a0d3957b9e40",
+  "kind": "30023",
+  "label": "On Lightning Network Privacy",
+  "author": "7459d333af66066f066cf87796e690db3a96ff4534f9edf4eab74df2f207289b",
+  "created_at": 1779347357,
+  "content": "Lightning Network privacy is real. And limited. Let me explain both.\n\nLN is a genuine privacy improvement over on-chain Bitcoin. Payments don't touch the blockchain, they're not broadcast to the whole network, and onion routing means each hop only knows its immediate neighbors. If you're paying for something, your counterparty will learn little about who you are.\n\nBut \"better than on-chain\" isn't the same as \"private.\"\n\nA 2020 paper by Kappos et al. titled “An Empirical Analysis of Privacy in the Lightning Network”, did a thorough job of poking holes in four privacy properties LN “claims” to o",
+  "context": "…ough job of poking holes in four privacy properties LN “claims” to offer. Here's what they found:  1\\. Private channels aren't really private  LN lets you open channels without announcing them to the network. In theory, nobody knows they exist. In practice, the researchers used blockchain analysis (following \"peeling chains\" of Bitcoin UTXOs) to identify \\~27,000 likely private channel openings. Of those,… … …). Using \"private enough\" UTXOs for opening those channels and ideally having a private channels only node.  Even with all of this, the anonymity set is inherently small, since there aren't that many Lightning nodes.  \\---  The same lesson applies here as everywhere else in privacy: LN gives you real, meaningful privacy improvements over on-chain Bitcoin, and zero privacy guarantees. The threat model matter… … … you hiding from, and what are they willing to do?  Use Lightning. It's genuinely better. Just don't use it as if it made you invisible.  \\---  Kappos et al., \"An Empirical Analysis of Privacy in the Lightning Network\" (2020)  arXiv: <https://arxiv.org/abs/2003.12470> …",
+  "tags": [
+   [
+    "title",
+    "On Lightning Network Privacy"
+   ],
+   [
+    "summary",
+    "Lightning Network privacy is real. But \"better than on-chain\" isn't the same as "
+   ],
+   [
+    "image",
+    "https://blossom.primal.net/a57b13f8f1e98c9deb70a95a29822dd205b264f070b9b0d3f6771"
+   ],
+   [
+    "d",
+    "on-lightning-network-privacy"
+   ],
+   [
+    "t",
+    "Lightning Network"
+   ],
+   [
+    "t",
+    "privacy"
+   ],
+   [
+    "r",
+    "wss://nostr.sgn.space/"
+   ],
+   [
+    "r",
+    "wss://nos.lol/"
+   ],
+   [
+    "r",
+    "wss://relay.snort.social/"
+   ],
+   [
+    "r",
+    "wss://relay.damus.io/"
+   ],
+   [
+    "r",
+    "wss://nostr.bitcoiner.social/"
+   ],
+   [
+    "client",
+    "Primal Web"
+   ],
+   [
+    "published_at",
+    "1779347357"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "lightning network",
+  "query": "lightning network",
+  "intent": "topical",
+  "need": "TOPICAL: the Bitcoin Lightning Network. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "999d923de06f498c9080f0d004f3a207e40f3803108f11f09d5313079adc167d",
+  "kind": "30023",
+  "label": "Lightning Network Decentralization",
+  "author": "220522c2c32b3bf29006b275e224b285d64bb19f79bda906991bcb3861e18cb4",
+  "created_at": 1676439554,
+  "content": "Bitcoin's Lightning Network is a layer-two payment protocol that enables faster and cheaper transactions on the Bitcoin network. It achieves this by allowing users to create payment channels that can be used to transact with each other without requiring on-chain Bitcoin transactions. The Lightning Network is also a significant step towards making Bitcoin more decentralized.\n\n## Benefits of Decentralization\n\nDecentralization has long been one of the core values of the Bitcoin community. A decentralized network is one that is not controlled by any single entity, but rather by a network of users ",
+  "context": "…le point of failure that can be exploited by attackers.  - **Greater Resilience**: A decentralized network is more resilient since it can continue to operate even if some nodes are taken offline.  ## Lightning Network and Decentralization  The Lightning Network is a significant step towards making the Bitcoin network more decentralized. Here are some of the ways it achieves this:  - **Reduced Reliance on Centralize… … …ation  The Lightning Network is a significant step towards making the Bitcoin network more decentralized. Here are some of the ways it achieves this:  - **Reduced Reliance on Centralized Exchanges**: Lightning Network enables users to transact with each other directly without the need for centralized exchanges, reducing the network's dependence on such centralized entities.  - **More Nodes, More Decentralization**:… … …t with each other directly without the need for centralized exchanges, reducing the network's dependence on such centralized entities.  - **More Nodes, More Decentralization**: As more nodes join the Lightning Network, the network becomes more decentralized since there is no central entity that controls it.  - **Open-Source Code**: The Lightning Network's open-source code allows anyone to contribute to its developm…",
+  "tags": [
+   [
+    "client",
+    "blogstack.io"
+   ],
+   [
+    "title",
+    "Lightning Network Decentralization"
+   ],
+   [
+    "image",
+    "https://you.com/proxy?url=https%3A%2F%2Ftse1.mm.bing.net%2Fth%3Fid%3DOIP.wklJlwJ"
+   ],
+   [
+    "summary",
+    "Bitcoin's Lightning Network is a layer-two payment protocol that enables faster "
+   ],
+   [
+    "t",
+    "bitcoin"
+   ],
+   [
+    "t",
+    "lightning"
+   ],
+   [
+    "d",
+    "b5002cdd"
+   ],
+   [
+    "published_at",
+    "1676439554"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "lightning network",
+  "query": "lightning network",
+  "intent": "topical",
+  "need": "TOPICAL: the Bitcoin Lightning Network. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "b1966ea8035c3bbfa24ec57b3ea8db58a60d4c7005a2a7fa77afa2809e01f5d7",
+  "kind": "21",
+  "label": "7.3 Finding Private Bitcoin Lightning Network Channels",
+  "author": "b7ed68b062de6b4a12e51fd5285c1e1e0ed0e5128cda93ab11b4150b55ed32fc",
+  "created_at": 1616544000,
+  "content": "Researchers discovered private Lightning Network channels by analyzing on-chain transaction patterns. Channel openings register as 2-of-2 multisig outputs under 0.16 BTC; the attack exploits users' idiom of reusing change outputs when opening sequential channels, allowing observers to infer private channels between public ones. Channel closures showing hash-time-locked contracts also revealed channel existence. The paper identified ~30 previously unlisted channels through change-output tracing.",
+  "context": "",
+  "tags": [
+   [
+    "title",
+    "7.3 Finding Private Bitcoin Lightning Network Channels"
+   ],
+   [
+    "published_at",
+    "1616544000"
+   ],
+   [
+    "alt",
+    "7.3 Finding Private Bitcoin Lightning Network Channels"
+   ],
+   [
+    "imeta",
+    "url https://relay.towardsliberty.com/9768cab70bcb73eba429b472d3daef0499640552dc3",
+    "x 9768cab70bcb73eba429b472d3daef0499640552dc31ca25083adf4624c7e168"
+   ],
+   [
+    "t",
+    "bitcoin"
+   ],
+   [
+    "t",
+    "privacy"
+   ],
+   [
+    "r",
+    "https://www.youtube.com/watch?v=wnPyf_e8AFw"
+   ],
+   [
+    "summary",
+    "Researchers discovered private Lightning Network channels by analyzing on-chain "
+   ],
+   [
+    "text-track",
+    "https://relay.towardsliberty.com/29bfa8c49308334ed55e8c4125f0d4c8781a77d74e3c24c",
+    "captions"
+   ],
+   [
+    "channel",
+    "Wasabi Wallet"
+   ],
+   [
+    "show",
+    "Wasabi Wallet"
+   ],
+   [
+    "image",
+    "https://relay.towardsliberty.com/09d41be92037f46e69de48cc4175a89f8f0db8248dede5c"
+   ],
+   [
+    "origin",
+    "youtube",
+    "wnPyf_e8AFw"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "lightning network",
+  "query": "lightning network",
+  "intent": "topical",
+  "need": "TOPICAL: the Bitcoin Lightning Network. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "b33ef1ee7d33e13b04c42812b91b17919fc0713470d86839f78a935ec9d3e173",
+  "kind": "21",
+  "label": "5.4 Privacy of Bitcoin Lightning Network",
+  "author": "b7ed68b062de6b4a12e51fd5285c1e1e0ed0e5128cda93ab11b4150b55ed32fc",
+  "created_at": 1615334400,
+  "content": "",
+  "context": "",
+  "tags": [
+   [
+    "title",
+    "5.4 Privacy of Bitcoin Lightning Network"
+   ],
+   [
+    "published_at",
+    "1615334400"
+   ],
+   [
+    "alt",
+    "5.4 Privacy of Bitcoin Lightning Network"
+   ],
+   [
+    "imeta",
+    "url https://relay.towardsliberty.com/3cba99627902a76d6bcf287b347cd5c89df5522a4fe",
+    "x 3cba99627902a76d6bcf287b347cd5c89df5522a4fee7a9c61af0b8b6f8a850c"
+   ],
+   [
+    "t",
+    "bitcoin"
+   ],
+   [
+    "t",
+    "privacy"
+   ],
+   [
+    "r",
+    "https://www.youtube.com/watch?v=5-XdA97ne_w"
+   ],
+   [
+    "channel",
+    "Wasabi Wallet"
+   ],
+   [
+    "show",
+    "Wasabi Wallet"
+   ],
+   [
+    "image",
+    "https://relay.towardsliberty.com/de85289a3d8b0517cbf2a4b88115d3f5d68f8ebfa5cb2ce"
+   ],
+   [
+    "origin",
+    "youtube",
+    "5-XdA97ne_w"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "lightning network",
+  "query": "lightning network",
+  "intent": "topical",
+  "need": "TOPICAL: the Bitcoin Lightning Network. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "fd529e48b8a3066696b3cf1a4f2dec32863a67ac0134aab33950269a1edf1691",
+  "kind": "30023",
+  "label": "Como começar a usar a Lightning Network, sem gastar um cêntimo",
+  "author": "8f69ac99b96f7c4ad58b98cc38fe5d35ce02daefae7d1609c797ce3b4f92f5fd",
+  "created_at": 1679482760,
+  "content": "Já aqui falei algumas vezes sobre a Lightning Network. Resumindo, a LN permite a qualquer pessoa usar Bitcoin de forma instantânea, com custos mínimos.\n\nUsar a [Lightning Network pode parecer difícil](https://blog.sparkpay.pt/lightning-network-o-que-e/) no início, e ainda é em certos casos mais avançados. Para começares a usar a LN precisas de abrir um canal de pagamento com alguém na rede. Financiar esse canal, esperar que a abertura do canal seja propagada na blockchain, fazer backups dos canais, etc... Neste post vou explicar como podes começar a usar a LN em poucos minutos sem sequer gasta",
+  "context": "…bertura do canal seja propagada na blockchain, fazer backups dos canais, etc... Neste post vou explicar como podes começar a usar a LN em poucos minutos sem sequer gastares 1 cêntimo.  ### **Carteira Lightning**  Primeiro que tudo precisas de uma carteira Lightning. Tens imensas escolhas, umas mais fáceis que outras, umas custodial, outras non-custodial (para perceberes melhor estes conceitos podes ler o [p… … …al como as carteiras custodial, abre automaticamente um incoming channel, canal para poderes receber, do nó deles para ti... de borla.  ### **Passo-a-passo com a Bluewallet**  ![Como começar a usar a Lightning Network, sem gastar um cêntimo](https://substackcdn.com/image/fetch/f_auto,q_auto:good,fl_progressive:steep/https%3A%2F%2Fbucketeer-e05bbc84-baa3-437e-9518-adb32be77984.s3.amazonaws.com%2Fpublic%2Fimages%2F17… … …z scan deste QR para receberes 100 satoshis. _Se estiveres a ver em mobile, clica no link atrás para ires à página da faucet, e clica no QR code, para abrires na carteira._    ![Como começar a usar a Lightning Network, sem gastar um cêntimo](https://lnpay.co/t/e224b6/image.png)  Podes dar uma volta por [lapps.co](https://www.lapps.co/), e descobrir uma panóplia de aplicações Lightning Network onde podes ganhar ou g…",
+  "tags": [
+   [
+    "d",
+    "80585100.como-comecar-a-usar-a-lightning-network-sem-gastar-um-centimo"
+   ],
+   [
+    "title",
+    "Como começar a usar a Lightning Network, sem gastar um cêntimo"
+   ],
+   [
+    "image",
+    "https://bucketeer-e05bbc84-baa3-437e-9518-adb32be77984.s3.amazonaws.com/public/i"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "lord of the rings",
+  "query": "lord of the rings",
+  "intent": "topical",
+  "need": "TOPICAL: The Lord of the Rings (Tolkien's books, the films, its world). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "1c243da9089abc79035e4c1d0f3f34e074df1e8fd2447d5e3bc52e639761fd26",
+  "kind": "30023",
+  "label": "Janko: Unlocking Music Theory's Geometric Intelligence and Chordal Exploration",
+  "author": "5fd693e61a7969ecf5c11dbf5ce20aedac1cea71721755b037955994bf6061bb",
+  "created_at": 1684273066,
+  "content": "Here I am responding to a subscriber-only newsletters by John McWhorter published by the New York Times. I believe you can read the piece for the next week (or until a new newsletter is published) for free on the side of [the sign up page here](https://www.nytimes.com/newsletters/john-mcwhorter?campaign_id=229&emc=edit_jm_20230516&instance_id=92707&nl=john-mcwhorter&regi_id=89831940&segment_id=133097&te=1&user_id=68eedf85c5d70c644a795984c06cf17a). If you do have a subscription to the times, I highly recommend his newsletter.\n\nI generally agree with McWhorter on many things. In his recent newsl",
+  "context": "…id=68eedf85c5d70c644a795984c06cf17a). If you do have a subscription to the times, I highly recommend his newsletter.  I generally agree with McWhorter on many things. In his recent newsletter titled \"The dubious case that musicology is racist,\" he counters [Philip Ewell's](https://en.wikipedia.org/wiki/Philip_Ewell) proposition that one should obtain a musicology degree based on beat making or sound r… … …ipedia.org/wiki/Philip_Ewell) proposition that one should obtain a musicology degree based on beat making or sound recording. McWhorter argues that keyboards are better suited for demonstrating music theory than most instruments because they allow for playing chords. He also counters some other arguments, but I'm going to focus on the keyboard for theory.  I agree that playing an instrument should be … … …cause they allow for playing chords. He also counters some other arguments, but I'm going to focus on the keyboard for theory.  I agree that playing an instrument should be a requirement. However, in the absence of an instrument capable of playing chords, the ideal choice should be the [Janko layout](https://en.wikipedia.org/wiki/Jank%C3%B3_keyboard) rather than the traditional piano roll for teaching…",
+  "tags": [
+   [
+    "d",
+    "1684272960217"
+   ],
+   [
+    "title",
+    "Janko: Unlocking Music Theory's Geometric Intelligence and Chordal Exploration"
+   ],
+   [
+    "summary",
+    "half a million beatmakers already have an interface for janko"
+   ],
+   [
+    "published_at",
+    "1684273066"
+   ],
+   [
+    "t",
+    "John McWhorter"
+   ],
+   [
+    "t",
+    "Philip Ewell"
+   ],
+   [
+    "t",
+    "Music Theory"
+   ],
+   [
+    "t",
+    "Beat Making"
+   ],
+   [
+    "t",
+    "Sound Recording"
+   ],
+   [
+    "t",
+    "Musicology"
+   ],
+   [
+    "image",
+    "https://i.imgur.com/fLhufZu.jpg"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "lord of the rings",
+  "query": "lord of the rings",
+  "intent": "topical",
+  "need": "TOPICAL: The Lord of the Rings (Tolkien's books, the films, its world). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "1f35078d51cf244517271e5ba0f6ec78c708667de386c8492ab4c98020873820",
+  "kind": "30023",
+  "label": "The Credential Paradox",
+  "author": "0028f12f8359ab382b89575ab568380ef22afb832b61aed52eef4d4e532c1c67",
+  "created_at": 1767148368,
+  "content": "# The Credential Paradox\n## Why I See What Others Miss\nMost people designing refugee solutions have never been refugees. They have doctorates in international development, positions at NGOs, grants from foundations. They understand displacement through reports, statistics, and field visits that end with flights back to countries where their passports work. They are essentially cooks writing recipes for meals they’ve never eaten and never intend to eat themselves. So, naturally they don’t understand the needs, resources that are available or lacking, or the risks fully undocumented humans face ",
+  "context": "…eaten and never intend to eat themselves. So, naturally they don’t understand the needs, resources that are available or lacking, or the risks fully undocumented humans face when trying to operate in the modern world.  I don't have those credentials. What I have is three + decades of living as an internal refugee. A natural-born US citizen who became functionally undocumented by walking away from ever… … …t both my passport and my driver’s license expire, living without ANY photo ID for over 2 years.  This sounds impossible. How can someone born with citizenship become undocumented? How can someone in the world's wealthiest nation experience the practical constraints of displacement?  The answer reveals something most people don't understand: the infrastructure of modern identity isn't about legal stat… … …ance and security theater, as residential leases rarely are notarized and have no centralized registry that verifies either the lessee, the lessor, or that the address even exists. The Tenant and Landlord, as well as the physical street address, almost never having the signatories nor the actual location verified. Although, the state of Hawaii that DOES authenticate Tenant/Landlord identities, has a “C…",
+  "tags": [
+   [
+    "client",
+    "Yakihonne",
+    "31990:20986fb83e775d96d188ca5c9df10ce6d613e0eb7e5768a0f0b12b37cdac21b3:170073287"
+   ],
+   [
+    "published_at",
+    "1767146053"
+   ],
+   [
+    "d",
+    "m6jymPylB5yOmCOPr2WiR"
+   ],
+   [
+    "image",
+    "https://image.nostr.build/d3a14952213e0fad174ca5eceec90c43c1f7140440dda79ede06f2"
+   ],
+   [
+    "title",
+    "The Credential Paradox"
+   ],
+   [
+    "summary",
+    "This essay argues that “credentialing” is less about legal status and more about"
+   ],
+   [
+    "t",
+    "refugee infrastructure"
+   ],
+   [
+    "t",
+    "Web of Trust"
+   ],
+   [
+    "t",
+    "Decentralized Identity"
+   ],
+   [
+    "t",
+    "eCash bearer instruments"
+   ],
+   [
+    "t",
+    "Self-Sovereignty"
+   ],
+   [
+    "t",
+    "self-authenticated credentials"
+   ],
+   [
+    "t",
+    "reputational capital"
+   ],
+   [
+    "t",
+    "undocumented"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "lord of the rings",
+  "query": "lord of the rings",
+  "intent": "topical",
+  "need": "TOPICAL: The Lord of the Rings (Tolkien's books, the films, its world). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "7be05ccbf73885549a6ab2077e8c41daefaaf4357426fa9e8c38f6907a58d87a",
+  "kind": "30023",
+  "label": "Why Art Is a Gateway to the Divine",
+  "author": "c582af78dff442700ec59e21786532a7074c00be8b7b1eac989bbf62698069cc",
+  "created_at": 1750791616,
+  "content": "# **The Face of God: How Art Became a Gateway to the Divine**  \n\nIf you live in the **West**, you’re surrounded by depictions of **God, Jesus, and the saints**—from paintings and statues to illustrated Bibles and stained glass windows.  \n\nBut this is far from universal. In the **Islamic world**, religious art takes a very different form: vibrant colors, **intricate geometry, and architectural symmetry**. **Depictions of God or Muhammad aren’t just discouraged—they are outright forbidden.**  \n\nBut why?  \n\nTo answer that, we must go back to the **origins of the Abrahamic religions**—when **early",
+  "context": "…they are outright forbidden.**    But why?    To answer that, we must go back to the **origins of the Abrahamic religions**—when **early Christians, Jews, and Muslims** were surprisingly **unified in their views on religious art**.    https://image.nostr.build/1515c5fd00d798cd283583618bbbc0d5eb91bc481a84c21d53644d42fa30173a.jpg ---  ## **The Early Christian Hesitation**    The **first generation of Ch… … …t idol worship. **Depicting God in any form was considered dangerous**—a potential gateway to paganism.    For centuries, Christianity could have followed this path, rejecting religious imagery altogether. But one fundamental theological idea **changed everything**:    **The Incarnation.**    As the early Church wrestled with the **nature of Christ**, heated debates emerged:    - Was he part human and… … …ansports you beyond the canvas, the page, or the screen**.    This idea mirrors the Incarnation itself: **an infinite God becoming finite to guide us back to the infinite**.    ---  ## **Tolkien, The Lord of the Rings, and the Incarnation of Art**    A perfect example? **J.R.R. Tolkien’s *The Lord of the Rings***.    Tolkien infused his story with **themes of brotherhood, heroism, and sacrifice**—all t…",
+  "tags": [
+   [
+    "d",
+    "1739645682011"
+   ],
+   [
+    "title",
+    "Why Art Is a Gateway to the Divine"
+   ],
+   [
+    "summary",
+    "Why do thousands of paintings depict Mary and Jesus, yet none are permitted of M"
+   ],
+   [
+    "published_at",
+    "1739647282"
+   ],
+   [
+    "alt",
+    "This is a long form article, you can read it in https://habla.news/a/naddr1qvzqq"
+   ],
+   [
+    "image",
+    "https://image.nostr.build/14df7bc37f63867c764765498f477df9c9329b130c93d5cc7000ac"
+   ],
+   [
+    "published_at",
+    "1739647282"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "lord of the rings",
+  "query": "lord of the rings",
+  "intent": "topical",
+  "need": "TOPICAL: The Lord of the Rings (Tolkien's books, the films, its world). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "96fa7bff00b144c5e8c543a8b5d3f89a27b4ca3636da1ef70ccc100cc47e9ce3",
+  "kind": "30023",
+  "label": "What Does the Lord Require?",
+  "author": "8d34bd2432240c5637174a3db191878baa1c133aec739b64a264259f414be32b",
+  "created_at": 1765725825,
+  "content": "*FYI, I used to get bogged down when reading Leviticus, Numbers, and Deuteronomy, but as I study the entire Bible more, I have been getting so much out of Deuteronomy, especially when I spend time searching for verses on related topics in both the Old and New Testaments.*\n\nDo you ever wonder what God wants from you?  It is true that we can never work our way into Heaven or God’s graces.  Our salvation is a gift from God.  That doesn’t mean, however, that God wants nothing from us.  He wants us to live life in particular ways for both His glory and our good.\n\nThis passage, which I read last nig",
+  "context": "…se description of what God wants from all of His followers.  I’ll go through each of the commands and look at similar commands given to Christians in the New Testament.  > “Now, Israel, what does the Lord your God require from you, but to fear the Lord your God, to walk in all His ways and love Him, and to serve the Lord your God with all your heart and with all your soul, and to keep the Lord’s comman… … …atutes which I am commanding you today for your good? (Deuteronomy 10:12-13) >   Fear God. Walk with God. Love God.  Serve God.  Obey God.  That sums up our walk with Jesus pretty well.  ### Fear the Lord Your God  The command to fear God is scattered throughout the Bible.  Possibly the most quoted is this:  > **The fear of the Lord is the beginning of wisdom**;A good understanding have all those who d… … …d live.  One example is His modeling serving others.  > And there arose also a dispute among them as to which one of them was regarded to be greatest.  And He said to them, “The kings of the Gentiles lord it over them; and those who have authority over them are called ‘Benefactors.’  But it is not this way with you, but the one who is the greatest among you must become like the youngest, and the leader…",
+  "tags": [
+   [
+    "client",
+    "Yakihonne",
+    "31990:20986fb83e775d96d188ca5c9df10ce6d613e0eb7e5768a0f0b12b37cdac21b3:170073287"
+   ],
+   [
+    "published_at",
+    "1765725825"
+   ],
+   [
+    "d",
+    "qHCq7W9PQeJG5lvppIg5a"
+   ],
+   [
+    "image",
+    "https://image.nostr.build/11fcf144087cfe0562b145a58dc9094e2b67043783ce412aae4999"
+   ],
+   [
+    "title",
+    "What Does the Lord Require?"
+   ],
+   [
+    "summary",
+    ""
+   ],
+   [
+    "t",
+    "biblestr"
+   ],
+   [
+    "t",
+    "Christian"
+   ],
+   [
+    "t",
+    "christianity"
+   ],
+   [
+    "t",
+    "Jesus"
+   ],
+   [
+    "t",
+    "Bible"
+   ],
+   [
+    "t",
+    "grownostr"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "lord of the rings",
+  "query": "lord of the rings",
+  "intent": "topical",
+  "need": "TOPICAL: The Lord of the Rings (Tolkien's books, the films, its world). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "bc3c06c6330d1b23447a73ca35f62819836f0e7812408700879ae15506eda0a0",
+  "kind": "30023",
+  "label": "You Shall Not Do As They Do",
+  "author": "b7274d28e3e983bf720db4b4a12a31f5c7ef262320d05c25ec90489ac99628cb",
+  "created_at": 1783361568,
+  "content": "In this paper we will be looking at the types of sacrifices prescribed for the people of God in the book of Leviticus and taking special note of how they differed from the sacrifices performed by the pagan peoples of the time. Moreover, we will see how they point toward the messiah, who would be the ultimate sacrifice. My intention is to show that Israel was **distinct from her neighbors** both in the way the nation conducted their sacrificial offerings, and the reasons why they performed them.\n\nThe temptation when approaching the ritual sacrifices of the ancient Near East is to assume that al",
+  "context": "…re forbidden from using idols in their worship. Just look at the fallout from them forming the golden calf in [Exodus 32:33-35](https://www.blueletterbible.org/esv/exo/32/33-35/s_82033).   > *But the LORD said to Moses, \"Whoever has sinned against me, I will blot out of my book. But now go, lead the people to the place about which I have spoken to you; behold, my angel shall go before you. Nevertheless… … …. But now go, lead the people to the place about which I have spoken to you; behold, my angel shall go before you. Nevertheless, in the day when I visit, I will visit their sin upon them.\" Then **the LORD sent a plague on the people, because they made the calf**, the one that Aaron made.*  They were not just forbidden from making idols representing pagan gods, but even idols representing their own, tru… … …p was ever and always to be directed toward the **invisible God** who had no need to be fed by mere men, but was rather **pleased by the aroma** of the earnest worship of his people.  > *And when the LORD **smelled the pleasing aroma**, the LORD said in his heart, \"I will never again curse the ground because of man, for the intention of man's heart is evil from his youth. Neither will I ever again stri…",
+  "tags": [
+   [
+    "title",
+    "You Shall Not Do As They Do"
+   ],
+   [
+    "published_at",
+    "1762562233"
+   ],
+   [
+    "t",
+    "longform"
+   ],
+   [
+    "client",
+    "Longform._"
+   ],
+   [
+    "summary",
+    "It can be tempting to lump the ceremonial sacrifices of Israel into the same cat"
+   ],
+   [
+    "image",
+    "https://relay.brightbolt.net/d5688412af72718803e1fc1538c057e1efc9a2145c40929ba3b"
+   ],
+   [
+    "d",
+    "You-Shall-Not-Do-As-They-Do-980cp6"
+   ],
+   [
+    "t",
+    "Christian"
+   ],
+   [
+    "t",
+    "Reformed"
+   ],
+   [
+    "t",
+    "catholic"
+   ],
+   [
+    "t",
+    "seminary"
+   ],
+   [
+    "t",
+    "Leviticus"
+   ],
+   [
+    "t",
+    "paganism"
+   ],
+   [
+    "t",
+    "idolatry"
+   ],
+   [
+    "t",
+    "sacrifice"
+   ],
+   [
+    "t",
+    "Theology"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "lord of the rings",
+  "query": "lord of the rings",
+  "intent": "topical",
+  "need": "TOPICAL: The Lord of the Rings (Tolkien's books, the films, its world). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "cc8fda906f0e075c305b6ee9166c8194f167de81a400a22a3dbb86e40db14644",
+  "kind": "30023",
+  "label": "The Lord of the Rings: The Fellowship of the Ring",
+  "author": "d34e832d42ad8b93c1a1c3c8400934405f30bcbf857f39ea2f008c26383f78d0",
+  "created_at": 1725662294,
+  "content": "<iframe src=\"https://archive.org/embed/203TheRoadGoesEverOnOn\" width=\"500\" height=\"60\" frameborder=\"0\" webkitallowfullscreen=\"true\" mozallowfullscreen=\"true\" allowfullscreen></iframe>\n\nThis Radio adaptation brings to life J.R.R. Tolkien's *The Fellowship of the Ring*, the first volume of *The Lord of the Rings* trilogy. In this richly produced audiodrama, we follow Frodo Baggins, a young hobbit from the Shire, who inherits the One Ring, an artifact of immense and dangerous power. Tasked with the perilous mission to destroy the Ring, Frodo forms a fellowship of allies including the wizard Ganda",
+  "context": "…he Shire, who inherits the One Ring, an artifact of immense and dangerous power. Tasked with the perilous mission to destroy the Ring, Frodo forms a fellowship of allies including the wizard Gandalf, the ranger Aragorn, and other companions. Together, they journey through Middle-earth, confronting the growing darkness of Sauron, the Ring's creator, who seeks to reclaim it and plunge the world into cha… … …ney through Middle-earth, confronting the growing darkness of Sauron, the Ring's creator, who seeks to reclaim it and plunge the world into chaos.  With sweeping soundscapes and dynamic performances, the radio drama captures the essence of Tolkien’s epic—an adventure filled with friendship, courage, and sacrifice. The fellowship faces treacherous landscapes, the sinister Ringwraiths, and growing inter… … …tures the essence of Tolkien’s epic—an adventure filled with friendship, courage, and sacrifice. The fellowship faces treacherous landscapes, the sinister Ringwraiths, and growing internal tension as the burden of the Ring tests them all, leading to the eventual breaking of the fellowship.…",
+  "tags": [
+   [
+    "d",
+    "1725661875004"
+   ],
+   [
+    "title",
+    "The Lord of the Rings: The Fellowship of the Ring"
+   ],
+   [
+    "summary",
+    "This Radio adaptation brings to life J.R.R. Tolkien's *The Fellowship of the Rin"
+   ],
+   [
+    "t",
+    "Fellowship"
+   ],
+   [
+    "image",
+    "https://image.nostr.build/bd3c7a23811245ebb7e898d8c49338722e5a12165c857548a0c167"
+   ],
+   [
+    "published_at",
+    "1725595200"
+   ],
+   [
+    "alt",
+    "This is a long form article, you can read it in https://habla.news/a/naddr1qvzqq"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "lord of the rings",
+  "query": "lord of the rings",
+  "intent": "topical",
+  "need": "TOPICAL: The Lord of the Rings (Tolkien's books, the films, its world). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "e986cd8ddfc770d02d1e6a374faa0735c337463d5648d4f0b4e0b8d54358a69f",
+  "kind": "30023",
+  "label": "The Great Decentralization Swindle: How Every Protocol But One Betrays Its Promise",
+  "author": "b7ed68b062de6b4a12e51fd5285c1e1e0ed0e5128cda93ab11b4150b55ed32fc",
+  "created_at": 1777543606,
+  "content": "## The eternal recurrence of centralization\n\nThere is a pattern in human affairs that repeats with depressing regularity. A technology emerges that promises to decentralize power. Enthusiasts celebrate. Entrepreneurs build. And then, slowly, the same old concentrations of control reassert themselves through new mechanisms.\n\nWe saw it with the internet itself, that great decentralizing force that somehow delivered us into the hands of five corporations. We see it now in the protocols that claim to offer an escape.\n\nThe word \"decentralized\" has become the most abused term in technology. To cut t",
+  "context": "…o cut through this fog, we must be precise about what decentralization requires: identity sovereignty (your identity exists independent of any third party), censorship resistance (your voice survives the failure or hostility of any single node), and permissionless participation (anyone can join on equal terms).  Most protocols that call themselves decentralized fail at least one of these tests. Many f… … …s participation (anyone can join on equal terms).  Most protocols that call themselves decentralized fail at least one of these tests. Many fail all three.  ---  ## ActivityPub: trading corporate overlords for hobbyist landlords  ActivityPub, the protocol underlying Mastodon, works through independent servers communicating with each other, passing messages in a grand federation. Users create accounts o… … … dominance.  Direct messages are readable by server administrators, and block lists are publicly queryable. ActivityPub offers distributed hosting, not decentralization. You have traded corporate overlords for hobbyist landlords.  ---  ## AT Protocol: the Bluesky mirage  If ActivityPub represents the first wave of federated social networking, AT Protocol represents the second: more sophisticated and be…",
+  "tags": [
+   [
+    "d",
+    "015e33c3b5ad5321"
+   ],
+   [
+    "image",
+    "https://image.nostr.build/74544b98f29aa74555e6f999ee19b2ab857255006888057354db79"
+   ],
+   [
+    "title",
+    "The Great Decentralization Swindle: How Every Protocol But One Betrays Its Promi"
+   ],
+   [
+    "summary",
+    "The decentralized social landscape is littered with protocols that centralize th"
+   ],
+   [
+    "published_at",
+    "1765736132"
+   ],
+   [
+    "t",
+    "austrian-economics"
+   ],
+   [
+    "t",
+    "freedom-tech"
+   ],
+   [
+    "t",
+    "nostr"
+   ],
+   [
+    "t",
+    "decentralization"
+   ],
+   [
+    "t",
+    "self-sovereignty"
+   ],
+   [
+    "t",
+    "cryptography"
+   ],
+   [
+    "t",
+    "p2p"
+   ],
+   [
+    "t",
+    "sovereignty"
+   ],
+   [
+    "t",
+    "bluesky"
+   ],
+   [
+    "t",
+    "mastadon"
+   ],
+   [
+    "t",
+    "farcaster"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "lyn alden",
+  "query": "lyn alden",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: Lyn Alden, macro analyst and author of Broken Money. 3 = her own profile; 2 = content about her or her work (articles, interviews, reviews of Broken Money); 1 = mentions; 0 = impersonators, unrelated.",
+  "id": "9327ffcd30598eb7b146fc39e42d94a21e6deb562977cc617ae6ee0e33722bb7",
+  "kind": "21",
+  "label": "The Economics of Bitcoin with Lyn Alden, Preston Pysh, Allen Farrington, Max Hillebrand",
+  "author": "b7ed68b062de6b4a12e51fd5285c1e1e0ed0e5128cda93ab11b4150b55ed32fc",
+  "created_at": 1713744000,
+  "content": "Panel with Lyn Alden, Preston Pysh, Allen Farrington, and Max Hillebrand on The Peter McCormack Show examines Bitcoin economics. Core thesis: Fiat money printing is the cheat code redistributing wealth through dilution; Bitcoin provides digital base money enabling accurate economic calculation. Topics: GDP as consumption metric (originated from WWI resource extraction), hurdle rates as dilution costs vs nominal yields, time preference collapse under Fiat, and inflation mechanics creating sequential malinvestment. Explores why governments haven't publicly adopted Bitcoin and recommends Austrian",
+  "context": "",
+  "tags": [
+   [
+    "title",
+    "The Economics of Bitcoin with Lyn Alden, Preston Pysh, Allen Farrington, Max Hil"
+   ],
+   [
+    "published_at",
+    "1713744000"
+   ],
+   [
+    "alt",
+    "The Economics of Bitcoin with Lyn Alden, Preston Pysh, Allen Farrington, Max Hil"
+   ],
+   [
+    "imeta",
+    "url https://relay.towardsliberty.com/6529f45605d97230d348d66d578f332abb237b32ce7",
+    "x 6529f45605d97230d348d66d578f332abb237b32ce7d3ed292bb7777af73f3ce"
+   ],
+   [
+    "t",
+    "bitcoin"
+   ],
+   [
+    "t",
+    "privacy"
+   ],
+   [
+    "r",
+    "https://www.youtube.com/watch?v=sA4jzHIPj7A"
+   ],
+   [
+    "summary",
+    "Panel with Lyn Alden, Preston Pysh, Allen Farrington, and Max Hillebrand on The "
+   ],
+   [
+    "text-track",
+    "https://relay.towardsliberty.com/ad15c4f2cff1f641ab80d76dab57bde571624e44377c713",
+    "captions"
+   ],
+   [
+    "channel",
+    "The Peter McCormack Show"
+   ],
+   [
+    "show",
+    "The Peter McCormack Show"
+   ],
+   [
+    "image",
+    "https://relay.towardsliberty.com/e0b2c7ff6c55391da8fc4fa6062cb08d2ada8272d9d60a2"
+   ],
+   [
+    "origin",
+    "youtube",
+    "sA4jzHIPj7A"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "lyn alden",
+  "query": "lyn alden",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: Lyn Alden, macro analyst and author of Broken Money. 3 = her own profile; 2 = content about her or her work (articles, interviews, reviews of Broken Money); 1 = mentions; 0 = impersonators, unrelated.",
+  "id": "a17c2d6bda45c962deb453044173bb721c8c08eb52e358ca921dcb08e0525bfe",
+  "kind": "1",
+  "label": "a17c2d6b",
+  "author": "58b295a1a5f7b8e7d507777acbcbf7691a0b39c768da2695220a89a6da85ca67",
+  "created_at": 1677781746,
+  "content": "\n\nI'm joined by guests [Craig Raw]( https://twitter.com/craigraw ), [Lyn Alden]( https://twitter.com/LynAldenContact ) & [Ben Carman]( https://twitter.com/BentheCarman ) to go through the list.  \n  \n**Housekeeping**\n\n  * 00:01:30 Bitcoin Park Events\n  * 00:01:56 Bitcoinevents.org\n\n\n\n**Software Releases & Project Updates**\n\n  * 00:02:27 Sparrow\n  * 00:09:57 Mk4: Version 5.1.0\n  * 00:14:57 Nunchuk\n  * 00:21:32 Trezor-Suite v23.2.1\n  * 00:21:43 Zeus v0.7.3-beta2 (pre-release)\n  * 00:26:09 Mutiny Wallet\n  * 00:31:47 Liana v0.2\n  * 00:32:39 Breez\n  * 00:36:13 Blixt\n  * 00:36:24 MyNode\n  * 00:38:14 ",
+  "context": "",
+  "tags": [
+   [
+    "subject",
+    "BR026 - Sparrow, COLDCARD, Nunchuk, Keeper, Breez LSP, + MORE ft. Craig Raw, Lyn"
+   ],
+   [
+    "image",
+    "https://d3t3ozftmdmh3i.cloudfront.net/production/podcast_uploaded_nologo/2489869"
+   ],
+   [
+    "t",
+    "RSSTR"
+   ],
+   [
+    "syntax",
+    "Markdown"
+   ],
+   [
+    "rss_guid",
+    "f4d489a7-3176-4153-b3f2-215f5a8abdb3"
+   ],
+   [
+    "a",
+    "34550:58b295a1a5f7b8e7d507777acbcbf7691a0b39c768da2695220a89a6da85ca67:Bitcoin.R"
+   ],
+   [
+    "r",
+    "https://anchor.fm/s/9500fad8/podcast/play/65873282/https%3A%2F%2Fd3ctxlq1ktw2nl."
+   ],
+   [
+    "episode_type",
+    "full"
+   ],
+   [
+    "media_duration",
+    "01:43:52"
+   ],
+   [
+    "rss_metadata",
+    "{\"links\": [{\"rel\": \"alternate\", \"type\": \"text/html\", \"href\": \"https://podcasters"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "lyn alden",
+  "query": "lyn alden",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: Lyn Alden, macro analyst and author of Broken Money. 3 = her own profile; 2 = content about her or her work (articles, interviews, reviews of Broken Money); 1 = mentions; 0 = impersonators, unrelated.",
+  "id": "ac5b22c1a28350329b2f8cef2e964dde07c7362d7cdb3d29ad22c5aed8a30014",
+  "kind": "21",
+  "label": "The Economics of Bitcoin with Lyn Alden, Preston Pysh, Allen Farrington, Max Hillebrand - WBD803",
+  "author": "b7ed68b062de6b4a12e51fd5285c1e1e0ed0e5128cda93ab11b4150b55ed32fc",
+  "created_at": 1713788406,
+  "content": "",
+  "context": "",
+  "tags": [
+   [
+    "title",
+    "The Economics of Bitcoin with Lyn Alden, Preston Pysh, Allen Farrington, Max Hil"
+   ],
+   [
+    "published_at",
+    "1713788406"
+   ],
+   [
+    "alt",
+    "The Economics of Bitcoin with Lyn Alden, Preston Pysh, Allen Farrington, Max Hil"
+   ],
+   [
+    "imeta",
+    "url https://relay.towardsliberty.com/93368d363d87395e3624c7cd60c92d37252845a7210",
+    "x 93368d363d87395e3624c7cd60c92d37252845a72103bba87e5255454ae5c5a2"
+   ],
+   [
+    "t",
+    "bitcoin"
+   ],
+   [
+    "t",
+    "privacy"
+   ],
+   [
+    "r",
+    "https://podcasts.apple.com/us/podcast/the-economics-of-bitcoin-with-lyn-alden-pr"
+   ],
+   [
+    "origin",
+    "listennotes",
+    "1000668622718"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "lyn alden",
+  "query": "lyn alden",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: Lyn Alden, macro analyst and author of Broken Money. 3 = her own profile; 2 = content about her or her work (articles, interviews, reviews of Broken Money); 1 = mentions; 0 = impersonators, unrelated.",
+  "id": "c50f875a836954d860f4e7a0fc71e806b05e788d611bc7cb8f9e30e1bd9adb66",
+  "kind": "21",
+  "label": "The Economics of Bitcoin | Lyn Alden, Preston Pysh, Max Hillebrand & Allen Farrington",
+  "author": "b7ed68b062de6b4a12e51fd5285c1e1e0ed0e5128cda93ab11b4150b55ed32fc",
+  "created_at": 1729209600,
+  "content": "Next Event in Sydney, Australia. October 25th & 26th “Bitcoin is how life should always have been, the cheatcode is fiat money ...",
+  "context": "",
+  "tags": [
+   [
+    "title",
+    "The Economics of Bitcoin | Lyn Alden, Preston Pysh, Max Hillebrand & Allen Farri"
+   ],
+   [
+    "published_at",
+    "1729209600"
+   ],
+   [
+    "alt",
+    "The Economics of Bitcoin | Lyn Alden, Preston Pysh, Max Hillebrand & Allen Farri"
+   ],
+   [
+    "imeta",
+    "url https://relay.towardsliberty.com/1204b91e8e9d944f14bea5a93105104c89ddf931622",
+    "x 1204b91e8e9d944f14bea5a93105104c89ddf931622096d22ed74c5cae0f9f79"
+   ],
+   [
+    "t",
+    "bitcoin"
+   ],
+   [
+    "t",
+    "privacy"
+   ],
+   [
+    "r",
+    "https://www.youtube.com/watch?v=UKslh5twiF4"
+   ],
+   [
+    "summary",
+    "Next Event in Sydney, Australia. October 25th & 26th “Bitcoin is how life should"
+   ],
+   [
+    "channel",
+    "CheatCode"
+   ],
+   [
+    "show",
+    "CheatCode"
+   ],
+   [
+    "image",
+    "https://relay.towardsliberty.com/ade72b63dfe5305fd920dfd6116026290dfd99d9816b5f6"
+   ],
+   [
+    "origin",
+    "youtube",
+    "UKslh5twiF4"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "matt odell",
+  "query": "matt odell",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: Matt Odell (ODELL), bitcoin podcaster (Citadel Dispatch, Rabbit Hole Recap). 3 = his own profile; 2 = his shows' profiles or episodes, content about him; 1 = mentions; 0 = impersonators, mirrors, unrelated.",
+  "id": "36900ac79b9b5bcf14f7eeb309c4e2897ab65a88d3ef2c7f42ea8e5900d257a1",
+  "kind": "1",
+  "label": "36900ac7",
+  "author": "58b295a1a5f7b8e7d507777acbcbf7691a0b39c768da2695220a89a6da85ca67",
+  "created_at": 1667316842,
+  "content": "\n\nA conversation with designers.  \n  \nI'm joined by guests:  \nMo ( _https://twitter.com/MogashniR_ )  \nStephen Delorme ( _https://twitter.com/StephenDeLorme_ )  \nPedro ( _https://twitter.com/@pedromvpg_ )  \nMatt Odell ( _https://twitter.com/odell_ )\n\n**Discussion Topics  \n**00:04:32 Bitcoin UX Hurdles  \n00:15:22 Onboarding noobs  \n00:28:36 QR vs NFC  \n00:33:54 Creating products for specific markets  \n00:43:01 User testing  \n00:46:07 Funding and building collaboratively  \n01:03:40 Identifying issues and user feedback  \n01:14:26 Simplicity vs complexity  \n01:45:21 Terminology **  \n**\n\n**Links & ",
+  "context": "",
+  "tags": [
+   [
+    "subject",
+    "BR008 - UX/UI Experts Roundtable ft. Odell, Pedro, Mo & Stephen"
+   ],
+   [
+    "image",
+    "https://d3t3ozftmdmh3i.cloudfront.net/production/podcast_uploaded_nologo/2489869"
+   ],
+   [
+    "t",
+    "RSSTR"
+   ],
+   [
+    "syntax",
+    "Markdown"
+   ],
+   [
+    "rss_guid",
+    "5e0e581e-4fd5-4357-978f-a7eec84cdba5"
+   ],
+   [
+    "a",
+    "34550:58b295a1a5f7b8e7d507777acbcbf7691a0b39c768da2695220a89a6da85ca67:Bitcoin.R"
+   ],
+   [
+    "r",
+    "https://anchor.fm/s/9500fad8/podcast/play/59909428/https%3A%2F%2Fd3ctxlq1ktw2nl."
+   ],
+   [
+    "episode_type",
+    "full"
+   ],
+   [
+    "media_duration",
+    "02:09:21"
+   ],
+   [
+    "rss_metadata",
+    "{\"links\": [{\"rel\": \"alternate\", \"type\": \"text/html\", \"href\": \"https://podcasters"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "matt odell",
+  "query": "matt odell",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: Matt Odell (ODELL), bitcoin podcaster (Citadel Dispatch, Rabbit Hole Recap). 3 = his own profile; 2 = his shows' profiles or episodes, content about him; 1 = mentions; 0 = impersonators, mirrors, unrelated.",
+  "id": "37932999eb8bf279fad2e7614610194f4c0dd637e329e615008a11495acbe8f5",
+  "kind": "21",
+  "label": "The Bitcoin Privacy Debate w/ Max Hillebrand, Odell, Nicholas Gregory, Giacomo Zucco,Perianne Boring",
+  "author": "b7ed68b062de6b4a12e51fd5285c1e1e0ed0e5128cda93ab11b4150b55ed32fc",
+  "created_at": 1666051200,
+  "content": "Max Hillebrand, Matt Odell, Nicholas Gregory, Giacomo Zucco, and Perianne Boring debate the topic of privacy in Bitcoin at ...",
+  "context": "",
+  "tags": [
+   [
+    "title",
+    "The Bitcoin Privacy Debate w/ Max Hillebrand, Odell, Nicholas Gregory, Giacomo Z"
+   ],
+   [
+    "published_at",
+    "1666051200"
+   ],
+   [
+    "alt",
+    "The Bitcoin Privacy Debate w/ Max Hillebrand, Odell, Nicholas Gregory, Giacomo Z"
+   ],
+   [
+    "imeta",
+    "url https://relay.towardsliberty.com/f25dd34bd34290aee29473df4cac651c7f3622f54b0",
+    "x f25dd34bd34290aee29473df4cac651c7f3622f54b0d7f3672ad99e6f9870698"
+   ],
+   [
+    "t",
+    "bitcoin"
+   ],
+   [
+    "t",
+    "privacy"
+   ],
+   [
+    "r",
+    "https://www.youtube.com/watch?v=oQ7GgCcUW_M"
+   ],
+   [
+    "channel",
+    "Bitcoin Magazine"
+   ],
+   [
+    "origin",
+    "youtube",
+    "oQ7GgCcUW_M"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "matt odell",
+  "query": "matt odell",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: Matt Odell (ODELL), bitcoin podcaster (Citadel Dispatch, Rabbit Hole Recap). 3 = his own profile; 2 = his shows' profiles or episodes, content about him; 1 = mentions; 0 = impersonators, mirrors, unrelated.",
+  "id": "4a8439baa9664626189425b09315756a7eea63bc7d337b968d69d1d9195447da",
+  "kind": "1",
+  "label": "4a8439ba",
+  "author": "58b295a1a5f7b8e7d507777acbcbf7691a0b39c768da2695220a89a6da85ca67",
+  "created_at": 1656377911,
+  "content": "\n\nScratching my own itch, this is a best efforts place to talk about Bitcoin Project software updates and some other commentary that I find interesting or noteworthy to me. Big thanks to [Matt Odell]( _https://twitter.com/ODELL_ ) for graciously joining me as my first guest.  \nTo send Bitcoin related questions, just go to bitcoin.review and click submit story at the top right.\n\n**Software Releases & Project Updates:**\n\n  * 03:28 HWI 2.1.1 07:20 COLDCARD Mk4 Firmware 5.0.4\n  * 11:24 COLDCARD Mk3 Firmware 4.1.5\n  * 13:00 BTC Pay Server v1.5 15:39 BlueWallet 6.2.18 + 6.2.17\n  * 17:49 COLDCORE 0.3",
+  "context": "",
+  "tags": [
+   [
+    "subject",
+    "BR001 - COLDCARD, BTC Pay Server, BlueWallet, Electrum, Sparrow, Fountain, Wasab"
+   ],
+   [
+    "image",
+    "https://d3t3ozftmdmh3i.cloudfront.net/production/podcast_uploaded_episode400/248"
+   ],
+   [
+    "t",
+    "RSSTR"
+   ],
+   [
+    "syntax",
+    "Markdown"
+   ],
+   [
+    "rss_guid",
+    "97fcc2fe-d810-41d7-8d3d-4a432f465aea"
+   ],
+   [
+    "a",
+    "34550:58b295a1a5f7b8e7d507777acbcbf7691a0b39c768da2695220a89a6da85ca67:Bitcoin.R"
+   ],
+   [
+    "r",
+    "https://anchor.fm/s/9500fad8/podcast/play/54093203/https%3A%2F%2Fd3ctxlq1ktw2nl."
+   ],
+   [
+    "episode_type",
+    "full"
+   ],
+   [
+    "episode",
+    "1"
+   ],
+   [
+    "season",
+    "1"
+   ],
+   [
+    "media_duration",
+    "01:40:00"
+   ],
+   [
+    "rss_metadata",
+    "{\"links\": [{\"rel\": \"alternate\", \"type\": \"text/html\", \"href\": \"https://podcasters"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "matt odell",
+  "query": "matt odell",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: Matt Odell (ODELL), bitcoin podcaster (Citadel Dispatch, Rabbit Hole Recap). 3 = his own profile; 2 = his shows' profiles or episodes, content about him; 1 = mentions; 0 = impersonators, mirrors, unrelated.",
+  "id": "5f3c96b2811846b3059a0e90ce27c0f5d9f6c6da95cf43515b5d1757bee31c78",
+  "kind": "21",
+  "label": "The Bitcoin Privacy Debate w/ Max Hillebrand, Odell, Nicholas Gregory, Giacomo Zucco,Perianne Boring",
+  "author": "b7ed68b062de6b4a12e51fd5285c1e1e0ed0e5128cda93ab11b4150b55ed32fc",
+  "created_at": 1666051200,
+  "content": "Max Hillebrand, Matt Odell, Nicholas Gregory, Giacomo Zucco, and Perianne Boring debate the topic of privacy in Bitcoin at ...",
+  "context": "",
+  "tags": [
+   [
+    "title",
+    "The Bitcoin Privacy Debate w/ Max Hillebrand, Odell, Nicholas Gregory, Giacomo Z"
+   ],
+   [
+    "published_at",
+    "1666051200"
+   ],
+   [
+    "alt",
+    "The Bitcoin Privacy Debate w/ Max Hillebrand, Odell, Nicholas Gregory, Giacomo Z"
+   ],
+   [
+    "imeta",
+    "url https://relay.towardsliberty.com/f25dd34bd34290aee29473df4cac651c7f3622f54b0",
+    "x f25dd34bd34290aee29473df4cac651c7f3622f54b0d7f3672ad99e6f9870698"
+   ],
+   [
+    "t",
+    "bitcoin"
+   ],
+   [
+    "t",
+    "privacy"
+   ],
+   [
+    "r",
+    "https://www.youtube.com/watch?v=oQ7GgCcUW_M"
+   ],
+   [
+    "summary",
+    "Privacy is foundational to freedom and property rights. This panel—Wasabi's Max "
+   ],
+   [
+    "text-track",
+    "https://relay.towardsliberty.com/ec261ef5c005c3da43370e9dd1b326ee4184f68ee0ecb22",
+    "captions"
+   ],
+   [
+    "channel",
+    "Bitcoin Magazine"
+   ],
+   [
+    "show",
+    "Bitcoin Magazine"
+   ],
+   [
+    "image",
+    "https://relay.towardsliberty.com/48376e108fd55bcb51e478896a9f993e6d327f115748477"
+   ],
+   [
+    "origin",
+    "youtube",
+    "oQ7GgCcUW_M"
    ]
   ],
   "grade": null,
@@ -11324,6 +13492,243 @@
   "by": null
  },
  {
+  "topic": "preston pysh",
+  "query": "preston pysh",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: Preston Pysh, investor and podcast host (The Investor's Podcast, Bitcoin Fundamentals). 3 = his own profile; 2 = content about him, his shows; 1 = mentions; 0 = impersonators, unrelated.",
+  "id": "5d93c92b8d67e00dba3cd95726838b468339b5d9216940ba29afcb7f8cd391fe",
+  "kind": "21",
+  "label": "The Economics of Bitcoin with Lyn Alden, Preston Pysh, Allen Farrington, Max Hillebrand - WBD803",
+  "author": "b7ed68b062de6b4a12e51fd5285c1e1e0ed0e5128cda93ab11b4150b55ed32fc",
+  "created_at": 1713788406,
+  "content": "",
+  "context": "",
+  "tags": [
+   [
+    "title",
+    "The Economics of Bitcoin with Lyn Alden, Preston Pysh, Allen Farrington, Max Hil"
+   ],
+   [
+    "published_at",
+    "1713788406"
+   ],
+   [
+    "alt",
+    "The Economics of Bitcoin with Lyn Alden, Preston Pysh, Allen Farrington, Max Hil"
+   ],
+   [
+    "imeta",
+    "url https://relay.towardsliberty.com/93368d363d87395e3624c7cd60c92d37252845a7210",
+    "x 93368d363d87395e3624c7cd60c92d37252845a72103bba87e5255454ae5c5a2"
+   ],
+   [
+    "t",
+    "bitcoin"
+   ],
+   [
+    "t",
+    "privacy"
+   ],
+   [
+    "r",
+    "https://podcasts.apple.com/us/podcast/the-economics-of-bitcoin-with-lyn-alden-pr"
+   ],
+   [
+    "show",
+    "The Peter McCormack Show"
+   ],
+   [
+    "image",
+    "https://relay.towardsliberty.com/f1e16d3d61d3be9ca1b2c99981521ef0a611bd3a748b2aa"
+   ],
+   [
+    "origin",
+    "listennotes",
+    "1000668622718"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "preston pysh",
+  "query": "preston pysh",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: Preston Pysh, investor and podcast host (The Investor's Podcast, Bitcoin Fundamentals). 3 = his own profile; 2 = content about him, his shows; 1 = mentions; 0 = impersonators, unrelated.",
+  "id": "9327ffcd30598eb7b146fc39e42d94a21e6deb562977cc617ae6ee0e33722bb7",
+  "kind": "21",
+  "label": "The Economics of Bitcoin with Lyn Alden, Preston Pysh, Allen Farrington, Max Hillebrand",
+  "author": "b7ed68b062de6b4a12e51fd5285c1e1e0ed0e5128cda93ab11b4150b55ed32fc",
+  "created_at": 1713744000,
+  "content": "Panel with Lyn Alden, Preston Pysh, Allen Farrington, and Max Hillebrand on The Peter McCormack Show examines Bitcoin economics. Core thesis: Fiat money printing is the cheat code redistributing wealth through dilution; Bitcoin provides digital base money enabling accurate economic calculation. Topics: GDP as consumption metric (originated from WWI resource extraction), hurdle rates as dilution costs vs nominal yields, time preference collapse under Fiat, and inflation mechanics creating sequential malinvestment. Explores why governments haven't publicly adopted Bitcoin and recommends Austrian",
+  "context": "",
+  "tags": [
+   [
+    "title",
+    "The Economics of Bitcoin with Lyn Alden, Preston Pysh, Allen Farrington, Max Hil"
+   ],
+   [
+    "published_at",
+    "1713744000"
+   ],
+   [
+    "alt",
+    "The Economics of Bitcoin with Lyn Alden, Preston Pysh, Allen Farrington, Max Hil"
+   ],
+   [
+    "imeta",
+    "url https://relay.towardsliberty.com/6529f45605d97230d348d66d578f332abb237b32ce7",
+    "x 6529f45605d97230d348d66d578f332abb237b32ce7d3ed292bb7777af73f3ce"
+   ],
+   [
+    "t",
+    "bitcoin"
+   ],
+   [
+    "t",
+    "privacy"
+   ],
+   [
+    "r",
+    "https://www.youtube.com/watch?v=sA4jzHIPj7A"
+   ],
+   [
+    "summary",
+    "Panel with Lyn Alden, Preston Pysh, Allen Farrington, and Max Hillebrand on The "
+   ],
+   [
+    "text-track",
+    "https://relay.towardsliberty.com/ad15c4f2cff1f641ab80d76dab57bde571624e44377c713",
+    "captions"
+   ],
+   [
+    "channel",
+    "The Peter McCormack Show"
+   ],
+   [
+    "show",
+    "The Peter McCormack Show"
+   ],
+   [
+    "image",
+    "https://relay.towardsliberty.com/e0b2c7ff6c55391da8fc4fa6062cb08d2ada8272d9d60a2"
+   ],
+   [
+    "origin",
+    "youtube",
+    "sA4jzHIPj7A"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "preston pysh",
+  "query": "preston pysh",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: Preston Pysh, investor and podcast host (The Investor's Podcast, Bitcoin Fundamentals). 3 = his own profile; 2 = content about him, his shows; 1 = mentions; 0 = impersonators, unrelated.",
+  "id": "ac5b22c1a28350329b2f8cef2e964dde07c7362d7cdb3d29ad22c5aed8a30014",
+  "kind": "21",
+  "label": "The Economics of Bitcoin with Lyn Alden, Preston Pysh, Allen Farrington, Max Hillebrand - WBD803",
+  "author": "b7ed68b062de6b4a12e51fd5285c1e1e0ed0e5128cda93ab11b4150b55ed32fc",
+  "created_at": 1713788406,
+  "content": "",
+  "context": "",
+  "tags": [
+   [
+    "title",
+    "The Economics of Bitcoin with Lyn Alden, Preston Pysh, Allen Farrington, Max Hil"
+   ],
+   [
+    "published_at",
+    "1713788406"
+   ],
+   [
+    "alt",
+    "The Economics of Bitcoin with Lyn Alden, Preston Pysh, Allen Farrington, Max Hil"
+   ],
+   [
+    "imeta",
+    "url https://relay.towardsliberty.com/93368d363d87395e3624c7cd60c92d37252845a7210",
+    "x 93368d363d87395e3624c7cd60c92d37252845a72103bba87e5255454ae5c5a2"
+   ],
+   [
+    "t",
+    "bitcoin"
+   ],
+   [
+    "t",
+    "privacy"
+   ],
+   [
+    "r",
+    "https://podcasts.apple.com/us/podcast/the-economics-of-bitcoin-with-lyn-alden-pr"
+   ],
+   [
+    "origin",
+    "listennotes",
+    "1000668622718"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "preston pysh",
+  "query": "preston pysh",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: Preston Pysh, investor and podcast host (The Investor's Podcast, Bitcoin Fundamentals). 3 = his own profile; 2 = content about him, his shows; 1 = mentions; 0 = impersonators, unrelated.",
+  "id": "c7c7970b0bcf8a76bf95dc773c3c4103411672feb2918fa43e14c09378175f50",
+  "kind": "21",
+  "label": "The Economics of Bitcoin with Lyn Alden, Preston Pysh, Allen Farrington, Max Hillebrand",
+  "author": "b7ed68b062de6b4a12e51fd5285c1e1e0ed0e5128cda93ab11b4150b55ed32fc",
+  "created_at": 1713744000,
+  "content": "",
+  "context": "",
+  "tags": [
+   [
+    "title",
+    "The Economics of Bitcoin with Lyn Alden, Preston Pysh, Allen Farrington, Max Hil"
+   ],
+   [
+    "published_at",
+    "1713744000"
+   ],
+   [
+    "alt",
+    "The Economics of Bitcoin with Lyn Alden, Preston Pysh, Allen Farrington, Max Hil"
+   ],
+   [
+    "imeta",
+    "url https://relay.towardsliberty.com/6529f45605d97230d348d66d578f332abb237b32ce7",
+    "x 6529f45605d97230d348d66d578f332abb237b32ce7d3ed292bb7777af73f3ce"
+   ],
+   [
+    "t",
+    "bitcoin"
+   ],
+   [
+    "t",
+    "privacy"
+   ],
+   [
+    "r",
+    "https://www.youtube.com/watch?v=sA4jzHIPj7A"
+   ],
+   [
+    "channel",
+    "The Peter McCormack Show"
+   ],
+   [
+    "origin",
+    "youtube",
+    "sA4jzHIPj7A"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
   "topic": "primal.net",
   "query": "primal.net",
   "intent": "identity",
@@ -11985,6 +14390,1124 @@
   "by": null
  },
  {
+  "topic": "proof of stake",
+  "query": "proof of stake",
+  "intent": "topical",
+  "need": "TOPICAL: proof of stake, the consensus mechanism (and critiques of it). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "0c6f939000c587b198d9dd3e4dd4e982f95cc72cd9fa56ae1f6e1d446f56c06a",
+  "kind": "30023",
+  "label": "The Praxeology of Privacy ~ Chapter 19: Operational Security",
+  "author": "b7ed68b062de6b4a12e51fd5285c1e1e0ed0e5128cda93ab11b4150b55ed32fc",
+  "created_at": 1777361721,
+  "content": "*\"Only amateurs attack machines; professionals target people.\"*\n\nBruce Schneier^1^\n\n## Introduction\n\nTechnical tools fail if humans fail. Encryption protecting your messages is worthless if you post the same content publicly under your real name. Tor's anonymity does not help if you log into your personal accounts through it. Bitcoin's pseudonymity does not protect you if you buy at an exchange that has your identity and then use those coins for sensitive purchases.\n\nOperational security (OPSEC) is the discipline of preventing adversaries from gathering information that could compromise securi",
+  "context": "…urisdictions require notification after certain types of surveillance conclude; absence of such notification does not mean absence of surveillance.  ### Limitations of Detection  Detection is not foolproof. Sophisticated adversaries conduct surveillance specifically designed to evade detection. Nation-state capabilities include techniques that leave minimal traces. The absence of detected surveillance d… … … you have removed it. Assume every document, physical or digital, contains information you did not intend to include.  ### Blockchain Analysis: Tracing Bitcoin  Bitcoin's pseudonymity is frequently mistaken for anonymity. In 2019, international law enforcement announced a major operation that resulted in 337 arrests across 38 countries.^5^ The investigation relied primarily on blockchain analysis, not o… … …ightings of the same person or vehicle across unconnected locations. Digital indicators include unexpected account activity, password reset requests, and unusual device behavior. Detection is not foolproof; sophisticated adversaries design surveillance to evade detection. But even imperfect detection improves situational awareness.  Case studies demonstrate common failure modes. Silk Road failed through…",
+  "tags": [
+   [
+    "d",
+    "3d1d01b6130491e1"
+   ],
+   [
+    "image",
+    "https://cdn.nostrcheck.me/b7ed68b062de6b4a12e51fd5285c1e1e0ed0e5128cda93ab11b415"
+   ],
+   [
+    "title",
+    "The Praxeology of Privacy ~ Chapter 19: Operational Security"
+   ],
+   [
+    "summary",
+    "Operational security prevents adversaries from gathering compromising informatio"
+   ],
+   [
+    "published_at",
+    "1767379784"
+   ],
+   [
+    "t",
+    "austrian-economics"
+   ],
+   [
+    "t",
+    "freedom-tech"
+   ],
+   [
+    "t",
+    "praxeology-of-privacy"
+   ],
+   [
+    "t",
+    "praxeology"
+   ],
+   [
+    "t",
+    "opsec"
+   ],
+   [
+    "t",
+    "privacy"
+   ],
+   [
+    "t",
+    "surveillance"
+   ],
+   [
+    "t",
+    "anonymity"
+   ],
+   [
+    "t",
+    "cryptography"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "proof of stake",
+  "query": "proof of stake",
+  "intent": "topical",
+  "need": "TOPICAL: proof of stake, the consensus mechanism (and critiques of it). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "1b29f3b3ab9e3e0dff7fe78ab7eaee132a015b4f0fc6c847a69770fa48ad24f1",
+  "kind": "30023",
+  "label": "Entropy, Proof of Work, and Bitcoin’s Decentralization\n",
+  "author": "08f968569f15f1f803466845f954e8b384fee6669aa589c85b860fd3ffe59a09",
+  "created_at": 1723630759,
+  "content": "# Introduction\n\nBitcoin is often cited as a prime example of a truly decentralized system. Unlike traditional financial systems that rely on central authorities, Bitcoin operates on a decentralized network of nodes, where each node independently validates and records transactions. This decentralization is critical for Bitcoin’s security, trust, and resistance to censorship. Understanding how entropy and Proof of Work (PoW) contribute to this decentralization helps elucidate why Bitcoin remains a robust and effective decentralized system. Additionally, examining how these concepts relate to the",
+  "context": "… the state of the blockchain, and P(x) represents the probability distribution of different blockchain states. High entropy indicates high uncertainty or disorder in the blockchain's state [1][2].  # Proof of Work and Reducing Entropy  **Proof of Work (PoW)** plays a crucial role in Bitcoin’s mechanism for managing entropy and maintaining decentralization. Here’s how PoW works to reduce entropy in Bitco… … …lockchain state due to the successful resolution of the PoW.  This reduction in entropy highlights how PoW helps maintain the order and consistency of the blockchain, even as new blocks are added.  # Proof of Work as a Mechanism for Order  PoW transforms physical work into a structured record. The process ensures that adding new blocks requires solving computational puzzles, which imposes a cost on crea… … …cs mirrors the balance between order and disorder in Bitcoin’s blockchain. The work done in PoW introduces structure and consistency, reducing entropy and enhancing the system's overall stability.  # Proof of Stake: Limitations in Reducing Entropy  In contrast, **Proof of Stake (PoS)**, while offering a different approach to consensus, faces limitations in managing entropy:  1. **No Physical Energy Inpu…",
+  "tags": [
+   [
+    "client",
+    "YakiHonne",
+    "31990:20986fb83e775d96d188ca5c9df10ce6d613e0eb7e5768a0f0b12b37cdac21b3:170073287"
+   ],
+   [
+    "d",
+    "4e5e124227d409ab"
+   ],
+   [
+    "image",
+    "https://image.nostr.build/202b6faff8f67737afc6dfe195d78021573bbed4309d1e4f7a6a25"
+   ],
+   [
+    "title",
+    "Entropy, Proof of Work, and Bitcoin’s Decentralization\n"
+   ],
+   [
+    "summary",
+    "This article explores the concept of entropy within the context of Bitcoin’s dec"
+   ],
+   [
+    "published_at",
+    "1723609896"
+   ],
+   [
+    "t",
+    "Bitcoin"
+   ],
+   [
+    "t",
+    "Digital Transformation"
+   ],
+   [
+    "t",
+    "Decentralization"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "proof of stake",
+  "query": "proof of stake",
+  "intent": "topical",
+  "need": "TOPICAL: proof of stake, the consensus mechanism (and critiques of it). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "5ad2d5415839dd88b0734f372c9727cec8ffee98417fef3208b48b653b7d1971",
+  "kind": "30023",
+  "label": "A Step-By-Step Guide To Writing A Blockchain Proof of Concept\n",
+  "author": "fd78c37f13c3a9d5bce80dc3278d529ba908e5119e90f9131905c5a5a0ec0833",
+  "created_at": 1697065974,
+  "content": "[\"Read more related articles, follow on the anti-censorship long content platform yakihonne.com.\n](https://yakihonne.com/users/nprofile1qqs067xr0ufu82w4hn5qmse834ffh2ggu5geay8ezvvst3d95rkqsvcpr3mhxue69uhkummnw3ez6vp39eukz6mfdphkumn99e3k7mgpremhxue69uhkummnw3ez6vpj9ejx7unpveskxar0wfujummjvuq3gamnwvaz7tmjv4kxz7fwv3sk6atn9e5k7f6er9s)\n\n\n## KEY TAKEAWAYS\n\n- A proof of concept (PoC) is a prototype or experiment that tests the feasibility and viability of a blockchain or cryptocurrency project.\n- PoC helps assess technical feasibility and identify potential issues before committing to a full-scale pr",
+  "context": "…cific issues, choosing the right blockchain platform, and designing the architecture, among other steps. - Not all POCs will lead to successful ventures due to various external factors.  ## What Is A Proof Of Concept In Blockchain? A Proof of Concept (PoC) is a prototype or small-scale experiment that illustrates the viability and potential of a specific blockchain or cryptocurrency project in the conte… … …fails in the end.   But before moving forward with a larger project, PoCs are an essential phase in the development process because they are used to test concepts and technology.  ## Steps To Write a Proof Of Concept For Blockchain Projects The process of developing a PoC for a blockchain project entails proving the viability and functioning of your concept in a practical setting. Let’s understand the p… … … PoC, get input from experts, stakeholders, and potential users. For instance, inform users that “feedback from supply chain experts helped us enhance traceability features.”  ### Step8: Document The Proof of Concept Make a thorough report detailing the design, development, testing, and feedback on the PoC. For instance, “The documentation provides a detailed overview of the PoC’s architecture, smart co…",
+  "tags": [
+   [
+    "client",
+    "yakihonne.com"
+   ],
+   [
+    "published_at",
+    "1697065974"
+   ],
+   [
+    "d",
+    "2Fq8gygn2wSQ-7j1Av5_v"
+   ],
+   [
+    "image",
+    "https://www.ccn.com/wp-content/uploads/2023/09/a-step-by-step-guide-to-writing-a"
+   ],
+   [
+    "title",
+    "A Step-By-Step Guide To Writing A Blockchain Proof of Concept\n"
+   ],
+   [
+    "summary",
+    ""
+   ],
+   [
+    "t",
+    "Blockchain Proof"
+   ],
+   [
+    "t",
+    "Blockchain"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "proof of stake",
+  "query": "proof of stake",
+  "intent": "topical",
+  "need": "TOPICAL: proof of stake, the consensus mechanism (and critiques of it). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "5b8925ab5460ee4fc614d7d9aabc48f915e1fb7bc5b189d97a4d63faf07b8960",
+  "kind": "30023",
+  "label": "The Praxeology of Privacy ~ Chapter 18: Lessons from History",
+  "author": "b7ed68b062de6b4a12e51fd5285c1e1e0ed0e5128cda93ab11b4150b55ed32fc",
+  "created_at": 1777361716,
+  "content": "*\"Those who cannot remember the past are condemned to repeat it.\"*\n\nGeorge Santayana\n\n## Introduction\n\nBitcoin succeeded where predecessors failed. Understanding why requires examining those predecessors: what they attempted, why they failed, and what lessons their failures offer.\n\nThe history of alternative currencies and private digital money includes technical brilliance, commercial misjudgment, regulatory overreach, and operational security failures. Each project teaches something. Collectively, they illuminate the path that Bitcoin and subsequent systems followed.\n\nThis chapter examines s",
+  "context": "…nst issuers, not money proper. DigiCash tokens were precisely this: warehouse receipts representing claims on dollars held by issuing banks. Users did not hold value directly; they held cryptographic proof of a claim against a bank's reserves.  This is why bank partnerships were not a business choice that better management might have avoided. They were structurally required by the system's design. A bli… … …nterface. The technology worked. Human operational security failed.  ### Why Successor Markets Survived Longer  Silk Road's shutdown did not end darknet markets. Successors learned from Silk Road's mistakes. Later operators were more careful about separating their operational identities from personal identities. Some markets implemented multiple administrators in different jurisdictions, preventing sing… … … But the pattern is clear: learning from past failures improves survival.  ### Lessons  Silk Road's story demonstrates that OPSEC is essential. Technical anonymity is insufficient if operators make mistakes connecting anonymous and identified activities; Silk Road's technology was sound, but Ulbricht's operational security was not. Decentralization improves resilience: Silk Road depended on Ulbricht, an…",
+  "tags": [
+   [
+    "d",
+    "b7ae50e3ee7d83de"
+   ],
+   [
+    "image",
+    "https://cdn.nostrcheck.me/b7ed68b062de6b4a12e51fd5285c1e1e0ed0e5128cda93ab11b415"
+   ],
+   [
+    "title",
+    "The Praxeology of Privacy ~ Chapter 18: Lessons from History"
+   ],
+   [
+    "summary",
+    "DigiCash, e-gold, and Silk Road failed through centralization and poor OPSEC. Bi"
+   ],
+   [
+    "published_at",
+    "1767379708"
+   ],
+   [
+    "t",
+    "praxeology-of-privacy"
+   ],
+   [
+    "t",
+    "praxeology"
+   ],
+   [
+    "t",
+    "history"
+   ],
+   [
+    "t",
+    "bitcoin"
+   ],
+   [
+    "t",
+    "ecash"
+   ],
+   [
+    "t",
+    "chaumian"
+   ],
+   [
+    "t",
+    "blind-signatures"
+   ],
+   [
+    "t",
+    "privacy"
+   ],
+   [
+    "t",
+    "austrian-economics"
+   ],
+   [
+    "t",
+    "freedom-tech"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "proof of stake",
+  "query": "proof of stake",
+  "intent": "topical",
+  "need": "TOPICAL: proof of stake, the consensus mechanism (and critiques of it). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "91c11f318bdc1e0e3c562163f1d309d4dfd96849513eb845a15c539e913da095",
+  "kind": "30023",
+  "label": "The Praxeology of Privacy ~ Preface",
+  "author": "b7ed68b062de6b4a12e51fd5285c1e1e0ed0e5128cda93ab11b4150b55ed32fc",
+  "created_at": 1777361634,
+  "content": "# Preface\n\nThe state is the most dangerous institution in human history. It has killed hundreds of millions, impoverished billions, and now constructs surveillance infrastructure that would make prior tyrannies weep with envy. Central Bank Digital Currencies will complete the architecture: money itself becoming a tool of observation and control, every transaction recorded, every purchase approved or denied at the discretion of authorities.\n\nThis is not paranoia. This is the announced policy of over 130 central banks.\n\nThree groups of people might resist. Each has a fatal weakness.\n\n**Austrian ",
+  "context": "…* will find their theory operationalized. Cryptographic concepts translate through economic analogies: public key cryptography solving trust problems, Bitcoin implementing sound money, zero-knowledge proofs enabling verification without disclosure. You will learn HOW to build what you have long understood SHOULD exist.  **Cypherpunks** will discover the economic framework explaining why your tools matte… … …need. No prior expertise required. Both domains are explained from first principles. Your instinct is correct; this book gives it teeth. You will learn WHAT you face and WHAT to do about it.  ### The Stakes  Privacy is not about hiding. It is about the conditions under which humans can act as humans: deliberating internally, coordinating voluntarily, accumulating wealth beyond the reach of those who wou…",
+  "tags": [
+   [
+    "d",
+    "6024cd1c23518f89"
+   ],
+   [
+    "image",
+    "https://cdn.nostrcheck.me/b7ed68b062de6b4a12e51fd5285c1e1e0ed0e5128cda93ab11b415"
+   ],
+   [
+    "title",
+    "The Praxeology of Privacy ~ Preface"
+   ],
+   [
+    "summary",
+    "Austrian economists theorize but cannot build. Cypherpunks build but lack theory"
+   ],
+   [
+    "published_at",
+    "1767378054"
+   ],
+   [
+    "t",
+    "austrian-economics"
+   ],
+   [
+    "t",
+    "freedom-tech"
+   ],
+   [
+    "t",
+    "praxeology-of-privacy"
+   ],
+   [
+    "t",
+    "praxeology"
+   ],
+   [
+    "t",
+    "cypherpunk"
+   ],
+   [
+    "t",
+    "privacy"
+   ],
+   [
+    "t",
+    "sound-money"
+   ],
+   [
+    "t",
+    "surveillance"
+   ],
+   [
+    "t",
+    "bitcoin"
+   ],
+   [
+    "t",
+    "cryptography"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "proof of stake",
+  "query": "proof of stake",
+  "intent": "topical",
+  "need": "TOPICAL: proof of stake, the consensus mechanism (and critiques of it). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "98bc8b68080fa852c1d718fc71573dfc028da4e3a9075c6156f67314e61e4a78",
+  "kind": "30023",
+  "label": "Lights and Shadows of Money Electric",
+  "author": "1b5ee74df1f13eb85d54d36bc19a4180f44ce9aceeba2ea110f9ea79bb1aae6e",
+  "created_at": 1728762552,
+  "content": "On October 8th, the American production company HBO—owned by Warner Bros. Discovery—released *Money Electric: The Bitcoin Mystery*. The documentary, directed by Cullen Hoback and currently available only to the U.S. audience, was immediately shared via P2P file-sharing platforms and can thus be easily found online.\n\nConsidering all the elements presented in the hour-and-a-half-long documentary, my personal judgment swings between two feelings:\n\n- Satisfaction for having witnessed a thorough explanation of Bitcoin’s origins, its cultural roots, the reasons behind its creation, and the intrinsic",
+  "context": "…stimated. The narrative, while effective in capturing the attention of an uninformed audience, is highly dangerous.  The “evidence” provided is completely inconsistent. Consider that the most damning proof is a 2010 BitcoinTalk post in response to Satoshi Nakamoto, which Hoback claims was accidentally posted using Todd’s profile. That is, according to the author, Satoshi himself completed his post throu… … …k post in response to Satoshi Nakamoto, which Hoback claims was accidentally posted using Todd’s profile. That is, according to the author, Satoshi himself completed his post through a response but mistakenly logged in with his personal profile: Todd's.  This is a groundless hypothesis and, moreover, not a new revelation. It's also important to note that Peter Todd's nickname at the time was “retep,” an…",
+  "tags": [
+   [
+    "image",
+    "https://blossom.primal.net/d45f43ec2c8c611fa6198fb00cf6f4364dad817c10a7368598399"
+   ],
+   [
+    "title",
+    "Lights and Shadows of Money Electric"
+   ],
+   [
+    "summary",
+    "HBO suggests Peter Todd as a possible Satoshi Nakamoto. The evidence is incredib"
+   ],
+   [
+    "t",
+    "#bitcoin #MoneyElectric #SatoshiNakamoto"
+   ],
+   [
+    "published_at",
+    "1728762552"
+   ],
+   [
+    "d",
+    "Lights-and-Shadows-of-Money-Electric-xhu3hr"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "proof of stake",
+  "query": "proof of stake",
+  "intent": "topical",
+  "need": "TOPICAL: proof of stake, the consensus mechanism (and critiques of it). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "a2634602902f3b9cb9867a0b616a8d8a4d7a998567091b44bba99fcadc51f296",
+  "kind": "30023",
+  "label": "🍒 PROOF OF STAKE SU BITCOIN? DISCUTENDO DELLE SPIDERCHAINS DI BOTANIX",
+  "author": "c73818cc95d6adf098fbff289cda4c3cf50d5f370d25f0b6f3677231ccd5c890",
+  "created_at": 1718378411,
+  "content": "![image](https://yakihonne.s3.ap-east-1.amazonaws.com/c73818cc95d6adf098fbff289cda4c3cf50d5f370d25f0b6f3677231ccd5c890/files/1718378329716-YAKIHONNES3.jpeg)\n\n🌈 In un'intervista esclusiva con Bitcoin Magazine, Willem Schroé di Botanix Labs ha svelato i dettagli di Spiderchain, una sidechain innovativa che combina Proof of Stake (PoS) e multisig per scalare la rete Bitcoin. Utilizzando l'Ethereum Virtual Machine (EVM) e meccanismi unici di PoS, Spiderchain mira a risolvere i problemi di centralizzazione e sicurezza delle soluzioni attuali. Questa nuova architettura promette di migliorare la sic",
+  "context": "…di attacco a Bitcoin mascherato da innovazione.  Unisciti al nostro gruppo Telegram: https://t.me/Bitcoin_Report_Italia  #BitcoinReportItalia #Magazine #Botanix #Spiderchain #Criptovalute #Sidechain #ProofofStake #PoS #Ethereum #EVM #Crypto #Bitcoin…",
+  "tags": [
+   [
+    "client",
+    "Yakihonne",
+    "31990:20986fb83e775d96d188ca5c9df10ce6d613e0eb7e5768a0f0b12b37cdac21b3:170073287"
+   ],
+   [
+    "published_at",
+    "1718378411"
+   ],
+   [
+    "d",
+    "AfODVhswNOsOpfyp7mTiT"
+   ],
+   [
+    "image",
+    "https://yakihonne.s3.ap-east-1.amazonaws.com/c73818cc95d6adf098fbff289cda4c3cf50"
+   ],
+   [
+    "title",
+    "🍒 PROOF OF STAKE SU BITCOIN? DISCUTENDO DELLE SPIDERCHAINS DI BOTANIX"
+   ],
+   [
+    "summary",
+    ""
+   ],
+   [
+    "zap",
+    "c73818cc95d6adf098fbff289cda4c3cf50d5f370d25f0b6f3677231ccd5c890",
+    ""
+   ],
+   [
+    "t",
+    "Bitcoin"
+   ],
+   [
+    "t",
+    "Crypto"
+   ],
+   [
+    "t",
+    "EVM"
+   ],
+   [
+    "t",
+    "Ethereum"
+   ],
+   [
+    "t",
+    "PoS"
+   ],
+   [
+    "t",
+    "ProofofStake"
+   ],
+   [
+    "t",
+    "Sidechain"
+   ],
+   [
+    "t",
+    "Criptovalute"
+   ],
+   [
+    "t",
+    "Spiderchain"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "proof of stake",
+  "query": "proof of stake",
+  "intent": "topical",
+  "need": "TOPICAL: proof of stake, the consensus mechanism (and critiques of it). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "aad6e189f28167e5145804dd0baa1366914e2b43a7937bc10686aac84ce824a4",
+  "kind": "30023",
+  "label": "The Joy of Cryptography by Mike Rosulek: Proving What a Security Guarantee Covers",
+  "author": "b7ed68b062de6b4a12e51fd5285c1e1e0ed0e5128cda93ab11b4150b55ed32fc",
+  "created_at": 1792092263,
+  "content": "Mike Rosulek's [*The Joy of Cryptography*](https://joyofcryptography.com/) is a mathematics textbook on provable security. It explains why cryptographic constructions satisfy formal definitions and what each definition permits an attacker to do. This recommendation concerns the current online edition, accessed on 7 October 2026, and excludes earlier PDF drafts and any print version. In the [preface](https://joyofcryptography.com/preface/), Rosulek argues that security demands reasoning about arbitrary components across every possible input, because output that looks random in a sample proves n",
+  "context": "…r's position as a library: a set of subroutines the adversary may call, with secret values held inside. A security definition says that two libraries are interchangeable to any calling program, and a proof converts one into the other through a sequence of justified transformations. The format exposes two inputs: the queries the adversary may make and the assumptions the construction depends on. How a ci… … …formations. The format exposes two inputs: the queries the adversary may make and the assumptions the construction depends on. How a ciphertext looks plays no part. Rosulek also marks where his early proofs stop.  The chosen-ciphertext material shows the method absorbing a stronger adversary. Chosen-plaintext security gives the attacker encryptions, and chosen-ciphertext security adds decryptions. Rosul… … …ttacker who sees ciphertexts, or one who also receives decryption replies. A reader can check both before accepting that something stays private. In our assessment, the precision also sets a limit. A proof that one secret stays hidden from one view does not establish anonymity, conceal who communicated with whom, or certify a messaging product as private overall. Each of those claims needs its own defin…",
+  "tags": [
+   [
+    "d",
+    "library-joy-of-cryptography"
+   ],
+   [
+    "title",
+    "The Joy of Cryptography by Mike Rosulek: Proving What a Security Guarantee Cover"
+   ],
+   [
+    "summary",
+    "Mike Rosulek's textbook proves cryptographic security through attacker libraries"
+   ],
+   [
+    "image",
+    "https://relay.towardsliberty.com/a2fd49328a7cf54c333222afb83b0658f5f1ae62c2ee689"
+   ],
+   [
+    "alt",
+    "Long-form article: The Joy of Cryptography by Mike Rosulek: Proving What a Secur"
+   ],
+   [
+    "tl-schema",
+    "recommendation-v1"
+   ],
+   [
+    "tl-work",
+    "tl-reading-0430"
+   ],
+   [
+    "tl-relation",
+    "recommended"
+   ],
+   [
+    "i",
+    "https://joyofcryptography.com/"
+   ],
+   [
+    "k",
+    "web"
+   ],
+   [
+    "t",
+    "cryptography"
+   ],
+   [
+    "t",
+    "encryption"
+   ],
+   [
+    "t",
+    "messaging"
+   ],
+   [
+    "t",
+    "privacy"
+   ],
+   [
+    "t",
+    "zero-knowledge"
+   ],
+   [
+    "tl-meta",
+    "aa8b6eac72e43aa873128bc9caf779d5ca9abf57d9d2b24306c776dcb7352af6"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "proof of stake",
+  "query": "proof of stake",
+  "intent": "topical",
+  "need": "TOPICAL: proof of stake, the consensus mechanism (and critiques of it). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "cafbeb1c1851c150bbb1214b678d3c3443aa74ef9ca385596c7e6059ef9f6ab2",
+  "kind": "30023",
+  "label": "Blockchain, is it a chain of fools?",
+  "author": "b7b1382ea9bd7b2420eed4db8d8333aa664c7bb7bee2208554a31a6074635e6c",
+  "created_at": 1769602832,
+  "content": "I've spent years teaching people about Bitcoin—breaking down the complexities until folks with zero background could explain it to their grandmothers. I believed in the vision. I still believe in parts of it.\n\nBut I have a problem with lies.\n\nNot the kind of lies people tell on purpose. The kind that get repeated so often they become truth. The blockchain industry is full of these. Trustlessness. Decentralization. Censorship resistance. These words get thrown around like confetti at a parade, but when you actually try to grab one and hold it up to the light?\n\nIt crumbles.\n\nI'm going to tell yo",
+  "context": "…ces the middleman. The moment you have a gatekeeper who controls who can read or write to the ledger, you have removed the need for a blockchain. If you know and trust your validators, you don't need Proof-of-Work or Proof-of-Stake. You just need a distributed database with cryptographic signatures.  Building a private blockchain is like buying a tank for your morning commute because you want to feel sa… … …ration.\"  The reality?  Tether has frozen hundreds of millions in USDT at law enforcement request. Circle blacklisted Tornado Cash addresses within hours of OFAC sanctions. After Ethereum switched to proof-of-stake, around 70% of blocks became OFAC-compliant because major validators filtered sanctioned transactions. The network has partially self-corrected, but the structural vulnerability remains.  The…",
+  "tags": [
+   [
+    "d",
+    "document-28"
+   ],
+   [
+    "title",
+    "Blockchain, is it a chain of fools?"
+   ],
+   [
+    "image",
+    "https://firebasestorage.googleapis.com/v0/b/cherise-wilson.appspot.com/o/nostr-b"
+   ],
+   [
+    "t",
+    "Blockchain"
+   ],
+   [
+    "t",
+    "Bitcoin"
+   ],
+   [
+    "t",
+    "Crypto"
+   ],
+   [
+    "t",
+    "Jamie Dimon"
+   ],
+   [
+    "t",
+    "JPMorgan"
+   ],
+   [
+    "t",
+    "ERC-8004"
+   ],
+   [
+    "t",
+    "AI Agents"
+   ],
+   [
+    "t",
+    "DeFi"
+   ],
+   [
+    "t",
+    "Decentralization"
+   ],
+   [
+    "t",
+    "Private Blockchain"
+   ],
+   [
+    "t",
+    "Web3"
+   ],
+   [
+    "published_at",
+    "1769579880"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "proof of work",
+  "query": "proof of work",
+  "intent": "topical",
+  "need": "TOPICAL: proof of work, the consensus mechanism (bitcoin mining, PoW). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "55829eea5e480120e9ef2d5b270a0c822fef0195a094bea9534e24ac11b69986",
+  "kind": "21",
+  "label": "Proof of Work - An interview with Michel (Nodl)",
+  "author": "b7ed68b062de6b4a12e51fd5285c1e1e0ed0e5128cda93ab11b4150b55ed32fc",
+  "created_at": 1566345600,
+  "content": "",
+  "context": "",
+  "tags": [
+   [
+    "title",
+    "Proof of Work - An interview with Michel (Nodl)"
+   ],
+   [
+    "published_at",
+    "1566345600"
+   ],
+   [
+    "alt",
+    "Proof of Work - An interview with Michel (Nodl)"
+   ],
+   [
+    "imeta",
+    "url https://relay.towardsliberty.com/9915d7a62876bfa4e95a1dca833ca4d01cdb10142c0",
+    "x 9915d7a62876bfa4e95a1dca833ca4d01cdb10142c0c1c4f802b729293dc44a0"
+   ],
+   [
+    "t",
+    "bitcoin"
+   ],
+   [
+    "t",
+    "privacy"
+   ],
+   [
+    "r",
+    "https://www.youtube.com/watch?v=4mdSgZ-l8kE"
+   ],
+   [
+    "channel",
+    "World Crypto Network"
+   ],
+   [
+    "show",
+    "World Crypto Network"
+   ],
+   [
+    "origin",
+    "youtube",
+    "4mdSgZ-l8kE"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "proof of work",
+  "query": "proof of work",
+  "intent": "topical",
+  "need": "TOPICAL: proof of work, the consensus mechanism (bitcoin mining, PoW). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "64ce828c45fe1b35a5f4bc32823f30af32c74f7e1ba13e69c182b8b6f6ca0ea7",
+  "kind": "39701",
+  "label": "Mine vanity npubs and NIP-13 proof of work events on the GPU or CPU",
+  "author": "06639a386c9c1014217622ccbcf40908c4f1a0c33e23f8d6d68f4abf655f8f71",
+  "created_at": 1792576395,
+  "content": "",
+  "context": "",
+  "tags": [
+   [
+    "d",
+    "github.com/v0l/ngrind"
+   ],
+   [
+    "client",
+    "CCNS.news"
+   ],
+   [
+    "title",
+    "Mine vanity npubs and NIP-13 proof of work events on the GPU or CPU"
+   ],
+   [
+    "published_at",
+    "1792576395000"
+   ],
+   [
+    "u",
+    "https://github.com/v0l/ngrind"
+   ],
+   [
+    "scheme",
+    "https:"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "proof of work",
+  "query": "proof of work",
+  "intent": "topical",
+  "need": "TOPICAL: proof of work, the consensus mechanism (bitcoin mining, PoW). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "9c7f1b553c755af4b5fbb5600c71b82d668f7350054890fd8d37e6b2fb46f500",
+  "kind": "21",
+  "label": "Proof of Work - An interview with Michel (Nodl)",
+  "author": "b7ed68b062de6b4a12e51fd5285c1e1e0ed0e5128cda93ab11b4150b55ed32fc",
+  "created_at": 1566345600,
+  "content": "",
+  "context": "",
+  "tags": [
+   [
+    "title",
+    "Proof of Work - An interview with Michel (Nodl)"
+   ],
+   [
+    "published_at",
+    "1566345600"
+   ],
+   [
+    "alt",
+    "Proof of Work - An interview with Michel (Nodl)"
+   ],
+   [
+    "imeta",
+    "url https://relay.towardsliberty.com/9915d7a62876bfa4e95a1dca833ca4d01cdb10142c0",
+    "x 9915d7a62876bfa4e95a1dca833ca4d01cdb10142c0c1c4f802b729293dc44a0"
+   ],
+   [
+    "t",
+    "bitcoin"
+   ],
+   [
+    "t",
+    "privacy"
+   ],
+   [
+    "r",
+    "https://www.youtube.com/watch?v=4mdSgZ-l8kE"
+   ],
+   [
+    "channel",
+    "World Crypto Network"
+   ],
+   [
+    "show",
+    "World Crypto Network"
+   ],
+   [
+    "image",
+    "https://relay.towardsliberty.com/7e18124b0995447d0436fb94b81bed5717184230f24b472"
+   ],
+   [
+    "origin",
+    "youtube",
+    "4mdSgZ-l8kE"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "proof of work",
+  "query": "proof of work",
+  "intent": "topical",
+  "need": "TOPICAL: proof of work, the consensus mechanism (bitcoin mining, PoW). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "b8456ba273996b442cf495fba3eb60e076a2ab3d7320a06c6b05b6e248396b32",
+  "kind": "21",
+  "label": "Cryptoeconomics · 4.16 Proof of Work Fallacy · Eric Voskuil",
+  "author": "b7ed68b062de6b4a12e51fd5285c1e1e0ed0e5128cda93ab11b4150b55ed32fc",
+  "created_at": 1633254620,
+  "content": "Cryptoeconomics: Fundamental Principles of Bitcoin\nby Eric Voskuil\nNarrated by Max Hillebrand\n\nProof of Work Fallacy\n\nhttps://bitcoin.fr/wp-content/uploads/2021/11/cryptoeconomics.pdf",
+  "context": "",
+  "tags": [
+   [
+    "title",
+    "Cryptoeconomics · 4.16 Proof of Work Fallacy · Eric Voskuil"
+   ],
+   [
+    "published_at",
+    "1633254620"
+   ],
+   [
+    "alt",
+    "Cryptoeconomics · 4.16 Proof of Work Fallacy · Eric Voskuil"
+   ],
+   [
+    "imeta",
+    "url https://relay.towardsliberty.com/2e649217c73b48127603570994af6b76871a26d2062",
+    "x 2e649217c73b48127603570994af6b76871a26d206224d911d9ba9221cc6a616"
+   ],
+   [
+    "t",
+    "cryptoeconomics"
+   ],
+   [
+    "t",
+    "ericvoskuil"
+   ],
+   [
+    "t",
+    "bitcoin"
+   ],
+   [
+    "t",
+    "maxhillebrand"
+   ],
+   [
+    "t",
+    "audiobook"
+   ],
+   [
+    "r",
+    "https://bitcoin.fr/wp-content/uploads/2021/11/cryptoeconomics.pdf"
+   ],
+   [
+    "origin",
+    "audiobook",
+    "cryptoeconomics-4.16"
+   ],
+   [
+    "image",
+    "https://relay.towardsliberty.com/f7ca25ae543d4ea7ab4762f6fe85d545e85c6aeb3b9953f"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "the art of war",
+  "query": "the art of war",
+  "intent": "topical",
+  "need": "TOPICAL: The Art of War, Sun Tzu's treatise (its text, quotes, commentary). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "2bd287a554a87e118f52ceb3169b913c201e5cf2fe3781bebfac6afcf45883a4",
+  "kind": "30023",
+  "label": "The Bushido of Bitcoin",
+  "author": "6ad08392d1baa3f6ff7a9409e2ac5e5443587265d8b4a581c6067d88ea301584",
+  "created_at": 1716834699,
+  "content": "### Release announcement & short overview\n\nTwo years, six drafts, and 125,000 words later, and The Bushido of Bitcoin is almost complete. \n\nBefore the book’s release in Q3 of this year I will be doing a few things: \n\n1. Making it available for pre-order on [Geyser](http://geyser.fund/bushidoofbitcoin). For the general paperback, digital and audio copies, it will save you roughly 50%. I will also include some limited edition options, like a short run of 21 leather-bound versions of the book. More on that in the coming weeks.\n2. Drip-feeding snippets from the book, in the form of quotes, lessons",
+  "context": "…sons, etymology progressions and insights, across all my socials. On Substack I’ll do longer form posts, on [Twitter](http://twitter.com/svetskiwrites) & [Nostr](http://primal.net/svetski), I’ll keep them more succinct, and finally, I’m reviving my [Instagram](http://instagram.com/svetskiwrites) to wrap the insights in beautiful, shareable, bite-size visuals.  3. Jumping on a bunch of podcasts, both B… … …y [Instagram](http://instagram.com/svetskiwrites) to wrap the insights in beautiful, shareable, bite-size visuals.  3. Jumping on a bunch of podcasts, both Bitcoin and not Bitcoin-related to dig into the content of the book. I’ve recorded with Breedlove already. Many more to come _- and who knows, I may even revive my old Wake Up Podcast and do a few short episodes there too._   I want to treat this b… … …ny more to come _- and who knows, I may even revive my old Wake Up Podcast and do a few short episodes there too._   I want to treat this book as both an ongoing work and a piece of art. So alongside the book, I’m also going to produce some pieces of visual and physical art. The video trailer, alone, I promise will blow your mind., as will the warrior-samurai artwork I’m going to have commissioned in …",
+  "tags": [
+   [
+    "title",
+    "The Bushido of Bitcoin"
+   ],
+   [
+    "image",
+    "https://image.nostr.build/cb5a39fd8c7119cca26cb72630c44f7779043ecbae2e70cda0e48d"
+   ],
+   [
+    "summary",
+    "The Bushido of Bitcoin - Release Announcement & Overview"
+   ],
+   [
+    "t",
+    "Bitcoin"
+   ],
+   [
+    "t",
+    "Bushido"
+   ],
+   [
+    "t",
+    "Virtue"
+   ],
+   [
+    "t",
+    "Philosophy"
+   ],
+   [
+    "t",
+    "Warrior Codes"
+   ],
+   [
+    "t",
+    "Svetski"
+   ],
+   [
+    "h",
+    "6ad08392d1baa3f6ff7a9409e2ac5e5443587265d8b4a581c6067d88ea301584"
+   ],
+   [
+    "f",
+    "Free"
+   ],
+   [
+    "published_at",
+    "1716834699"
+   ],
+   [
+    "d",
+    "The-Bushido-of-Bitcoin-k53ih8"
+   ],
+   [
+    "client",
+    "highlighter",
+    "31990:73c6bb92440a9344279f7a36aa3de1710c9198b1e9e8a394cd13e0dd5c994c63:170450226"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "the art of war",
+  "query": "the art of war",
+  "intent": "topical",
+  "need": "TOPICAL: The Art of War, Sun Tzu's treatise (its text, quotes, commentary). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "57a03bf2bb7a72166eab45c15a68bdceb48c48719c48c1a453218c76281b2972",
+  "kind": "30023",
+  "label": "The World War II Consensus is Breaking Down - Return of the Strong Gods?",
+  "author": "000002de954405f6471e92ef46027059271c9fd80dadba406b0caca3c05780a7",
+  "created_at": 1747857621,
+  "content": "I enjoy Jonathan Pageau's perspectives from time to time. He is big on myth and symbolic signs in culture and history. I find this stuff fascinating as well. I watched this video last week, and based on the title, I was thinking... hmm, I wonder if it is a review of *[Return of the Strong Gods]().* It wasn't, but it really flows with the thesis of that book. You should read it if you haven't, and before you do, go check out @SimpleStacker's [review](https://stacker.news/items/933342) of it.\n\nPageau starts the video by talking about the concept of \"watching the clown.\" He uses Ye as the clown. ",
+  "context": "…Stacker's [review](https://stacker.news/items/933342) of it.  Pageau starts the video by talking about the concept of \"watching the clown.\" He uses Ye as the clown. Ye has been a leading indicator in the past when he publicly claimed he was a Christian and began making music and holding church services. Now he's going \"off the rails\" seemingly with his Hitler songs and art. Clearly, the stigma of Hitl… … … seemingly with his Hitler songs and art. Clearly, the stigma of Hitler will not last forever. It's hard for us to realize this. At least for someone of my age, but Pageau points out that eventually, the villains of history become less of a stand-in for Satan and more of a purely historical figure. He mentions Alexander the Great as a man who did incredibly evil things, but today we just read about hi… … … historical figure. He mentions Alexander the Great as a man who did incredibly evil things, but today we just read about him in school and don't really think about it too much. One day, that will be the way Hitler is viewed. Sure, evil, but the power of using him as the mythical Satan will wane.  The most interesting point I took away from this video, though, was that the post-war consensus was built…",
+  "tags": [
+   [
+    "d",
+    "985962"
+   ],
+   [
+    "title",
+    "The World War II Consensus is Breaking Down - Return of the Strong Gods?"
+   ],
+   [
+    "published_at",
+    "1747857621"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "the art of war",
+  "query": "the art of war",
+  "intent": "topical",
+  "need": "TOPICAL: The Art of War, Sun Tzu's treatise (its text, quotes, commentary). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "5c1eb7a4a1721fb4f09c6a91e43e48379bba0093364cc520bd0c3857c6ca837f",
+  "kind": "30023",
+  "label": "Ralph McQuarrie — The Original Star Wars Concept Artist",
+  "author": "2cde0e02bda47eaeeed65e341619cc5f2afce990164669da4e1e5989180a96b9",
+  "created_at": 1779190717,
+  "content": "![atat star wars](https://m.stacker.news/141787)\n\n![ralph mcquarrie](https://m.stacker.news/141785)\n*reference*\n\n***\n\n**Ralph Angus McQuarrie** ([/məˈkwɒriː/](https://en.wikipedia.org/wiki/Help:IPA/English \"Help:IPA/English\"); June 13, 1929 – March 3, 2012) was an American [concept artist](https://en.wikipedia.org/wiki/Concept_art \"Concept art\") who worked in film and television. His career included work on the original [*Star Wars* trilogy](https://en.wikipedia.org/wiki/Star_Wars#Original_trilogy \"Star Wars\"), the original [*Battlestar Galactica*](https://en.wikipedia.org/wiki/Battlestar_Gala",
+  "context": "…rs#Original_trilogy \"Star Wars\"), the original [*Battlestar Galactica*](https://en.wikipedia.org/wiki/Battlestar_Galactica_(1978_TV_series) \"Battlestar Galactica (1978 TV series)\") television series, the film [*E.T. the Extra-Terrestrial*](https://en.wikipedia.org/wiki/E.T._the_Extra-Terrestrial \"E.T. the Extra-Terrestrial\"), and the film [*Cocoon*](https://en.wikipedia.org/wiki/Cocoon_(film) \"Cocoon … … …rrestrial\"), and the film [*Cocoon*](https://en.wikipedia.org/wiki/Cocoon_(film) \"Cocoon (film)\"), for which he won an [Academy Award](https://en.wikipedia.org/wiki/Academy_Awards \"Academy Awards\").  The young filmmaker [George Lucas](https://en.wikipedia.org/wiki/George_Lucas \"George Lucas\") was impressed by McQuarrie's work and met with him to discuss his plans for a space-fantasy film, [*Star Wars*… … …[https://en.wikipedia.org/wiki/Ralph\\_McQuarrie#cite\\_note-:0-4](https://en.wikipedia.org/wiki/Ralph_McQuarrie#cite_note-:0-4)) In 1975, Lucas commissioned McQuarrie to illustrate several scenes from the script of the film. McQuarrie may have been inspired by some of Berkey's works, in particular a painting of a rocket-plane diving down through space towards a gigantic mechanical planet (the image had…",
+  "tags": [
+   [
+    "d",
+    "1492912"
+   ],
+   [
+    "title",
+    "Ralph McQuarrie — The Original Star Wars Concept Artist"
+   ],
+   [
+    "published_at",
+    "1779190717"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "the art of war",
+  "query": "the art of war",
+  "intent": "topical",
+  "need": "TOPICAL: The Art of War, Sun Tzu's treatise (its text, quotes, commentary). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "638a5d065a89e4d2d2cadb699ccb2ad2115decdce452434554a5efbb2b158aea",
+  "kind": "30023",
+  "label": "The Connection Between Money and Building Culture",
+  "author": "652d58acafa105af8475c0fe8029a52e7ddbc337b2bd9c98bb17a111dc4cde60",
+  "created_at": 1764840659,
+  "content": "Welcome to the 34th Edition of The Bitcoin Newsletter  \n  \n2024 was a remarkable year for Bitcoin, exceeding expectations, while 2025 has been the opposite, challenging them and once again showing that the monetization of bitcoin unfolds in mysterious ways.\n\nThe network grows, the user base expands, and the price rises—but never exactly as predicted. This uncertainty is exactly what makes decentralized markets powerful, revealing which ideas and technologies truly thrive.\n\nWhat does hard money mean for our built environment, long shaped by short-term speculation?\n\nModern architecture often res",
+  "context": "…as and technologies truly thrive.  What does hard money mean for our built environment, long shaped by short-term speculation?  Modern architecture often resists timeless principles of beauty seen in the Mona Lisa, the Pyramids, or the Golden Ratio.  I will explain how this relates to the devaluation of money and why bitcoin, as hard money, could help reshape building culture, fostering designs that r… … …or the Golden Ratio.  I will explain how this relates to the devaluation of money and why bitcoin, as hard money, could help reshape building culture, fostering designs that reflect long-term value rather than short-term trends.  This essay also forms part of my upcoming book, *Digital Real Estate*, which I have been working on for over 2.5 years.  I’ve tested the theories and strategies in practice, … … …his essay also forms part of my upcoming book, *Digital Real Estate*, which I have been working on for over 2.5 years.  I’ve tested the theories and strategies in practice, and this summer I explored the treasury phenomenon and its influence on real estate, incorporating it into the book, which significantly extended the writing process.  The book is now finally scheduled for release in Q2 2026 via Bi…",
+  "tags": [
+   [
+    "d",
+    "leonwankum-substack-com-p-the-connection-between-money-and-building-culture"
+   ],
+   [
+    "title",
+    "The Connection Between Money and Building Culture"
+   ],
+   [
+    "summary",
+    "TBN 34 - In this edition I explain why modern architecture often resists timeles"
+   ],
+   [
+    "image",
+    "https://blossom.primal.net/6104830af4bda11e0abd868ca482a9c82262a05461edb61861b5d"
+   ],
+   [
+    "published_at",
+    "1764840659"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "the art of war",
+  "query": "the art of war",
+  "intent": "topical",
+  "need": "TOPICAL: The Art of War, Sun Tzu's treatise (its text, quotes, commentary). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "7cf2686a46a7452383dfdf93ecaef3f71e81c65839be7c048dafe368cea064e9",
+  "kind": "30023",
+  "label": "Instant Settlement: The Construction Industry",
+  "author": "3c827db6c45f7e6221fa119b96044eb1a412146a1f5674742874f7b266418fc3",
+  "created_at": 1704203617,
+  "content": "As I delve deeper into the realm of Bitcoin and the Lightning Network, I am consistently struck by the potential benefits it holds for humanity. The realization of how inefficient and broken our societal structures are due to the limitations of fiat currency becomes increasingly apparent to everyone. While the spotlight often shines on the monetary aspects of Bitcoin, my exploration into the Lightning Network, spurred by my work at Breez and our company's visionary goals, has unveiled an aspect that remains largely unspoken. This hidden gem promises significant benefits for humanity, yet it re",
+  "context": "…twork, spurred by my work at Breez and our company's visionary goals, has unveiled an aspect that remains largely unspoken. This hidden gem promises significant benefits for humanity, yet it requires the careful alignment of various building blocks before its full potential can be realized.  I will try to illustrate individual pieces of the vision that I have for changing human behavior through the Li… … …will try to illustrate individual pieces of the vision that I have for changing human behavior through the Lightning Network. Those will be examples of different visions for different industries, how they will be disrupted from their current operations, and ways of delivering the benefits of Lightning to each one. I'm not sure how many industries I'll talk about because the more I think about it, the … … …ach one. I'm not sure how many industries I'll talk about because the more I think about it, the more I see that it's connected to everything, just like Bitcoin. But I will cover as many as needed so the disruptive potential can resonate with more people.  Disclaimer: I am not an expert in any particular industry so the examples can be improved even more from people who are experts in them. The idea i…",
+  "tags": [
+   [
+    "d",
+    "1698043895882"
+   ],
+   [
+    "title",
+    "Instant Settlement: The Construction Industry"
+   ],
+   [
+    "summary",
+    "The first part in an article series by Ivan Makedonski from Breez on how Lightni"
+   ],
+   [
+    "published_at",
+    "1698044130"
+   ],
+   [
+    "t",
+    "Bitcoin"
+   ],
+   [
+    "t",
+    "Lightning Network"
+   ],
+   [
+    "t",
+    "Construction"
+   ],
+   [
+    "t",
+    "Work"
+   ],
+   [
+    "image",
+    "https://media.licdn.com/dms/image/sync/D4D27AQHZGxjgKUWmXg/articleshare-shrink_8"
+   ],
+   [
+    "alt",
+    "This is a long form article, you can read it in https://habla.news/a/naddr1qqxnz"
+   ],
+   [
+    "client",
+    "31990:7d4e04503ab26615dd5f29ec08b52943cbe5f17bacc3012b26220caa232ab14c:168732969",
+    "wss://relay.nostr.band"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "the art of war",
+  "query": "the art of war",
+  "intent": "topical",
+  "need": "TOPICAL: The Art of War, Sun Tzu's treatise (its text, quotes, commentary). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "993bdd6a04866de9e1be158eefdd518fca7de21941e31daf9221ff51e40e9202",
+  "kind": "30023",
+  "label": "The Long Story of Rights: A Narrative of Understanding, Error, and Discovery ",
+  "author": "0c65eba8a81341439ac132a0fec38121ce7d68d89e56a5c2b6e88d784a08ef9a",
+  "created_at": 1757154631,
+  "content": "Once, long before laws and courts and constitutions, there was only the sun, the earth, the water, the wind, the animals, and us. But not as we are now, in some ways we were more robust. The bodies of our ancestors were strong, hardened by labor, hunger, and cold. You can see it in their bones: dense, scarred, built for survival. But while the individual was robust, the world around us was unforgiving, and we were alone. Small bands. Isolated families. Fragile not in body, but in social structure. Alone in the savage wilderness, where no one came if you cried out, and no one mourned if you van",
+  "context": "… in body, but in social structure. Alone in the savage wilderness, where no one came if you cried out, and no one mourned if you vanished.  What we now call \"rights\" began not in books or temples, or the minds of great intellectuals, but out of necessity, in the mud and blood of survival. A man had no right to his body unless he could defend it. He had no claim to his tools unless he could hold onto t… … …he mud and blood of survival. A man had no right to his body unless he could defend it. He had no claim to his tools unless he could hold onto them. He had no wife or children unless he could protect them. Life was a long negotiation with nature, and with others, often in the language of violence.  Nature is a cruel and unforgiving mistress, which made men who were cruel and unforgiving. And so life w… … …d with others, often in the language of violence.  Nature is a cruel and unforgiving mistress, which made men who were cruel and unforgiving. And so life was hard, but we humans hung on, surviving by the skin of our teeth.  Out of that violence and hardship the first truth emerged: a right is not given, it is defended. It is made real only by the cost you are willing to pay to preserve it.  But not ev…",
+  "tags": [
+   [
+    "title",
+    "The Long Story of Rights: A Narrative of Understanding, Error, and Discovery "
+   ],
+   [
+    "summary",
+    "Where do rights come from? Do they come from nature? From God? From our humanity"
+   ],
+   [
+    "image",
+    "https://blossom.primal.net/285343e36bd3a44a060c3e67b7f5ba20819df9accc45c8d584fc5"
+   ],
+   [
+    "d",
+    "the-long-story-of-rights-a-narrative-of-understanding-error-and-discovery-"
+   ],
+   [
+    "r",
+    "wss://relay.primal.net/"
+   ],
+   [
+    "client",
+    "Primal"
+   ],
+   [
+    "published_at",
+    "1757154631"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
   "topic": "vitor",
   "query": "vitor",
   "intent": "ambiguous",
@@ -12610,6 +16133,308 @@
    [
     "repo",
     "https://github.com/vitorpamplona/amethyst"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "web of trust",
+  "query": "web of trust",
+  "intent": "topical",
+  "need": "TOPICAL: web of trust (trust graphs, WoT in Nostr or PGP, reputation by who-trusts-whom). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "3b13ac9e2fd04e4e8b7a1ded9d66a594e5fdc6e3bc1fe31a4c71d8ae64075126",
+  "kind": "30002",
+  "label": "My Web-of-Trust",
+  "author": "b7274d28e3e983bf720db4b4a12a31f5c7ef262320d05c25ec90489ac99628cb",
+  "created_at": 1782662898,
+  "content": "",
+  "context": "",
+  "tags": [
+   [
+    "d",
+    "listr-269811e9-7768-4867-aff9-526f78fe7490"
+   ],
+   [
+    "title",
+    "My Web-of-Trust"
+   ],
+   [
+    "description",
+    "Just my own web-of-trust relay."
+   ],
+   [
+    "relay",
+    "wss://wot.brightbolt.xyz"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "web of trust",
+  "query": "web of trust",
+  "intent": "topical",
+  "need": "TOPICAL: web of trust (trust graphs, WoT in Nostr or PGP, reputation by who-trusts-whom). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "72af3fed154dae3f84a61b7bbd4b5bae8653d6cfd52168a31d89bea0c1968d2e",
+  "kind": "31923",
+  "label": "[Nostriga 2024] RIP Global, web-of-trust as the ONLY valid entry-point to the internet",
+  "author": "c3e6982c7f93e443d99f2d22c3d6fc6ba61475af11bcf289f927a7b905fffe51",
+  "created_at": 1724230231,
+  "content": "Day 1. Nostrich Stage. Panel. Meta Track.\n\nExploration about the transformative potential of Nostr's Web of Trust (WoT) in reshaping how users navigate and verify information on the internet.\n\nWith the proliferation of AI technologies and the increasing challenges of digital impersonation, establishing trust and authenticity online has never been more crucial.\n\nThe panel will delve into the concept of using Nostr's WoT as a foundational layer for internet interactions, focusing on its implications for content verification, social networking, and digital identity.\n\nSome keypoints we'll touch on",
+  "context": "",
+  "tags": [
+   [
+    "d",
+    "D82439C2-C5B4-4884-9B87-FDB435BCE0F7"
+   ],
+   [
+    "title",
+    "[Nostriga 2024] RIP Global, web-of-trust as the ONLY valid entry-point to the in"
+   ],
+   [
+    "start",
+    "1724325741"
+   ],
+   [
+    "summary",
+    "Day 1. Nostrich Stage. Panel. Meta Track."
+   ],
+   [
+    "image",
+    "https://media.primal.net/uploads/a/58/09/a58099bc25defb329989f5748ca5639ac942c34"
+   ],
+   [
+    "end",
+    "1724328441"
+   ],
+   [
+    "start_tzid",
+    "Europe/Riga"
+   ],
+   [
+    "location",
+    "Nostrich Stage, Fantadroms, conference center, G. Zemgala gatve 76, Riga, LV-103"
+   ],
+   [
+    "g",
+    "ud1hjujqyv"
+   ],
+   [
+    "p",
+    "ff27d01cb1e56fb58580306c7ba76bb037bf211c5b573c56e4e70ca858755af0",
+    ""
+   ],
+   [
+    "p",
+    "3fc5f8553abd753ac47967c4c468cfd08e8cb9dee71b79e12d5adab205bc04d3",
+    ""
+   ],
+   [
+    "p",
+    "9c163c7351f8832b08b56cbb2e095960d1c5060dd6b0e461e813f0f07459119e",
+    ""
+   ],
+   [
+    "p",
+    "fa984bd7dbb282f07e16e7ae87b26a2a7b9b90b7246a44771f0cf5ae58018f52",
+    ""
+   ],
+   [
+    "p",
+    "266815e0c9210dfa324c6cba3573b14bee49da4209a9456f9484e5106cd408a5",
+    ""
+   ],
+   [
+    "r",
+    "https://github.com/nostrworld/nostriga/issues/14"
+   ],
+   [
+    "r",
+    "https://nostr.world/"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "web of trust",
+  "query": "web of trust",
+  "intent": "topical",
+  "need": "TOPICAL: web of trust (trust graphs, WoT in Nostr or PGP, reputation by who-trusts-whom). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "75b83c21d44fdc24cc8f51091f6648ae170aef3fe75d6710bf7c913a6adccd14",
+  "kind": "1621",
+  "label": "75b83c21",
+  "author": "d04ecf33a303a59852fdb681ed8b412201ba85d8d2199aec73cb62681d62aa90",
+  "created_at": 1736256966,
+  "content": "Problem: Anyone can create Mint recommendation  ([nip87](https://github.com/nostr-protocol/nips/pull/1110), kind 38000) as well as CashuMintList events([nip61](https://github.com/nostr-protocol/nips/blob/cashu-wallet/61.md), kind 10019) and spam / scam users.\n\nWe can use these however if filtered with WoT pubkeys. The Cashu Mint List event is the stronger recommendation though because ppl advertise Mints where they want to receive money unlike the general recommendation of nip87.\n\n- Use CashuMintList (10019) events filtered by WoT when creating new or updating Cashu wallet in Mint exploration ",
+  "context": "",
+  "tags": [
+   [
+    "subject",
+    " Cashu: Explore Mints using web of Trust"
+   ],
+   [
+    "alt",
+    "git repository issue:  Cashu: Explore Mints using web of Trust"
+   ],
+   [
+    "r",
+    "e0528f7e2306693a4167f7745267cca1ce883439"
+   ],
+   [
+    "a",
+    "30617:d04ecf33a303a59852fdb681ed8b412201ba85d8d2199aec73cb62681d62aa90:satshoot",
+    "wss://relay.damus.io/"
+   ],
+   [
+    "p",
+    "d04ecf33a303a59852fdb681ed8b412201ba85d8d2199aec73cb62681d62aa90"
+   ],
+   [
+    "t",
+    "52"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "web of trust",
+  "query": "web of trust",
+  "intent": "topical",
+  "need": "TOPICAL: web of trust (trust graphs, WoT in Nostr or PGP, reputation by who-trusts-whom). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "810e27171f27fa307a2ac092b690342cf77f782caf39d82932ed71ea6fdd414f",
+  "kind": "30023",
+  "label": "Nostr and the accidental Web of Trust",
+  "author": "9be0be0e64d38a29a9cec9a5c8ef5d873c2bfa5362a4b558da5ff69bc3cbb81e",
+  "created_at": 1695886895,
+  "content": "I’m not sure if nostr:npub180cvv07tjdrrgpa0j7j7tmnyl2yr6yr7l8j4s3evf6u64th6gkwsyjh6w6 had a Web of Trust in mind when designing nostr and its use of public contact lists but I think it’s very important to nostr’s future.\n\nTechnically there is no need to publish a follow list, if a nostr client wants to show a feed of follows it just needs a list of contacts, this list does not need to exist in public or on relays, but the fact that it does is what makes the Web of Trust work.\n\n**Accidental**\n\nThe only other Web of Trust that I know of is PGP’s Web of Trust, it is only used by IT and security p",
+  "context": "… used by IT and security people, which is also the reason why it is unusable for most people. It leaves no room for error because security has the highest priority in those circles.  But on nostr the Web of Trust is a side effect of just following people. You press Follow a few times and you are accidentally building a Web of Trust without even knowing it. It might not be perfect, but that’s also why … … … are accidentally building a Web of Trust without even knowing it. It might not be perfect, but that’s also why it works, because it is so simple, like nostr itself.  Attempts to “fix” or improve the Web of Trust should be made with that simplicity in mind. Creating new lists with granularity of people you really trust, partially trust, don’t trust at all etc are all great, but this will make it possi… … …icity in mind. Creating new lists with granularity of people you really trust, partially trust, don’t trust at all etc are all great, but this will make it possible for it to end up like PGP. Nostr’s Web of Trust works precisely because people don’t have to think about it.  There is also this idea that likes, reposts or any signal that can be made by users are useless because they can be gamed, but th…",
+  "tags": [
+   [
+    "d",
+    "nostr-web-of-trust"
+   ],
+   [
+    "title",
+    "Nostr and the accidental Web of Trust"
+   ],
+   [
+    "summary",
+    "Why I think nostr's Web of Trust is important to nostr's future"
+   ],
+   [
+    "published_at",
+    "1695886895"
+   ],
+   [
+    "t",
+    "nostr"
+   ],
+   [
+    "t",
+    "wot"
+   ],
+   [
+    "image",
+    "https://nostur.com/a/nostr-wot-article.png"
+   ],
+   [
+    "p",
+    "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d"
+   ],
+   [
+    "e",
+    "e9e60f59a040d4f6cd82ddd8aee81c21d868fe9a0a452ffc919315c57e94c9af"
+   ],
+   [
+    "p",
+    "218238431393959d6c8617a3bd899303a96609b44a644e973891038a7de8622d"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "web of trust",
+  "query": "web of trust",
+  "intent": "topical",
+  "need": "TOPICAL: web of trust (trust graphs, WoT in Nostr or PGP, reputation by who-trusts-whom). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+  "id": "ea495817543ee52ffd9d7bf349476d959b3575e19ad23c4de97dce898deafa7f",
+  "kind": "30023",
+  "label": "Key Rotation and Web of Trust: the Simplest Possible Solution to a Pressing Problem",
+  "author": "e5272de914bd301755c439b88e6959a43c9d2664831f093c51e9c799a16a102f",
+  "created_at": 1763147495,
+  "content": "I'm going to take a stab at one of the most difficult and important problems in freedom technology: key rotation. Can web of trust help? If so, how?\n\nThe canonical use case will be that of a compromised nostr nsec. Suppose Alice wakes up one morning to discover that her nsec has been compromised by a scammer who is sending DMs to all of her contacts asking for sats. She needs the community to know that this nsec is compromised, she needs to spin up a new nsec, she needs the community to know that this is her new replacement nsec, and she needs to do all of this ASAP. How does she proceed?\n\nMy ",
+  "context": "…also be obtained with the appropriate kind 7 filter and gathered together. All of these results (kind 9999 and kind 7 events) would then be filtered or weighted based upon the end user's personalized trust metric of the event author. For starters, standard personalized PageRank or personalized GrapeRank metrics would do, easily obtained via [Trusted Assertions](https://nostrhub.io/naddr1qvzqqqrcvypzq3sv… … …: lost, compromised, routine rotation, etc. Perhaps a tag to communicate the timestamp that the rotation is intended to take effect. The list of tags is just that: a list, that can be curated by your web of trust! In the event that multiple incompatible expansions are proposed, the community would hopefully (and probably) settle upon one or the other.  ## Conclusion  A client that implements the above… … …nt would want to use one or more standard methods to communicate the status of any given pubkey: Trusted Assertions, API, and/or some other method.  This would be a great contribution to the upcoming web of trust hackathon. It could be vibe coded, but ideally a team would form around an idea such as this and ensure excellent execution. And of course, I welcome ideas on how to improve this proposal. LF…",
+  "tags": [
+   [
+    "title",
+    "Key Rotation and Web of Trust: the Simplest Possible Solution to a Pressing Prob"
+   ],
+   [
+    "summary",
+    "Key rotation is an existential problem that cries out for an answer. This articl"
+   ],
+   [
+    "image",
+    ""
+   ],
+   [
+    "d",
+    "key-rotation-and-web-of-trust-the-simplest-possible-solution-to-a-pressing-probl"
+   ],
+   [
+    "t",
+    "key rotation"
+   ],
+   [
+    "t",
+    "nostr"
+   ],
+   [
+    "t",
+    "wotathon"
+   ],
+   [
+    "t",
+    "decentralized lists"
+   ],
+   [
+    "a",
+    "30817:e5272de914bd301755c439b88e6959a43c9d2664831f093c51e9c799a16a102f:decentral",
+    "wss://relay.primal.net"
+   ],
+   [
+    "a",
+    "30817:460c25e682fda7832b52d1f22d3d22b3176d972f60dcdc3212ed8c92ef85065c:trusted-a",
+    "wss://relay.primal.net"
+   ],
+   [
+    "e",
+    "84d63d0843e3ffb290474482c74c1cc31fc94b8be83018d0d1d4096a0b9f798f",
+    ""
+   ],
+   [
+    "r",
+    "wss://relay.primal.net/"
+   ],
+   [
+    "r",
+    "wss://eden.nostr.land/"
+   ],
+   [
+    "r",
+    "wss://filter.nostr.wine/"
+   ],
+   [
+    "r",
+    "wss://david.nostr1.com/"
+   ],
+   [
+    "client",
+    "Primal"
    ]
   ],
   "grade": null,

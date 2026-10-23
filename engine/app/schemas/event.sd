@@ -774,8 +774,12 @@ schema event {
             # one CONTENT word of three is demoted too: one word of three in a
             # name is not a naming answer. 0.5 leaves every two-word query
             # alone (one of two IS 0.5), and with it the `Verified Human`
-            # calibration above. 0.0 ships it inert.
-            query(w_split_min_coverage) double: 0.0
+            # calibration above. SHIPPED at 0.5 after the pre-registered held-out
+            # confirmation (docs/search-evaluation.md §9): with w_phrase_pop
+            # below, nDCG@10 +0.017 [+0.004, +0.032] on 12 multi-word topics
+            # chosen before any page was seen, no navigational topic moved;
+            # `book of daniel` 0.00 -> 0.47 on dev.
+            query(w_split_min_coverage) double: 0.5
             # ---- §12.3 THE PERFECT RUNG, FOR MULTI-WORD QUERIES ONLY --------
             #
             # A field that IS the query, whole and in order, on a query of more
@@ -931,8 +935,14 @@ schema event {
             # costly for every match, and once w_split_min_coverage demotes the
             # one-stopword titles these notes are inside the rerank window. At
             # the `search` profile's scale, multiplied by trust and recency
-            # like precision_boost_pop(). 0.0 ships it inert.
-            query(w_phrase_pop) double: 0.0
+            # like precision_boost_pop(). SHIPPED at the WEAK rung (4 000): a
+            # phrase in a body says the words are there, not that the note is
+            # ABOUT them, and trust multiplies it — at 23 000 and 60 000 it
+            # lifted notes merely mentioning "the book of Daniel" (graded 1)
+            # from rank-90+ authors over the pages about the book (graded 2-3,
+            # rank 32) and cost `Verified Human` up to 0.10 (dev, §9). At 4 000
+            # it breaks ties between otherwise equal hits and costs nothing.
+            query(w_phrase_pop) double: 4000.0
             # perfect_df_lo / perfect_df_hi — how COMMON the query word is AS A
             # NAME decides how much of the perfect-match rung a one-word query
             # pays (perfect_share()). The rung exists for navigational queries,

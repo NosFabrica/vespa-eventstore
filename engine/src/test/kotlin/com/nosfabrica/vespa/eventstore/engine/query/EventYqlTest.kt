@@ -66,6 +66,11 @@ class EventYqlTest {
         assertFalse("bp" in single.params)
         val bodyless = EventYql.build(EventQuery(search = "book of daniel", kinds = listOf(EventYql.BODYLESS_KINDS.first())))!!
         assertFalse(bodyless.yql.contains("body_phrase"), bodyless.yql)
+
+        // A phrase Vespa refuses (one word six times in a row: a 400 for the
+        // whole REQ) gets no rank-only item rather than a failed search.
+        val refused = EventYql.build(EventQuery(search = "x no no no no no no"))!!
+        assertFalse(refused.yql.contains("body_phrase"), refused.yql)
     }
 
     @Test

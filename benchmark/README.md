@@ -64,6 +64,13 @@ measures what the emitted query actually does:
   ./gradlew :benchmark:rankAb --args="--merge /tmp/pool.json --by human:<you>"
   ```
 
+- **`ThinSplitPhraseIT`** (test, `@Tag("integration")`) — the `book of daniel`
+  fixes on a real Vespa (`event.sd` `w_split_min_coverage`, `w_phrase_pop`;
+  `docs/search-evaluation.md` §9): a title carrying one word of three is scored
+  on the body rung, a body holding the phrase reads `body_phrase` 1 and
+  outranks it, the exact title leads, and a two-word query is untouched. Run
+  with `-Pintegration`.
+
 - **`NameFrequencyRungIT`** (test, `@Tag("integration")`) — the perfect-match
   rung damped by how common the query word is as a name (`event.sd`
   `perfect_share()`, `docs/search-evaluation.md` §9) on a real Vespa: the

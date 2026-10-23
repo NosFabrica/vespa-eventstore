@@ -667,6 +667,31 @@ book (graded 2–3, rank 32), since a phrase in a body is weak evidence of about
 multiplies it. At the weak rung (4 000) it only breaks ties. **`both_4k` is the candidate**:
 `w_split_min_coverage` 0.5 and `w_phrase_pop` 4 000.
 
+**The confirmation: passed (run once, 2026-10-23). Both fixes ship.** The production pages for
+the 12 held-out topics were captured. The blind pool (303 documents, top 20 of `baseline`,
+`both_4k` and its two halves) was graded with the keyword-in-context worksheet by three model
+judges (`llm:claude`; 64 rows were added to the audit sheet), and `rankAb --split test
+--configs baseline,both_4k` ran once over the 12 topics:
+
+| criterion | result |
+|---|---|
+| 1. nDCG@10 CI low end ≥ −0.01 | Δ **+0.017**, CI **[+0.004, +0.032]**, W/T/L 5/5/1 (11 topics: `the art of war` has no relevant document in its pool, all 29 graded 0, so its nDCG is undefined) |
+| 2. no navigational loss | `jack dorsey`, `matt odell`, `lyn alden`, `preston pysh`: nDCG@10 and RR identical |
+| 3. topical improves on average | **+0.026**: `lightning network` +0.074, `lord of the rings` +0.046, `web of trust` +0.040, `proof of work` +0.017, `freedom of speech` +0.009, `proof of stake` 0, `bitcoin white paper` −0.002 (the one loss) |
+
+*Guardrails.* Top-author share fell (0.433 → 0.383). Median top-10 age rose (692 → 787
+days), on two topics: `lightning network` (+479 days), where an older explainer article
+replaced a newer bookmark list and nDCG rose by 0.074, and `the art of war`, whose pool holds
+nothing relevant. It is better content that happens to be older, not a staleness regression.
+
+`event.sd` ships `w_split_min_coverage` 0.5 and `w_phrase_pop` 4 000. `ThinSplitPhraseIT`
+pins the behaviour on a real Vespa: a thin split scores on the body rung, a body phrase reads
+1 and outranks it, the exact title leads, and a two-word query is untouched.
+
+*Not addressed, seen on the way.* On `jack dorsey` and `matt odell` the people's own profiles
+reach no config's top 20, because their names are `jack` and `ODELL`, not the full names.
+That is a recall gap for full-name queries against short handles, and a separate topic.
+
 **What is next.** (1) A human audits the 208-row sample and reports κ (`rankAb --agreement`).
 (2) Grow toward the §3.2 target of 50 or more topics, adding multilingual and topical topics
 first, since those are the strata where the levers disagree. (3) A/B the two hypotheses above
