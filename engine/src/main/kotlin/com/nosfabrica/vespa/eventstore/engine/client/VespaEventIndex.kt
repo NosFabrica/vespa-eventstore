@@ -25,6 +25,10 @@ import ai.vespa.feed.client.Result
 import com.nosfabrica.vespa.eventstore.engine.DocRef
 import com.nosfabrica.vespa.eventstore.engine.DocsPage
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
+import com.nosfabrica.vespa.eventstore.engine.LinkScore
+import com.nosfabrica.vespa.eventstore.engine.LinkTarget
+import com.nosfabrica.vespa.eventstore.engine.LinkWeights
+import com.nosfabrica.vespa.eventstore.engine.Linker
 import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.ScoredHit
 import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
@@ -40,6 +44,8 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.nosfabrica.vespa.eventstore.engine.query.VespaQuery
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import com.vitorpamplona.quartz.utils.Hex
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.future.await
 import kotlinx.serialization.decodeFromString
@@ -1763,6 +1769,136 @@ class VespaEventIndex(
             GroupingResults.groupCounts(root)
         }
 
+    /**
+     * [EventIndex.scoreLinks] in three reads, two of them concurrent:
+     *
+     *  1. PEOPLE ([EventYql.buildLinkPeople]): one grouping, key -> author ->
+     *     kind, every kind but zap receipts, gated and trust-summed by the
+     *     [EventYql.RANK_LINK_TRUST] profile when [linkers] carries a lens.
+     *  2. ZAPS ([EventYql.buildLinkZaps]), beside it: the receipts themselves on
+     *     the attribute-only `idtimetag` summary, signer-gated by the same profile.
+     *     Their zapper (`P`) is another element of the `tag_index` array the key
+     *     lives in, which the grouping cannot reach (see the builder); a document
+     *     read has both.
+     *  3. ZAPPER TRUST ([EventYql.buildTrustCells]), after 2: the named zappers'
+     *     rank cells, one reputation query. A zapper below the floor is dropped
+     *     like any other person.
+     *
+     * Unlensed, nothing ranks: every person is fully trusted (1.0) and nothing is
+     * gated, as the in-memory reference answers.
+     */
+    override suspend fun scoreLinks(
+        targets: List<LinkTarget>,
+        linkers: EventQuery,
+        weights: LinkWeights,
+    ): Map<String, LinkScore> =
+        coroutineScope {
+            val narrowed = weights.narrow(linkers)
+            if ((narrowed.limit ?: 1) <= 0 || targets.isEmpty()) return@coroutineScope emptyMap()
+            val byKey = HashMap<String, MutableList<LinkTarget>>()
+            targets.forEach { t -> t.keys.forEach { byKey.getOrPut(it) { ArrayList() }.add(t) } }
+            val lensed = EventYql.isLensed(narrowed)
+            val floor = narrowed.minRank ?: 0.0
+
+            val peopleRead = async { EventYql.buildLinkPeople(byKey.keys, narrowed)?.let { queryRoot(it, hits = 0) } }
+            val zapRead = async { EventYql.buildLinkZaps(byKey.keys, narrowed)?.let { queryRoot(it, hits = ZAP_RECEIPTS_PER_READ) } }
+
+            // target id -> person -> (trust, kind -> count)
+            val people = HashMap<String, HashMap<String, Pair<Double, HashMap<Int, Int>>>>()
+
+            fun add(
+                target: String,
+                person: String,
+                trust: Double,
+                kind: Int,
+                n: Int,
+                merge: (Int, Int) -> Int = Int::plus,
+            ) {
+                val (_, byKind) = people.getOrPut(target) { HashMap() }.getOrPut(person) { trust to HashMap() }
+                byKind.merge(kind, n, merge)
+            }
+            peopleRead.await()?.let { root ->
+                for ((key, persons) in GroupingResults.keyPersonKinds(root)) {
+                    for ((person, byKind) in persons) {
+                        // One author, one cell: every kind group carries the same per-link
+                        // relevance, so any group's sum / count is the person's trust.
+                        val (n, sum) = byKind.values.first()
+                        val trust = if (lensed) (sum ?: 0.0) / n / LinkScore.TRUST_SCALE else 1.0
+                        // MAX across a hit's keys, never the sum: a like on an addressable
+                        // names it by `e` AND by `a` (NIP-25), and the grouping puts that one
+                        // document in both key groups. Per key, a (person, kind) group is one
+                        // count; across keys the max is exact whenever a person linked through
+                        // one key — the common case — and a lower bound, never a double count,
+                        // when they linked twice through different ones.
+                        for (t in byKey[key].orEmpty()) byKind.forEach { (kind, c) -> add(t.id, person, trust, kind, c.first) { a, b -> maxOf(a, b) } }
+                    }
+                }
+            }
+
+            val unattributed = HashMap<String, MutableList<Linker>>()
+            val zaps = ArrayList<Triple<String, String, Double>>() // target, zapper, signer trust
+            zapRead.await()?.let { root ->
+                for (hit in root["children"]?.jsonArray.orEmpty()) {
+                    val h = hit.jsonObject
+                    val tags =
+                        h["fields"]
+                            ?.jsonObject
+                            ?.get("tag_index")
+                            ?.jsonArray
+                            ?.map { it.jsonPrimitive.content }
+                            .orEmpty()
+                    val signer = if (lensed) ((h["relevance"] as? JsonPrimitive)?.content?.toDoubleOrNull() ?: 0.0) / LinkScore.TRUST_SCALE else 1.0
+                    val zapper = tags.firstOrNull { it.startsWith("P:") }?.substring(2)?.lowercase()
+                    // Per receipt: one link to each hit it names, however many of its keys.
+                    for (t in tags.flatMap { byKey[it].orEmpty() }.distinctBy { it.id }) {
+                        if (zapper == null) {
+                            unattributed.getOrPut(t.id) { ArrayList() }.add(Linker(signer, mapOf(LinkWeights.ZAP_RECEIPT_KIND to 1)))
+                        } else {
+                            zaps += Triple(t.id, zapper, signer)
+                        }
+                    }
+                }
+            }
+            if (zaps.isNotEmpty()) {
+                val zapperTrust: Map<String, Double> =
+                    if (!lensed) {
+                        emptyMap()
+                    } else {
+                        val cells = EventYql.buildTrustCells(zaps.map { it.second }, narrowed.rankKey ?: "")?.let { queryRoot(it, hits = zaps.size) }
+                        cells
+                            ?.get("children")
+                            ?.jsonArray
+                            .orEmpty()
+                            .mapNotNull { hit ->
+                                val h = hit.jsonObject
+                                val pubkey =
+                                    h["fields"]
+                                        ?.jsonObject
+                                        ?.get("pubkey")
+                                        ?.jsonPrimitive
+                                        ?.content
+                                        ?.lowercase() ?: return@mapNotNull null
+                                val cell = (h["relevance"] as? JsonPrimitive)?.content?.toDoubleOrNull() ?: return@mapNotNull null
+                                pubkey to cell
+                            }.toMap()
+                    }
+                for ((target, zapper, _) in zaps) {
+                    if (!lensed) {
+                        add(target, zapper, 1.0, LinkWeights.ZAP_RECEIPT_KIND, 1)
+                        continue
+                    }
+                    // The zapper is gated like any author: no cell, or one below the floor, and the zap is not theirs to count.
+                    val cell = zapperTrust[zapper] ?: continue
+                    if (cell < floor) continue
+                    add(target, zapper, cell / LinkScore.TRUST_SCALE, LinkWeights.ZAP_RECEIPT_KIND, 1)
+                }
+            }
+            targets
+                .associate { t ->
+                    t.id to weights.score(t, people[t.id].orEmpty().mapValues { (_, p) -> Linker(p.first, p.second) }, unattributed[t.id].orEmpty())
+                }.filterValues { it.people > 0 }
+        }
+
     // ---- transport funnels --------------------------------------------------
 
     /**
@@ -2001,6 +2137,14 @@ class VespaEventIndex(
          * edge column, the stemmed columns — each refused on its own feed round.
          */
         const val FED_COLUMN_GENERATIONS = 3
+
+        /**
+         * The receipts one [scoreLinks] read may return — a bound, not an expected
+         * size: the 1,262 captured search hits drew 1,678 receipts in all, the
+         * busiest note a few hundred. Past it a page's zaps are undercounted,
+         * never mis-attributed.
+         */
+        const val ZAP_RECEIPTS_PER_READ = 100_000
 
         /** Concurrent document-API gets for a pure-id lookup. Gets are light (no summary stage to overrun), so this floats above QUERY_FANOUT. */
         const val ID_GET_FANOUT = 32

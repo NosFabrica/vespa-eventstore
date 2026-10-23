@@ -23,6 +23,9 @@ package com.nosfabrica.vespa.eventstore.runtime
 import com.nosfabrica.vespa.eventstore.engine.DocRef
 import com.nosfabrica.vespa.eventstore.engine.DocsPage
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
+import com.nosfabrica.vespa.eventstore.engine.LinkScore
+import com.nosfabrica.vespa.eventstore.engine.LinkTarget
+import com.nosfabrica.vespa.eventstore.engine.LinkWeights
 import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.CellRemoval
@@ -92,6 +95,12 @@ internal class ReadOnlyEventIndex(
     override suspend fun count(query: EventQuery): Int = inner.count(query)
 
     override suspend fun countByAuthor(query: EventQuery): Map<String, Int> = inner.countByAuthor(query)
+
+    override suspend fun scoreLinks(
+        targets: List<LinkTarget>,
+        linkers: EventQuery,
+        weights: LinkWeights,
+    ): Map<String, LinkScore> = inner.scoreLinks(targets, linkers, weights)
 
     override suspend fun scanAuthors(query: EventQuery): Set<String> = inner.scanAuthors(query)
 

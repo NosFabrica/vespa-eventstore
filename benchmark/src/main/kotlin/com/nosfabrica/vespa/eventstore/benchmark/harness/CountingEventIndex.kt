@@ -23,6 +23,9 @@ package com.nosfabrica.vespa.eventstore.benchmark.harness
 import com.nosfabrica.vespa.eventstore.engine.DocRef
 import com.nosfabrica.vespa.eventstore.engine.DocsPage
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
+import com.nosfabrica.vespa.eventstore.engine.LinkScore
+import com.nosfabrica.vespa.eventstore.engine.LinkTarget
+import com.nosfabrica.vespa.eventstore.engine.LinkWeights
 import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
@@ -166,6 +169,15 @@ class CountingEventIndex(
     override suspend fun countByAuthor(query: EventQuery): Map<String, Int> {
         searches.incrementAndGet()
         return inner.countByAuthor(query)
+    }
+
+    override suspend fun scoreLinks(
+        targets: List<LinkTarget>,
+        linkers: EventQuery,
+        weights: LinkWeights,
+    ): Map<String, LinkScore> {
+        searches.incrementAndGet()
+        return inner.scoreLinks(targets, linkers, weights)
     }
 
     override fun close() = inner.close()

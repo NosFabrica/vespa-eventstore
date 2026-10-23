@@ -47,6 +47,22 @@ class FilterMappingTest {
     }
 
     @Test
+    fun `a search for notes alone ranks at the note recency weight, every other shape at the schema's`() {
+        fun weight(
+            kinds: List<Int>?,
+            search: String?,
+        ) = Filter(kinds = kinds, search = search).toEventQuery()!!.recencyWeight
+        assertEquals(NOTE_RECENCY_WEIGHT, weight(listOf(1), "bitcoin"))
+        assertEquals(NOTE_RECENCY_WEIGHT, weight(listOf(1, 1), "bitcoin"), "a repeated kind is still notes alone")
+        assertEquals(NOTE_RECENCY_WEIGHT, weight(listOf(1), "\"lightning wallet\""), "a phrase is a search too")
+        assertNull(weight(null, "bitcoin"), "no kinds: profiles are in the match set")
+        assertNull(weight(listOf(0, 1), "jose"), "a profile beside the notes keeps the shipped weight")
+        assertNull(weight(listOf(0), "primal"))
+        assertNull(weight(listOf(1, 30023), "bitcoin"), "unmeasured kinds are not notes")
+        assertNull(weight(listOf(1), null), "a plain read ranks by created_at, not by text")
+    }
+
+    @Test
     fun `language names a stemmed column when there is one, and is otherwise ignored`() {
         val pt = map("notícias language:pt")
         assertEquals("pt", pt.stemLanguage)

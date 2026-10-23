@@ -59,6 +59,7 @@ import java.nio.file.Path
  *
  *     ./gradlew :benchmark:rankAb --args="--vespa http://localhost:8080"
  *     ./gradlew :benchmark:rankAb --args="--configs baseline,near_off --profile text"
+ *     ./gradlew :benchmark:rankAb --args="--observer <hex> --rank-key <the 10040's rank service>"
  */
 object RankAb {
     /**
@@ -164,6 +165,14 @@ object RankAb {
             "recency_h30_w2" to mapOf("w_recency" to 2.0, "recency_halflife" to 30.0),
             "recency_h7_w1" to mapOf("w_recency" to 1.0, "recency_halflife" to 7.0),
             "recency_h365_w1" to mapOf("w_recency" to 1.0, "recency_halflife" to 365.0),
+            // The weights the blind note judgments asked for (benchmark/README.md, "Does
+            // the order make sense?"): judged better on notes all the way up, so the
+            // question here is what each costs the pinned PROFILE cases.
+            "recency_h30_w3" to mapOf("w_recency" to 3.0, "recency_halflife" to 30.0),
+            "recency_h30_w10" to mapOf("w_recency" to 10.0, "recency_halflife" to 30.0),
+            "recency_h30_w30" to mapOf("w_recency" to 30.0, "recency_halflife" to 30.0),
+            "recency_h30_w100" to mapOf("w_recency" to 100.0, "recency_halflife" to 30.0),
+            "recency_h30_w300" to mapOf("w_recency" to 300.0, "recency_halflife" to 30.0),
             // The paper ceiling, to SEE the failure the ceiling describes:
             // 1 + w = 5.65 is the ladder's smallest rung ratio, so this is
             // where a fresh bio mention starts overtaking a real name match.
@@ -183,6 +192,12 @@ object RankAb {
         val casesPath = opts["--cases"] ?: "benchmark/rank_cases.json"
         val profile = opts["--profile"] ?: "search"
         val observer = opts["--observer"]
+        // The LENS: trust cells are keyed by the SERVICE that signed the 30382, never
+        // by the observer (docs/service-keyed-trust.md). The store resolves an
+        // observer's 10040 to that key per query; this harness sits below the store,
+        // so the key is passed in. Without it an observer's query ranks as trusting
+        // nobody, and under the gate every hit drops — every case reads MISS.
+        val rankKey = opts["--rank-key"]
         val hits = (opts["--hits"] ?: "100").toInt()
         // The instant recency is measured against. Pinning it makes a sweep
         // reproducible across days (and lets one be replayed at the moment a
@@ -219,7 +234,7 @@ object RankAb {
         opts["--dump"]?.let { text ->
             for (config in names) {
                 println("\n=== $config === $text")
-                dumpPage(search(vespa, buildJsonObject { put("query", text) }, profile, observer, hits, CONFIGS.getValue(config), nowSecs, kinds))
+                dumpPage(search(vespa, buildJsonObject { put("query", text) }, profile, observer, rankKey, hits, CONFIGS.getValue(config), nowSecs, kinds))
             }
             return
         }
@@ -246,7 +261,7 @@ object RankAb {
         }
 
         println(
-            "target=$vespa profile=$profile observer=${observer ?: "none (pure text)"} depth=$hits cases=${cases.size} " +
+            "target=$vespa profile=$profile observer=${observer ?: "none (pure text)"} rank-key=${rankKey ?: "none"} depth=$hits cases=${cases.size} " +
                 "kinds=${kinds.takeIf { it.isNotEmpty() }?.joinToString(",") ?: "all"} now=${nowSecs?.toString() ?: "wall clock"}",
         )
         val clock = nowSecs ?: (System.currentTimeMillis() / 1000)
@@ -255,7 +270,7 @@ object RankAb {
         // a recency config is actually FOR, and invisible in a position table.
         val ages = LinkedHashMap<String, List<Double?>>()
         for (config in names) {
-            val ranked = cases.map { search(vespa, it, profile, observer, hits, CONFIGS.getValue(config), nowSecs, kinds) }
+            val ranked = cases.map { search(vespa, it, profile, observer, rankKey, hits, CONFIGS.getValue(config), nowSecs, kinds) }
             results[config] =
                 ranked.mapIndexed { i, hitsOf ->
                     expects[i]?.let { want -> hitsOf.indexOfFirst { it.id.startsWith(want) }.takeIf { it >= 0 }?.plus(1) }
@@ -386,6 +401,7 @@ object RankAb {
         case: JsonObject,
         profile: String,
         observer: String?,
+        rankKey: String?,
         hits: Int,
         overrides: Map<String, Double>,
         nowSecs: Long?,
@@ -403,6 +419,8 @@ object RankAb {
                     search = text,
                     kinds = kinds,
                     observer = observer,
+                    rankKey = rankKey,
+                    followersKey = rankKey,
                     ranking = profile,
                     minRank = observer?.let { 2.0 },
                     nowSecs = nowSecs,

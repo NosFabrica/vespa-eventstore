@@ -287,3 +287,14 @@ tasks.register<JavaExec>("pinReplayProbe") {
     maxHeapSize = System.getenv("BENCH_HEAP") ?: "2g"
     workingDir = rootDir
 }
+
+// The `sort:links` rerank on a captured corpus: latency with and without it, and
+// what moved and why — see LinkRerankProbe.kt and benchmark/README.md.
+tasks.register<JavaExec>("linkRerankProbe") {
+    group = "verification"
+    description = "Serve captured searches with and without sort:links and report latency and what moved"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.probe.LinkRerankProbe")
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "2g"
+    workingDir = rootDir
+}

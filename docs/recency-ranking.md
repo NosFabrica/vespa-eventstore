@@ -5,6 +5,18 @@ the run in §4.2. The trust profiles are live; the pure-text profiles keep their
 own weight at 0.0. Turning it off, or to any other value, is a query feature —
 no redeploy. §6 says exactly what is measured and what is not.
 
+**Since 2026-10-23, a search for notes alone ranks at 30** — the store's
+`NOTE_RECENCY_WEIGHT`, sent as `EventQuery.recencyWeight` when a search's kinds
+are exactly `[1]`; every other search keeps 0.1. A blind judgment of 20 real
+note searches (`benchmark/README.md`, "Does the order make sense?") found the
+0.1 pages ~2 years old and judged quality rising at every step to 30, while the
+same 30 on every search broke pinned profile cases — hence per QUERY shape, not
+per kind (§3.4's continuity argument holds: one query, one factor of age). 31×
+is past this doc's 4.5 ceiling on purpose: a fresh note may cross ONE rung,
+never two (`RankRegressionIT` claim 6). A REQ whose searches disagree on the
+weight (notes beside profiles) ranks all of them at 0.1, since their scores are
+merged into one order.
+
 ## 1. The gap
 
 `created_at` orders every *plain* recall in this store and is invisible in every

@@ -1001,6 +1001,17 @@ schema event {
             # crossing at 21x), which proves the bound is a fact about the
             # WEIGHT rather than about a fixture that could never cross.
             #
+            # ONE QUERY SHAPE IS SENT PAST IT, on purpose (2026-10-23): the
+            # store asks for 30 on a search whose kinds are exactly [1]
+            # (EventQuery.recencyWeight; the measurement is at the store's
+            # NOTE_RECENCY_WEIGHT). Blind-judged on 20 real note searches,
+            # 30 beat 0.1 at every step; the same 30 on profile searches
+            # broke pinned cases, so it is the QUERY's choice, never a
+            # kind's. At 31x a fresh note crosses ONE rung and never two
+            # (weak -> exact, the tightest two-rung span, is 32.5x);
+            # RankRegressionIT pins both sides of that at 30. This default
+            # stays what every other shape ranks with.
+            #
             # The USEFUL range is nowhere near the ceiling. MEASURED
             # 2026-08-22 against a 4 596-event staging slice fed into a local
             # Vespa with its real 30382 trust cards (benchmark/README.md):
@@ -1927,6 +1938,37 @@ schema event {
 
         first-phase {
             expression: if(user_score() >= query(min_rank), attribute(created_at), -1000000000.0)
+            rank-score-drop-limit: -1000000.0
+        }
+    }
+
+    # link_trust: the score of a LINK is its author's trust. EventIndex.scoreLinks
+    # groups the events that link to a search page's hits (e:<id> / a:<address>)
+    # by key, author and kind and reads `sum(relevance())` per group — that
+    # author's trust — so a like from an author the observer trusts at 90 weighs
+    # forty-five times one from an author at 2, in the same single query. The
+    # zap-receipts read rides it too: there the score is the receipt SIGNER's
+    # trust, the gate that keeps an untrusted LNURL server's receipts out.
+    #
+    # The gate is recency_gated_exact's, verbatim: below the floor maps to the
+    # sentinel and rank-score-drop-limit deletes the document before the
+    # grouping sees it (pinned at hits=0 by TrustedLinksIT). Full scan, no
+    # match-phase: a link set is small (thousands, not millions) and a cut
+    # would silently drop links from the sum. STANDALONE for the same reason
+    # recency_gated_exact is — no text features to compute per match — and its
+    # inputs mirror that profile's; keep them in sync.
+    rank-profile link_trust {
+        inputs {
+            query(user_q) tensor<float>(user{})
+            query(min_rank) double: -1000000000.0
+        }
+
+        function user_score() {
+            expression: sum(query(user_q) * attribute(author_influence_scores))
+        }
+
+        first-phase {
+            expression: if(user_score() >= query(min_rank), user_score(), -1000000000.0)
             rank-score-drop-limit: -1000000.0
         }
     }
