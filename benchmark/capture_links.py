@@ -47,6 +47,7 @@ ap.add_argument("out")
 ap.add_argument("--per-term", type=int, default=100)
 ap.add_argument("--terms", default=",".join(TERMS))
 ap.add_argument("--popular", type=int, default=100, help="size of the 'popular' page (0 skips it)")
+ap.add_argument("--no-oracle", action="store_true", help="skip the per-hit live COUNTs (two round trips per hit)")
 a = ap.parse_args()
 
 
@@ -163,7 +164,7 @@ async def main():
         # The live relay's own answer per hit, gated and ungated — the oracle. All of a hit's
         # link filters ride ONE COUNT, which NIP-45 answers as their union, so an event
         # linking through two tags is counted once — the same set the probe counts.
-        for i, h in enumerate(hit_list):
+        for i, h in enumerate([] if a.no_oracle else hit_list):
             fs = link_filters(h)
             gated, gated_ms = await r.count([dict(f, search=f"observer:{OBSERVER}") for f in fs])
             every, _ = await r.count([dict(f, search="include:spam") for f in fs])
@@ -171,9 +172,13 @@ async def main():
             if i % 200 == 0:
                 print(f"  oracle {i}/{len(hit_list)}", file=sys.stderr)
 
-        # The lens: the observer's 10040, then the provider's card for every author present.
+        # The lens: the observer's 10040, then the provider's card for every PERSON present —
+        # every author, and every zapper a receipt's `P` names: scoreLinks weighs a zap by
+        # its zapper's trust, and a zapper who wrote nothing in the capture would otherwise
+        # read as unranked and be gated out.
         add(await r.req({"kinds": [10040], "authors": [OBSERVER], "search": "include:spam"}))
-        authors = sorted({e["pubkey"] for e in corpus.values()})
+        zappers = {t[1] for e in corpus.values() if e["kind"] == 9735 for t in e["tags"] if len(t) > 1 and t[0] == "P" and len(t[1]) == 64}
+        authors = sorted({e["pubkey"] for e in corpus.values()} | zappers)
         cards = 0
         for i in range(0, len(authors), 500):
             cards += add(await r.req({"kinds": [30382], "authors": [PROVIDER], "#d": authors[i : i + 500], "limit": 5000, "search": "include:spam"}))

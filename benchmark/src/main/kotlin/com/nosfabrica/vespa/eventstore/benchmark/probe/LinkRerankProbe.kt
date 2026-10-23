@@ -29,8 +29,13 @@ import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonObject
 import java.nio.file.Files
 import java.nio.file.Path
 
@@ -51,6 +56,11 @@ import java.nio.file.Path
  *
  *     VESPA_URL=http://localhost:8080 ./gradlew :benchmark:linkRerankProbe \
  *       --args="/tmp/links.json [limit=20] [reps=7] [strengths=0.25,0.5,1.0]"
+ *
+ * `LINK_PROBE_MODE=dump` writes, per term, both served pages (the default order
+ * and `sort:links`, each the top [limit]) with every hit's engine score, text
+ * score and link score, as JSON to `LINK_PROBE_OUT` — the input of an offline
+ * judgment of whether either order makes sense (`benchmark/rank_eval.py`).
  *
  * `LINK_PROBE_MODE=bands` prints the CALIBRATION view instead: per term, the
  * match tiers in the engine's top window, the score spread inside each, and how
@@ -76,6 +86,7 @@ object LinkRerankProbe {
 
             VespaEventStore.open(System.getenv("VESPA_URL") ?: "http://localhost:8080").use { vs ->
                 if (System.getenv("LINK_PROBE_MODE") == "bands") return@use bands(vs, terms, observer, provider, linkers, rerank)
+                if (System.getenv("LINK_PROBE_MODE") == "dump") return@use dump(vs, terms, observer, provider, linkers, rerank, limit)
 
                 suspend fun page(search: String) = vs.store.query<Event>(Filter(kinds = listOf(1), search = search, limit = limit))
 
@@ -134,6 +145,81 @@ object LinkRerankProbe {
                 }
             }
         }
+
+    /** See the class KDoc, `LINK_PROBE_MODE=dump`. */
+    private suspend fun dump(
+        vs: VespaEventStore,
+        terms: List<String>,
+        observer: String,
+        provider: String,
+        linkers: EventQuery,
+        rerank: LinkRerank,
+        limit: Int,
+    ) {
+        val now = System.currentTimeMillis() / 1000
+        val out =
+            buildJsonObject {
+                for (term in terms) {
+                    val search = "$term observer:$observer"
+                    val base = vs.store.query<Event>(Filter(kinds = listOf(1), search = search, limit = limit)).map { it.id }
+                    val linked = vs.store.query<Event>(Filter(kinds = listOf(1), search = "$search sort:links", limit = limit)).map { it.id }
+                    // The engine's own view of the window both pages were cut from: score and text tier per hit.
+                    val window =
+                        vs.engine.searchRanked(
+                            EventQuery(kinds = listOf(1), search = term, observer = observer, rankKey = provider, followersKey = provider, minRank = 2.0, limit = rerank.window, nowSecs = now),
+                        )
+                    val links = vs.engine.scoreLinks(window.map { LinkTarget(it.hit.id, it.hit.pubkey) }, linkers, rerank.weights)
+                    // FLAT: the same read with the subject rung dropped to the body's.
+                    // `w_name_tier` (130,000) is what a note's NIP-14 subject match earns —
+                    // shared with a profile's name match, which is why it is an override
+                    // here and not a schema edit; the evaluation is notes only.
+                    val flatWindow =
+                        vs.engine.searchRanked(
+                            EventQuery(kinds = listOf(1), search = term, observer = observer, rankKey = provider, followersKey = provider, minRank = 2.0, limit = rerank.window, nowSecs = now, rankFeatures = mapOf("w_name_tier" to FLAT_NAME_TIER)),
+                        )
+                    val flatLinks = vs.engine.scoreLinks(flatWindow.map { LinkTarget(it.hit.id, it.hit.pubkey) }, linkers, rerank.weights)
+                    // The store's rerank, replayed on the flat window (the store path has no rank-feature override).
+                    val flatReranked =
+                        flatWindow
+                            .sortedByDescending { r -> (r.score ?: 0.0) * LinkRerank.multiplier(flatLinks[r.hit.id]?.score ?: 0.0, rerank.strength, rerank.maxBoost) }
+                            .take(limit)
+                    putJsonObject(term) {
+                        put("base", JsonArray(base.map { JsonPrimitive(it) }))
+                        put("links", JsonArray(linked.map { JsonPrimitive(it) }))
+                        put("flat", JsonArray(flatWindow.take(limit).map { JsonPrimitive(it.hit.id) }))
+                        put("flat_links", JsonArray(flatReranked.map { JsonPrimitive(it.hit.id) }))
+                        putJsonObject("flat_window") {
+                            flatWindow.forEachIndexed { i, r ->
+                                putJsonObject(r.hit.id) {
+                                    put("pos", i + 1)
+                                    put("score", r.score ?: 0.0)
+                                    put("text", r.textScore ?: 0.0)
+                                    val l = flatLinks[r.hit.id]
+                                    put("link", l?.score ?: 0.0)
+                                    put("people", l?.people ?: 0)
+                                }
+                            }
+                        }
+                        putJsonObject("window") {
+                            window.forEachIndexed { i, r ->
+                                putJsonObject(r.hit.id) {
+                                    put("pos", i + 1)
+                                    put("score", r.score ?: 0.0)
+                                    put("text", r.textScore ?: 0.0)
+                                    val l = links[r.hit.id]
+                                    put("link", l?.score ?: 0.0)
+                                    put("people", l?.people ?: 0)
+                                    putJsonObject("byKind") { l?.byKind?.forEach { (k, n) -> put(k.toString(), n) } }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        val path = System.getenv("LINK_PROBE_OUT") ?: "link_probe_dump.json"
+        Files.writeString(Path.of(path), out.toString())
+        println("wrote ${terms.size} terms to $path")
+    }
 
     /**
      * HOW FAR APART ARE THE ENGINE'S SCORES, and how often does the rerank cross a
@@ -246,6 +332,9 @@ object LinkRerankProbe {
             println("   within-tier best/median and best/worst: $spread")
         }
     }
+
+    /** [dump]'s FLAT variant: a note's subject match on the body's rung instead of a profile name's (~4,000, measured). */
+    private const val FLAT_NAME_TIER = 4000.0
 
     /** The base read widened to the rerank window, timed — what widening alone costs. */
     private suspend fun timedWide(
