@@ -64,6 +64,13 @@ measures what the emitted query actually does:
   ./gradlew :benchmark:rankAb --args="--merge /tmp/pool.json --by human:<you>"
   ```
 
+- **`NameFrequencyRungIT`** (test, `@Tag("integration")`) — the perfect-match
+  rung damped by how common the query word is as a name (`event.sd`
+  `perfect_share()`, `docs/search-evaluation.md` §9) on a real Vespa: the
+  small-index guard keeps it whole, a word labelling most of the corpus loses
+  it, a rare name and any multi-word query keep it, and lo >= hi switches it
+  off. Run with `-Pintegration`.
+
 - **`FieldCoverageRankIT`** (test, `@Tag("integration")`) — `event.sd` §12.2 on
   a real Vespa: the same synthetic shapes the section below measures, asserting
   that one field answering the whole query outranks several fields sharing it,

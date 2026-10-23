@@ -483,13 +483,13 @@ frequency (`primal` 341k, inflated by `@primal.net` addresses; `odell` 6.7k agai
 names are a fair sample of production's: a random sample of profiles and labelled kinds, not
 this query-drawn capture, whose name frequencies are biased toward its own queries.
 
-**Built, not yet enabled: the perfect-match rung damped by name frequency (2026-10-23).** This
+**Shipped: the perfect-match rung damped by name frequency (2026-10-23).** This
 follows the per-kind result above. `event.sd` gains `name_df_ratio()`, the share of indexed
 documents carrying the query word in `name`, `display_name` or `search_primary`. It is read in
 place from Vespa's per-field statistics (`queryTermDocumentFrequency` over `num_docs_indexed`),
 so it costs no extra round trip. `perfect_share()` scales the rung on one-word queries:
-whole at or below `perfect_df_lo`, gone at or above `perfect_df_hi`, log-linear between. The
-default is lo = hi = 1, which disables it, so the ranking is unchanged until a value is chosen.
+whole at or below `perfect_df_lo`, gone at or above `perfect_df_hi`, log-linear between. It
+was built disabled and switched on (2e-4, 6e-4) only after the held-out confirmation below.
 
 *Measuring production's ratio.* The evaluation corpus cannot measure it, because it is drawn
 from the topics' pages and every topic word names 1–7% of it. `benchmark/sample_names.py`
@@ -538,11 +538,9 @@ the damping. Against this branch, the candidate moves exactly three topics: `bit
 is (1–5 per 150k), so name frequency cannot tell them from a navigational query. Their pages
 keep the rung and its cost, and they need a different signal.
 
-*Why not enabled.* It clears §6.3 on these topics. But (lo, hi) was chosen on the same
-27 topics it is scored on, and only two of them fall above `lo`. §6.3 rule 5 asks a tuned
-value to hold on held-out topics first, and there is no `test` split yet. Enabling it is a
-two-line default change in `event.sd`, once held-out topics with common-as-a-name words
-(`music`, `news`, `art`, `photography`…) confirm it, and once the grades are audited.
+*Why it waited.* It cleared §6.3 on these topics, but (lo, hi) was chosen on the same 27
+topics it is scored on, and only two of them fall above `lo`. §6.3 rule 5 asks a tuned value
+to hold on held-out topics first, which is the confirmation below.
 
 **Held-out confirmation, pre-registered (2026-10-23).** This was written and committed before any
 held-out page was captured, graded or scored. Twelve `split: test` topics were chosen by name
@@ -567,6 +565,36 @@ default is switched on, only if all four of these hold:
 4. the three controls do not move by more than 0.01 nDCG@10.
 
 Production's pages are reported beside it for reference and do not enter the criteria.
+
+**The confirmation: passed (run once, 2026-10-23).** Production pages for the 12 topics were
+captured with `capture_eval.py`. Their blind pool (326 documents, all four configs' top 20)
+was graded by three model judges against each case's `need` (`llm:claude`; 71 of them were
+added to the audit sheet), and `rankAb --split test --name-df benchmark/name_df.json
+--configs baseline,name_df_2e4_6e4` ran once:
+
+| criterion | result |
+|---|---|
+| 1. nDCG@10 CI low end ≥ −0.01 | Δ +0.010, CI **[+0.000, +0.028]**, W/T/L 2/10/0 |
+| 2. no navigational loss | `damus`, `alby`, `fountain`, `iris`, `zeus`: identical pages (RBO 1.00), Δ 0 |
+| 3. acted-on topics improve on average | mean **+0.03**: `ai` 0.29 → **0.40** (its top 10 also goes from 82 days old to 20), `crypto` +0.01; `music` and `news` unchanged |
+| 4. controls move ≤ 0.01 | `art`, `film`, `privacy`: identical pages |
+
+All four hold, so the default is on. Across all 39 topics the shipped behaviour scores
++0.008 [−0.004, +0.024], W/T/L 4/34/1: every navigational topic is identical, and the one loss
+is the `primal.net` artifact. The effect is real but narrow. It moves a page only where a word
+is clearly more common as a name than any name is, and `music` and `news` sit low enough in
+the ramp that they did not reorder.
+
+**The small-index guard** (`perfect_df_min_docs`, 100 000) was added when the default was
+switched on, and is outside what the confirmation measured. The ratio is a local statistic,
+and on a small index every word is common: in a 30-document corpus, a name two documents carry
+reads 7%, a hundred times past `hi`. Below 100 000 documents on a node, the rung is therefore
+whole, exactly as before the damping existed. So small relays, fresh stores and every ranking
+IT are unaffected, and production's nodes, which hold millions, get the measured behaviour.
+On an evaluation corpus (always under the guard) `baseline` therefore reads as the damping
+OFF. The `name_df_*` configs lift the guard (`perfect_df_min_docs` 0) and must be paired with
+`--name-df`, which makes the corpus's name statistics production's. `NameFrequencyRungIT` pins
+the guard, the damping, the multi-word exemption and the off switch on a real Vespa.
 
 **What is next.** (1) A human audits the 208-row sample and reports κ (`rankAb --agreement`).
 (2) Grow toward the §3.2 target of 50 or more topics, adding multilingual and topical topics

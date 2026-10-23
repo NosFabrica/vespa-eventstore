@@ -3586,6 +3586,536 @@
   "by": null
  },
  {
+  "topic": "ai",
+  "query": "ai",
+  "intent": "topical",
+  "need": "TOPICAL: artificial intelligence (AI, machine learning, LLMs). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated. The Portuguese/Spanish interjection \"aí\" and letters inside other words are 0.",
+  "id": "0073cc3c556ae1149b00428dd0c1c4bd342c85d7cf0e594c5670a36c32d29616",
+  "kind": "1",
+  "label": "0073cc3c",
+  "author": "e0cfb5549d3cf7db4e2736f8e1bc84f62486af7a41295d867c6a313459042528",
+  "created_at": 1728085636,
+  "content": "https://bloson.dlsouza.lol/d84d26b46fb1d17ee26dd84c184b93a8f4a6478f299b8d570d0b13a6457bd834.jpg",
+  "tags": [
+   [
+    "a",
+    "34550:135d2b016eb41672477291ea7bcafe5f00e007dc6612610ff58a08655bc1b095:Brasil"
+   ],
+   [
+    "subject",
+    "Voces ai"
+   ],
+   [
+    "client",
+    "noStrudel",
+    "31990:266815e0c9210dfa324c6cba3573b14bee49da4209a9456f9484e5106cd408a5:168606654"
+   ],
+   [
+    "nonce",
+    "166",
+    "8"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "ai",
+  "query": "ai",
+  "intent": "topical",
+  "need": "TOPICAL: artificial intelligence (AI, machine learning, LLMs). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated. The Portuguese/Spanish interjection \"aí\" and letters inside other words are 0.",
+  "id": "2354d9d7cc903bc2347e4afd0c143615c09e1ecdbaa70d40779670d2d3807250",
+  "kind": "30023",
+  "label": "AI Providers",
+  "author": "f33c8a9617cb15f705fc70cd461cfd6eaf22f9e24c33eabad981648e5ec6f741",
+  "created_at": 1773079512,
+  "content": "# AI Providers\n\n<div class=\"video-embed\" style=\"position:relative;padding-bottom:56.25%;height:0;overflow:hidden;border-radius:12px;box-shadow:0 12px 24px rgba(15,23,42,0.25);\">\n<video controls src=\"https://plebdevs-bucket.nyc3.cdn.digitaloceanspaces.com/videos/plebdevs/plebdevs-ai-course-2.mp4\" style=\"position:absolute;top:0;left:0;width:100%;height:100%;\" preload=\"metadata\">\n  Your browser does not support the video tag.\n</video>\n</div>",
+  "tags": [
+   [
+    "d",
+    "f4e49328-b84e-4c6d-a86f-31d82e6c79bc"
+   ],
+   [
+    "title",
+    "AI Providers"
+   ],
+   [
+    "summary",
+    "Lesson 2 continues our intro to AI from the backend this time with a focus on AI"
+   ],
+   [
+    "published_at",
+    "1773079512"
+   ],
+   [
+    "image",
+    "https://plebdevs-bucket.nyc3.cdn.digitaloceanspaces.com/images/plebdevs-ai/plebd"
+   ],
+   [
+    "t",
+    "ai"
+   ],
+   [
+    "t",
+    "video"
+   ],
+   [
+    "video",
+    "https://plebdevs-bucket.nyc3.cdn.digitaloceanspaces.com/videos/plebdevs/plebdevs"
+   ],
+   [
+    "r",
+    "https://tinyurl.com/plebdevs-adversarial-ai-2",
+    "Slides"
+   ],
+   [
+    "r",
+    "https://tinyurl.com/plebdevs-ai-whiteboard",
+    "Whiteboard"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "ai",
+  "query": "ai",
+  "intent": "topical",
+  "need": "TOPICAL: artificial intelligence (AI, machine learning, LLMs). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated. The Portuguese/Spanish interjection \"aí\" and letters inside other words are 0.",
+  "id": "290d4f1653227fa1a8d446765033c66d6ee04a5a169a71c24fb0b8c384b8ba77",
+  "kind": "30003",
+  "label": "AI",
+  "author": "1c1b8e487090a5c1bdb0bea3aca19d90de4fefa38a224b15e5e274e60e4de5df",
+  "created_at": 1728482373,
+  "content": "",
+  "tags": [
+   [
+    "d",
+    "AI"
+   ],
+   [
+    "title",
+    "AI"
+   ],
+   [
+    "summary",
+    "All about so called KI"
+   ],
+   [
+    "a",
+    "30023:46fcbe3065eaf1ae7811465924e48923363ff3f526bd6f73d7c184b16bd8ce4d:172755560",
+    "wss://nos.lol"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "ai",
+  "query": "ai",
+  "intent": "topical",
+  "need": "TOPICAL: artificial intelligence (AI, machine learning, LLMs). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated. The Portuguese/Spanish interjection \"aí\" and letters inside other words are 0.",
+  "id": "3fe099c5cfa7bd201369d7786e94363fdeb062d26ce29b573020dba74ff9cb33",
+  "kind": "39701",
+  "label": "A prompt-injection gate for my AI agent: what worked, what didn't, and the benchmark",
+  "author": "9e02ef62bf212188aab2ad6a5a1b9893707a11d08ec2c39f087f1e8efe780797",
+  "created_at": 1791576939,
+  "content": "",
+  "tags": [
+   [
+    "d",
+    "juraj.bednar.io/en/blog-en/2026/09/28/a-prompt-injection-gate-for-my-ai-agent-wh"
+   ],
+   [
+    "published_at",
+    "1791576939"
+   ],
+   [
+    "title",
+    "A prompt-injection gate for my AI agent: what worked, what didn't, and the bench"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "ai",
+  "query": "ai",
+  "intent": "topical",
+  "need": "TOPICAL: artificial intelligence (AI, machine learning, LLMs). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated. The Portuguese/Spanish interjection \"aí\" and letters inside other words are 0.",
+  "id": "5325ff678d3e03e4e390604c4443dc30fdfb265bae3306d362c33b9de267441a",
+  "kind": "39701",
+  "label": "Jan AI",
+  "author": "592295cf2b09a7f9555f43adb734cbee8a84ee892ed3f9336e6a09b6413a0db9",
+  "created_at": 1771314688,
+  "content": "Jan is an open source alternative to ChatGPT that runs 100% offline on your computer.",
+  "tags": [
+   [
+    "d",
+    "github.com/janhq/jan"
+   ],
+   [
+    "u",
+    "https://github.com/janhq/jan"
+   ],
+   [
+    "scheme",
+    "https"
+   ],
+   [
+    "client",
+    "yumyu.me"
+   ],
+   [
+    "title",
+    "Jan AI"
+   ],
+   [
+    "t",
+    "ai"
+   ],
+   [
+    "t",
+    "local"
+   ],
+   [
+    "published_at",
+    "1771314688"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "ai",
+  "query": "ai",
+  "intent": "topical",
+  "need": "TOPICAL: artificial intelligence (AI, machine learning, LLMs). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated. The Portuguese/Spanish interjection \"aí\" and letters inside other words are 0.",
+  "id": "8c390479cd929086eae6c93b9d02f64aef9bfcd530c206ae931f57fe2ca45ef1",
+  "kind": "30003",
+  "label": "Ai",
+  "author": "000000005e9dda01479c76c5f4fccbaebe4e7856e02f8e85adba05ad62ad6927",
+  "created_at": 1792315218,
+  "content": "",
+  "tags": [
+   [
+    "d",
+    "GXTlWsBNoiMGGuOA"
+   ],
+   [
+    "title",
+    "Ai"
+   ],
+   [
+    "description",
+    "Ai creations I find interesting "
+   ],
+   [
+    "a",
+    "34236:460c25e682fda7832b52d1f22d3d22b3176d972f60dcdc3212ed8c92ef85065c:27fd51f6-",
+    ""
+   ],
+   [
+    "e",
+    "b5886c4929336b9e4dfb8c32f09895d3978947f35917b7ee07ed8e299d2d5722",
+    "wss://relay.momostr.pink/"
+   ],
+   [
+    "alt",
+    "A labeled list of bookmarks"
+   ],
+   [
+    "client",
+    "Amethyst"
+   ],
+   [
+    "a",
+    "30023:b7ed68b062de6b4a12e51fd5285c1e1e0ed0e5128cda93ab11b4150b55ed32fc:touch-gra",
+    "wss://relay.primal.net/"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "ai",
+  "query": "ai",
+  "intent": "topical",
+  "need": "TOPICAL: artificial intelligence (AI, machine learning, LLMs). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated. The Portuguese/Spanish interjection \"aí\" and letters inside other words are 0.",
+  "id": "ac7387216d82ac93e12378d923dab777a7df0281d5fdbb583ccc03e6291310d6",
+  "kind": "30003",
+  "label": "AI",
+  "author": "fe403ee3a532c9cc893566cddd6043c872fa9261db240127d603d91c026391d9",
+  "created_at": 1777325514,
+  "content": "",
+  "tags": [
+   [
+    "d",
+    "ai"
+   ],
+   [
+    "title",
+    "AI"
+   ],
+   [
+    "e",
+    "87f9a7adf5efdb1bed33e255a9c9a5140e955f3c3a23d21da980158266204495",
+    "wss://relay.bullishbounty.com"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "alby",
+  "query": "alby",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: Alby, the bitcoin Lightning wallet and browser extension (getalby.com). 3 = the product itself (its official profile, app handler or app listing); 2 = content about Alby (releases, guides); 1 = profiles merely using an @getalby.com address, mentions; 0 = unrelated, or impersonators.",
+  "id": "2369763c935eecc8c2a72a4cd0cfec7388ccfedc937f60de91769fb4fd051fe1",
+  "kind": "30311",
+  "label": "Nest with Alby 🐝",
+  "author": "4657dfe8965be8980a93072bcfb5e59a65124406db0f819215ee78ba47934b3e",
+  "created_at": 1723490755,
+  "content": "",
+  "tags": [
+   [
+    "color",
+    "gradient-5"
+   ],
+   [
+    "d",
+    "c97a78e4-1be1-465c-b428-e4c6c7a6d12f"
+   ],
+   [
+    "image",
+    ""
+   ],
+   [
+    "relays",
+    "wss://relay.snort.social",
+    "wss://nos.lol"
+   ],
+   [
+    "service",
+    "https://nostrnests.com"
+   ],
+   [
+    "starts",
+    "1723490684"
+   ],
+   [
+    "status",
+    "ended"
+   ],
+   [
+    "streaming",
+    "wss+livekit://nostrnests.com:443"
+   ],
+   [
+    "streaming",
+    "https://nostrnests.com/api/v1/live/c97a78e4-1be1-465c-b428-e4c6c7a6d12f/live.m3u"
+   ],
+   [
+    "summary",
+    "🐣 Who is behind Alby, why and how do they do what they do? Meet Alby's team and"
+   ],
+   [
+    "title",
+    "Nest with Alby 🐝"
+   ],
+   [
+    "ends",
+    "1723490755"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "alby",
+  "query": "alby",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: Alby, the bitcoin Lightning wallet and browser extension (getalby.com). 3 = the product itself (its official profile, app handler or app listing); 2 = content about Alby (releases, guides); 1 = profiles merely using an @getalby.com address, mentions; 0 = unrelated, or impersonators.",
+  "id": "545bb283aaeee82a2c1518f784ce37068b1e096b13d2db45b6b8352e5116443c",
+  "kind": "30023",
+  "label": "How to use Alby to receive zaps to your own LND node",
+  "author": "124b23f2f6755402aa7814b185ccd1066fbf0f9e2b7e563683c783db02455947",
+  "created_at": 1697652426,
+  "content": "I've made a little write-up on one of the various things in bitcoin / lightning I've been toying with.  Check it out, cheers!\n\nGhost Blog Onion Link: https://w3.do/-sJEHtvf\n\nNostr Post: https://nostrudel.ninja/#/n/note1cys7tqjrkr7gyd69v02r7xkuq5zwv0ep46rmw7rd49rk6rd2a4cqu03l3u",
+  "tags": [
+   [
+    "d",
+    "287344"
+   ],
+   [
+    "title",
+    "How to use Alby to receive zaps to your own LND node"
+   ],
+   [
+    "published_at",
+    "1697652426"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "alby",
+  "query": "alby",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: Alby, the bitcoin Lightning wallet and browser extension (getalby.com). 3 = the product itself (its official profile, app handler or app listing); 2 = content about Alby (releases, guides); 1 = profiles merely using an @getalby.com address, mentions; 0 = unrelated, or impersonators.",
+  "id": "6bae7569723bf1b558f2c4db1b1e75f6768015f01ea8a07bda8063b249fb2980",
+  "kind": "30009",
+  "label": "Alby Contributor",
+  "author": "4657dfe8965be8980a93072bcfb5e59a65124406db0f819215ee78ba47934b3e",
+  "created_at": 1705869428,
+  "content": "",
+  "tags": [
+   [
+    "d",
+    "Alby-Contributor"
+   ],
+   [
+    "name",
+    "Alby Contributor"
+   ],
+   [
+    "alt",
+    "Badge: Alby Contributor"
+   ],
+   [
+    "description",
+    "I participated in the development of the open-source project Alby!"
+   ],
+   [
+    "image",
+    "https://void.cat/d/7mL8BDxdQtBx9H8evV4e27.webp"
+   ],
+   [
+    "thumb",
+    "https://void.cat/d/3CbpAFiE9ENfKWn1J5A6DT.webp"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "alby",
+  "query": "alby",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: Alby, the bitcoin Lightning wallet and browser extension (getalby.com). 3 = the product itself (its official profile, app handler or app listing); 2 = content about Alby (releases, guides); 1 = profiles merely using an @getalby.com address, mentions; 0 = unrelated, or impersonators.",
+  "id": "76d72555d1ceb08ad66fbc32a7da1eb7a02f914153c3c0b62fd79573ebbc8a6f",
+  "kind": "1",
+  "label": "76d72555",
+  "author": "005bc4de41cfcb580f71cad6ae8909a976568633a4f6a93c6b7fd5bfef11e1a2",
+  "created_at": 1721748273,
+  "content": "I've seen people writing about wanting an \"Alby invite\" and saw recently that Alby is phasing out the free tier. Two questions: \n1. Is this true?\n2. If yes, what is a good option for a new nostrich to get zappable? (And by \"get zappable\" I mean stupid easy.)\n\nI already use Alby and felt it was the easiest and best way for a noob to get a signing extension AND lightning/zapping wallet. Alby is/was my recommendation for newcomers.\n#asknostr #grownostr #plebchain ",
+  "tags": [
+   [
+    "t",
+    "asknostr"
+   ],
+   [
+    "t",
+    "grownostr"
+   ],
+   [
+    "t",
+    "plebchain"
+   ],
+   [
+    "a",
+    "34550:005bc4de41cfcb580f71cad6ae8909a976568633a4f6a93c6b7fd5bfef11e1a2:General"
+   ],
+   [
+    "subject",
+    "Alby changes?"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "alby",
+  "query": "alby",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: Alby, the bitcoin Lightning wallet and browser extension (getalby.com). 3 = the product itself (its official profile, app handler or app listing); 2 = content about Alby (releases, guides); 1 = profiles merely using an @getalby.com address, mentions; 0 = unrelated, or impersonators.",
+  "id": "7de457c6bdcac210b869d01787c75c9757e1d362a95fe283a7432e121df452e8",
+  "kind": "30023",
+  "label": "Let's Talk Alby Hub",
+  "author": "b7274d28e3e983bf720db4b4a12a31f5c7ef262320d05c25ec90489ac99628cb",
+  "created_at": 1731818300,
+  "content": "There seems to be a bit of confusion going around about exactly what #AlbyHub is, and what it does, what use-cases it does and does not fit into. As someone who is using #Alby Hub on a daily basis and have been quite happy with it, I thought I might be able to shed some light on the matter from the perspective of a user. nostr:npub1getal6ykt05fsz5nqu4uld09nfj3y3qxmv8crys4aeut53unfvlqr80nfm, please correct me if I get anything wrong in this article.\n\nNote: I am not in any way affiliated with Alby, except by being a satisfied user of their software, and have not been paid to write this article.\n",
+  "tags": [
+   [
+    "d",
+    "1731697253653"
+   ],
+   [
+    "title",
+    "Let's Talk Alby Hub"
+   ],
+   [
+    "summary",
+    ""
+   ],
+   [
+    "published_at",
+    "1731716769"
+   ],
+   [
+    "alt",
+    "This is a long form article, you can read it in https://habla.news/a/naddr1qvzqq"
+   ],
+   [
+    "t",
+    "AlbyHub"
+   ],
+   [
+    "t",
+    "Alby"
+   ],
+   [
+    "t",
+    "Zeus"
+   ],
+   [
+    "t",
+    "Lightning"
+   ],
+   [
+    "t",
+    "NodeRunner"
+   ],
+   [
+    "t",
+    "NostrWalletConnect"
+   ],
+   [
+    "t",
+    "Bitcoin"
+   ],
+   [
+    "t",
+    "Start9"
+   ],
+   [
+    "t",
+    "Umbrel"
+   ],
+   [
+    "published_at",
+    "1731716769"
+   ],
+   [
+    "p",
+    "4657dfe8965be8980a93072bcfb5e59a65124406db0f819215ee78ba47934b3e"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
   "topic": "amethyst",
   "query": "amethyst",
   "intent": "navigational",
@@ -3880,6 +4410,290 @@
     "r",
     "https://play.google.com/store/apps/details?id=com.vitorpamplona.amethyst",
     "Via PlayStore"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "art",
+  "query": "art",
+  "intent": "topical",
+  "need": "TOPICAL: art (artworks, artists, visual and creative art). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
+  "id": "0d42f5ce456547f98e70c83d8c592ac41d20657300946bfd690bfb976b6c1a00",
+  "kind": "30023",
+  "label": "Art",
+  "author": "6ad3e2a34818b153c81f48c58f44e5199e7b4fc8dbe37810a000dce3c90b7740",
+  "created_at": 1706133503,
+  "content": "I consider myself a curious person — I like to read and think about varied phenomena, something which the few of you who read my work already know. But one area in which I’m especially under-informed, even compared to normal people, is art.\n\nMaybe it’s in part because some modern art is ([alleged to be](https://www.bbc.com/culture/article/20161004-was-modern-art-a-weapon-of-the-cia)) propaganda masquerading as the real thing, and some of it is undoubtedly propped up for [money laundering and tax evasion](https://edition.cnn.com/2020/07/29/business/art-money-laundering-sanctions-senate/index.ht",
+  "tags": [
+   [
+    "client",
+    "31990:20986fb83e775d96d188ca5c9df10ce6d613e0eb7e5768a0f0b12b37cdac21b3:170073287"
+   ],
+   [
+    "published_at",
+    "1706133503"
+   ],
+   [
+    "d",
+    "9mib9DTLZwjKD3HXdxz_R"
+   ],
+   [
+    "image",
+    "https://yakihonne.s3.ap-east-1.amazonaws.com/6ad3e2a34818b153c81f48c58f44e5199e7"
+   ],
+   [
+    "title",
+    "Art"
+   ],
+   [
+    "summary",
+    "Who the hell am I to post and podcast my thoughts?"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "art",
+  "query": "art",
+  "intent": "topical",
+  "need": "TOPICAL: art (artworks, artists, visual and creative art). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
+  "id": "116e36262af09c7550e3f00119a8ed471a4e9ffe1573619b209701020e642dd8",
+  "kind": "30000",
+  "label": "Art",
+  "author": "532d830dffe09c13e75e8b145c825718fc12b0003f61d61e9077721c7fff93cb",
+  "created_at": 1745601222,
+  "content": "",
+  "tags": [
+   [
+    "p",
+    "1d80e5588de010d137a67c42b03717595f5f510e73e42cfc48f31bae91844d59"
+   ],
+   [
+    "p",
+    "f0fb31d1810a9f95df3d178fcd67ca0b09879ad11e8689e56962cd839fb8ead4"
+   ],
+   [
+    "p",
+    "f4db5270bd991b17bea1e6d035f45dee392919c29474bbac10342d223c74e0d0"
+   ],
+   [
+    "p",
+    "43baaf0c28e6cfb195b17ee083e19eb3a4afdfac54d9b6baf170270ed193e34c"
+   ],
+   [
+    "p",
+    "8b925acef507ccdb4b29ac3af74cf41529308e5e07f59eaeee335fc3e4116702"
+   ],
+   [
+    "p",
+    "8f9efe5e5b5b13fa967568f037811e1d8fa8ece3101a8c65ad0a5d75665fe6da"
+   ],
+   [
+    "p",
+    "74214fce7752e5f09c8983815e72021f4a1e7b7a75d0a71fd147a900d1d17d91"
+   ],
+   [
+    "p",
+    "2cde0e02bda47eaeeed65e341619cc5f2afce990164669da4e1e5989180a96b9"
+   ],
+   [
+    "p",
+    "bf2376e17ba4ec269d10fcc996a4746b451152be9031fa48e74553dde5526bce"
+   ],
+   [
+    "p",
+    "958b754a1d3de5b5eca0fe31d2d555f451325f8498a83da1997b7fcd5c39e88c"
+   ],
+   [
+    "p",
+    "be39043cc12efbddfee564d95da751a71df6c139e2def45c431cadeb4a573ca3"
+   ],
+   [
+    "p",
+    "431fa2f340f0adf8963d6d7c6e2c20d913278c691fe609fd3857db13d8f39feb"
+   ],
+   [
+    "p",
+    "0dcfcaac3d6f6796f7bc300a7d0d3b71bad1457f4e6b72f9cf490e1e55767be4"
+   ],
+   [
+    "p",
+    "c12a2bcb002fd74b4d342f9b942c24c44cc46d5ed39201245a8b6f4162e7efce"
+   ],
+   [
+    "p",
+    "1af54955936be804f95010647ea5ada5c7627eddf0734a7f813bba0e31eed960"
+   ],
+   [
+    "p",
+    "f96c3d76497074c4c83a7b3823380e77dc73d5a9494fd2e053e4a1453e17824b"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "art",
+  "query": "art",
+  "intent": "topical",
+  "need": "TOPICAL: art (artworks, artists, visual and creative art). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
+  "id": "8e5b710a32e025553f27fc157f6ed0dccd99617e15b0d58b2370c12dcf70be6d",
+  "kind": "30015",
+  "label": "Art",
+  "author": "1aa1dbbeeb04dde30e1e7a00f7eea7605549e78726d53522e3990aa68009f433",
+  "created_at": 1785842902,
+  "content": "",
+  "tags": [
+   [
+    "d",
+    "fb3f07f2-f71a-472c-a6e5-9a6f8924fea0"
+   ],
+   [
+    "alt",
+    "Interest Set"
+   ],
+   [
+    "title",
+    "Art"
+   ],
+   [
+    "client",
+    "Amethyst"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "art",
+  "query": "art",
+  "intent": "topical",
+  "need": "TOPICAL: art (artworks, artists, visual and creative art). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
+  "id": "9561b04b8c7e0835429ae32512c1fd2a247590ee8e8bc4d8abd79fe655bc6dd3",
+  "kind": "30023",
+  "label": "Audrey オードリー・ヘプバーン Japanese Ink art",
+  "author": "2cde0e02bda47eaeeed65e341619cc5f2afce990164669da4e1e5989180a96b9",
+  "created_at": 1765807466,
+  "content": "![audrey hepburn drawing](https://m.stacker.news/122116)\n[Audrey Hepburn](https://en.wikipedia.org/wiki/Audrey_Hepburn) (1929-1993)\n\n![art tools](https://m.stacker.news/122117)\n_tools used_\n\nhttps://stacker.news/items/1342924",
+  "tags": [
+   [
+    "d",
+    "1342924"
+   ],
+   [
+    "title",
+    "Audrey オードリー・ヘプバーン Japanese Ink art"
+   ],
+   [
+    "published_at",
+    "1765807466"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "art",
+  "query": "art",
+  "intent": "topical",
+  "need": "TOPICAL: art (artworks, artists, visual and creative art). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
+  "id": "990ef75c579ebd2f6508e5ea8a5eaa46b30c431f9fb95912fc40b07dec99c75e",
+  "kind": "0",
+  "label": "art assoiants",
+  "author": "eea716eddbff20e045fc30d3e82f4308b58bff2e276e8ab4468113b2ec1e1eda",
+  "created_at": 1734987312,
+  "content": "{\"name\":\"art\",\"display_name\":\"art assoiants\",\"about\":\"Contract product manager @ chaincode.com. Collector of weirdos. Write about building stuff, electronic music, biohacking, personal development. \\n\\nOP_CHECKGOODVIBESVERIFY\",\"website\":\"artassoiants.com\",\"picture\":\"https://nostr.build/i/p/4bc3ad1cc4d2cf2e68e398749b8021bcbc58056d02b7d407c86729b94add7605.jpg\",\"lud16\":\"bitcoinlegaldefensefund@btcpay.bldf.xyz\",\"username\":\"art\",\"displayName\":\"art assoiants\",\"banner\":\"https://cdn.nostr.build/p/20mP.jpg\",\"nip05\":\"aaassoiants@primal.net\",\"lud06\":\"lnurl1dp68gurn8ghj7cn5vdcxz7fwvfkxge3w0puh5t6z23pj742f",
+  "tags": [],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "art",
+  "query": "art",
+  "intent": "topical",
+  "need": "TOPICAL: art (artworks, artists, visual and creative art). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
+  "id": "b0637dcf972e6ea9a129cc08eb2faede5a4f2ec78b3d177d039259b0bd43ba9f",
+  "kind": "30023",
+  "label": "Tatooine — Sepia Art",
+  "author": "2cde0e02bda47eaeeed65e341619cc5f2afce990164669da4e1e5989180a96b9",
+  "created_at": 1751207926,
+  "content": "![tatooine](https://m.stacker.news/98424)\n\nTatooine (/ˌtætuˈiːn/ TAT-oo-EEN) is a fictional desert planet that appears in the Star Wars franchise. It is a beige-colored, desolate world orbiting a pair of binary stars, and inhabited by human settlers and a variety of other life forms. The planet was first seen in the original 1977 film Star Wars, and has to date featured in a total of seven Star Wars theatrical films, three live-action television series, and four animated series.\n\nIt is the home planet of the protagonist of the original Star Wars Trilogy, Luke Skywalker, and of his father, Anak",
+  "tags": [
+   [
+    "d",
+    "1018480"
+   ],
+   [
+    "title",
+    "Tatooine — Sepia Art"
+   ],
+   [
+    "published_at",
+    "1751207926"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "art",
+  "query": "art",
+  "intent": "topical",
+  "need": "TOPICAL: art (artworks, artists, visual and creative art). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
+  "id": "b9606543eefdb0dd7f6a5068f96f4e263657ce5cd76d1222039cbcc8e801034e",
+  "kind": "30023",
+  "label": "Queen Amidala — Japanese Ink Art & Tools",
+  "author": "2cde0e02bda47eaeeed65e341619cc5f2afce990164669da4e1e5989180a96b9",
+  "created_at": 1749822535,
+  "content": "![queen padme amidala](https://m.stacker.news/96423)\npen & ink; monochromized\n\n![](https://m.stacker.news/96424)\ntools used\n\n\nhttps://stacker.news/items/1005456",
+  "tags": [
+   [
+    "d",
+    "1005456"
+   ],
+   [
+    "title",
+    "Queen Amidala — Japanese Ink Art & Tools"
+   ],
+   [
+    "published_at",
+    "1749822535"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "art",
+  "query": "art",
+  "intent": "topical",
+  "need": "TOPICAL: art (artworks, artists, visual and creative art). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
+  "id": "c0a6522c5622c8f2184936e4006c8233a1b7e51705dab8ae94c56bf569b72e8f",
+  "kind": "30617",
+  "label": "Art",
+  "author": "df478568479de26b4a83c1bdc4dbab61b5cc82e1a312e2b28bc815a12a951e67",
+  "created_at": 1789262952,
+  "content": "",
+  "tags": [
+   [
+    "d",
+    "Art"
+   ],
+   [
+    "name",
+    "Art"
+   ],
+   [
+    "clone",
+    "htree://npub1marc26z8nh3xkj5rcx7ufkatvx6ueqhp5vfw9v5teq26z254renshtf3g0/Art"
+   ],
+   [
+    "r",
+    "37f33492ed573bdd0c5ea81ef6bfcdb5960d9d56",
+    "euc"
    ]
   ],
   "grade": null,
@@ -5419,6 +6233,517 @@
   "by": null
  },
  {
+  "topic": "crypto",
+  "query": "crypto",
+  "intent": "topical",
+  "need": "TOPICAL: cryptocurrency (bitcoin and other coins, markets, wallets). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated. Cryptography in the security sense is a different sense (1).",
+  "id": "2c988b23877a63594a1852bb1499b486cad9b7d17913c41bc035d37f9ad8f5ab",
+  "kind": "39701",
+  "label": "Pirate islands and Crypto-Anarchist Utopias",
+  "author": "96417ed9d3926370a887430fcf90b46fbb09eaa4891eec9bdc87e90266b02a55",
+  "created_at": 1787668105,
+  "content": "",
+  "tags": [
+   [
+    "d",
+    "substack.com/home/post/p-97016976"
+   ],
+   [
+    "published_at",
+    "1787668105"
+   ],
+   [
+    "title",
+    "Pirate islands and Crypto-Anarchist Utopias"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "crypto",
+  "query": "crypto",
+  "intent": "topical",
+  "need": "TOPICAL: cryptocurrency (bitcoin and other coins, markets, wallets). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated. Cryptography in the security sense is a different sense (1).",
+  "id": "92dfb8d6f253f5801a933440f29367c1e859e96335f6cefa44e9307569c1d7e8",
+  "kind": "30023",
+  "label": "The Untold Story of the Greatest Crypto Project Ever",
+  "author": "efe5d120df0cc290fa748727fb45ac487caad346d4f2293ab069e8f01fc51981",
+  "created_at": 1727965584,
+  "content": "If you only clicked on the post to tell me crypto sucks let me disappoint - crypto in this case stands for cryptography, as it is for a long time before shitcoins came into existence. \n\nMany of you might have read Paul Rosenberg's amazing [A lodging of wayfaring men](https://freemansperspective.com/product/a-lodging-of-wayfaring-men/). Some of you might even know that npub1klkk3vrzme455yh9rl2jshq7rc8dpegj3ndf82c3ks2sk40dxt7qulx3vt recently created [an audiobook version of it](https://freemansperspective.com/audiobook-a-lodging-of-wayfaring-men/). \n\nBut there is a story that predates that book,",
+  "tags": [
+   [
+    "client",
+    "Yakihonne",
+    "31990:20986fb83e775d96d188ca5c9df10ce6d613e0eb7e5768a0f0b12b37cdac21b3:170073287"
+   ],
+   [
+    "published_at",
+    "1727965584"
+   ],
+   [
+    "d",
+    "i2QqwM3ywXSz3BDMFeqP6"
+   ],
+   [
+    "image",
+    ""
+   ],
+   [
+    "title",
+    "The Untold Story of the Greatest Crypto Project Ever"
+   ],
+   [
+    "summary",
+    "The Untold Story of the Greatest Crypto Project Ever"
+   ],
+   [
+    "zap",
+    "efe5d120df0cc290fa748727fb45ac487caad346d4f2293ab069e8f01fc51981",
+    ""
+   ],
+   [
+    "t",
+    "cypherpunk"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "crypto",
+  "query": "crypto",
+  "intent": "topical",
+  "need": "TOPICAL: cryptocurrency (bitcoin and other coins, markets, wallets). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated. Cryptography in the security sense is a different sense (1).",
+  "id": "b11a8e81dfd72921d7193d6c85a2c5d6a01627af2d3c3265c6cbeda0d1a2174f",
+  "kind": "30023",
+  "label": "War in Iran and Crypto Currency Market",
+  "author": "721be1b24ae584258e3d8e69d5afb6701ab8ef2622248cc91b13481d2cee7c6e",
+  "created_at": 1774343035,
+  "content": "The war in Iran could have a significant impact on the cryptocurrency market. The conflict has already led to a surge in oil prices, which could lead to higher inflation and interest rates. This, in turn, could negatively impact the value of cryptocurrencies such as Bitcoin and Ethereum. Additionally, the war could lead to a decrease in investor confidence, which could also negatively impact the cryptocurrency market.",
+  "tags": [
+   [
+    "d",
+    "war-in-iran-and-crypto-currency-market"
+   ],
+   [
+    "title",
+    "War in Iran and Crypto Currency Market"
+   ],
+   [
+    "published_at",
+    "1774343035"
+   ],
+   [
+    "t",
+    "nostr"
+   ],
+   [
+    "t",
+    "nip"
+   ],
+   [
+    "t",
+    "grownostr"
+   ],
+   [
+    "t",
+    "howto"
+   ],
+   [
+    "t",
+    "blog"
+   ],
+   [
+    "summary",
+    "The war in Iran could have a significant impact on the cryptocurrency market."
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "crypto",
+  "query": "crypto",
+  "intent": "topical",
+  "need": "TOPICAL: cryptocurrency (bitcoin and other coins, markets, wallets). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated. Cryptography in the security sense is a different sense (1).",
+  "id": "becfa610bcda0dcfd29ccf774651ecef77f040293cb8a2dac2ded9348d1d9b78",
+  "kind": "39701",
+  "label": "Crypto Anarchy and Virtual Communities | Satoshi Nakamoto Institute",
+  "author": "96417ed9d3926370a887430fcf90b46fbb09eaa4891eec9bdc87e90266b02a55",
+  "created_at": 1787831419,
+  "content": "By Timothy C. May, December 1994",
+  "tags": [
+   [
+    "d",
+    "nakamotoinstitute.org/library/virtual-communities/"
+   ],
+   [
+    "published_at",
+    "1787831419"
+   ],
+   [
+    "title",
+    "Crypto Anarchy and Virtual Communities | Satoshi Nakamoto Institute"
+   ],
+   [
+    "t",
+    "boris"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "crypto",
+  "query": "crypto",
+  "intent": "topical",
+  "need": "TOPICAL: cryptocurrency (bitcoin and other coins, markets, wallets). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated. Cryptography in the security sense is a different sense (1).",
+  "id": "fbb4e25acd259d365cf371aec78fc0bdb7c957d87acde068a4182d4b0c9ee398",
+  "kind": "21",
+  "label": "A Declaration of Separation | Crypto Anarchist Series | Episode 4 (WiM429)",
+  "author": "b7ed68b062de6b4a12e51fd5285c1e1e0ed0e5128cda93ab11b4150b55ed32fc",
+  "created_at": 1706659200,
+  "content": "Max Hillebrand joins me for a series of conversations covering various works on crypto-anarchism. In this episode, we discuss the essay titled “A Declaration of Separation”.\n\nMax Hillebrand...",
+  "tags": [
+   [
+    "title",
+    "A Declaration of Separation | Crypto Anarchist Series | Episode 4 (WiM429)"
+   ],
+   [
+    "published_at",
+    "1706659200"
+   ],
+   [
+    "alt",
+    "A Declaration of Separation | Crypto Anarchist Series | Episode 4 (WiM429)"
+   ],
+   [
+    "imeta",
+    "url https://relay.towardsliberty.com/d9a8d928e046f4d664c612e43442dad1bfc28b35328",
+    "x d9a8d928e046f4d664c612e43442dad1bfc28b35328c6470004270795e93cd49"
+   ],
+   [
+    "t",
+    "bitcoin"
+   ],
+   [
+    "t",
+    "privacy"
+   ],
+   [
+    "r",
+    "https://www.youtube.com/watch?v=yj8th_ekOdc"
+   ],
+   [
+    "channel",
+    "WiM Media"
+   ],
+   [
+    "origin",
+    "youtube",
+    "yj8th_ekOdc"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "damus",
+  "query": "damus",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: Damus, the iOS Nostr client. 3 = the app itself (its official profile, app handler or app listing); 2 = content about Damus (releases, guides, reviews), its project channels or repository; 1 = mentions, profiles merely using a damus.io address; 0 = unrelated, or impersonators.",
+  "id": "12f3419586b1536ceaeb5ac18d74daf19ee2b2242c8e854ebfa5dea35a2e5dc0",
+  "kind": "31990",
+  "label": "12f34195",
+  "author": "3356de61b39647931ce8b2140b2bab837e0810c0ef515bbe92de0248040b8bdd",
+  "created_at": 1698733443,
+  "content": "{\"name\":\"damus\",\"display_name\":\"Damus\",\"nip05\":\"_@damus.io\",\"picture\":\"https://damus.io/img/logo.png\",\"banner\":\"https://nostr.build/i/9fc5269117947fd2085c0c73b41fdbc3e155708846571371fee27bdf4521cad7.jpg\",\"about\":\"The iOS nostr client!\",\"lud16\":\"jb55@sendsats.lol\",\"website\":\"https://damus.io\"}",
+  "tags": [
+   [
+    "d",
+    "1685723153804"
+   ],
+   [
+    "published_at",
+    "1685723153"
+   ],
+   [
+    "t",
+    "nostr"
+   ],
+   [
+    "t",
+    "social"
+   ],
+   [
+    "r",
+    "https://damus.io"
+   ],
+   [
+    "alt",
+    "Nostr App: damus"
+   ],
+   [
+    "r",
+    "https://github.com/damus-io/damus",
+    "source"
+   ],
+   [
+    "zap",
+    "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245",
+    "wss://relay.nostr.band"
+   ],
+   [
+    "zap",
+    "3356de61b39647931ce8b2140b2bab837e0810c0ef515bbe92de0248040b8bdd",
+    "wss://relay.nostr.band"
+   ],
+   [
+    "p",
+    "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245",
+    "wss://relay.nostr.band"
+   ],
+   [
+    "k",
+    "0"
+   ],
+   [
+    "k",
+    "1"
+   ],
+   [
+    "ios",
+    "damus:<bech32>",
+    "npub"
+   ],
+   [
+    "ios",
+    "damus:<bech32>",
+    "note"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "damus",
+  "query": "damus",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: Damus, the iOS Nostr client. 3 = the app itself (its official profile, app handler or app listing); 2 = content about Damus (releases, guides, reviews), its project channels or repository; 1 = mentions, profiles merely using a damus.io address; 0 = unrelated, or impersonators.",
+  "id": "871337ebeeb9c3a9321d96c8d00595f24010faeb496a83424872570b3ac735c0",
+  "kind": "30402",
+  "label": "Black Damus Hoodie (size Large) free shipping ",
+  "author": "ae1008d23930b776c18092f6eab41e4b09fcf3f03f3641b1b4e6ee3aa166d760",
+  "created_at": 1740252192,
+  "content": "https://image.nostr.build/b79e11ce057899935b34e25ea91f78ea8982899ede1e7c57943f8e3b3e619e7c.jpg\nhttps://image.nostr.build/da6aa800c75878e2c58a878ec7dacccec1a516bae3a3a796e7893417184342ed.jpg https://image.nostr.build/19b06559b2a6d020e4a0e4449b0949be0ab9d45bd4fa11adaf6c265724827fcb.jpg https://image.nostr.build/8dbba032b16d1a6cacbe0f7053d83d564bfcfe0e5c18782f9edd1e0b7e41e2e4.jpg https://image.nostr.build/e54f8a8579471af0f8305425995d26b9c1690b7b9e02552e3a33b8c7f19f20c5.jpg\nhttps://image.nostr.build/a54f769d79f9cebc662ead7909cf64c9aa5b5a1172e856f3c93e1ed37c5941c0.jpg https://image.nostr.build/6a27",
+  "tags": [
+   [
+    "d",
+    "d0f9ba2f-6b3e-4b63-9deb-3203c21b903f"
+   ],
+   [
+    "title",
+    "Black Damus Hoodie (size Large) free shipping "
+   ],
+   [
+    "summary",
+    "https://image.nostr.build/b79e11ce057899935b34e25ea91f78ea8982899ede1e7c57943f8e"
+   ],
+   [
+    "price",
+    "85000",
+    "SATS"
+   ],
+   [
+    "t",
+    "Clothing"
+   ],
+   [
+    "location",
+    "USA"
+   ],
+   [
+    "publishedAt",
+    "1740252192"
+   ],
+   [
+    "condition",
+    "new"
+   ],
+   [
+    "image",
+    "https://image.nostr.build/b79e11ce057899935b34e25ea91f78ea8982899ede1e7c57943f8e"
+   ],
+   [
+    "r",
+    "https://image.nostr.build/b79e11ce057899935b34e25ea91f78ea8982899ede1e7c57943f8e"
+   ],
+   [
+    "image",
+    "https://image.nostr.build/da6aa800c75878e2c58a878ec7dacccec1a516bae3a3a796e78934"
+   ],
+   [
+    "r",
+    "https://image.nostr.build/da6aa800c75878e2c58a878ec7dacccec1a516bae3a3a796e78934"
+   ],
+   [
+    "image",
+    "https://image.nostr.build/19b06559b2a6d020e4a0e4449b0949be0ab9d45bd4fa11adaf6c26"
+   ],
+   [
+    "r",
+    "https://image.nostr.build/19b06559b2a6d020e4a0e4449b0949be0ab9d45bd4fa11adaf6c26"
+   ],
+   [
+    "image",
+    "https://image.nostr.build/8dbba032b16d1a6cacbe0f7053d83d564bfcfe0e5c18782f9edd1e"
+   ],
+   [
+    "r",
+    "https://image.nostr.build/8dbba032b16d1a6cacbe0f7053d83d564bfcfe0e5c18782f9edd1e"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "damus",
+  "query": "damus",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: Damus, the iOS Nostr client. 3 = the app itself (its official profile, app handler or app listing); 2 = content about Damus (releases, guides, reviews), its project channels or repository; 1 = mentions, profiles merely using a damus.io address; 0 = unrelated, or impersonators.",
+  "id": "cfb906905dc26ac2394375ad1d5133430525263d7c6f5bcd2d6ec69169c714df",
+  "kind": "30023",
+  "label": "Help me with a PR for Damus. Integrate nostrcheck.me as media provider for uploads. ",
+  "author": "89e14be49ed0073da83b678279cd29ba5ad86cf000b6a3d1a4c3dc4aa4fdd02c",
+  "created_at": 1689578826,
+  "content": "At nostrcheck.me we have a public API. This api is used by clients as nostros, nostrid, plebstr, amethyst or nostur. We want to integrate it in Damus. I don't know about swift developement and I don't have the tools to debug it. \n\nThe objective is help me with the draft PR and make it work.",
+  "tags": [
+   [
+    "t",
+    "bounty"
+   ],
+   [
+    "reward",
+    "200000"
+   ],
+   [
+    "published_at",
+    "1683304737"
+   ],
+   [
+    "d",
+    "1683304737"
+   ],
+   [
+    "t",
+    "development-bounty"
+   ],
+   [
+    "t",
+    "debugging-bounty"
+   ],
+   [
+    "title",
+    "Help me with a PR for Damus. Integrate nostrcheck.me as media provider for uploa"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "damus",
+  "query": "damus",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: Damus, the iOS Nostr client. 3 = the app itself (its official profile, app handler or app listing); 2 = content about Damus (releases, guides, reviews), its project channels or repository; 1 = mentions, profiles merely using a damus.io address; 0 = unrelated, or impersonators.",
+  "id": "ea5c84aad276f5840969801a0232c88a594a91f0225176a13cfdd1573303d625",
+  "kind": "30023",
+  "label": "Add NIP-50 search to Damus",
+  "author": "3356de61b39647931ce8b2140b2bab837e0810c0ef515bbe92de0248040b8bdd",
+  "created_at": 1682949266,
+  "content": "Create a PR to add search over kind:1 events into Damus, there is already a tab and a search box, need to forward typed string using NIP-50 to the relay and render results.\n\nNot many relays implement NIP-50, wss://relay.nostr.band is a good option. There should probably be a way for users to choose the search relay, maybe on the Settings screen.\n\nQuestions about implementation details should be discussed with jb55, the bounty will be paid after PR is accepted.  ",
+  "tags": [
+   [
+    "t",
+    "bounty"
+   ],
+   [
+    "title",
+    "Add NIP-50 search to Damus"
+   ],
+   [
+    "reward",
+    "500000"
+   ],
+   [
+    "published_at",
+    "1682949266"
+   ],
+   [
+    "d",
+    "1682949266"
+   ],
+   [
+    "t",
+    "development-bounty"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "damus",
+  "query": "damus",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: Damus, the iOS Nostr client. 3 = the app itself (its official profile, app handler or app listing); 2 = content about Damus (releases, guides, reviews), its project channels or repository; 1 = mentions, profiles merely using a damus.io address; 0 = unrelated, or impersonators.",
+  "id": "fbc08fa50ec394f45848b3dfef1290ab5e4d60a2d6393b2f877d4a4dc01c77ed",
+  "kind": "30000",
+  "label": "damus",
+  "author": "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245",
+  "created_at": 1776729915,
+  "content": "",
+  "tags": [
+   [
+    "d",
+    "damus"
+   ],
+   [
+    "title",
+    "damus"
+   ],
+   [
+    "p",
+    "17538dc2a62769d09443f18c37cbe358fab5bbf981173542aa7c5ff171ed77c4"
+   ],
+   [
+    "p",
+    "4a0510f26880d40e432f4865cb5714d9d3c200ca6ebb16b418ae6c555f574967"
+   ],
+   [
+    "p",
+    "2779f3d9f42c7dee17f0e6bcdcf89a8f9d592d19e3b1bbd27ef1cffd1a7f98d1"
+   ],
+   [
+    "p",
+    "971615b70ad9ec896f8d5ba0f2d01652f1dfe5f9ced81ac9469ca7facefad68b"
+   ],
+   [
+    "p",
+    "bd1e19980e2c91e6dc657e92c25762ca882eb9272d2579e221f037f93788de91"
+   ],
+   [
+    "p",
+    "f16ac67afff1340501cf27b7ebe9e3086fb62e97f044ba407e38b5d8425a73f2"
+   ],
+   [
+    "p",
+    "8b2be0a0ad34805d76679272c28a77dbede9adcbfdca48c681ec8b624a1208a6"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
   "topic": "de extraordinary",
   "query": "de extraordinary",
   "intent": "topical",
@@ -6533,6 +7858,576 @@
   "by": null
  },
  {
+  "topic": "film",
+  "query": "film",
+  "intent": "topical",
+  "need": "TOPICAL: film as cinema (movies, filmmaking, film festivals). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated. Photographic film is a different sense (1).",
+  "id": "1a9450c12b7e682685b02c63b28cd49900c91ec6b176dc3413cff3479238d326",
+  "kind": "30023",
+  "label": "“Untoward Equilibrium” (Short Film) - Artist Statement + Stills & Video [2015]",
+  "author": "1cb14ab335876fc9efc37d838ba287cf17e5adcccb20bf6d49f9da9695d52462",
+  "created_at": 1735926073,
+  "content": "***VDMX5, iMovie, APC40 (4:48)*** \n\n*This project was created and first exhibited in 2015 in Boulder, CO.*\n\n---\n\n### Artist Statement\n\n**Untoward Equilibrium** is an experimental short film that delves into the complex and often strained relationship between humans and the natural world. Through a dynamic interplay of visuals, sound, and digital manipulation, **the film investigates themes of migration, cultural destruction, and the often futile efforts to rebuild in the face of inevitable change.** Utilizing tools such as VDMX 5, iMovie, and the APC40, I aimed to weave a narrative that reflec",
+  "tags": [
+   [
+    "d",
+    "1735924190244"
+   ],
+   [
+    "title",
+    "“Untoward Equilibrium” (Short Film) - Artist Statement + Stills & Video [2015]"
+   ],
+   [
+    "summary",
+    "Untoward Equilibrium is a short film that explores the fraught relationship betw"
+   ],
+   [
+    "t",
+    "short film"
+   ],
+   [
+    "t",
+    "video"
+   ],
+   [
+    "t",
+    "art"
+   ],
+   [
+    "t",
+    "digital art"
+   ],
+   [
+    "t",
+    "nature"
+   ],
+   [
+    "t",
+    "hes"
+   ],
+   [
+    "t",
+    "war"
+   ],
+   [
+    "t",
+    "revolution"
+   ],
+   [
+    "t",
+    "glitch"
+   ],
+   [
+    "t",
+    "migration"
+   ],
+   [
+    "t",
+    "destruction"
+   ],
+   [
+    "t",
+    "film"
+   ],
+   [
+    "t",
+    "humans"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "film",
+  "query": "film",
+  "intent": "topical",
+  "need": "TOPICAL: film as cinema (movies, filmmaking, film festivals). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated. Photographic film is a different sense (1).",
+  "id": "4bcaba8d1d2843cefee9138b55e85da8c8f01687e85d04c6073b420f9cca4ab0",
+  "kind": "30003",
+  "label": "Film",
+  "author": "d996ace530c16e4d43c419ae2b1e0f01e3a620470e21a0347a055f340ee1cfdf",
+  "created_at": 1766824891,
+  "content": "",
+  "tags": [
+   [
+    "d",
+    "56tYjbMLlkP4SZuH"
+   ],
+   [
+    "title",
+    "Film"
+   ],
+   [
+    "description",
+    ""
+   ],
+   [
+    "e",
+    "070e248d355f575acd165cf44e6e8b6f6758958547557ac88927b4ed4abfc816"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "film",
+  "query": "film",
+  "intent": "topical",
+  "need": "TOPICAL: film as cinema (movies, filmmaking, film festivals). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated. Photographic film is a different sense (1).",
+  "id": "64b219056b412b7ae1e5a019541277fae3a18f402500bd87301f760085800c3e",
+  "kind": "30003",
+  "label": "Film",
+  "author": "d996ace530c16e4d43c419ae2b1e0f01e3a620470e21a0347a055f340ee1cfdf",
+  "created_at": 1765702144,
+  "content": "",
+  "tags": [
+   [
+    "d",
+    "nclZpGEPMfkkxuZR"
+   ],
+   [
+    "title",
+    "Film"
+   ],
+   [
+    "description",
+    ""
+   ],
+   [
+    "e",
+    "6362856edbd7e9951e98773a77fdf433968fa20c4b6328992ff5ea7ba6896dda"
+   ],
+   [
+    "e",
+    "b06e5f0190959b20762fd2abe26fb480ed06ad4ab624f188d12f058bd9c7f3e4"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "film",
+  "query": "film",
+  "intent": "topical",
+  "need": "TOPICAL: film as cinema (movies, filmmaking, film festivals). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated. Photographic film is a different sense (1).",
+  "id": "80d07921da0c5fabddebe8e4abb1da26724aa6881d415064ac9ade43c75a7ad7",
+  "kind": "31923",
+  "label": "Meet, greet n sip + Film Screening",
+  "author": "0bcdbcc0174ad3e4754c55c4d10ab5e75f42e7cf179a5baf83555e155491ed0d",
+  "created_at": 1768558366,
+  "content": "Meet, greet n sip + Film Screening before the start of Day 1 of Adopting Bitcoin Cape Town.\n\nFree to join.\n\nLocation: Main stage, Workshop 17, V&A Waterfront",
+  "tags": [
+   [
+    "d",
+    "19e828bb-a49e-4a34-abb2-fd5b09620acf"
+   ],
+   [
+    "t",
+    "Meetup"
+   ],
+   [
+    "r",
+    ""
+   ],
+   [
+    "title",
+    "Meet, greet n sip + Film Screening"
+   ],
+   [
+    "image",
+    "https://cdn.satlantis.io/1p0xmesqhftf7ga2v2hzdzz44ua059e70z7d9htur240p24y3a5xsn0"
+   ],
+   [
+    "start",
+    "1769698800"
+   ],
+   [
+    "end",
+    "1769706000"
+   ],
+   [
+    "start_tzid",
+    "Africa/Johannesburg"
+   ],
+   [
+    "g",
+    "k3vp55t47"
+   ],
+   [
+    "summary",
+    "Meet, greet n sip + Film Screening before the start of Day 1 of Adopting Bitcoin"
+   ],
+   [
+    "url",
+    ""
+   ],
+   [
+    "cohosts",
+    ""
+   ],
+   [
+    "calendar_event_tags",
+    "bitcoin"
+   ],
+   [
+    "autoFollowHosts",
+    "false"
+   ],
+   [
+    "rsvp_gated_enabled",
+    "false"
+   ],
+   [
+    "allowCohostsToDownloadAttendeeList",
+    "false"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "film",
+  "query": "film",
+  "intent": "topical",
+  "need": "TOPICAL: film as cinema (movies, filmmaking, film festivals). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated. Photographic film is a different sense (1).",
+  "id": "bbb9210461e203f448225d1ff3b4565a588a21a0774506cc6c193cd4c8a4b261",
+  "kind": "30023",
+  "label": "Live music on analogue film",
+  "author": "a7bbc310337ef342474f8311949a713a61f9002d146c75493fef6628fe7b7be3",
+  "created_at": 1738758059,
+  "content": "![image]( https://image.nostr.build/16f5a653d5f29639369675d65a810ec462a77ce77bf214822a5b5f7e38c76662.jpg)In 2018 I started doing film photography. I asked myself what could I do that was unique. So, I tried taking picture at local gig venues. I’d look around and everyone was using digital cameras. I had a limited number of shots I could take, inconsistent lighting at different venues but some delayed gratification of not knowing how the images would turn out until I developed them. I’d come home late from a show and be up until the early hours developing and scanning the images. 2020 put a sto",
+  "tags": [
+   [
+    "client",
+    "YakiHonne",
+    "31990:20986fb83e775d96d188ca5c9df10ce6d613e0eb7e5768a0f0b12b37cdac21b3:170073287"
+   ],
+   [
+    "d",
+    "05acf5c0e60e7265"
+   ],
+   [
+    "image",
+    "https://image.nostr.build/630c0c87c64bc77ecd229a30d82f3fd3cc501ac6aada5c24d174a1"
+   ],
+   [
+    "title",
+    "Live music on analogue film"
+   ],
+   [
+    "summary",
+    "Being re inspired by my own photography "
+   ],
+   [
+    "published_at",
+    "1738758003"
+   ],
+   [
+    "t",
+    "#Photography"
+   ],
+   [
+    "t",
+    "Music"
+   ],
+   [
+    "t",
+    "#Art"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "fountain",
+  "query": "fountain",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: Fountain, the bitcoin podcast app (fountain.fm). 3 = the app itself (its official profile, app handler or app listing); 2 = content about the Fountain app; 1 = mentions, links to episodes hosted on fountain.fm, other senses (a water fountain); 0 = unrelated, or impersonators.",
+  "id": "2122c9c123adf556ce4856a07da0464812a4250a5a0925bb5e4fb4b55787a526",
+  "kind": "0",
+  "label": "Fountain",
+  "author": "6538925ebfb661f418d8c7d074bee2e8afd778701dd89070c2da936d571e55c3",
+  "created_at": 1755204324,
+  "content": "{\"lud06\":\"\",\"lud16\":\"Fountain@primal.net\",\"nip05\":\"fountain@fountain.fm\",\"banner\":\"https://m.primal.net/KQEX.jpg\",\"about\":\"Share, discover and support over 4 million podcasts and emerging artists. Powered by Lightning and Nostr.\",\"website\":\"https://www.fountain.fm\",\"picture\":\"https://image.nostr.build/daf2e9938e56e4652b29d90eb8c7434d0c2e5c2a8af29940406e8d8a09aaa956.png\",\"display_name\":\"Fountain\",\"name\":\"fountain_app\"}",
+  "tags": [],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "fountain",
+  "query": "fountain",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: Fountain, the bitcoin podcast app (fountain.fm). 3 = the app itself (its official profile, app handler or app listing); 2 = content about the Fountain app; 1 = mentions, links to episodes hosted on fountain.fm, other senses (a water fountain); 0 = unrelated, or impersonators.",
+  "id": "23830877984f9a5c770600dbb4bede986afafaaafd673db76d0e641bdc064f37",
+  "kind": "30023",
+  "label": "Publish Video to Apple Podcasts with Fountain",
+  "author": "6538925ebfb661f418d8c7d074bee2e8afd778701dd89070c2da936d571e55c3",
+  "created_at": 1785396670,
+  "content": "Earlier this year, Apple announced support for [video podcast distribution to Apple Podcasts](https://fountain.fm/blog/apple-podcasts-video-guide-2026-how-it-works--how-to-publish), allowing users to switch between audio and video for supporting podcasts.\n\nToday, we are excited to announce that [Fountain for Podcasters ](https://fountain.fm/podcasters)customers can now publish video directly to Apple Podcasts without changing their workflow. The feature is available immediately to all existing customers on the [Pro plan](https://fountain.fm/pricing) ($50/month) at no additional cost.\n\nAfter up",
+  "tags": [
+   [
+    "title",
+    "Publish Video to Apple Podcasts with Fountain"
+   ],
+   [
+    "summary",
+    "With Fountain for Podcasters, any videos you upload will automatically be made a"
+   ],
+   [
+    "image",
+    "https://blossom.primal.net/9f939c509e84f8bfd43de56105689d843fd448753e2f4f5c3ba27"
+   ],
+   [
+    "d",
+    "publish-video-to-apple-podcasts-with-fountain"
+   ],
+   [
+    "t",
+    "podcast"
+   ],
+   [
+    "t",
+    "podcasting"
+   ],
+   [
+    "t",
+    "apple"
+   ],
+   [
+    "t",
+    "apple podcasts"
+   ],
+   [
+    "t",
+    "video"
+   ],
+   [
+    "r",
+    "wss://relay.primal.net/"
+   ],
+   [
+    "r",
+    "wss://premium.primal.net/"
+   ],
+   [
+    "r",
+    "wss://nos.lol/"
+   ],
+   [
+    "r",
+    "wss://relay.fountain.fm/"
+   ],
+   [
+    "r",
+    "wss://relay.damus.io/"
+   ],
+   [
+    "client",
+    "Primal Web"
+   ],
+   [
+    "published_at",
+    "1783522149"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "fountain",
+  "query": "fountain",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: Fountain, the bitcoin podcast app (fountain.fm). 3 = the app itself (its official profile, app handler or app listing); 2 = content about the Fountain app; 1 = mentions, links to episodes hosted on fountain.fm, other senses (a water fountain); 0 = unrelated, or impersonators.",
+  "id": "afa9b7080ce6177bccac558844f6e66392f85e2f76f11bee858684a3327ea182",
+  "kind": "30023",
+  "label": "Fountain 1.4.0 - Wallet Redesign, Nostr Wallet Connect & Payment Upgrades",
+  "author": "6538925ebfb661f418d8c7d074bee2e8afd778701dd89070c2da936d571e55c3",
+  "created_at": 1765560397,
+  "content": "The first thing you’ll notice after updating is a cleaner, simpler look for the new Fountain wallet. But this wasn’t just about refreshing the design - we’ve added several highly requested features and made user-friendly improvements across every payment surface in the app.\n\n[![](https://substackcdn.com/image/fetch/$s_!ml9F!,w_1456,c_limit,f_auto,q_auto:good,fl_progressive:steep/https%3A%2F%2Fsubstack-post-media.s3.amazonaws.com%2Fpublic%2Fimages%2F19fe766b-68b3-40e0-8bf0-84b87065d277_2472x1642.png)](https://substackcdn.com/image/fetch/$s_!ml9F!,f_auto,q_auto:good,fl_progressive:steep/https%3A",
+  "tags": [
+   [
+    "title",
+    "Fountain 1.4.0 - Wallet Redesign, Nostr Wallet Connect & Payment Upgrades"
+   ],
+   [
+    "summary",
+    "We've completely revamped the Fountain wallet, added high requested features lik"
+   ],
+   [
+    "image",
+    "https://blossom.primal.net/82f53f6e80f23088aebc386c47fe9eb91db600628b52c9b80737a"
+   ],
+   [
+    "d",
+    "fountain-140---wallet-redesign-nostr-wallet-connect--payment-upgrades"
+   ],
+   [
+    "t",
+    "podcasts"
+   ],
+   [
+    "t",
+    "podcasting"
+   ],
+   [
+    "t",
+    "music"
+   ],
+   [
+    "t",
+    "nostr"
+   ],
+   [
+    "t",
+    "nwc"
+   ],
+   [
+    "t",
+    "lightning"
+   ],
+   [
+    "t",
+    "bitcoin"
+   ],
+   [
+    "r",
+    "wss://eden.nostr.land/"
+   ],
+   [
+    "r",
+    "wss://filter.nostr.wine/npub1v5ufyh4lkeslgxxcclg8f0hzazhaw7rsrhvfquxzm2fk64c72hp"
+   ],
+   [
+    "r",
+    "wss://nostr-01.bolt.observer/"
+   ],
+   [
+    "r",
+    "wss://nostr.bitcoiner.social/"
+   ],
+   [
+    "r",
+    "wss://nostr.wine/"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "fountain",
+  "query": "fountain",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: Fountain, the bitcoin podcast app (fountain.fm). 3 = the app itself (its official profile, app handler or app listing); 2 = content about the Fountain app; 1 = mentions, links to episodes hosted on fountain.fm, other senses (a water fountain); 0 = unrelated, or impersonators.",
+  "id": "bf6c6fae7490ee9097c4ae62d1ff4d5929175322f5548b525178b3d32fefe8b1",
+  "kind": "30023",
+  "label": "Fountain 1.1.10 - Payment UX Improvements and Faster Boosts",
+  "author": "6538925ebfb661f418d8c7d074bee2e8afd778701dd89070c2da936d571e55c3",
+  "created_at": 1733936861,
+  "content": "![](https://substackcdn.com/image/fetch/w_1456,c_limit,f_auto,q_auto:good,fl_progressive:steep/https%3A%2F%2Fsubstack-post-media.s3.amazonaws.com%2Fpublic%2Fimages%2Ffa8c5768-7537-4df5-8fc8-45a7d3c5a514_1920x1080.png)#### **Payment UX Improvements**\n\nWe have updated the modals for all payment functionality across the app. Next time you boost, stream, zap, deposit or withdraw, you will notice that a few changes.\n\nWe now display both sats and USD values when making a payment. When choosing a custom amount, you can enter a value in either sats or USD. When making a payment, we have also added toa",
+  "tags": [
+   [
+    "summary",
+    "If you like to boost, hopefully you should enjoy our latest update."
+   ],
+   [
+    "title",
+    "Fountain 1.1.10 - Payment UX Improvements and Faster Boosts"
+   ],
+   [
+    "published_at",
+    "1733936348"
+   ],
+   [
+    "d",
+    "Fountain-1-1-10-Payment-UX-Improvements-and-Faster-Boosts-r2aqhm"
+   ],
+   [
+    "image",
+    "https://blossom.primal.net/1dd19805e3eb94ad3ab790508c3e130d13e3f5ce3d79103544f86"
+   ],
+   [
+    "t",
+    "bitcoin"
+   ],
+   [
+    "t",
+    "music"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "fountain",
+  "query": "fountain",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: Fountain, the bitcoin podcast app (fountain.fm). 3 = the app itself (its official profile, app handler or app listing); 2 = content about the Fountain app; 1 = mentions, links to episodes hosted on fountain.fm, other senses (a water fountain); 0 = unrelated, or impersonators.",
+  "id": "d72a965e16e5cb1f85d16d723fe73aa1ebde55097e991685ad203c882a56c2a5",
+  "kind": "31923",
+  "label": "[Nostriga 2024] Rebuilding Fountain's Social Features on Nostr",
+  "author": "c3e6982c7f93e443d99f2d22c3d6fc6ba61475af11bcf289f927a7b905fffe51",
+  "created_at": 1724233070,
+  "content": "Day 2. Proof of Talk Stage. Keynote. Meta Track.\n\n[Fountain](https://fountain.fm) is a podcast app that uses payments as a discovery signal for what content is worth listening to.\n\nPreviously we had built our own internal social graph, profiles, and commenting system to power these social discovery features.\n\nOver the past few months we've rebuilt the social features from the ground up using nostr - and I thought it would be useful to share our experience doing this so that other developers get an insight into some of the challenges in migrating to nostr rather than starting with it from scrat",
+  "tags": [
+   [
+    "d",
+    "293B7F71-FEFC-40E3-8E04-0B267D5FBE79"
+   ],
+   [
+    "title",
+    "[Nostriga 2024] Rebuilding Fountain's Social Features on Nostr"
+   ],
+   [
+    "start",
+    "1724410258"
+   ],
+   [
+    "summary",
+    "Day 2. Proof of Talk Stage. Keynote. Meta Track."
+   ],
+   [
+    "image",
+    "https://media.primal.net/uploads/a/58/09/a58099bc25defb329989f5748ca5639ac942c34"
+   ],
+   [
+    "end",
+    "1724412058"
+   ],
+   [
+    "start_tzid",
+    "Europe/Riga"
+   ],
+   [
+    "location",
+    "Proof of Talk Stage, Fantadroms, conference center, G. Zemgala gatve 76, Riga, L"
+   ],
+   [
+    "g",
+    "ud1hjujqyv"
+   ],
+   [
+    "p",
+    "9c163c7351f8832b08b56cbb2e095960d1c5060dd6b0e461e813f0f07459119e",
+    ""
+   ],
+   [
+    "p",
+    "e4f695f05bb05b231255ccce3d471b8d79c64a65bccc014662d27f0f7e921092",
+    ""
+   ],
+   [
+    "r",
+    "https://github.com/nostrworld/nostriga/issues/78"
+   ],
+   [
+    "r",
+    "https://nostr.world/"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
   "topic": "group:rspuyeetackckp92 testin",
   "query": "group:rspuyeetackckp92 testin",
   "intent": "prefix",
@@ -6753,6 +8648,165 @@
     "1752868386"
    ]
   ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "iris",
+  "query": "iris",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: Iris, the Nostr web client (iris.to). 3 = the client itself (its official profile, app handler or app listing); 2 = content about the Iris client; 1 = other senses (the flower, the eye, people named Iris), mentions; 0 = unrelated, or impersonators.",
+  "id": "09d73fce1f980f166e70170f6e8df123b0488c55b2eed3ee142d5e73cf289b05",
+  "kind": "1621",
+  "label": "09d73fce",
+  "author": "a008def15796fba9a0d6fab04e8fd57089285d9fd505da5a83fe8aad57a3564d",
+  "created_at": 1790091779,
+  "content": "I'd like to use Iris Drive to keep automatic backups of my GrapheneOS phone\non my own devices and self-hosted storage. Seedvault would create the phone\nbackups, with Iris making them available across my devices.\n\nThe phone and another device, such as my laptop, would already have access\nto the backup folder. If the phone is lost or broken, I want to retrieve the\ncomplete backup through that other device and restore it onto a replacement\nphone. Exporting the backup to USB for Seedvault to restore would be fine;\nrestoration need not depend on the original phone being available.\n\nSeedvault backup",
+  "tags": [
+   [
+    "a",
+    "30617:336f319763657d6b0e65a5b5876719e8c8dcdcf9396852be71ee26b73368b29b:iris-driv"
+   ],
+   [
+    "p",
+    "336f319763657d6b0e65a5b5876719e8c8dcdcf9396852be71ee26b73368b29b"
+   ],
+   [
+    "subject",
+    "Android: automatic Seedvault backups to Iris, recoverable through another device"
+   ],
+   [
+    "alt",
+    "Git issue: Android: automatic Seedvault backups to Iris, recoverable through ano"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "iris",
+  "query": "iris",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: Iris, the Nostr web client (iris.to). 3 = the client itself (its official profile, app handler or app listing); 2 = content about the Iris client; 1 = other senses (the flower, the eye, people named Iris), mentions; 0 = unrelated, or impersonators.",
+  "id": "45df289586812315edea950d3f39afd79eba0d439be7b50778f12788cb618abd",
+  "kind": "30002",
+  "label": "vault.iris.to",
+  "author": "4523be58d395b1b196a9b8c82b038b6895cb02b683d0c253a955068dba1facd0",
+  "created_at": 1748427180,
+  "content": "",
+  "tags": [
+   [
+    "d",
+    "QmQsx7084Y51j2X3jSjDdgbxpxxH3SsR"
+   ],
+   [
+    "title",
+    "vault.iris.to"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "iris",
+  "query": "iris",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: Iris, the Nostr web client (iris.to). 3 = the client itself (its official profile, app handler or app listing); 2 = content about the Iris client; 1 = other senses (the flower, the eye, people named Iris), mentions; 0 = unrelated, or impersonators.",
+  "id": "6fccbf1983d212780466e19809be8c71d3ab1c6016c709f72ff3955a2777667b",
+  "kind": "30023",
+  "label": "21: Hashtree, Nostr VPN, and Iris w/ Martti Malmi",
+  "author": "9bde421491f3ead1ac21bd1d01667aab947f4c1c4aed87624cf2273b06ca052b",
+  "created_at": 1775392930,
+  "content": "\"We have this window of opportunity to steer the LLMs and the future of technology into a freedom-tech direction.\"\n\n[Martti Malmi](https://njump.to/npub1g53mukxnjkcmr94fhryzkqutdz2ukq4ks0gvy5af25rgmwsl4ngq43drvk) & [Gigi](https://njump.to/npub1dergggklka99wwrs92yz8wdjs952h2ux2ha2ed598ngwu9w7a6fsh9xzpc) take a walk in Madeira. Recorded during [SEC-07](https://sovereignengineering.io/projects#SEC-07).\n\n[Listen on sovereignengineering.io](https://sovereignengineering.io/podcast/21-hashtree-nostr-vpn-and-iris-w-martti-malmi)\n\nIn this dialogue:\n- Martti's GitHub annoyance spawned [Hashtree](https:/",
+  "tags": [
+   [
+    "title",
+    "21: Hashtree, Nostr VPN, and Iris w/ Martti Malmi"
+   ],
+   [
+    "summary",
+    "We have this window of opportunity to steer the LLMs and the future of technolog"
+   ],
+   [
+    "t",
+    "nosolutions"
+   ],
+   [
+    "image",
+    "https://haven.dergigi.com/7ba994b11ea5b7a7413c4feeed1e214db56ea150a009020d360988"
+   ],
+   [
+    "published_at",
+    "1775337288"
+   ],
+   [
+    "d",
+    "21-hashtree-nostr-vpn-and-iris-w-martti-malmi"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "iris",
+  "query": "iris",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: Iris, the Nostr web client (iris.to). 3 = the client itself (its official profile, app handler or app listing); 2 = content about the Iris client; 1 = other senses (the flower, the eye, people named Iris), mentions; 0 = unrelated, or impersonators.",
+  "id": "b714c259cd8fd00773dc48f9c3284d8c4aeda61381ecccbdb3f7f2bd7322ae14",
+  "kind": "30023",
+  "label": "ノストラシアでのスピーチの文字起こし | Iris.to by Martti Malmi",
+  "author": "20986fb83e775d96d188ca5c9df10ce6d613e0eb7e5768a0f0b12b37cdac21b3",
+  "created_at": 1700101885,
+  "content": "YakiHonne コミュニティはノストラシアに興奮しており、ノストラシアの感動的なスピーチを熱心に文字に起こしています。 追加のスピーチトランスクリプトは、今後公開される予定です。 日本語版とスペイン語版は、最初にコミュニティ メンバーによって AI ツールの助けを借りて翻訳および校正されます。 YakiHonneユーザーの皆様はぜひレビューにご参加ください。 無事にレビューを完了した方には特別報酬として3000Satが付与されます。 まずはご連絡ください (**ここにコメントしてください**、**DM**、または [**TG**](https://t.me/YakiHonne))。 連絡してレビューを送信した人が、幸運な特典の受け取り者となります。 もしよろしければ、これらのスピーチをさらに多くの言語に翻訳していただければ幸いです。 参加しませんか！\n\n🌟[**English: Iris.to**](https://yakihonne.com/article/naddr1qq2576zld9xnv3twfe6hx560f35x76nwgez4gq3qyzvxlwp7wawed5vgefwfmugvumtp8c8t0etk3g8sky4n0ndvyxesxpqqqp65w8wyd02)\n🌟[**中文版: Iris.to**](https://yakihonne.com/art",
+  "tags": [
+   [
+    "client",
+    "yakihonne.com"
+   ],
+   [
+    "published_at",
+    "1700101577"
+   ],
+   [
+    "d",
+    "Z5Y_FWyVIZZMw5bqZfFda"
+   ],
+   [
+    "image",
+    "https://yakihonne.s3.ap-east-1.amazonaws.com/20986fb83e775d96d188ca5c9df10ce6d61"
+   ],
+   [
+    "title",
+    "ノストラシアでのスピーチの文字起こし | Iris.to by Martti Malmi"
+   ],
+   [
+    "summary",
+    "Martti Malmi は、ノストリカ後の期間、Snort との合併、および Iris の哲学についての洞察をカバーする、過去 6 か月に関する包括的な最新情"
+   ],
+   [
+    "t",
+    "Nostrasia"
+   ],
+   [
+    "t",
+    "Nostr"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "iris",
+  "query": "iris",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: Iris, the Nostr web client (iris.to). 3 = the client itself (its official profile, app handler or app listing); 2 = content about the Iris client; 1 = other senses (the flower, the eye, people named Iris), mentions; 0 = unrelated, or impersonators.",
+  "id": "c314d4ae2b87a6a3b66e62a880c6c6a2dff20ed4eefeda5ab3997cce723310dc",
+  "kind": "0",
+  "label": "4tanned",
+  "author": "e2b2f00a50938b0e1b0db64032346ff1850218fb106ba2f788c3faa2f73d825a",
+  "created_at": 1678543200,
+  "content": "{\"lud16\":\"sketchyfrance62@walletofsatoshi.com\",\"nip05\":\"4tanned@iris.to\",\"picture\":\"https://nostr.build/i/nostr.build_e31050ca747fd605ee8f1e933295cdebcb2a794f0a38d3794d6faa92bc42c43f.jpg\",\"display_name\":\"4tanned\",\"about\":\"#Nostr and  #Bitcoin\",\"banner\":\"https://nostr.build/i/nostr.build_143400196f80eaead55d0b1aeced52df5c35510889cf5a8783dce4be6e8e762d.jpg\",\"name\":\"4tanned@iris.to\",\"username\":\"iris.to\",\"displayName\":\"4tanned\",\"website\":\"\",\"lud06\":\"\",\"nip05valid\":true}",
+  "tags": [],
   "grade": null,
   "by": null
  },
@@ -7437,6 +9491,702 @@
    [
     "a",
     "30017:6a6be47bb12f21dd80f1ef3fdf284d12a29314cea0c69db5ecd04ab53e74e3e1:samhainsa"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "music",
+  "query": "music",
+  "intent": "topical",
+  "need": "TOPICAL: music (songs, artists, albums, making or sharing music). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
+  "id": "2f574868d480d46fb852dc420e9c8a01ae5c9a17d7815c8f2e6d1dd37416ca96",
+  "kind": "32267",
+  "label": "Gyawun Music",
+  "author": "78ce6faa72264387284e647ba6938995735ec8c7d5c5a65737e55130f026307d",
+  "created_at": 1791422405,
+  "content": "Immerse yourself in the world of Gyawun, where music knows no bounds. Enjoy uninterrupted, ad-free streaming with an extensive library of songs spanning genres and artists from every corner of the globe. With Gyawun, the rhythm never fades. Download now and let the music carry you away.",
+  "tags": [
+   [
+    "d",
+    "com.jhelum.gyawun"
+   ],
+   [
+    "name",
+    "Gyawun Music"
+   ],
+   [
+    "summary",
+    "Stream music from YouTube Music"
+   ],
+   [
+    "icon",
+    "https://cdn.zapstore.dev/ee6399a62867cfce048b4abbd9a058afd669d44ec971d9949e4cb94"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/4712fe7e572119dcc4e3fa04866c1b97903f3ee843ef0f38112adc1"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/5c05977a4eb2bf263a08cdc751ea6a776159800a665f881e5011a86"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/7b4c653f04b5c06862162c1900e501dd6038b563501f45d73341ed4"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/beaa160acfa77b10a3da4bad0b8c13fc26128e7c496524d699aadc5"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/c255f94fe4f474d5acac677ab6a8ab66b6258bb65f0d92e4837f56c"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/cbaa7258986d7e0e915b8d5ba7f86c42bc212ab514cc389939f8b78"
+   ],
+   [
+    "repository",
+    "https://github.com/sheikhhaziq/gyawun"
+   ],
+   [
+    "f",
+    "android-arm64-v8a"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "music",
+  "query": "music",
+  "intent": "topical",
+  "need": "TOPICAL: music (songs, artists, albums, making or sharing music). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
+  "id": "4c832d1472b1314bd9fb84e5b4be21467aac0cf23d73c3ce421f1a06dc3a0b42",
+  "kind": "30818",
+  "label": "music",
+  "author": "b708f7392f588406212c3882e7b3bc0d9b08d62f95fa170d099127ece2770e5e",
+  "created_at": 1718321838,
+  "content": "sounds that make me come alive\n",
+  "tags": [
+   [
+    "d",
+    "music"
+   ],
+   [
+    "client",
+    "wikifreedia",
+    "31990:fa984bd7dbb282f07e16e7ae87b26a2a7b9b90b7246a44771f0cf5ae58018f52:171649813"
+   ],
+   [
+    "title",
+    "music"
+   ],
+   [
+    "c",
+    "Music"
+   ],
+   [
+    "published_at",
+    "1718321838"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "music",
+  "query": "music",
+  "intent": "topical",
+  "need": "TOPICAL: music (songs, artists, albums, making or sharing music). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
+  "id": "78e0b15f8e8ad3f19372a44306d4a7d8a92ad3fbb69a1e9f88bdc7316e401681",
+  "kind": "30003",
+  "label": "Music",
+  "author": "266815e0c9210dfa324c6cba3573b14bee49da4209a9456f9484e5106cd408a5",
+  "created_at": 1751805149,
+  "content": "",
+  "tags": [
+   [
+    "d",
+    "r58vKbqtH5CGI8l9FXUwH"
+   ],
+   [
+    "title",
+    "Music"
+   ],
+   [
+    "e",
+    "4d9f8aa242d2203110820841b08bb3f30a24faf0a7d278e26a7fe8c4cecc4179",
+    "wss://relay.damus.io/"
+   ],
+   [
+    "client",
+    "noStrudel",
+    "31990:266815e0c9210dfa324c6cba3573b14bee49da4209a9456f9484e5106cd408a5:168606654"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "music",
+  "query": "music",
+  "intent": "topical",
+  "need": "TOPICAL: music (songs, artists, albums, making or sharing music). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
+  "id": "86e003ccc081274de21e45012a97326cbb13325ac7ff5e227ff17fbb0d0a9b4e",
+  "kind": "30003",
+  "label": "ambient music",
+  "author": "dd81a8bacbab0b5c3007d1672fb8301383b4e9583d431835985057223eb298a5",
+  "created_at": 1738938651,
+  "content": "",
+  "tags": [
+   [
+    "e",
+    "13c7e4fb4bdadb3bbc102bbd57b3b0e130b4a63992f9f1ac8c1c5d0000836789",
+    "wss://nos.lol/"
+   ],
+   [
+    "title",
+    "ambient music"
+   ],
+   [
+    "description",
+    "a list of notes with links to ambient music"
+   ],
+   [
+    "L",
+    "lol.listr.ontology"
+   ],
+   [
+    "l",
+    "Music"
+   ],
+   [
+    "d",
+    "listr-f4810b46-a465-42f3-bdaa-3b2c9ce7c058"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "music",
+  "query": "music",
+  "intent": "topical",
+  "need": "TOPICAL: music (songs, artists, albums, making or sharing music). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
+  "id": "8d2e5d7d8ae37482459c53976d3f186e2bf337cb4132e5ca34d5a7384ddc1cf7",
+  "kind": "32267",
+  "label": "Music.axs",
+  "author": "78ce6faa72264387284e647ba6938995735ec8c7d5c5a65737e55130f026307d",
+  "created_at": 1792519811,
+  "content": "",
+  "tags": [
+   [
+    "d",
+    "dev.pgaxis.musicaxs"
+   ],
+   [
+    "name",
+    "Music.axs"
+   ],
+   [
+    "icon",
+    "https://cdn.zapstore.dev/35aeb186922672ea7dc6bbb9424026ef7d9a43704545b71724595c3"
+   ],
+   [
+    "repository",
+    "https://github.com/pgaxis/musicplayer"
+   ],
+   [
+    "f",
+    "android-arm64-v8a"
+   ],
+   [
+    "f",
+    "android-armeabi-v7a"
+   ],
+   [
+    "f",
+    "android-x86"
+   ],
+   [
+    "f",
+    "android-x86_64"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "music",
+  "query": "music",
+  "intent": "topical",
+  "need": "TOPICAL: music (songs, artists, albums, making or sharing music). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
+  "id": "bbf0bb854be2fba47f7a8dbfaea0ffd465d2ef550f9cf2adb6b5b40db1fc193b",
+  "kind": "30003",
+  "label": "Music",
+  "author": "e9d58d53b009ac6d3524c17f899149073f4e7db9ddf1aee70f207dcb685df0ff",
+  "created_at": 1775818931,
+  "content": "",
+  "tags": [
+   [
+    "d",
+    "playlist-1775818573"
+   ],
+   [
+    "title",
+    "Music"
+   ],
+   [
+    "alt",
+    "Playlist: Music"
+   ],
+   [
+    "t",
+    "music"
+   ],
+   [
+    "t",
+    "playlist"
+   ],
+   [
+    "gradient",
+    "colors",
+    "linear-gradient(135deg, #ff6b6b 0%, #feca57 100%)"
+   ],
+   [
+    "client",
+    "nostria"
+   ],
+   [
+    "a",
+    "36787:17e2889fba01021d048a13fd0ba108ad31c38326295460c21e69c43fa8fbe515:track-177"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "music",
+  "query": "music",
+  "intent": "topical",
+  "need": "TOPICAL: music (songs, artists, albums, making or sharing music). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
+  "id": "d0e1053847052d7a57fe9f9e174e828b32f146dec51ec9a9b7983d71dd7c723b",
+  "kind": "30003",
+  "label": "Music",
+  "author": "28ca019b78b494c25a9da2d645975a8501c7e99b11302e5cbe748ee593fcb2cc",
+  "created_at": 1727184853,
+  "content": "",
+  "tags": [
+   [
+    "title",
+    "Music"
+   ],
+   [
+    "description",
+    "Links to stream"
+   ],
+   [
+    "d",
+    "nostree-5bde93a6-9abe-4bd7-8d5e-1aeb032ece47"
+   ],
+   [
+    "L",
+    "me.nostree.ontology"
+   ],
+   [
+    "l",
+    "nostree"
+   ],
+   [
+    "l",
+    "ukryuw8o0"
+   ],
+   [
+    "r",
+    "https://wavlake.com/joemartin",
+    "Wavlake"
+   ],
+   [
+    "r",
+    "https://open.spotify.com/artist/4G6DafLOFyiy1eqgahC2W1?si=yAajAuEESJ24z-XV1TcIRw",
+    "Spotify"
+   ],
+   [
+    "r",
+    "https://music.apple.com/gb/artist/joe-martin/1641579550",
+    "Apple Music"
+   ],
+   [
+    "r",
+    "https://music.amazon.co.uk/artists/B001EUJ7DG/joe-martin",
+    "Amazon Music"
+   ],
+   [
+    "r",
+    "https://www.joemartinmusic.com/merch",
+    "Merch"
+   ],
+   [
+    "r",
+    "https://www.joemartinmusic.com/",
+    "Website"
+   ],
+   [
+    "r",
+    "https://primal.net/p/npub19r9qrxmckj2vyk5a5ttyt966s5qu06vmzyczuh97wj8wtyluktxqym",
+    "Nostr"
+   ],
+   [
+    "r",
+    "https://twitter.com/JoeMartinMusic",
+    "Twitter"
+   ],
+   [
+    "r",
+    "https://www.instagram.com/joemartinmusic/",
+    "Instagram"
+   ],
+   [
+    "r",
+    "https://www.facebook.com/JoeMartinMusic/",
+    "Facebook"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "news",
+  "query": "news",
+  "intent": "topical",
+  "need": "TOPICAL: news (current-events reporting, news outlets and their stories). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
+  "id": "36a0a60b56dd0f3c93c8c0f8e69c45a1d6927f4dcef8fedf35acfd5996c29a19",
+  "kind": "30000",
+  "label": "News",
+  "author": "745eb529d0e42d2fa6c904bbc2c10702deae964b4dd3079803ab8b43536dda12",
+  "created_at": 1790004958,
+  "content": "",
+  "tags": [
+   [
+    "d",
+    "A5gjibYtpsEeX4-1TLTJL"
+   ],
+   [
+    "p",
+    "9279276bffb83cee33946e564c3600a32840269a8206d01ddf40c6432baa0bcb"
+   ],
+   [
+    "p",
+    "bdb96ad31ac6af123c7683c55775ee2138da0f8f011e3994d56a27270e692575"
+   ],
+   [
+    "p",
+    "9c5d07933092ed10933ef2cf4b006fdd77e9c76ed3e24cade98098fe0176d77e"
+   ],
+   [
+    "p",
+    "9c5d057b9c8aeb8b203f2e1bcb9816d0ddaeb5a8a06a12866bf1d6bdc8e4c194"
+   ],
+   [
+    "p",
+    "e9ab3129c1509ca30466af0cf378506cb4f5794b0300bf687ca617b59c2d0b6d"
+   ],
+   [
+    "p",
+    "4d7842051782e0d3feb034d150adc2b6bae4ee3b49786793bffa468b6f5b96b3"
+   ],
+   [
+    "p",
+    "2774d83c8f9789c583414292b1192c4345db7ff0d551ea32efa2958f4192f6e5"
+   ],
+   [
+    "p",
+    "9c5d0095a33aa75300c52b2a614a8e496541dba88cd9a3436d0b733239ebcb43"
+   ],
+   [
+    "title",
+    "News"
+   ],
+   [
+    "client",
+    "Ditto",
+    "31990:781a1527055f74c1f70230f10384609b34548f8ab6a0a6caa74025827f9fdae5:ditto"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "news",
+  "query": "news",
+  "intent": "topical",
+  "need": "TOPICAL: news (current-events reporting, news outlets and their stories). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
+  "id": "4aa2717b9cc37163774ec6bdc0ea89718e7b2476bd8cc663bca2b07f0400a66f",
+  "kind": "30015",
+  "label": "News",
+  "author": "480ec1a7516406090dc042ddf67780ef30f26f3a864e83b417c053a5a611c838",
+  "created_at": 1763843599,
+  "content": "",
+  "tags": [
+   [
+    "d",
+    "news"
+   ],
+   [
+    "title",
+    "News"
+   ],
+   [
+    "t",
+    "news"
+   ],
+   [
+    "client",
+    "zelo.news"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "news",
+  "query": "news",
+  "intent": "topical",
+  "need": "TOPICAL: news (current-events reporting, news outlets and their stories). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
+  "id": "539166dd1d440d00ef5cbd5f9158eca1157cb70ae6da42182ec3d6ffad72aa80",
+  "kind": "32267",
+  "label": "News",
+  "author": "78ce6faa72264387284e647ba6938995735ec8c7d5c5a65737e55130f026307d",
+  "created_at": 1787495868,
+  "content": "",
+  "tags": [
+   [
+    "d",
+    "de.luhmer.owncloudnewsreader"
+   ],
+   [
+    "name",
+    "News"
+   ],
+   [
+    "icon",
+    "https://cdn.zapstore.dev/0a428f2a1e81d62ac181425c229fa7ec6156c4e6835ee6ba13a40b7"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/61d592cdf9cf70f17ae2bba234665531f0ecdcfd83de0cab2e1ce08"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/dcaf5e89aca9687ce3f5044961ccb6147fe62247cbc1129405846ac"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/69c8f44409da1d69341a8efb104fc48ab6fa23938c6bec7b05af0f8"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/57f4dd141478b2155582b125582aaca3597964cb0205f629192d4a2"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/e3082d4fa22e743e1ed071243fdd0e819d73951b05ead8cf698e0b7"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/76a1ce08d677df24c687a5f35e4b794a80d71a13e1ef3303b4bc979"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/2629b53bfa42ff9c1625089b1425bb7d85e8aad35cfd0669bef825c"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/5119b87ab20697c0a5dda83d3e84eb6d9597b0084532ebc54da9a62"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/2c51be6d7add140fce7cf41769102c44af8b7981beb568ec9c3023b"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/84b9fcfd750bed350dfd0ff26feb3d4be74bf4b0fd471a59b820b4d"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/781689788430c7fda31db2922d8b4078c0d3e1f184f3f369bd06e42"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/091c257348931ba2fc7dc6e2b3bc3c4061256812d6e07c21c849423"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/38a2a26ba46edaa53f77f4b8fbfe90ec3846b350f1d3aa10f4c9dbc"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "news",
+  "query": "news",
+  "intent": "topical",
+  "need": "TOPICAL: news (current-events reporting, news outlets and their stories). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
+  "id": "8dff2caae40dd0fe455734aff5ef4da25414fcf34ae69cf0247195e8d8772cc3",
+  "kind": "30000",
+  "label": "News-bots",
+  "author": "26cc4fcabfc7a1ce757bc0bfacaede8c222f9c5f0bc18381ff8e59a995ff4d54",
+  "created_at": 1732704569,
+  "content": "",
+  "tags": [
+   [
+    "p",
+    "9c5d0c591dfe800250799a7c1c636f831469566774a61291b08bd3c0e4e08fb8"
+   ],
+   [
+    "p",
+    "9c5d004ec7b7514579e9ed7fb40bb35188b233044cf718e094ee8fcd9ae3d3cf"
+   ],
+   [
+    "p",
+    "9c5d0379dd6479e6cd68e2e96569d6a94c44c164b8cedf26faf826ce9a78e0f9"
+   ],
+   [
+    "p",
+    "9c5d0067559081d216c3a5bc2c940963fabad1d0a972a9204277d09efb43186d"
+   ],
+   [
+    "p",
+    "9c5d0fdb227051d4a1f7a862e2c24b86f61fca16426b432c672678cd4016ece5"
+   ],
+   [
+    "p",
+    "9c5d062ab65b614da84392d70a2744e91ee1a578e0411711432448da2b672b5f"
+   ],
+   [
+    "p",
+    "9c5d0ef9a5def0d90bdb78b4d36753897b7225f929177f0d070074530c5c9988"
+   ],
+   [
+    "p",
+    "9c5d0b35e3fef1fbb98c629ea2226072708077939ba4d3319cef03acad37880d"
+   ],
+   [
+    "p",
+    "9c5d0d56dc2b4260c1e95af98533e7b3afbf55df047656947aa75834c73ddeca"
+   ],
+   [
+    "p",
+    "9c5d0b120f01b75292d2a2bc32972bf918c8dd8927eaa633d3f62e181a292b27"
+   ],
+   [
+    "p",
+    "b9a537523bba2fcdae857d90d8a760de4f2139c9f90d986f747ce7d0ec0d173d"
+   ],
+   [
+    "p",
+    "2774d83c8f9789c583414292b1192c4345db7ff0d551ea32efa2958f4192f6e5"
+   ],
+   [
+    "p",
+    "bdb96ad31ac6af123c7683c55775ee2138da0f8f011e3994d56a27270e692575"
+   ],
+   [
+    "title",
+    "News-bots"
+   ],
+   [
+    "d",
+    "listr-be58e913-d4bc-4a8d-a04a-bfeaa8f1fcd3"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "news",
+  "query": "news",
+  "intent": "topical",
+  "need": "TOPICAL: news (current-events reporting, news outlets and their stories). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
+  "id": "a03f8043798b2ce73527d491b7b8eacc57f5b5bc3bca5f853b4e969bbc75aeb5",
+  "kind": "30000",
+  "label": "News",
+  "author": "26cc4fcabfc7a1ce757bc0bfacaede8c222f9c5f0bc18381ff8e59a995ff4d54",
+  "created_at": 1732635825,
+  "content": "",
+  "tags": [
+   [
+    "p",
+    "9c5d0c591dfe800250799a7c1c636f831469566774a61291b08bd3c0e4e08fb8"
+   ],
+   [
+    "title",
+    "News"
+   ],
+   [
+    "d",
+    "listr-b5efc287-f7ca-4066-b927-48f96103ad1e"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "news",
+  "query": "news",
+  "intent": "topical",
+  "need": "TOPICAL: news (current-events reporting, news outlets and their stories). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
+  "id": "ff126faa27053d87aa40e9d446b1efa7dcd6d1c6fa0f8d5560574215483b9078",
+  "kind": "30000",
+  "label": "News",
+  "author": "123afae7d187ba36d6ddcd97dbf4acc59aeffe243f782592ff8f25ed579df306",
+  "created_at": 1710360025,
+  "content": "lZ8hjh3OhS8ZWaKxeRvqWQ==?iv=/TRmCx4ZYK6w/0h31Fd8Wg==",
+  "tags": [
+   [
+    "p",
+    "52921e1feee2b3c5093b193784e5a55a5191f4940725e3cb7a17592f1c37981b"
+   ],
+   [
+    "p",
+    "59fbee7369df7713dbbfa9bbdb0892c62eba929232615c6ff2787da384cb770f"
+   ],
+   [
+    "p",
+    "2edbcea694d164629854a52583458fd6d965b161e3c48b57d3aff01940558884"
+   ],
+   [
+    "p",
+    "b9a537523bba2fcdae857d90d8a760de4f2139c9f90d986f747ce7d0ec0d173d"
+   ],
+   [
+    "p",
+    "6774223d1b19dc15454733ab7559acde1d21fdf3fe9b2652c463c7fadb12c042"
+   ],
+   [
+    "p",
+    "347447120a7a81123f131acfd91708dd2b85aca0e6a18647c6caa95914e45736"
+   ],
+   [
+    "title",
+    "News"
+   ],
+   [
+    "d",
+    "listr-b028e3ea-2fff-4d8a-9801-525f3bb19a36"
+   ],
+   [
+    "L",
+    "lol.listr.ontology"
+   ],
+   [
+    "l",
+    "People"
    ]
   ],
   "grade": null,
@@ -8747,6 +11497,494 @@
   "by": null
  },
  {
+  "topic": "privacy",
+  "query": "privacy",
+  "intent": "topical",
+  "need": "TOPICAL: privacy (personal and digital privacy, privacy tools, surveillance). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
+  "id": "0fd81d1e69ec2a030233599302b5c50515f68b4cdc84fa57fae31d9731b9806b",
+  "kind": "32267",
+  "label": "Seek Privacy",
+  "author": "78ce6faa72264387284e647ba6938995735ec8c7d5c5a65737e55130f026307d",
+  "created_at": 1785880855,
+  "content": "",
+  "tags": [
+   [
+    "d",
+    "com.seeker.seekprivacy"
+   ],
+   [
+    "name",
+    "Seek Privacy"
+   ],
+   [
+    "icon",
+    "https://cdn.zapstore.dev/e8b3aec901ac2ff7bd3c79abd839eadb240b4f0da0f2ba9527cc40c"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/47347aab8eb3430a115348e740152df2d9db017fe7b4b600a66229b"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/1dd0d5c43e0e079d4ee6da2d8eba00d626c573200530317b09e96ae"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/9d0edc6c2841a3871532c44afcb1af5f4b289e0cd01d6179b6f433c"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/3d3aa19c2c1660ed5e11bccf33d7260719c10d550c491309c043b19"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/46e46c9fdcb1681e6075a07ba10183308c606e98b8d170c8383dce9"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/e01441095b62217fd3cb8b8d2a3cf3679b92ee84acec0e9432c6a46"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/f8756740922e9d87ec8a4f4ca00df86bf15b3076892d53b97ec9529"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/2009f791d6a60ef95d87f29ac1a25781d309949a253144d4aeff306"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/f8756740922e9d87ec8a4f4ca00df86bf15b3076892d53b97ec9529"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/15baadfac81bfe0fa439420e26448a971f5759620dac6fbe047fa30"
+   ],
+   [
+    "t",
+    "file encryption & vault"
+   ],
+   [
+    "t",
+    "security"
+   ],
+   [
+    "repository",
+    "https://github.com/duckniii/SeekPrivacy"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "privacy",
+  "query": "privacy",
+  "intent": "topical",
+  "need": "TOPICAL: privacy (personal and digital privacy, privacy tools, surveillance). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
+  "id": "265d279fbf1e542f78acfeb2072a5da316087c6fd333f6e98b990e1d72245523",
+  "kind": "30000",
+  "label": "Privacy & ...",
+  "author": "00000017c61ccde5cd336346ec69a78ad8e6cdf99485637cc48439e0eb437582",
+  "created_at": 1776953883,
+  "content": "AsB0vyc+yj9oCmQFjZlCuu57XZO8D8cP1Qx161uev5+PuPnQNxu4oAQESlgGvMXaGgpiUMoLC77+D38bFNojVL4wNsAP+S+molGfoWar3qFZKQvve/UqkTjzGLBuXQRqP8TXxmz8PxV8Am8WN7EIEkexlWYU8xIaLjbeJYlAHBRLc1mJubUIZZHirIwEmleAY3IuDmHQ7U5Bsyu5yomMZz5hSQ==",
+  "tags": [
+   [
+    "d",
+    "pl1750519741"
+   ],
+   [
+    "title",
+    "Privacy & ..."
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "privacy",
+  "query": "privacy",
+  "intent": "topical",
+  "need": "TOPICAL: privacy (personal and digital privacy, privacy tools, surveillance). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
+  "id": "2f146e654b1b3290a4228bb78a268614da46da16883e7cafdaea06eec95ccb98",
+  "kind": "32267",
+  "label": "Privacy Browser",
+  "author": "78ce6faa72264387284e647ba6938995735ec8c7d5c5a65737e55130f026307d",
+  "created_at": 1785493814,
+  "content": "The only way to prevent data from being abused is to prevent it from being collected in the first place. Privacy Browser has two primary goals.\n\n1. Minimize the data that is sent to the internet.\n\n2. Minimize the data that is stored on the device.\n\nMost browsers silently give websites massive amounts of information that allows them to track you and compromise your privacy. Websites and ad networks use technologies like JavaScript, cookies, DOM storage, user agents, and many other things to uniquely identify each user and track them between visits and across the web.\n\nIn contrast, privacy sensi",
+  "tags": [
+   [
+    "d",
+    "com.stoutner.privacybrowser.standard"
+   ],
+   [
+    "name",
+    "Privacy Browser"
+   ],
+   [
+    "icon",
+    "https://cdn.zapstore.dev/f31677b154da1344b86631ccf66ebc5968e843363a8b8ad3ad1635b"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/ce583c2e8df8f4c33aa13a402ec2168af37be9eab9d67d8c5e6676a"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/d5ef295f0614aea3209b2e0fa61e6be938df9b8c698bace96930096"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/55aa095e02b5a31eb02622c7a426f5ff2bd1b8aac328d6e4004aaff"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/fd6ca98a86978596e83dd4605dc0c76b28c8fde4b4f0d58c49e1324"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/8fa06ee6d1260a39c62f6423ef57c497ff005bbacedd1f54c17f483"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/5fe1cbbebf3d9bc2ba8904b115323658a6d4e47fda6fdfeea43a3e0"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/e602fd2a5ff683c80aa729fb8280f6bcee37e96b6c983d4befca349"
+   ],
+   [
+    "t",
+    "browser"
+   ],
+   [
+    "t",
+    "internet"
+   ],
+   [
+    "url",
+    "https://www.stoutner.com/privacy-browser-android/"
+   ],
+   [
+    "f",
+    "android-arm64-v8a"
+   ],
+   [
+    "f",
+    "android-armeabi-v7a"
+   ],
+   [
+    "f",
+    "android-x86"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "privacy",
+  "query": "privacy",
+  "intent": "topical",
+  "need": "TOPICAL: privacy (personal and digital privacy, privacy tools, surveillance). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
+  "id": "359c7b4a0b9101a4957aa6191cb94fca1aaf61c34df6d88d5d9dd2e50517545a",
+  "kind": "30023",
+  "label": "Privacy on the Line: The Politics of Wiretapping and Encryption",
+  "author": "b7ed68b062de6b4a12e51fd5285c1e1e0ed0e5128cda93ab11b4150b55ed32fc",
+  "created_at": 1792099815,
+  "content": "*Privacy on the Line*, by Whitfield Diffie and Susan Landau, asks who can hear an electronic conversation and who decides when they may listen. First published in 1998 amid the fights over Clipper key escrow and cryptographic export controls, it returned in 2007 as an updated and expanded MIT Press edition, reviewed here. Its new preface adds network-built wiretapping and the eroding wall between foreign intelligence and domestic policing. The book is worth reading because, across its technical and legal chapters, it keeps four questions apart: who can observe a channel, who holds keys and can",
+  "tags": [
+   [
+    "d",
+    "library-privacy-on-line"
+   ],
+   [
+    "title",
+    "Privacy on the Line: The Politics of Wiretapping and Encryption"
+   ],
+   [
+    "summary",
+    "Diffie and Landau connect key exchange, wiretap law and surveillance institution"
+   ],
+   [
+    "image",
+    "https://relay.towardsliberty.com/00ed31988b5822970fff54e541678f1fa5ebb1323cf2808"
+   ],
+   [
+    "alt",
+    "Long-form article: Privacy on the Line: The Politics of Wiretapping and Encrypti"
+   ],
+   [
+    "tl-schema",
+    "recommendation-v1"
+   ],
+   [
+    "tl-work",
+    "tl-reading-0246"
+   ],
+   [
+    "tl-relation",
+    "recommended"
+   ],
+   [
+    "i",
+    "https://tile.loc.gov/storage-services/master/gdc/gdcebookspublic/20/20/71/84/91/"
+   ],
+   [
+    "k",
+    "web"
+   ],
+   [
+    "t",
+    "encryption"
+   ],
+   [
+    "t",
+    "governance"
+   ],
+   [
+    "t",
+    "jurisprudence"
+   ],
+   [
+    "t",
+    "privacy"
+   ],
+   [
+    "t",
+    "surveillance"
+   ],
+   [
+    "tl-meta",
+    "de86bda7fc91a28002c7f6e8d816facd8a244cf2438fcef2cb0fc0f77c744253"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "privacy",
+  "query": "privacy",
+  "intent": "topical",
+  "need": "TOPICAL: privacy (personal and digital privacy, privacy tools, surveillance). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
+  "id": "4495787c00da682c1ba4450ef1cc60450a7a1a8a7e7870a4004ab0657c7edd15",
+  "kind": "32267",
+  "label": "Privacy Cell",
+  "author": "78ce6faa72264387284e647ba6938995735ec8c7d5c5a65737e55130f026307d",
+  "created_at": 1785493825,
+  "content": "Privacy Cell is a small app that displays the cell phone protocol information.\n\nAt the time of this writing, many cell phone networks are switching from 4G (4th Generation) to 5G networks. The 5G network protocols were specifically designed to protect against some of the known insecurities of the older protocols, including those that allowed stingrays (IMSI catchers) to perform man-in-the-middle attacks on cell phone networks. To ease deployment and backwards compatibility, 4G and 5G networks can run together in what is known as 5G NR (New Radio) NSA (Non-Standalone) mode. This uses the 4G net",
+  "tags": [
+   [
+    "d",
+    "com.stoutner.privacycell"
+   ],
+   [
+    "name",
+    "Privacy Cell"
+   ],
+   [
+    "icon",
+    "https://cdn.zapstore.dev/2f2246b8bcbada6612bf7389216109e69a296b541e5fec428753880"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/6b9482f35f79daef3718ee88f130cc7248fe159c7f814f79a247a59"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/c395daf13fadb06a9991cce22f39ce3c3bea0254eb46734759f4602"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/70a7c166d8aba1bdeb4b560a7dbd40c0d50a9bd2a708b3fe4299fe6"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/f4333e334bf358664035b36d385e06deeb79ce6780f7b37aae0d939"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/5b6170da30075586a570c6e149a34f253384670a7f3b4aa53b14cc1"
+   ],
+   [
+    "t",
+    "phone & sms"
+   ],
+   [
+    "url",
+    "https://www.stoutner.com/privacy-cell/"
+   ],
+   [
+    "f",
+    "android-arm64-v8a"
+   ],
+   [
+    "f",
+    "android-armeabi-v7a"
+   ],
+   [
+    "f",
+    "android-x86"
+   ],
+   [
+    "f",
+    "android-x86_64"
+   ],
+   [
+    "license",
+    "GPL-3.0-or-later"
+   ],
+   [
+    "h",
+    "acfeaea6e51420e8068fac446ca9d17d7a9ef6a5d20d93894e50fee3d4902a84"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "privacy",
+  "query": "privacy",
+  "intent": "topical",
+  "need": "TOPICAL: privacy (personal and digital privacy, privacy tools, surveillance). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
+  "id": "df4d7d19cba1bddaf40564ff4c23e6da55c9fce553fd24abea2df80078985288",
+  "kind": "30267",
+  "label": "Privacy Stack",
+  "author": "b7ed68b062de6b4a12e51fd5285c1e1e0ed0e5128cda93ab11b4150b55ed32fc",
+  "created_at": 1787895472,
+  "content": "",
+  "tags": [
+   [
+    "name",
+    "Privacy Stack"
+   ],
+   [
+    "d",
+    "privacy-stack"
+   ],
+   [
+    "f",
+    "android-arm64-v8a"
+   ],
+   [
+    "h",
+    "acfeaea6e51420e8068fac446ca9d17d7a9ef6a5d20d93894e50fee3d4902a84"
+   ],
+   [
+    "a",
+    "32267:78ce6faa72264387284e647ba6938995735ec8c7d5c5a65737e55130f026307d:app.organ"
+   ],
+   [
+    "a",
+    "32267:7579076d9aff0a4cfdefa7e2045f2486c7e5d8bc63bfc6b45397233e1bbfcb19:com.green"
+   ],
+   [
+    "a",
+    "32267:aa9047325603dacd4f8142093567973566de3b1e20a89557b728c3be4c6a844b:com.vitor"
+   ],
+   [
+    "a",
+    "32267:78ce6faa72264387284e647ba6938995735ec8c7d5c5a65737e55130f026307d:de.danoeh"
+   ],
+   [
+    "a",
+    "32267:7579076d9aff0a4cfdefa7e2045f2486c7e5d8bc63bfc6b45397233e1bbfcb19:com.green"
+   ],
+   [
+    "a",
+    "32267:78ce6faa72264387284e647ba6938995735ec8c7d5c5a65737e55130f026307d:com.onlyo"
+   ],
+   [
+    "a",
+    "32267:78ce6faa72264387284e647ba6938995735ec8c7d5c5a65737e55130f026307d:org.futo."
+   ],
+   [
+    "a",
+    "32267:78ce6faa72264387284e647ba6938995735ec8c7d5c5a65737e55130f026307d:im.molly."
+   ],
+   [
+    "a",
+    "32267:78ce6faa72264387284e647ba6938995735ec8c7d5c5a65737e55130f026307d:io.nunchu"
+   ],
+   [
+    "a",
+    "32267:78ce6faa72264387284e647ba6938995735ec8c7d5c5a65737e55130f026307d:org.torpr"
+   ],
+   [
+    "a",
+    "32267:78ce6faa72264387284e647ba6938995735ec8c7d5c5a65737e55130f026307d:ch.proton"
+   ],
+   [
+    "a",
+    "32267:78ce6faa72264387284e647ba6938995735ec8c7d5c5a65737e55130f026307d:org.wohel"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "privacy",
+  "query": "privacy",
+  "intent": "topical",
+  "need": "TOPICAL: privacy (personal and digital privacy, privacy tools, surveillance). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
+  "id": "e24fc9089ad5c2bddfd0bf72c84c91d397a5dabacd315b450abc214a76c477b6",
+  "kind": "32267",
+  "label": "Privacy QR And Barcode Scanner",
+  "author": "78ce6faa72264387284e647ba6938995735ec8c7d5c5a65737e55130f026307d",
+  "created_at": 1791423232,
+  "content": "Privacy QR Scanner is a free and open-source QR code and barcode scanner for Android that respects your privacy.\n\nFeatures:\n* Fully offline — no internet connection required\n* No tracking, no analytics, no ads\n* Scan QR codes and barcodes instantly\n* Copy scanned result to clipboard\n* Share scanned result with any app\n* Open URLs directly in browser or compatible apps\n* Vibration feedback on successful scan\n* Clean Material Design UI with dark theme\n* Supports all major formats: QR Code, EAN, UPC, Code 128, Code 39, and more\n\nPermissions:\n* CAMERA — required to scan QR codes\n* VIBRATE — for ha",
+  "tags": [
+   [
+    "d",
+    "com.laert.qrscanner"
+   ],
+   [
+    "name",
+    "Privacy QR And Barcode Scanner"
+   ],
+   [
+    "summary",
+    "Fast, offline QR code and barcode scanner - no tracking, no ads"
+   ],
+   [
+    "icon",
+    "https://cdn.zapstore.dev/d1cb1acc0f7c6b1e5c947b00980530a07d39c78851a4b16cd0d86d7"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/35e13f76c8f206bb76a127e5c1a7cb61acede4295a5d72a27ac98dd"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/9044bd6a1d80bb83287f20d4cc47a409f7bce454457cdf61f486797"
+   ],
+   [
+    "image",
+    "https://cdn.zapstore.dev/d212e92a27aed7e44eea4ac3ca92d3f418c290cb47efad0211dfc65"
+   ],
+   [
+    "repository",
+    "https://github.com/laert-android/privacy-qr-and-barcode-scanner"
+   ],
+   [
+    "f",
+    "android-arm64-v8a"
+   ],
+   [
+    "f",
+    "android-armeabi-v7a"
+   ],
+   [
+    "f",
+    "android-x86"
+   ],
+   [
+    "f",
+    "android-x86_64"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
   "topic": "vitor",
   "query": "vitor",
   "intent": "ambiguous",
@@ -9372,6 +12610,282 @@
    [
     "repo",
     "https://github.com/vitorpamplona/amethyst"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "zeus",
+  "query": "zeus",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: ZEUS, the bitcoin Lightning wallet app. 3 = the app itself (its official profile, app handler or app listing); 2 = content about the ZEUS wallet; 1 = other senses (the Greek god), mentions; 0 = unrelated, or impersonators.",
+  "id": "065496f83d948ff2dc3bc9813c08bc6e70ef0a7cb4471cb97f47bcc3c36f04b2",
+  "kind": "1337",
+  "label": "app.zeusln.zeus",
+  "author": "03b5036dc3db82604307c1964d2b926417a91c3b11ef75ba6ca55019e9b7a62a",
+  "created_at": 1748258021,
+  "content": "IyEvYmluL2Jhc2gKCnJlcG89aHR0cHM6Ly9naXRodWIuY29tL1pldXNMTi96ZXVzCnRhZz12JHZlcnNpb25OYW1lCmNhc2UgJCgoJHZlcnNpb25Db2RlICUgMTApKSBpbgogIDEpIGFyY2hpdGVjdHVyZT0iYXJtZWFiaS12N2EiIDs7CiAgMikgYXJjaGl0ZWN0dXJlPSJ4ODYiIDs7CiAgMykgYXJjaGl0ZWN0dXJlPSJhcm02NC12OGEiIDs7CiAgNCkgYXJjaGl0ZWN0dXJlPSJ4ODZfNjQiIDs7CiAgKikgZWNobyAiSW52YWxpZCBudW1iZXIgZW5kaW5nLCBwbGVhc2UgcHJvdmlkZSBhIG51bWJlciBlbmRpbmcgaW4gMSwgMiwgMywgb3IgNC4iID4mMjsgZXhpdCAxIDs7CmVzYWMKYnVpbHRBcGs9IiR3b3JrRGlyL2FwcC9hbmRyb2lkL2FwcC9idWlsZC9vdXRwdXRzL2Fway9yZWxlYXNlL3pldXMtJGFyY2hpdGVjdHVyZS5hcGsiCgp0ZXN0KCkgewogICMgYnVpbGQKICBCVUlMREVSX0lNQUdFPSJy",
+  "tags": [
+   [
+    "name",
+    "app.zeusln.zeus"
+   ],
+   [
+    "extension",
+    "sh"
+   ],
+   [
+    "content-type",
+    "application/x-shellscript"
+   ],
+   [
+    "size",
+    "1410"
+   ],
+   [
+    "client",
+    "WalletScrutiny.com",
+    "31990:168b7a2cd8bb9205c3f574de540606d6f4c46717c5164f47373fdcce2b9cd335:598515333"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "zeus",
+  "query": "zeus",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: ZEUS, the bitcoin Lightning wallet app. 3 = the app itself (its official profile, app handler or app listing); 2 = content about the ZEUS wallet; 1 = other senses (the Greek god), mentions; 0 = unrelated, or impersonators.",
+  "id": "066dce0500bef548266c6c051dda68ff0bef26111a415914388f5fa93d3f675c",
+  "kind": "1337",
+  "label": "zeus_build",
+  "author": "1f9e547c2f31942623b8ad1d07713282e8640fd8cf474e9f79f18ace8af216ed",
+  "created_at": 1771840858,
+  "content": "IyEvYmluL2Jhc2gKIyA9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0KIyB6ZXVzX2J1aWxkLnNoIC0gWmV1cyBMaWdodG5pbmcgV2FsbGV0IFJlcHJvZHVjaWJsZSBCdWlsZCBWZXJpZmljYXRpb24KIyA9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0KIyBWZXJzaW9uOiAgICAgICB2MC4yLjUKIyBPcmdhbml6YXRpb246ICBXYWxsZXRTY3J1dGlueS5jb20KIyBMYXN0IE1vZGlmaWVkOiAyMDI2LTAyLTIzCiMgUHJvamVjdDogICAgICAgaHR0cHM6Ly9naXRodWIuY29tL1pldXNMTi96ZXVzCiMgPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09",
+  "tags": [
+   [
+    "name",
+    "zeus_build"
+   ],
+   [
+    "extension",
+    "sh"
+   ],
+   [
+    "content-type",
+    "application/x-shellscript"
+   ],
+   [
+    "size",
+    "32942"
+   ],
+   [
+    "client",
+    "WalletScrutiny.com",
+    "31990:168b7a2cd8bb9205c3f574de540606d6f4c46717c5164f47373fdcce2b9cd335:770337176"
+   ],
+   [
+    "c",
+    "walletscrutiny"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "zeus",
+  "query": "zeus",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: ZEUS, the bitcoin Lightning wallet app. 3 = the app itself (its official profile, app handler or app listing); 2 = content about the ZEUS wallet; 1 = other senses (the Greek god), mentions; 0 = unrelated, or impersonators.",
+  "id": "2576616c32b49b86a9563b75f31a2e26e8eeb4d274359513648afd8e8f810b1a",
+  "kind": "1337",
+  "label": "zeus-v0.4.0_build",
+  "author": "1f9e547c2f31942623b8ad1d07713282e8640fd8cf474e9f79f18ace8af216ed",
+  "created_at": 1791972774,
+  "content": "IyEvYmluL2Jhc2gKIyA9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0KIyB6ZXVzLXYwLjQuMF9idWlsZC5zaCAtIFpldXMgTGlnaHRuaW5nIFdhbGxldCBSZXByb2R1Y2libGUgQnVpbGQgVmVyaWZpY2F0aW9uCiMgPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09CiMgVmVyc2lvbjogICAgICAgdjAuNC4wCiMgT3JnYW5pemF0aW9uOiAgV2FsbGV0U2NydXRpbnkuY29tCiMgTGFzdCBtb2RpZmllZCBieTogQ2xhdWRlIENvZGUgZm9yIERhbm55CiMgTGFzdCBtb2RpZmllZCBvbjogMjAyNi0xMC0xNAojIFByb2plY3Q6ICAgICAgIGh0dHBzOi8vZ2l0aHViLmNvbS9aZXVzTE4vemV1cwojID09PT09PT09PT09PT09",
+  "tags": [
+   [
+    "name",
+    "zeus-v0.4.0_build"
+   ],
+   [
+    "extension",
+    "sh"
+   ],
+   [
+    "content-type",
+    "application/x-shellscript"
+   ],
+   [
+    "size",
+    "40823"
+   ],
+   [
+    "client",
+    "WalletScrutiny.com",
+    "31990:168b7a2cd8bb9205c3f574de540606d6f4c46717c5164f47373fdcce2b9cd335:770337176"
+   ],
+   [
+    "c",
+    "walletscrutiny"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "zeus",
+  "query": "zeus",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: ZEUS, the bitcoin Lightning wallet app. 3 = the app itself (its official profile, app handler or app listing); 2 = content about the ZEUS wallet; 1 = other senses (the Greek god), mentions; 0 = unrelated, or impersonators.",
+  "id": "eb58bacaf7f811defd17ac9f58cf3e8c59739bd5e29168153e19b13f564042c8",
+  "kind": "31923",
+  "label": "G.M. study sessions - Zeus Wallet",
+  "author": "664e070fe25e76ddcefa54929c0de42ecad0810093507e24de46220751cdb7aa",
+  "created_at": 1755863459,
+  "content": "July 5th — Join us at the café conference room for an overview of the current standards of practice, software, and hardware for the sovereign transition into the Information Age\n\nPlanned topics: \n- Zeus wallet overview, king of all lightning wallets\n- linking a node, opening and buying channels, making transactions, wallet recovery, swaps, and Cashu token storage! \n- come prepared with questions, and we’ll come up with some answers!\n\nwe shall not talk:\n- price \n- politics \n- sh!tcoins\n- conspiracies\n\nhttps://orangepill.app.link/4X5gGsXu2Vb",
+  "tags": [
+   [
+    "d",
+    "67a1253a63690c0805355390"
+   ],
+   [
+    "title",
+    "G.M. study sessions - Zeus Wallet"
+   ],
+   [
+    "start",
+    "1756558812"
+   ],
+   [
+    "start_tzid",
+    "America/New_York"
+   ],
+   [
+    "end",
+    "1756566012"
+   ],
+   [
+    "end_tzid",
+    "America/New_York"
+   ],
+   [
+    "location",
+    "Whole Latte Love Cafe, Inc., South Main Street, North Canton, OH, USA"
+   ],
+   [
+    "g",
+    "dpq07ycrz"
+   ],
+   [
+    "r",
+    "https://public.orangepillapp.com/event/67a1253a63690c0805355390"
+   ],
+   [
+    "image",
+    "https://orange-pill-app-dev.s3.amazonaws.com/events/a51c938f-5714-4f78-9363-cd9e"
+   ],
+   [
+    "t",
+    "OrangePillApp"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "zeus",
+  "query": "zeus",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: ZEUS, the bitcoin Lightning wallet app. 3 = the app itself (its official profile, app handler or app listing); 2 = content about the ZEUS wallet; 1 = other senses (the Greek god), mentions; 0 = unrelated, or impersonators.",
+  "id": "ec2e691b101c317e5c4b18a1f6ddeb4a065fd615d8ea0142b5e9c34688d70616",
+  "kind": "1",
+  "label": "ec2e691b",
+  "author": "58b295a1a5f7b8e7d507777acbcbf7691a0b39c768da2695220a89a6da85ca67",
+  "created_at": 1686945512,
+  "content": "\n\nI'm joined by guests [Bumi]( https://twitter.com/Bumi ) & [Mandrik]( https://twitter.com/Mandrik ) to go through the list. *CORRECTION* Release notes at 00:19:12 are for Trezor not Ledger.\n\n**Housekeeping**\n\n  * 00:02:24 More NFC card designs⁠\n  * 00:02:28 Bare chip with flex PCB SATSCHIP⁠ in stock in a few days\n  * 00:02:35 Satscard.com fiat balance display\n  * 00:02:40 OpenSats⁠ looking for applications\n\n\n\n**Bitcoin**\n\n• Security Updates\n\n  * 00:03:17 Damus to be removed from app store\n  * 00:04:22 Zeus rejected by Apple\n  * 00:06:53 MutinyWallet mainnet⁠⁠\n  * 00:08:09 Alby PWA in the work",
+  "tags": [
+   [
+    "subject",
+    "BR040 - Alby, Zeus, Nunchuk, Damus, Mutiny, SATSCARD, App store censorship + MOR"
+   ],
+   [
+    "image",
+    "https://d3t3ozftmdmh3i.cloudfront.net/production/podcast_uploaded_nologo/2489869"
+   ],
+   [
+    "t",
+    "RSSTR"
+   ],
+   [
+    "syntax",
+    "Markdown"
+   ],
+   [
+    "rss_guid",
+    "e7a459d0-241b-47c7-8442-f4db969de300"
+   ],
+   [
+    "a",
+    "34550:58b295a1a5f7b8e7d507777acbcbf7691a0b39c768da2695220a89a6da85ca67:Bitcoin.R"
+   ],
+   [
+    "r",
+    "https://anchor.fm/s/9500fad8/podcast/play/72231385/https%3A%2F%2Fd3ctxlq1ktw2nl."
+   ],
+   [
+    "episode_type",
+    "full"
+   ],
+   [
+    "media_duration",
+    "01:13:00"
+   ],
+   [
+    "rss_metadata",
+    "{\"links\": [{\"rel\": \"alternate\", \"type\": \"text/html\", \"href\": \"https://podcasters"
+   ]
+  ],
+  "grade": null,
+  "by": null
+ },
+ {
+  "topic": "zeus",
+  "query": "zeus",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: ZEUS, the bitcoin Lightning wallet app. 3 = the app itself (its official profile, app handler or app listing); 2 = content about the ZEUS wallet; 1 = other senses (the Greek god), mentions; 0 = unrelated, or impersonators.",
+  "id": "f9a16b6984709d8b0446ca00d0081545b10a4a95733f3dec1f711001d9686588",
+  "kind": "1337",
+  "label": "zeus-v0.3.2_build",
+  "author": "1f9e547c2f31942623b8ad1d07713282e8640fd8cf474e9f79f18ace8af216ed",
+  "created_at": 1790229130,
+  "content": "IyEvYmluL2Jhc2gKIyA9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0KIyB6ZXVzX2J1aWxkLnNoIC0gWmV1cyBMaWdodG5pbmcgV2FsbGV0IFJlcHJvZHVjaWJsZSBCdWlsZCBWZXJpZmljYXRpb24KIyA9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0KIyBWZXJzaW9uOiAgICAgICB2MC4zLjIKIyBPcmdhbml6YXRpb246ICBXYWxsZXRTY3J1dGlueS5jb20KIyBMYXN0IE1vZGlmaWVkOiAyMDI2LTA5LTI0CiMgUHJvamVjdDogICAgICAgaHR0cHM6Ly9naXRodWIuY29tL1pldXNMTi96ZXVzCiMgPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09",
+  "tags": [
+   [
+    "name",
+    "zeus-v0.3.2_build"
+   ],
+   [
+    "extension",
+    "sh"
+   ],
+   [
+    "content-type",
+    "application/x-shellscript"
+   ],
+   [
+    "size",
+    "38795"
+   ],
+   [
+    "client",
+    "WalletScrutiny.com",
+    "31990:168b7a2cd8bb9205c3f574de540606d6f4c46717c5164f47373fdcce2b9cd335:770337176"
+   ],
+   [
+    "c",
+    "walletscrutiny"
    ]
   ],
   "grade": null,

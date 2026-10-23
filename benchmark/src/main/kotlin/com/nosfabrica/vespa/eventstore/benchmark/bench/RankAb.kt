@@ -104,6 +104,9 @@ object RankAb {
                     "w_words_pop" to 3000.0,
                     "w_exactness_pop" to 6000.0,
                     "w_perfect_pop" to 80000.0,
+                    "perfect_df_lo" to 2e-4,
+                    "perfect_df_hi" to 6e-4,
+                    "perfect_df_min_docs" to 100000.0,
                     "w_order_floor" to 0.5,
                     "w_wot_pow" to 2.7,
                     "w_recency" to 0.1,
@@ -122,14 +125,19 @@ object RankAb {
             "perfect_off" to mapOf("w_perfect_pop" to 0.0),
             // The rung damped by how common the word is AS A NAME (event.sd,
             // query(perfect_df_lo)): whole below lo, gone above hi, log-linear
-            // between. Pair with --name-df on a corpus drawn from the topics.
+            // between. SHIPPED at (2e-4, 6e-4), but OFF on an index under
+            // perfect_df_min_docs — which every evaluation corpus is — so on
+            // one, `baseline` is the damping OFF. These configs lift that guard
+            // (min_docs 0): pair them with --name-df, which makes the corpus's
+            // name statistics production's. `name_df_off` is the control.
             // Ranges from the 2026-10-23 measurement on a kind-stratified random
-            // sample of production: one-word topics name 0..1.6e-4 of documents
-            // (jack 1.6e-4, primal 1.2e-4, odell 2.7e-5), bitcoin and nostr
-            // ~6.5e-4, lightning / coffee / bitcoiners 1-3e-5.
-            "name_df_2e4_6e4" to mapOf("perfect_df_lo" to 2e-4, "perfect_df_hi" to 6e-4),
-            "name_df_2e4_2e3" to mapOf("perfect_df_lo" to 2e-4, "perfect_df_hi" to 2e-3),
-            "name_df_1e4_1e3" to mapOf("perfect_df_lo" to 1e-4, "perfect_df_hi" to 1e-3),
+            // sample of production: one-word navigational topics name 0..1.6e-4
+            // of documents (jack 1.6e-4, primal 1.2e-4, odell 2.7e-5), bitcoin and
+            // nostr ~6.5e-4, lightning / coffee / bitcoiners 1-3e-5.
+            "name_df_off" to mapOf("perfect_df_lo" to 1.0, "perfect_df_hi" to 1.0),
+            "name_df_2e4_6e4" to mapOf("perfect_df_lo" to 2e-4, "perfect_df_hi" to 6e-4, "perfect_df_min_docs" to 0.0),
+            "name_df_2e4_2e3" to mapOf("perfect_df_lo" to 2e-4, "perfect_df_hi" to 2e-3, "perfect_df_min_docs" to 0.0),
+            "name_df_1e4_1e3" to mapOf("perfect_df_lo" to 1e-4, "perfect_df_hi" to 1e-3, "perfect_df_min_docs" to 0.0),
             // Word order off — what the default profile did before the audit.
             "order_off" to mapOf("w_order_floor" to 1.0),
             // ---- §12.2 the split rung + the perfect exponent ----

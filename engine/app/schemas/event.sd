@@ -924,12 +924,35 @@ schema event {
             # The ratio is name_df_ratio(): documents with the word in name,
             # display_name or search_primary, over the documents indexed. At or
             # below lo the rung is whole; at or above hi it is gone; between,
-            # it falls linearly in log(ratio). lo >= hi disables the damping —
-            # the default, which is the rung exactly as it shipped. Multi-word
-            # queries keep the whole rung: an exact multi-word name or title is
-            # specific evidence whatever its words' frequency ("Verified Human").
-            query(perfect_df_lo) double: 1.0
-            query(perfect_df_hi) double: 1.0
+            # it falls linearly in log(ratio). lo >= hi disables the damping.
+            # Multi-word queries keep the whole rung: an exact multi-word name
+            # or title is specific evidence whatever its words' frequency
+            # ("Verified Human").
+            #
+            # (2e-4, 6e-4) is MEASURED, and was confirmed on held-out topics
+            # before it became the default (docs/search-evaluation.md §9). On a
+            # kind-stratified random sample of production, every navigational
+            # name tried names <= 1.6e-4 of documents (jack, primal; the apps
+            # damus, alby, iris, fountain, zeus 0..2.7e-5), while bitcoin, nostr
+            # (~6.5e-4), ai, music (~4e-4), news and crypto (~2.4e-4) name more.
+            # Tuned on 27 topics (bitcoin 0.32 -> 0.58 nDCG@10, no navigational
+            # move) and confirmed on 12 held-out ones chosen before any page was
+            # seen (CI [+0.000, +0.028]; ai 0.29 -> 0.40; every navigational and
+            # control topic identical). RE-MEASURE with sample_names.py, never
+            # re-derive, if the extraction of the naming fields changes.
+            query(perfect_df_lo) double: 0.0002
+            query(perfect_df_hi) double: 0.0006
+            # perfect_df_min_docs — below this many documents on the node the
+            # damping is OFF and the rung is whole. The ratio is a LOCAL
+            # statistic, and on a small index every word is common: in a
+            # 30-document corpus a name carried by 2 documents reads 7%, a
+            # hundred times past hi. 100 000 is where the ramp's floor expects
+            # ~20 naming documents, enough to estimate; production's nodes hold
+            # millions. So a small relay, a fresh store and every ranking IT
+            # rank exactly as before the damping existed. An evaluation corpus
+            # that INJECTS production's frequencies (rankAb --name-df) sets this
+            # to 0, since its statistics are then production's.
+            query(perfect_df_min_docs) double: 100000.0
             # Word count as TYPED, sent by EventYql on every search with terms
             # (see the n_words comment there). 1.0 is the fail-safe default: a
             # sender that omits it degrades perfect_match() to "the field is
@@ -1518,11 +1541,12 @@ schema event {
 
         # The share of the perfect-match rung a document earns — see
         # query(perfect_df_lo). Whole on a multi-word query, whole with the
-        # damping disabled (lo >= hi), else linear in log(ratio) from 1 at lo
-        # to 0 at hi.
+        # damping disabled (lo >= hi) or on an index too small to trust its own
+        # statistics (query(perfect_df_min_docs)), else linear in log(ratio)
+        # from 1 at lo to 0 at hi.
         function perfect_share() {
             expression {
-                if (query(n_words) > 1 || query(perfect_df_hi) <= query(perfect_df_lo), 1.0,
+                if (query(n_words) > 1 || query(perfect_df_hi) <= query(perfect_df_lo) || num_docs_indexed < query(perfect_df_min_docs), 1.0,
                     max(0.0, min(1.0,
                         1.0 - (log(max(name_df_ratio(), 1e-12)) - log(query(perfect_df_lo)))
                               / (log(query(perfect_df_hi)) - log(query(perfect_df_lo))))))
