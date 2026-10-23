@@ -91,6 +91,9 @@ tasks.register<JavaExec>("rankAb") {
     description = "A/B Vespa ranking knobs against the fixed regression case set"
     classpath = sourceSets["main"].runtimeClasspath
     mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.bench.RankAb")
+    // The report prints Δ / § / — and every non-ASCII query verbatim; under a
+    // POSIX locale (CI, containers) the JVM would turn them into '?'.
+    jvmArgs("-Dstdout.encoding=UTF-8", "-Dstderr.encoding=UTF-8")
     // JavaExec's default working dir is THIS subproject (benchmark/), where the
     // documented default --cases path 'benchmark/rank_cases.json' would resolve
     // to benchmark/benchmark/... and NoSuchFile. Run from the repo root so the

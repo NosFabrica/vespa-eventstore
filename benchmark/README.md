@@ -38,6 +38,13 @@ measures what the emitted query actually does:
   no re-feed. The YQL comes from `EventYql` itself, so it is byte-identical to
   production's. Cases live in `benchmark/rank_cases.json` (`query` → expected
   doc-id prefix); **add a case every time someone reports a bad search**.
+  With graded judgments (`benchmark/search_judgments.json`) every row also
+  reports nDCG@10 / judged@10 / RBO against the baseline, and the run ends in a
+  paired per-topic VERDICT (randomization test, Holm-adjusted, with the minimum
+  detectable effect and every topic that lost > 0.1 by name). `--pool <file>`
+  writes the blind worksheet of what nobody has graded yet; `--merge <file>`
+  folds the grades back. **The protocol — what to run, how to grade, what counts
+  as a win — is [`docs/search-evaluation.md`](../docs/search-evaluation.md).**
 
   ```bash
   ./gradlew :benchmark:rankAb --args="--vespa http://localhost:8080"
@@ -45,6 +52,9 @@ measures what the emitted query actually does:
   # one query, the whole page, per config — kind, title, band, §12.2 flags
   ./gradlew :benchmark:rankAb --args="--vespa http://localhost:8080 --observer 460c25…065c \
     --configs pre_split,baseline --dump 'Verified Human' --hits 13"
+  # judge what a change surfaced, then fold the grades in
+  ./gradlew :benchmark:rankAb --args="--observer 460c25…065c --configs baseline,my_candidate --pool /tmp/pool.json"
+  ./gradlew :benchmark:rankAb --args="--merge /tmp/pool.json --by human:<you>"
   ```
 
 - **`FieldCoverageRankIT`** (test, `@Tag("integration")`) — `event.sd` §12.2 on
