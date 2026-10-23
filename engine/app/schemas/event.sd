@@ -760,6 +760,26 @@ schema event {
             # jack, primal, amethyst) sits exactly where it did. Set to
             # query(w_name_tier) to switch the rung off.
             query(w_split_tier) double: 23000.0
+            # w_split_min_coverage — the least of the query a scattered match's
+            # NAMING surface must carry to keep the split rung at all. Below it
+            # the doc is scored as the body match it is (split_rung(): the
+            # body rung, w_affil_tier_text). Why: any naming-field match, even
+            # of a stopword, flips any_token_match(), which switches the body,
+            # weak and affiliation bands OFF for that doc and puts it on the
+            # split rung instead — so a title holding just "of" outranked
+            # every body match on a three-word query (`book of daniel`,
+            # reported 2026-10-23: the whole top 15 was titles like "The
+            # Praxeology of Privacy", naming_coverage 0.33). A share, not a
+            # stopword list, so it is language-agnostic and a title holding
+            # one CONTENT word of three is demoted too: one word of three in a
+            # name is not a naming answer. 0.5 leaves every two-word query
+            # alone (one of two IS 0.5), and with it the `Verified Human`
+            # calibration above. SHIPPED at 0.5 after the pre-registered held-out
+            # confirmation (docs/search-evaluation.md §9): with w_phrase_pop
+            # below, nDCG@10 +0.017 [+0.004, +0.032] on 12 multi-word topics
+            # chosen before any page was seen, no navigational topic moved;
+            # `book of daniel` 0.00 -> 0.47 on dev.
+            query(w_split_min_coverage) double: 0.5
             # ---- §12.3 THE PERFECT RUNG, FOR MULTI-WORD QUERIES ONLY --------
             #
             # A field that IS the query, whole and in order, on a query of more
@@ -905,6 +925,80 @@ schema event {
             # delta to be crossed instead of ~7%, in the order the linear rung
             # already had. 1.0 restores that linear rung exactly.
             query(w_perfect_pow) double: 2.0
+            # w_phrase_pop — a band for a BODY that holds the query's words
+            # adjacent and in order (body_phrase()), on an UNQUOTED multi-word
+            # query. The body rung has no proximity: a note saying "the book of
+            # Daniel" scored exactly like one with the three words scattered
+            # through a thousand words, and on the `book of daniel` report
+            # (2026-10-23) such notes from trust-99 authors sat at #95, #100 or
+            # beyond. Second phase only: fieldMatch over a long body is too
+            # costly for every match, and once w_split_min_coverage demotes the
+            # one-stopword titles these notes are inside the rerank window. At
+            # the `search` profile's scale, multiplied by trust and recency
+            # like precision_boost_pop(). SHIPPED at the WEAK rung (4 000): a
+            # phrase in a body says the words are there, not that the note is
+            # ABOUT them, and trust multiplies it — at 23 000 and 60 000 it
+            # lifted notes merely mentioning "the book of Daniel" (graded 1)
+            # from rank-90+ authors over the pages about the book (graded 2-3,
+            # rank 32) and cost `Verified Human` up to 0.10 (dev, §9). At 4 000
+            # it breaks ties between otherwise equal hits and costs nothing.
+            query(w_phrase_pop) double: 4000.0
+            # phrase_terms — how many TOKENS the typed words are to Vespa, the
+            # run body_phrase() must find. Not n_words: Vespa splits a word at
+            # punctuation ("don't" is two tokens), so a run as long as the WORD
+            # count is a fragment of a punctuated query — on `don't trust` 58 of
+            # 74 matches read as holding the phrase, 1 of them did. EventYql
+            # counts it (phraseTokens) and sends it only with the rank-only
+            # phrase item; unsent, 0 switches the band off.
+            query(phrase_terms) double: 0.0
+            # perfect_df_lo / perfect_df_hi — how COMMON the query word is AS A
+            # NAME decides how much of the perfect-match rung a one-word query
+            # pays (perfect_share()). The rung exists for navigational queries,
+            # whose answer is the one entity named the query ("odell",
+            # "amethyst"); on a topical word ("bitcoin", "lightning") it lifts
+            # every profile, channel, repo and set NAMED the word over the
+            # content ABOUT it (docs/search-evaluation.md §9: nDCG@10 bitcoin
+            # 0.32 vs 0.58 without the rung, lightning 0.41 vs 0.72). The kind
+            # of the document cannot tell the two apart — a profile named
+            # "Bitcoin" has exactly the shape ODELL's has on "odell" (measured,
+            # the per-kind rung of §9). What can is how many documents carry
+            # the word in a naming field: one ODELL against thousands of things
+            # called "Bitcoin". Word frequency over ALL fields cannot (production
+            # COUNTs: `primal` 2.6M documents, `lightning` 1.6M), which is why
+            # the ratio reads the naming fields only.
+            #
+            # The ratio is name_df_ratio(): documents with the word in name,
+            # display_name or search_primary, over the documents indexed. At or
+            # below lo the rung is whole; at or above hi it is gone; between,
+            # it falls linearly in log(ratio). lo >= hi disables the damping.
+            # Multi-word queries keep the whole rung: an exact multi-word name
+            # or title is specific evidence whatever its words' frequency
+            # ("Verified Human").
+            #
+            # (2e-4, 6e-4) is MEASURED, and was confirmed on held-out topics
+            # before it became the default (docs/search-evaluation.md §9). On a
+            # kind-stratified random sample of production, every navigational
+            # name tried names <= 1.6e-4 of documents (jack, primal; the apps
+            # damus, alby, iris, fountain, zeus 0..2.7e-5), while bitcoin, nostr
+            # (~6.5e-4), ai, music (~4e-4), news and crypto (~2.4e-4) name more.
+            # Tuned on 27 topics (bitcoin 0.32 -> 0.58 nDCG@10, no navigational
+            # move) and confirmed on 12 held-out ones chosen before any page was
+            # seen (CI [+0.000, +0.028]; ai 0.29 -> 0.40; every navigational and
+            # control topic identical). RE-MEASURE with sample_names.py, never
+            # re-derive, if the extraction of the naming fields changes.
+            query(perfect_df_lo) double: 0.0002
+            query(perfect_df_hi) double: 0.0006
+            # perfect_df_min_docs — below this many documents on the node the
+            # damping is OFF and the rung is whole. The ratio is a LOCAL
+            # statistic, and on a small index every word is common: in a
+            # 30-document corpus a name carried by 2 documents reads 7%, a
+            # hundred times past hi. 100 000 is where the ramp's floor expects
+            # ~20 naming documents, enough to estimate; production's nodes hold
+            # millions. So a small relay, a fresh store and every ranking IT
+            # rank exactly as before the damping existed. An evaluation corpus
+            # that INJECTS production's frequencies (rankAb --name-df) sets this
+            # to 0, since its statistics are then production's.
+            query(perfect_df_min_docs) double: 100000.0
             # Word count as TYPED, sent by EventYql on every search with terms
             # (see the n_words comment there). 1.0 is the fail-safe default: a
             # sender that omits it degrades perfect_match() to "the field is
@@ -1486,6 +1580,47 @@ schema event {
             expression: max(max(field_perfect(name), field_perfect(display_name)), field_perfect(search_primary))
         }
 
+        # The body holds every typed word adjacent and in order — see
+        # query(w_phrase_pop). longestSequence counts the longest run of query
+        # terms adjacent in both query and field; only the per-word exact
+        # clause searches search_text (the gram net is its own column), so on
+        # an unquoted query a run as long as the phrase's TOKEN count
+        # (query(phrase_terms), not n_words — see there) is the phrase as typed.
+        # Gated on more than one token: a single token has no order to keep.
+        function body_phrase() {
+            expression: if (query(phrase_terms) > 1, if (fieldMatch(search_text).longestSequence >= query(phrase_terms), 1, 0), 0)
+        }
+
+        # How common the query is AS A NAME: the largest share of indexed
+        # documents carrying a query term in one naming field. Per content node
+        # (queryTermDocumentFrequency and num_docs_indexed are local statistics),
+        # which at production scale is a sample of millions per node. Only the
+        # exact per-field term searches these fields — the prefix, fuzzy and gram
+        # nets search their own columns — so a one-word query contributes one
+        # cell per field. max(…, 0) because an empty tensor reduces to no value.
+        function name_df_ratio() {
+            expression {
+                max(max(max(reduce(queryTermDocumentFrequency(name), max),
+                            reduce(queryTermDocumentFrequency(display_name), max)),
+                        reduce(queryTermDocumentFrequency(search_primary), max)), 0)
+                / max(num_docs_indexed, 1)
+            }
+        }
+
+        # The share of the perfect-match rung a document earns — see
+        # query(perfect_df_lo). Whole on a multi-word query, whole with the
+        # damping disabled (lo >= hi) or on an index too small to trust its own
+        # statistics (query(perfect_df_min_docs)), else linear in log(ratio)
+        # from 1 at lo to 0 at hi.
+        function perfect_share() {
+            expression {
+                if (query(n_words) > 1 || query(perfect_df_hi) <= query(perfect_df_lo) || num_docs_indexed < query(perfect_df_min_docs), 1.0,
+                    max(0.0, min(1.0,
+                        1.0 - (log(max(name_df_ratio(), 1e-12)) - log(query(perfect_df_lo)))
+                              / (log(query(perfect_df_hi)) - log(query(perfect_df_lo))))))
+            }
+        }
+
         # §12.3: the whole-field rung, and ONLY on a multi-word query — see
         # query(w_perfect_tier) for why the gate is the safety argument rather
         # than a refinement of it. > 0.999 rather than == 1 because
@@ -1567,12 +1702,21 @@ schema event {
         # title that answered half the query is treated exactly like a name
         # that did.
         function token_tier() {
-            expression: if (scattered_match() > 0, query(w_split_tier), query(w_name_tier))
+            expression: if (scattered_match() > 0, if (thin_split() > 0, query(w_affil_tier_text), query(w_split_tier)), query(w_name_tier))
         }
 
         # The same choice on the pure-text ladder.
         function token_tier_text() {
-            expression: if (scattered_match() > 0, query(w_split_tier_text), query(w_token_tier_text))
+            expression: if (scattered_match() > 0, if (thin_split() > 0, query(w_affil_tier_text), query(w_split_tier_text)), query(w_token_tier_text))
+        }
+
+        # A scattered match whose naming surface carried too little of the
+        # query to count as a naming answer — see query(w_split_min_coverage).
+        # It lands on the BODY rung rather than nowhere: any_token_match() has
+        # already switched the body band off for it, so zeroing the rung would
+        # sink it below every plain body hit, which is the opposite error.
+        function thin_split() {
+            expression: if (naming_coverage() < query(w_split_min_coverage), 1, 0)
         }
 
         # The precision rules at the `search` profile's scale — see
@@ -1583,7 +1727,7 @@ schema event {
             expression {
                 query(w_words_pop) * words_coverage()
                 + query(w_exactness_pop) * exactness()
-                + query(w_perfect_pop) * pow(perfect_match(), query(w_perfect_pow))
+                + query(w_perfect_pop) * perfect_share() * pow(perfect_match(), query(w_perfect_pow))
             }
         }
 
@@ -2095,7 +2239,7 @@ schema event {
             # precision rules would mean something measurably different for a
             # fresh document than for an old one. Scaling by the same factor
             # the bands carry is what keeps "reorders within a band" true.
-            expression: firstPhase + precision_boost_pop() * wot_mult() * recency_mult()
+            expression: firstPhase + (precision_boost_pop() + body_phrase() * query(w_phrase_pop)) * wot_mult() * recency_mult()
             rerank-count: 1000
         }
 
@@ -2116,6 +2260,14 @@ schema event {
             freshness
             recency_mult
             perfect_match
+            # How common the query is as a name, and the share of the
+            # perfect-match rung that bought (query(perfect_df_lo)).
+            name_df_ratio
+            perfect_share
+            # The two `book of daniel` levers (query(w_split_min_coverage),
+            # query(w_phrase_pop)).
+            thin_split
+            body_phrase
             name_match
             identity_match
             identity_text

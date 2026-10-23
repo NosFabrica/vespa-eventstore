@@ -3,141 +3,394 @@
     "query": "example",
     "expect": "",
     "skip": "true",
-    "note": "TEMPLATE — `expect` is a doc-id prefix (the event id of the profile that should rank). An EMPTY expect no longer skips the case: it rides along as an AGE-ONLY row (no position, no MRR contribution), because a page's median age is a measurement even when no single document is the right answer — that is how the recency configs are read. ADD A CASE EVERY TIME SOMEONE REPORTS A BAD SEARCH; capture a baseline in the same run as any candidate (positions depend on live data). This row itself carries `skip: true` — it is documentation, not a case, and must stay out of both the position table and the age column."
+    "note": "TEMPLATE — `expect` is a doc-id prefix (the event id of the profile that should rank). An EMPTY expect no longer skips the case: it rides along as an AGE-ONLY row (no position, no MRR contribution), because a page's median age is a measurement even when no single document is the right answer — that is how the recency configs are read. ADD A CASE EVERY TIME SOMEONE REPORTS A BAD SEARCH; capture a baseline in the same run as any candidate (positions depend on live data). This row itself carries `skip: true` — it is documentation, not a case, and must stay out of both the position table and the age column. OPTIONAL FIELDS (docs/search-evaluation.md §3): `intent` — the stratum the verdict is broken down by (navigational, ambiguous, prefix, fuzzy, identity, multilingual, topical); `split` — dev (default) or test, the held-out topics a tuned config is confirmed on ONCE; `observer` — the lens this topic is asked under (64-hex, or `none` for the anonymous page), overriding --observer; `kinds` — the tab (e.g. [0] for People), overriding --kinds; `need` — the topic's information need in a sentence or two (TREC's narrative): what an assessor grades against, so write it for every new case; `id` — the topic's key in benchmark/search_judgments.json when the query text alone does not name it (default: the query). Graded judgments live in that file, not here; an `expect` is read as a grade-3 judgment."
   },
   {
     "query": "Verified Human",
     "expect": "3cf99f2a",
+    "intent": "navigational",
+    "need": "lists, sets or follow packs TITLED \"Verified Human\" (people lists of verified humans) = 3; documents substantively about verifying humanness / proof of personhood = 2; both words used incidentally = 1; one word only (e.g. an article about \"Human\") = 0.",
     "note": "sot 2026-08-30 export: the People tab (kinds:[0]) reaches the 30392 Trusted List titled `Verified Human` (eb75f8c7) through the declaration companion, and it named 17 members scored 65..100. Both halves of the report were real. (a) The list's TITLE landed in the body tier — quartz gives 30392-30395 no SearchFieldExtractor branch, so `title()` fell through to the generic SearchableEvent case — scoring the exact phrase on the 550 affiliation rung instead of the 130 000 title rung. (b) The whole block then sat at 550 x wot(26), the trust of the SERVICE that signed the list, because `spliced()` clamped every member to its pointer (`minOf(own, pointer)`): sixteen members whose own scores ran 1.3e8..8.4e8 all tied at 2.9e6, came back in the publisher's tag order, and landed under organic hits from authors trusted 7..25. `expect` is david (trust 100, confidence 87, the list's best member), who was at #11 behind four weaker-matching profiles. Both fixes have landed (pin b10be95a6e + the pointer lift), so this row MEASURES them: it will read as a miss on any deployment that has not re-run `reindexFullTextSearch`, because the tiering is derived data and the stored 3039x/30382 documents keep the old columns until it does. sot 2026-08-31: the publisher republished the four lists at 14:16Z, which re-fed them through the current extraction (every put re-derives its columns, so an updated event needs no reindex) and moved the title onto the 130 000 rung — pure text now returns the 30392 FIRST, ahead of profiles literally NAMED `verified-human`. That stranded the members: with the pointer on the title rung the lift is a no-op, and `expect` sat at #40 on the Everything tab under 27 Wikipedia-mirror pages from ONE rank-30 author, each matching one of the two words in a title. The member rung's ceiling (4 000 x wot) cannot reach the token rung (130 000 x wot) — break-even is an author ranked ~29 — so no confidence and no trust could have fixed it. Now `spliced_member` floors a member at a share of its POINTER's relevance (`w_subject_floor_span`, one rung by default) with the confidence riding in per document as `rawScore` from a weighted recall, so this row measures the floor, the tiering, and the per-key weights together. A miss here means one of the three regressed; a deployment that has not re-run `reindexFullTextSearch` still reads it as a miss for the tiering reason alone. sot 2026-09-01, the same report re-opened on the People tab: the profile `DotardTed :verified:` (bio \"...raw humanity...\") led the page, over the exactly-titled lists and every member. `event.sd` §12.2 is the answer to the half this row said nothing could fix: those 27 Wikipedia mirrors, DotardTed and the two 30023s above the members were all SCATTERED matches — one word in a title, the other in a body — standing on the 130 000 token rung, and w_split_tier (23 000) is where they belong. Measured on a 10 961-event local slice under observer:460c25...065c: the five `Verified Human` lists take #1-5 (from #1-4 + #8), the mirrors in the top 50 go 29 -> 2, and the reported profile goes #12 -> #44, with every pinned case here position-identical. This row still MEASURES the tiering, the per-key weights and the floor, and it now also measures the rung that gave the floor a page worth being on. sot 2026-09-01, re-captured by kind: THE 30392 IS GONE. The relay holds nine kind-30392 events in total, all with empty titles and none matching this query, and the Tapestry service key now signs only 30382 cards. The case is today six kind-30000 people lists and two kind-39089 follow packs titled exactly `Verified Human`, signed by humans (david e5272de9, vinney 2efaa715, Edo f8ff11c7 and three others), which is why this store now unpacks those kinds for a reader who signed them or named their signer. `expect` (david) is therefore reachable on the People tab only under a lens that admits one of those signers; under the observer here the page is organic profiles, correctly ordered — DotardTed moves #1 -> #4 and the two DECLARING `Em :official_verified:` accounts leave it entirely, because a badge is no longer the word inside it. The 30392 path is now pinned by MemberTrustIT's end-to-end case rather than by a corpus, since no capturable corpus still has one."
   },
   {
     "query": "Ode",
     "expect": "",
+    "intent": "prefix",
+    "need": "AS-YOU-TYPE prefix, most likely heading toward ODELL (Matt Odell, bitcoin podcaster: Citadel Dispatch, Rabbit Hole Recap). 3 = his own profile, or a profile named exactly \"Ode\"; 2 = his shows / content about him, names starting with the prefix (Odessa…), other real people named Odell; 1 = mentions, a different sense of the word; 0 = impersonators, mirrors, words merely containing the letters (code, episode, model).",
     "note": "prefix of a name (upstream's canonical regression: must find ODELL through the near tier, not trigram noise)"
   },
   {
     "query": "Odel",
     "expect": "",
+    "intent": "prefix",
+    "need": "AS-YOU-TYPE prefix, most likely heading toward ODELL (Matt Odell, bitcoin podcaster: Citadel Dispatch, Rabbit Hole Recap). 3 = his own profile, or a profile named exactly \"Odel\"; 2 = his shows / content about him, names starting with the prefix (Odessa…), other real people named Odell; 1 = mentions, a different sense of the word; 0 = impersonators, mirrors, words merely containing the letters (code, episode, model).",
     "note": "4-char prefix — the old text_score_cutoff cliff returned ZERO results for this shape"
   },
   {
     "query": "dell",
     "expect": "",
+    "intent": "fuzzy",
+    "need": "typed as a word fragment: could mean the company Dell or a name containing \"dell\" (e.g. ODELL). 3 = an entity named exactly Dell; 2 = names containing it as a clear part (Odell, Dell X) or content about Dell computers; 1 = incidental; 0 = letter-noise.",
     "note": "infix — reaches the name only through the bounded AND-gram weak tier"
   },
   {
     "query": "vitorp",
     "expect": "",
+    "intent": "prefix",
+    "need": "AS-YOU-TYPE toward \"Vitor Pamplona\" (creator of Amethyst; real pubkey starts 460c25e682fd). 3 = his own profile(s) under author 460c25e682fd; 2 = content by or substantively about him or his projects (e.g. identity/website fields pointing at vitorpamplona.com); 1 = mentions; 0 = impersonating profiles from OTHER authors claiming to be him, noise.",
     "note": "compound prefix — must reach 'VitorPamplona', 'Vitor Pamplona' AND 'Vitor-Pamplona' via name_near's joined-token variants"
   },
   {
     "query": "jose",
     "expect": "",
+    "intent": "fuzzy",
+    "need": "accent-folded \"José\": 3 = profiles named José/Jose; 2 = \"José <surname>\" or content about a José; 1 = incidental; 0 = otherwise.",
     "note": "diacritic folding — must reach 'José' through the folded near params"
   },
   {
     "query": "中村",
     "expect": "",
+    "intent": "multilingual",
+    "need": "the Japanese surname Nakamura. 3 = a profile / person named 中村; 2 = content about a person named 中村; 1 = 中村 appears incidentally; 0 = otherwise.",
     "note": "2-char CJK — needs the non-ASCII prefix floor"
   },
   {
     "query": "Vitor P",
     "expect": "",
+    "intent": "prefix",
+    "need": "AS-YOU-TYPE toward \"Vitor Pamplona\" (creator of Amethyst; real pubkey starts 460c25e682fd). 3 = his own profile(s) under author 460c25e682fd; 2 = content by or substantively about him or his projects (e.g. identity/website fields pointing at vitorpamplona.com); 1 = mentions; 0 = impersonating profiles from OTHER authors claiming to be him, noise.",
     "note": "reported 2026-08-02 (the as-you-type ladder): typing toward 'Vitor Pamplona' returned NOTHING at 'Vitor P'..'Vitor Pam' and only the 3 name-bearing profiles at 'Vitor Pamp'..'Vitor Pamplon', snapping to all 10 on the final keystroke. The trailing word sits under the prefix floor, so only the joined-variant prefix can carry it — and it now reaches nip05/lud16/website/about through the affil_tokens weak-tier column. Full corpus + ladder pinned by SearchPrefixLadderIT."
   },
   {
     "query": "Vitor Pamp",
     "expect": "",
+    "intent": "prefix",
+    "need": "AS-YOU-TYPE toward \"Vitor Pamplona\" (creator of Amethyst; real pubkey starts 460c25e682fd). 3 = his own profile(s) under author 460c25e682fd; 2 = content by or substantively about him or his projects (e.g. identity/website fields pointing at vitorpamplona.com); 1 = mentions; 0 = impersonating profiles from OTHER authors claiming to be him, noise.",
     "note": "same report, the mid-ladder shape: name-bearers matched but every identity/affiliation doc (amethyst@vitorpamplona.com, bios holding github.com/vitorpamplona) dropped out until the word was finished. Must return the same set as 'Vitor Pamplona'."
   },
   {
     "query": "odell",
     "expect": "a9809f7c60e9998dc4a998995fe6fe7188666c562df2a451cf7b9c68fce46aa6",
+    "intent": "navigational",
+    "need": "NAVIGATIONAL: Matt Odell (\"ODELL\"), bitcoin podcaster (Citadel Dispatch, Rabbit Hole Recap). 3 = his own profile; 2 = his shows' profiles / episodes, articles about him, other real people named Odell; 1 = mentions; 0 = impersonators, mirrors, noise.",
     "note": "reported 2026-08-02 (calibrated in two rounds): under the reporting observer's lens, CITADEL DISPATCH (kind-0 above; about: 'hosted by ODELL'; author trust 97) ranked #9 — below trust-13 accounts NAMED odell — because the old log trust curve (span ~5.6x) could never cross the ~236x bio->name band ratio. wot_mult()'s power curve (w_wot_pow 2.7) crosses on a ~7.6x trust-delta advantage, which the report bounds from BOTH sides: expect this doc ~#2, directly under the real ODELL (trust 93, exact name) — while the trust-13 name matches stay ABOVE the 77-trust bio mention (BitcoinMemeTreasury); only near-top trust crosses, though near-floor name matches (trust <= ~4) still fall behind everyday ~20+-trust bio mentions. NOTE FOR RankAb: needs --observer <hex whose provider ranks the CITADEL DISPATCH author ~97> (author 7f573f55d875ce8edc528edf822949fd2ab9f9c65d914a40225663b0a697be07); RankAb pins min_rank=2. RankRegressionIT pins both bounds corpus-independently ('overwhelming trust crosses the tier ladder')."
   },
   {
     "query": "Vitor",
     "expect": "",
+    "intent": "ambiguous",
+    "need": "AMBIGUOUS first name. 3 = profiles of people named Vitor (the most prominent is Vitor Pamplona, creator of the Amethyst client, pubkey 460c25e682fd…); 2 = profiles \"Vitor <surname>\" or content about a Vitor; 1 = incidental; 0 = letter-noise like \"vitamin\", \"editor\".",
     "note": "reported 2026-08-02 (the include:spam shape): logged-in Vitor searching his own name with include:spam saw untrusted namesakes first — include:spam must drop only the GATE, not the trust ORDER. The store now sends min_rank=0.0 instead of omitting the feature (wot_mult anchors its log at min_rank; the omitted-feature fallback of -1e9 flattened the boost to a constant). NOTE FOR RankAb: extensions are NOT parsed here (queries feed EventQuery directly, and RankAb pins min_rank=2 with an observer) — reproduce with `--observer <hex whose provider ranks the real Vitor>` plus a config overriding min_rank to 0.0, never by putting include:spam in the query text."
   },
   {
     "query": "divórcio e desabafa",
     "expect": "",
+    "intent": "multilingual",
+    "need": "Portuguese: someone venting (\"desabafa\") about divorce. 3 = a note venting about divorce; 2 = about divorce; 1 = one of the words incidentally; 0 = otherwise.",
     "note": "reported 2026-08-05 (sotvitor export, observer npub1gcxzte5…): the words are the CONTENT of a kind 1 that the same lens had just returned for the query 'vitor' (through its #VItor-roque hashtag), yet searching them returned nothing. Not an indexing bug — search_text is fed, indexed and in the exact clauses — but a RANKING one: it was the only matchable column with no rung, so text_score() was query(w_content) × bm25 (low tens) against text_score_cutoff's 100, and `search` mapped it to 0.0 for rank-score-drop-limit to delete. Body-only search was dead for every kind, and kinds whose ONLY column is content (9, 14, 24, 42, 1111, …) were unfindable outright. Fixed by tier_body_match(), which puts search_text/search_location on the bio rung; RankRegressionIT pins both the recall and that a hashtag route still outranks the body. NOTE FOR RankAb: only reproduces WITH an observer — the cutoff lives in `search` alone, so the pure-text profile always returned this doc."
   },
   {
     "query": "bitcoiners",
     "expect": "",
+    "intent": "topical",
+    "need": "TOPICAL: content about or addressed to the bitcoiner community. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
     "note": "2026-08-05 audit, same bug class as 'divórcio e desabafa' one tier up. The weak tier read search_secondary_tokens (a NearText attribute) and not search_secondary (the index field), so an exact hashtag/summary match the attribute cannot mirror had no rung and died at text_score_cutoff. Three routes: STEMMING (now CLOSED — every text field carries `stemming: none` as of 2026-08-05, for the larger language reason recorded under the 'esposa' case; it had been the reachable one, the plural reaching the index and not the prefix column), words under FuzzyWordGroup.MIN_PREFIX_LEN ('#ai'), and words past NearText.MAX_ELEMENTS in a long description. Fixed by secondary_match(); RankRegressionIT pins the two repo-determined routes ('ai', 'quilombola'), the stemmer-dependent one is comment-only. Run this against a corpus with a '#bitcoiner' hashtag and no 'bitcoiners' anywhere."
   },
   {
     "query": "primal.net",
     "expect": "",
+    "intent": "identity",
+    "need": "IDENTITY/DOMAIN: 3 = Primal's own service/profile/app declaration at primal.net; 2 = content about primal.net (the service); 1 = a profile merely USING an @primal.net address (extremely common); 0 = otherwise.",
     "note": "2026-08-05 audit, FIXED. nip05/lud16 were the last matchable columns with no rung. bm25 alone decided both WHETHER such a hit ranked and WHERE, and that conflation was the bug: a common-domain match diluted to ~0 was meant to rank last, but text_score() has a cutoff, so it was deleted. Worse, matchCount on either field flipped has_token_match, hence any_token_match, which gates weak_match and tier_body_match — so an identity match suppressed every rung beneath it, including affil_tokens, the weak column built for those very fields. FIX: any_token_match() is now name-or-title only (has_token_match retired), and identity is one of weak_match()'s signals — so band membership is categorical and identity_text()'s IDF dilution orders hits from WITHIN the weak band instead of deciding whether they rank at all. A unique handle sorts far above a mass-hosted domain; neither can reach the name band. No new weight: an UNFINISHED word touching these fields already landed in weak via the affil_tokens prefix, so a finished word landing in the same band needs no recalibration. Retires the affiliation_match/affiliation_match_text and secondary_active/secondary_active_text forks that the same asymmetry had forced, and makes tierOf's \"identity\" label reachable for the first time (it was dead from the day it was written: identity implied has_token_match, so \"name\" always claimed it). Verified against a live Vespa: RankRegressionIT green with the recall-floor matrix asserting nip05/lud16 -> identity, and SearchPrefixLadderIT — the suite whose corpus has docs reachable ONLY through lud16/nip05 — green."
   },
   {
     "query": "amethyst",
     "expect": "08f6f27c",
+    "intent": "navigational",
+    "need": "NAVIGATIONAL: the Amethyst Android Nostr client. 3 = the app itself (its 31990 handler, 32267 app listing, official profile); 2 = its dev/user channels, its repository, wiki pages about the app; 1 = the gemstone sense, emoji sets, incidental; 0 = unrelated, or spam/vandalised pages.",
     "note": "reported 2026-08-05 (sotamethyst export, observer npub1gcxzte5…): exact whole-field matches ranked BELOW titles that merely contain the word — the kind-31990 app handler NAMED Amethyst (08f6f27c) at #4 and the kind-32267 application whose primary field is Amethyst (32a99591) at #6, under a kind-41 channel 'Amethyst Devs' (075568e1) and two kind-30023 articles (9161cc2a, 2c683f9f). 08f6f27c and 075568e1 share author 460c25e682, so trust explained nothing: inside the token band every hit scores the same w_name_tier and the additive tail decides, where tier_text() sums UNCAPPED secondary + body bm25 that a one-word field has no columns to collect. exactness() is the rule for this, but added raw after the ×wot_mult first phase it was worth w_exactness/wot_mult ≈ 0.0002 text points. Fixed by w_words_pop/w_exactness_pop scaled by wot_mult in `search`'s second phase; RankRegressionIT pins the same four docs field-for-field with one shared author."
   },
   {
     "query": "Avi Burra",
     "expect": "672c8192",
+    "intent": "navigational",
+    "need": "NAVIGATIONAL: Avi Burra, bitcoin novelist (\"24\", \"July 18\"), \"Finding Home\". 3 = his profile; 2 = content about him (book reviews, his live streams, interviews, an alt account of his); 1 = mentions; 0 = otherwise.",
     "note": "reported 2026-08-05 (sotAviBurra export, observer npub1gcxzte5…): the profile Avi Burra (672c8192, display_name IS the query, author trust 98) ranked #2 under a trust-100 article titled 'Do You Want a Seat at the Table? Join Avi Burra's Journey to Paraguay!' (4dc74f54). Same band, and the text signals are within 0.3% — the whole 5.7% gap is wot_mult(100)/wot_mult(98). Because the curve is convex, near the top of the 0..100 scale ONE trust point is worth w_wot_pow×Δ/(trust−min_rank) ≈ 2.8%, more than the words+exactness tie-breaker (3.8%) can offer. Fixed by w_perfect_pop, a rung rather than a nudge. NOTE FOR RankAb: needs --observer <hex whose provider ranks 70c48e4b… 100 and b83a28b7… 98>."
   },
   {
     "query": "Jon Gordon",
     "expect": "b8f4618c",
+    "intent": "navigational",
+    "need": "NAVIGATIONAL: Jon Gordon (thebitcoinyogi), bitcoin & healthcare. 3 = his profile; 2 = content by/about him (episodes, articles); 1 = mentions / a different Jon Gordon mentioned incidentally; 0 = otherwise.",
     "note": "reported 2026-08-05 (sotJonGordon export, same observer): the profile Jon Gordon (b8f4618c, display_name IS the query, author trust 96) ranked #2 under a trust-97 kind-34235 video titled 'Take a Look Into the Future of Healthcare, It's Purple and Orange | Jon Gordon' (3a2033c6), whose summary and body repeat the name. A ONE-point trust gap is +2.9% up here, against the 3.8% the words+exactness tie-breaker can offer — it scraped by on paper and lost in practice once the video's secondary+body tail is counted. Same fix as the Avi Burra case: w_perfect_pop. RankRegressionIT pins both reports field-for-field with the reported trust pairs."
   },
   {
     "query": "Primal",
     "expect": "6de5328a",
+    "intent": "navigational",
+    "need": "NAVIGATIONAL: the Primal Nostr client/company. 3 = the app's own handler/listing or the official Primal profile; 2 = articles/product pages about Primal, a list titled Primal; 1 = \"primal\" in another sense (primal instincts) or incidental; 0 = otherwise.",
     "note": "reported 2026-08-05 (sotPrimal export, same observer): the account whose name IS 'primal' (6de5328a, trust 97) ranked #6. The 40 hits came back in EXACT author-trust order — 99,99,99,99,98,97,97,97,97,97,97,96,… — which is the clearest statement of the problem: inside the token band every hit scores the same w_name_tier and no within-band text signal is worth even one trust point, so relevance degenerates to a pure trust sort. Above it sat four trust-99 miljan articles ('Introducing Primal for iOS' and friends) and a trust-98 review. Single-word query, so queryCompleteness is a constant 1.0 and fieldCompleteness carries perfect_match() alone. SIDE EFFECT TO WATCH: the same author's kind-30000 follow set titled 'Primal' (2c3fd1ad) is also a perfect match and the rung lifts it just behind the profile — if that is unwanted it is an extractor decision (should a set's title be a primary search field?), not a ranking one. RankRegressionIT pins the profile above the trust-99 article and keeps the profile-vs-set margin under test."
   },
   {
     "query": "Jack",
     "expect": "1f28480d",
+    "intent": "ambiguous",
+    "need": "AMBIGUOUS first name. 3 = profiles named exactly \"jack\"/\"Jack\" (including Jack Dorsey's account); 2 = profiles named \"Jack <surname>\", or content about Jack Dorsey or another Jack; 1 = \"jack\" incidental (e.g. a quote picture merely attributed to jack, a hijack); 0 = otherwise.",
     "note": "reported 2026-08-05 (sotJack export, same observer): the AMBIGUOUS shape — 'Jack' is a common first name, so unlike the amethyst/AviBurra/JonGordon/Primal reports there is no single right answer, only a right ORDER. Again pure trust order (100,100,100,99,98,98,98,97,97,96,96,95,...). Three accounts are named exactly jack/Jack: 1f28480d (t100), bd61fe55 (t100, a deprecated 'OLD Jack Chakany' account) and 5755cb79 (t97, ranked #8 behind half matches 'jack sweeney' t100, 'Jack Everitt' t99, 'Jack Starling' t98). w_perfect_pop lifts all three above the fragments and lets trust order them; the interesting bound is 5755cb79 overturning a THREE-point trust deficit, which the rung buys up to a 1.096 trust-delta ratio. TWO THINGS THE RUNG DOES NOT ADDRESS, both visible here: (1) 13 of the 40 slots are one author's identical kind-20 'Quote by jack in #BitcoinTwitter' pictures (plus 2+2 from two more authors) — a per-author/near-duplicate diversity problem, not a relevance one; (2) name squatting on a common first name is now more rewarded, bounded only by trust, so a sparse or flat web of trust weakens the protection. RankRegressionIT pins the ordering claims; the diversity one has no gate."
   },
   {
     "query": "esposa",
     "expect": "",
+    "intent": "multilingual",
+    "need": "Portuguese/Spanish \"wife\". 3 = content substantially about a wife / one's wife; 2 = relevant; 1 = the word appears incidentally; 0 = otherwise.",
     "note": "2026-08-05, MEASURED and FIXED. Non-English body text was unsearchable: Vespa stems a DOCUMENT's index terms with the language it DETECTS, while a query carries no language and is stemmed as English, and nothing here set either side. On a Portuguese note the two never met except on a word with no suffix to strip — measured, same words, only the query language differing: default(en) futebol 1 / esposa 0 / crise 0 / desabafa 0 / divorcio 0; model.language=pt all 1. This is why the reported 'divórcio e desabafa' note needed more than the body rung. FIX: `stemming: none` on every text field (name/display_name/search_primary already had it), so both sides are raw and agree by construction in any language. Measured cost: none — English stemming was already inert here ('wolf' does not find 'wolves', 'run' does not find 'running'), identical before and after. Rejected alternative: forcing one document language, which also worked but pins TOKENIZATION and would foreclose segmenting CJK. STILL BROKEN and pinned separately: CJK body text, which is a segmentation (tokenization) problem needing a CJK-capable linguistics component. Upgrade: fresh deploys unaffected (verified); redeploying over an existing cluster needs a validation-overrides.xml allowing indexing-change plus a Vespa reindex — reindexFullTextSearch will NOT do it."
   },
   {
     "query": "de extraordinary",
     "expect": "",
+    "intent": "topical",
+    "need": "a test query: a two-word query where the long word supplies matches. 3 = the phrase or both words are central (e.g. a title containing \"de\" and \"extraordinary\"); 2 = \"extraordinary\" is central; 1 = \"extraordinary\" incidental; 0 = neither word matters (only \"de\", or letters inside other words).",
     "note": "2026-08-05 audit, MEASURED and fixed. text_score_cutoff justifies itself with a gram-only ceiling of ~93 (gram_cap 80 + the about fallback), but only name_text() and tier_primary_text() capped their gram term — about_text() and secondary_text() did not, so the ceiling was asserted, not enforced. Measured on a live Vespa with docs whose search_secondary holds the query word ONLY as an infix inside a larger token (exact clause and *_tokens prefix both miss; real_match 0): bitcoin/w_gram 2.0 -> 18-20, bitcoin/8.0 -> 74-78, extraordinary/2.0 -> 37-43, extraordinary/8.0 -> 149-172 — the last CROSSING the cutoff and being returned as a hit. w_gram flips to 8.0 when the SHORTEST query word is <=3 chars and then applies to every word, so a two-word query like this one is the trigger: the long word supplies the trigram count, the short one the weight. Capping both terms puts the same rows at 32 (= w_secondary 0.4 x gram_cap 80) and the hit is dropped. about never crossed on its own (w_about 0.1 damps a measured about_text of 282 to 28) but was capped too, so the cutoff's arithmetic is true again. Rank-profile-only change: deploys with no validation override and no reindex. RankRegressionIT green with it."
   },
   {
     "query": "group:rspuyeetackckp92 testin",
     "expect": "7796c3f49d89b508",
+    "intent": "prefix",
+    "need": "someone typing \"testin(g)\" to find a test post in the NIP-29 group rspuyeetackckp92 (a #vegans group). 3 = a test post in that group; 2 = another post in that group, or a \"testing\" post in a group; 1 = a generic test post elsewhere; 0 = otherwise.",
     "note": "2026-08-14 report: this event ('Testing post to #vegans group!', kind 1, content-only — no subject tag, no hashtags) was found by 'testing' and NOT by 'testin'. Body text was exact-token-only: prefix/fuzzy target the *_near ATTRIBUTES, which the body has none of, and the AND-gram nets target about/secondary. Fixed by search_text_gram, a gram-3 index field matched as a trigram PHRASE. Pinned engine-side by SearchBodyGramIT; kept here so a rankAb run scores it against live data."
   },
   {
     "query": "vitor",
     "expect": "",
+    "intent": "ambiguous",
+    "need": "AMBIGUOUS first name. 3 = profiles of people named Vitor (the most prominent is Vitor Pamplona, creator of the Amethyst client, pubkey 460c25e682fd…); 2 = profiles \"Vitor <surname>\" or content about a Vitor; 1 = incidental; 0 = letter-noise like \"vitamin\", \"editor\".",
     "note": "The precision half of the same change, parked for a live run: a body reading 'Take a vitamin and open the editor' must NOT rank — it holds vit/ito/tor as scattered trigrams and the word nowhere. The AND-of-trigrams net matched it (measured up to 4.0% false positives on 2000-word bodies); the phrase form measures 0.0%. Fill `expect` with a real 'vitor' body hit from the corpus."
   },
   {
     "query": "bitcoin",
     "expect": "",
+    "intent": "topical",
+    "need": "TOPICAL: content about Bitcoin. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
     "note": "RECENCY baseline, MEASURED 2026-08-22 against search-staging (read-only, observer 460c25…065c, kind 1, limit 50): under the trust lens the top-50 page has median age 1057 days (p25 919, p75 1138), 49/50 older than a year, and the NEWEST hit on the page is 144 days old. Pure text is younger but still stale: median 507d, 41/50 over a year. The same filter with sort:recent returns 50 same-day hits — so fresh, trusted, matching content exists in quantity and relevance ranking simply never shows any of it. This is the row the recency_* configs have to move: watch the age column, and watch that the ladder cases below do NOT move."
   },
   {
     "query": "nostr",
     "expect": "",
+    "intent": "topical",
+    "need": "TOPICAL: content about the Nostr protocol and its ecosystem. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
     "note": "RECENCY baseline, same run: trust lens median 1106d (p25 948, p75 1164), 49/50 over a year, newest hit 337d. Pure text median 851d. The highest-volume term in the corpus — the shape where the freshest matches are most numerous and least visible."
   },
   {
     "query": "lightning",
     "expect": "",
+    "intent": "topical",
+    "need": "TOPICAL: content about the Bitcoin Lightning Network (weather lightning is a different sense). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
     "note": "RECENCY baseline, same run: trust lens median 955d, 50/50 over a year, newest hit 574d — the worst page measured, a whole page with nothing from the last eighteen months. Pure text median 360d, its youngest page, which is why both lenses belong in the sweep: w_recency only rides on the `search` profile, and w_recency_text is the separate (still-off) knob for the other one."
   },
   {
     "query": "coffee",
     "expect": "",
+    "intent": "topical",
+    "need": "TOPICAL: content about coffee. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
     "note": "RECENCY baseline, same run: trust lens median 1098d, 49/50 over a year, newest 208d. Kept beside the profile case 'coffee' above on purpose — the same word ranks a kind-0 ladder AND a kind-1 page, so the two rows read together say whether a config moved the pages or moved the ladder."
+  },
+  {
+    "query": "ai",
+    "expect": "",
+    "intent": "topical",
+    "need": "TOPICAL: artificial intelligence (AI, machine learning, LLMs). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated. The Portuguese/Spanish interjection \"aí\" and letters inside other words are 0.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23): chosen by name frequency on the production sample (benchmark/name_df.json), before any page was seen, to confirm the name-frequency rung (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "music",
+    "expect": "",
+    "intent": "topical",
+    "need": "TOPICAL: music (songs, artists, albums, making or sharing music). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23): chosen by name frequency on the production sample (benchmark/name_df.json), before any page was seen, to confirm the name-frequency rung (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "news",
+    "expect": "",
+    "intent": "topical",
+    "need": "TOPICAL: news (current-events reporting, news outlets and their stories). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23): chosen by name frequency on the production sample (benchmark/name_df.json), before any page was seen, to confirm the name-frequency rung (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "crypto",
+    "expect": "",
+    "intent": "topical",
+    "need": "TOPICAL: cryptocurrency (bitcoin and other coins, markets, wallets). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated. Cryptography in the security sense is a different sense (1).",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23): chosen by name frequency on the production sample (benchmark/name_df.json), before any page was seen, to confirm the name-frequency rung (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "art",
+    "expect": "",
+    "intent": "topical",
+    "need": "TOPICAL: art (artworks, artists, visual and creative art). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23): chosen by name frequency on the production sample (benchmark/name_df.json), before any page was seen, to confirm the name-frequency rung (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "film",
+    "expect": "",
+    "intent": "topical",
+    "need": "TOPICAL: film as cinema (movies, filmmaking, film festivals). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated. Photographic film is a different sense (1).",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23): chosen by name frequency on the production sample (benchmark/name_df.json), before any page was seen, to confirm the name-frequency rung (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "privacy",
+    "expect": "",
+    "intent": "topical",
+    "need": "TOPICAL: privacy (personal and digital privacy, privacy tools, surveillance). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23): chosen by name frequency on the production sample (benchmark/name_df.json), before any page was seen, to confirm the name-frequency rung (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "damus",
+    "expect": "",
+    "intent": "navigational",
+    "need": "NAVIGATIONAL: Damus, the iOS Nostr client. 3 = the app itself (its official profile, app handler or app listing); 2 = content about Damus (releases, guides, reviews), its project channels or repository; 1 = mentions, profiles merely using a damus.io address; 0 = unrelated, or impersonators.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23): chosen by name frequency on the production sample (benchmark/name_df.json), before any page was seen, to confirm the name-frequency rung (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "alby",
+    "expect": "",
+    "intent": "navigational",
+    "need": "NAVIGATIONAL: Alby, the bitcoin Lightning wallet and browser extension (getalby.com). 3 = the product itself (its official profile, app handler or app listing); 2 = content about Alby (releases, guides); 1 = profiles merely using an @getalby.com address, mentions; 0 = unrelated, or impersonators.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23): chosen by name frequency on the production sample (benchmark/name_df.json), before any page was seen, to confirm the name-frequency rung (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "fountain",
+    "expect": "",
+    "intent": "navigational",
+    "need": "NAVIGATIONAL: Fountain, the bitcoin podcast app (fountain.fm). 3 = the app itself (its official profile, app handler or app listing); 2 = content about the Fountain app; 1 = mentions, links to episodes hosted on fountain.fm, other senses (a water fountain); 0 = unrelated, or impersonators.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23): chosen by name frequency on the production sample (benchmark/name_df.json), before any page was seen, to confirm the name-frequency rung (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "iris",
+    "expect": "",
+    "intent": "navigational",
+    "need": "NAVIGATIONAL: Iris, the Nostr web client (iris.to). 3 = the client itself (its official profile, app handler or app listing); 2 = content about the Iris client; 1 = other senses (the flower, the eye, people named Iris), mentions; 0 = unrelated, or impersonators.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23): chosen by name frequency on the production sample (benchmark/name_df.json), before any page was seen, to confirm the name-frequency rung (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "zeus",
+    "expect": "",
+    "intent": "navigational",
+    "need": "NAVIGATIONAL: ZEUS, the bitcoin Lightning wallet app. 3 = the app itself (its official profile, app handler or app listing); 2 = content about the ZEUS wallet; 1 = other senses (the Greek god), mentions; 0 = unrelated, or impersonators.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23): chosen by name frequency on the production sample (benchmark/name_df.json), before any page was seen, to confirm the name-frequency rung (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "book of daniel",
+    "expect": "",
+    "intent": "topical",
+    "need": "The Book of Daniel, the biblical book. 3 = a document about it (an article or wiki page on the book, a note discussing its text or prophecies); 2 = clearly relevant (a page on something named after it, the novel, film or album titled 'The Book of Daniel', a study of one of its chapters); 1 = mentions it in passing; 0 = matches the words only scattered (a book signing, a title holding 'of', a person named Daniel) without being about the book.",
+    "note": "reported 2026-10-23 (production, observer 460c25…065c): the UNQUOTED query put 21 results ahead of any `book of daniel` hit — each matched ONE word in its title, mostly the stopword `of` ('The Praxeology of Privacy') or `book` ('Book Signing'), the rest scattered through a long body, by authors ranked 92-100 — while the Wikipedia mirror's pages whose titles ARE the query sat at #26+ (author rank 32), and trust-99 notes saying 'the book of Daniel' verbatim at #95, #100 or beyond. The QUOTED query is clean. Reproduced locally (rankAb --dump): the whole top 15 is split matches (naming_coverage 0.33, scattered 1, text ~23 100 = the split rung). Three stacked causes: (1) a stopword buys a naming-surface match, so any title holding `of` reaches the split rung; (2) the trust curve's ~24x for 98-vs-30 outweighs the ~9x the token + perfect rungs hold over the split rung, so even an exact title from a rank-32 author loses; (3) the body rung has no proximity, so the words IN ORDER in a note earn nothing over the same words scattered. §12.3's w_perfect_tier (rankAb perfect_tier_400k) lifts only the one page titled exactly `Book of Daniel` to #1 and leaves the rest — not the fix on its own. Grade this topic's pool before testing a fix."
+  },
+  {
+    "query": "proof of work",
+    "expect": "",
+    "intent": "topical",
+    "need": "TOPICAL: proof of work, the consensus mechanism (bitcoin mining, PoW). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23, round 2): multi-word, chosen before any page was seen to confirm the split-coverage and body-phrase fixes for the 'book of daniel' report (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "proof of stake",
+    "expect": "",
+    "intent": "topical",
+    "need": "TOPICAL: proof of stake, the consensus mechanism (and critiques of it). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23, round 2): multi-word, chosen before any page was seen to confirm the split-coverage and body-phrase fixes for the 'book of daniel' report (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "web of trust",
+    "expect": "",
+    "intent": "topical",
+    "need": "TOPICAL: web of trust (trust graphs, WoT in Nostr or PGP, reputation by who-trusts-whom). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23, round 2): multi-word, chosen before any page was seen to confirm the split-coverage and body-phrase fixes for the 'book of daniel' report (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "lightning network",
+    "expect": "",
+    "intent": "topical",
+    "need": "TOPICAL: the Bitcoin Lightning Network. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23, round 2): multi-word, chosen before any page was seen to confirm the split-coverage and body-phrase fixes for the 'book of daniel' report (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "freedom of speech",
+    "expect": "",
+    "intent": "topical",
+    "need": "TOPICAL: freedom of speech (free expression, censorship, its defence). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23, round 2): multi-word, chosen before any page was seen to confirm the split-coverage and body-phrase fixes for the 'book of daniel' report (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "lord of the rings",
+    "expect": "",
+    "intent": "topical",
+    "need": "TOPICAL: The Lord of the Rings (Tolkien's books, the films, its world). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23, round 2): multi-word, chosen before any page was seen to confirm the split-coverage and body-phrase fixes for the 'book of daniel' report (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "the art of war",
+    "expect": "",
+    "intent": "topical",
+    "need": "TOPICAL: The Art of War, Sun Tzu's treatise (its text, quotes, commentary). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23, round 2): multi-word, chosen before any page was seen to confirm the split-coverage and body-phrase fixes for the 'book of daniel' report (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "bitcoin white paper",
+    "expect": "",
+    "intent": "topical",
+    "need": "TOPICAL: the Bitcoin white paper (Satoshi Nakamoto's 2008 paper, its text, its anniversary, commentary). 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, or uses the words without meaning the phrase; 0 = the words only scattered (a title holding one of them, the rest elsewhere), or unrelated.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23, round 2): multi-word, chosen before any page was seen to confirm the split-coverage and body-phrase fixes for the 'book of daniel' report (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "jack dorsey",
+    "expect": "",
+    "intent": "navigational",
+    "need": "NAVIGATIONAL: Jack Dorsey (co-founder of Twitter and Block, Nostr supporter). 3 = his own profile; 2 = content about him, interviews; 1 = mentions, quote pictures attributed to him; 0 = impersonators, unrelated.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23, round 2): multi-word, chosen before any page was seen to confirm the split-coverage and body-phrase fixes for the 'book of daniel' report (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "matt odell",
+    "expect": "",
+    "intent": "navigational",
+    "need": "NAVIGATIONAL: Matt Odell (ODELL), bitcoin podcaster (Citadel Dispatch, Rabbit Hole Recap). 3 = his own profile; 2 = his shows' profiles or episodes, content about him; 1 = mentions; 0 = impersonators, mirrors, unrelated.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23, round 2): multi-word, chosen before any page was seen to confirm the split-coverage and body-phrase fixes for the 'book of daniel' report (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "lyn alden",
+    "expect": "",
+    "intent": "navigational",
+    "need": "NAVIGATIONAL: Lyn Alden, macro analyst and author of Broken Money. 3 = her own profile; 2 = content about her or her work (articles, interviews, reviews of Broken Money); 1 = mentions; 0 = impersonators, unrelated.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23, round 2): multi-word, chosen before any page was seen to confirm the split-coverage and body-phrase fixes for the 'book of daniel' report (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "preston pysh",
+    "expect": "",
+    "intent": "navigational",
+    "need": "NAVIGATIONAL: Preston Pysh, investor and podcast host (The Investor's Podcast, Bitcoin Fundamentals). 3 = his own profile; 2 = content about him, his shows; 1 = mentions; 0 = impersonators, unrelated.",
+    "split": "test",
+    "note": "HELD-OUT (2026-10-23, round 2): multi-word, chosen before any page was seen to confirm the split-coverage and body-phrase fixes for the 'book of daniel' report (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
   }
 ]

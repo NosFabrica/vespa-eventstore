@@ -585,10 +585,10 @@ object EventYql {
 
     fun build(q: EventQuery): VespaQuery? {
         val params = LinkedHashMap<String, String>()
-        val clauses = filterClauses(q, params) ?: return null
+        val ranking = profileOf(q)
+        val clauses = filterClauses(q, params, bodyPhrase = ranking == RANK_SEARCH) ?: return null
 
         val observer = q.observer?.lowercase()?.takeIf(Hex::isHex64)
-        val ranking = profileOf(q)
         if (ranking != RANK_UNRANKED && ranking != RANK_RECENCY && observer != null) lensParams(q, params)
         // A MEMBER PROFILE WITHOUT AN OBSERVER WOULD SATURATE, not degrade.
         // wot_mult() reads `min_rank`, which defaults to -1e9 so the gate in
@@ -885,6 +885,12 @@ object EventYql {
     /** The trigram-net weight for the query's words (text_relevance's `w_gram`). */
     private const val F_W_GRAM = "ranking.features.query(w_gram)"
 
+    /** The typed words as one body phrase, for the rank-only item behind event.sd's body_phrase(). */
+    private const val P_BODY_PHRASE = "bp"
+
+    /** How many TOKENS that phrase is to Vespa — body_phrase()'s threshold; see [phraseTokens]. */
+    private const val F_PHRASE_TERMS = "ranking.features.query(phrase_terms)"
+
     /** How many things the user asked for — words plus quoted phrases (text_relevance's `n_words`). */
     private const val F_N_WORDS = "ranking.features.query(n_words)"
 
@@ -908,6 +914,51 @@ object EventYql {
      * in [grouping]'s params. Named here for the guard that keeps it out.
      */
     const val GLOBAL_MAX_GROUPS = "grouping.globalMaxGroups"
+
+    /**
+     * How many tokens Vespa cuts [phrase] into: event.sd body_phrase()'s
+     * threshold, which the typed-word count `n_words` is not. Vespa splits a
+     * word at punctuation and drops it ("don't" is `don t`, "e-cash" `e cash`,
+     * "21.5" `21 5`, "foo_bar" `foo bar`), so against `n_words` a body holding
+     * only "don't" read as the whole of `don't trust` — 58 of the 74 matches
+     * on the evaluation corpus took the band, and 1 of them held the phrase
+     * (2026-10-23). Read off Vespa's own query tokenization that day: a run of
+     * letters, digits and combining marks is ONE token whatever its scripts
+     * ("web3", "比特币", "bitcoin比特币", "नमस्ते", "café"), and an emoji is one
+     * of its own. Counted to err only HIGH — every symbol code point is a
+     * token, so "❤️" counts 2 — because the errors are not symmetric: an
+     * over-count withholds a tie-breaker band, an under-count hands it to a
+     * body that lacks the phrase.
+     */
+    internal fun phraseTokens(phrase: String): Int {
+        var tokens = 0
+        var inRun = false
+        var i = 0
+        while (i < phrase.length) {
+            val cp = phrase.codePointAt(i)
+            when (Character.getType(cp).toByte()) {
+                Character.UPPERCASE_LETTER, Character.LOWERCASE_LETTER, Character.TITLECASE_LETTER,
+                Character.MODIFIER_LETTER, Character.OTHER_LETTER, Character.DECIMAL_DIGIT_NUMBER,
+                Character.LETTER_NUMBER, Character.OTHER_NUMBER, Character.NON_SPACING_MARK,
+                Character.ENCLOSING_MARK, Character.COMBINING_SPACING_MARK,
+                -> {
+                    if (!inRun) tokens++
+                    inRun = true
+                }
+
+                Character.MATH_SYMBOL, Character.CURRENCY_SYMBOL, Character.MODIFIER_SYMBOL, Character.OTHER_SYMBOL -> {
+                    tokens++
+                    inRun = false
+                }
+
+                else -> {
+                    inRun = false
+                }
+            }
+            i += Character.charCount(cp)
+        }
+        return tokens
+    }
 
     /**
      * WHICH CLAUSE KINDS [q] carries, for [VespaQuery.shape] — read off the
@@ -939,10 +990,14 @@ object EventYql {
         return if (parts.isEmpty()) SHAPE_PLAIN else parts.joinToString(",")
     }
 
-    /** The shared WHERE clauses (filters + optional search term + exclusions); null when the filter provably matches nothing. */
+    /**
+     * The shared WHERE clauses (filters + optional search term + exclusions); null when the filter provably matches nothing.
+     * [bodyPhrase] adds the rank-only body phrase, which only [RANK_SEARCH]'s second phase reads — see the clause.
+     */
     private fun filterClauses(
         q: EventQuery,
         params: MutableMap<String, String>,
+        bodyPhrase: Boolean = false,
     ): List<String>? {
         val clauses = ArrayList<String>()
 
@@ -996,7 +1051,37 @@ object EventYql {
             val bodyReachable = FuzzyWordGroup.bodyReachable(q.kinds)
             val bodyGram = q.bodyGramMatching && bodyReachable
             val stem = q.stemLanguage?.takeIf { bodyReachable }
-            clauses += FuzzyWordGroup.clause(matchable, params, nearFields = q.nearMatching, bodyGram = bodyGram, bodyEdge = q.bodyEdgeMatching, stemLanguage = stem)
+            val words = FuzzyWordGroup.clause(matchable, params, nearFields = q.nearMatching, bodyGram = bodyGram, bodyEdge = q.bodyEdgeMatching, stemLanguage = stem)
+            // The body PHRASE, as a RANK-ONLY item: `rank(match, extra)` matches
+            // exactly what `match` matches and only adds `extra`'s match data.
+            // event.sd's body_phrase() reads fieldMatch(search_text).longestSequence,
+            // which counts a run of query terms adjacent in the FIELD and in the
+            // QUERY — and in the word groups the synthetic joined pairs
+            // ("bookof") sit between the typed words, so without this item no
+            // body ever read as holding the phrase (measured 2026-10-23: 0 of
+            // the 28 notes saying "book of daniel"; with it, 28 of 28 and no
+            // false positive among the 14 that hold the words apart). Only
+            // where it can mean something: two or more words, and a kind that
+            // can carry a body. Quoted phrases need none — they are required.
+            // And only a phrase Vespa ACCEPTS as typed: one word repeated past
+            // [PhraseRuns.MAX_RUN] in a row is refused with a 400 that fails the
+            // whole REQ (SearchExactTextIT's "x no no no no no no" caught this),
+            // so such a query simply gets no phrase band — a tie-breaker it can
+            // do without — rather than the cut pieces a REQUIRED phrase needs.
+            // And only for the `search` profile ([bodyPhrase]): the item is not
+            // ranking-neutral elsewhere — it is a search_text term, so it feeds
+            // bm25(search_text) and reordered observer-less `text` pages that no
+            // evaluation measured — and every other read (counts, id walks,
+            // recency) would pay a positional phrase iterator for nothing.
+            val phrase = matchable.joinToString(" ")
+            clauses +=
+                if (bodyPhrase && matchable.size > 1 && bodyReachable && PhraseRuns.pieces(phrase) == listOf(phrase)) {
+                    params[P_BODY_PHRASE] = phrase
+                    params[F_PHRASE_TERMS] = phraseTokens(phrase).toString()
+                    "rank($words, ({label:\"body_phrase\",defaultIndex:\"search_text\",grammar:\"phrase\"}userInput(@$P_BODY_PHRASE)))"
+                } else {
+                    words
+                }
             // Short queries lean harder on the trigram safety net — judged by
             // the words that HAVE grams: an emoji beside "extraordinary" is no
             // reason to weight its trigrams up.

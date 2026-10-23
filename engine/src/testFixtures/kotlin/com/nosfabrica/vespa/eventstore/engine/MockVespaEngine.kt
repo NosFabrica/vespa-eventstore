@@ -1053,6 +1053,21 @@ object MockYql {
                     // parameters (@w0..@wN — @wj/@wp* are derived variants). A stemmed
                     // column inside it (`search_text_pt contains @sw0`) is the query's
                     // stemLanguage, which the reference matches the same way.
+                    // The same word group wrapped as rank(words, bodyPhrase): Vespa's
+                    // rank() matches exactly what its FIRST argument matches, and the
+                    // rest only adds match data — the labelled body phrase event.sd's
+                    // body_phrase() reads. Accepted only in exactly that shape, so a
+                    // drifted second argument fails parsing instead of passing as a
+                    // second recall constraint the reference never applies.
+                    clause.startsWith("rank(") -> {
+                        val args = splitTopLevel(clause.removePrefix("rank(").removeSuffix(")"), ", ")
+                        require(args.size == 2 && SEARCH_CLAUSE.containsMatchIn(args[0]) && BODY_PHRASE_CLAUSE.matches(args[1]) && "bp" in params) {
+                            "unexpected rank() shape: $clause"
+                        }
+                        val stemLanguage = StemText.LANGUAGES.firstOrNull { "${StemText.field(it)} contains @s" in args[0] }
+                        q.copy(search = searchWords(params), stemLanguage = stemLanguage)
+                    }
+
                     SEARCH_CLAUSE.containsMatchIn(clause) -> {
                         val stemLanguage = StemText.LANGUAGES.firstOrNull { "${StemText.field(it)} contains @s" in clause }
                         q.copy(search = searchWords(params), stemLanguage = stemLanguage)
@@ -1099,6 +1114,9 @@ object MockYql {
 
     /** Exactly 3 parens (one word), 4 (AND'd words), or 5 (AND'd words with pair coverage) — anything else is drift. */
     private val SEARCH_CLAUSE = Regex("""^\({3,5}\{defaultIndex:""")
+
+    /** The rank-only body phrase EventYql adds to a multi-word search (event.sd body_phrase()). */
+    private val BODY_PHRASE_CLAUSE = Regex("""^\(\{label:"body_phrase",defaultIndex:"search_text",grammar:"phrase"\}userInput\(@bp\)\)$""")
 
     /**
      * The required-phrase clause EventYql emits per quoted phrase — or per PIECE

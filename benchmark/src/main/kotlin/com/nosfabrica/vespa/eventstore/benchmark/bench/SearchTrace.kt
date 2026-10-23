@@ -69,7 +69,10 @@ import java.net.http.HttpResponse
  * ranks on `text`), `SEARCH_KINDS` (default 1 — the dominant relay shape),
  * `SEARCH_LIMIT` (50), `SEARCH_REPS` (5, medians reported), `SEARCH_YQL` (1 to
  * print every variant's YQL), `TRACE_LEVEL` (0 = off; >0 adds Vespa's
- * blueprint with per-term hit estimates to the FULL variant).
+ * blueprint with per-term hit estimates to the FULL variant), `SEARCH_MIN_RANK`
+ * (the gate an observer query sends, default 0; −1e9 opens it, which is how to
+ * time the second phase on a corpus captured without its trust cards — a
+ * closed gate drops every hit in the FIRST phase, and nothing is reranked).
  */
 object SearchTrace {
     private val json = Json { ignoreUnknownKeys = true }
@@ -130,11 +133,12 @@ object SearchTrace {
         val reps = System.getenv("SEARCH_REPS")?.toIntOrNull() ?: 5
         val showYql = System.getenv("SEARCH_YQL") == "1"
         val traceLevel = System.getenv("TRACE_LEVEL")?.toIntOrNull() ?: 0
+        val minRank = System.getenv("SEARCH_MIN_RANK")?.toDoubleOrNull() ?: 0.0
         val terms = if (args.isNotEmpty()) args.toList() else listOf("bitcoin", "nostr")
 
         println("cluster $url, kinds=$kinds, limit=$limit, reps=$reps, observer=${observer ?: "(none)"}")
         for (term in terms) {
-            val base = EventQuery(kinds = kinds, limit = limit, search = term, observer = observer, minRank = observer?.let { 0.0 })
+            val base = EventQuery(kinds = kinds, limit = limit, search = term, observer = observer, minRank = observer?.let { minRank })
             val built = EventYql.build(base) ?: error("query for '$term' provably matches nothing")
             println()
             println("=== \"$term\" — profile ${built.ranking} ===")
@@ -305,8 +309,22 @@ object SearchTrace {
         if (t.startsWith("(") && t.endsWith(")") && balanced(t.substring(1, t.length - 1))) {
             return "(" + rewrite(t.substring(1, t.length - 1), markers) + ")"
         }
+        // A multi-word word group travels as rank(words, phrase) ([EventYql]):
+        // the arguments after the first are rank-only and match nothing, so the
+        // matchers to strip all sit in the first one — without this case every
+        // ablation of a multi-word term read "no branch matched". That restores
+        // the unwrapped behaviour, limits included: a multi-word group's OR
+        // branches are whole per-word conjunctions, so one marker drops the
+        // conjunction and recall collapses — the `matches` column shows it, and
+        // this tool's ablations are a ONE-term instrument.
+        if (t.startsWith(RANK_OPEN) && t.endsWith(")") && balanced(t.substring(RANK_OPEN.length, t.length - 1))) {
+            val args = splitTop(t.substring(RANK_OPEN.length, t.length - 1), ", ")
+            return RANK_OPEN + (listOf(rewrite(args.first(), markers)) + args.drop(1)).joinToString(", ") + ")"
+        }
         return text
     }
+
+    private const val RANK_OPEN = "rank("
 
     private fun splitOr(text: String) = splitTop(text, " or ")
 

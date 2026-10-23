@@ -20,11 +20,21 @@
  */
 package com.nosfabrica.vespa.eventstore.benchmark.bench
 
+import com.nosfabrica.vespa.eventstore.benchmark.harness.Agreement
+import com.nosfabrica.vespa.eventstore.benchmark.harness.Judgments
+import com.nosfabrica.vespa.eventstore.benchmark.harness.PairedComparison
+import com.nosfabrica.vespa.eventstore.benchmark.harness.RelevanceMetrics
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
+import com.nosfabrica.vespa.eventstore.engine.text.StemText
+import com.vitorpamplona.quartz.nip50Search.SearchQuery
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -55,7 +65,14 @@ import java.nio.file.Path
  *
  * ADD A CASE EVERY TIME SOMEONE REPORTS A BAD SEARCH — that is the point of
  * the fixed case file. Five cases demonstrate a problem; they are not enough
- * to tune on.
+ * to tune on — the verdict block prints the minimum detectable effect to say
+ * how far from enough a run is.
+ *
+ * Beyond positions, this is the search-QUALITY harness of
+ * `docs/search-evaluation.md`: graded judgments ([Judgments]) turn each page
+ * into nDCG@10 / success@k ([RelevanceMetrics]), every candidate is compared
+ * to the first config per topic ([PairedComparison]), and `--pool` / `--merge`
+ * are the judging loop. That doc is the protocol; this is its instrument.
  *
  *     ./gradlew :benchmark:rankAb --args="--vespa http://localhost:8080"
  *     ./gradlew :benchmark:rankAb --args="--configs baseline,near_off --profile text"
@@ -88,6 +105,9 @@ object RankAb {
                     "w_words_pop" to 3000.0,
                     "w_exactness_pop" to 6000.0,
                     "w_perfect_pop" to 80000.0,
+                    "perfect_df_lo" to 2e-4,
+                    "perfect_df_hi" to 6e-4,
+                    "perfect_df_min_docs" to 100000.0,
                     "w_order_floor" to 0.5,
                     "w_wot_pow" to 2.7,
                     "w_recency" to 0.1,
@@ -104,6 +124,36 @@ object RankAb {
             // turn. Sweep it against the odell crossing bound, whose ceiling
             // (98306) was MEASURED on a live Vespa, not derived on paper.
             "perfect_off" to mapOf("w_perfect_pop" to 0.0),
+            // The rung damped by how common the word is AS A NAME (event.sd,
+            // query(perfect_df_lo)): whole below lo, gone above hi, log-linear
+            // between. SHIPPED at (2e-4, 6e-4), but OFF on an index under
+            // perfect_df_min_docs — which every evaluation corpus is — so on
+            // one, `baseline` is the damping OFF. These configs lift that guard
+            // (min_docs 0): pair them with --name-df, which makes the corpus's
+            // name statistics production's. `name_df_off` is the control.
+            // Ranges from the 2026-10-23 measurement on a kind-stratified random
+            // sample of production: one-word navigational topics name 0..1.6e-4
+            // of documents (jack 1.6e-4, primal 1.2e-4, odell 2.7e-5), bitcoin and
+            // nostr ~6.5e-4, lightning / coffee / bitcoiners 1-3e-5.
+            // ---- the `book of daniel` report (event.sd, query(w_split_min_coverage)
+            // and query(w_phrase_pop)) ----
+            // A scattered match whose naming surface carried under half the
+            // query is scored as the body match it is; 0.5 leaves two-word
+            // queries alone.
+            "split_cov_05" to mapOf("w_split_min_coverage" to 0.5),
+            // A body holding the words adjacent and in order, banded at the weak
+            // rung, the split rung, and between split and token. Never the token
+            // rung: a note quoting a name would then contest the name's profile.
+            "phrase_4k" to mapOf("w_phrase_pop" to 4000.0),
+            "phrase_23k" to mapOf("w_phrase_pop" to 23000.0),
+            "phrase_60k" to mapOf("w_phrase_pop" to 60000.0),
+            "both_4k" to mapOf("w_split_min_coverage" to 0.5, "w_phrase_pop" to 4000.0),
+            "both_23k" to mapOf("w_split_min_coverage" to 0.5, "w_phrase_pop" to 23000.0),
+            "both_60k" to mapOf("w_split_min_coverage" to 0.5, "w_phrase_pop" to 60000.0),
+            "name_df_off" to mapOf("perfect_df_lo" to 1.0, "perfect_df_hi" to 1.0),
+            "name_df_2e4_6e4" to mapOf("perfect_df_lo" to 2e-4, "perfect_df_hi" to 6e-4, "perfect_df_min_docs" to 0.0),
+            "name_df_2e4_2e3" to mapOf("perfect_df_lo" to 2e-4, "perfect_df_hi" to 2e-3, "perfect_df_min_docs" to 0.0),
+            "name_df_1e4_1e3" to mapOf("perfect_df_lo" to 1e-4, "perfect_df_hi" to 1e-3, "perfect_df_min_docs" to 0.0),
             // Word order off — what the default profile did before the audit.
             "order_off" to mapOf("w_order_floor" to 1.0),
             // ---- §12.2 the split rung + the perfect exponent ----
@@ -192,12 +242,25 @@ object RankAb {
         val casesPath = opts["--cases"] ?: "benchmark/rank_cases.json"
         val profile = opts["--profile"] ?: "search"
         val observer = opts["--observer"]
-        // The LENS: trust cells are keyed by the SERVICE that signed the 30382, never
-        // by the observer (docs/service-keyed-trust.md). The store resolves an
-        // observer's 10040 to that key per query; this harness sits below the store,
-        // so the key is passed in. Without it an observer's query ranks as trusting
-        // nobody, and under the gate every hit drops — every case reads MISS.
-        val rankKey = opts["--rank-key"]
+        // The lens's service key, when the cluster cannot say: rankAb resolves
+        // each observer's kind 10040 itself ([lensOf]), so this is only for a
+        // cluster fed without it. `--rank-key` is the same flag under the name
+        // main gave it when it fixed the same empty-page bug independently.
+        lensOverride = opts["--lens-key"] ?: opts["--rank-key"]
+        // `--name-df <file>`: how common each word is AS A NAME on production,
+        // measured on a random sample (docs/search-evaluation.md §9). See [withNameDf].
+        nameDf =
+            opts["--name-df"]
+                ?.let { path ->
+                    Json
+                        .parseToJsonElement(Files.readString(Path.of(path)))
+                        .jsonObject
+                        .filterKeys { !it.startsWith("_") }
+                        .mapValues {
+                            it.value.jsonPrimitive.content
+                                .toDouble()
+                        }
+                }.orEmpty()
         val hits = (opts["--hits"] ?: "100").toInt()
         // The instant recency is measured against. Pinning it makes a sweep
         // reproducible across days (and lets one be replayed at the moment a
@@ -218,9 +281,38 @@ object RankAb {
                         return
                     }
                 }.orEmpty()
-        val names = opts["--configs"]?.split(",") ?: CONFIGS.keys.toList()
-        names.firstOrNull { it !in CONFIGS }?.let {
-            System.err.println("unknown config '$it'; known: ${CONFIGS.keys}")
+        // `--run name=path[,name=path]`: rankings computed ELSEWHERE — the
+        // production relay's served pages, another cluster's `--write-runs`
+        // output — scored as configs beside the live ones, against the same
+        // judgments (docs/search-evaluation.md §8.4). Named in `--configs`
+        // like any other; put one FIRST to make it the baseline.
+        val runs =
+            opts["--run"]
+                ?.split(",")
+                ?.associate { spec -> spec.substringBefore("=") to loadRun(Path.of(spec.substringAfter("="))) }
+                .orEmpty()
+        val names = opts["--configs"]?.split(",") ?: (CONFIGS.keys.toList() + runs.keys)
+        names.firstOrNull { it !in CONFIGS && it !in runs }?.let {
+            System.err.println("unknown config '$it'; known: ${CONFIGS.keys + runs.keys}")
+            return
+        }
+        // The graded judgments (docs/search-evaluation.md). A missing file is
+        // an empty set: every topic then reads unjudged, and the report says so.
+        val judgmentsPath = Path.of(opts["--judgments"] ?: "benchmark/search_judgments.json")
+
+        // ---- --merge: fold a graded --pool worksheet into the judgments ---
+        // No Vespa involved — this is the assessor's half of the loop.
+        opts["--merge"]?.let { sheet ->
+            merge(Path.of(sheet), judgmentsPath, opts["--by"])
+            return
+        }
+
+        // ---- --agreement: a blind re-grade against the stored grades ------
+        // The audit an LLM-judged batch owes (§5.3). Run it BEFORE merging the
+        // audit sheet: --merge overwrites, so afterwards the two assessors
+        // agree by construction.
+        opts["--agreement"]?.let { sheet ->
+            agreement(Path.of(sheet), Judgments.load(judgmentsPath))
             return
         }
 
@@ -232,14 +324,17 @@ object RankAb {
         // MRR: just the page, side by side, from the same request the library
         // sends.
         opts["--dump"]?.let { text ->
-            for (config in names) {
+            for (config in names.filter { it in CONFIGS }) {
                 println("\n=== $config === $text")
-                dumpPage(search(vespa, buildJsonObject { put("query", text) }, profile, observer, rankKey, hits, CONFIGS.getValue(config), nowSecs, kinds))
+                dumpPage(search(vespa, text, profile, observer, hits, CONFIGS.getValue(config), nowSecs, kinds))
             }
             return
         }
 
-        val cases =
+        // `--split dev|test|all`: tune on dev, confirm ONCE on test — a weight
+        // swept on the topics it is scored on is fitted to them (§6.4).
+        val split = opts["--split"] ?: "all"
+        val topics =
             Json
                 .parseToJsonElement(Files.readString(Path.of(casesPath)))
                 .jsonArray
@@ -249,41 +344,64 @@ object RankAb {
                 // being measured for age it was being queried live and folded
                 // into the headline median.
                 .filter { (it["query"]?.jsonPrimitive?.content).orEmpty().isNotBlank() && it["skip"]?.jsonPrimitive?.content != "true" }
+                .map { topicOf(it, observer, kinds) }
+                .filter { split == "all" || it.split == split }
+        if (topics.isEmpty()) {
+            System.err.println("no cases with a query in $casesPath (split=$split) — nothing to measure")
+            return
+        }
         // A case with an empty `expect` names no winning document, so it scores
         // no position — but it still has a PAGE, and the age of that page is a
         // measurement. Those rows ride along age-only (they were skipped
         // outright before the recency work) and stay out of found/MRR, which
         // are claims about positions.
-        val expects = cases.map { (it["expect"]?.jsonPrimitive?.content).orEmpty().takeIf(String::isNotEmpty) }
-        if (cases.isEmpty()) {
-            System.err.println("no cases with a query in $casesPath — nothing to measure")
-            return
-        }
+        val expects = topics.map { it.expect }
+        // An `expect` is a human's report of THE answer, so it is a grade-3
+        // judgment without anyone transcribing it.
+        val qrels =
+            Judgments
+                .load(judgmentsPath)
+                .withImplicit(topics.filter { it.expect != null }.associate { it.key to (it.expect!! to 3) })
 
         println(
-            "target=$vespa profile=$profile observer=${observer ?: "none (pure text)"} rank-key=${rankKey ?: "none"} depth=$hits cases=${cases.size} " +
-                "kinds=${kinds.takeIf { it.isNotEmpty() }?.joinToString(",") ?: "all"} now=${nowSecs?.toString() ?: "wall clock"}",
+            "target=$vespa profile=$profile observer=${observer ?: "none (pure text)"} depth=$hits cases=${topics.size} " +
+                "kinds=${kinds.takeIf { it.isNotEmpty() }?.joinToString(",") ?: "all"} now=${nowSecs?.toString() ?: "wall clock"} " +
+                "split=$split judgments=$judgmentsPath (${qrels.topicCount} topics)",
         )
         val clock = nowSecs ?: (System.currentTimeMillis() / 1000)
-        val results = LinkedHashMap<String, List<Int?>>()
-        // Median age, in days, of each case's top-[AGE_DEPTH] hits — the thing
-        // a recency config is actually FOR, and invisible in a position table.
-        val ages = LinkedHashMap<String, List<Double?>>()
+        val pages = LinkedHashMap<String, List<List<Hit>>>()
         for (config in names) {
-            val ranked = cases.map { search(vespa, it, profile, observer, rankKey, hits, CONFIGS.getValue(config), nowSecs, kinds) }
-            results[config] =
+            val run = runs[config]
+            pages[config] =
+                if (run != null) {
+                    topics.filter { it.key !in run }.takeIf { it.isNotEmpty() }?.let { missing ->
+                        System.err.println("run '$config' has no page for ${missing.map { it.key }} — scored as EMPTY pages")
+                    }
+                    topics.map { run[it.key].orEmpty().take(hits) }
+                } else {
+                    topics.map { search(vespa, it.query, profile, it.observer, hits, CONFIGS.getValue(config), nowSecs, it.kinds) }
+                }
+        }
+        opts["--write-runs"]?.let { dir -> writeRuns(Path.of(dir), topics, pages) }
+        val results =
+            pages.mapValues { (_, ranked) ->
                 ranked.mapIndexed { i, hitsOf ->
                     expects[i]?.let { want -> hitsOf.indexOfFirst { it.id.startsWith(want) }.takeIf { it >= 0 }?.plus(1) }
                 }
-            ages[config] = ranked.map { medianAgeDays(it.take(AGE_DEPTH), clock) }
-        }
+            }
+        // Median age, in days, of each case's top-[AGE_DEPTH] hits — the thing
+        // a recency config is actually FOR, and invisible in a position table.
+        val ages = pages.mapValues { (_, ranked) -> ranked.map { medianAgeDays(it.take(AGE_DEPTH), clock) } }
+        val quality = pages.mapValues { (_, ranked) -> ranked.mapIndexed { i, page -> scoreOf(topics[i], page, qrels) } }
+        val basePages = pages.getValue(names.first())
 
         val base = results.getValue(names.first())
-        val labels = cases.mapIndexed { i, case -> "${case.getValue("query").jsonPrimitive.content}|${expects[i]?.take(10) ?: "age-only"}" }
+        val labels = topics.mapIndexed { i, t -> "${t.query}|${expects[i]?.take(10) ?: "age-only"}" }
         val width = labels.maxOf { it.length }
         val baseAges = ages.getValue(names.first())
         for ((config, row) in results) {
             println("\n--- $config${if (config == names.first()) "   (baseline)" else ""} ---")
+            val q = quality.getValue(config)
             row.forEachIndexed { i, pos ->
                 val delta =
                     when {
@@ -296,7 +414,13 @@ object RankAb {
                 val age = ages.getValue(config)[i]
                 val ageDelta = baseAges[i]?.let { b -> age?.let { a -> if (config == names.first()) "" else " (${"%+.0f".format(a - b)})" } } ?: ""
                 val position = if (expects[i] == null) "-" else pos?.let { "#$it" } ?: "MISS"
-                println("  ${labels[i].padEnd(width)}  ${position.padEnd(6)}${delta.padEnd(16)}  age ${age?.let { "%.0fd".format(it) } ?: "-"}$ageDelta")
+                val graded = q[i].ndcg?.let { "nDCG %.2f".format(it) } ?: "nDCG  -  "
+                val judged = q[i].judged?.let { "j@10 %.1f".format(it) } ?: "j@10  - "
+                val rbo = if (config == names.first()) "" else "  rbo %.2f".format(RelevanceMetrics.rbo(basePages[i].map { it.id }, pages.getValue(config)[i].map { it.id }))
+                println(
+                    "  ${labels[i].padEnd(width)}  ${position.padEnd(6)}${delta.padEnd(16)}  age ${(age?.let { "%.0fd".format(it) } ?: "-").padEnd(6)}" +
+                        "${ageDelta.padEnd(8)}  $graded  $judged$rbo",
+                )
             }
             val scored = row.filterIndexed { i, _ -> expects[i] != null }
             val found = scored.filterNotNull()
@@ -307,11 +431,427 @@ object RankAb {
                     "median #${found.sorted().getOrNull(found.size / 2) ?: "-"}   " +
                     "median top-$AGE_DEPTH age ${ageRow.getOrNull(ageRow.size / 2)?.let { "%.0fd".format(it) } ?: "-"}",
             )
+            println("  ${"".padEnd(width)}  ${qualityLine(q)}")
         }
         println("\nhigher MRR is better; MISS -> a number is the win that matters.")
         println("age = median created_at age of the top-$AGE_DEPTH hits: what a recency config buys, and what it must not")
         println("pay for in positions — a config that trades a pinned case for fresher results has lost.")
+        if (names.size > 1) compareToBaseline(names, topics, quality)
+
+        // ---- --pool: what the assessors have to judge next ----------------
+        // The union of every config's top `--pool-depth` that no judgment
+        // covers — TREC pooling, run incrementally: only what THIS change
+        // surfaced is new work. Grade the rows, then `--merge` the file.
+        opts["--pool"]?.let { out ->
+            val depth = (opts["--pool-depth"] ?: "20").toInt()
+            writePool(Path.of(out), topics, pages, qrels, depth)
+        }
     }
+
+    /**
+     * One `rank_cases.json` row as an evaluation TOPIC: the query plus the
+     * lens and kinds it is asked under. A row's own `observer` ("none" for
+     * the anonymous page) and `kinds` override the command line, because a
+     * topic like "the People tab under the canonical observer" is only that
+     * topic under that lens. `id` names it in the judgments (default: the
+     * query text); `intent` and `split` are §3's strata and §6.4's split.
+     */
+    private data class Topic(
+        val key: String,
+        val query: String,
+        val expect: String?,
+        val intent: String,
+        // What an assessor grades against (TREC's narrative), carried onto every worksheet row.
+        val need: String?,
+        val split: String,
+        val observer: String?,
+        val kinds: List<Int>,
+    )
+
+    private fun topicOf(
+        case: JsonObject,
+        observer: String?,
+        kinds: List<Int>,
+    ): Topic {
+        fun str(k: String) = (case[k] as? JsonPrimitive)?.content?.takeIf(String::isNotEmpty)
+        val query = case.getValue("query").jsonPrimitive.content
+        return Topic(
+            key = str("id") ?: query,
+            query = query,
+            expect = str("expect"),
+            intent = str("intent") ?: "unclassified",
+            need = str("need"),
+            split = str("split") ?: "dev",
+            observer =
+                when (val o = str("observer")) {
+                    null -> observer
+                    "none" -> null
+                    else -> o
+                },
+            kinds = (case["kinds"] as? JsonArray)?.map { it.jsonPrimitive.content.toInt() } ?: kinds,
+        )
+    }
+
+    /** One topic's quality on one config's page; each field null where it does not apply (§5). */
+    private data class Score(
+        val ndcg: Double?,
+        val judged: Double?,
+        val rr: Double?,
+        val s1: Double?,
+        val s3: Double?,
+        val authorShare: Double?,
+    )
+
+    /**
+     * A topic is GRADED once it has [GRADED_MIN] judgments: condensed nDCG on
+     * fewer is mostly the condensing (an `expect`-only topic would score 1.0
+     * whenever its one judged doc is anywhere on the page). It is KNOWN-ITEM
+     * when some document is judged "the answer" (3) — then the page is also
+     * read as "where is it", on the uncondensed list.
+     */
+    private fun scoreOf(
+        topic: Topic,
+        page: List<Hit>,
+        qrels: Judgments,
+    ): Score {
+        val grades = page.map { qrels.gradeOf(topic.key, it.id) }
+        val all = qrels.grades(topic.key)
+        val knownItem = 3 in all
+        return Score(
+            ndcg = if (all.size >= GRADED_MIN) RelevanceMetrics.ndcg(grades, all) else null,
+            judged = if (all.isEmpty()) null else RelevanceMetrics.judgedAt(grades),
+            rr = if (knownItem) RelevanceMetrics.reciprocalRank(grades, 3) else null,
+            s1 = if (knownItem) RelevanceMetrics.successAt(grades, 3, 1) else null,
+            s3 = if (knownItem) RelevanceMetrics.successAt(grades, 3, 3) else null,
+            authorShare = RelevanceMetrics.maxAuthorShare(page.map { it.pubkey }),
+        )
+    }
+
+    private fun qualityLine(q: List<Score>): String {
+        fun mean(v: List<Double?>) = v.filterNotNull().let { if (it.isEmpty()) "-" else "%.3f".format(it.average()) }
+        val graded = q.mapNotNull { it.ndcg }
+        val underJudged = q.count { it.ndcg != null && (it.judged ?: 1.0) < JUDGED_FLOOR }
+        // judged@10 over the GRADED topics only: it is the gauge for their
+        // condensed nDCG, and an expect-only topic is 1-in-10 judged by design.
+        return "graded ${graded.size}: nDCG@10 ${mean(q.map { it.ndcg })}  judged@10 ${mean(q.filter { it.ndcg != null }.map { it.judged })}" +
+            (if (underJudged > 0) " ($underJudged under ${"%.1f".format(JUDGED_FLOOR)} — run --pool)" else "") +
+            "   known-item ${q.count { it.rr != null }}: S@1 ${mean(q.map { it.s1 })} S@3 ${mean(q.map { it.s3 })}" +
+            "   top-author share ${mean(q.map { it.authorShare })}"
+    }
+
+    /**
+     * The verdict block (§6): every candidate against the FIRST config, paired
+     * per topic, on the two headline measures — nDCG@10 over graded topics and
+     * RR over known-item ones. p is the randomization test's, Holm-adjusted
+     * across every candidate in this run (a sweep is many tests); MDE is the
+     * smallest mean delta this many topics could have detected, so a
+     * non-significant row says how small "nothing" is. Then the RISK view a
+     * mean hides: every topic that lost more than [LOSS_REPORT], by name —
+     * each must be explained before a change ships — and the per-intent means.
+     */
+    private fun compareToBaseline(
+        names: List<String>,
+        topics: List<Topic>,
+        quality: Map<String, List<Score>>,
+    ) {
+        val baseline = names.first()
+        val candidates = names.drop(1)
+        for ((metric, pick) in listOf<Pair<String, (Score) -> Double?>>("nDCG@10" to { it.ndcg }, "RR (known-item)" to { it.rr })) {
+            val b = quality.getValue(baseline).map(pick)
+            val rows =
+                candidates.map { config ->
+                    val c = quality.getValue(config).map(pick)
+                    // Only topics the metric covers in BOTH configs are paired.
+                    val idx = topics.indices.filter { b[it] != null && c[it] != null }
+                    Triple(config, idx, PairedComparison.compare(idx.map { b[it]!! }, idx.map { c[it]!! }))
+                }
+            if (rows.all { it.third.n == 0 }) {
+                println("\n=== $metric vs $baseline: no topic carries it — judge some (docs/search-evaluation.md §5) ===")
+                continue
+            }
+            val adjusted = PairedComparison.holm(rows.map { it.third.p })
+            println("\n=== $metric vs $baseline — paired per topic; randomization test, Holm-adjusted over ${rows.size} candidate(s) ===")
+            println("  %-22s %4s %8s %19s %8s %9s %7s".format("config", "n", "Δ mean", "95% CI", "p(holm)", "W/T/L", "MDE"))
+            rows.forEachIndexed { r, (config, idx, res) ->
+                println(
+                    "  %-22s %4d %+8.3f   [%+.3f, %+.3f] %8.3f %9s %7.3f".format(
+                        config,
+                        res.n,
+                        res.meanDelta,
+                        res.ciLow,
+                        res.ciHigh,
+                        adjusted[r],
+                        "${res.wins}/${res.ties}/${res.losses}",
+                        PairedComparison.minimumDetectable(res.sdDelta, res.n),
+                    ),
+                )
+                val c = quality.getValue(config).map(pick)
+                val losses = idx.map { it to c[it]!! - b[it]!! }.filter { it.second < -LOSS_REPORT }.sortedBy { it.second }
+                if (losses.isNotEmpty()) {
+                    println("      losses > $LOSS_REPORT: " + losses.joinToString("  ") { (i, d) -> "'${topics[i].key}' %+.2f".format(d) })
+                }
+                val byIntent =
+                    idx.groupBy { topics[it].intent }.toSortedMap().entries.joinToString("  ") { (intent, ii) ->
+                        "$intent %+.3f (n=${ii.size})".format(ii.map { c[it]!! - b[it]!! }.average())
+                    }
+                println("      by intent: $byIntent")
+            }
+        }
+        println("\nread: a candidate ships when no pinned case is LOST, the nDCG CI's low end clears -$NON_INFERIORITY, every listed loss")
+        println("is explained, and the guardrails (age, top-author share, latency) hold — docs/search-evaluation.md §6.")
+    }
+
+    /**
+     * Writes the unjudged pool as a worksheet: one row per (topic, event),
+     * `grade` left null for the assessor. BLIND, as TREC pools are: no rank,
+     * no score, no config name, and rows sorted by event id — an assessor
+     * (human or model) who can see that a document came first, or came from
+     * the candidate, grades the ranking instead of the document (§5.2).
+     */
+    private fun writePool(
+        out: Path,
+        topics: List<Topic>,
+        pages: Map<String, List<List<Hit>>>,
+        qrels: Judgments,
+        depth: Int,
+    ) {
+        val rows =
+            buildJsonArray {
+                topics.forEachIndexed { i, topic ->
+                    val pool = sortedMapOf<String, Hit>()
+                    for (ranked in pages.values) {
+                        ranked[i].take(depth).filter { qrels.gradeOf(topic.key, it.id) == null }.forEach { pool.putIfAbsent(it.id, it) }
+                    }
+                    for ((id, hit) in pool) {
+                        add(
+                            buildJsonObject {
+                                put("topic", topic.key)
+                                put("query", topic.query)
+                                put("intent", topic.intent)
+                                put("need", topic.need ?: "(no `need` on this case — write one in rank_cases.json before grading)")
+                                put("id", id)
+                                put("kind", hit.kind)
+                                put("label", hit.label)
+                                put("author", hit.pubkey)
+                                put("created_at", hit.createdAt)
+                                put("content", hit.content.take(POOL_CONTENT_CHARS))
+                                // Where the query actually matched, when that is past the
+                                // excerpt: a long note holding "the book of Daniel" in
+                                // its third paragraph was graded 0 for showing nothing
+                                // relevant in its first 600 characters (2026-10-23), and
+                                // those are exactly the documents a body-phrase change
+                                // promotes. Keyword-in-context, as assessors are shown.
+                                put("context", keywordsInContext(hit.content, topic.query))
+                                // The first tags, values cut short: a NIP-29 `h` (which group), a
+                                // `title`, the `t` hashtags are often what a grade turns on, and the
+                                // first round had to be corrected for lacking them. Capped, because a
+                                // follow list's tags are its whole content.
+                                put("tags", worksheetTags(hit.tags))
+                                put("grade", JsonNull)
+                                put("by", JsonNull)
+                            },
+                        )
+                    }
+                }
+            }
+        Files.writeString(out, PRETTY.encodeToString(JsonArray.serializer(), rows) + "\n")
+        println("\npool: ${rows.size} unjudged hit(s) in the top $depth of ${pages.size} config(s) over ${topics.size} topic(s) -> $out")
+        println("grade each row 0-3 per docs/search-evaluation.md §4, set `by`, then: rankAb --merge $out")
+    }
+
+    /**
+     * Up to [KWIC_WINDOWS] windows of the content around the query — the whole
+     * typed phrase first, then each word — that lie BEYOND the excerpt. Empty
+     * when every match is already inside it.
+     */
+    private fun keywordsInContext(
+        content: String,
+        query: String,
+    ): String {
+        val words =
+            SearchQuery
+                .parse(query)
+                .terms
+                .split(Regex("\\s+"))
+                .filter { it.length > 2 }
+        val needles = listOf(words.joinToString(" ")).filter { words.size > 1 } + words
+        val windows = ArrayList<IntRange>()
+        for (needle in needles) {
+            var at = content.indexOf(needle, POOL_CONTENT_CHARS, ignoreCase = true)
+            while (at >= 0 && windows.size < KWIC_WINDOWS) {
+                if (windows.none { at in it }) windows += (at - KWIC_SPAN).coerceAtLeast(0)..(at + needle.length + KWIC_SPAN).coerceAtMost(content.length - 1)
+                at = content.indexOf(needle, at + needle.length, ignoreCase = true)
+            }
+        }
+        return windows.sortedBy { it.first }.joinToString(" … ") { "…" + content.substring(it.first, it.last + 1).replace('\n', ' ') + "…" }
+    }
+
+    private fun worksheetTags(raw: String): JsonArray =
+        JsonArray(
+            runCatching { Json.parseToJsonElement(raw).jsonArray }
+                .getOrDefault(JsonArray(emptyList()))
+                .take(POOL_TAGS)
+                .map { tag -> JsonArray(tag.jsonArray.take(3).map { JsonPrimitive(it.jsonPrimitive.content.take(POOL_TAG_CHARS)) }) },
+        )
+
+    /** Folds every graded row of a `--pool` worksheet into the judgments file. */
+    private fun merge(
+        sheet: Path,
+        judgmentsPath: Path,
+        defaultBy: String?,
+    ) {
+        val qrels = Judgments.load(judgmentsPath)
+        val today =
+            java.time.LocalDate
+                .now()
+                .toString()
+        var added = 0
+        var ungraded = 0
+        for (row in Json.parseToJsonElement(Files.readString(sheet)).jsonArray.map { it.jsonObject }) {
+            val grade = (row["grade"] as? JsonPrimitive)?.content?.toIntOrNull()
+            if (grade == null) {
+                ungraded++
+                continue
+            }
+            val by =
+                (row["by"] as? JsonPrimitive)?.content?.takeIf { it.isNotBlank() && it != "null" } ?: defaultBy
+                    ?: error("row ${row["topic"]}/${row["id"]} has no `by` and no --by was given — provenance is required (§5.3)")
+            qrels.put(row.getValue("topic").jsonPrimitive.content, row.getValue("id").jsonPrimitive.content, Judgments.Judgment(grade, by, today))
+            added++
+        }
+        qrels.write(judgmentsPath)
+        println("merged $added judgment(s) into $judgmentsPath ($ungraded row(s) left ungraded)")
+    }
+
+    /**
+     * A RUN FILE: `{ "<topic>": [ <event>, … ] }` in served order — what a
+     * relay's NIP-50 REQ returns, captured as-is, or what [writeRuns] wrote.
+     * Plain Nostr events (a `sig` is ignored), so a capture needs no
+     * conversion. Keys starting with `_` are documentation.
+     */
+    private fun loadRun(path: Path): Map<String, List<Hit>> =
+        Json
+            .parseToJsonElement(Files.readString(path))
+            .jsonObject
+            .filterKeys { !it.startsWith("_") }
+            .mapValues { (_, page) ->
+                page.jsonArray.map { e ->
+                    val o = e.jsonObject
+
+                    fun str(k: String) = (o[k] as? JsonPrimitive)?.content
+                    val tags = o["tags"]?.toString() ?: "[]"
+                    Hit(
+                        id = str("id")!!,
+                        createdAt = str("created_at")?.toLongOrNull() ?: 0L,
+                        kind = str("kind") ?: "?",
+                        label = labelOf(str("kind"), tags, str("content")) ?: str("id")!!.take(8),
+                        pubkey = str("pubkey").orEmpty(),
+                        content = str("content").orEmpty(),
+                        tags = tags,
+                    )
+                }
+            }
+
+    /** One run file per config, so a ranking from THIS cluster can be scored against another's later (§8.4). */
+    private fun writeRuns(
+        dir: Path,
+        topics: List<Topic>,
+        pages: Map<String, List<List<Hit>>>,
+    ) {
+        Files.createDirectories(dir)
+        for ((config, ranked) in pages) {
+            val run =
+                buildJsonObject {
+                    put("_doc", "rankAb run '$config': served order per topic (docs/search-evaluation.md §8.4)")
+                    topics.forEachIndexed { i, topic ->
+                        put(
+                            topic.key,
+                            buildJsonArray {
+                                ranked[i].forEach { h ->
+                                    add(
+                                        buildJsonObject {
+                                            put("id", h.id)
+                                            put("pubkey", h.pubkey)
+                                            put("created_at", h.createdAt)
+                                            put("kind", h.kind.toIntOrNull() ?: -1)
+                                            put("tags", runCatching { Json.parseToJsonElement(h.tags) }.getOrDefault(JsonArray(emptyList())))
+                                            put("content", h.content)
+                                        },
+                                    )
+                                }
+                            },
+                        )
+                    }
+                }
+            Files.writeString(dir.resolve("run_$config.json"), Json.encodeToString(JsonObject.serializer(), run) + "\n")
+        }
+        println("wrote ${pages.size} run file(s) to $dir")
+    }
+
+    /**
+     * Grades in [sheet] (a --pool-shaped worksheet a second assessor filled)
+     * against the stored ones, on the documents both graded.
+     */
+    private fun agreement(
+        sheet: Path,
+        qrels: Judgments,
+    ) {
+        val rows = Json.parseToJsonElement(Files.readString(sheet)).jsonArray.map { it.jsonObject }
+        val pairs = ArrayList<Pair<Int, Int>>()
+        val byTopic = LinkedHashMap<String, MutableList<Pair<Int, Int>>>()
+        for (row in rows) {
+            val second = (row["grade"] as? JsonPrimitive)?.content?.toIntOrNull() ?: continue
+            val topic = row.getValue("topic").jsonPrimitive.content
+            val first = qrels.gradeOf(topic, row.getValue("id").jsonPrimitive.content) ?: continue
+            pairs += first to second
+            byTopic.getOrPut(topic) { ArrayList() } += first to second
+        }
+        val r = Agreement.of(pairs)
+        println("agreement over ${r.n} document(s) graded in both (stored = first assessor, $sheet = second)")
+        println("  exact %.2f   within one %.2f   quadratic-weighted kappa %s".format(r.exact, r.withinOne, if (r.kappa.isNaN()) "-" else "%.3f".format(r.kappa)))
+        println("  confusion (rows: stored grade 0..3, columns: second assessor 0..3)")
+        r.matrix.forEachIndexed { g, row -> println("    $g  " + row.joinToString(" ") { "%4d".format(it) }) }
+        val higher = pairs.count { it.second > it.first }
+        val lower = pairs.count { it.second < it.first }
+        println("  second assessor higher on $higher, lower on $lower — a lenient first assessor shows as 'lower' mass")
+        val worst =
+            byTopic
+                .mapValues { (_, p) -> p.count { it.first != it.second } }
+                .filterValues { it > 0 }
+                .entries
+                .sortedByDescending { it.value }
+        if (worst.isNotEmpty()) println("  disagreements by topic: " + worst.joinToString("  ") { "'${it.key}' ${it.value}/${byTopic.getValue(it.key).size}" })
+    }
+
+    /** Judgments a topic needs before nDCG means anything (see [scoreOf]). */
+    private const val GRADED_MIN = 5
+
+    /** judged@10 below this and a condensed nDCG is flagged: judge the pool first (§5.2). */
+    private const val JUDGED_FLOOR = 0.9
+
+    /** Per-topic losses larger than this are listed by name in the verdict. */
+    private const val LOSS_REPORT = 0.1
+
+    /** The non-inferiority margin on mean nDCG@10 a change must clear (§6.2). */
+    private const val NON_INFERIORITY = 0.01
+
+    /** How much of each pooled event's content the worksheet carries — enough to grade, not the whole article. */
+    private const val POOL_CONTENT_CHARS = 600
+
+    /** Keyword-in-context windows past the excerpt: how many, and how much text either side. */
+    private const val KWIC_WINDOWS = 3
+    private const val KWIC_SPAN = 200
+
+    /** How many of each pooled event's tags the worksheet shows, and how much of each value. */
+    private const val POOL_TAGS = 16
+    private const val POOL_TAG_CHARS = 80
+
+    @OptIn(ExperimentalSerializationApi::class)
+    private val PRETTY =
+        Json {
+            prettyPrint = true
+            prettyPrintIndent = "  "
+        }
 
     /**
      * What to call a hit on a dumped page. The schema's summary carries the
@@ -376,6 +916,11 @@ object RankAb {
         val scattered: Double = 0.0,
         val coverage: Double = 0.0,
         val perfect: Double = 0.0,
+        // For the quality columns: the author-share guardrail and the --pool worksheet.
+        val pubkey: String = "",
+        val content: String = "",
+        // The raw tag array, so --write-runs saves an event a run file can be re-read from.
+        val tags: String = "[]",
     )
 
     /**
@@ -398,37 +943,54 @@ object RankAb {
     /** One query with knob overrides; returns the ranked hits. Same YQL the library sends, always. */
     private fun search(
         base: String,
-        case: JsonObject,
+        text: String,
         profile: String,
         observer: String?,
-        rankKey: String?,
         hits: Int,
         overrides: Map<String, Double>,
         nowSecs: Long?,
         kinds: List<Int>,
     ): List<Hit> {
-        val text = case.getValue("query").jsonPrimitive.content
-        // Case text feeds EventQuery.search RAW — below the store's syntax
-        // parser, so `-word`/quotes in a rank case would be loose words here,
-        // not exclusions/phrases. Deliberate (this A/Bs engine profiles on
-        // identical recall); route cases through FilterMapping if they ever
-        // adopt the term syntax.
+        // Case text goes through the relay's GRAMMAR first — Quartz's
+        // SearchQuery, the same parse the store's FilterMapping.toEventQuery
+        // starts from (that function is `internal` to :store, so its policies
+        // are mirrored here, not called): `-word` / `-"phrase"` exclude,
+        // `"quoted"` spans are phrases, `include:spam` drops the gate but keeps
+        // the trust curve anchored at 0, `language:pt|es` adds the stemmed
+        // body column, and an unknown `key:value` extension is IGNORED, as
+        // NIP-50 asks. Until 2026-10-23 the text went in RAW, so a case like
+        // `group:rspuyeetackckp92 testin` required the literal token
+        // `group:rspuyeetackckp92`, matched nothing, and scored a page the
+        // relay never serves — invisible until production's pages became a
+        // baseline (docs/search-evaluation.md §8.5). Not mirrored: NIP-30
+        // shortcode rewriting, `sort:` / `filter:` (the profile and floor are
+        // this harness's own knobs).
+        val parsed = SearchQuery.parse(text)
         val vq =
             EventYql.build(
                 EventQuery(
-                    search = text,
+                    search = parsed.terms.ifEmpty { null },
+                    phrases = parsed.phrases,
+                    notSearch = parsed.notTerms + parsed.notPhrases,
+                    includeSpam = parsed.includeSpam,
+                    stemLanguage =
+                        parsed.language
+                            ?.lowercase()
+                            ?.substringBefore('-')
+                            ?.substringBefore('_')
+                            ?.takeIf { it in StemText.LANGUAGES },
                     kinds = kinds,
                     observer = observer,
-                    rankKey = rankKey,
-                    followersKey = rankKey,
+                    rankKey = observer?.let { lensOf(base, it).first },
+                    followersKey = observer?.let { lensOf(base, it).second },
                     ranking = profile,
-                    minRank = observer?.let { 2.0 },
+                    minRank = observer?.let { if (parsed.includeSpam) 0.0 else 2.0 },
                     nowSecs = nowSecs,
                 ),
             ) ?: return emptyList()
         val body =
             buildJsonObject {
-                put("yql", vq.yql)
+                put("yql", withNameDf(base, vq.yql, parsed))
                 put("hits", hits.toString())
                 put("ranking", vq.ranking)
                 vq.params.forEach { (k, v) -> put(k, v) }
@@ -470,9 +1032,150 @@ object RankAb {
                     scattered = feature("scattered_match"),
                     coverage = feature("naming_coverage"),
                     perfect = feature("perfect_match"),
+                    pubkey = str("pubkey").orEmpty(),
+                    content = str("content").orEmpty(),
+                    tags = str("tags") ?: "[]",
                 )
             }
     }
+
+    /**
+     * The observer's lens RESOLVED to service keys — what `user_q` and
+     * `followers_q` really carry since trust went service-keyed
+     * (docs/service-keyed-trust.md). The store does this per query off its
+     * provider map; this does it once per observer off the cluster's own
+     * kind 10040 (`30382:rank` / `30382:followers`), so the page is the one
+     * the relay serves. Before this, an `--observer` run sent the OBSERVER as
+     * the key, matched no tensor cell, and the min_rank gate emptied every
+     * page. `--lens-key` overrides both (a cluster fed without the 10040).
+     */
+    private fun lensOf(
+        base: String,
+        observer: String,
+    ): Pair<String?, String?> =
+        lensCache.getOrPut(observer) {
+            lensOverride?.let { return@getOrPut it to it }
+            val body =
+                buildJsonObject {
+                    put("yql", "select * from event where kind = 10040 and pubkey contains \"$observer\"")
+                    put("hits", "1")
+                }.toString()
+            val resp =
+                HTTP.send(
+                    HttpRequest
+                        .newBuilder(URI.create("$base/search/"))
+                        .header("Content-Type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString(body))
+                        .build(),
+                    HttpResponse.BodyHandlers.ofString(),
+                )
+            val tags =
+                runCatching {
+                    Json
+                        .parseToJsonElement(resp.body())
+                        .jsonObject["root"]
+                        ?.jsonObject
+                        ?.get("children")
+                        ?.jsonArray
+                        ?.firstOrNull()
+                        ?.jsonObject
+                        ?.get("fields")
+                        ?.jsonObject
+                        ?.get("tags")
+                        ?.jsonPrimitive
+                        ?.content
+                        ?.let { Json.parseToJsonElement(it).jsonArray.map { t -> t.jsonArray.map { v -> v.jsonPrimitive.content } } }
+                }.getOrNull().orEmpty()
+
+            fun service(type: String) = tags.firstOrNull { it.size > 1 && it[0] == "30382:$type" }?.get(1)
+            val lens = service("rank") to service("followers")
+            if (lens.first == null) System.err.println("observer $observer has no kind 10040 naming a 30382:rank service here — it ranks as trusting nobody")
+            lens
+        }
+
+    private val lensCache = HashMap<String, Pair<String?, String?>>()
+
+    /** `--name-df`: word -> share of production documents carrying it in a naming field. */
+    private var nameDf: Map<String, Double> = emptyMap()
+
+    /**
+     * Makes this cluster's NAME-FIELD document frequency read as production's.
+     * `event.sd`'s perfect_share() damps the perfect-match rung by how common
+     * the query word is as a name (queryTermDocumentFrequency over name,
+     * display_name and search_primary, over num_docs_indexed). Those are
+     * statistics of the LOCAL index, and an evaluation corpus is drawn from
+     * the topics' own pages, so its names are full of the very words it
+     * queries: "bitcoin" names 7% of it, against a fraction of a percent of
+     * production. So, for a one-word query with a measured [nameDf], the three
+     * naming-field clauses are rewritten from `userInput` to `contains` with a
+     * `documentFrequency` annotation, the per-query override Vespa's
+     * statistics honour. The frequency is scaled to THIS cluster's document
+     * count because the expression divides by the local num_docs_indexed, not
+     * by the override's count. The label is kept: itemRawScore(mtch_exact)
+     * reads it. Matching is unchanged for a single plain word, the only shape
+     * rewritten; anything with punctuation is left alone.
+     */
+    private fun withNameDf(
+        base: String,
+        yql: String,
+        parsed: SearchQuery,
+    ): String {
+        val word = parsed.terms.trim()
+        val ratio = nameDf[word.lowercase()] ?: return yql
+        if (parsed.phrases.isNotEmpty() || !word.all { it.isLetterOrDigit() }) return yql
+        val docs = localDocs.getOrPut(base) { countDocs(base) }
+        val frequency = Math.round(ratio * docs)
+        var out = yql
+        for (field in listOf("name", "display_name", "search_primary")) {
+            val clause = "({defaultIndex:\"$field\",label:\"mtch_exact\"}userInput(@w0))"
+            check(clause in out) { "--name-df: no `$field` exact clause to annotate in the YQL; EventYql changed shape" }
+            out =
+                out.replace(
+                    clause,
+                    "($field contains ({label:\"mtch_exact\",documentFrequency:{frequency:$frequency,count:$docs}}\"$word\"))",
+                )
+        }
+        return out
+    }
+
+    private val localDocs = HashMap<String, Long>()
+
+    private fun countDocs(base: String): Long {
+        val body =
+            buildJsonObject {
+                put("yql", "select * from event where true")
+                put("hits", "0")
+            }.toString()
+        val resp =
+            HTTP.send(
+                HttpRequest
+                    .newBuilder(URI.create("$base/search/"))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(body))
+                    .build(),
+                HttpResponse.BodyHandlers.ofString(),
+            )
+        val root = Json.parseToJsonElement(resp.body()).jsonObject["root"]!!.jsonObject
+        // The schema divides by num_docs_indexed, a PER-NODE count, and this is
+        // the cluster's: on two content nodes every injected ratio would read
+        // double and the sweep's verdict would be biased without a sign of it.
+        val nodes =
+            root["coverage"]
+                ?.jsonObject
+                ?.get("nodes")
+                ?.jsonPrimitive
+                ?.content
+                ?.toInt() ?: 1
+        check(nodes == 1) { "--name-df needs a single-content-node evaluation cluster; this one answered from $nodes" }
+        return root["fields"]!!
+            .jsonObject["totalCount"]!!
+            .jsonPrimitive
+            .content
+            .toLong()
+    }
+
+    /** `--lens-key`, when given: the service key to rank by, whatever the 10040 says. */
+    private var lensOverride: String? = null
 
     private val HTTP: HttpClient = HttpClient.newHttpClient()
 }

@@ -38,6 +38,20 @@ measures what the emitted query actually does:
   no re-feed. The YQL comes from `EventYql` itself, so it is byte-identical to
   production's. Cases live in `benchmark/rank_cases.json` (`query` → expected
   doc-id prefix); **add a case every time someone reports a bad search**.
+  With graded judgments (`benchmark/search_judgments.json`) every row also
+  reports nDCG@10 / judged@10 / RBO against the baseline, and the run ends in a
+  paired per-topic VERDICT (randomization test, Holm-adjusted, with the minimum
+  detectable effect and every topic that lost > 0.1 by name). `--pool <file>`
+  writes the blind worksheet of what nobody has graded yet; `--merge <file>`
+  folds the grades back. `--run production=<file>` scores a captured page set
+  (`capture_eval.py` writes production's) as a config, `--write-runs <dir>`
+  saves this cluster's pages for a later two-cluster comparison, and
+  `--agreement <sheet>` reports weighted κ for a human audit of LLM grades.
+  `--name-df benchmark/name_df.json` makes a query-drawn corpus read
+  production's NAME frequencies (measured by `sample_names.py`), which the
+  `name_df_*` configs' damped perfect-match rung depends on.
+  **The protocol — what to run, how to grade, what counts
+  as a win — is [`docs/search-evaluation.md`](../docs/search-evaluation.md).**
 
   ```bash
   ./gradlew :benchmark:rankAb --args="--vespa http://localhost:8080"
@@ -45,7 +59,24 @@ measures what the emitted query actually does:
   # one query, the whole page, per config — kind, title, band, §12.2 flags
   ./gradlew :benchmark:rankAb --args="--vespa http://localhost:8080 --observer 460c25…065c \
     --configs pre_split,baseline --dump 'Verified Human' --hits 13"
+  # judge what a change surfaced, then fold the grades in
+  ./gradlew :benchmark:rankAb --args="--observer 460c25…065c --configs baseline,my_candidate --pool /tmp/pool.json"
+  ./gradlew :benchmark:rankAb --args="--merge /tmp/pool.json --by human:<you>"
   ```
+
+- **`ThinSplitPhraseIT`** (test, `@Tag("integration")`) — the `book of daniel`
+  fixes on a real Vespa (`event.sd` `w_split_min_coverage`, `w_phrase_pop`;
+  `docs/search-evaluation.md` §9): a title carrying one word of three is scored
+  on the body rung, a body holding the phrase reads `body_phrase` 1 and
+  outranks it, the exact title leads, and a two-word query is untouched. Run
+  with `-Pintegration`.
+
+- **`NameFrequencyRungIT`** (test, `@Tag("integration")`) — the perfect-match
+  rung damped by how common the query word is as a name (`event.sd`
+  `perfect_share()`, `docs/search-evaluation.md` §9) on a real Vespa: the
+  small-index guard keeps it whole, a word labelling most of the corpus loses
+  it, a rare name and any multi-word query keep it, and lo >= hi switches it
+  off. Run with `-Pintegration`.
 
 - **`FieldCoverageRankIT`** (test, `@Tag("integration")`) — `event.sd` §12.2 on
   a real Vespa: the same synthetic shapes the section below measures, asserting
