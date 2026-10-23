@@ -192,6 +192,12 @@ class VespaEventIndex(
      * `InMemoryEventIndex`, which has no rank profiles at all.
      */
     private val ledger: CostLedger? = null,
+    /**
+     * Build the feed client with the index (true), so a feed setting it refuses fails here, or on
+     * the first write (false). Building it is a Jetty pool and a handshake with Vespa, ~0.5 s of a
+     * boot: a read-only store, which never writes, skips it.
+     */
+    eagerFeed: Boolean = true,
 ) : EventIndex {
     private val documentApi = EndpointRotation(feedEndpoints, baseUrl)
 
@@ -203,7 +209,7 @@ class VespaEventIndex(
     /** The endpoint for one `/search/` request — round-robin across [queryEndpoints]. */
     private fun queryEndpoint(): String = searchApi.next()
 
-    private val feed = VespaFeed(documentApi.urls)
+    private val feed = VespaFeed(documentApi.urls, eager = eagerFeed)
 
     private val http = VespaHttp()
 

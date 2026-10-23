@@ -415,8 +415,11 @@ class VespaEventStore internal constructor(
             // The ledger reaches the engine client too: rank profile, docs
             // matched and Vespa's own timing are only knowable from inside the
             // thing that speaks to Vespa (docs/telemetry.md §3.5).
-            val eventIndex = VespaEventIndex(url, feedEndpoints = feedEndpoints, queryEndpoints = queryEndpoints, ledger = ledger)
-            val reputations = VespaReputationIndex(url, endpoints = feedEndpoints)
+            // The events' feed client is built here, unless nothing will write: a feed setting it
+            // refuses stops the store from opening. The reputations' reads the same settings, so it
+            // is left to its first write, and the open pays one client's handshake instead of two.
+            val eventIndex = VespaEventIndex(url, feedEndpoints = feedEndpoints, queryEndpoints = queryEndpoints, ledger = ledger, eagerFeed = !readOnly)
+            val reputations = VespaReputationIndex(url, endpoints = feedEndpoints, eagerFeed = false)
             // METERED AT THE ENGINE SEAM: everything below this line is what
             // actually reached Vespa, whichever route asked for it — the
             // store's own reads, the projection's, a sweep's. Nothing above

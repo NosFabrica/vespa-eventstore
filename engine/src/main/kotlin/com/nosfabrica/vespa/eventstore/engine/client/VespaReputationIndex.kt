@@ -52,10 +52,12 @@ class VespaReputationIndex(
     baseUrl: String = System.getenv("VESPA_URL") ?: "http://localhost:8080",
     /** The document-API containers; empty = just [baseUrl]. Requests round-robin across them. */
     endpoints: List<String> = emptyList(),
+    /** Build the feed client with the index, or on the first write: [VespaEventIndex]'s `eagerFeed`. */
+    eagerFeed: Boolean = true,
 ) : ReputationIndex {
     private val documentApi = EndpointRotation(endpoints, baseUrl)
 
-    private val feed = VespaFeed(documentApi.urls)
+    private val feed = VespaFeed(documentApi.urls, eager = eagerFeed)
 
     private val http = VespaHttp()
 
