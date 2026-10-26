@@ -3293,6 +3293,26 @@ longer gzips an ack per document). Per read shape, latency dropped 6-16%. After 
 trust state was checked whole: the marker drained to nothing and 83,874 reputation documents
 stood for the slice's 83,873 card subjects.
 
+**The write through OkHttp.** The per-document feed client is Jetty's: on top of the body we
+write, each document costs a `getBytes`, a gzip into a fresh `Deflater` (`VESPA_FEED_COMPRESSION`),
+Jetty's request buffers and a Jackson parser for its ack. The bundled batch handler
+(`VESPA_FEED_BATCH`) already went through `VespaHttp`'s OkHttp client, but built each batch as one
+string: a hundred follow lists are megabytes, three humongous copies a batch. It now streams each
+document's body into the socket (`VespaBatchFeed.operations`). The same ingest, each arm on a
+fresh Vespa (the feed client arm also has `EventDoc.feedJson` sized for its near arrays):
+
+| write path | wall | relay CPU | Vespa CPU | allocated | GC events | humongous cycles |
+|---|---:|---:|---:|---:|---:|---:|
+| feed client, `/document/v1` | 470 s | 396 s | 1,034 s | 19.0 GB | 283 | 1 |
+| batch handler, 100 per request, one string | 350 s | 235 s | 807 s | 18.9 GB | 436 | 86 |
+| batch handler, 100 per request, streamed | **351 s** | **223 s** | **824 s** | **10.7 GB** | 298 | 2 |
+
+Against the feed client the streamed batch path takes a quarter off the wall clock, 44% off the
+relay's CPU, a fifth off Vespa's and 44% off the relay's allocation. The default stays off:
+replacing the feed client outright would mean rebuilding what it does that the batch path does
+not need, its adaptive throttle, per-document ordering of operations on one id (the trust cell
+updates rely on it), and a pool of HTTP/2 connections where OkHttp multiplexes one per host.
+
 **What is left** on the read path is proportional to the bytes served: the summary strings
 decoded per hit (13%), the frame quartz builds per event and Ktor's UTF-8 encode of it (21%
 together), and the response segments themselves. Taking it further means a frame written as

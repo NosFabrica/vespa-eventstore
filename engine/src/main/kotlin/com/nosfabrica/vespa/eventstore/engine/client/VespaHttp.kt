@@ -33,6 +33,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
 import okhttp3.Request
+import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okio.Buffer
@@ -148,6 +149,19 @@ internal class VespaHttp {
                 .Builder()
                 .url(url)
                 .post(body.toRequestBody(jsonMedia))
+                .build(),
+        )
+
+    /** POST [body] to [url], retrying transient overload like [postJson]: a body written as it is sent. */
+    suspend fun post(
+        url: String,
+        body: RequestBody,
+    ): HttpResp =
+        send(
+            Request
+                .Builder()
+                .url(url)
+                .post(body)
                 .build(),
         )
 
