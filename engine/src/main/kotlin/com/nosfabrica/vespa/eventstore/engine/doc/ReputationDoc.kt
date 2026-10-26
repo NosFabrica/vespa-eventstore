@@ -57,6 +57,19 @@ data class ReputationDoc(
             putJsonObject("follower_counts") { followerCounts.forEach { (service, count) -> put(service.hex, JsonPrimitive(count)) } }
         }
 
+    /** The feed body, `{"fields": [indexFields]}`, written in one pass: the marker's runs to thousands of cells. */
+    fun feedJson(): String {
+        val out = JsonChars(160 + (influenceScores.size + followerCounts.size) * 80).raw("{\"fields\":{")
+        out.key("pubkey", first = true).string(pubkey)
+        out.key("influence_scores").raw('{')
+        var i = 0
+        influenceScores.forEach { (service, rank) -> out.key(service.hex, i++ == 0).raw(rank.toString()) }
+        out.raw('}').key("follower_counts").raw('{')
+        i = 0
+        followerCounts.forEach { (service, count) -> out.key(service.hex, i++ == 0).raw(count.toString()) }
+        return out.raw("}}}").toString()
+    }
+
     companion object {
         /**
          * Parse a document-API `fields` object. Mapped tensors arrive in TWO

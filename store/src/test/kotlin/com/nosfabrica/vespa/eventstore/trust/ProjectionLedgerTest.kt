@@ -433,11 +433,11 @@ class ProjectionLedgerTest {
             // The peer's write-ahead, already in the shared marker.
             reputations.updateCells(listOf(ReputationCells(ProjectionLedger.MARKER_KEY, ServiceKey(peerSubject), 1, null)))
 
-            // A batch past MAX_CELL_ADDS: insurance goes in as one document put.
-            projection.putAll(manySubjects(ProjectionLedger.MAX_CELL_ADDS + 20).map { cardFor(it, 70).toDoc() })
+            // A bulk batch: its insurance goes in as one call of cell adds.
+            projection.putAll(manySubjects(84).map { cardFor(it, 70).toDoc() })
 
             val keys = assertNotNull(reputations.get(ProjectionLedger.MARKER_KEY), "the marker stands while work is pending").influenceScores.keys
-            assertTrue(ServiceKey(peerSubject) in keys, "the peer's insurance must survive this process's bulk put: $keys")
+            assertTrue(ServiceKey(peerSubject) in keys, "the peer's insurance must survive this process's bulk write-ahead: $keys")
         }
 
     /**
@@ -512,9 +512,8 @@ class ProjectionLedgerTest {
         }
 
     /**
-     * A BULK write-ahead mid-round rewrites the marker as a whole document
-     * (past DELTA_ADD_MAX the write-ahead is one put, not cell adds). The
-     * round's own snapshot must survive that rewrite: a version of this ledger
+     * A BULK write-ahead mid-round, which once rewrote the marker as a whole
+     * document. The round's own snapshot must survive it: a version of this ledger
      * that TOOK its snapshot out of memory computed the write-ahead without
      * it, so the marker stopped naming the subjects still being derived — a
      * crash before the round's final rewrite would have lost them for good.
@@ -531,8 +530,8 @@ class ProjectionLedgerTest {
                 body()
                 if (!landed && d.rankOf(subject) == 40) {
                     landed = true
-                    // 100 cards for OTHER subjects: a delta past DELTA_ADD_MAX,
-                    // persisted as one marker-doc put.
+                    // 100 cards for OTHER subjects: a bulk delta, persisted
+                    // as one call of marker cell adds.
                     d.projection.putAll((1..100).map { i -> UserAssertionEvent(id(), service, next(), arrayOf(arrayOf("d", i.toString(16).padStart(64, 'e')), arrayOf("rank", "1")), "", "").toDoc() })
                     val marker = assertNotNull(d.marker(), "the marker still stands")
                     assertTrue(ServiceKey(service) in marker.followerCounts, "the marker still names the service the round is walking")
@@ -545,7 +544,7 @@ class ProjectionLedgerTest {
     /**
      * INSURANCE THAT PRODUCED NO WORK must not leave the marker standing. A
      * batch of cards by a signer no 10040 maps insures every subject (one
-     * marker put past DELTA_ADD_MAX) and then writes no cells; with nothing
+     * bulk marker write-ahead) and then writes no cells; with nothing
      * pending no drain ever rewrote the marker, so the next boot inherited
      * every one of those subjects as drift to re-derive to nothing.
      */

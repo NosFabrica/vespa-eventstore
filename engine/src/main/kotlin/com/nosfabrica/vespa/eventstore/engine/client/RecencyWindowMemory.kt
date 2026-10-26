@@ -21,6 +21,8 @@
 package com.nosfabrica.vespa.eventstore.engine.client
 
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
+import java.nio.ByteBuffer
+import java.security.MessageDigest
 
 /**
  * WHERE THE LAST READ OF THIS SHAPE FOUND ITS PAGE, so the next one starts
@@ -140,24 +142,89 @@ internal class RecencyWindowMemory(
         now: Long,
     ): Key {
         val gated = q.usesGatedProfile()
-        val canonical =
-            buildString {
-                append("k=").append(q.kinds.sorted())
-                append("|a=").append(q.authors.map { it.lowercase() }.sorted())
-                append("|o=").append(q.owners.map { it.lowercase() }.sorted())
-                append("|t=").append(q.tags.toSortedMap().mapValues { (_, v) -> v.sorted() })
-                append("|T=").append(q.tagsAll.toSortedMap().mapValues { (_, v) -> v.sorted() })
-                append("|n=").append(q.notSearch.sorted())
-                append("|g=").append(gated)
-                if (gated) append("|r=").append(q.rankKey).append("|m=").append(q.minRank)
-                append("|age=").append(ageBucket(now - anchor))
+        val d = ShapeDigest()
+        d.text("k=").items(q.kinds.sorted())
+        d.text("|a=").items(q.authors.map { it.lowercase() }.sorted())
+        d.text("|o=").items(q.owners.map { it.lowercase() }.sorted())
+        d.text("|t=").tags(q.tags)
+        d.text("|T=").tags(q.tagsAll)
+        d.text("|n=").items(q.notSearch.sorted())
+        d.text("|g=").text(gated.toString())
+        if (gated) {
+            d
+                .text("|r=")
+                .text(q.rankKey.toString())
+                .text("|m=")
+                .text(q.minRank.toString())
+        }
+        d.text("|age=").text(ageBucket(now - anchor).toString())
+        return d.key()
+    }
+
+    /**
+     * SHA-256 over a shape's canonical text, fed a buffer at a time rather than
+     * built as one string first: a feed's author list alone runs to tens of
+     * kilobytes, and every recency read keys twice.
+     */
+    private class ShapeDigest {
+        private val sha = MessageDigest.getInstance("SHA-256")
+        private val buf = ByteArray(1024)
+        private var n = 0
+
+        /**
+         * Each char as UTF-8, a lone surrogate encoded as itself: unambiguous, and one byte for
+         * the hex that is most of a key. The key is process-local, so only determinism matters.
+         */
+        fun text(s: String): ShapeDigest {
+            for (c in s) {
+                if (n + 3 > buf.size) flush()
+                val code = c.code
+                when {
+                    code < 0x80 -> {
+                        buf[n++] = code.toByte()
+                    }
+
+                    code < 0x800 -> {
+                        buf[n++] = (0xC0 or (code shr 6)).toByte()
+                        buf[n++] = (0x80 or (code and 0x3F)).toByte()
+                    }
+
+                    else -> {
+                        buf[n++] = (0xE0 or (code shr 12)).toByte()
+                        buf[n++] = (0x80 or ((code shr 6) and 0x3F)).toByte()
+                        buf[n++] = (0x80 or (code and 0x3F)).toByte()
+                    }
+                }
             }
-        val digest =
-            java.security.MessageDigest
-                .getInstance("SHA-256")
-                .digest(canonical.toByteArray(Charsets.UTF_8))
-        val buf = java.nio.ByteBuffer.wrap(digest)
-        return Key(buf.getLong(), buf.getLong())
+            return this
+        }
+
+        fun items(values: List<Any>): ShapeDigest {
+            text("[")
+            values.forEachIndexed { i, v -> (if (i > 0) text(", ") else this).text(v.toString()) }
+            return text("]")
+        }
+
+        fun tags(tags: Map<String, List<String>>): ShapeDigest {
+            text("{")
+            var first = true
+            tags.toSortedMap().forEach { (name, values) ->
+                (if (first) this else text(", ")).text(name).text("=").items(values.sorted())
+                first = false
+            }
+            return text("}")
+        }
+
+        fun key(): Key {
+            flush()
+            val digest = ByteBuffer.wrap(sha.digest())
+            return Key(digest.getLong(), digest.getLong())
+        }
+
+        private fun flush() {
+            sha.update(buf, 0, n)
+            n = 0
+        }
     }
 
     companion object {
