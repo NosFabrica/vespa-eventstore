@@ -130,4 +130,15 @@ class JsonCharsTest {
         // The tags field is JSON inside a JSON string: each unit goes through the TWICE table.
         assertEquals(spec(everyUnit, near = false, edge = false), everyUnit.feedJson(includeNear = false, includeEdge = false))
     }
+
+    @Test
+    fun `the reputation feed body is its indexFields object, byte for byte`() {
+        val docs =
+            listOf(
+                ReputationDoc("ab".repeat(32)),
+                ReputationDoc("ab".repeat(32), mapOf(ServiceKey("cd".repeat(32)) to 87), mapOf(ServiceKey("ef".repeat(32)) to 1234.0)),
+                ReputationDoc("projection-dirty", (1..50).associate { ServiceKey(it.toString(16).padStart(64, '0')) to 1 }, mapOf(ServiceKey("01".repeat(32)) to 1.0E7)),
+            )
+        for (doc in docs) assertEquals(buildJsonObject { put("fields", doc.indexFields()) }.toString(), doc.feedJson())
+    }
 }
