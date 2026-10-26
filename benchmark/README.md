@@ -2743,7 +2743,7 @@ store's own queries (80 NIP-50 searches, 20 `p`-tag, 20 `e`-tag, 20 author, 2 ki
 every event exactly twice, with the same relevance, the same rank features (`matchfeatures`) and
 the same summary, 1,318 hits in all.
 
-**The bundled handler (prototype, `VESPA_FEED_BATCH`).** Not that endpoint, but the same thing
+**The bundled handler (`VESPA_FEED_BATCH`).** Not that endpoint, but the same thing
 through supported API: `BatchFeedHandler` (module `:bundle`, packed into `vespa-app.zip` under
 `components/` and bound at `/eventstore/v1/feed`) takes a JSON array of `/document/v1`-shaped
 operations, dispatches each through the container's own document API (`DocumentAccess`, one
@@ -2754,7 +2754,8 @@ re-put through the feed client, a 404 (a package without the handler) parks the 
 five minutes before the next batch tries again (`feedStatus()` and the `feed.batch.parked` gauge
 say so meanwhile; it used to switch the path off for the life of the process, silently), and a
 batch the schema refuses (a fed column it lacks) takes the feed-client path whose
-schema-fallback net then leaves that column out of later batches. Off by default.
+schema-fallback net then leaves that column out of later batches. On by default, at 100 per
+request, since 2026-10-26 (below).
 
 Measured on another host than the tables above, after this session's container was recycled: the
 same arms cost 1.7-2x the CPU per put (the bundle is not why: the package WITHOUT it measured
@@ -3308,10 +3309,12 @@ fresh Vespa (the feed client arm also has `EventDoc.feedJson` sized for its near
 | batch handler, 100 per request, streamed | **351 s** | **223 s** | **824 s** | **10.7 GB** | 298 | 2 |
 
 Against the feed client the streamed batch path takes a quarter off the wall clock, 44% off the
-relay's CPU, a fifth off Vespa's and 44% off the relay's allocation. The default stays off:
-replacing the feed client outright would mean rebuilding what it does that the batch path does
-not need, its adaptive throttle, per-document ordering of operations on one id (the trust cell
-updates rely on it), and a pool of HTTP/2 connections where OkHttp multiplexes one per host.
+relay's CPU, a fifth off Vespa's and 44% off the relay's allocation, so it is now the default
+(`VESPA_FEED_BATCH` unset means 100; `0` writes one put per request). The feed client stays: it
+is the fallback for every document the handler does not confirm, and replacing it outright would
+mean rebuilding what it does that the batch path does not need, its adaptive throttle,
+per-document ordering of operations on one id (the trust cell updates rely on it), and a pool of
+HTTP/2 connections where OkHttp multiplexes one per host.
 
 **What is left** on the read path is proportional to the bytes served: the summary strings
 decoded per hit (13%), the frame quartz builds per event and Ktor's UTF-8 encode of it (21%

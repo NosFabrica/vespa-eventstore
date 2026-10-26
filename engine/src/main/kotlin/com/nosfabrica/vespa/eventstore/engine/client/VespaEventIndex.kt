@@ -176,10 +176,11 @@ class VespaEventIndex(
     private val bodyEdgeFeed: Boolean =
         System.getenv("VESPA_BODY_EDGE")?.let { it == "1" || it.equals("true", ignoreCase = true) } ?: false,
     /**
-     * PROTOTYPE: documents per request through the bundled batch handler ([VespaBatchFeed]),
-     * `VESPA_FEED_BATCH`; 0 (the default) writes every put through `/document/v1` as before.
+     * Documents per request through the bundled batch handler ([VespaBatchFeed]),
+     * `VESPA_FEED_BATCH`, default [DEFAULT_FEED_BATCH]; 0 or 1 writes every put through
+     * `/document/v1`. A document the handler does not confirm is re-put through the feed client.
      */
-    feedBatch: Int = System.getenv("VESPA_FEED_BATCH")?.toIntOrNull() ?: 0,
+    feedBatch: Int = System.getenv("VESPA_FEED_BATCH")?.toIntOrNull() ?: DEFAULT_FEED_BATCH,
     /**
      * WHERE ENGINE-LEVEL COST IS PUBLISHED, or null to publish none.
      *
@@ -2257,6 +2258,13 @@ class VespaEventIndex(
          * deadline that starts when it is enqueued (see [putAll]).
          */
         const val FEED_CHUNK = 4_096
+
+        /**
+         * [feedBatch] unless `VESPA_FEED_BATCH` says otherwise: past 100 a request the gain
+         * flattens, and a batch of 100 took a quarter off a production ingest's wall clock and 44%
+         * off the relay's CPU against one put per request (benchmark/README.md).
+         */
+        const val DEFAULT_FEED_BATCH = 100
 
         /** Batches in flight at once on the batched path ([VespaBatchFeed]). */
         const val BATCH_CONCURRENCY = 8
