@@ -125,7 +125,7 @@ internal class VespaVisits(
                 "&concurrency=$bucketConcurrency"
         val resp = http.getVisit(resumeFrom?.let { "$base&continuation=$it" } ?: base)
         require(resp.statusCode() < 400) { "vespa visit ${resp.statusCode()}: ${resp.body().take(300)}" }
-        val env = VESPA_JSON.decodeFromString<DocVisitEnvelope>(resp.body())
+        val env = resp.decode(VESPA_JSON, DocVisitEnvelope.serializer())
         return DocsPage(env.documents.mapNotNull { it.fields?.toDoc(withNearState = true) }, env.continuation)
     }
 
@@ -147,7 +147,7 @@ internal class VespaVisits(
         while (true) {
             val resp = http.getVisit(continuation?.let { "$base&continuation=$it" } ?: base)
             require(resp.statusCode() < 400) { "vespa visit ${resp.statusCode()}: ${resp.body().take(300)}" }
-            val env = VESPA_JSON.decodeFromString<PagedVisitEnvelope>(resp.body())
+            val env = resp.decode(VESPA_JSON, PagedVisitEnvelope.serializer())
             if (env.documents.isNotEmpty()) emit(env.documents.map { VisitedDoc(it.id, it.fields) })
             continuation = env.continuation ?: return
         }

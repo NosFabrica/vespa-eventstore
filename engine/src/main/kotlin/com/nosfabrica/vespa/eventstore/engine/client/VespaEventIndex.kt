@@ -33,6 +33,7 @@ import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.ScoredHit
 import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
+import com.nosfabrica.vespa.eventstore.engine.doc.JsonChars
 import com.nosfabrica.vespa.eventstore.engine.metrics.Activity
 import com.nosfabrica.vespa.eventstore.engine.metrics.CostLedger
 import com.nosfabrica.vespa.eventstore.engine.metrics.DegradedReads
@@ -48,11 +49,9 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.future.await
-import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -260,7 +259,7 @@ class VespaEventIndex(
         val resp = http.get("${documentEndpoint()}/document/v1/$EVENT_NAMESPACE/$EVENT_DOCTYPE/docid/$id")
         if (resp.statusCode() == 404 && isAbsentDocument(resp.body())) return null
         require(resp.statusCode() < 400) { "vespa get ${resp.statusCode()}: ${resp.body().take(300)}" }
-        return VESPA_JSON.decodeFromString<DocEnvelope>(resp.body()).fields?.toDoc(withNearState = true)
+        return resp.decode(VESPA_JSON, DocEnvelope.serializer()).fields?.toDoc(withNearState = true)
     }
 
     /** One doc by its `id` attribute via the search stack — the id-lookup path under address-keying. */
@@ -1902,31 +1901,31 @@ class VespaEventIndex(
     // ---- transport funnels --------------------------------------------------
 
     /**
-     * POST [vq] to `/search/` and return the raw response body. POSTs because a
-     * filter with hundreds of ids or authors builds YQL far past any sane URL
-     * length.
+     * POST [vq] to `/search/` and return the response. POSTs because a filter
+     * with hundreds of ids or authors builds YQL far past any sane URL length.
      */
     private suspend fun queryBody(
         vq: VespaQuery,
         hits: Int,
-    ): String {
-        val body =
-            buildJsonObject {
-                put("yql", vq.yql)
-                put("hits", hits.toString())
-                put("ranking", vq.ranking)
-                // Vespa's own split of the time it spent. Asked for only when
-                // somebody is listening, so a store with no ledger sends the
-                // byte-identical request it always did.
-                if (ledger != null) put("presentation.timing", "true")
-                vq.params.forEach { (k, v) -> put(k, v) }
-            }.toString()
+    ): VespaHttp.HttpResp {
+        // Sized for the yql's quotes, every param and the fixed keys, so the writer never regrows.
+        var params = 0
+        vq.params.forEach { (k, v) -> params += k.length + v.length + 6 }
+        val body = JsonChars(vq.yql.length + vq.yql.length / 8 + params + 128).raw('{')
+        body.key("yql", first = true).string(vq.yql)
+        body.key("hits").string(hits.toString())
+        body.key("ranking").string(vq.ranking)
+        // Vespa's own split of the time it spent. Asked for only when
+        // somebody is listening, so a store with no ledger sends the
+        // byte-identical request it always did.
+        if (ledger != null) body.key("presentation.timing").string("true")
+        vq.params.forEach { (k, v) -> body.key(k).string(v) }
         // A busy engine sheds load transiently (504 under heavy concurrent
         // summary fills); one failed page must not kill a multi-hour sync, so
         // 5xx gets brief retries inside VespaHttp.
-        val resp = http.postJson("${queryEndpoint()}/search/", body)
+        val resp = http.postJson("${queryEndpoint()}/search/", body.raw('}').toString())
         require(resp.statusCode() < 400) { "vespa search ${resp.statusCode()}: ${resp.body().take(300)}" }
-        return resp.body()
+        return resp
     }
 
     /**
@@ -1940,7 +1939,7 @@ class VespaEventIndex(
         hits: Int,
     ): SearchRoot {
         val t0 = if (ledger?.slowQueryThresholdNanos != null) System.nanoTime() else 0L
-        val envelope = VESPA_JSON.decodeFromString<SearchEnvelope>(queryBody(vq, hits))
+        val envelope = queryBody(vq, hits).decode(VESPA_JSON, SearchEnvelope.serializer())
         val root = envelope.root
         // Published BEFORE the coverage check, deliberately: a degraded answer
         // is the one an operator most wants to see in the numbers, and
@@ -2017,8 +2016,7 @@ class VespaEventIndex(
         hits: Int,
     ): JsonObject? {
         val t0 = if (ledger?.slowQueryThresholdNanos != null) System.nanoTime() else 0L
-        val text = queryBody(vq, hits)
-        val envelope = Json.parseToJsonElement(text).jsonObject
+        val envelope = queryBody(vq, hits).decode(Json, JsonObject.serializer())
         // Published here too, not just in [searchRoot]. COUNT and the
         // distinct-author grouping come through this path, so without it a
         // NIP-45 count was invisible in the engine altitude while still paying

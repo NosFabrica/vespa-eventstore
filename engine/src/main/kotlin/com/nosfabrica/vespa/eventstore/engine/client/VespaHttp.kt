@@ -22,6 +22,10 @@ package com.nosfabrica.vespa.eventstore.engine.client
 
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.serialization.DeserializationStrategy
+import kotlinx.serialization.ExperimentalSerializationApi
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.decodeFromStream
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.Dispatcher
@@ -31,6 +35,7 @@ import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import okio.Buffer
 import java.io.IOException
 import java.net.InetAddress
 import java.net.Proxy
@@ -175,14 +180,26 @@ internal class VespaHttp {
         }
     }
 
-    /** Minimal response holder so the get/search/visit/count call sites keep their JDK-style statusCode()/body() shape. */
+    /**
+     * A response held as okio segments, never as one array: a 500-hit page is a megabyte, which
+     * G1 allocates humongous and answers with a concurrent cycle. [decode] streams off the
+     * segments; [body] is the text, for error messages and the paths that still need it.
+     */
     internal class HttpResp(
         private val code: Int,
-        private val bodyText: String,
+        private val payload: Buffer,
     ) {
         fun statusCode() = code
 
-        fun body() = bodyText
+        fun body(): String = text
+
+        private val text by lazy(LazyThreadSafetyMode.NONE) { payload.clone().readUtf8() }
+
+        @OptIn(ExperimentalSerializationApi::class)
+        fun <T> decode(
+            json: Json,
+            deserializer: DeserializationStrategy<T>,
+        ): T = json.decodeFromStream(deserializer, payload.clone().inputStream())
     }
 
     /**
@@ -209,7 +226,7 @@ internal class VespaHttp {
                         call: Call,
                         response: Response,
                     ) {
-                        val result = runCatching { response.use { HttpResp(it.code, it.body.string()) } }
+                        val result = runCatching { response.use { HttpResp(it.code, Buffer().apply { writeAll(it.body.source()) }) } }
                         if (cont.isCancelled) return
                         result
                             .onSuccess { cont.resume(it) }
