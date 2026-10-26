@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.eventstore.ingest
 
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
+import com.nosfabrica.vespa.eventstore.engine.async.PUT_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.async.QUERY_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
@@ -220,20 +221,20 @@ internal class BulkRecordInsert(
         // Stage D — supersession per replaceable address.
         if (index.supersedesViaPut) {
             // The address-keyed engine enforces newest-wins per put: replay each
-            // address's run IN ORDER, identical to the per-event path (a loser
-            // comes back false and is REPLACED). Different addresses run
-            // concurrently (PUT_FANOUT wide, inside putAllIfNewer); a single
-            // address stays sequential. The winners are written there; toPut
+            // address's run through putIfNewer IN ORDER, identical to the
+            // per-event path (a loser comes back false and is REPLACED).
+            // Different addresses run concurrently; a single address stays
+            // sequential. putIfNewer writes replaceable winners itself; toPut
             // carries only the regular events.
-            //
-            // ONE CALL FOR THE BATCH, never a putIfNewer per event: the trust
-            // projection reacts per call, and a per-event loop made every card
-            // of an assistant run pay its own ledger bracket and cell write
-            // (see EventIndex.putAllIfNewer).
             IngestStats.timed("versions") {
-                val runs = groups.values.flatten()
-                index.putAllIfNewer(runs.map { events[it].toDoc() }).forEachIndexed { k, won ->
-                    if (!won) outcome[runs[k]] = IEventStore.InsertOutcome.Rejected(Rejections.REPLACED)
+                // Conditional puts are writes — fan out much wider than QUERY_FANOUT
+                // (which is capped for searches) so they pipeline like the raw feed.
+                groups.entries.toList().mapBounded(PUT_FANOUT) { (_, idxs) ->
+                    for (i in idxs) {
+                        if (!index.putIfNewer(events[i].toDoc())) {
+                            outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.REPLACED)
+                        }
+                    }
                 }
             }
             if (toPut.isNotEmpty()) index.putAll(toPut.values.map { it.toDoc() })
@@ -322,15 +323,15 @@ internal class BulkRecordInsert(
                 versions.forEach { doc -> if (doc.id != bestDoc?.id && doc.id !in removeIds) scheduleRemove(doc) }
             }
         }
-        // Stage E — the superseded versions removed and everything that
-        // survived written, as ONE supersede: the projection then sees that a
-        // removed card's address is refilled by its winner and leaves that
-        // cell alone, where a removeDocs followed by a putAll retracted it and
-        // wrote it straight back (see EventIndex.supersede). The docs are in
-        // hand, so the projection reacts without a get per id; an empty side
-        // skips its round trip (first-seen addresses remove nothing). Timing
-        // is booked by the layers below: remove / write / proj.write.
-        index.supersede(removeFromStore, toPut.values.map { it.toDoc() })
+        // Skip the round trip when nothing supersedes — the common case for a
+        // fresh corpus (first-seen addresses remove nothing). The docs are in
+        // hand, so removeDocs lets the projection react without a get per id.
+        if (removeFromStore.isNotEmpty()) index.removeDocs(removeFromStore)
+
+        // Stage E — one pipelined write for everything that survived. (Timing
+        // is booked by the layers below: the projection decorator splits it
+        // into write / proj.fetch / proj.write.)
+        if (toPut.isNotEmpty()) index.putAll(toPut.values.map { it.toDoc() })
         alive().forEach { i -> outcome[i] = IEventStore.InsertOutcome.Accepted }
         // A row this run never decided is the STORE's fault, not the event's:
         // Failed tells the caller to re-offer it, where Rejected would say

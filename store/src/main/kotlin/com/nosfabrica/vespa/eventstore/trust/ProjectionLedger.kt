@@ -27,6 +27,8 @@ import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
 import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
@@ -218,14 +220,61 @@ internal class ProjectionLedger(
     }
 
     /**
+     * The write-ahead of ONE [insuring] bracket, which its block may EXTEND as
+     * it learns what it is about to write — a commit scope does not know every
+     * subject when it opens (TrustProjection.commit), only as each port call
+     * arrives. Each extension persists only what is neither already covered by
+     * this bracket nor pending in the ledger, so the calls of one commit that
+     * the store pre-declared cost no marker I/O at all, and an undeclared one
+     * costs one small write.
+     *
+     * SERIALIZED, because the calls of one commit run concurrently (the bulk
+     * path's conditional puts, [com.nosfabrica.vespa.eventstore.engine.async.PUT_FANOUT]
+     * wide) and every extension writes the SAME marker document: unserialized,
+     * 32 callers each wrote their own cell to it and Vespa queued them behind
+     * each other — 78 ms per marker op, measured, against 5 ms of cell write.
+     */
+    inner class Cover internal constructor() {
+        private val lock = Mutex()
+
+        /** Everything this bracket insures — what a failure queues. */
+        @Volatile
+        var covered: ProjectionWork = ProjectionWork.NONE
+            private set
+
+        /** What this bracket itself wrote to the marker — what a clean finish clears. */
+        @Volatile
+        var persisted: ProjectionWork = ProjectionWork.NONE
+            private set
+
+        /** Persist [work] before the write it insures; returns once the marker holds it. */
+        suspend fun extend(work: ProjectionWork) {
+            if (work.isEmpty()) return
+            lock.withLock {
+                val before = pendingNow().toWork()
+                val delta = work - covered - before
+                covered += work
+                if (delta.isEmpty()) return@withLock
+                // A small delta is pipelined cell adds — no read, no doc rewrite,
+                // and already-pending work persists nothing. A bulk batch's is one
+                // doc put: per-entry ops at batch size would rival the event writes
+                // they insure.
+                if (delta.toRederive.size + delta.toRewalk.size <= MAX_CELL_ADDS) addMarkerCells(delta) else mergeWholeMarker(before + covered)
+                persisted += delta
+            }
+        }
+    }
+
+    /**
      * Run [block] — the event write plus any cheap inline projection —
      * bracketed by the ledger.
      *
      * [couldInvalidate] is everything the op could leave stale if it dies
-     * partway, persisted as a write-ahead before anything is touched;
-     * [block]'s [Outcome.workLeft] is what it ACTUALLY left, which
-     * [couldInvalidate] must cover, named directly or reachable through an
-     * insured service's walk. On failure the whole insurance becomes pending.
+     * partway, persisted as a write-ahead before anything is touched; the
+     * block may add to it through the [Cover] it is handed, before each write
+     * it did not declare. [block]'s [Outcome.workLeft] is what it ACTUALLY
+     * left, which the cover must hold, named directly or reachable through an
+     * insured service's walk. On failure the whole cover becomes pending.
      *
      * The marker may transiently OVER-cover until a drain narrows it —
      * deliberate: narrowing here would cost a doc-sized write per batch, while
@@ -233,22 +282,16 @@ internal class ProjectionLedger(
      */
     suspend fun <T> insuring(
         couldInvalidate: ProjectionWork,
-        block: suspend () -> Outcome<T>,
+        block: suspend (Cover) -> Outcome<T>,
     ): T {
-        val before = adoptStoredMarkerOnce()
-        val delta = couldInvalidate - before
-        if (!delta.isEmpty()) {
-            // A small delta is pipelined cell adds — no read, no doc rewrite,
-            // and already-pending work persists nothing. A bulk batch's is one
-            // doc put: per-entry ops at batch size would rival the event writes
-            // they insure.
-            if (delta.toRederive.size + delta.toRewalk.size <= MAX_CELL_ADDS) addMarkerCells(delta) else mergeWholeMarker(before + couldInvalidate)
-        }
+        adoptStoredMarkerOnce()
+        val cover = Cover()
+        cover.extend(couldInvalidate)
         val outcome: Outcome<T>
         try {
-            outcome = block()
+            outcome = block(cover)
         } catch (t: Throwable) {
-            queue(couldInvalidate)
+            queue(cover.covered)
             // Wake the drainer even though the op failed: its retry loop repairs
             // a transient failure's work without waiting for the next write.
             onWorkQueued?.invoke()
@@ -264,8 +307,9 @@ internal class ProjectionLedger(
         // marker for work that does not exist, so it stood, and the next boot
         // inherited hundreds of subjects to re-derive to nothing and dropped the
         // provider cache for it. One remove here keeps the marker honest.
-        if (!delta.isEmpty() && queued.isEmpty()) {
-            clearMarkerCells(delta)
+        val persisted = cover.persisted
+        if (!persisted.isEmpty() && queued.isEmpty()) {
+            clearMarkerCells(persisted)
             dropMarkerIfEmpty()
         }
         val deferred = onWorkQueued

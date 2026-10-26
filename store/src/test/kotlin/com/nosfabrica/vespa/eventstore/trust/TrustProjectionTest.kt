@@ -578,11 +578,12 @@ class TrustProjectionTest {
             subjects.forEach { assertNull(reps.get(it), "cells must be missing after the failure") }
             assertEquals(subjects.map(::ServiceKey).toSet(), reps.get(ProjectionLedger.MARKER_KEY)?.influenceScores?.keys, "the marker names the dirty subjects")
 
-            // A retry is all duplicates and never reaches the projection; the
-            // next NEW trust write heals first.
+            // A retry is all duplicates and writes nothing — but it is a trust
+            // commit (TrustProjection.commit), and a commit settles the ledger
+            // like any trust write, so the retry itself heals. (Before commits,
+            // a duplicate-only batch never reached the projection, and the heal
+            // waited for the next NEW trust write.)
             st.batchInsert(batch)
-            subjects.forEach { assertNull(reps.get(it), "duplicates alone cannot repair") }
-            st.insert(card(about = "9a".repeat(32)))
             subjects.forEach { s -> assertEquals(serviceCells(service to 87), reps.get(s)?.influenceScores, "healed subject $s") }
             assertNull(reps.get(ProjectionLedger.MARKER_KEY), "marker cleared after the heal")
         }
@@ -980,6 +981,50 @@ class TrustProjectionTest {
             st.insert(DeletionRequestEvent(id(), service, next(), arrayOf(arrayOf("e", doomed.id)), "", ""))
             val left = counting.get(subjects[1])
             assertTrue(left == null || left.isEmpty(), "a deleted card's cell goes, got $left")
+        }
+
+    /**
+     * The commit, not the call, is the unit of reaction — so a batch too small
+     * for the bulk path (under BULK_MIN, admitted one event at a time through
+     * putIfNewer) is still one cell write, which no batch-shaped port member
+     * could have reached.
+     */
+    @Test
+    fun `a small batch admitted event by event still writes its cells once`() =
+        runBlocking {
+            val counting = MarkerCountingReputationIndex(InMemoryReputationIndex())
+            val st = NostrSemanticsStore(TrustProjection(InMemoryEventIndex(), counting), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+            st.insert(list10040())
+            val before = counting.subjectCellCalls
+            val subjects = (1..10).map { it.toString(16).padStart(64, 'f') }
+            val out = st.batchInsert(subjects.mapIndexed { i, s -> card(about = s, rank = 40 + i) })
+            assertTrue(out.all { it is IEventStore.InsertOutcome.Accepted }, "$out")
+            assertEquals(before + 1, counting.subjectCellCalls, "ten admissions, one commit, one cell write")
+            subjects.forEachIndexed { i, s -> assertEquals(40 + i, counting.get(s)?.influenceScores?.get(ServiceKey(service))) }
+        }
+
+    /**
+     * Inside one commit only the LAST thing done to an address reaches the
+     * cells: a card stored and then deleted by a later event of the same
+     * (mixed) batch is one retraction, and the cell does not exist afterwards.
+     */
+    @Test
+    fun `a card stored and deleted in one mixed batch leaves no cell`() =
+        runBlocking {
+            val counting = MarkerCountingReputationIndex(InMemoryReputationIndex())
+            val st = NostrSemanticsStore(TrustProjection(InMemoryEventIndex(), counting), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+            st.insert(list10040())
+            val kept = (1..20).map { it.toString(16).padStart(64, 'b') }
+            val doomedCard = card(about = "c1".repeat(32), rank = 55)
+            val batch =
+                kept.map { s -> card(about = s, rank = 33) } +
+                    doomedCard +
+                    DeletionRequestEvent(id(), service, next(), arrayOf(arrayOf("e", doomedCard.id)), "", "")
+            st.batchInsert(batch)
+            val left = counting.get("c1".repeat(32))
+            assertTrue(left == null || left.isEmpty(), "the deleted card leaves no cell, got $left")
+            kept.forEach { s -> assertEquals(33, counting.get(s)?.influenceScores?.get(ServiceKey(service))) }
+            assertNull(counting.get(ProjectionLedger.MARKER_KEY), "a clean commit leaves no marker")
         }
 }
 

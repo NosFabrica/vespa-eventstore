@@ -68,7 +68,7 @@ What each write becomes:
 | a 10040 write | drop the provider-map cache; for each service the list names that NO stored list named before, queue a **service walk**: its card ids stream off the search index (`visitIds`, cursor-paged), each page fetched by id and applied as cells under the gate — O(cards of that service), once ever per service |
 | a 10040 re-sign, or a swap to an already-named service | nothing at all |
 | a card removal (kind 5, vanish, sweep) | a tensor `remove` of its cell, no read, no derive |
-| supersession | one reaction, the winner's cells; the versions it replaced need no hook (same key) — `TrustProjection.putIfNewer` replays the read-then-supersede on the inner index itself. A BULK batch reacts once for the whole batch, never per card: `putAllIfNewer` (address-keyed) and `supersede` (read-then-supersede, which also skips retracting a cell its winner refills) — see `benchmark/README.md`, "One assistant run" |
+| supersession | one reaction, the winner's cells; the versions it replaced need no hook (same key) — `TrustProjection.putIfNewer` replays the read-then-supersede on the inner index itself. Every reaction is applied once per store COMMIT (`TrustProjection.commit`), not per call: a batch's cards are one cell write however they were written, and a removed version whose address its winner refills is never retracted — see `benchmark/README.md`, "One assistant run" |
 
 What stays: the `DirtLedger` (crash insurance and the deferred drain), the
 `TrustReconciler` (verify/repair through the exact derive, now keyed by service),

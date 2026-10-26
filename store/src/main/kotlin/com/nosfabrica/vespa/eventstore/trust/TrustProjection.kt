@@ -35,10 +35,19 @@ import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
 import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
+import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.core.isAddressable
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
+import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
+import com.vitorpamplona.quartz.utils.Hex
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import kotlin.coroutines.AbstractCoroutineContextElement
+import kotlin.coroutines.CoroutineContext
 
 /**
  * Maintains the `reputation` parent documents (per-pubkey trust tensors the
@@ -47,8 +56,9 @@ import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
  * vanish, sweeps — funnels into [put]/[remove] here, so the tensors stay
  * current with ZERO deletion-specific code.
  *
- * A card is ONE cell update on its subject, applied inline on every path
- * ([TrustRecompute.applyCards]); a removed card is one cell remove. The only
+ * A card is ONE cell update on its subject, a removed card one cell remove,
+ * both applied at the end of the store COMMIT that wrote them, one pipelined
+ * pass for the whole commit ([commit], [TrustRecompute.applyCards]). The only
  * deferred reaction is a 10040 naming a service nobody named before, whose
  * stored cards become cells through a walk ([TrustRecompute.projectServices])
  * — declared as [ProjectionWork] and settled inline (read-your-writes; what
@@ -155,13 +165,93 @@ class TrustProjection(
     override val supersedesViaPut: Boolean get() = inner.supersedesViaPut
 
     /**
+     * ONE STORE COMMIT, ONE REACTION. Run [body] — a commit under the trust
+     * gate, which may make any number of port calls on this decorator, from
+     * any number of coroutines — and apply what its trust writes change ONCE,
+     * at the end: one crash-ledger bracket and one pipelined cell write for
+     * the commit, however its writes were split into calls.
+     *
+     * The reaction used to be per CALL, and calls are not shaped by trust: the
+     * bulk path's address-keyed supersession is one `putIfNewer` per event,
+     * its read-then-supersede one `removeDocs` then one `putAll`. Measured on
+     * one GrapeRank assistant run (20,000 cards by one service, batch 1000,
+     * address-keyed), every card paid its own bracket and cell write — 1,000
+     * `proj.write` calls and 3,000 marker round trips per batch, the marker
+     * ones all updating ONE document 32 callers deep (78 ms each): 139 cards/s,
+     * ~18 minutes for the 150,000-card run the publisher re-signs every five.
+     * And the remove-then-put retracted every superseded card's cell for the
+     * put to write it straight back. Batching at the commit fixes every path at
+     * once, including the ones no one has written yet, with no port member to
+     * add — the alternative tried first (a batch form of each call) had to be
+     * rediscovered by every caller that loops.
+     *
+     * WHAT IS RECORDED, AND WHY THE NET IS EXACT. A card's cell is a function
+     * of the newest stored version at its (service, subject) address alone, so
+     * each call records, per address, only the last thing that happened to it
+     * — stored, or removed — and the flush applies exactly that. Calls on ONE
+     * address arrive in order (the store sequences an address's run; distinct
+     * addresses are distinct cells), so last-recorded is last-happened. A
+     * removal followed by its winner is therefore one update, not a retraction
+     * and a re-write; a card stored and then deleted in the same commit is one
+     * retraction. A 10040's reaction stays INLINE — the provider map dropped
+     * the moment the list is stored — so a later call in the commit judges
+     * fresh services, and the flush applies cards, against the map that
+     * includes it.
+     *
+     * CRASH SAFETY is the ledger's, one bracket wide: [planned] (the events the
+     * store is about to commit) is insured before anything is written, and
+     * each call extends the cover with whatever it was not told about before
+     * its own write ([ProjectionLedger.Cover]) — so a pre-declared batch writes
+     * the marker once, and the commit's 32 concurrent conditional puts write it
+     * not at all. A failure anywhere queues the whole cover.
+     *
+     * Atomic against the drain for the same reason the per-call bracket was:
+     * the whole commit, flush included, runs under the caller's trust gate. A
+     * call made OUTSIDE any commit (a test, a direct caller) opens its own, so
+     * it behaves exactly as the per-call reaction did. Nested commits join the
+     * outer one. A long commit flushes every [FLUSH_AT] addresses, so its buffer
+     * stays bounded; flushes are serialized and drain the buffer in order.
+     */
+    internal suspend fun <T> commit(
+        planned: List<Event> = emptyList(),
+        body: suspend () -> T,
+    ): T {
+        if (currentCoroutineContext()[CommitScope] != null) return body()
+        val insurance = insuranceForPlanned(planned)
+        return backlog.insuring(insurance) { cover ->
+            val scope = CommitScope(cover, coarse = insurance.toRewalk.isNotEmpty())
+            val result = withContext(scope) { body() }
+            flush(scope)
+            Outcome(result, scope.workLeft())
+        }
+    }
+
+    /** Run one call's write [op] inside the current commit — or a commit of its own — insured by [puts] and [removals] before it writes. */
+    private suspend fun <T> reacting(
+        puts: List<EventDoc>,
+        removals: List<EventDoc>,
+        fresh: Set<String>,
+        op: suspend (CommitScope) -> T,
+    ): T {
+        val scope = currentCoroutineContext()[CommitScope] ?: return commit { reacting(puts, removals, fresh, op) }
+        // A commit insured by SERVICE (a planned batch past DIRT_SUBJECT_CAP)
+        // keeps its puts insured by service: per-subject cover here would be a
+        // marker write per card, the very cost the commit exists to remove.
+        val putCover = if (scope.coarse) servicesOf(puts) else insuranceForPuts(puts)
+        scope.cover.extend(putCover + insuranceForRemovals(removals) + ProjectionWork(emptySet(), fresh))
+        val result = op(scope)
+        if (scope.pending() >= FLUSH_AT) flush(scope)
+        return result
+    }
+
+    /**
      * Supersession of a trust doc is ONE reaction: the winner's cells. The
      * versions it replaces need no hook — the cell is keyed by the address
      * they share, so the winner's `add` overwrites it and its `remove` of a
      * dropped tag retracts it — so the read-then-supersede default, which
-     * would route each replaced version through [removeDocs] and pay a
-     * ledger bracket per version, is replayed here on the INNER index with
-     * the projection reacting once. Non-trust kinds go straight through.
+     * would route each replaced version through [removeDocs], is replayed here
+     * on the INNER index and only the winner is recorded. Non-trust kinds go
+     * straight through.
      */
     override suspend fun putIfNewer(doc: EventDoc): Boolean {
         if (doc.kind !in TRUST_KINDS) return inner.putIfNewer(doc)
@@ -169,70 +259,12 @@ class TrustProjection(
         // write lands, else a first-ever map read would already hold the new
         // list and the walk that projects its service would never run.
         val fresh = if (doc.kind == TrustProviderListEvent.KIND) freshServicesOf(listOf(doc)) else emptySet()
-        var stored = false
-        backlog.insuring(insuranceFor(doc) + ProjectionWork(emptySet(), fresh)) {
-            stored = if (inner.supersedesViaPut) inner.putIfNewer(doc) else supersedeReading(doc)
-            if (!stored) return@insuring Outcome(Unit, ProjectionWork.NONE)
-            Outcome(Unit, react(listOf(doc), fresh))
+        return reacting(listOf(doc), emptyList(), fresh) { scope ->
+            val stored = if (inner.supersedesViaPut) inner.putIfNewer(doc) else supersedeReading(doc)
+            // A loser records nothing: its fresh services were never written.
+            if (stored) stored(scope, listOf(doc), fresh)
+            stored
         }
-        return stored
-    }
-
-    /**
-     * A batch's supersession, reacted to ONCE: one ledger bracket and one
-     * pipelined cell write for every card in [docs], where [putIfNewer] pays
-     * both per card. An assistant run is ~150,000 cards by ONE service
-     * published together, so per-card cost is the whole cost: one run's
-     * worth (20,000 cards, address-keyed) measured 129 cards/s through the
-     * per-card bracket — see [EventIndex.putAllIfNewer] for the split.
-     *
-     * Nothing about WHICH cells land changes. Each card's verdict is still
-     * decided by the engine one address at a time, in list order; the cells
-     * are applied afterwards from the WINNERS only, folded oldest-first
-     * ([TrustRecompute.applyCards]), so a same-address pair inside the batch
-     * lands the newest exactly as two sequential reactions would. A loser
-     * reacts to nothing, as before. And it all happens under the caller's
-     * trust gate, so no derive can interleave between a winner's put and its
-     * cell — the same atomicity the per-card bracket had, held once.
-     *
-     * The crash insurance is [putAll]'s: the batch's subjects (services past
-     * [DIRT_SUBJECT_CAP]) persisted before any put, so a death between the
-     * puts and the cell write is repaired by the next drain.
-     */
-    override suspend fun putAllIfNewer(docs: List<EventDoc>): List<Boolean> {
-        if (docs.none { it.kind in TRUST_KINDS }) return inner.putAllIfNewer(docs)
-        val (trust, plain) = docs.indices.partition { docs[it].kind in TRUST_KINDS }
-        val verdicts = BooleanArray(docs.size)
-        // Different kinds can never share an address, so the plain half cannot
-        // interact with the trust half and goes straight through.
-        if (plain.isNotEmpty()) inner.putAllIfNewer(plain.map { docs[it] }).forEachIndexed { k, won -> verdicts[plain[k]] = won }
-        val trustDocs = trust.map { docs[it] }
-        val lists = trustDocs.filter { it.kind == TrustProviderListEvent.KIND }
-        // Judged against the map BEFORE the writes land, as in [putIfNewer].
-        val fresh = if (lists.isEmpty()) emptySet() else freshServicesOf(lists)
-        backlog.insuring(insuranceForPuts(trustDocs) + ProjectionWork(emptySet(), fresh)) {
-            val stored = if (inner.supersedesViaPut) inner.putAllIfNewer(trustDocs) else supersedeReadingAll(trustDocs)
-            stored.forEachIndexed { k, won -> verdicts[trust[k]] = won }
-            val won = trustDocs.filterIndexed { k, _ -> stored[k] }
-            if (won.isEmpty()) return@insuring Outcome(Unit, ProjectionWork.NONE)
-            // Only a list that WON queues its fresh services' walk: a loser's
-            // services were never written, and [react] releases what it is given.
-            val wonLists = won.filter { it.kind == TrustProviderListEvent.KIND }
-            val wonFresh = if (fresh.isEmpty() || wonLists.isEmpty()) emptySet() else fresh.intersect(ProviderMap.trustServicesOf(wonLists).toSet())
-            Outcome(Unit, react(won, wonFresh))
-        }
-        return verdicts.asList()
-    }
-
-    /** [supersedeReading] over a batch: each address's run in list order, addresses [QUERY_FANOUT] wide (each costs a search). */
-    private suspend fun supersedeReadingAll(docs: List<EventDoc>): List<Boolean> {
-        val verdicts = BooleanArray(docs.size)
-        docs.indices
-            .groupBy { docs[it].addressOrNull() ?: docs[it].id }
-            .values
-            .toList()
-            .mapBounded(QUERY_FANOUT) { run -> for (i in run) verdicts[i] = supersedeReading(docs[i]) }
-        return verdicts.asList()
     }
 
     /** [EventIndex.putIfNewer]'s read-then-supersede, against [inner] alone (see [putIfNewer]). */
@@ -259,52 +291,95 @@ class TrustProjection(
 
     override suspend fun put(doc: EventDoc) {
         val fresh = if (doc.kind == TrustProviderListEvent.KIND) freshServicesOf(listOf(doc)) else emptySet()
-        backlog.insuring(insuranceFor(doc) + ProjectionWork(emptySet(), fresh)) {
+        reacting(listOf(doc), emptyList(), fresh) { scope ->
             inner.put(doc)
-            Outcome(Unit, react(listOf(doc), fresh))
+            stored(scope, listOf(doc), fresh)
         }
     }
 
     /**
      * The bulk path: cards land as tensor-cell UPDATES with ZERO reads, one
-     * update per card (its service's cell on its subject). Supersession
-     * guarantees each card here is the newest for its (service, subject)
-     * address, and the cell is keyed by exactly that service, so the update
-     * IS the derivation — within a batch the fold order settles a same-address
-     * conflict the way a derive would. A card that lost a tag drops that
-     * dimension's cell in the same pass (a tensor `remove`), so the one thing
-     * left for the read-based derive is a card that fails to reconstruct.
+     * update per card (its service's cell on its subject), written when the
+     * commit flushes. Supersession guarantees each card here is the newest for
+     * its (service, subject) address, and the cell is keyed by exactly that
+     * service, so the update IS the derivation. A card that lost a tag drops
+     * that dimension's cell in the same update (a tensor `remove`), so the one
+     * thing left for the read-based derive is a card that fails to reconstruct.
      */
     override suspend fun putAll(docs: List<EventDoc>) {
         val lists = docs.filter { it.kind == TrustProviderListEvent.KIND }
         val fresh = if (lists.isEmpty()) emptySet() else freshServicesOf(lists)
-        backlog.insuring(insuranceForPuts(docs) + ProjectionWork(emptySet(), fresh)) {
+        reacting(docs, emptyList(), fresh) { scope ->
             IngestStats.timed("write") { inner.putAll(docs) }
-            Outcome(Unit, react(docs, fresh))
+            stored(scope, docs, fresh)
         }
     }
 
     /**
-     * What a batch of stored trust docs changes, applied: the provider map
-     * dropped after any 10040, the cards' cells written, and the WORK left —
-     * [fresh] services to walk (their cards were stored while nobody named
-     * them, so their cells do not exist yet) and the subjects whose card
-     * could not be applied as a cell.
+     * Stored trust docs, recorded: the provider map dropped NOW after any
+     * 10040 (so the rest of the commit sees the list), its [fresh] services
+     * owed a walk, and the cards left for the flush.
      */
-    private suspend fun react(
+    private fun stored(
+        scope: CommitScope,
         docs: List<EventDoc>,
         fresh: Set<String>,
-    ): ProjectionWork {
+    ) {
         if (docs.any { it.kind == TrustProviderListEvent.KIND }) recompute.invalidateProviders()
         // HERE, once the list is stored and its walk is about to be queued —
         // not where [fresh] is judged: a list that loses supersession queues
         // nothing, and releasing its services' skips then would lose them.
         recompute.walkQueued(fresh)
-        val cards = docs.filter { it.kind == UserAssertionEvent.KIND }
-        if (cards.isEmpty()) return ProjectionWork(emptySet(), fresh)
-        val retracted = recompute.applyCards(cards, recompute.providerMap())
-        return ProjectionWork(retracted, fresh)
+        scope.walk(fresh)
+        scope.record(docs.filter { it.kind == UserAssertionEvent.KIND }, stored = true)
     }
+
+    /**
+     * Removed trust docs, recorded. A removed 10040 drops the provider map
+     * now; the cells its services own stay — no lens resolves to an unnamed
+     * service, so they are dead weight for the orphan sweep.
+     */
+    private fun removed(
+        scope: CommitScope,
+        docs: List<EventDoc>,
+    ) {
+        if (docs.any { it.kind == TrustProviderListEvent.KIND }) recompute.invalidateProviders()
+        scope.record(docs.filter { it.kind == UserAssertionEvent.KIND }, stored = false)
+    }
+
+    /**
+     * Apply what the commit recorded since the last flush, in ONE pass: the
+     * stored cards as cell updates ([TrustRecompute.applyCards], under the
+     * provider map as it stands now), the removed ones as cell removes. Each
+     * address appears once, so the updates and the removes touch disjoint
+     * cells and their order does not matter.
+     *
+     * A removed card is exact for ranking: the store holds one version per
+     * (service, subject) address, so the removed card was the one backing the
+     * cell. What a removal leaves behind is bookkeeping, not drift: a parent
+     * with no cells left, which may now read high — an upper bound still, so
+     * the descent stays sound and only pays a rung; both are tightened by a
+     * derive (the crash marker, a verify with repair).
+     *
+     * A winner that REFILLED an address this commit emptied writes the cell
+     * itself, so no retraction is sent — unless its signer is one no 10040
+     * maps, which writes no cell at all: then the predecessor's cell (left by
+     * a service that went unnamed since) is retracted, as its removal alone
+     * would have. A winner that fails to reconstruct is derive work, and the
+     * derive writes the subject's exact parent, stale cell included.
+     */
+    private suspend fun flush(scope: CommitScope) =
+        scope.flushing { ops ->
+            val puts = ops.filter { it.stored }
+            val map = if (puts.isEmpty()) null else recompute.providerMap()
+            if (map != null) scope.rederive(recompute.applyCards(puts.map { it.doc }, map))
+            val removals = ArrayList<CellRemoval>()
+            for (op in ops) {
+                if (op.stored && (!op.refills || map?.maps(op.doc.pubkey) == true)) continue
+                subjectOf(op.doc)?.let { removals += CellRemoval(it, ServiceKey(op.doc.pubkey), influence = true, followers = true) }
+            }
+            if (removals.isNotEmpty()) IngestStats.timed("proj.write") { reputations.removeCells(removals) }
+        }
 
     /** The services [lists] name that the CURRENT map does not — the ones whose stored cards have no cells yet. Read before the lists are written. */
     private suspend fun freshServicesOf(lists: List<EventDoc>): Set<String> {
@@ -364,7 +439,7 @@ class TrustProjection(
     /**
      * Bulk remove by id: only TRUST docs (30382/10040) can invalidate the
      * projection, so read back just those via chunked kind-filtered searches —
-     * never a get per id — then delete pipelined with ONE work set for the batch.
+     * never a get per id — then delete pipelined, recorded once for the batch.
      */
     override suspend fun removeAll(ids: List<String>) {
         val docs =
@@ -378,10 +453,10 @@ class TrustProjection(
         if (docs.isEmpty()) return inner.removeAll(ids)
         val byId = docs.associateBy { it.id }
         val plain = ids.filter { it !in byId }
-        backlog.insuring(insuranceForRemovals(docs)) {
+        reacting(emptyList(), docs, emptySet()) { scope ->
             if (plain.isNotEmpty()) inner.removeAll(plain)
             inner.removeDocs(docs)
-            Outcome(Unit, unreact(docs))
+            removed(scope, docs)
         }
     }
 
@@ -391,107 +466,57 @@ class TrustProjection(
      */
     override suspend fun removeDocs(docs: List<EventDoc>) {
         if (docs.none { it.kind in TRUST_KINDS }) return inner.removeDocs(docs)
-        backlog.insuring(insuranceForRemovals(docs)) {
+        reacting(emptyList(), docs, emptySet()) { scope ->
             // Timed for symmetry with putAll's `write`: this is a supersession's
             // other half — the sweep of the versions the winner replaced — on
             // the same bulk path inside the same writer lock, so leaving it
             // untimed reads as "the write is all there is".
             IngestStats.timed("remove") { inner.removeDocs(docs) }
-            Outcome(Unit, unreact(docs))
+            removed(scope, docs)
         }
     }
-
-    /**
-     * A bulk commit's removals and winners under ONE ledger bracket, and a
-     * removed card whose address a winner refills is NOT retracted: the
-     * winner's own update writes that very cell (the cell is keyed by the
-     * address the versions share), dropping in the same atomic update any
-     * dimension it no longer carries. Retracting first was a second cell
-     * write per superseded card that the next call undid — on a superseding
-     * assistant run, half of every batch's `proj.write` calls.
-     *
-     * "Refills" is judged AFTER [react], against the provider map its cells
-     * were written under: only a winner by a mapped service writes a cell, so
-     * only then may the removed version's retraction be skipped. A winner by
-     * an unmapped signer writes nothing, and its predecessor's cell (if a
-     * service went unnamed since) is retracted as a plain removal would. A
-     * winner that fails to reconstruct is derive work, and the derive writes
-     * the subject's exact parent, stale cell included. Distinct addresses are
-     * distinct cells, so applying the winners before the retractions changes
-     * nothing for the cells actually retracted.
-     */
-    override suspend fun supersede(
-        removed: List<EventDoc>,
-        winners: List<EventDoc>,
-    ) {
-        if (removed.none { it.kind in TRUST_KINDS } && winners.none { it.kind in TRUST_KINDS }) return inner.supersede(removed, winners)
-        val lists = winners.filter { it.kind == TrustProviderListEvent.KIND }
-        val fresh = if (lists.isEmpty()) emptySet() else freshServicesOf(lists)
-        backlog.insuring(insuranceForRemovals(removed) + insuranceForPuts(winners) + ProjectionWork(emptySet(), fresh)) {
-            if (removed.isNotEmpty()) IngestStats.timed("remove") { inner.removeDocs(removed) }
-            if (winners.isNotEmpty()) IngestStats.timed("write") { inner.putAll(winners) }
-            // A removed list leaves the map BEFORE the winners' cells are
-            // written, as when its removal reacted first: a card in this same
-            // commit must not land a cell for a service only that list named.
-            if (removed.any { it.kind == TrustProviderListEvent.KIND }) recompute.invalidateProviders()
-            val work = react(winners, fresh)
-            val refilled = HashSet<String>()
-            if (winners.any { it.kind == UserAssertionEvent.KIND }) {
-                val map = recompute.providerMap()
-                for (doc in winners) if (doc.kind == UserAssertionEvent.KIND && map.maps(doc.pubkey)) doc.addressOrNull()?.let(refilled::add)
-            }
-            unreact(removed.filterNot { it.kind == UserAssertionEvent.KIND && it.addressOrNull() in refilled })
-            Outcome(Unit, work)
-        }
-    }
-
-    /**
-     * A removed card's cells go with it — a tensor `remove` of its service's
-     * cell on its subject, no read, no derive. Exact for ranking: the store
-     * holds one version per (service, subject) address, so the removed card
-     * was the one backing the cell. What it leaves behind is bookkeeping, not
-     * drift: a parent with no cells left, which may now read
-     * high — an upper bound still, so the descent stays sound and only pays
-     * a rung; both are tightened by a derive (the crash marker, a verify with
-     * repair). Removals are rare beside supersession, which never comes
-     * through here on the address-keyed engine and reacts once on the
-     * read-then-supersede path ([putIfNewer]). A removed 10040 drops the
-     * provider map; the cells its services own stay — no lens resolves to an
-     * unnamed service, so they are dead weight for the orphan sweep.
-     */
-    private suspend fun unreact(docs: List<EventDoc>): ProjectionWork {
-        if (docs.any { it.kind == TrustProviderListEvent.KIND }) recompute.invalidateProviders()
-        val removals =
-            docs
-                .filter { it.kind == UserAssertionEvent.KIND }
-                .mapNotNull { doc -> subjectOf(doc)?.let { CellRemoval(it, ServiceKey(doc.pubkey), influence = true, followers = true) } }
-        if (removals.isNotEmpty()) IngestStats.timed("proj.write") { reputations.removeCells(removals) }
-        return ProjectionWork.NONE
-    }
-
-    /** Crash insurance for ONE doc's write: a card its subject (re-derived exactly if the cell write is lost), a 10040 nothing — its walk is declared as work, not insured. */
-    private fun insuranceFor(doc: EventDoc): ProjectionWork =
-        when (doc.kind) {
-            UserAssertionEvent.KIND -> ProjectionWork(setOfNotNull(subjectOf(doc)), emptySet())
-            else -> ProjectionWork.NONE
-        }
 
     /**
      * Crash insurance for a PUT of [docs]. Card subjects are recorded exactly
      * while they fit [DIRT_SUBJECT_CAP]; a bigger batch records the cards'
      * SERVICES instead — few keys however large the batch, repaired by
      * re-walking each service (safe for puts: the stored cards make the walk
-     * reach every touched subject).
+     * reach every touched subject). A 10040 insures nothing — its walk is
+     * declared as work, not insured.
      */
     private fun insuranceForPuts(docs: List<EventDoc>): ProjectionWork {
         val subjects = LinkedHashSet<String>()
         for (doc in docs) if (doc.kind == UserAssertionEvent.KIND) subjectOf(doc)?.let(subjects::add)
+        if (subjects.size > DIRT_SUBJECT_CAP) return servicesOf(docs)
+        return ProjectionWork(subjects, emptySet())
+    }
+
+    /** [insuranceForPuts] coarsened outright: the services of [docs]' cards. */
+    private fun servicesOf(docs: List<EventDoc>): ProjectionWork {
         val services = LinkedHashSet<String>()
-        if (subjects.size > DIRT_SUBJECT_CAP) {
-            docs.forEach { if (it.kind == UserAssertionEvent.KIND) services += it.pubkey }
-            subjects.clear()
+        for (doc in docs) if (doc.kind == UserAssertionEvent.KIND) services += doc.pubkey
+        return ProjectionWork(emptySet(), services)
+    }
+
+    /**
+     * [insuranceForPuts] for the EVENTS a commit is about to write, before any
+     * is converted: the same subjects (a card's 64-hex d tag, [subjectOf]'s
+     * rule) under the same cap.
+     */
+    private fun insuranceForPlanned(events: List<Event>): ProjectionWork {
+        val subjects = LinkedHashSet<String>()
+        for (e in events) {
+            if (e.kind == UserAssertionEvent.KIND) {
+                e.tags
+                    .dTag()
+                    ?.takeIf(Hex::isHex64)
+                    ?.let(subjects::add)
+            }
         }
-        return ProjectionWork(subjects, services)
+        if (subjects.size <= DIRT_SUBJECT_CAP) return ProjectionWork(subjects, emptySet())
+        val services = LinkedHashSet<String>()
+        for (e in events) if (e.kind == UserAssertionEvent.KIND) services += e.pubKey
+        return ProjectionWork(emptySet(), services)
     }
 
     /** What a REMOVE of [docs] insures: card subjects exactly — a lost cell remove is repaired by the exact derive, which also drops an emptied parent. */
@@ -499,6 +524,65 @@ class TrustProjection(
         val subjects = LinkedHashSet<String>()
         for (doc in docs) if (doc.kind == UserAssertionEvent.KIND) subjectOf(doc)?.let(subjects::add)
         return ProjectionWork(subjects, emptySet())
+    }
+
+    /** The last thing a commit did to one card address: stored [doc], or removed it; [refills] when a removal preceded the store. */
+    private class CardOp(
+        val doc: EventDoc,
+        val stored: Boolean,
+        val refills: Boolean,
+    )
+
+    /**
+     * One commit's recorded reactions — a coroutine-context element, so the
+     * calls of the commit find it from whichever child coroutine makes them
+     * (the bulk path fans its conditional puts out [com.nosfabrica.vespa.eventstore.engine.async.PUT_FANOUT] wide).
+     */
+    private class CommitScope(
+        val cover: ProjectionLedger.Cover,
+        /** Insured by service (a planned batch past [DIRT_SUBJECT_CAP]): later puts are too. */
+        val coarse: Boolean,
+    ) : AbstractCoroutineContextElement(CommitScope) {
+        companion object Key : CoroutineContext.Key<CommitScope>
+
+        private val lock = Any()
+        private var ops = LinkedHashMap<String, CardOp>()
+        private val walks = LinkedHashSet<String>()
+        private val rederive = LinkedHashSet<String>()
+        private val flushLock = Mutex()
+
+        fun record(
+            cards: List<EventDoc>,
+            stored: Boolean,
+        ) {
+            if (cards.isEmpty()) return
+            synchronized(lock) {
+                for (doc in cards) {
+                    val address = doc.addressOrNull() ?: continue
+                    val prior = ops[address]
+                    ops[address] = CardOp(doc, stored, refills = stored && prior != null && (!prior.stored || prior.refills))
+                }
+            }
+        }
+
+        fun pending(): Int = synchronized(lock) { ops.size }
+
+        fun walk(services: Set<String>) {
+            if (services.isNotEmpty()) synchronized(lock) { walks += services }
+        }
+
+        fun rederive(subjects: Set<String>) {
+            if (subjects.isNotEmpty()) synchronized(lock) { rederive += subjects }
+        }
+
+        fun workLeft(): ProjectionWork = synchronized(lock) { ProjectionWork(rederive.toSet(), walks.toSet()) }
+
+        /** Take everything recorded so far and [apply] it; serialized, so two flushes land in the order they took. */
+        suspend fun flushing(apply: suspend (List<CardOp>) -> Unit) =
+            flushLock.withLock {
+                val batch = synchronized(lock) { ops.values.toList().also { ops = LinkedHashMap() } }
+                if (batch.isNotEmpty()) apply(batch)
+            }
     }
 
     internal companion object {
@@ -514,5 +598,15 @@ class TrustProjection(
          * keeping the precise, cheaper repair for normally-sized batches.
          */
         const val DIRT_SUBJECT_CAP = 5_000
+
+        /**
+         * Card addresses a commit buffers before it flushes mid-way — a bound
+         * on the buffer, not a batching knob: a relay's ingest batch (1000 by
+         * default, the mirror lane's 20,000 at most) flushes once at its end,
+         * and only a commit bigger than that splits. Past ~1000 cells a
+         * flush is throughput-bound (5000 cells measured 16% cheaper per cell
+         * than 1000), so a bigger buffer would buy nothing.
+         */
+        const val FLUSH_AT = 20_000
     }
 }

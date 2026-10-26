@@ -1784,8 +1784,14 @@ steady state:
 
 | mode | before | after | what changed |
 |---|---:|---:|---|
-| address-keyed (`VESPA_ADDRESS_KEYED=1`) | 139 cards/s (20k measured; **~18 min** for 150k) | **1,261 cards/s, 118.9 s** for 150k | the batch reaches the projection whole (`putAllIfNewer`) |
-| read-then-supersede (default) | 952 cards/s, 157.6 s | **1,377 cards/s, 108.9 s** | removals and winners reach it together (`supersede`) |
+| address-keyed (`VESPA_ADDRESS_KEYED=1`) | 139 cards/s (20k measured; **~18 min** for 150k) | **1,290 cards/s, 116.2 s** for 150k | one reaction per commit, not per card |
+| read-then-supersede (default) | 952 cards/s, 157.6 s | **1,244 cards/s, 120.6 s** | one reaction per commit; no retract-then-rewrite |
+
+Run-to-run spread on this box is ~10%: the port-member cut measured the
+default row at 108.9 s with identical call counts (1 `proj.write`, 3 marker
+round trips per batch), every engine stage — `write` and `remove` included,
+which neither change touches — 10–15% slower in the later run, and the stages
+summing to the lock hold (no time of the commit's own).
 
 **Address-keyed: the per-card bracket.** The bulk path replayed each address
 through `putIfNewer`, and the trust projection reacts per CALL: every card
@@ -1794,24 +1800,37 @@ that was 1,000 `proj.write` calls (5 ms each) and 3,000 `proj.marker` round
 trips — and the marker ops were the cost, 78 ms each, because all 32
 concurrent `putIfNewer`s (`PUT_FANOUT`) update the ONE `projection-dirty`
 document, which Vespa serialises. 20,000 cards booked 4,690 s of marker time
-against 90 s of cell writes. `EventIndex.putAllIfNewer` hands the batch over in
-one call: the engine still decides each address in order, 32 wide, and the
-projection then brackets once and writes the winners' cells in one pipelined
-`updateCells` — 1 `proj.write` and 3 marker round trips per batch. The 17
-minutes measured in production is this row's "before" almost exactly.
+against 90 s of cell writes.
 
 **Read-then-supersede: the retraction its winner undid.** The commit wrote
 its diff as `removeDocs(superseded)` then `putAll(winners)`. The projection
 reacted to each: the remove RETRACTED every superseded card's cell, the put
 wrote the same cell straight back, each behind its own bracket — 2
 `proj.write` and 6 marker calls per batch, 150 of the run's 300 cell writes
-undone by the next. `EventIndex.supersede` carries the pair, and a removed
-card whose address a mapped winner refills is not retracted (the winner's
-update drops any dimension it no longer carries in the same atomic write).
+undone by the next.
+
+**The fix: react per COMMIT, not per call.** Both are one mistake — the
+reaction's unit was the port call, and calls are not shaped by trust. The
+store now wraps every trust-gated ingest commit in `TrustProjection.commit`:
+each put or remove inside it does its event write and RECORDS, per card
+address, the last thing that happened there (stored, or removed); the
+commit's end applies the record in one pipelined pass — one `proj.write` (plus
+one cell-remove call if anything was really removed) under one crash-ledger
+bracket. A removal followed by its winner nets to the winner's update, so
+nothing is retracted to be re-written. The bracket's write-ahead is declared
+up front from the batch the store is committing (only what survived dedup),
+and each call extends it only with what it was not told about, under a lock
+— so 32 concurrent conditional puts write the marker zero times instead of
+32 deep on one document. Every path gets this, including the sub-`BULK_MIN`
+loop that admits a small batch one event at a time, with no new port member.
+(A first cut added batch members to the port — `putAllIfNewer`, `supersede`
+— which fixed the two measured paths and left every other caller one loop
+away from the same cost; it was replaced by the commit.)
 
 **What is left, per 1000-card batch, and why it was not chased further.**
-Address-keyed: ~480 ms of conditional puts, ~280 ms `proj.write`, ~30 ms of
-marker. Default: `write` 223 ms, `remove` 171 ms, `proj.write` 255 ms. The
+Address-keyed: ~490 ms of conditional puts (`versions`, which no longer
+includes the cell write), ~240 ms `proj.write`, ~30 ms of
+marker. Default: `write` 255 ms, `remove` 195 ms, `proj.write` 278 ms. The
 cell writes are now THROUGHPUT-bound, not call-bound: a 5000-card batch wrote
 its cells at 1,072 ms against 5 × 255 ms, 16% better per cell — so
 coalescing cells across batches (a write-behind buffer per run) would buy
@@ -2079,9 +2098,9 @@ replaceable/draft churn dominates. `BENCH_ADDR_SMOKE=1` (with
 > Note: the trust projection FORWARDS `supersedesViaPut` (a card's cell is a
 > function of the newest version alone, so it no longer needs to see the one
 > replaced), so the conditional put is live through the production stack too.
-> What the projection needs is the batch WHOLE: the bulk path calls
-> `putAllIfNewer` once per batch, never `putIfNewer` per event — see "One
-> assistant run" below for what the per-event loop cost a card stream.
+> The bulk path still calls `putIfNewer` per event; what keeps that cheap is
+> that the projection reacts per store COMMIT, not per call — see "One
+> assistant run" below for what per-call reaction cost a card stream.
 
 ### 3. Query throughput (queries/sec; higher is better)
 
