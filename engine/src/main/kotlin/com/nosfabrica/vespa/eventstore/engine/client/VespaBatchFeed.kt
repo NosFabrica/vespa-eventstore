@@ -136,30 +136,6 @@ internal class VespaBatchFeed(
         return answer.failed.map { batch[it.index] }
     }
 
-    /**
-     * The batch as a JSON array of `{"put": id, "fields": …}`, written into the socket document by
-     * document: a hundred follow lists are megabytes, which as one string were three humongous
-     * copies (the builder, its string, its bytes). Repeatable, as a retried request needs.
-     */
-    private fun operations(
-        ids: List<String>,
-        bodies: List<String>,
-    ): RequestBody =
-        object : RequestBody() {
-            override fun contentType() = JSON_MEDIA
-
-            override fun writeTo(sink: BufferedSink) {
-                sink.writeByte('['.code)
-                for (i in bodies.indices) {
-                    if (i > 0) sink.writeByte(','.code)
-                    // feedJson() is `{"fields":{…}}`: the operation is the same object with the id in front.
-                    sink.writeUtf8(OPERATION_PREFIX).writeUtf8(ids[i]).writeUtf8("\",")
-                    sink.writeUtf8(bodies[i], 1, bodies[i].length)
-                }
-                sink.writeByte(']'.code)
-            }
-        }
-
     @Serializable
     private data class BatchAnswer(
         val count: Int,
@@ -186,6 +162,31 @@ internal class VespaBatchFeed(
     companion object {
         /** Where `BatchFeedHandler` is bound (engine/app/services.xml). */
         const val PATH = "/eventstore/v1/feed"
+
+        /**
+         * The batch as a JSON array of `{"put": id, "fields": …}`, written into the socket document by
+         * document: a hundred follow lists are megabytes, which as one string were three humongous
+         * copies (the builder, its string, its bytes). Repeatable, as a retried request needs.
+         */
+        internal fun operations(
+            ids: List<String>,
+            bodies: List<String>,
+        ): RequestBody =
+            object : RequestBody() {
+                override fun contentType() = JSON_MEDIA
+
+                override fun writeTo(sink: BufferedSink) {
+                    sink.writeByte('['.code)
+                    for (i in bodies.indices) {
+                        if (i > 0) sink.writeByte(','.code)
+                        // feedJson() is `{"fields":{…}}`: the operation is the same object with the id in front.
+                        // Escaped: an address-keyed id carries the author's own d tag.
+                        sink.writeUtf8(OPERATION_PREFIX).writeJsonEscaped(ids[i]).writeUtf8("\",")
+                        sink.writeUtf8(bodies[i], 1, bodies[i].length)
+                    }
+                    sink.writeByte(']'.code)
+                }
+            }
 
         private const val OPERATION_PREFIX = "{\"put\":\"id:$EVENT_NAMESPACE:$EVENT_DOCTYPE::"
 
