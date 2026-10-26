@@ -25,6 +25,7 @@ import com.nosfabrica.vespa.eventstore.engine.doc.CellRemoval
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationCells
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
+import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import kotlinx.coroutines.CancellationException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -498,7 +499,7 @@ internal class ProjectionLedger(
         val cells = ArrayList<ReputationCells>(work.toRederive.size + work.toRewalk.size)
         work.toRederive.forEach { cells += ReputationCells(MARKER_KEY, ServiceKey(it), 1, null) }
         work.toRewalk.forEach { cells += ReputationCells(MARKER_KEY, ServiceKey(it), null, 1.0) }
-        reputations.updateCells(cells)
+        IngestStats.timed(MARKER_STAGE) { reputations.updateCells(cells) }
     }
 
     /** The mirror of [addMarkerCells]: drop exactly these entries' cells, leaving every other cell alone. */
@@ -507,7 +508,7 @@ internal class ProjectionLedger(
         val cells = ArrayList<CellRemoval>(work.toRederive.size + work.toRewalk.size)
         work.toRederive.forEach { cells += CellRemoval(MARKER_KEY, ServiceKey(it), influence = true, followers = false) }
         work.toRewalk.forEach { cells += CellRemoval(MARKER_KEY, ServiceKey(it), influence = false, followers = true) }
-        reputations.removeCells(cells)
+        IngestStats.timed(MARKER_STAGE) { reputations.removeCells(cells) }
     }
 
     /**
@@ -520,15 +521,16 @@ internal class ProjectionLedger(
      * process has never heard of. The read costs one small get against a
      * write this branch only takes at bulk size.
      */
-    private suspend fun mergeWholeMarker(work: ProjectionWork) {
-        val stored = reputations.get(MARKER_KEY)
-        val merged =
-            ProjectionWork(
-                work.toRederive + (stored?.influenceScores?.keys?.unwrap() ?: emptySet()),
-                work.toRewalk + (stored?.followerCounts?.keys?.unwrap() ?: emptySet()),
-            )
-        if (merged.isEmpty()) reputations.remove(MARKER_KEY) else reputations.put(marker(merged))
-    }
+    private suspend fun mergeWholeMarker(work: ProjectionWork) =
+        IngestStats.timed(MARKER_STAGE) {
+            val stored = reputations.get(MARKER_KEY)
+            val merged =
+                ProjectionWork(
+                    work.toRederive + (stored?.influenceScores?.keys?.unwrap() ?: emptySet()),
+                    work.toRewalk + (stored?.followerCounts?.keys?.unwrap() ?: emptySet()),
+                )
+            if (merged.isEmpty()) reputations.remove(MARKER_KEY) else reputations.put(marker(merged))
+        }
 
     /** The marker's cells as they are STORED right now — the only emptiness this class is allowed to act on. */
     private suspend fun storedMarker(): ProjectionWork = reputations.get(MARKER_KEY)?.let { ProjectionWork(it.influenceScores.keys.unwrap(), it.followerCounts.keys.unwrap()) } ?: ProjectionWork.NONE
@@ -551,10 +553,11 @@ internal class ProjectionLedger(
      * conditional remove), which is a design change and not a guard. Until
      * then this is a smaller window, not the absence of one.
      */
-    private suspend fun dropMarkerIfEmpty() {
-        val stored = reputations.get(MARKER_KEY) ?: return
-        if (stored.influenceScores.isEmpty() && stored.followerCounts.isEmpty()) reputations.remove(MARKER_KEY)
-    }
+    private suspend fun dropMarkerIfEmpty() =
+        IngestStats.timed(MARKER_STAGE) {
+            val stored = reputations.get(MARKER_KEY) ?: return@timed
+            if (stored.influenceScores.isEmpty() && stored.followerCounts.isEmpty()) reputations.remove(MARKER_KEY)
+        }
 
     companion object {
         /**
@@ -566,6 +569,14 @@ internal class ProjectionLedger(
 
         /** Registry key — the operator reads this string on the trust page. */
         const val DRAIN = "trust-drain"
+
+        /**
+         * The [IngestStats] stage every marker round trip books to — the
+         * write-ahead, its cleanup, the husk check. Each is a feed round trip
+         * on the commit's critical path, beside `proj.write`, and until this
+         * was booked the two could not be told apart.
+         */
+        const val MARKER_STAGE = "proj.marker"
 
         /**
          * Largest write-ahead delta persisted as per-cell adds; bigger takes one

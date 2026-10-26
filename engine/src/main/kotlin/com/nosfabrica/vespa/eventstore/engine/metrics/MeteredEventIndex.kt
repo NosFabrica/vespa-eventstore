@@ -291,5 +291,19 @@ class MeteredEventIndex(
      */
     override suspend fun putIfNewer(doc: EventDoc): Boolean = meter(PortCall.Put, 1) { inner.putIfNewer(doc) }
 
+    /** Forwarded for the same reason: the default would loop through this decorator's [putIfNewer], one metered call per doc. */
+    override suspend fun putAllIfNewer(docs: List<EventDoc>): List<Boolean> = meter(PortCall.Put, docs.size.toLong()) { inner.putAllIfNewer(docs) }
+
+    /**
+     * Forwarded as ONE call, so a reacting decorator below still sees the
+     * pair. Booked as a Put of every document it moves: the time of one call
+     * cannot be split between the Remove and Put rows honestly, and the
+     * write-stage cost is what the row exists to show.
+     */
+    override suspend fun supersede(
+        removed: List<EventDoc>,
+        winners: List<EventDoc>,
+    ) = meter(PortCall.Put, (removed.size + winners.size).toLong()) { inner.supersede(removed, winners) }
+
     override fun close() = inner.close()
 }

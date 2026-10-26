@@ -19,6 +19,8 @@
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 package com.nosfabrica.vespa.eventstore.engine
+import com.nosfabrica.vespa.eventstore.engine.async.PUT_FANOUT
+import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.vitorpamplona.quartz.nip01Core.core.isAddressable
@@ -352,6 +354,64 @@ interface EventIndex : AutoCloseable {
         if (existing.isNotEmpty()) removeDocs(existing)
         put(doc)
         return true
+    }
+
+    /**
+     * [putIfNewer] over a BATCH: one verdict per doc, in [docs] order. Docs
+     * sharing a NIP-01 address are applied in list order, ending exactly where
+     * that many sequential [putIfNewer] calls would; different addresses run
+     * concurrently, [PUT_FANOUT] wide (sized for the address-keyed conditional
+     * put, the only engine the bulk path calls this on).
+     *
+     * A MEMBER, NOT A LOOP AT THE CALL SITE, because a REACTING decorator pays
+     * its reaction per CALL. The trust projection brackets every write with its
+     * crash ledger and ends it in a reputation-cell write, so the bulk path's
+     * per-doc loop paid both PER CARD: 1,000 `proj.write` calls and 3,000
+     * marker round trips for a 1,000-card batch, the marker ones all updating
+     * ONE document that Vespa serialises, 32 callers deep. Measured locally on
+     * one assistant run (20,000 same-service cards, VESPA_ADDRESS_KEYED=1):
+     * 129 cards/s, `proj.marker` 78 ms per call — a 150,000-card run is 18
+     * minutes, against a publisher that re-signs it every five. Handed the
+     * whole batch, the projection brackets it once and writes its cells in one
+     * pipelined call.
+     *
+     * A decorator MUST override this: riding the default sends every doc back
+     * through its own [putIfNewer], which is exactly the per-doc cost above.
+     */
+    suspend fun putAllIfNewer(docs: List<EventDoc>): List<Boolean> {
+        val verdicts = BooleanArray(docs.size)
+        docs.indices
+            .groupBy { docs[it].addressOrNull() ?: docs[it].id }
+            .values
+            .toList()
+            .mapBounded(PUT_FANOUT) { run -> for (i in run) verdicts[i] = putIfNewer(docs[i]) }
+        return verdicts.asList()
+    }
+
+    /**
+     * A bulk commit's write stage: [removed] gone, then [winners] stored —
+     * exactly [removeDocs] followed by [putAll], which is this default. The
+     * read-then-supersede path resolves every address in memory and writes
+     * the diff with this ONE call; [removed] holds the versions the winners
+     * replaced (and any doc a deletion took), [winners] what survived.
+     *
+     * A MEMBER, NOT TWO CALLS, so a REACTING decorator sees the pair. Apart,
+     * the trust projection reacted twice to every superseded card: the remove
+     * retracted the card's cell, and the put wrote the same cell straight
+     * back, each behind its own crash-ledger bracket. Measured on a
+     * 150,000-card superseding run (one service, batch 1000): two `proj.write`
+     * calls and six marker round trips per batch — 150 of the run's 300 cell
+     * writes removing cells the next call put back. Together, a removed
+     * version whose address a winner refills needs no reaction at all.
+     *
+     * A decorator MUST override this, for the same reason as [putAllIfNewer].
+     */
+    suspend fun supersede(
+        removed: List<EventDoc>,
+        winners: List<EventDoc>,
+    ) {
+        if (removed.isNotEmpty()) removeDocs(removed)
+        if (winners.isNotEmpty()) putAll(winners)
     }
 }
 

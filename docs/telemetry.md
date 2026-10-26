@@ -26,7 +26,7 @@ The store can say a great deal about a write and nothing at all about a read.
 | --- | --- |
 | ingest stages (`dedup`, `guards`, `versions`, `supersede`, `write`) | yes — `IngestStats` |
 | writer-lock wait / hold, and who holds it now | yes — `IngestStats`, `heldNow()` |
-| trust projection (`proj.fetch.derive`, `proj.write`) | yes |
+| trust projection (`proj.fetch.derive`, `proj.write`, `proj.marker` — the crash ledger's write-ahead and cleanup) | yes |
 | **REQ / COUNT / NIP-50 search** | **no** |
 | **round trips to the engine** | **no** |
 | **engine-side cost: docs matched, coverage, rank profile** | **no** |

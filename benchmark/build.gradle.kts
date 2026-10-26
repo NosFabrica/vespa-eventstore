@@ -301,3 +301,12 @@ tasks.register<JavaExec>("linkRerankProbe") {
     maxHeapSize = System.getenv("BENCH_HEAP") ?: "2g"
     workingDir = rootDir
 }
+
+tasks.register<JavaExec>("cardRunProbe") {
+    group = "verification"
+    description = "Time one assistant run of N same-service 30382s through batchInsert, then the run that supersedes it (N, BATCH, WORKERS, RUNS)"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.probe.CardRunProbe")
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "4g"
+    workingDir = rootDir
+}

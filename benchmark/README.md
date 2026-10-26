@@ -1764,6 +1764,64 @@ rest as a phrase, so positive words drop them. The live gate judges streamed
 events by the same rewritten phrases. `SearchExactTextIT` runs every shape
 against a real Vespa.
 
+## One assistant run: 150,000 cards by one service (`cardRunProbe`, 2026-10-26)
+
+**The production report.** brainstorm's GrapeRank run publishes ~150,000 kind
+30382 cards, every one signed by the SAME service, every few minutes, and
+each run supersedes the last. The relay took ~17 minutes to store one, so it
+was saving slower than the publisher was signing. `cardRunProbe` replays that
+shape: one 10040 naming the service, then `RUNS` runs of `N` cards through
+`batchInsert` at the relay's publish batch (`BATCH`, 1000) from `WORKERS`
+concurrent callers (2, the relay's `RELAY_INGEST_CONCURRENCY`), run 2
+superseding every card of run 1. It prints the stage split per run and checks
+200 sampled subjects carry that run's rank.
+
+    VESPA_URL=http://localhost:8080 N=150000 ./gradlew :benchmark:cardRunProbe
+    VESPA_ADDRESS_KEYED=1 N=150000 ./gradlew :benchmark:cardRunProbe
+
+Single local Vespa 8.763.13 (4 cores, 15 GB), the superseding run — the
+steady state:
+
+| mode | before | after | what changed |
+|---|---:|---:|---|
+| address-keyed (`VESPA_ADDRESS_KEYED=1`) | 139 cards/s (20k measured; **~18 min** for 150k) | **1,261 cards/s, 118.9 s** for 150k | the batch reaches the projection whole (`putAllIfNewer`) |
+| read-then-supersede (default) | 952 cards/s, 157.6 s | **1,377 cards/s, 108.9 s** | removals and winners reach it together (`supersede`) |
+
+**Address-keyed: the per-card bracket.** The bulk path replayed each address
+through `putIfNewer`, and the trust projection reacts per CALL: every card
+paid its own crash-ledger bracket and its own cell write. Per 1000-card batch
+that was 1,000 `proj.write` calls (5 ms each) and 3,000 `proj.marker` round
+trips — and the marker ops were the cost, 78 ms each, because all 32
+concurrent `putIfNewer`s (`PUT_FANOUT`) update the ONE `projection-dirty`
+document, which Vespa serialises. 20,000 cards booked 4,690 s of marker time
+against 90 s of cell writes. `EventIndex.putAllIfNewer` hands the batch over in
+one call: the engine still decides each address in order, 32 wide, and the
+projection then brackets once and writes the winners' cells in one pipelined
+`updateCells` — 1 `proj.write` and 3 marker round trips per batch. The 17
+minutes measured in production is this row's "before" almost exactly.
+
+**Read-then-supersede: the retraction its winner undid.** The commit wrote
+its diff as `removeDocs(superseded)` then `putAll(winners)`. The projection
+reacted to each: the remove RETRACTED every superseded card's cell, the put
+wrote the same cell straight back, each behind its own bracket — 2
+`proj.write` and 6 marker calls per batch, 150 of the run's 300 cell writes
+undone by the next. `EventIndex.supersede` carries the pair, and a removed
+card whose address a mapped winner refills is not retracted (the winner's
+update drops any dimension it no longer carries in the same atomic write).
+
+**What is left, per 1000-card batch, and why it was not chased further.**
+Address-keyed: ~480 ms of conditional puts, ~280 ms `proj.write`, ~30 ms of
+marker. Default: `write` 223 ms, `remove` 171 ms, `proj.write` 255 ms. The
+cell writes are now THROUGHPUT-bound, not call-bound: a 5000-card batch wrote
+its cells at 1,072 ms against 5 × 255 ms, 16% better per cell — so
+coalescing cells across batches (a write-behind buffer per run) would buy
+little and cost a second crash-recovery path. The next lever is writing
+FEWER cells: a re-signed card whose rank and followers are unchanged
+rewrites an identical cell, and on a five-minute cadence that is likely most
+of them. Skipping one needs the stored cell's value, which neither path has
+in hand today (the conditional put does not return the version it replaced),
+so it was left as the measured next step rather than guessed at.
+
 ## Targeted benches (gradle tasks against a live Vespa)
 
 Beyond the head-to-head suite (`:benchmark:run`), these tasks each own one
@@ -1788,6 +1846,7 @@ timing is also a proof:
 | `recencyStrategyProbe` | the four `RecencyStrategy` options on the dominant feed shapes, plain and gated (`BENCH_OBSERVER`), with engine queries per REQ | any loaded store, read-only (`BENCH_NOW` pins the clock to a frozen corpus) | all four strategies must serve the identical page, ids and order |
 | `transportProbe` | read-transport isolation: JDK h1 / OkHttp h1 / OkHttp h2c on identical queries across body sizes | any loaded store | — |
 | `pinReplayProbe` | a Quartz pin bump on real data: per-kind drift between what the engine holds and what the new pin derives, the scoped `reindexFullTextSearch(kinds)`, NIP-50 probes before and after (procedure: `pin_replay.py`) | a capture of the moved kinds plus a control set of the unmoved searchable kinds, loaded at the OLD pin | before the repair every stale kind must be on the list; after it `--require-clean` fails on any stale doc; `pin_replay.py grade` fails unless each added term hits only after, each dropped term only before, each control both times |
+| `cardRunProbe` | one GrapeRank assistant run: `N` same-service 30382s through `batchInsert` at relay batch size and concurrency, then the run that supersedes them, with the projection's stage split (`proj.write`, `proj.marker`) | its own synthetic cards, written into the store (a fresh service per invocation) | 200 sampled subjects must carry the run's rank in the service's cell |
 | `trustProbe` | the trust write path under a real lens: bulk card ingest, single card inserts, a 10040 re-sign, a provider swap (with cards inserted on a clock during each walk to read the gate wait), a provider re-publishing its corpus (`--load-then-republish`), and the lensed page after the swap (`--query-only`) — the harness behind `docs/service-keyed-trust.md` | captured 10040s and two providers' 30382 corpora (JSON arrays; the doc says how they were pulled from staging) | the lensed `sort:rank` page must follow the CURRENT 10040's provider |
 
 The workload benches (`corpusLoad`, `BENCH_MIXED`, `BENCH_THROUGHPUT`,
@@ -2017,9 +2076,12 @@ split (regular events by id, replaceables by address) worth enabling only where
 replaceable/draft churn dominates. `BENCH_ADDR_SMOKE=1` (with
 `VESPA_ADDRESS_KEYED=1`) is the live end-to-end correctness smoke for it.
 
-> Note: through the production trust-projection decorator, supersession stays
-> read-based so the projection's write reactions still see both versions; the
-> conditional-put fast path engages on the undecorated index.
+> Note: the trust projection FORWARDS `supersedesViaPut` (a card's cell is a
+> function of the newest version alone, so it no longer needs to see the one
+> replaced), so the conditional put is live through the production stack too.
+> What the projection needs is the batch WHOLE: the bulk path calls
+> `putAllIfNewer` once per batch, never `putIfNewer` per event — see "One
+> assistant run" below for what the per-event loop cost a card stream.
 
 ### 3. Query throughput (queries/sec; higher is better)
 

@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.DocsPage
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
+import com.nosfabrica.vespa.eventstore.engine.doc.CellRemoval
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationCells
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
@@ -32,6 +33,7 @@ import com.nosfabrica.vespa.eventstore.engine.doc.serviceCells
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
+import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
@@ -898,6 +900,87 @@ class TrustProjectionTest {
             assertEquals(2, counting.markerCellAdds, "back to a single cell add for a single insert")
             assertEquals(1, counting.markerPuts)
         }
+
+    /**
+     * ONE ASSISTANT RUN, ONE REACTION PER BATCH — on the address-keyed path,
+     * which replays each address through the engine's conditional put. The
+     * bulk path used to call `putIfNewer` per card, and the projection reacts
+     * per CALL, so every card paid its own ledger bracket and its own cell
+     * write (measured 129 cards/s on a 20,000-card run; see
+     * EventIndex.putAllIfNewer). The verdicts and the cells must be exactly
+     * what the per-card path produced — including a same-address pair inside
+     * one batch, in both orders.
+     */
+    @Test
+    fun `an address-keyed bulk batch of cards writes its cells in one call, newest winning`() =
+        runBlocking {
+            val counting = MarkerCountingReputationIndex(InMemoryReputationIndex())
+            val st = NostrSemanticsStore(TrustProjection(InMemoryEventIndex(supersedesViaPut = true), counting), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+            st.insert(list10040())
+            val subjects = (1..100).map { it.toString(16).padStart(64, 'c') }
+
+            val run1 = st.batchInsert(subjects.mapIndexed { i, s -> card(about = s, rank = i % 50, at = 2_000_000) })
+            assertTrue(run1.all { it is IEventStore.InsertOutcome.Accepted }, "run 1: $run1")
+            assertEquals(1, counting.subjectCellCalls, "a batch of cards is one cell write, not one per card")
+            assertEquals(1, counting.markerPuts, "and one marker write-ahead for the batch")
+
+            // The next run supersedes every card. Inside it, subject 0 carries an
+            // older-then-newer pair and subject 1 a newer-then-older pair.
+            val run2Cards =
+                buildList {
+                    subjects.forEachIndexed { i, s -> add(card(about = s, rank = 99 - i % 50, at = 2_000_300)) }
+                    add(card(about = subjects[0], rank = 7, at = 2_000_400))
+                    add(card(about = subjects[1], rank = 8, at = 2_000_200))
+                }
+            val run2 = st.batchInsert(run2Cards)
+            assertTrue(run2.dropLast(1).all { it is IEventStore.InsertOutcome.Accepted }, "run 2: $run2")
+            assertTrue(run2.last() is IEventStore.InsertOutcome.Rejected, "an older version of a stored address is REPLACED: ${run2.last()}")
+            assertEquals(2, counting.subjectCellCalls, "the superseding run is one more cell write")
+            assertEquals(2, counting.markerPuts)
+
+            assertEquals(7, counting.get(subjects[0])?.influenceScores?.get(ServiceKey(service)), "the in-batch newer version lands")
+            assertEquals(98, counting.get(subjects[1])?.influenceScores?.get(ServiceKey(service)), "the in-batch older version loses")
+            subjects.drop(2).forEachIndexed { k, s ->
+                val i = k + 2
+                assertEquals(99 - i % 50, counting.get(s)?.influenceScores?.get(ServiceKey(service)), "subject $i carries run 2's rank")
+            }
+            // One version per address stored: run 1 is gone, run 2 holds.
+            assertEquals(100, st.count(Filter(kinds = listOf(UserAssertionEvent.KIND))))
+        }
+
+    /**
+     * The read-then-supersede commit writes its diff as ONE supersede, so a
+     * superseded card is not retracted only for its winner to write the same
+     * cell back (EventIndex.supersede). What a winner no longer carries must
+     * still leave — through the winner's own update, not a retraction — and a
+     * card a deletion took, with no winner, is still retracted.
+     */
+    @Test
+    fun `a superseding bulk batch rewrites each cell once and retracts nothing it refills`() =
+        runBlocking {
+            val counting = MarkerCountingReputationIndex(InMemoryReputationIndex())
+            val st = NostrSemanticsStore(TrustProjection(InMemoryEventIndex(), counting), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+            st.insert(list10040())
+            val subjects = (1..50).map { it.toString(16).padStart(64, 'd') }
+            st.batchInsert(subjects.map { s -> card(about = s, rank = 10, followers = 100, at = 2_000_000) })
+            val cellCalls = counting.subjectCellCalls
+            val removeCalls = counting.subjectRemoveCalls
+
+            // Run 2: every card superseded; subject 0's winner drops its followers tag.
+            val run2 = st.batchInsert(subjects.mapIndexed { i, s -> card(about = s, rank = 20, followers = if (i == 0) null else 200, at = 2_000_300) })
+            assertTrue(run2.all { it is IEventStore.InsertOutcome.Accepted }, "run 2: $run2")
+            assertEquals(cellCalls + 1, counting.subjectCellCalls, "one cell write for the superseding batch")
+            assertEquals(removeCalls, counting.subjectRemoveCalls, "no retraction of a cell its winner refills")
+            assertEquals(ReputationDoc(subjects[0], serviceCells(service to 20), emptyMap()), counting.get(subjects[0]), "the dropped dimension still leaves")
+            subjects.drop(1).forEach { s -> assertEquals(ReputationDoc(s, serviceCells(service to 20), serviceCells(service to 200.0)), counting.get(s)) }
+            assertEquals(50, st.count(Filter(kinds = listOf(UserAssertionEvent.KIND))), "one version per address")
+
+            // A kind 5 taking a card has no winner: its cell is retracted.
+            val doomed = st.query<UserAssertionEvent>(Filter(kinds = listOf(UserAssertionEvent.KIND), tags = mapOf("d" to listOf(subjects[1])))).single()
+            st.insert(DeletionRequestEvent(id(), service, next(), arrayOf(arrayOf("e", doomed.id)), "", ""))
+            val left = counting.get(subjects[1])
+            assertTrue(left == null || left.isEmpty(), "a deleted card's cell goes, got $left")
+        }
 }
 
 /** Counts marker-doc traffic, separating pipelined cell adds from whole-doc puts. */
@@ -907,9 +990,21 @@ private class MarkerCountingReputationIndex(
     var markerCellAdds = 0
     var markerPuts = 0
 
+    /** updateCells calls that write a real subject's cells — the projection's own writes, not the ledger's. */
+    var subjectCellCalls = 0
+
     override suspend fun updateCells(updates: List<ReputationCells>) {
         markerCellAdds += updates.count { it.subject == ProjectionLedger.MARKER_KEY }
+        if (updates.any { it.subject != ProjectionLedger.MARKER_KEY }) subjectCellCalls++
         inner.updateCells(updates)
+    }
+
+    /** removeCells calls that retract a real subject's cells. */
+    var subjectRemoveCalls = 0
+
+    override suspend fun removeCells(removals: List<CellRemoval>) {
+        if (removals.any { it.subject != ProjectionLedger.MARKER_KEY }) subjectRemoveCalls++
+        inner.removeCells(removals)
     }
 
     override suspend fun put(reputation: ReputationDoc) {

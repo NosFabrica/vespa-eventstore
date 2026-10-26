@@ -178,6 +178,63 @@ class TrustProjection(
         return stored
     }
 
+    /**
+     * A batch's supersession, reacted to ONCE: one ledger bracket and one
+     * pipelined cell write for every card in [docs], where [putIfNewer] pays
+     * both per card. An assistant run is ~150,000 cards by ONE service
+     * published together, so per-card cost is the whole cost: one run's
+     * worth (20,000 cards, address-keyed) measured 129 cards/s through the
+     * per-card bracket — see [EventIndex.putAllIfNewer] for the split.
+     *
+     * Nothing about WHICH cells land changes. Each card's verdict is still
+     * decided by the engine one address at a time, in list order; the cells
+     * are applied afterwards from the WINNERS only, folded oldest-first
+     * ([TrustRecompute.applyCards]), so a same-address pair inside the batch
+     * lands the newest exactly as two sequential reactions would. A loser
+     * reacts to nothing, as before. And it all happens under the caller's
+     * trust gate, so no derive can interleave between a winner's put and its
+     * cell — the same atomicity the per-card bracket had, held once.
+     *
+     * The crash insurance is [putAll]'s: the batch's subjects (services past
+     * [DIRT_SUBJECT_CAP]) persisted before any put, so a death between the
+     * puts and the cell write is repaired by the next drain.
+     */
+    override suspend fun putAllIfNewer(docs: List<EventDoc>): List<Boolean> {
+        if (docs.none { it.kind in TRUST_KINDS }) return inner.putAllIfNewer(docs)
+        val (trust, plain) = docs.indices.partition { docs[it].kind in TRUST_KINDS }
+        val verdicts = BooleanArray(docs.size)
+        // Different kinds can never share an address, so the plain half cannot
+        // interact with the trust half and goes straight through.
+        if (plain.isNotEmpty()) inner.putAllIfNewer(plain.map { docs[it] }).forEachIndexed { k, won -> verdicts[plain[k]] = won }
+        val trustDocs = trust.map { docs[it] }
+        val lists = trustDocs.filter { it.kind == TrustProviderListEvent.KIND }
+        // Judged against the map BEFORE the writes land, as in [putIfNewer].
+        val fresh = if (lists.isEmpty()) emptySet() else freshServicesOf(lists)
+        backlog.insuring(insuranceForPuts(trustDocs) + ProjectionWork(emptySet(), fresh)) {
+            val stored = if (inner.supersedesViaPut) inner.putAllIfNewer(trustDocs) else supersedeReadingAll(trustDocs)
+            stored.forEachIndexed { k, won -> verdicts[trust[k]] = won }
+            val won = trustDocs.filterIndexed { k, _ -> stored[k] }
+            if (won.isEmpty()) return@insuring Outcome(Unit, ProjectionWork.NONE)
+            // Only a list that WON queues its fresh services' walk: a loser's
+            // services were never written, and [react] releases what it is given.
+            val wonLists = won.filter { it.kind == TrustProviderListEvent.KIND }
+            val wonFresh = if (fresh.isEmpty() || wonLists.isEmpty()) emptySet() else fresh.intersect(ProviderMap.trustServicesOf(wonLists).toSet())
+            Outcome(Unit, react(won, wonFresh))
+        }
+        return verdicts.asList()
+    }
+
+    /** [supersedeReading] over a batch: each address's run in list order, addresses [QUERY_FANOUT] wide (each costs a search). */
+    private suspend fun supersedeReadingAll(docs: List<EventDoc>): List<Boolean> {
+        val verdicts = BooleanArray(docs.size)
+        docs.indices
+            .groupBy { docs[it].addressOrNull() ?: docs[it].id }
+            .values
+            .toList()
+            .mapBounded(QUERY_FANOUT) { run -> for (i in run) verdicts[i] = supersedeReading(docs[i]) }
+        return verdicts.asList()
+    }
+
     /** [EventIndex.putIfNewer]'s read-then-supersede, against [inner] alone (see [putIfNewer]). */
     private suspend fun supersedeReading(doc: EventDoc): Boolean {
         val address =
@@ -341,6 +398,50 @@ class TrustProjection(
             // untimed reads as "the write is all there is".
             IngestStats.timed("remove") { inner.removeDocs(docs) }
             Outcome(Unit, unreact(docs))
+        }
+    }
+
+    /**
+     * A bulk commit's removals and winners under ONE ledger bracket, and a
+     * removed card whose address a winner refills is NOT retracted: the
+     * winner's own update writes that very cell (the cell is keyed by the
+     * address the versions share), dropping in the same atomic update any
+     * dimension it no longer carries. Retracting first was a second cell
+     * write per superseded card that the next call undid — on a superseding
+     * assistant run, half of every batch's `proj.write` calls.
+     *
+     * "Refills" is judged AFTER [react], against the provider map its cells
+     * were written under: only a winner by a mapped service writes a cell, so
+     * only then may the removed version's retraction be skipped. A winner by
+     * an unmapped signer writes nothing, and its predecessor's cell (if a
+     * service went unnamed since) is retracted as a plain removal would. A
+     * winner that fails to reconstruct is derive work, and the derive writes
+     * the subject's exact parent, stale cell included. Distinct addresses are
+     * distinct cells, so applying the winners before the retractions changes
+     * nothing for the cells actually retracted.
+     */
+    override suspend fun supersede(
+        removed: List<EventDoc>,
+        winners: List<EventDoc>,
+    ) {
+        if (removed.none { it.kind in TRUST_KINDS } && winners.none { it.kind in TRUST_KINDS }) return inner.supersede(removed, winners)
+        val lists = winners.filter { it.kind == TrustProviderListEvent.KIND }
+        val fresh = if (lists.isEmpty()) emptySet() else freshServicesOf(lists)
+        backlog.insuring(insuranceForRemovals(removed) + insuranceForPuts(winners) + ProjectionWork(emptySet(), fresh)) {
+            if (removed.isNotEmpty()) IngestStats.timed("remove") { inner.removeDocs(removed) }
+            if (winners.isNotEmpty()) IngestStats.timed("write") { inner.putAll(winners) }
+            // A removed list leaves the map BEFORE the winners' cells are
+            // written, as when its removal reacted first: a card in this same
+            // commit must not land a cell for a service only that list named.
+            if (removed.any { it.kind == TrustProviderListEvent.KIND }) recompute.invalidateProviders()
+            val work = react(winners, fresh)
+            val refilled = HashSet<String>()
+            if (winners.any { it.kind == UserAssertionEvent.KIND }) {
+                val map = recompute.providerMap()
+                for (doc in winners) if (doc.kind == UserAssertionEvent.KIND && map.maps(doc.pubkey)) doc.addressOrNull()?.let(refilled::add)
+            }
+            unreact(removed.filterNot { it.kind == UserAssertionEvent.KIND && it.addressOrNull() in refilled })
+            Outcome(Unit, work)
         }
     }
 

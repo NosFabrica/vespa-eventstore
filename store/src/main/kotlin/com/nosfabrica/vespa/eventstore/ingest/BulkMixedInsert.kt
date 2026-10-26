@@ -72,11 +72,12 @@ internal class BulkMixedInsert(
         val after = snapshot.search(EventQuery())
         val afterIds = after.mapTo(HashSet()) { it.id }
         // The removed DOCS (not just ids) were preloaded into the snapshot, so
-        // removeDocs lets the projection react without re-reading each one.
+        // the projection reacts without re-reading each one — and as one
+        // supersede, so a card whose address a newer card refills is not
+        // retracted and re-written (see EventIndex.supersede).
         val removed = beforeDocs.filter { it.id !in afterIds }
         val added = after.filter { it.id !in before }
-        if (removed.isNotEmpty()) index.removeDocs(removed)
-        if (added.isNotEmpty()) index.putAll(added)
+        index.supersede(removed, added)
         added.forEach {
             when (it.kind) {
                 DeletionRequestEvent.KIND -> guards.noteDeletionStored(it.pubkey)

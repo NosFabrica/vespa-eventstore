@@ -110,6 +110,13 @@ internal class ReadOnlyEventIndex(
 
     override suspend fun putIfNewer(doc: EventDoc): Boolean = readOnlyRefusal("putIfNewer")
 
+    override suspend fun putAllIfNewer(docs: List<EventDoc>): List<Boolean> = readOnlyRefusal("putAllIfNewer")
+
+    override suspend fun supersede(
+        removed: List<EventDoc>,
+        winners: List<EventDoc>,
+    ) = readOnlyRefusal("supersede")
+
     override suspend fun remove(id: String) = readOnlyRefusal("remove")
 
     override suspend fun removeAll(ids: List<String>) = readOnlyRefusal("removeAll")

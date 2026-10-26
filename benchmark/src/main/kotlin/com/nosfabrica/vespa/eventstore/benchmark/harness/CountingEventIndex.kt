@@ -76,6 +76,19 @@ class CountingEventIndex(
     // reports for a draft-churn corpus was measuring the port, not the engine.
     override suspend fun putIfNewer(doc: EventDoc): Boolean = inner.putIfNewer(doc)
 
+    override suspend fun putAllIfNewer(docs: List<EventDoc>): List<Boolean> = inner.putAllIfNewer(docs)
+
+    // Through THIS object's removeDocs/putAll, deliberately: the real client
+    // has no paired form (the default is those two calls), so this is exactly
+    // its round trips, and forwarding would drop them from the counts.
+    override suspend fun supersede(
+        removed: List<EventDoc>,
+        winners: List<EventDoc>,
+    ) {
+        if (removed.isNotEmpty()) removeDocs(removed)
+        if (winners.isNotEmpty()) putAll(winners)
+    }
+
     override suspend fun removeDocs(docs: List<EventDoc>) = inner.removeDocs(docs)
 
     override suspend fun existingIds(ids: List<String>): Set<String> = inner.existingIds(ids)
