@@ -171,12 +171,30 @@ internal class RecencyWindowMemory(
         private val buf = ByteArray(1024)
         private var n = 0
 
-        /** Each char as its two UTF-16 bytes: the key is process-local, so only determinism matters. */
+        /**
+         * Each char as UTF-8, a lone surrogate encoded as itself: unambiguous, and one byte for
+         * the hex that is most of a key. The key is process-local, so only determinism matters.
+         */
         fun text(s: String): ShapeDigest {
             for (c in s) {
-                if (n + 2 > buf.size) flush()
-                buf[n++] = (c.code shr 8).toByte()
-                buf[n++] = c.code.toByte()
+                if (n + 3 > buf.size) flush()
+                val code = c.code
+                when {
+                    code < 0x80 -> {
+                        buf[n++] = code.toByte()
+                    }
+
+                    code < 0x800 -> {
+                        buf[n++] = (0xC0 or (code shr 6)).toByte()
+                        buf[n++] = (0x80 or (code and 0x3F)).toByte()
+                    }
+
+                    else -> {
+                        buf[n++] = (0xE0 or (code shr 12)).toByte()
+                        buf[n++] = (0x80 or ((code shr 6) and 0x3F)).toByte()
+                        buf[n++] = (0x80 or (code and 0x3F)).toByte()
+                    }
+                }
             }
             return this
         }

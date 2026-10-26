@@ -225,4 +225,33 @@ class VespaReputationIndexTest {
         )
         assertFalse("pubkey" in fields, "a removal assigns nothing, so it cannot conjure a document")
     }
+
+    @Test
+    fun `a bulk of cell adds is split into bounded updates, the later cell still winning`() {
+        mock.updateReply = 200 to """{"id":"x"}"""
+
+        fun distinct(i: Int) = ServiceKey(i.toString(16).padStart(64, '0'))
+        val adds = (1..2500).map { ReputationCells(subject, distinct(it), influence = 1, followers = null) }
+        runBlocking { reputations.updateCells(adds + ReputationCells(subject, distinct(3), influence = 99, followers = null)) }
+        assertEquals(3, mock.updateRequests, "2,501 cells in pieces of 1,024")
+        val cells =
+            mock.updates.map {
+                fieldsOf(it.second)
+                    .getValue("influence_scores")
+                    .jsonObject
+                    .getValue("add")
+                    .jsonObject
+                    .getValue("cells")
+                    .jsonObject
+            }
+        assertEquals(listOf(1024, 1024, 453), cells.map { it.size })
+        assertEquals(
+            99,
+            cells
+                .last()
+                .getValue(distinct(3).hex)
+                .jsonPrimitive.int,
+            "the later cell rides the later update",
+        )
+    }
 }

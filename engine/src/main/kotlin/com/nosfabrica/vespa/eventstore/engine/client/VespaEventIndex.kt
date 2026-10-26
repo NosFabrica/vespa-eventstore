@@ -33,7 +33,6 @@ import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.ScoredHit
 import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
-import com.nosfabrica.vespa.eventstore.engine.doc.JsonChars
 import com.nosfabrica.vespa.eventstore.engine.metrics.Activity
 import com.nosfabrica.vespa.eventstore.engine.metrics.CostLedger
 import com.nosfabrica.vespa.eventstore.engine.metrics.DegradedReads
@@ -56,6 +55,9 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody
+import okio.BufferedSink
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.atomic.AtomicInteger
@@ -177,10 +179,12 @@ class VespaEventIndex(
         System.getenv("VESPA_BODY_EDGE")?.let { it == "1" || it.equals("true", ignoreCase = true) } ?: false,
     /**
      * Documents per request through the bundled batch handler ([VespaBatchFeed]),
-     * `VESPA_FEED_BATCH`, default [DEFAULT_FEED_BATCH]; 0 or 1 writes every put through
-     * `/document/v1`. A document the handler does not confirm is re-put through the feed client.
+     * `VESPA_FEED_BATCH`, default [DEFAULT_FEED_BATCH] when unset or blank; 0 or 1 writes every
+     * put through `/document/v1`, and so does a value that is not a number, as it always has: an
+     * operator's `off` must not turn batching on. A document the handler does not confirm is
+     * re-put through the feed client.
      */
-    feedBatch: Int = System.getenv("VESPA_FEED_BATCH")?.toIntOrNull() ?: DEFAULT_FEED_BATCH,
+    feedBatch: Int = feedBatchOf(System.getenv("VESPA_FEED_BATCH")),
     /**
      * WHERE ENGINE-LEVEL COST IS PUBLISHED, or null to publish none.
      *
@@ -1909,22 +1913,36 @@ class VespaEventIndex(
         vq: VespaQuery,
         hits: Int,
     ): VespaHttp.HttpResp {
-        // Sized for the yql's quotes, every param and the fixed keys, so the writer never regrows.
-        var params = 0
-        vq.params.forEach { (k, v) -> params += k.length + v.length + 6 }
-        val body = JsonChars(vq.yql.length + vq.yql.length / 8 + params + 128).raw('{')
-        body.key("yql", first = true).string(vq.yql)
-        body.key("hits").string(hits.toString())
-        body.key("ranking").string(vq.ranking)
-        // Vespa's own split of the time it spent. Asked for only when
-        // somebody is listening, so a store with no ledger sends the
-        // byte-identical request it always did.
-        if (ledger != null) body.key("presentation.timing").string("true")
-        vq.params.forEach { (k, v) -> body.key(k).string(v) }
+        // Written into the socket as it is sent: an id or author recall's yql runs to hundreds of
+        // kilobytes, and as a buffer, its string and its bytes it was three copies of that.
+        // Repeatable, as VespaHttp's retries need.
+        val timing = ledger != null
+        val body =
+            object : RequestBody() {
+                override fun contentType() = JSON_MEDIA
+
+                override fun writeTo(sink: BufferedSink) {
+                    sink.writeUtf8("{\"yql\":").writeJsonString(vq.yql)
+                    sink.writeUtf8(",\"hits\":").writeJsonString(hits.toString())
+                    sink.writeUtf8(",\"ranking\":").writeJsonString(vq.ranking)
+                    // Vespa's own split of the time it spent. Asked for only when
+                    // somebody is listening, so a store with no ledger sends the
+                    // byte-identical request it always did.
+                    if (timing) sink.writeUtf8(",\"presentation.timing\":\"true\"")
+                    vq.params.forEach { (k, v) ->
+                        sink
+                            .writeByte(','.code)
+                            .writeJsonString(k)
+                            .writeByte(':'.code)
+                            .writeJsonString(v)
+                    }
+                    sink.writeByte('}'.code)
+                }
+            }
         // A busy engine sheds load transiently (504 under heavy concurrent
         // summary fills); one failed page must not kill a multi-hour sync, so
         // 5xx gets brief retries inside VespaHttp.
-        val resp = http.postJson("${queryEndpoint()}/search/", body.raw('}').toString())
+        val resp = http.post("${queryEndpoint()}/search/", body)
         require(resp.statusCode() < 400) { "vespa search ${resp.statusCode()}: ${resp.body().take(300)}" }
         return resp
     }
@@ -2265,6 +2283,11 @@ class VespaEventIndex(
          * off the relay's CPU against one put per request (benchmark/README.md).
          */
         const val DEFAULT_FEED_BATCH = 100
+
+        /** `VESPA_FEED_BATCH` as [feedBatch] reads it. */
+        internal fun feedBatchOf(value: String?): Int = value?.trim()?.takeIf { it.isNotEmpty() }?.let { it.toIntOrNull() ?: 0 } ?: DEFAULT_FEED_BATCH
+
+        private val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
 
         /** Batches in flight at once on the batched path ([VespaBatchFeed]). */
         const val BATCH_CONCURRENCY = 8

@@ -102,7 +102,7 @@ class VespaReputationIndex(
 
     /**
      * GROUPED BY DOCUMENT, as [removeCells] is: one subject's plain adds merge
-     * into one update, a later cell winning as it would in sequence. A subject
+     * into one update per [MAX_CELLS_PER_UPDATE], a later cell winning as it would in sequence. A subject
      * with a retraction keeps one update per entry, in order, since one field
      * cannot carry both an `add` and a `remove`.
      */
@@ -110,13 +110,17 @@ class VespaReputationIndex(
         val out = ArrayList<CellUpdate>(updates.size)
         updates.groupBy { it.subject }.forEach { (subject, cells) ->
             if (cells.size > 1 && cells.all { it.isPlainAdd() }) {
-                val influence = LinkedHashMap<String, Int>()
-                val followers = LinkedHashMap<String, Double>()
-                cells.forEach { u ->
-                    u.influence?.let { influence[u.key.hex] = it }
-                    u.followers?.let { followers[u.key.hex] = it }
+                // Pieces of MAX_CELLS_PER_UPDATE, in order: a bulk write-ahead names thousands of
+                // subjects, and the feed client's per-document ordering keeps a later cell winning.
+                cells.chunked(MAX_CELLS_PER_UPDATE).forEach { piece ->
+                    val influence = LinkedHashMap<String, Int>()
+                    val followers = LinkedHashMap<String, Double>()
+                    piece.forEach { u ->
+                        u.influence?.let { influence[u.key.hex] = it }
+                        u.followers?.let { followers[u.key.hex] = it }
+                    }
+                    out += CellUpdate(subject, cellsJson(subject, influence, followers, emptyList(), emptyList()), creates = true)
                 }
-                out += CellUpdate(subject, cellsJson(subject, influence, followers, emptyList(), emptyList()), creates = true)
             } else {
                 cells.forEach { u ->
                     // A retracted dimension leaves in the same atomic update.
@@ -148,7 +152,7 @@ class VespaReputationIndex(
      * document is left missing.
      *
      * GROUPED BY DOCUMENT: a tensor `remove` takes a LIST of addresses, so
-     * every cell leaving one document goes in one update. Callers do send
+     * every cell leaving one document goes in one update, up to [MAX_CELLS_PER_UPDATE]. Callers do send
      * hundreds of cells for a single document — [DirtLedger] retires a whole
      * drain slice out of its marker in one call — and one update per cell
      * there is not merely n round trips but n CONCURRENT updates to the same
@@ -158,7 +162,8 @@ class VespaReputationIndex(
         val byDocument =
             removals
                 .groupBy { it.subject }
-                .map { (subject, cells) -> subject to (cells.filter { it.influence }.map { it.key } to cells.filter { it.followers }.map { it.key }) }
+                // At most MAX_CELLS_PER_UPDATE addresses an update; removes commute, so pieces need no order.
+                .flatMap { (subject, cells) -> cells.chunked(MAX_CELLS_PER_UPDATE).map { piece -> subject to (piece.filter { it.influence }.map { it.key } to piece.filter { it.followers }.map { it.key }) } }
         byDocument.chunked(VespaEventIndex.FEED_CHUNK).forEach { chunk ->
             chunk
                 .map { (subject, dimensions) ->
@@ -286,6 +291,9 @@ class VespaReputationIndex(
     private companion object {
         const val NAMESPACE = "reputation"
         const val DOCTYPE = "reputation"
+
+        /** Cells merged into one update at most: about 90 KB of body, well under a G1 region. */
+        const val MAX_CELLS_PER_UPDATE = 1_024
 
         /** Docs asked for per visit response (Vespa's per-request ceiling is 1024). */
         const val VISIT_PAGE = 1024
