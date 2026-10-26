@@ -203,7 +203,13 @@ data class EventDoc(
         val searchFields = search.fields()
         val stemFields = if (includeStem) search.stemFields() else emptyMap()
         val searchChars = searchFields.values.sumOf { it.length } + stemFields.values.sumOf { it.length }
-        val out = JsonChars(FEED_OVERHEAD + content.length + searchChars + 2 * tagChars)
+        // The near and edge arrays, and the escapes in a body (a kind 0's content is JSON, every
+        // quote of it doubled), were the rest of what made a profile outgrow its buffer.
+        val nearFields = if (includeNear) search.nearFieldsWritten() else emptyMap()
+        val edgeFields = if (includeEdge) search.edgeFields() else emptyMap()
+        var listChars = 0
+        for (elements in nearFields.values + edgeFields.values) listChars += 32 + elements.sumOf { it.length + 3 }
+        val out = JsonChars(FEED_OVERHEAD + content.length + content.length / 8 + searchChars + 2 * tagChars + listChars)
         out.raw("{\"fields\":{")
         out.key("id", first = true).string(id)
         out.key("pubkey").string(pubkey)
@@ -223,12 +229,8 @@ data class EventDoc(
         out.key("owner").string(owner)
         out.key("author_ref").string("id:reputation:reputation::$pubkey")
         for ((field, value) in searchFields) out.key(field).string(value)
-        if (includeNear) {
-            for ((field, elements) in search.nearFieldsWritten()) out.key(field).strings(elements)
-        }
-        if (includeEdge) {
-            for ((field, elements) in search.edgeFields()) out.key(field).strings(elements)
-        }
+        for ((field, elements) in nearFields) out.key(field).strings(elements)
+        for ((field, elements) in edgeFields) out.key(field).strings(elements)
         for ((field, value) in stemFields) out.key(field).string(value)
         out.key("expires_at").raw(expiresAt() ?: NO_EXPIRATION)
         return out.raw("}}").toString()
