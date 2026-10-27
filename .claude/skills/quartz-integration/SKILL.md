@@ -11,11 +11,10 @@ Reference for integrating `com.vitorpamplona.quartz:quartz` into external Nostr 
 **Targets**: JVM 21+, Android (minSdk 21+), iOS (XCFramework `quartz-kmpKit`)
 **License**: MIT
 
-> **In this repo (vespa-eventstore):** Quartz is NOT consumed from Maven Central.
-> It comes from **JitPack pinned by commit** — `com.github.vitorpamplona.quartz:quartz`
-> with `quartz = "<sha>"` in `gradle/libs.versions.toml` — and is exposed as `api(libs.quartz)`
-> from `:store`. Bumps are deliberate; the toml comment records what the new pin contains.
-> Ignore §1 (Gradle Setup) and the version numbers here; everything else (APIs, packages,
+> **In this repo (vespa-eventstore):** Quartz comes from **Maven Central**, a release —
+> `com.vitorpamplona.quartz:quartz` with `quartz = "2.4.0"` in `gradle/libs.versions.toml` — and
+> is exposed as `api(libs.quartz)` from `:store`. Bumps are deliberate; the toml comment records
+> what the new pin contains. Ignore the version numbers here; everything else (APIs, packages,
 > builders, utilities) applies as-is. This repo implements Quartz's `IEventStore` interface
 > (`NostrSemanticsStore`), so §14's SQLite `EventStore` is the sibling implementation we
 > benchmark against — not something to use here.

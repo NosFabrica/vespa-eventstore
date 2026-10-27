@@ -7,8 +7,9 @@ description: Nostr protocol implementation patterns in Quartz (AmethystMultiplat
 
 Practical patterns for working with Nostr in Quartz, AmethystMultiplatform's KMP Nostr library.
 
-> **In this repo (vespa-eventstore):** Quartz is a JitPack dependency pinned by commit
-> (`gradle/libs.versions.toml`) — its sources are NOT checked out here. To browse them or
+> **In this repo (vespa-eventstore):** Quartz is a Maven Central dependency
+> (`com.vitorpamplona.quartz:quartz`, version in `gradle/libs.versions.toml`) — its sources are
+> NOT checked out here. To browse them or
 > run `scripts/nip-lookup.sh`, clone Quartz and point `QUARTZ_PATH` at it, e.g.
 > `git clone https://github.com/vitorpamplona/quartz /tmp/quartz` then
 > `QUARTZ_PATH=/tmp/quartz/quartz/src/commonMain/kotlin/com/vitorpamplona/quartz scripts/nip-lookup.sh 50`.
