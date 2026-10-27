@@ -25,7 +25,10 @@ import com.nosfabrica.vespa.eventstore.engine.doc.CellRemoval
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationCells
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
+import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
@@ -217,14 +220,116 @@ internal class ProjectionLedger(
     }
 
     /**
+     * The write-ahead of ONE [insuring] bracket, which its block may EXTEND as
+     * it learns what it is about to write — a commit scope does not know every
+     * subject when it opens (TrustProjection.commit), only as each port call
+     * arrives. Each extension persists only what is neither already covered by
+     * this bracket nor pending in the ledger, so the calls of one commit that
+     * the store pre-declared cost no marker I/O at all, and an undeclared one
+     * costs one small write.
+     *
+     * SERIALIZED, because the calls of one commit run concurrently (the bulk
+     * path's conditional puts, [com.nosfabrica.vespa.eventstore.engine.async.PUT_FANOUT]
+     * wide) and every extension writes the SAME marker document: unserialized,
+     * 32 callers each wrote their own cell to it and Vespa queued them behind
+     * each other — 78 ms per marker op, measured, against 5 ms of cell write.
+     */
+    inner class Cover internal constructor() {
+        private val lock = Mutex()
+
+        // Mutable, and touched only under [lock] (or after the block, by the
+        // one coroutine that ran it): a commit extends its cover once per call,
+        // up to 20,000 calls on the address-keyed path, and an immutable union
+        // per call copied the whole cover each time — O(n²) under the lock the
+        // whole fan-out waits on.
+        private val coveredSubjects = HashSet<String>()
+        private val coveredServices = HashSet<String>()
+        private val persistedSubjects = LinkedHashSet<String>()
+        private val persistedServices = LinkedHashSet<String>()
+
+        /** Calls of this commit that have extended the cover and not yet recorded what they wrote — see [retire]. */
+        private val inFlight = AtomicLong()
+
+        /** Everything this bracket insures — what a failure queues. */
+        val covered: ProjectionWork get() = ProjectionWork(coveredSubjects.toSet(), coveredServices.toSet())
+
+        /** What this bracket itself wrote to the marker — what a clean finish clears. */
+        val persisted: ProjectionWork get() = ProjectionWork(persistedSubjects.toSet(), persistedServices.toSet())
+
+        /**
+         * Persist [work] before the write it insures; returns once the marker
+         * holds it. With [call], also counts the caller as IN FLIGHT until it
+         * calls [landed] — registered under the same lock [retire] decides
+         * under, so a retirement can never see "nobody is about to write" while
+         * a call it would uncover has already been told it is covered.
+         */
+        suspend fun extend(
+            work: ProjectionWork,
+            call: Boolean = false,
+        ) {
+            if (work.isEmpty() && !call) return
+            lock.withLock {
+                if (call) inFlight.incrementAndGet()
+                val freshSubjects = work.toRederive.filterTo(LinkedHashSet()) { coveredSubjects.add(it) }
+                val freshServices = work.toRewalk.filterTo(LinkedHashSet()) { coveredServices.add(it) }
+                if (freshSubjects.isEmpty() && freshServices.isEmpty()) return@withLock
+                val before = pendingNow().toWork()
+                val delta = ProjectionWork(freshSubjects, freshServices) - before
+                if (delta.isEmpty()) return@withLock
+                // Cell adds, which the engine sends as one update of the marker
+                // document at any size: no read, no doc rewrite, and
+                // already-pending work persists nothing.
+                addMarkerCells(delta)
+                persistedSubjects += delta.toRederive
+                persistedServices += delta.toRewalk
+            }
+        }
+
+        /** The call registered by [extend] has recorded what it wrote. */
+        fun landed() {
+            inFlight.decrementAndGet()
+        }
+
+        /**
+         * Drop [subjects] from this bracket — their cells are written and
+         * acked, mid-commit — and clear the marker cells it wrote for them, so
+         * a long commit's marker holds what is still unwritten rather than all
+         * it ever insured. Without it, a commit that removes a service's cards
+         * a page at a time (a kind 62 by a scoring service: 242,000 cards,
+         * pages of 10,000) kept every page's subjects in the marker until the
+         * commit ended — one document of every subject, cleared in one call —
+         * where the per-call bracket it replaced held one page at a time.
+         *
+         * Refused — returns false, nothing cleared — unless the caller is the
+         * only call of the commit in flight: a call that extended its cover
+         * and has not yet written may be about to write one of these subjects,
+         * and clearing its insurance first would leave that write naked.
+         * Refusing costs only over-coverage until the commit ends.
+         */
+        suspend fun retire(subjects: Set<String>): Boolean {
+            if (subjects.isEmpty()) return true
+            return lock.withLock {
+                if (inFlight.get() != 0L) return@withLock false
+                coveredSubjects -= subjects
+                val mine = subjects.filterTo(LinkedHashSet()) { persistedSubjects.remove(it) }
+                // Never a cell some queued work still needs: pending is insured too.
+                mine.removeAll(pendingNow().toRederive.keys)
+                clearMarkerCells(ProjectionWork(mine, emptySet()))
+                true
+            }
+        }
+    }
+
+    /**
      * Run [block] — the event write plus any cheap inline projection —
      * bracketed by the ledger.
      *
      * [couldInvalidate] is everything the op could leave stale if it dies
-     * partway, persisted as a write-ahead before anything is touched;
-     * [block]'s [Outcome.workLeft] is what it ACTUALLY left, which
-     * [couldInvalidate] must cover, named directly or reachable through an
-     * insured service's walk. On failure the whole insurance becomes pending.
+     * partway, persisted as a write-ahead before anything is touched; the
+     * block may add to it through the [Cover] it is handed, before each write
+     * it did not declare. [block]'s [Outcome.workLeft] is what it ACTUALLY
+     * left, which the cover must hold, named directly or reachable through an
+     * insured service's walk. On failure the whole cover becomes pending.
      *
      * The marker may transiently OVER-cover until a drain narrows it —
      * deliberate: narrowing here would cost a doc-sized write per batch, while
@@ -232,19 +337,16 @@ internal class ProjectionLedger(
      */
     suspend fun <T> insuring(
         couldInvalidate: ProjectionWork,
-        block: suspend () -> Outcome<T>,
+        block: suspend (Cover) -> Outcome<T>,
     ): T {
-        val before = adoptStoredMarkerOnce()
-        val delta = couldInvalidate - before
-        // Cell adds, which the engine sends as one update of the marker
-        // document at any size: no read, no doc rewrite, and already-pending
-        // work persists nothing.
-        if (!delta.isEmpty()) addMarkerCells(delta)
+        adoptStoredMarkerOnce()
+        val cover = Cover()
+        cover.extend(couldInvalidate)
         val outcome: Outcome<T>
         try {
-            outcome = block()
+            outcome = block(cover)
         } catch (t: Throwable) {
-            queue(couldInvalidate)
+            queue(cover.covered)
             // Wake the drainer even though the op failed: its retry loop repairs
             // a transient failure's work without waiting for the next write.
             onWorkQueued?.invoke()
@@ -260,8 +362,9 @@ internal class ProjectionLedger(
         // marker for work that does not exist, so it stood, and the next boot
         // inherited hundreds of subjects to re-derive to nothing and dropped the
         // provider cache for it. One remove here keeps the marker honest.
-        if (!delta.isEmpty() && queued.isEmpty()) {
-            clearMarkerCells(delta)
+        val persisted = cover.persisted
+        if (!persisted.isEmpty() && queued.isEmpty()) {
+            clearMarkerCells(persisted)
             dropMarkerIfEmpty()
         }
         val deferred = onWorkQueued
@@ -495,7 +598,7 @@ internal class ProjectionLedger(
         val cells = ArrayList<ReputationCells>(work.toRederive.size + work.toRewalk.size)
         work.toRederive.forEach { cells += ReputationCells(MARKER_KEY, ServiceKey(it), 1, null) }
         work.toRewalk.forEach { cells += ReputationCells(MARKER_KEY, ServiceKey(it), null, 1.0) }
-        reputations.updateCells(cells)
+        IngestStats.timed(MARKER_STAGE) { reputations.updateCells(cells) }
     }
 
     /** The mirror of [addMarkerCells]: drop exactly these entries' cells, leaving every other cell alone. */
@@ -504,7 +607,7 @@ internal class ProjectionLedger(
         val cells = ArrayList<CellRemoval>(work.toRederive.size + work.toRewalk.size)
         work.toRederive.forEach { cells += CellRemoval(MARKER_KEY, ServiceKey(it), influence = true, followers = false) }
         work.toRewalk.forEach { cells += CellRemoval(MARKER_KEY, ServiceKey(it), influence = false, followers = true) }
-        reputations.removeCells(cells)
+        IngestStats.timed(MARKER_STAGE) { reputations.removeCells(cells) }
     }
 
     /** The marker's cells as they are STORED right now — the only emptiness this class is allowed to act on. */
@@ -528,10 +631,11 @@ internal class ProjectionLedger(
      * conditional remove), which is a design change and not a guard. Until
      * then this is a smaller window, not the absence of one.
      */
-    private suspend fun dropMarkerIfEmpty() {
-        val stored = reputations.get(MARKER_KEY) ?: return
-        if (stored.influenceScores.isEmpty() && stored.followerCounts.isEmpty()) reputations.remove(MARKER_KEY)
-    }
+    private suspend fun dropMarkerIfEmpty() =
+        IngestStats.timed(MARKER_STAGE) {
+            val stored = reputations.get(MARKER_KEY) ?: return@timed
+            if (stored.influenceScores.isEmpty() && stored.followerCounts.isEmpty()) reputations.remove(MARKER_KEY)
+        }
 
     companion object {
         /**
@@ -543,6 +647,14 @@ internal class ProjectionLedger(
 
         /** Registry key — the operator reads this string on the trust page. */
         const val DRAIN = "trust-drain"
+
+        /**
+         * The [IngestStats] stage every marker round trip books to — the
+         * write-ahead, its cleanup, the husk check. Each is a feed round trip
+         * on the commit's critical path, beside `proj.write`, and until this
+         * was booked the two could not be told apart.
+         */
+        const val MARKER_STAGE = "proj.marker"
 
         /**
          * THE MARKER IS NOT A REPUTATION DOCUMENT, and this is where that shows.

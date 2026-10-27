@@ -1764,6 +1764,83 @@ rest as a phrase, so positive words drop them. The live gate judges streamed
 events by the same rewritten phrases. `SearchExactTextIT` runs every shape
 against a real Vespa.
 
+## One assistant run: 150,000 cards by one service (`cardRunProbe`, 2026-10-26)
+
+**The production report.** brainstorm's GrapeRank run publishes ~150,000 kind
+30382 cards, every one signed by the SAME service, every few minutes, and
+each run supersedes the last. The relay took ~17 minutes to store one, so it
+was saving slower than the publisher was signing. `cardRunProbe` replays that
+shape: one 10040 naming the service, then `RUNS` runs of `N` cards through
+`batchInsert` at the relay's publish batch (`BATCH`, 1000) from `WORKERS`
+concurrent callers (2, the relay's `RELAY_INGEST_CONCURRENCY`), run 2
+superseding every card of run 1. It prints the stage split per run and checks
+200 sampled subjects carry that run's rank.
+
+    VESPA_URL=http://localhost:8080 N=150000 ./gradlew :benchmark:cardRunProbe
+    VESPA_ADDRESS_KEYED=1 N=150000 ./gradlew :benchmark:cardRunProbe
+
+Single local Vespa 8.763.13 (4 cores, 15 GB), the superseding run — the
+steady state:
+
+| mode | before | after | what changed |
+|---|---:|---:|---|
+| address-keyed (`VESPA_ADDRESS_KEYED=1`) | 139 cards/s (20k measured; **~18 min** for 150k) | **1,290 cards/s, 116.2 s** for 150k | one reaction per commit, not per card |
+| read-then-supersede (default) | 952 cards/s, 157.6 s | **1,244 cards/s, 120.6 s** | one reaction per commit; no retract-then-rewrite |
+
+Run-to-run spread on this box is ~10%: the port-member cut measured the
+default row at 108.9 s with identical call counts (1 `proj.write`, 3 marker
+round trips per batch), every engine stage — `write` and `remove` included,
+which neither change touches — 10–15% slower in the later run, and the stages
+summing to the lock hold (no time of the commit's own).
+
+**Address-keyed: the per-card bracket.** The bulk path replayed each address
+through `putIfNewer`, and the trust projection reacts per CALL: every card
+paid its own crash-ledger bracket and its own cell write. Per 1000-card batch
+that was 1,000 `proj.write` calls (5 ms each) and 3,000 `proj.marker` round
+trips — and the marker ops were the cost, 78 ms each, because all 32
+concurrent `putIfNewer`s (`PUT_FANOUT`) update the ONE `projection-dirty`
+document, which Vespa serialises. 20,000 cards booked 4,690 s of marker time
+against 90 s of cell writes.
+
+**Read-then-supersede: the retraction its winner undid.** The commit wrote
+its diff as `removeDocs(superseded)` then `putAll(winners)`. The projection
+reacted to each: the remove RETRACTED every superseded card's cell, the put
+wrote the same cell straight back, each behind its own bracket — 2
+`proj.write` and 6 marker calls per batch, 150 of the run's 300 cell writes
+undone by the next.
+
+**The fix: react per COMMIT, not per call.** Both are one mistake — the
+reaction's unit was the port call, and calls are not shaped by trust. The
+store now wraps every trust-gated ingest commit in `TrustProjection.commit`:
+each put or remove inside it does its event write and RECORDS, per card
+address, the last thing that happened there (stored, or removed); the
+commit's end applies the record in one pipelined pass — one `proj.write` (plus
+one cell-remove call if anything was really removed) under one crash-ledger
+bracket. A removal followed by its winner nets to the winner's update, so
+nothing is retracted to be re-written. The bracket's write-ahead is declared
+up front from the batch the store is committing (only what survived dedup),
+and each call extends it only with what it was not told about, under a lock
+— so 32 concurrent conditional puts write the marker zero times instead of
+32 deep on one document. Every path gets this, including the sub-`BULK_MIN`
+loop that admits a small batch one event at a time, with no new port member.
+(A first cut added batch members to the port — `putAllIfNewer`, `supersede`
+— which fixed the two measured paths and left every other caller one loop
+away from the same cost; it was replaced by the commit.)
+
+**What is left, per 1000-card batch, and why it was not chased further.**
+Address-keyed: ~490 ms of conditional puts (`versions`, which no longer
+includes the cell write), ~240 ms `proj.write`, ~30 ms of
+marker. Default: `write` 255 ms, `remove` 195 ms, `proj.write` 278 ms. The
+cell writes are now THROUGHPUT-bound, not call-bound: a 5000-card batch wrote
+its cells at 1,072 ms against 5 × 255 ms, 16% better per cell — so
+coalescing cells across batches (a write-behind buffer per run) would buy
+little and cost a second crash-recovery path. The next lever is writing
+FEWER cells: a re-signed card whose rank and followers are unchanged
+rewrites an identical cell, and on a five-minute cadence that is likely most
+of them. Skipping one needs the stored cell's value, which neither path has
+in hand today (the conditional put does not return the version it replaced),
+so it was left as the measured next step rather than guessed at.
+
 ## Targeted benches (gradle tasks against a live Vespa)
 
 Beyond the head-to-head suite (`:benchmark:run`), these tasks each own one
@@ -1788,6 +1865,7 @@ timing is also a proof:
 | `recencyStrategyProbe` | the four `RecencyStrategy` options on the dominant feed shapes, plain and gated (`BENCH_OBSERVER`), with engine queries per REQ | any loaded store, read-only (`BENCH_NOW` pins the clock to a frozen corpus) | all four strategies must serve the identical page, ids and order |
 | `transportProbe` | read-transport isolation: JDK h1 / OkHttp h1 / OkHttp h2c on identical queries across body sizes | any loaded store | — |
 | `pinReplayProbe` | a Quartz pin bump on real data: per-kind drift between what the engine holds and what the new pin derives, the scoped `reindexFullTextSearch(kinds)`, NIP-50 probes before and after (procedure: `pin_replay.py`) | a capture of the moved kinds plus a control set of the unmoved searchable kinds, loaded at the OLD pin | before the repair every stale kind must be on the list; after it `--require-clean` fails on any stale doc; `pin_replay.py grade` fails unless each added term hits only after, each dropped term only before, each control both times |
+| `cardRunProbe` | one GrapeRank assistant run: `N` same-service 30382s through `batchInsert` at relay batch size and concurrency, then the run that supersedes them, with the projection's stage split (`proj.write`, `proj.marker`) | its own synthetic cards, written into the store (a fresh service per invocation) | 200 sampled subjects must carry the run's rank in the service's cell |
 | `trustProbe` | the trust write path under a real lens: bulk card ingest, single card inserts, a 10040 re-sign, a provider swap (with cards inserted on a clock during each walk to read the gate wait), a provider re-publishing its corpus (`--load-then-republish`), and the lensed page after the swap (`--query-only`) — the harness behind `docs/service-keyed-trust.md` | captured 10040s and two providers' 30382 corpora (JSON arrays; the doc says how they were pulled from staging) | the lensed `sort:rank` page must follow the CURRENT 10040's provider |
 
 The workload benches (`corpusLoad`, `BENCH_MIXED`, `BENCH_THROUGHPUT`,
@@ -2017,9 +2095,12 @@ split (regular events by id, replaceables by address) worth enabling only where
 replaceable/draft churn dominates. `BENCH_ADDR_SMOKE=1` (with
 `VESPA_ADDRESS_KEYED=1`) is the live end-to-end correctness smoke for it.
 
-> Note: through the production trust-projection decorator, supersession stays
-> read-based so the projection's write reactions still see both versions; the
-> conditional-put fast path engages on the undecorated index.
+> Note: the trust projection FORWARDS `supersedesViaPut` (a card's cell is a
+> function of the newest version alone, so it no longer needs to see the one
+> replaced), so the conditional put is live through the production stack too.
+> The bulk path still calls `putIfNewer` per event; what keeps that cheap is
+> that the projection reacts per store COMMIT, not per call — see "One
+> assistant run" below for what per-call reaction cost a card stream.
 
 ### 3. Query throughput (queries/sec; higher is better)
 

@@ -142,7 +142,7 @@ A limit'd newest-first read would otherwise make the engine walk its whole match
 
 All writes serialize behind one `Mutex` (`withWriteLock`), making query-then-write atomic within the process. `insertLocked` enforces: dedup, replaceable/addressable supersession (NIP-01 tiebreak: same `created_at` → lowest id wins), NIP-09 deletions (same-owner only; deleting a deletion is a no-op — Quartz's SQLite store gets this wrong, we don't), NIP-40 expiration, NIP-62 vanish, ephemeral-never-stored. Rejections return typed `"duplicate:"`/`"replaced:"`/`"blocked:"` reasons (`Rejections.kt`). The store **never verifies signatures** — it deliberately holds unsigned rumors; verification is the caller's ingress job.
 
-The per-event `insert()` path pays admission-probe round trips; `batchInsert()` amortizes them (~47× fewer round trips). Never ingest in a loop over `insert()`.
+The per-event `insert()` path pays admission-probe round trips; `batchInsert()` amortizes them (~47× fewer round trips). Never ingest in a loop over `insert()`. The same holds one layer down, and is handled there: the trust projection reacts per STORE COMMIT, not per port call — the store wraps each trust-gated ingest commit in `TrustProjection.commit`, every put/remove inside it records its reaction, and the commit applies them in one crash-ledger bracket and one pipelined cell write. Per-call reaction made a 150,000-card assistant run (one `putIfNewer` per card on the address-keyed path) take ~18 minutes (`./gradlew :benchmark:cardRunProbe`). A new trust-gated write path should run inside a commit too; a call outside one opens its own.
 
 ### Trust projection (`store/trust/`)
 

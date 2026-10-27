@@ -5,7 +5,28 @@ app = "1.0.1"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"
 # Quartz from JitPack (vitorpamplona/quartz @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
-# dfe281430a = vitorpamplona/quartz @ 2026-10-21, the first pin from Quartz's own repo: it left Amethyst
+# c63c35ca76 = vitorpamplona/quartz v2.4.0 (main @ 2026-10-27, the merge of quartz#38), a descendant
+# of dfe281430a (below): 100 commits, 67 touching quartz's main sources. Scanned against this
+# store's imports (38 packages; a tree diff of quartz/src between the pins, main sources):
+#  - JACKSON IS GONE (quartz d445157, BREAKING upstream): OptimizedJsonMapper is common code over
+#    Kite, quartz's own reader/writer, for events, messages, commands, filters and tags; kotlinx for
+#    the rest. This store parses and writes events through it (EventDoc, EventDocConversion), so
+#    every event read is Kite's: the same events on valid input (vespa-relay compared the two over
+#    65,050 real frames), stricter on malformed input (a non-string `content` or `pubkey` is refused).
+#    relay.filters loses only its Jackson (de)serializers, which this store never called.
+#  - THREE MORE SEARCHABLE KINDS, 33953 (EbookEvent), 34609 (MagazineEvent), 39731
+#    (MagazineIssueEvent), new classes on the catch-all. Stored ones index after
+#    store.reindexFullTextSearch(listOf(33953, 34609, 39731)); no other kind's extraction moved.
+#  - Same-answer: EventFactory.create is split in four (JIT-able: parsing 11-21% faster), Hex gains
+#    range helpers, RawEvent presizes its JSON and writes `\u00xx` lowercase like Kite,
+#    nip01Core.store's deletion extension and ObservableEventStore are refactors this store does
+#    not call. Comment reply targets and zap poll options moved; this store reads neither.
+#  - RUNTIME CLASSPATH (:store): jackson-databind and mls 1.0.0 leave; jackson-core drops from
+#    2.22.3 (databind's) to 2.22.0, the version the Vespa feed client declares; crypto-kmp
+#    1.0.0 -> 2.1.0, okhttp 5.5.1, kotlinx-serialization 1.12.0, kotlin-stdlib 2.4.21,
+#    androidx.collection 1.7.0.
+#
+# Prev dfe281430a = vitorpamplona/quartz @ 2026-10-21, the first pin from Quartz's own repo: it left Amethyst
 # that day, so the coordinates move from com.github.vitorpamplona.amethyst:quartz to
 # com.github.vitorpamplona.quartz:quartz. Over e7f23068e0 (below) it carries vitorpamplona/quartz#3, the
 # outbox fix (a failed connection keeps an event pending, re-sent on the next one, and gives it up after
@@ -131,7 +152,7 @@ mavenPublish = "0.37.0"
 # catch-all; SearchableEvent grows the read-path forEachIndexableField, no reindex).
 # Prev cecc3287b2 (2026-09-01: 17 catch-all kinds split into title/body roles, four
 # affiliation URLs, six doubled `t`-tag scans dropped; a ranking backfill).
-quartz = "dfe281430a"
+quartz = "c63c35ca76"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 # Matches what Quartz brings transitively; Gradle would resolve to it regardless.
