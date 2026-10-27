@@ -9,8 +9,9 @@ pluginManagement {
 dependencyResolutionManagement {
     repositories {
         google()
+        // Quartz comes from Maven Central since 2.4.0 (libs.versions.toml), the last thing this build
+        // read from JitPack. jitpack.yml stays: JitPack still BUILDS this store for vespa-relay.
         mavenCentral()
-        maven { url = uri("https://jitpack.io") }
     }
 }
 

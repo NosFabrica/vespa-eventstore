@@ -4,8 +4,19 @@ kotlin = "2.4.0"
 app = "1.0.1"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"
-# Quartz from JitPack (vitorpamplona/quartz @ commit) — NIP-11 DSL + opt-out SQLite FTS index.
-# c63c35ca76 = vitorpamplona/quartz v2.4.0 (main @ 2026-10-27, the merge of quartz#38), a descendant
+# Quartz from Maven Central (com.vitorpamplona.quartz:quartz, a release) — NIP-11 DSL + opt-out
+# SQLite FTS index.
+# 2.4.0 = the same code as c63c35ca76 (below): the release workflow publishes tag v2.4.0, and
+# git rev-parse v2.4.0^{commit} = c63c35ca7629. FROM CENTRAL, NOT JITPACK, because this store is
+# itself published to Central with quartz as an `api` dependency: a JitPack coordinate in its POM
+# is one a consumer without JitPack cannot resolve. With it, this build reads nothing from JitPack
+# and settings.gradle.kts drops the repository. The group differs from JitPack's
+# (com.github.vitorpamplona.quartz), so a graph holding both would carry two quartz modules side by
+# side, not a version conflict; vespa-relay, which still takes this store from JitPack,
+# substitutes the old group for this one. Runtime classpath identical to c63c35ca76's (the
+# published POM names the same dependency versions).
+#
+# Prev c63c35ca76 = vitorpamplona/quartz v2.4.0 (main @ 2026-10-27, the merge of quartz#38), a descendant
 # of dfe281430a (below): 100 commits, 67 touching quartz's main sources. Scanned against this
 # store's imports (38 packages; a tree diff of quartz/src between the pins, main sources):
 #  - JACKSON IS GONE (quartz d445157, BREAKING upstream): OptimizedJsonMapper is common code over
@@ -152,7 +163,7 @@ mavenPublish = "0.37.0"
 # catch-all; SearchableEvent grows the read-path forEachIndexableField, no reindex).
 # Prev cecc3287b2 (2026-09-01: 17 catch-all kinds split into title/body roles, four
 # affiliation URLs, six doubled `t`-tag scans dropped; a ranking backfill).
-quartz = "c63c35ca76"
+quartz = "2.4.0"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 # Matches what Quartz brings transitively; Gradle would resolve to it regardless.
@@ -178,7 +189,7 @@ ktlint = "1.8.0"
 testcontainers = "1.20.4"
 
 [libraries]
-quartz = { module = "com.github.vitorpamplona.quartz:quartz", version.ref = "quartz" }
+quartz = { module = "com.vitorpamplona.quartz:quartz", version.ref = "quartz" }
 kotlinx-coroutines = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
