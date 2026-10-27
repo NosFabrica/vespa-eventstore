@@ -237,30 +237,86 @@ internal class ProjectionLedger(
     inner class Cover internal constructor() {
         private val lock = Mutex()
 
+        // Mutable, and touched only under [lock] (or after the block, by the
+        // one coroutine that ran it): a commit extends its cover once per call,
+        // up to 20,000 calls on the address-keyed path, and an immutable union
+        // per call copied the whole cover each time — O(n²) under the lock the
+        // whole fan-out waits on.
+        private val coveredSubjects = HashSet<String>()
+        private val coveredServices = HashSet<String>()
+        private val persistedSubjects = LinkedHashSet<String>()
+        private val persistedServices = LinkedHashSet<String>()
+
+        /** Calls of this commit that have extended the cover and not yet recorded what they wrote — see [retire]. */
+        private val inFlight = AtomicLong()
+
         /** Everything this bracket insures — what a failure queues. */
-        @Volatile
-        var covered: ProjectionWork = ProjectionWork.NONE
-            private set
+        val covered: ProjectionWork get() = ProjectionWork(coveredSubjects.toSet(), coveredServices.toSet())
 
         /** What this bracket itself wrote to the marker — what a clean finish clears. */
-        @Volatile
-        var persisted: ProjectionWork = ProjectionWork.NONE
-            private set
+        val persisted: ProjectionWork get() = ProjectionWork(persistedSubjects.toSet(), persistedServices.toSet())
 
-        /** Persist [work] before the write it insures; returns once the marker holds it. */
-        suspend fun extend(work: ProjectionWork) {
-            if (work.isEmpty()) return
+        /**
+         * Persist [work] before the write it insures; returns once the marker
+         * holds it. With [call], also counts the caller as IN FLIGHT until it
+         * calls [landed] — registered under the same lock [retire] decides
+         * under, so a retirement can never see "nobody is about to write" while
+         * a call it would uncover has already been told it is covered.
+         */
+        suspend fun extend(
+            work: ProjectionWork,
+            call: Boolean = false,
+        ) {
+            if (work.isEmpty() && !call) return
             lock.withLock {
+                if (call) inFlight.incrementAndGet()
+                val freshSubjects = work.toRederive.filterTo(LinkedHashSet()) { coveredSubjects.add(it) }
+                val freshServices = work.toRewalk.filterTo(LinkedHashSet()) { coveredServices.add(it) }
+                if (freshSubjects.isEmpty() && freshServices.isEmpty()) return@withLock
                 val before = pendingNow().toWork()
-                val delta = work - covered - before
-                covered += work
+                val delta = ProjectionWork(freshSubjects, freshServices) - before
                 if (delta.isEmpty()) return@withLock
                 // A small delta is pipelined cell adds — no read, no doc rewrite,
-                // and already-pending work persists nothing. A bulk batch's is one
-                // doc put: per-entry ops at batch size would rival the event writes
-                // they insure.
-                if (delta.toRederive.size + delta.toRewalk.size <= MAX_CELL_ADDS) addMarkerCells(delta) else mergeWholeMarker(before + covered)
-                persisted += delta
+                // and already-pending work persists nothing. A bulk one is one doc
+                // put, MERGED with what is stored (which already holds everything
+                // this bracket persisted): per-entry ops at batch size would rival
+                // the event writes they insure.
+                if (delta.toRederive.size + delta.toRewalk.size <= MAX_CELL_ADDS) addMarkerCells(delta) else mergeWholeMarker(before + delta)
+                persistedSubjects += delta.toRederive
+                persistedServices += delta.toRewalk
+            }
+        }
+
+        /** The call registered by [extend] has recorded what it wrote. */
+        fun landed() {
+            inFlight.decrementAndGet()
+        }
+
+        /**
+         * Drop [subjects] from this bracket — their cells are written and
+         * acked, mid-commit — and clear the marker cells it wrote for them, so
+         * a long commit's marker holds what is still unwritten rather than all
+         * it ever insured. Without it, a commit that removes a service's cards
+         * a page at a time (a kind 62 by a scoring service: 242,000 cards,
+         * pages of 10,000) rewrote an ever-growing marker document on every
+         * page, up to one document of every subject.
+         *
+         * Refused — returns false, nothing cleared — unless the caller is the
+         * only call of the commit in flight: a call that extended its cover
+         * and has not yet written may be about to write one of these subjects,
+         * and clearing its insurance first would leave that write naked.
+         * Refusing costs only over-coverage until the commit ends.
+         */
+        suspend fun retire(subjects: Set<String>): Boolean {
+            if (subjects.isEmpty()) return true
+            return lock.withLock {
+                if (inFlight.get() != 0L) return@withLock false
+                coveredSubjects -= subjects
+                val mine = subjects.filterTo(LinkedHashSet()) { persistedSubjects.remove(it) }
+                // Never a cell some queued work still needs: pending is insured too.
+                mine.removeAll(pendingNow().toRederive.keys)
+                clearMarkerCells(ProjectionWork(mine, emptySet()))
+                true
             }
         }
     }

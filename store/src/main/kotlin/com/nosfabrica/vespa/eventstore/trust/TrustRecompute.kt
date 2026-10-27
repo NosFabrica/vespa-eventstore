@@ -32,6 +32,8 @@ import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.mapping.toEvent
 import com.nosfabrica.vespa.eventstore.runtime.WriteLocks
+import com.vitorpamplona.quartz.nip01Core.core.Event
+import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import com.vitorpamplona.quartz.utils.Hex
 import kotlinx.coroutines.channels.Channel
@@ -542,6 +544,9 @@ internal class TrustRecompute(
  * projection's bookkeeping ids ([ProjectionLedger]).
  */
 internal fun subjectOf(doc: EventDoc): String? = doc.dTagOrEmpty().takeIf(Hex::isHex64)
+
+/** [subjectOf] for an event not yet converted — the same rule (a missing d is empty, so never a subject). */
+internal fun subjectOf(event: Event): String? = event.tags.dTag()?.takeIf(Hex::isHex64)
 
 /**
  * The card's rank tag clamped to the served 0..100 scale — providers are not

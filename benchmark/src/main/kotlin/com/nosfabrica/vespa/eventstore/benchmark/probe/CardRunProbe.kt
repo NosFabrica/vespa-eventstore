@@ -90,7 +90,7 @@ object CardRunProbe {
 
     private fun stage(name: String): IngestStats.Stage = IngestStats.snapshot()[name] ?: IngestStats.Stage(0, 0, 0)
 
-    private val STAGES = listOf("lock.ingest.trust.wait", "lock.ingest.hold", "dedup", "versions", "supersede", "write", "remove", "proj.write", "proj.marker", "proj.flush")
+    private val STAGES = listOf("lock.ingest.trust.wait", "lock.ingest.hold", "dedup", "versions", "supersede", "write", "remove", "proj.write", "proj.marker")
 
     @JvmStatic
     fun main(args: Array<String>) =

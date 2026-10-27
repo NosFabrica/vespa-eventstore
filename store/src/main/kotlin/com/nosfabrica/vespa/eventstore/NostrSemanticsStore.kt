@@ -380,24 +380,52 @@ class NostrSemanticsStore(
     private suspend fun <T> lockedForWrite(
         event: Event,
         body: suspend () -> T,
-    ): T = locks.gated(touchesTrust(event), WriteLocks.INGEST) { committing(touchesTrust(event), listOf(event), body) }
+    ): T {
+        // ONE answer for both: a gate taken without its commit would leave the
+        // flush unordered, a commit without its gate would flush outside it.
+        val trust = touchesTrust(event)
+        return locks.gated(trust, WriteLocks.INGEST) { committing(trust, body = body) }
+    }
 
     /**
      * [body] as ONE trust commit when [trust] ([TrustProjection.commit]):
      * however its writes are split into port calls — a conditional put per
-     * event, a remove then a put — the projection reacts once, at the end,
-     * with [planned] insured up front. Taken INSIDE the trust gate, always:
-     * the commit's flush is reputation work, and the gate is what orders it
-     * against the drain. A store without the projection just runs [body].
+     * event, a remove then a put — the projection reacts once, at the end.
+     * Taken INSIDE the trust gate, always: the commit's flush is reputation
+     * work, and the gate is what orders it against the drain. A store without
+     * the projection just runs [body].
+     *
+     * [planned] is insured up front, so the calls that write it pay no marker
+     * I/O of their own. Only a caller that has ALREADY dropped its duplicates
+     * passes it (the bulk records path, after its lock-free dedup): a planned
+     * card that turns out stored costs a marker write and its clear for a cell
+     * nobody writes. Everyone else leaves it empty and each call insures what
+     * it is about to write — for one event, or a sub-BULK_MIN batch, that is no
+     * more than the old per-call bracket paid.
+     *
+     * A [RejectedException] is the admission path's way of RETURNING a verdict
+     * (duplicate, replaced, deleted, …), not a failed write, so it is carried
+     * out of the commit as a value and re-thrown after it closes cleanly. Thrown
+     * through, the ledger read it as "the writes may have died half way" and
+     * queued the whole cover: every re-offered card left a re-derive and a
+     * marker cell behind.
      */
     private suspend fun <T> committing(
         trust: Boolean,
-        planned: List<Event>,
+        planned: List<Event> = emptyList(),
         body: suspend () -> T,
     ): T {
         val projection = index as? TrustProjection
         if (!trust || projection == null) return body()
-        return projection.commit(planned) { body() }
+        val outcome =
+            projection.commit(planned) {
+                try {
+                    Result.success(body())
+                } catch (e: RejectedException) {
+                    Result.failure(e)
+                }
+            }
+        return outcome.getOrThrow()
     }
 
     override suspend fun insert(event: Event) {
@@ -443,7 +471,7 @@ class NostrSemanticsStore(
         body: suspend () -> T,
     ): T {
         val trust = events.any { touchesTrust(it) }
-        return locks.gated(trust, WriteLocks.INGEST) { committing(trust, events, body) }
+        return locks.gated(trust, WriteLocks.INGEST) { committing(trust, body = body) }
     }
 
     /**
@@ -516,7 +544,7 @@ class NostrSemanticsStore(
         trust: Boolean,
         bulk: Boolean,
     ): List<IEventStore.InsertOutcome> {
-        if (!bulk) return locks.gated(trust, WriteLocks.INGEST) { committing(trust, events) { events.map { admission.tryAdmit(it) } } }
+        if (!bulk) return locks.gated(trust, WriteLocks.INGEST) { committing(trust) { events.map { admission.tryAdmit(it) } } }
         // PLANNED OUTSIDE THE LOCKS, as before: the plan is reads only.
         val plan = bulkRecords.plan(events)
         // Only what survived the lock-free dedup is declared: a mirror's card

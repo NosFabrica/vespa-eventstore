@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.eventstore.trust
 
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
+import com.nosfabrica.vespa.eventstore.RejectedException
 import com.nosfabrica.vespa.eventstore.engine.DocsPage
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
@@ -904,11 +905,11 @@ class TrustProjectionTest {
 
     /**
      * ONE ASSISTANT RUN, ONE REACTION PER BATCH — on the address-keyed path,
-     * which replays each address through the engine's conditional put. The
-     * bulk path used to call `putIfNewer` per card, and the projection reacts
-     * per CALL, so every card paid its own ledger bracket and its own cell
-     * write (measured 129 cards/s on a 20,000-card run; see
-     * EventIndex.putAllIfNewer). The verdicts and the cells must be exactly
+     * which replays each address through the engine's conditional put, one
+     * `putIfNewer` per card. The projection used to react per CALL, so every
+     * card paid its own ledger bracket and its own cell write (139 cards/s on
+     * a 20,000-card run; see TrustProjection.commit, which now makes the
+     * commit the unit of reaction). The verdicts and the cells must be exactly
      * what the per-card path produced — including a same-address pair inside
      * one batch, in both orders.
      */
@@ -950,9 +951,10 @@ class TrustProjectionTest {
         }
 
     /**
-     * The read-then-supersede commit writes its diff as ONE supersede, so a
-     * superseded card is not retracted only for its winner to write the same
-     * cell back (EventIndex.supersede). What a winner no longer carries must
+     * The read-then-supersede commit writes its diff as a removeDocs and then a
+     * putAll, inside ONE trust commit, so a superseded card is not retracted
+     * only for its winner to write the same cell back (TrustProjection.commit
+     * nets the two calls per address). What a winner no longer carries must
      * still leave — through the winner's own update, not a retraction — and a
      * card a deletion took, with no winner, is still retracted.
      */
@@ -1025,6 +1027,80 @@ class TrustProjectionTest {
             assertTrue(left == null || left.isEmpty(), "the deleted card leaves no cell, got $left")
             kept.forEach { s -> assertEquals(33, counting.get(s)?.influenceScores?.get(ServiceKey(service))) }
             assertNull(counting.get(ProjectionLedger.MARKER_KEY), "a clean commit leaves no marker")
+        }
+
+    /**
+     * A REJECTION IS NOT A FAILED COMMIT. `insert` signals duplicate, replaced,
+     * deleted and the rest by throwing [RejectedException]
+     * from inside the commit; the ledger reads a throw as "the writes may have
+     * died half way" and queues the whole cover. A relay re-offered a card it
+     * already holds — the commonest card insert there is — would then leave
+     * a queued re-derive and a marker cell behind, every time.
+     */
+    @Test
+    fun `a rejected card insert leaves no ledger work and no marker`() =
+        runBlocking {
+            store.insert(list10040())
+            projection.backlog.drain { it() }
+            val first = card(rank = 70)
+            store.insert(first)
+            assertFailsWith<RejectedException> { store.insert(first) } // duplicate
+            assertFailsWith<RejectedException> { store.insert(card(rank = 10, at = first.createdAt - 1)) } // replaced
+            assertEquals(0L, projection.backlog.pendingSubjects(), "nothing to re-derive after a rejection")
+            assertNull(reputations.get(ProjectionLedger.MARKER_KEY), "and no marker left naming it")
+            assertEquals(70, reputations.get(subject)?.influenceScores?.get(ServiceKey(service)))
+        }
+
+    /**
+     * A commit bigger than [TrustProjection.FLUSH_AT] flushes mid-way, and the
+     * flush must not land between a supersession's removeDocs and the putAll
+     * that refills it: settled there, every superseded cell was retracted and
+     * then written straight back, with the subjects briefly cell-less to a
+     * gated read. Removals now wait for the next removal call or the commit's
+     * end, so the refill still nets them away.
+     */
+    @Test
+    fun `a superseding batch past the flush bound still retracts nothing it refills`() =
+        runBlocking {
+            val counting = MarkerCountingReputationIndex(InMemoryReputationIndex())
+            val st = NostrSemanticsStore(TrustProjection(InMemoryEventIndex(), counting), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+            st.insert(list10040())
+            val n = TrustProjection.FLUSH_AT + 100
+            // Zero-padded behind a fixed prefix: padding with a HEX digit makes
+            // 0xa and 0xaa the same subject.
+            val subjects = (1..n).map { "d0" + it.toString(16).padStart(62, '0') }
+            st.batchInsert(subjects.map { s -> card(about = s, rank = 10, at = 2_000_000) })
+            val removeCalls = counting.subjectRemoveCalls
+            val run2 = st.batchInsert(subjects.map { s -> card(about = s, rank = 20, at = 2_000_300) })
+            assertTrue(run2.all { it is IEventStore.InsertOutcome.Accepted }, "run 2: ${run2.groupingBy { it.toString().take(60) }.eachCount()}")
+            assertEquals(removeCalls, counting.subjectRemoveCalls, "no retraction of cells the same commit refills")
+            assertEquals(20, counting.get(subjects.last())?.influenceScores?.get(ServiceKey(service)))
+            assertNull(counting.get(ProjectionLedger.MARKER_KEY))
+        }
+
+    /**
+     * Mid-commit retirement shrinks the marker only when no other call of the
+     * commit is between "told it is covered" and "recorded what it wrote" —
+     * otherwise the cell it is about to write would lose its insurance.
+     */
+    @Test
+    fun `a cover retires insurance only when no call is in flight`() =
+        runBlocking {
+            val reps = InMemoryReputationIndex()
+            val proj = TrustProjection(InMemoryEventIndex(), reps)
+            proj.backlog.drainInBackground { }
+            val a = "a1".repeat(32)
+            proj.backlog.insuring(ProjectionWork.NONE) { cover ->
+                cover.extend(ProjectionWork(setOf(a), emptySet()), call = true)
+                assertEquals(setOf(ServiceKey(a)), reps.get(ProjectionLedger.MARKER_KEY)?.influenceScores?.keys, "insured before the write")
+                assertTrue(!cover.retire(setOf(a)), "refused while the call is in flight")
+                assertEquals(setOf(ServiceKey(a)), reps.get(ProjectionLedger.MARKER_KEY)?.influenceScores?.keys, "and the insurance stands")
+                cover.landed()
+                assertTrue(cover.retire(setOf(a)), "allowed once it has landed")
+                val left = reps.get(ProjectionLedger.MARKER_KEY)
+                assertTrue(left == null || left.influenceScores.isEmpty(), "its marker cell is cleared, got $left")
+                Outcome(Unit, ProjectionWork.NONE)
+            }
         }
 }
 

@@ -41,7 +41,6 @@ import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
-import com.vitorpamplona.quartz.utils.Hex
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -234,14 +233,41 @@ class TrustProjection(
         op: suspend (CommitScope) -> T,
     ): T {
         val scope = currentCoroutineContext()[CommitScope] ?: return commit { reacting(puts, removals, fresh, op) }
+        // A REMOVAL is the one point that settles what the commit buffered so
+        // far, mid-commit: every removal path is a single sequential call (a
+        // supersession's sweep, a deletion, a vanish page), never part of the
+        // conditional puts' fan-out, so nothing else is usually in flight —
+        // which is what [ProjectionLedger.Cover.retire] needs to shrink the
+        // marker. A long removal commit (a vanish of a scoring service, page by
+        // page) thereby holds one page of insurance at a time instead of all of
+        // it. Puts never trigger this: a put cannot be undone by a later call
+        // in a way that costs a write, while a removal can be refilled by the
+        // winner the NEXT call stores — the read-then-supersede path's
+        // removeDocs-then-putAll — and settling between the two is exactly the
+        // retract-then-rewrite the commit exists to avoid.
+        if (removals.isNotEmpty()) settle(scope)
         // A commit insured by SERVICE (a planned batch past DIRT_SUBJECT_CAP)
         // keeps its puts insured by service: per-subject cover here would be a
         // marker write per card, the very cost the commit exists to remove.
         val putCover = if (scope.coarse) servicesOf(puts) else insuranceForPuts(puts)
-        scope.cover.extend(putCover + insuranceForRemovals(removals) + ProjectionWork(emptySet(), fresh))
-        val result = op(scope)
-        if (scope.pending() >= FLUSH_AT) flush(scope)
+        scope.cover.extend(putCover + insuranceForRemovals(removals) + ProjectionWork(emptySet(), fresh), call = true)
+        val result =
+            try {
+                op(scope)
+            } finally {
+                scope.cover.landed()
+            }
+        // The buffer's bound, for puts: their cells written now, removals kept
+        // for a winner that may still refill them (see above).
+        if (scope.pendingStored() >= FLUSH_AT) flush(scope, storedOnly = true)
         return result
+    }
+
+    /** Apply everything [scope] buffered, then retire the insurance it no longer needs — see [reacting]. */
+    private suspend fun settle(scope: CommitScope) {
+        val written = flush(scope, storedOnly = false)
+        // Not the subjects still owed a derive: they stay insured until the drain.
+        scope.cover.retire(written - scope.rederiving())
     }
 
     /**
@@ -368,18 +394,26 @@ class TrustProjection(
      * would have. A winner that fails to reconstruct is derive work, and the
      * derive writes the subject's exact parent, stale cell included.
      */
-    private suspend fun flush(scope: CommitScope) =
-        scope.flushing { ops ->
+    private suspend fun flush(
+        scope: CommitScope,
+        storedOnly: Boolean = false,
+    ): Set<String> {
+        val written = LinkedHashSet<String>()
+        scope.flushing(storedOnly) { ops ->
             val puts = ops.filter { it.stored }
             val map = if (puts.isEmpty()) null else recompute.providerMap()
             if (map != null) scope.rederive(recompute.applyCards(puts.map { it.doc }, map))
             val removals = ArrayList<CellRemoval>()
             for (op in ops) {
+                val subject = subjectOf(op.doc) ?: continue
+                written += subject
                 if (op.stored && (!op.refills || map?.maps(op.doc.pubkey) == true)) continue
-                subjectOf(op.doc)?.let { removals += CellRemoval(it, ServiceKey(op.doc.pubkey), influence = true, followers = true) }
+                removals += CellRemoval(subject, ServiceKey(op.doc.pubkey), influence = true, followers = true)
             }
             if (removals.isNotEmpty()) IngestStats.timed("proj.write") { reputations.removeCells(removals) }
         }
+        return written
+    }
 
     /** The services [lists] name that the CURRENT map does not — the ones whose stored cards have no cells yet. Read before the lists are written. */
     private suspend fun freshServicesOf(lists: List<EventDoc>): Set<String> {
@@ -484,38 +518,30 @@ class TrustProjection(
      * reach every touched subject). A 10040 insures nothing — its walk is
      * declared as work, not insured.
      */
-    private fun insuranceForPuts(docs: List<EventDoc>): ProjectionWork {
-        val subjects = LinkedHashSet<String>()
-        for (doc in docs) if (doc.kind == UserAssertionEvent.KIND) subjectOf(doc)?.let(subjects::add)
-        if (subjects.size > DIRT_SUBJECT_CAP) return servicesOf(docs)
-        return ProjectionWork(subjects, emptySet())
-    }
+    private fun insuranceForPuts(docs: List<EventDoc>): ProjectionWork = putCover(docs, { it.kind }, ::subjectOf) { it.pubkey }
 
     /** [insuranceForPuts] coarsened outright: the services of [docs]' cards. */
-    private fun servicesOf(docs: List<EventDoc>): ProjectionWork {
-        val services = LinkedHashSet<String>()
-        for (doc in docs) if (doc.kind == UserAssertionEvent.KIND) services += doc.pubkey
-        return ProjectionWork(emptySet(), services)
-    }
+    private fun servicesOf(docs: List<EventDoc>): ProjectionWork = ProjectionWork(emptySet(), docs.filter { it.kind == UserAssertionEvent.KIND }.mapTo(LinkedHashSet()) { it.pubkey })
 
     /**
      * [insuranceForPuts] for the EVENTS a commit is about to write, before any
-     * is converted: the same subjects (a card's 64-hex d tag, [subjectOf]'s
-     * rule) under the same cap.
+     * is converted — the same rule and cap, by construction ([putCover]), so
+     * the planned cover and each call's own cover name the same keys.
      */
-    private fun insuranceForPlanned(events: List<Event>): ProjectionWork {
+    private fun insuranceForPlanned(events: List<Event>): ProjectionWork = putCover(events, { it.kind }, ::subjectOf) { it.pubKey }
+
+    /** The one put-insurance rule, for docs and events alike: card subjects under [DIRT_SUBJECT_CAP], else their services. */
+    private inline fun <T> putCover(
+        items: List<T>,
+        kind: (T) -> Int,
+        subject: (T) -> String?,
+        service: (T) -> String,
+    ): ProjectionWork {
         val subjects = LinkedHashSet<String>()
-        for (e in events) {
-            if (e.kind == UserAssertionEvent.KIND) {
-                e.tags
-                    .dTag()
-                    ?.takeIf(Hex::isHex64)
-                    ?.let(subjects::add)
-            }
-        }
+        for (item in items) if (kind(item) == UserAssertionEvent.KIND) subject(item)?.let(subjects::add)
         if (subjects.size <= DIRT_SUBJECT_CAP) return ProjectionWork(subjects, emptySet())
         val services = LinkedHashSet<String>()
-        for (e in events) if (e.kind == UserAssertionEvent.KIND) services += e.pubKey
+        for (item in items) if (kind(item) == UserAssertionEvent.KIND) services += service(item)
         return ProjectionWork(emptySet(), services)
     }
 
@@ -547,6 +573,7 @@ class TrustProjection(
 
         private val lock = Any()
         private var ops = LinkedHashMap<String, CardOp>()
+        private var storedCount = 0
         private val walks = LinkedHashSet<String>()
         private val rederive = LinkedHashSet<String>()
         private val flushLock = Mutex()
@@ -560,12 +587,17 @@ class TrustProjection(
                 for (doc in cards) {
                     val address = doc.addressOrNull() ?: continue
                     val prior = ops[address]
+                    if (prior?.stored == true) storedCount--
+                    if (stored) storedCount++
                     ops[address] = CardOp(doc, stored, refills = stored && prior != null && (!prior.stored || prior.refills))
                 }
             }
         }
 
-        fun pending(): Int = synchronized(lock) { ops.size }
+        /** Stored ops waiting — the buffer [FLUSH_AT] bounds; removals wait for a refill (see [reacting]). */
+        fun pendingStored(): Int = synchronized(lock) { storedCount }
+
+        fun rederiving(): Set<String> = synchronized(lock) { rederive.toSet() }
 
         fun walk(services: Set<String>) {
             if (services.isNotEmpty()) synchronized(lock) { walks += services }
@@ -577,12 +609,31 @@ class TrustProjection(
 
         fun workLeft(): ProjectionWork = synchronized(lock) { ProjectionWork(rederive.toSet(), walks.toSet()) }
 
-        /** Take everything recorded so far and [apply] it; serialized, so two flushes land in the order they took. */
-        suspend fun flushing(apply: suspend (List<CardOp>) -> Unit) =
-            flushLock.withLock {
-                val batch = synchronized(lock) { ops.values.toList().also { ops = LinkedHashMap() } }
-                if (batch.isNotEmpty()) apply(batch)
-            }
+        /**
+         * Take what is recorded so far — every op, or with [storedOnly] the
+         * stored ones, leaving removals for a refill — and [apply] it.
+         * Serialized, so two flushes land in the order they took.
+         */
+        suspend fun flushing(
+            storedOnly: Boolean,
+            apply: suspend (List<CardOp>) -> Unit,
+        ) = flushLock.withLock {
+            val batch =
+                synchronized(lock) {
+                    if (storedOnly) {
+                        val taken = ops.values.filter { it.stored }
+                        ops.values.removeAll { it.stored }
+                        storedCount = 0
+                        taken
+                    } else {
+                        ops.values.toList().also {
+                            ops = LinkedHashMap()
+                            storedCount = 0
+                        }
+                    }
+                }
+            if (batch.isNotEmpty()) apply(batch)
+        }
     }
 
     internal companion object {
@@ -607,6 +658,6 @@ class TrustProjection(
          * flush is throughput-bound (5000 cells measured 16% cheaper per cell
          * than 1000), so a bigger buffer would buy nothing.
          */
-        const val FLUSH_AT = 20_000
+        internal const val FLUSH_AT = 20_000
     }
 }
