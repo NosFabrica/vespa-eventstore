@@ -50,6 +50,7 @@ import org.eclipse.jetty.server.ServerConnector
 import org.eclipse.jetty.util.Callback
 import java.io.IOException
 import java.net.URLDecoder
+import java.util.Collections
 import java.util.zip.GZIPInputStream
 
 /**
@@ -206,6 +207,9 @@ class MockVespaEngine(
 
     /** Document updates answered through [updateReply]. */
     @Volatile var updateRequests: Int = 0
+
+    /** Each update answered through [updateReply], as its path and JSON body, in arrival order. */
+    val updates: MutableList<Pair<String, String>> = Collections.synchronizedList(ArrayList())
 
     /**
      * Document-API visit requests served. Both snapshot paths return the SAME
@@ -379,6 +383,7 @@ class MockVespaEngine(
         val docPrefix = "/document/v1/event/event/docid/"
         updateReply?.takeIf { method == "PUT" && path.startsWith("/document/v1/") }?.let { (status, reply) ->
             updateRequests++
+            updates += path to body
             return Reply(status, reply)
         }
         return when {

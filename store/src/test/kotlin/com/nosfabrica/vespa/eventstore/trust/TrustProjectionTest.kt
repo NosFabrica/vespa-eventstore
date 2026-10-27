@@ -880,27 +880,28 @@ class TrustProjectionTest {
         }
 
     /**
-     * The write-ahead marker must be priced to the op: per-cell adds for the
-     * small backlog of live traffic, ONE doc put for a bulk batch — per-subject
-     * feed ops at batch size would rival the event writes they insure.
+     * The write-ahead marker must be priced to the op: one cell-add call for a
+     * bulk batch as for a single, which the engine sends as one update of the
+     * marker document, and never a whole-doc put, which would not compose with
+     * a peer writer's insurance.
      */
     @Test
-    fun `the marker write-ahead is one doc put for a bulk batch and cell adds for singles`() =
+    fun `the marker write-ahead is one cell-add call for a bulk batch and never a doc put`() =
         runBlocking {
             val counting = MarkerCountingReputationIndex(InMemoryReputationIndex())
             val st = NostrSemanticsStore(TrustProjection(InMemoryEventIndex(), counting), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
             st.insert(list10040())
-            assertEquals(1, counting.markerCellAdds, "a single's backlog (here: the list's fresh service) is one pipelined cell add")
-            assertEquals(0, counting.markerPuts)
+            assertEquals(1, counting.markerCellAddCalls, "a single's backlog (here: the list's fresh service) is one cell-add call")
 
             val subjects = (1..100).map { it.toString(16).padStart(64, 'c') }
+            val cellsBefore = counting.markerCellAdds
             st.batchInsert(subjects.map { s -> card(about = s) })
-            assertEquals(1, counting.markerCellAdds, "a bulk batch must not pay per-subject marker ops")
-            assertEquals(1, counting.markerPuts, "its write-ahead is one marker-doc put")
+            assertEquals(2, counting.markerCellAddCalls, "a bulk batch must not pay per-subject marker calls")
+            assertEquals(100, counting.markerCellAdds - cellsBefore, "its one call names every subject it insures")
 
             st.insert(card())
-            assertEquals(2, counting.markerCellAdds, "back to a single cell add for a single insert")
-            assertEquals(1, counting.markerPuts)
+            assertEquals(3, counting.markerCellAddCalls)
+            assertEquals(0, counting.markerPuts, "the marker is never rewritten whole")
         }
 
     /**
@@ -920,11 +921,13 @@ class TrustProjectionTest {
             val st = NostrSemanticsStore(TrustProjection(InMemoryEventIndex(supersedesViaPut = true), counting), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
             st.insert(list10040())
             val subjects = (1..100).map { it.toString(16).padStart(64, 'c') }
+            val adds = counting.markerCellAddCalls
 
             val run1 = st.batchInsert(subjects.mapIndexed { i, s -> card(about = s, rank = i % 50, at = 2_000_000) })
             assertTrue(run1.all { it is IEventStore.InsertOutcome.Accepted }, "run 1: $run1")
             assertEquals(1, counting.subjectCellCalls, "a batch of cards is one cell write, not one per card")
-            assertEquals(1, counting.markerPuts, "and one marker write-ahead for the batch")
+            assertEquals(adds + 1, counting.markerCellAddCalls, "and one marker write-ahead for the batch, not one per card")
+            assertEquals(0, counting.markerPuts, "never a whole-marker rewrite")
 
             // The next run supersedes every card. Inside it, subject 0 carries an
             // older-then-newer pair and subject 1 a newer-then-older pair.
@@ -938,7 +941,7 @@ class TrustProjectionTest {
             assertTrue(run2.dropLast(1).all { it is IEventStore.InsertOutcome.Accepted }, "run 2: $run2")
             assertTrue(run2.last() is IEventStore.InsertOutcome.Rejected, "an older version of a stored address is REPLACED: ${run2.last()}")
             assertEquals(2, counting.subjectCellCalls, "the superseding run is one more cell write")
-            assertEquals(2, counting.markerPuts)
+            assertEquals(adds + 2, counting.markerCellAddCalls)
 
             assertEquals(7, counting.get(subjects[0])?.influenceScores?.get(ServiceKey(service)), "the in-batch newer version lands")
             assertEquals(98, counting.get(subjects[1])?.influenceScores?.get(ServiceKey(service)), "the in-batch older version loses")
@@ -1109,13 +1112,16 @@ private class MarkerCountingReputationIndex(
     private val inner: InMemoryReputationIndex,
 ) : ReputationIndex by inner {
     var markerCellAdds = 0
+    var markerCellAddCalls = 0
     var markerPuts = 0
 
     /** updateCells calls that write a real subject's cells — the projection's own writes, not the ledger's. */
     var subjectCellCalls = 0
 
     override suspend fun updateCells(updates: List<ReputationCells>) {
-        markerCellAdds += updates.count { it.subject == ProjectionLedger.MARKER_KEY }
+        val adds = updates.count { it.subject == ProjectionLedger.MARKER_KEY }
+        if (adds > 0) markerCellAddCalls++
+        markerCellAdds += adds
         if (updates.any { it.subject != ProjectionLedger.MARKER_KEY }) subjectCellCalls++
         inner.updateCells(updates)
     }

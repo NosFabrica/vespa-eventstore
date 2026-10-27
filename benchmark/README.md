@@ -2824,7 +2824,7 @@ store's own queries (80 NIP-50 searches, 20 `p`-tag, 20 `e`-tag, 20 author, 2 ki
 every event exactly twice, with the same relevance, the same rank features (`matchfeatures`) and
 the same summary, 1,318 hits in all.
 
-**The bundled handler (prototype, `VESPA_FEED_BATCH`).** Not that endpoint, but the same thing
+**The bundled handler (`VESPA_FEED_BATCH`).** Not that endpoint, but the same thing
 through supported API: `BatchFeedHandler` (module `:bundle`, packed into `vespa-app.zip` under
 `components/` and bound at `/eventstore/v1/feed`) takes a JSON array of `/document/v1`-shaped
 operations, dispatches each through the container's own document API (`DocumentAccess`, one
@@ -2835,7 +2835,8 @@ re-put through the feed client, a 404 (a package without the handler) parks the 
 five minutes before the next batch tries again (`feedStatus()` and the `feed.batch.parked` gauge
 say so meanwhile; it used to switch the path off for the life of the process, silently), and a
 batch the schema refuses (a fed column it lacks) takes the feed-client path whose
-schema-fallback net then leaves that column out of later batches. Off by default.
+schema-fallback net then leaves that column out of later batches. On by default, at 100 per
+request, since 2026-10-26 (below).
 
 Measured on another host than the tables above, after this session's container was recycled: the
 same arms cost 1.7-2x the CPU per put (the bundle is not why: the package WITHOUT it measured
@@ -3328,6 +3329,78 @@ match sets. **Not shipped**: it needs a corpus large enough for the win to appea
 *and* a relevance-quality regression harness (representative signed data) to
 prove the reranking is acceptable — search relevance is a headline feature, not
 overhead to cut blind.
+
+## Allocation and GC on a production corpus (2026-10-26)
+
+vespa-relay over this store, profiled with JFR (`settings=profile`, allocation samples by
+stack) on a 4-core box beside a single-node Vespa (`VESPA_MEM_LIMIT=7g`), relay `-Xmx4g`. The
+corpus is a 364k-event slice of search.brainstorm.world (150k kind 1, 60k kind 0, 10k kind 3,
+60k reactions/zaps/lists, 84k of the canonical provider's 30382s, 550 10040s). Ingest: the
+whole slice published over 4 sockets, 500 EVENTs in flight each, onto a fresh Vespa. Reads:
+20,000 seeded queries over 16 sockets, every filter lensed through the canonical observer, an
+equal mix of follow feed (500 authors, limit 200), note search, profile search, thread,
+profile batch, notifications, global (limit 500) and COUNT. Bytes are JFR's per-thread
+allocation totals over the measured window.
+
+**What the profile showed.** Reads allocated 1.9 MB per query and G1 paused 927 times in 235 s,
+404 of those humongous-allocation cycles: every response was read whole into one `String`
+(`okhttp3.ResponseBody.string`), and a 500-hit page is a megabyte, past half of G1's 2 MiB
+region. Ingest allocated 122 KB per event; its largest owners were the feed client's response
+decoding (21%: Jetty asks for gzip, so each ~150-byte ack came back gzipped and was inflated
+with a fresh `Inflater` and an unpooled 8 KiB buffer) and the trust ledger's bulk write-ahead
+(about 12%: past 64 subjects it read the whole `projection-dirty` marker, merged and put it
+back, at a cost growing with the marker rather than the batch).
+
+| change | where |
+|---|---|
+| responses held as okio segments, decoded as a stream (`decodeFromStream`); `body()` only for errors and the tree paths | `VespaHttp.HttpResp`, `searchRoot`, `queryRoot`, gets, visits |
+| query body written in one pass with `JsonChars`, sized for the yql and every param | `VespaEventIndex.queryBody` |
+| `Accept-Encoding: identity` on the feed client | `VespaFeed` |
+| a document's plain cell adds as one update (as `removeCells` already grouped removals); the ledger's write-ahead always cell adds, never the read-merge-put | `VespaReputationIndex.updateCells`, `ProjectionLedger.insuring` |
+| reputation put and cell bodies written with `JsonChars` | `ReputationDoc.feedJson`, `VespaReputationIndex` |
+| YQL `in` lists, tag clauses and joins built in one presized buffer; quoting char by char | `EventYql` |
+| the recency shape key hashed as it is written, never built as one string | `RecencyWindowMemory.keyOf` |
+
+Same box, same corpus, same seeded queries, both arms served identical event counts per shape:
+
+| run | arm | wall | allocated | GC events | humongous cycles | total pause |
+|---|---|---:|---:|---:|---:|---:|
+| reads, 20k queries | before | 237 s | 39.1 GB | 944 | 217 | 10.6 s |
+| | after | **214 s** | **22.3 GB** | **173** | **0** | **1.5 s** |
+| ingest, 364k events | before | 618 s | 44.6 GB | 779 | 86 | 9.9 s |
+| | after | **462 s** | **20.1 GB** | **232** | **0** | **3.6 s** |
+
+Ingest also cut CPU on both sides: relay 503 → 388 s, Vespa 1,234 → 1,024 s (the container no
+longer gzips an ack per document). Per read shape, latency dropped 6-16%. After the ingest the
+trust state was checked whole: the marker drained to nothing and 83,874 reputation documents
+stood for the slice's 83,873 card subjects.
+
+**The write through OkHttp.** The per-document feed client is Jetty's: on top of the body we
+write, each document costs a `getBytes`, a gzip into a fresh `Deflater` (`VESPA_FEED_COMPRESSION`),
+Jetty's request buffers and a Jackson parser for its ack. The bundled batch handler
+(`VESPA_FEED_BATCH`) already went through `VespaHttp`'s OkHttp client, but built each batch as one
+string: a hundred follow lists are megabytes, three humongous copies a batch. It now streams each
+document's body into the socket (`VespaBatchFeed.operations`). The same ingest, each arm on a
+fresh Vespa (the feed client arm also has `EventDoc.feedJson` sized for its near arrays):
+
+| write path | wall | relay CPU | Vespa CPU | allocated | GC events | humongous cycles |
+|---|---:|---:|---:|---:|---:|---:|
+| feed client, `/document/v1` | 470 s | 396 s | 1,034 s | 19.0 GB | 283 | 1 |
+| batch handler, 100 per request, one string | 350 s | 235 s | 807 s | 18.9 GB | 436 | 86 |
+| batch handler, 100 per request, streamed | **351 s** | **223 s** | **824 s** | **10.7 GB** | 298 | 2 |
+
+Against the feed client the streamed batch path takes a quarter off the wall clock, 44% off the
+relay's CPU, a fifth off Vespa's and 44% off the relay's allocation, so it is now the default
+(`VESPA_FEED_BATCH` unset means 100; `0` writes one put per request). The feed client stays: it
+is the fallback for every document the handler does not confirm, and replacing it outright would
+mean rebuilding what it does that the batch path does not need, its adaptive throttle,
+per-document ordering of operations on one id (the trust cell updates rely on it), and a pool of
+HTTP/2 connections where OkHttp multiplexes one per host.
+
+**What is left** on the read path is proportional to the bytes served: the summary strings
+decoded per hit (13%), the frame quartz builds per event and Ktor's UTF-8 encode of it (21%
+together), and the response segments themselves. Taking it further means a frame written as
+bytes from the decoded summary, an API change across quartz's `sendRaw` and the relay's writer.
 
 ## CI correctness gate
 

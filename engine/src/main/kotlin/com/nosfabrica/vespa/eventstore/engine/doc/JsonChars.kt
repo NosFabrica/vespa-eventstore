@@ -33,6 +33,9 @@ private val ESCAPES: Array<String?> =
         this[0x0c] = "\\f"
     }
 
+/** [c]'s JSON escape, or null when it stands as itself: the one table every writer here uses. */
+internal fun jsonEscapeOf(c: Char): String? = if (c.code < ESCAPES.size) ESCAPES[c.code] else null
+
 /**
  * Each char's [ESCAPES] form, escaped again: what a char of a JSON string
  * becomes once that JSON text is itself a string value. `"` is `\"` inside

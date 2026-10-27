@@ -25,6 +25,12 @@ import com.nosfabrica.vespa.eventstore.engine.doc.CellRemoval
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationCells
 import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.double
+import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -96,5 +102,156 @@ class VespaReputationIndexTest {
         assertFalse(RuntimeException("Status 404 executing 'PUT /x': Document API is not configured in this cluster").isAbsentDocumentFailure())
         assertFalse(RuntimeException("Connection refused").isAbsentDocumentFailure())
         assertFalse(RuntimeException().isAbsentDocumentFailure())
+    }
+
+    private fun fieldsOf(body: String) =
+        Json
+            .parseToJsonElement(body)
+            .jsonObject
+            .getValue("fields")
+            .jsonObject
+
+    private fun key(i: Int) = ServiceKey(i.toString(16).padStart(64, 'a'))
+
+    @Test
+    fun `one subject's cell adds go out as one document update, the later cell winning`() {
+        mock.updateReply = 200 to """{"id":"x"}"""
+        val other = "c".repeat(64)
+        val adds = (1..100).map { ReputationCells(subject, key(it), influence = it, followers = null) }
+        runBlocking { reputations.updateCells(adds + ReputationCells(other, service, 5, 2.0) + ReputationCells(subject, key(7), influence = 70, followers = 3.0)) }
+
+        assertEquals(2, mock.updateRequests, "one update per document, not one per cell")
+        val fields = fieldsOf(mock.updates.single { it.first.endsWith(subject) }.second)
+        val influence =
+            fields
+                .getValue("influence_scores")
+                .jsonObject
+                .getValue("add")
+                .jsonObject
+                .getValue("cells")
+                .jsonObject
+        assertEquals(100, influence.size)
+        assertEquals(70, influence.getValue(key(7).hex).jsonPrimitive.int, "a later cell for the same key overwrites, as sequential adds would")
+        assertEquals(
+            3.0,
+            fields
+                .getValue("follower_counts")
+                .jsonObject
+                .getValue("add")
+                .jsonObject
+                .getValue("cells")
+                .jsonObject
+                .getValue(key(7).hex)
+                .jsonPrimitive.double,
+        )
+        assertEquals(
+            subject,
+            fields
+                .getValue("pubkey")
+                .jsonObject
+                .getValue("assign")
+                .jsonPrimitive.content,
+        )
+    }
+
+    @Test
+    fun `a subject with a retraction keeps one update per entry, in order`() {
+        mock.updateReply = 200 to """{"id":"x"}"""
+        runBlocking {
+            reputations.updateCells(
+                listOf(
+                    ReputationCells(subject, service, influence = 40, followers = null),
+                    ReputationCells(subject, service, influence = null, followers = null, dropInfluence = true),
+                ),
+            )
+        }
+        assertEquals(2, mock.updateRequests)
+        val (add, drop) = mock.updates.map { fieldsOf(it.second) }
+        assertEquals(
+            40,
+            add
+                .getValue("influence_scores")
+                .jsonObject
+                .getValue("add")
+                .jsonObject
+                .getValue("cells")
+                .jsonObject
+                .getValue(service.hex)
+                .jsonPrimitive.int,
+        )
+        val removed =
+            drop
+                .getValue("influence_scores")
+                .jsonObject
+                .getValue("remove")
+                .jsonObject
+                .getValue("addresses")
+                .jsonArray
+        assertEquals(
+            service.hex,
+            removed
+                .single()
+                .jsonObject
+                .getValue("user")
+                .jsonPrimitive.content,
+        )
+    }
+
+    @Test
+    fun `a removal names every address of a document in one update`() {
+        mock.updateReply = 200 to """{"id":"x"}"""
+        runBlocking { reputations.removeCells((1..30).map { CellRemoval(subject, key(it), influence = true, followers = it % 2 == 0) }) }
+        assertEquals(1, mock.updateRequests)
+        val fields = fieldsOf(mock.updates.single().second)
+        assertEquals(
+            30,
+            fields
+                .getValue("influence_scores")
+                .jsonObject
+                .getValue("remove")
+                .jsonObject
+                .getValue("addresses")
+                .jsonArray.size,
+        )
+        assertEquals(
+            15,
+            fields
+                .getValue("follower_counts")
+                .jsonObject
+                .getValue("remove")
+                .jsonObject
+                .getValue("addresses")
+                .jsonArray.size,
+        )
+        assertFalse("pubkey" in fields, "a removal assigns nothing, so it cannot conjure a document")
+    }
+
+    @Test
+    fun `a bulk of cell adds is split into bounded updates, the later cell still winning`() {
+        mock.updateReply = 200 to """{"id":"x"}"""
+
+        fun distinct(i: Int) = ServiceKey(i.toString(16).padStart(64, '0'))
+        val adds = (1..2500).map { ReputationCells(subject, distinct(it), influence = 1, followers = null) }
+        runBlocking { reputations.updateCells(adds + ReputationCells(subject, distinct(3), influence = 99, followers = null)) }
+        assertEquals(3, mock.updateRequests, "2,501 cells in pieces of 1,024")
+        val cells =
+            mock.updates.map {
+                fieldsOf(it.second)
+                    .getValue("influence_scores")
+                    .jsonObject
+                    .getValue("add")
+                    .jsonObject
+                    .getValue("cells")
+                    .jsonObject
+            }
+        assertEquals(listOf(1024, 1024, 453), cells.map { it.size })
+        assertEquals(
+            99,
+            cells
+                .last()
+                .getValue(distinct(3).hex)
+                .jsonPrimitive.int,
+            "the later cell rides the later update",
+        )
     }
 }

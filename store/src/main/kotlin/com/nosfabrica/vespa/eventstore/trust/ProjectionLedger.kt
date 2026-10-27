@@ -276,12 +276,10 @@ internal class ProjectionLedger(
                 val before = pendingNow().toWork()
                 val delta = ProjectionWork(freshSubjects, freshServices) - before
                 if (delta.isEmpty()) return@withLock
-                // A small delta is pipelined cell adds — no read, no doc rewrite,
-                // and already-pending work persists nothing. A bulk one is one doc
-                // put, MERGED with what is stored (which already holds everything
-                // this bracket persisted): per-entry ops at batch size would rival
-                // the event writes they insure.
-                if (delta.toRederive.size + delta.toRewalk.size <= MAX_CELL_ADDS) addMarkerCells(delta) else mergeWholeMarker(before + delta)
+                // Cell adds, which the engine sends as one update of the marker
+                // document at any size: no read, no doc rewrite, and
+                // already-pending work persists nothing.
+                addMarkerCells(delta)
                 persistedSubjects += delta.toRederive
                 persistedServices += delta.toRewalk
             }
@@ -298,8 +296,9 @@ internal class ProjectionLedger(
          * a long commit's marker holds what is still unwritten rather than all
          * it ever insured. Without it, a commit that removes a service's cards
          * a page at a time (a kind 62 by a scoring service: 242,000 cards,
-         * pages of 10,000) rewrote an ever-growing marker document on every
-         * page, up to one document of every subject.
+         * pages of 10,000) kept every page's subjects in the marker until the
+         * commit ended — one document of every subject, cleared in one call —
+         * where the per-call bracket it replaced held one page at a time.
          *
          * Refused — returns false, nothing cleared — unless the caller is the
          * only call of the commit in flight: a call that extended its cover
@@ -611,27 +610,6 @@ internal class ProjectionLedger(
         IngestStats.timed(MARKER_STAGE) { reputations.removeCells(cells) }
     }
 
-    /**
-     * One doc put for a delta too big to be cells — MERGED with what is
-     * stored, never this process's view alone.
-     *
-     * The merge is the multi-writer rule this file is built on ([retire]): a
-     * whole-document write composes only if it carries every cell already
-     * there, and the peer's write-ahead insurance is exactly the cell this
-     * process has never heard of. The read costs one small get against a
-     * write this branch only takes at bulk size.
-     */
-    private suspend fun mergeWholeMarker(work: ProjectionWork) =
-        IngestStats.timed(MARKER_STAGE) {
-            val stored = reputations.get(MARKER_KEY)
-            val merged =
-                ProjectionWork(
-                    work.toRederive + (stored?.influenceScores?.keys?.unwrap() ?: emptySet()),
-                    work.toRewalk + (stored?.followerCounts?.keys?.unwrap() ?: emptySet()),
-                )
-            if (merged.isEmpty()) reputations.remove(MARKER_KEY) else reputations.put(marker(merged))
-        }
-
     /** The marker's cells as they are STORED right now — the only emptiness this class is allowed to act on. */
     private suspend fun storedMarker(): ProjectionWork = reputations.get(MARKER_KEY)?.let { ProjectionWork(it.influenceScores.keys.unwrap(), it.followerCounts.keys.unwrap()) } ?: ProjectionWork.NONE
 
@@ -679,21 +657,11 @@ internal class ProjectionLedger(
         const val MARKER_STAGE = "proj.marker"
 
         /**
-         * Largest write-ahead delta persisted as per-cell adds; bigger takes one
-         * doc put. Adds win for live traffic's small deltas; a put wins for
-         * bulk, where per-entry ops rival the event writes they insure.
-         */
-        internal const val MAX_CELL_ADDS = 64
-
-        /** The persisted form: subjects ride the influence cells, services the follower cells (values are ignored). */
-        private fun marker(work: ProjectionWork): ReputationDoc = ReputationDoc(MARKER_KEY, work.toRederive.associate { ServiceKey(it) to 1 }, work.toRewalk.associate { ServiceKey(it) to 1.0 })
-
-        /**
          * THE MARKER IS NOT A REPUTATION DOCUMENT, and this is where that shows.
          * It borrows the reputation tensors as a plain string SET — subjects ride
          * the influence cells, services the follower cells, and both values are
          * ignored — so its cell keys are not [ServiceKey]s in the sense every
-         * other cell in this doctype is. The wrapping at these four call sites is
+         * other cell in this doctype is. The unwrapping at these call sites is
          * that borrowing made explicit. While every key was a bare `String` the
          * type system had no way to say it, and nothing did.
          */

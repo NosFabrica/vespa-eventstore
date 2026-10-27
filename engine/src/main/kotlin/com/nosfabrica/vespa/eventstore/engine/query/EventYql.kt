@@ -1153,9 +1153,22 @@ object EventYql {
     private fun whereOf(clauses: List<String>): String =
         when {
             clauses.isEmpty() -> "true"
-            clauses.all { it.startsWith("!(") } -> (listOf("true") + clauses).joinToString(" and ")
-            else -> clauses.joinToString(" and ")
+            clauses.all { it.startsWith("!(") } -> joined(listOf("true") + clauses, " and ")
+            else -> joined(clauses, " and ")
         }
+
+    /** [parts] joined by [separator] into one buffer sized up front: an id list's clause runs to tens of kilobytes. */
+    private fun joined(
+        parts: List<String>,
+        separator: String,
+    ): String {
+        if (parts.size == 1) return parts[0]
+        var length = separator.length * (parts.size - 1)
+        parts.forEach { length += it.length }
+        val out = StringBuilder(length)
+        parts.forEachIndexed { i, part -> (if (i > 0) out.append(separator) else out).append(part) }
+        return out.toString()
+    }
 
     /**
      * One tag constraint: values joined with [op] ("or" = NIP-01 tags, "and" =
@@ -1184,7 +1197,11 @@ object EventYql {
         if (op == "and" && usable.size != values.size) return null
         if (usable.isEmpty()) return null
         if (op == "or" && usable.size > 1) {
-            return usable.joinToString(", ", prefix = "tag_index in (", postfix = ")") { v -> quote("$name:$v") }
+            var length = 16
+            usable.forEach { length += name.length + it.length + 5 }
+            val out = StringBuilder(length).append("tag_index in (")
+            usable.forEachIndexed { i, v -> appendQuoted(if (i > 0) out.append(", ") else out, name, v) }
+            return out.append(')').toString()
         }
         return usable.joinToString(" $op ", prefix = "(", postfix = ")") { v -> "tag_index contains ${quote("$name:$v")}" }
     }
@@ -1212,9 +1229,12 @@ object EventYql {
         field: String,
         values: List<String>,
     ): String? {
-        val hexes = values.map { it.lowercase() }.filter(Hex::isHex64).distinct()
+        val hexes = LinkedHashSet<String>(values.size * 2)
+        values.forEach { v -> v.lowercase().let { if (Hex.isHex64(it)) hexes += it } }
         if (hexes.isEmpty()) return null
-        return "$field in (${hexes.joinToString(", ") { "\"$it\"" }})"
+        val out = StringBuilder(field.length + 6 + hexes.size * 68).append(field).append(" in (")
+        hexes.forEachIndexed { i, hex -> (if (i > 0) out.append(", ") else out).append('"').append(hex).append('"') }
+        return out.append(')').toString()
     }
 
     /**
@@ -1246,12 +1266,37 @@ object EventYql {
 
     /** YQL string literal with backslash/quote/control escaping — for caller-supplied text. */
     private fun quote(s: String): String =
-        "\"" +
-            s
-                .replace("\\", "\\\\")
-                .replace("\"", "\\\"")
-                .replace("\n", "\\n")
-                .replace("\r", "\\r")
-                .replace("\t", "\\t") +
-            "\""
+        StringBuilder(s.length + 8)
+            .append('"')
+            .escapedYql(s)
+            .append('"')
+            .toString()
+
+    /** `"[prefix]:[value]"` as one YQL literal, without building the joined string first. */
+    private fun appendQuoted(
+        out: StringBuilder,
+        prefix: String,
+        value: String,
+    ): StringBuilder =
+        out
+            .append('"')
+            .escapedYql(prefix)
+            .append(':')
+            .escapedYql(value)
+            .append('"')
+
+    /** [s] with backslash, quote, LF, CR and tab escaped: [quote]'s body. */
+    private fun StringBuilder.escapedYql(s: String): StringBuilder {
+        for (c in s) {
+            when (c) {
+                '\\' -> append("\\\\")
+                '"' -> append("\\\"")
+                '\n' -> append("\\n")
+                '\r' -> append("\\r")
+                '\t' -> append("\\t")
+                else -> append(c)
+            }
+        }
+        return this
+    }
 }

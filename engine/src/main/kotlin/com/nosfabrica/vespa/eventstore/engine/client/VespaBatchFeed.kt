@@ -27,6 +27,9 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.serialization.Serializable
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody
+import okio.BufferedSink
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -109,23 +112,9 @@ internal class VespaBatchFeed(
         body: (EventDoc) -> String,
     ): List<EventDoc> {
         if (!available) return batch
-        val json = StringBuilder(batch.size * 1024).append('[')
-        batch.forEachIndexed { i, doc ->
-            if (i > 0) json.append(',')
-            // feedJson() is `{"fields":{…}}`: the operation is the same object with the id in front.
-            json
-                .append("{\"put\":\"id:")
-                .append(EVENT_NAMESPACE)
-                .append(':')
-                .append(EVENT_DOCTYPE)
-                .append("::")
-                .append(docId(doc))
-                .append("\",")
-            val fields = body(doc)
-            json.append(fields, 1, fields.length)
-        }
-        json.append(']')
-        val resp = runCatching { http.postJson(endpoint() + PATH, json.toString()) }.getOrNull() ?: return batch
+        val bodies = batch.map(body)
+        val ids = batch.map(docId)
+        val resp = runCatching { http.post(endpoint() + PATH, operations(ids, bodies)) }.getOrNull() ?: return batch
         when (resp.statusCode()) {
             200 -> {}
 
@@ -141,7 +130,7 @@ internal class VespaBatchFeed(
                 return batch
             }
         }
-        val answer = runCatching { VESPA_JSON.decodeFromString<BatchAnswer>(resp.body()) }.getOrNull() ?: return batch
+        val answer = runCatching { resp.decode(VESPA_JSON, BatchAnswer.serializer()) }.getOrNull() ?: return batch
         if (answer.count != batch.size) return batch
         sentCount.incrementAndGet()
         return answer.failed.map { batch[it.index] }
@@ -173,6 +162,35 @@ internal class VespaBatchFeed(
     companion object {
         /** Where `BatchFeedHandler` is bound (engine/app/services.xml). */
         const val PATH = "/eventstore/v1/feed"
+
+        /**
+         * The batch as a JSON array of `{"put": id, "fields": …}`, written into the socket document by
+         * document: a hundred follow lists are megabytes, which as one string were three humongous
+         * copies (the builder, its string, its bytes). Repeatable, as a retried request needs.
+         */
+        internal fun operations(
+            ids: List<String>,
+            bodies: List<String>,
+        ): RequestBody =
+            object : RequestBody() {
+                override fun contentType() = JSON_MEDIA
+
+                override fun writeTo(sink: BufferedSink) {
+                    sink.writeByte('['.code)
+                    for (i in bodies.indices) {
+                        if (i > 0) sink.writeByte(','.code)
+                        // feedJson() is `{"fields":{…}}`: the operation is the same object with the id in front.
+                        // Escaped: an address-keyed id carries the author's own d tag.
+                        sink.writeUtf8(OPERATION_PREFIX).writeJsonEscaped(ids[i]).writeUtf8("\",")
+                        sink.writeUtf8(bodies[i], 1, bodies[i].length)
+                    }
+                    sink.writeByte(']'.code)
+                }
+            }
+
+        private const val OPERATION_PREFIX = "{\"put\":\"id:$EVENT_NAMESPACE:$EVENT_DOCTYPE::"
+
+        private val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
 
         /**
          * Five minutes: a handler that arrives with a deploy, or a container back from a restart,

@@ -98,6 +98,10 @@ internal class VespaFeed(
             .setConnectionsPerEndpoint(connectionsPerEndpoint)
             .setMaxStreamPerConnection(System.getenv("VESPA_FEED_STREAMS")?.toIntOrNull() ?: 128)
             .setCompression(compression)
+            // Jetty asks for gzip on every request, so each ~150-byte ack came back gzipped and
+            // was inflated with a fresh Inflater and an unpooled 8 KiB buffer per document.
+            // A builder header replaces Jetty's own.
+            .addRequestHeader("Accept-Encoding", "identity")
             .apply { System.getenv("VESPA_FEED_INFLIGHT_FACTOR")?.toIntOrNull()?.let { setInitialInflightFactor(it) } }
             .setRetryStrategy(
                 object : FeedClient.RetryStrategy {
