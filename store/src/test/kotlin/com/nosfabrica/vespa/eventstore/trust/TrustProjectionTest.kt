@@ -79,6 +79,18 @@ class TrustProjectionTest {
         assertTrue(doc == null || doc.isEmpty(), "$message, got $doc")
     }
 
+    /**
+     * The marker names no work: absent, or the empty document a clean commit
+     * leaves (ProjectionLedger.insuring clears its cells, not the document).
+     */
+    private suspend fun assertMarkerNamesNothing(
+        reps: ReputationIndex,
+        message: String = "the marker names nothing",
+    ) {
+        val marker = reps.get(ProjectionLedger.MARKER_KEY)
+        assertTrue(marker == null || marker.isEmpty(), "$message, got $marker")
+    }
+
     private fun next() = t++
 
     private var seq = 0
@@ -905,6 +917,106 @@ class TrustProjectionTest {
         }
 
     /**
+     * A CLEAN COMMIT'S BRACKET IS TWO MARKER CALLS: the write-ahead and its
+     * clear. It used to read the marker back and remove the emptied document
+     * too — four serial round trips under the trust gate, ~15% of the ingest
+     * lock on a loaded cluster (issue #183). The husk it left is harmless,
+     * and a drain that empties the ledger still removes it.
+     */
+    @Test
+    fun `a clean commit writes the marker and clears it, and never reads it back`() =
+        runBlocking {
+            val counting = MarkerCountingReputationIndex(InMemoryReputationIndex())
+            val st = NostrSemanticsStore(TrustProjection(InMemoryEventIndex(), counting), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+            st.insert(list10040())
+            st.insert(card(about = "c0".repeat(32)))
+            val calls = counting.markerCalls
+            val reads = counting.markerReads
+
+            val subjects = (1..100).map { it.toString(16).padStart(64, 'c') }
+            st.batchInsert(subjects.map { s -> card(about = s) })
+            assertEquals(calls + 2, counting.markerCalls, "one write-ahead and one clear for the batch")
+            st.insert(card(about = subjects[0], rank = 3))
+            assertEquals(calls + 4, counting.markerCalls, "and the same for a single card")
+            assertEquals(reads, counting.markerReads, "no read-back on a commit's clean finish")
+
+            assertMarkerNamesNothing(counting, "the marker names nothing once the commits are clean")
+            subjects.drop(1).forEach { s -> assertEquals(87, counting.get(s)?.influenceScores?.get(ServiceKey(service))) }
+        }
+
+    /**
+     * A CARD NO 10040 MAPS WRITES NO CELL, so it has nothing to insure: a
+     * crash between its write and the flush leaves nothing to repair. Insuring
+     * it anyway cost a write-ahead and a clear per commit for no cell at all,
+     * and a mirror's by-kind card ingest is mostly such cards (issue #183).
+     */
+    @Test
+    fun `cards by a signer no 10040 maps cost no marker round trip`() =
+        runBlocking {
+            val counting = MarkerCountingReputationIndex(InMemoryReputationIndex())
+            val st = NostrSemanticsStore(TrustProjection(InMemoryEventIndex(), counting), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+            st.insert(list10040())
+            st.insert(card(about = "c0".repeat(32)))
+            val calls = counting.markerCalls
+            val unmapped = "7f".repeat(32)
+
+            val subjects = (1..100).map { it.toString(16).padStart(64, 'e') }
+            val out = st.batchInsert(subjects.map { s -> card(signer = unmapped, about = s) })
+            assertTrue(out.all { it is IEventStore.InsertOutcome.Accepted }, "$out")
+            st.insert(card(signer = unmapped, about = subject))
+            assertEquals(calls, counting.markerCalls, "no marker I/O for cards that write no cell")
+            subjects.forEach { s -> assertNoCells(counting.inner, s, "an unmapped signer's card writes no cell") }
+
+            // Named later, its stored cards are still reached: through the walk
+            // the naming list queues, not through any insurance.
+            st.insert(list10040(author = observer2, serviceKey = unmapped))
+            subjects.forEach { s -> assertEquals(87, counting.get(s)?.influenceScores?.get(ServiceKey(unmapped))) }
+        }
+
+    /**
+     * A MAP THAT CANNOT ANSWER INSURES EVERYTHING. A pass naming no service is
+     * a relay with no 10040s or an engine not yet serving them, and only the
+     * first could safely skip the insurance; a pass a 10040 write just dropped
+     * is no answer at all.
+     */
+    @Test
+    fun `cards are insured while the provider map names nothing or was just dropped`() =
+        runBlocking {
+            val counting = MarkerCountingReputationIndex(InMemoryReputationIndex())
+            val proj = TrustProjection(InMemoryEventIndex(), counting)
+            val st = NostrSemanticsStore(proj, relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+            proj.recompute.providerMap()
+            val subjects = (1..20).map { it.toString(16).padStart(64, 'e') }
+            st.batchInsert(subjects.map { s -> card(about = s) })
+            assertTrue(counting.markerKeysAdded.containsAll(subjects), "an empty pass insures every card")
+
+            st.insert(list10040())
+            proj.recompute.invalidateProviders()
+            val later = (1..20).map { it.toString(16).padStart(64, 'f') }
+            st.batchInsert(later.map { s -> card(signer = "7f".repeat(32), about = s) })
+            assertTrue(counting.markerKeysAdded.containsAll(later), "a dropped pass insures every card")
+        }
+
+    /**
+     * A 10040 IN THE SAME BATCH NAMES ITS SERVICES for the batch's cover: the
+     * commit is about to store it, and that service's cards would then write
+     * cells — so they are insured like any mapped signer's.
+     */
+    @Test
+    fun `a batch carrying the 10040 that names its cards' signer insures those cards`() =
+        runBlocking {
+            val counting = MarkerCountingReputationIndex(InMemoryReputationIndex())
+            val st = NostrSemanticsStore(TrustProjection(InMemoryEventIndex(), counting), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+            st.insert(list10040())
+            st.insert(card(about = "c0".repeat(32)))
+            val subjects = (1..50).map { it.toString(16).padStart(64, 'e') }
+            val out = st.batchInsert(listOf(list10040(author = observer2, serviceKey = service2)) + subjects.map { s -> card(signer = service2, about = s) })
+            assertTrue(out.all { it is IEventStore.InsertOutcome.Accepted }, "$out")
+            assertTrue(counting.markerKeysAdded.containsAll(subjects), "the batch's own list named their signer")
+            subjects.forEach { s -> assertEquals(87, counting.get(s)?.influenceScores?.get(ServiceKey(service2))) }
+        }
+
+    /**
      * ONE ASSISTANT RUN, ONE REACTION PER BATCH — on the address-keyed path,
      * which replays each address through the engine's conditional put, one
      * `putIfNewer` per card. The projection used to react per CALL, so every
@@ -1029,7 +1141,7 @@ class TrustProjectionTest {
             val left = counting.get("c1".repeat(32))
             assertTrue(left == null || left.isEmpty(), "the deleted card leaves no cell, got $left")
             kept.forEach { s -> assertEquals(33, counting.get(s)?.influenceScores?.get(ServiceKey(service))) }
-            assertNull(counting.get(ProjectionLedger.MARKER_KEY), "a clean commit leaves no marker")
+            assertMarkerNamesNothing(counting, "a clean commit leaves no marker cell")
         }
 
     /**
@@ -1050,7 +1162,7 @@ class TrustProjectionTest {
             assertFailsWith<RejectedException> { store.insert(first) } // duplicate
             assertFailsWith<RejectedException> { store.insert(card(rank = 10, at = first.createdAt - 1)) } // replaced
             assertEquals(0L, projection.backlog.pendingSubjects(), "nothing to re-derive after a rejection")
-            assertNull(reputations.get(ProjectionLedger.MARKER_KEY), "and no marker left naming it")
+            assertMarkerNamesNothing(reputations, "and no marker left naming it")
             assertEquals(70, reputations.get(subject)?.influenceScores?.get(ServiceKey(service)))
         }
 
@@ -1078,7 +1190,7 @@ class TrustProjectionTest {
             assertTrue(run2.all { it is IEventStore.InsertOutcome.Accepted }, "run 2: ${run2.groupingBy { it.toString().take(60) }.eachCount()}")
             assertEquals(removeCalls, counting.subjectRemoveCalls, "no retraction of cells the same commit refills")
             assertEquals(20, counting.get(subjects.last())?.influenceScores?.get(ServiceKey(service)))
-            assertNull(counting.get(ProjectionLedger.MARKER_KEY))
+            assertMarkerNamesNothing(counting)
         }
 
     /**
@@ -1109,19 +1221,45 @@ class TrustProjectionTest {
 
 /** Counts marker-doc traffic, separating pipelined cell adds from whole-doc puts. */
 private class MarkerCountingReputationIndex(
-    private val inner: InMemoryReputationIndex,
+    val inner: InMemoryReputationIndex,
 ) : ReputationIndex by inner {
     var markerCellAdds = 0
     var markerCellAddCalls = 0
     var markerPuts = 0
+
+    /** Every call that touches the marker document — each one a round trip on a real engine. */
+    var markerCalls = 0
+
+    /** Reads of the marker document. */
+    var markerReads = 0
+
+    /** Every key ever written to the marker — what some write-ahead insured. */
+    val markerKeysAdded = HashSet<String>()
+
+    override suspend fun get(pubkey: String): ReputationDoc? {
+        if (pubkey == ProjectionLedger.MARKER_KEY) {
+            markerReads++
+            markerCalls++
+        }
+        return inner.get(pubkey)
+    }
+
+    override suspend fun remove(pubkey: String) {
+        if (pubkey == ProjectionLedger.MARKER_KEY) markerCalls++
+        inner.remove(pubkey)
+    }
 
     /** updateCells calls that write a real subject's cells — the projection's own writes, not the ledger's. */
     var subjectCellCalls = 0
 
     override suspend fun updateCells(updates: List<ReputationCells>) {
         val adds = updates.count { it.subject == ProjectionLedger.MARKER_KEY }
-        if (adds > 0) markerCellAddCalls++
+        if (adds > 0) {
+            markerCellAddCalls++
+            markerCalls++
+        }
         markerCellAdds += adds
+        updates.forEach { if (it.subject == ProjectionLedger.MARKER_KEY) markerKeysAdded += it.key.hex }
         if (updates.any { it.subject != ProjectionLedger.MARKER_KEY }) subjectCellCalls++
         inner.updateCells(updates)
     }
@@ -1131,11 +1269,15 @@ private class MarkerCountingReputationIndex(
 
     override suspend fun removeCells(removals: List<CellRemoval>) {
         if (removals.any { it.subject != ProjectionLedger.MARKER_KEY }) subjectRemoveCalls++
+        if (removals.any { it.subject == ProjectionLedger.MARKER_KEY }) markerCalls++
         inner.removeCells(removals)
     }
 
     override suspend fun put(reputation: ReputationDoc) {
-        if (reputation.pubkey == ProjectionLedger.MARKER_KEY) markerPuts++
+        if (reputation.pubkey == ProjectionLedger.MARKER_KEY) {
+            markerPuts++
+            markerCalls++
+        }
         inner.put(reputation)
     }
 }

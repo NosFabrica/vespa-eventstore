@@ -249,7 +249,9 @@ class TrustProjection(
         // A commit insured by SERVICE (a planned batch past DIRT_SUBJECT_CAP)
         // keeps its puts insured by service: per-subject cover here would be a
         // marker write per card, the very cost the commit exists to remove.
-        val putCover = if (scope.coarse) servicesOf(puts) else insuranceForPuts(puts)
+        // [fresh] counts as named: this call's own list is about to name it.
+        val insures = insurableSigners(fresh)
+        val putCover = if (scope.coarse) servicesOf(puts, insures) else insuranceForPuts(puts, insures)
         scope.cover.extend(putCover + insuranceForRemovals(removals) + ProjectionWork(emptySet(), fresh), call = true)
         val result =
             try {
@@ -511,37 +513,83 @@ class TrustProjection(
     }
 
     /**
-     * Crash insurance for a PUT of [docs]. Card subjects are recorded exactly
+     * Crash insurance for a PUT of [docs]: the cards whose signer [insures]
+     * admits ([insurableSigners]). Card subjects are recorded exactly
      * while they fit [DIRT_SUBJECT_CAP]; a bigger batch records the cards'
      * SERVICES instead — few keys however large the batch, repaired by
      * re-walking each service (safe for puts: the stored cards make the walk
      * reach every touched subject). A 10040 insures nothing — its walk is
      * declared as work, not insured.
      */
-    private fun insuranceForPuts(docs: List<EventDoc>): ProjectionWork = putCover(docs, { it.kind }, ::subjectOf) { it.pubkey }
+    private fun insuranceForPuts(
+        docs: List<EventDoc>,
+        insures: (String) -> Boolean,
+    ): ProjectionWork = putCover(docs, { it.kind }, ::subjectOf, { it.pubkey }, insures)
 
-    /** [insuranceForPuts] coarsened outright: the services of [docs]' cards. */
-    private fun servicesOf(docs: List<EventDoc>): ProjectionWork = ProjectionWork(emptySet(), docs.filter { it.kind == UserAssertionEvent.KIND }.mapTo(LinkedHashSet()) { it.pubkey })
+    /** [insuranceForPuts] coarsened outright: the services of [docs]' insurable cards. */
+    private fun servicesOf(
+        docs: List<EventDoc>,
+        insures: (String) -> Boolean,
+    ): ProjectionWork = ProjectionWork(emptySet(), docs.filter { it.kind == UserAssertionEvent.KIND && insures(it.pubkey) }.mapTo(LinkedHashSet()) { it.pubkey })
 
     /**
      * [insuranceForPuts] for the EVENTS a commit is about to write, before any
      * is converted — the same rule and cap, by construction ([putCover]), so
-     * the planned cover and each call's own cover name the same keys.
+     * the planned cover and each call's own cover name the same keys. A 10040
+     * among them counts its services as named, as a call's `fresh` does: the
+     * commit is about to store it, and its cards would then write cells.
      */
-    private fun insuranceForPlanned(events: List<Event>): ProjectionWork = putCover(events, { it.kind }, ::subjectOf) { it.pubKey }
+    private fun insuranceForPlanned(events: List<Event>): ProjectionWork {
+        val lists = events.mapNotNull { it as? TrustProviderListEvent }
+        val named = if (lists.isEmpty()) emptySet() else ProviderMap.providersIn(lists).services
+        return putCover(events, { it.kind }, ::subjectOf, { it.pubKey }, insurableSigners(named))
+    }
 
-    /** The one put-insurance rule, for docs and events alike: card subjects under [DIRT_SUBJECT_CAP], else their services. */
+    /**
+     * WHOSE CARDS NEED INSURANCE: only a signer some 10040 maps, or one in
+     * [named]. [TrustRecompute.applyCards] writes no cell for any other
+     * signer, so a crash between such a card's write and the flush leaves
+     * nothing to repair — insuring it bought a marker write-ahead and its
+     * clear, two serial round trips under the trust gate, for no cell at all.
+     * A mirror's by-kind card ingest is mostly this (issue #183).
+     *
+     * Read off the provider map's PEEK ([TrustRecompute.liveProviderMap]): no
+     * I/O on the write path, and no new way for a commit to fail. Everything
+     * is insured, as before, whenever the peek cannot answer: no pass built
+     * yet, one dropped by a 10040 write since, or a pass naming no service at
+     * all — which is a relay holding no 10040s OR an engine not yet serving
+     * them, and only the second needs the insurance ([ProviderMap.get] refuses
+     * to cache that emptiness for the same reason).
+     *
+     * THE WINDOW THIS OPENS, stated so nobody reads it as a guarantee: a pass
+     * that newly names a signer can land between a card's cover and the
+     * commit's flush — a refresher tick carrying another process's 10040 —
+     * and a crash in that gap leaves the card's cell unwritten and unnamed.
+     * That is the drift a commit already leaves when the map is stale at its
+     * FLUSH (the skip is remembered only in memory, [ProviderMap.noteSkipped]),
+     * a gap one commit wide beside it, and the reconciler's to repair. This
+     * process's own 10040s never open it: their services are [named] here,
+     * and each insures its walk before the list is written.
+     */
+    private fun insurableSigners(named: Set<String>): (String) -> Boolean {
+        val map = recompute.liveProviderMap()
+        if (map == null || map.services.isEmpty()) return { true }
+        return { map.maps(it) || it in named }
+    }
+
+    /** The one put-insurance rule, for docs and events alike: insurable card subjects under [DIRT_SUBJECT_CAP], else their services. */
     private inline fun <T> putCover(
         items: List<T>,
         kind: (T) -> Int,
         subject: (T) -> String?,
         service: (T) -> String,
+        insures: (String) -> Boolean,
     ): ProjectionWork {
         val subjects = LinkedHashSet<String>()
-        for (item in items) if (kind(item) == UserAssertionEvent.KIND) subject(item)?.let(subjects::add)
+        for (item in items) if (kind(item) == UserAssertionEvent.KIND && insures(service(item))) subject(item)?.let(subjects::add)
         if (subjects.size <= DIRT_SUBJECT_CAP) return ProjectionWork(subjects, emptySet())
         val services = LinkedHashSet<String>()
-        for (item in items) if (kind(item) == UserAssertionEvent.KIND) services += service(item)
+        for (item in items) if (kind(item) == UserAssertionEvent.KIND && insures(service(item))) services += service(item)
         return ProjectionWork(emptySet(), services)
     }
 

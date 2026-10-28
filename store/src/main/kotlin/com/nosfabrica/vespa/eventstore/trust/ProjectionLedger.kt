@@ -356,17 +356,26 @@ internal class ProjectionLedger(
         // resurrect whatever a concurrent drain retired since the read above.
         val queued = queue(outcome.workLeft)
         // Insurance persisted, no work left, nothing pending: the marker names
-        // subjects nobody will ever drain — a batch of cards by a signer no
-        // 10040 maps (a mirror's by-kind card ingest is mostly this) insured
-        // every subject and then found no cells to write. No drain rewrites the
-        // marker for work that does not exist, so it stood, and the next boot
+        // subjects nobody will ever drain — a clean commit whose cells are all
+        // written, or a batch of cards by a signer no 10040 maps, insured
+        // because the provider map could not yet say so
+        // (TrustProjection.insurableSigners), that found no cells to write. No
+        // drain rewrites the marker for work that does not exist, so it stood, and the next boot
         // inherited hundreds of subjects to re-derive to nothing and dropped the
         // provider cache for it. One remove here keeps the marker honest.
+        //
+        // THE CELLS, NOT THE DOCUMENT. This used to go on to drop the emptied
+        // document ([dropMarkerIfEmpty]: a GET, then a remove), so a commit's
+        // bracket was four serial round trips to one document under the trust
+        // gate — on a 3-node cluster replaying a sync gap, 63–90 ms each, ~15%
+        // of the ingest lock (issue #183). The husk it removed is harmless:
+        // [adoptStoredMarkerOnce] reads an empty marker as no work, and the
+        // next commit's write-ahead updates it in place. Leaving it is also
+        // the safer half for a second writer — the drop could still take a
+        // peer cell that landed between its GET and its remove. A drain that
+        // empties the ledger still drops it ([retire]); a commit no longer does.
         val persisted = cover.persisted
-        if (!persisted.isEmpty() && queued.isEmpty()) {
-            clearMarkerCells(persisted)
-            dropMarkerIfEmpty()
-        }
+        if (!persisted.isEmpty() && queued.isEmpty()) clearMarkerCells(persisted)
         val deferred = onWorkQueued
         if (deferred == null) {
             drain(WriteGate.DIRECT) // settle inline: the caller holds the writer lock
@@ -563,8 +572,9 @@ internal class ProjectionLedger(
                         .toSet(),
                 ),
             )
-            // Nothing left here: drop the document, so a surviving marker is
-            // always drift and never an emptied husk. The marker legitimately
+            // Nothing left here: drop the document, so a marker that survives
+            // a drain is drift or a commit's emptied husk (see [insuring]),
+            // never spent cells. The marker legitimately
             // OVER-covers between a bulk write-ahead and the drain that narrows
             // it (see [insuring]), so this has to clear more than `done` — but
             // it clears the cells it has READ, one by one, rather than deleting
