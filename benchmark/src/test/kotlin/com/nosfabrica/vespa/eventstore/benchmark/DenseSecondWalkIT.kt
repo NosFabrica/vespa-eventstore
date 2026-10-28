@@ -54,7 +54,8 @@ import kotlin.test.assertNull
  * `id contains ({prefix:true}"…")` matches by PREFIX on an attribute declared
  * `match { cased }` with `dictionary { hash }` — a dictionary that cannot seek
  * a prefix — so the sixteen buckets sum to the second exactly, and a walk
- * through them serves the scan's id set with no scan at all. The mock parses
+ * through them serves the scan's id set with no scan at all — and a LIMITED
+ * walk stopping inside the second keeps its lowest ids. The mock parses
  * the clause back into the in-memory spec, so it would agree with any
  * grammar EventYql emitted.
  *
@@ -110,6 +111,30 @@ class DenseSecondWalkIT {
                             assertNotNull(stages["walk.ties.dense"], "pageSize=$pageSize: the second was too dense for the cursor")
                             assertNotNull(stages["walk.ties.prefix"], "pageSize=$pageSize: and was read by prefix")
                             assertNull(stages["walk.scan"], "pageSize=$pageSize: with no scan")
+                        }
+                    }
+
+                    // A LIMITED walk stopping inside the second keeps NIP-01's
+                    // members — its lowest ids — not the ones the engine's
+                    // single-key sort reached first. Each path: one overfetched
+                    // page whose tie read is over its cap (limit 200 inside
+                    // 250-id pages, cap 1,001), and the budgeted cursor at one
+                    // split (cap 401) and at two (cap 81).
+                    val nip01 = corpus.sortedWith(compareByDescending<EventDoc> { it.createdAt }.thenBy { it.id })
+                    for ((pageSize, limit) in listOf(250 to 200, 100 to 1_000, 20 to 1_000)) {
+                        IngestStats.reset()
+                        VespaEventIndex(queryUrl, idPageSize = pageSize).use { walker ->
+                            val limited = ArrayList<DocRef>()
+                            walker.visitIds(EventQuery(kinds = listOf(KIND), authors = listOf(PROVIDER), limit = limit)) { page ->
+                                limited += page
+                                true
+                            }
+                            assertEquals(
+                                nip01.take(limit).map { it.id }.toSet(),
+                                limited.map { it.id }.toSet(),
+                                "pageSize=$pageSize limit=$limit: the newest, lowest-id first",
+                            )
+                            assertNotNull(IngestStats.snapshot()["walk.ties.prefix"], "pageSize=$pageSize limit=$limit: the second was split")
                         }
                     }
                     IngestStats.reset()

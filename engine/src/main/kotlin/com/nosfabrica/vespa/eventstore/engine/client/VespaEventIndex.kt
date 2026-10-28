@@ -117,10 +117,6 @@ class VespaEventIndex(
     // drive the multi-page and tie-group paths without seeding tens of
     // thousands of docs; production has no reason to change it.
     private val idPageSize: Int = PAGE_IDS,
-    // Bucket reads one dense second's id-prefix split may spend before the rest
-    // is scanned (visitTieByIdPrefix). Exposed for the same reason as
-    // [idPageSize]: a test can reach the budget's edge with hundreds of docs.
-    private val tiePrefixQueries: Int = MAX_TIE_PREFIX_QUERIES,
     /**
      * Independent STREAMED slices a full-corpus visit is split into, each
      * walked concurrently as its own JSON-Lines stream. Each slice is roughly
@@ -206,6 +202,11 @@ class VespaEventIndex(
      * boot: a read-only store, which never writes, skips it.
      */
     eagerFeed: Boolean = true,
+    // Bucket reads one dense second's id-prefix split may spend before the rest
+    // is scanned (visitTieByIdPrefix). Exposed, like [idPageSize], so a test
+    // can reach the budget's edge with hundreds of docs — and LAST, so no
+    // positional argument after it shifts.
+    private val tiePrefixQueries: Int = MAX_TIE_PREFIX_QUERIES,
 ) : EventIndex {
     private val documentApi = EndpointRotation(feedEndpoints, baseUrl)
 
@@ -1385,10 +1386,12 @@ class VespaEventIndex(
                     // this walk a range and expects every id in it.
                     //
                     // The floor is one second, where there is nothing left to
-                    // halve. THAT is what the scan is for — a service that
-                    // bulk-published 148,130 cards on a single timestamp cannot
-                    // be split by time at all, and a visit has no match phase
-                    // because it is not a search.
+                    // halve, and there the scan finishes the walk: a visit has
+                    // no match phase because it is not a search. A cut that
+                    // halving drove down to one second is an engine cutting
+                    // whatever it is asked — the id-prefix split, which serves a
+                    // DENSE second, would spend its whole budget on cut buckets
+                    // before reaching the same scan.
                     val ceiling = until ?: query.nowSecs ?: (System.currentTimeMillis() / 1000)
                     val floor = query.since ?: 0L
                     val spent = narrowings.getAndDecrement() <= 0
@@ -1458,11 +1461,13 @@ class VespaEventIndex(
                 // plain threshold on every uncapped deployment.
                 // A limited walk reads the group whole as well (to the same dense
                 // cap): which of its members a budget keeps is decided by id,
-                // client-side, and that needs them all. Only past the cap does a
-                // limited walk settle for the engine's members, instead of the scan.
+                // client-side, and that needs them all. Past the cap it splits
+                // like any walk: the split hands the second out lowest ids first,
+                // so a budget that stops inside it keeps NIP-01's members — where
+                // it used to keep whichever the engine's single-key sort reached.
                 val cap = minOf(idPageSize * TIE_DENSE_FACTOR + 1, unboundedHits)
                 val group = idTimeRetrying(query.copy(since = boundary, until = boundary, limit = cap), withDTag, "walk.ids.tiegroup")
-                if (budget == null && group.size >= cap) {
+                if (group.size >= cap) {
                     // TOO WIDE TO RESOLVE ON THE CURSOR — a service that
                     // bulk-published 148,130 cards on one timestamp cannot be
                     // paged by time at all. It used to go to the document-API
@@ -1519,7 +1524,11 @@ class VespaEventIndex(
      * to the unresolved prefixes — still complete, and booked as
      * `walk.ties.prefix.budget` beside the `walk.scan` it buys.
      *
-     * Depth-first in hex order, so buckets go out lowest ids first.
+     * Depth-first in hex order, so buckets go out lowest ids first — which is
+     * what lets a LIMITED walk stop inside the second and still hold NIP-01's
+     * members. Only the budget's scan breaks that order (its pages come in
+     * document order, after the buckets the split did serve), and only past
+     * ~20M ids a second.
      */
     private suspend fun visitTieByIdPrefix(
         second: EventQuery,
@@ -1559,7 +1568,9 @@ class VespaEventIndex(
         if (unresolved.isEmpty()) return true
         IngestStats.timed("walk.ties.prefix.budget") { }
         var carryOn = true
-        visitIdsByScan(second, withDTag) { page ->
+        // UNLIMITED, whatever [second] carried: a limit is an order a scan
+        // cannot serve, so a limited selection falls to a full-document search.
+        visitIdsByScan(second.copy(limit = null), withDTag) { page ->
             val keep = page.filter { ref -> unresolved.any { ref.id.startsWith(it) } }
             carryOn = keep.isEmpty() || onPage(keep)
             carryOn
@@ -1587,8 +1598,9 @@ class VespaEventIndex(
      * id asc`) from one overfetched id query — plus, only when the tie group at
      * the Nth position may have been cut short, one `[t, t]` read of that group.
      * The same resolution recallSummaries applies to a page, on the id walk.
-     * A group wider than the dense cap is read to the cap: past it the members
-     * taken are the engine's, the one case this cannot make exact.
+     * A group wider than the dense cap is read by id prefix
+     * ([visitTieByIdPrefix]), lowest ids first, until the members the limit
+     * still needs have arrived.
      */
     private suspend fun newestExact(
         query: EventQuery,
@@ -1601,14 +1613,25 @@ class VespaEventIndex(
         val t = hits[limit - 1].createdAt
         // Complete if the engine ran out, or already emitted something older than t.
         val complete = hits.size < fetch || hits.last().createdAt < t
-        val pool =
-            if (complete) {
-                hits
-            } else {
-                val cap = minOf(idPageSize * TIE_DENSE_FACTOR + 1, unboundedHits)
-                hits.filter { it.createdAt > t } + idTimeRetrying(query.copy(since = t, until = t, limit = cap), withDTag, "walk.limited.tiegroup")
+        if (complete) return hits.sortedWith(DOCREF_NEWEST_FIRST).take(limit)
+        val newer = hits.filter { it.createdAt > t }
+        val cap = minOf(idPageSize * TIE_DENSE_FACTOR + 1, unboundedHits)
+        val second = query.copy(since = t, until = t, limit = null)
+        var group = idTimeRetrying(second.copy(limit = cap), withDTag, "walk.limited.tiegroup")
+        if (group.size >= cap) {
+            // Past the cap these are the engine's members, not the lowest ids.
+            // Buckets arrive whole and in hex order, so once the limit's share
+            // has arrived the lowest ids of the second are all in hand.
+            IngestStats.timed("walk.ties.dense") { }
+            val need = limit - newer.size
+            val lowest = ArrayList<DocRef>()
+            visitTieByIdPrefix(second, withDTag, cap) { page ->
+                lowest += page
+                lowest.size < need
             }
-        return pool.sortedWith(DOCREF_NEWEST_FIRST).take(limit)
+            group = lowest
+        }
+        return (newer + group).sortedWith(DOCREF_NEWEST_FIRST).take(limit)
     }
 
     /** Whether the ids are the ENGINE's ordering to give — terms, phrases or an explicit profile — rather than plain recency. */
@@ -2352,7 +2375,9 @@ class VespaEventIndex(
          * every bucket under it, 256 buckets of up to 80,000 ids at the shipped
          * cap: a second of ~20M ids, 90 times the densest staging has held
          * (223,339 cards). One level less (256 reads) would leave the 16th
-         * bucket of any second past ~1.28M to the scan.
+         * bucket of any second past ~1.28M to the scan. A deployment that caps
+         * `maxHits` (`VESPA_UNBOUNDED_HITS`) caps the bucket with it, so two
+         * levels serve 256 x that cap.
          */
         const val MAX_TIE_PREFIX_QUERIES = 16 + 16 * 16
 

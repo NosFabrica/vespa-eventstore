@@ -1935,6 +1935,42 @@ class VespaEventIndexTest {
             }
         }
 
+    /**
+     * THE SAME PROMISE PAST THE DENSE CAP. A limited walk used to read a tied
+     * second to `idPageSize * TIE_DENSE_FACTOR` and keep the ENGINE's members
+     * of it, which on real Vespa are whichever its single-key sort reached
+     * first — so a NIP-77 snapshot of a limit'd filter over a provider's run
+     * disagreed with its own REQ. The id-prefix split hands a second out
+     * lowest ids first, so a budget that stops inside it keeps exactly
+     * NIP-01's members. Both limited paths: one overfetched page (limit 15
+     * inside 20-id pages) and the budgeted cursor (limit 40 past 10-id pages),
+     * each against a 300-id second over its cap.
+     */
+    @Test
+    fun `a limit'd walk cutting a dense second keeps its lowest ids`() =
+        runBlocking {
+            val bob = "b6".repeat(32)
+            seed(*(1..8).map { doc(kind = 30382, pubkey = bob, at = (7_000 + it).toLong()) }.toTypedArray())
+            seedBulk((1..300).map { hashedDoc(kind = 30382, pubkey = bob, at = 6_000L) })
+            val all = reference.search(EventQuery(kinds = listOf(30382), authors = listOf(bob))).map { DocRef(it.id, it.createdAt) }
+            val nip01 = all.sortedWith(compareByDescending<DocRef> { it.createdAt }.thenBy { it.id })
+            mock.scrambleTieOrder = true
+            try {
+                for ((pageSize, limit) in listOf(20 to 15, 10 to 40)) {
+                    VespaEventIndex(mock.url, idPageSize = pageSize).use { paged ->
+                        val got = ArrayList<DocRef>()
+                        paged.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(bob), limit = limit)) {
+                            got += it
+                            true
+                        }
+                        assertEquals(nip01.take(limit).map { it.id }.toSet(), got.map { it.id }.toSet(), "limit $limit on $pageSize-id pages: the newest, lowest-id first")
+                    }
+                }
+            } finally {
+                mock.scrambleTieOrder = false
+            }
+        }
+
     private suspend fun limitCases(
         bob: String,
         nip01: List<DocRef>,

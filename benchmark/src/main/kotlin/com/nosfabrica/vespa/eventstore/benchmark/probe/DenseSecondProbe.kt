@@ -45,7 +45,10 @@ import java.io.File
  *
  *  - the dense second, author-bound (the cursor's failing case);
  *  - the same second as a by-kind mirror window asks it (8 assertion kinds, no author);
- *  - the provider, all time (a retraction audit's ask).
+ *  - the provider, all time (a retraction audit's ask);
+ *  - the provider with `limit: 100000`, the limit a relay stamps on NIP-77 and
+ *    COUNT filters — a limited walk must keep NIP-01's newest N
+ *    (`created_at desc, id asc`), which inside a dense second is its LOWEST ids.
  *
  * For each it prints the wall time, whether the id set equals the capture's
  * (the oracle — the capture is itself a NIP-77 pull of the relay), and the
@@ -55,6 +58,13 @@ import java.io.File
  * The capture is the file `exportLoad` was fed (a JSON array) or JSON lines,
  * one event each. The densest second and its most frequent author are found in
  * it, so any provider's run works.
+ *
+ * THE ORACLE IS THE CAPTURE AS FED, so it holds only for a capture the store
+ * accepted WHOLE — `exportLoad` prints "N read, N accepted". It does not
+ * replay what the store enforces on the way in or out (a superseded card
+ * version, a NIP-09 deletion, a NIP-40 expiry); a capture carrying any of
+ * those reads as MISMATCH here while the store is right. A NIP-77 pull of one
+ * provider's current cards carries none of them.
  *
  *     ./gradlew :benchmark:exportLoad --args="/path/run.json"
  *     ./gradlew :benchmark:denseSecondProbe --args="/path/run.json"
@@ -98,6 +108,7 @@ object DenseSecondProbe {
             require(args.size == 1) { "usage: denseSecondProbe <capture.json|capture.jsonl>" }
             val url = System.getenv("VESPA_URL") ?: "http://localhost:8080"
             val cards = load(args[0])
+            require(cards.isNotEmpty()) { "${args[0]} holds no events" }
             val (second, tied) = cards.groupingBy { it.createdAt }.eachCount().maxBy { it.value }
             val author =
                 cards
@@ -113,6 +124,7 @@ object DenseSecondProbe {
                     "the second, author-bound" to Filter(kinds = listOf(30382), authors = listOf(author), since = second, until = second),
                     "the second, 8 assertion kinds, no author" to Filter(kinds = ASSERTION_KINDS, since = second, until = second),
                     "the provider, all time" to Filter(kinds = listOf(30382), authors = listOf(author)),
+                    "the provider, limit 100000" to Filter(kinds = listOf(30382), authors = listOf(author), limit = 100_000),
                 )
             VespaEventStore.open(url).use { store ->
                 for ((name, filter) in windows) {
@@ -123,7 +135,9 @@ object DenseSecondProbe {
                                     (filter.authors == null || c.pubkey in filter.authors!!) &&
                                     (filter.since == null || c.createdAt >= filter.since!!) &&
                                     (filter.until == null || c.createdAt <= filter.until!!)
-                            }.mapTo(HashSet()) { it.id }
+                            }.sortedWith(compareByDescending<Card> { it.createdAt }.thenBy { it.id })
+                            .let { matched -> filter.limit?.let { matched.take(it) } ?: matched }
+                            .mapTo(HashSet()) { it.id }
                     IngestStats.reset()
                     val t0 = System.nanoTime()
                     val got = store.snapshotIdsForNegentropy(listOf(filter), null, null)
