@@ -28,6 +28,7 @@ import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import kotlinx.coroutines.runBlocking
+import java.security.MessageDigest
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -220,6 +221,22 @@ class VespaEventIndexTest {
         search = search,
     )
 
+    /**
+     * [doc] with a HASH for an id, as a real event's is. [doc]'s ids count up
+     * from `000…1`, so they share every leading digit — the right shape for most
+     * tests, and the wrong one for an id-prefix split, which relies on ids
+     * spreading evenly over the hex digits.
+     */
+    private fun hashedDoc(
+        kind: Int,
+        pubkey: String,
+        at: Long,
+    ): EventDoc {
+        val d = doc(kind = kind, pubkey = pubkey, at = at)
+        val id = MessageDigest.getInstance("SHA-256").digest(d.id.toByteArray()).joinToString("") { "%02x".format(it) }
+        return d.copy(id = id)
+    }
+
     private fun seed(vararg docs: EventDoc) =
         runBlocking {
             for (d in docs) {
@@ -282,6 +299,10 @@ class VespaEventIndexTest {
         check(EventQuery(kinds = listOf(1), limit = 2))
         check(EventQuery(notExpiredAt = 3000))
         check(EventQuery(expiresBefore = 3000))
+        // The id prefix: one id, all of them, none — [doc]'s ids count up from `000…1`.
+        check(EventQuery(idPrefix = "0".repeat(63) + "3"))
+        check(EventQuery(idPrefix = "0".repeat(62)))
+        check(EventQuery(kinds = listOf(1), idPrefix = "1"))
         check(EventQuery(search = "vitor"))
         check(EventQuery(kinds = listOf(0, 1), tags = mapOf("p" to listOf(bob)), until = 9000))
         check(EventQuery(search = "vitor", notSearch = listOf("pamplona")))
@@ -1704,39 +1725,47 @@ class VespaEventIndexTest {
      * matched per second went unattributed on staging while two fixes aimed at
      * the cursor path changed no CPU at all.
      *
+     * Reached here the one way a DENSE SECOND still can: its id-prefix split
+     * spending the budget. These ids are NOT hashes — [doc] counts them up from
+     * `000…1` — so the whole second sits in bucket `0` at every depth, the
+     * shape a depth bound would let run sixty-four levels down. The budget is
+     * reads, shared: sixteen levels of sixteen, then what is left goes to the
+     * scan, which must be ONE scan of the second, filtered to what the split
+     * did not serve.
+     *
      * Pinned so the timer cannot be dropped the way it was never added.
      */
     @Test
-    fun `the scan walk books walk-scan, and is told apart from the cursor`() =
+    fun `what the prefix split cannot reach is one scan, booked as walk-scan`() =
         runBlocking {
             IngestStats.reset()
             val ida = "d4".repeat(32)
-            // One timestamp for all of them, and MORE THAN ONE FULL PAGE of
-            // them (idPageSize + TIE_SLACK): the boundary only exists once the
-            // engine hands back everything that was asked for, and a group
-            // wider than idPageSize * TIE_DENSE_FACTOR is what the cursor
-            // cannot carry.
-            seedBulk((1..100).map { doc(kind = 30382, pubkey = ida, at = 1_700_000_000L) })
-            val scanning = VespaEventIndex(mock.url, idPageSize = 2)
+            seedBulk((1..200).map { doc(kind = 30382, pubkey = ida, at = 1_700_000_000L) })
+            val scanning = VespaEventIndex(mock.url, idPageSize = 1)
             try {
-                val ids = HashSet<String>()
+                val got = ArrayList<DocRef>()
                 scanning.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(ida))) { page ->
-                    ids += page.map { it.id }
+                    got += page
                     true
                 }
-                assertEquals(100, ids.size, "the scan must still deliver every match")
+                assertEquals(200, got.distinctBy { it.id }.size, "the scan must still deliver every match")
+                assertEquals(200, got.size, "and each exactly once: a bucket read AND scanned would arrive twice")
 
                 val stages = IngestStats.snapshot()
                 val scan = assertNotNull(stages["walk.scan"], "the scan booked no stage — it is invisible again; stages seen: ${stages.keys.sorted()}")
-                assertEquals(true, scan.calls >= 1, "walk.scan must count the scan, got ${scan.calls} call(s)")
+                assertEquals(1L, scan.calls, "whatever the budget could not split shares ONE scan of the second")
                 assertNotNull(stages["walk.scan.page"], "the scan's pages must be counted too")
-                // The routing is DISCOVERED at the boundary now, not decided by a
-                // probe, so this is what says the walk found a group it could not carry.
                 assertNotNull(stages["walk.ties.dense"], "a group too wide for the cursor must say so")
+                assertNotNull(stages["walk.ties.prefix.budget"], "and the scan must arrive by spending the split's budget")
+                assertEquals(
+                    VespaEventIndex.MAX_TIE_PREFIX_QUERIES.toLong(),
+                    stages["walk.ties.prefix"]?.calls,
+                    "the budget is READS across the whole split, not a depth",
+                )
                 // ONE cursor page, and no more. The routing is discovered, not
                 // predicted, so the walk necessarily reads the page that shows
-                // it the boundary — and then hands the remainder over rather
-                // than paging on. That one page IS the cost the probe used to be.
+                // it the boundary — and then resolves the second rather than
+                // paging on. That one page IS the cost the probe used to be.
                 assertEquals(1L, stages["walk.ids.page"]?.calls, "discovery costs exactly one cursor page")
                 assertNotNull(stages["walk.ids.tiegroup"], "and the bounded boundary read that measured the group")
             } finally {
@@ -2065,20 +2094,25 @@ class VespaEventIndexTest {
         }
 
     /**
-     * A tie-DENSE walk falls back to the scan, and is still complete.
+     * A TIE-DENSE SECOND IS SPLIT BY ID PREFIX, and never buys the corpus.
      *
-     * 90 docs share one second against a page of 10, so every boundary would
-     * cost an unbounded window query — the shape the cursor loses on (measured
-     * unkeyed 30382: scan 4,046 ids/s against cursor 480). The routing must
-     * notice and step aside, and stepping aside must not cost a single doc.
+     * 500 docs share one second against a page of 100, past the
+     * `idPageSize * TIE_DENSE_FACTOR` the cursor can carry. This went to the
+     * document-API scan, and on staging's 516M documents that scan took 22 to
+     * 51 minutes for a provider's one-second run of ~220k cards (2026-10-28) —
+     * while sixteen id-prefix reads of the same second, through the attribute
+     * index, summed to it exactly in about a second.
+     *
+     * Verified to fail with the split reverted: the walk scans
+     * (`visitRequests` > 0, `walk.scan` booked).
      */
     @Test
-    fun `a tie-dense walk falls back to the scan and stays complete`() =
+    fun `a tie-dense second splits by id prefix, stays complete, and never scans`() =
         runBlocking {
+            IngestStats.reset()
             val bob = "b7".repeat(32)
-            seed(*(1..500).map { doc(kind = 30382, pubkey = bob, at = 3_000L) }.toTypedArray())
-            // `probeIds` and not `idPageSize`: the DECISION samples on its own
-            // knob now, so a test that means "make the probe small" says so.
+            seed(*(1..500).map { hashedDoc(kind = 30382, pubkey = bob, at = 3_000L) }.toTypedArray())
+            val before = mock.visitRequests
             val paged = VespaEventIndex(mock.url, idPageSize = 100)
             try {
                 val got = ArrayList<DocRef>()
@@ -2086,10 +2120,123 @@ class VespaEventIndexTest {
                     got += it
                     true
                 }
-                assertEquals(500, got.distinctBy { it.id }.size, "the scan fallback must lose nothing")
-                assertTrue(mock.visitRequests > 0, "a tie-dense walk must actually fall back to the scan")
+                assertEquals(500, got.distinctBy { it.id }.size, "the split must lose nothing")
+                assertEquals(500, got.size, "and serve each id once")
+                val stages = IngestStats.snapshot()
+                assertNotNull(stages["walk.ties.dense"], "the second really was too dense for the cursor")
+                assertEquals(0, mock.visitRequests - before, "a dense second must not buy a document-API read of the corpus")
+                assertEquals(null, stages["walk.scan"], "no scan")
+                // ~31 ids a bucket against a cap of 401: one split, sixteen reads.
+                assertEquals(16L, stages["walk.ties.prefix"]?.calls, "one split of the second, a read per hex digit")
             } finally {
                 paged.close()
+                IngestStats.reset()
+            }
+        }
+
+    /**
+     * A BUCKET STILL TOO WIDE SPLITS AGAIN, on the next hex digit — the case a
+     * second of millions reaches, here at a bucket cap of 13. The ids must all
+     * arrive once and in id order within the second (depth-first, hex order),
+     * with no scan.
+     */
+    @Test
+    fun `a prefix bucket too wide for the cap splits on the next digit`() =
+        runBlocking {
+            IngestStats.reset()
+            val cy = "c1".repeat(32)
+            seedBulk((1..400).map { hashedDoc(kind = 30382, pubkey = cy, at = 4_000L) })
+            val before = mock.visitRequests
+            // The DEFAULT budget: every one of the sixteen buckets is over the
+            // cap, and two full levels is exactly what it buys.
+            val paged = VespaEventIndex(mock.url, idPageSize = 3)
+            try {
+                val got = ArrayList<DocRef>()
+                paged.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(cy))) {
+                    got += it
+                    true
+                }
+                assertEquals(400, got.size, "every id")
+                assertEquals(400, got.distinctBy { it.id }.size, "each once")
+                val stages = IngestStats.snapshot()
+                assertEquals(17L, stages["walk.ties.prefix.split"]?.calls, "~25 ids a bucket against 13: the root, then every bucket under it")
+                assertEquals(null, stages["walk.ties.prefix.budget"], "two full levels fit the default budget")
+                assertEquals(0, mock.visitRequests - before, "no scan")
+                assertEquals(got.map { it.id }.sorted(), got.map { it.id }, "depth-first in hex order serves the second lowest id first")
+            } finally {
+                paged.close()
+                IngestStats.reset()
+            }
+        }
+
+    /**
+     * THE SECOND IS READ ALONE, and the cursor resumes strictly below it: what
+     * is newer goes out before the split, what is older after it, and nothing
+     * on either side arrives twice or goes missing. The scan this replaced was
+     * bounded `until = boundary` and finished the whole rest of the range; the
+     * split covers ONE second, so the walk below it is the cursor's again.
+     */
+    @Test
+    fun `a dense second between newer and older pages hands the walk back to the cursor`() =
+        runBlocking {
+            IngestStats.reset()
+            val dee = "c2".repeat(32)
+            val tied = 5_000L
+            val corpus =
+                (1..30).map { doc(kind = 30382, pubkey = dee, at = tied + it) } +
+                    (1..300).map { hashedDoc(kind = 30382, pubkey = dee, at = tied) } +
+                    (1..45).map { doc(kind = 30382, pubkey = dee, at = tied - it) }
+            seedBulk(corpus)
+            val before = mock.visitRequests
+            val paged = VespaEventIndex(mock.url, idPageSize = 20)
+            try {
+                val got = ArrayList<DocRef>()
+                paged.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(dee))) {
+                    got += it
+                    true
+                }
+                assertEquals(corpus.map { it.id }.sorted(), got.map { it.id }.sorted(), "exactly the corpus, each once")
+                val firstTied = got.indexOfFirst { it.createdAt == tied }
+                val lastTied = got.indexOfLast { it.createdAt == tied }
+                assertTrue(got.subList(0, firstTied).all { it.createdAt > tied }, "everything newer goes out before the second")
+                assertTrue(got.subList(firstTied, lastTied + 1).all { it.createdAt == tied }, "the second goes out in one run")
+                assertTrue(got.subList(lastTied + 1, got.size).all { it.createdAt < tied }, "and the cursor resumes below it")
+                assertNotNull(IngestStats.snapshot()["walk.ties.dense"], "the second was dense")
+                assertEquals(0, mock.visitRequests - before, "no scan")
+            } finally {
+                paged.close()
+                IngestStats.reset()
+            }
+        }
+
+    /**
+     * A WALK STOPPED INSIDE THE SECOND STAYS STOPPED: the split must not read
+     * the remaining buckets, nor the cursor page below them, once the caller
+     * has said it is done.
+     */
+    @Test
+    fun `a walk stopped inside a dense second reads no further`() =
+        runBlocking {
+            IngestStats.reset()
+            val eli = "c4".repeat(32)
+            seedBulk(
+                (1..300).map { hashedDoc(kind = 30382, pubkey = eli, at = 6_000L) } +
+                    (1..30).map { doc(kind = 30382, pubkey = eli, at = 6_000L - it) },
+            )
+            val paged = VespaEventIndex(mock.url, idPageSize = 20)
+            try {
+                var pages = 0
+                paged.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(eli))) {
+                    pages++
+                    false
+                }
+                assertEquals(1, pages, "the first bucket said stop")
+                val stages = IngestStats.snapshot()
+                assertEquals(1L, stages["walk.ties.prefix"]?.calls, "no bucket after the stop is read")
+                assertEquals(1L, stages["walk.ids.page"]?.calls, "and the cursor does not page on below the second")
+            } finally {
+                paged.close()
+                IngestStats.reset()
             }
         }
 

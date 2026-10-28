@@ -226,8 +226,10 @@ class InMemoryEventIndex(
         // [rawScoreOf]; to matching they are a key set.
         private val idWeights = q.idWeights.normHexKeys()
         private val authorWeights = q.authorWeights.normHexKeys()
+        private val idPrefix = q.idPrefixHex()
         private val unsatisfiable =
             (q.ids.isNotEmpty() && ids.isEmpty()) ||
+                (q.idPrefix != null && idPrefix == null) ||
                 (q.authors.isNotEmpty() && authors.isEmpty()) ||
                 (q.idWeights.isNotEmpty() && idWeights.isEmpty()) ||
                 (q.authorWeights.isNotEmpty() && authorWeights.isEmpty()) ||
@@ -264,6 +266,7 @@ class InMemoryEventIndex(
             val pairs = if (tagAny.isEmpty() && tagAll.isEmpty()) emptyList() else d.tagIndex()
             return (ids.isEmpty() || d.id in ids) &&
                 (idWeights.isEmpty() || d.id in idWeights) &&
+                (idPrefix == null || d.id.startsWith(idPrefix)) &&
                 (kinds.isEmpty() || d.kind in kinds) &&
                 (authors.isEmpty() || d.pubkey in authors) &&
                 (authorWeights.isEmpty() || d.pubkey in authorWeights) &&

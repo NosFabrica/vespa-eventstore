@@ -1009,6 +1009,14 @@ object MockYql {
                         q.copy(authors = strings(clause))
                     }
 
+                    // EventQuery.idPrefix — the dense-second split's bucket.
+                    // Matched EXACTLY, annotation included: without
+                    // `{prefix:true}` real Vespa matches the literal as a whole
+                    // id, so a drifted grammar must fail here, not pass as a prefix.
+                    ID_PREFIX_CLAUSE.matches(clause) -> {
+                        q.copy(idPrefix = ID_PREFIX_CLAUSE.find(clause)!!.groupValues[1])
+                    }
+
                     clause.startsWith("owner in (") -> {
                         q.copy(owners = strings(clause))
                     }
@@ -1116,6 +1124,9 @@ object MockYql {
         }
         return q
     }
+
+    /** `id contains ({prefix:true}"<hex>")` — exactly [EventYql]'s id-prefix clause. */
+    private val ID_PREFIX_CLAUSE = Regex("""^id contains \(\{prefix:true\}"([0-9a-f]{1,64})"\)$""")
 
     /** Exactly 3 parens (one word), 4 (AND'd words), or 5 (AND'd words with pair coverage) — anything else is drift. */
     private val SEARCH_CLAUSE = Regex("""^\({3,5}\{defaultIndex:""")

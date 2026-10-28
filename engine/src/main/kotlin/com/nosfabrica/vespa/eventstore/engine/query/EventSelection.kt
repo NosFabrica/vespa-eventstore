@@ -28,7 +28,8 @@ import com.vitorpamplona.quartz.utils.Hex
  * Only attribute-shaped constraints translate: kinds, authors, owners,
  * since/until, and the not-yet-expired guard.
  *
- * Returns null when [q] carries anything a selection can't express — ids, the
+ * Returns null when [q] carries anything a selection can't express — ids, an
+ * id prefix (its one caller filters a scan's pages by prefix itself), the
  * weighted key sets ([EventQuery.idWeights] / [EventQuery.authorWeights]),
  * tags, any search constraint (including `notSearch`: a silently dropped
  * exclusion would stream exactly the docs the query subtracted), a limit, the
@@ -38,7 +39,7 @@ import com.vitorpamplona.quartz.utils.Hex
  */
 object EventSelection {
     fun build(q: EventQuery): String? {
-        if (q.ids.isNotEmpty() || q.tags.isNotEmpty() || q.tagsAll.isNotEmpty()) return null
+        if (q.ids.isNotEmpty() || q.idPrefix != null || q.tags.isNotEmpty() || q.tagsAll.isNotEmpty()) return null
         // The WEIGHTED key sets, for the same reason as [EventQuery.ids] above
         // and with more at stake: they are a RECALL constraint (a dotProduct
         // over `id` / `pubkey`) that happens to carry a ranking number, and a

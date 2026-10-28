@@ -29,6 +29,19 @@ package com.nosfabrica.vespa.eventstore.engine.query
 data class EventQuery(
     /** 64-hex event ids. */
     val ids: List<String> = emptyList(),
+    /**
+     * A lowercase-hex PREFIX every matching id must start with (1 to 64 hex
+     * characters; anything else is unsatisfiable, the same rule [ids] follows).
+     *
+     * No relay filter carries this — NIP-01 has no prefix ids. It is how the id
+     * walk splits ONE `created_at` second too dense for its cursor
+     * (`VespaEventIndex.visitTieByIdPrefix`): ids are hashes, so sixteen
+     * one-digit prefixes cut a tie group into sixteen near-equal buckets, each
+     * read through the attribute index instead of a document-API scan of the
+     * whole corpus. Measured on the live corpus (2026-10-28): a 223,339-card
+     * second summed exactly across its 16 prefixes at ~13 ms a bucket.
+     */
+    val idPrefix: String? = null,
     val kinds: List<Int> = emptyList(),
     /** 64-hex pubkeys. */
     val authors: List<String> = emptyList(),
@@ -303,7 +316,16 @@ data class EventQuery(
      * false positive — "projected" when it is not — that would matter.
      */
     val sampled: Boolean = false,
-)
+) {
+    /**
+     * [idPrefix] as every compiler of this query emits it — lowercased, since
+     * the stores hold lowercase hex — or null when it can match NOTHING: empty,
+     * longer than an id, or not hex. Null is only meaningful while [idPrefix]
+     * is set; one definition, so the YQL and the in-memory spec cannot disagree
+     * about which prefixes are satisfiable.
+     */
+    fun idPrefixHex(): String? = idPrefix?.lowercase()?.takeIf { it.length in 1..64 && it.all { c -> c in '0'..'9' || c in 'a'..'f' } }
+}
 
 /** A ready-to-send Vespa query: the YQL, its query parameters, and the rank profile. */
 data class VespaQuery(

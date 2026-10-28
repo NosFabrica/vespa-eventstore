@@ -117,6 +117,10 @@ class VespaEventIndex(
     // drive the multi-page and tie-group paths without seeding tens of
     // thousands of docs; production has no reason to change it.
     private val idPageSize: Int = PAGE_IDS,
+    // Bucket reads one dense second's id-prefix split may spend before the rest
+    // is scanned (visitTieByIdPrefix). Exposed for the same reason as
+    // [idPageSize]: a test can reach the budget's edge with hundreds of docs.
+    private val tiePrefixQueries: Int = MAX_TIE_PREFIX_QUERIES,
     /**
      * Independent STREAMED slices a full-corpus visit is split into, each
      * walked concurrently as its own JSON-Lines stream. Each slice is roughly
@@ -1117,6 +1121,7 @@ class VespaEventIndex(
             // search path implements it, so it must not take this shortcut.
             (limit == null || limit > 0) &&
             ids.isNotEmpty() && ids.size <= ID_GET_FANOUT &&
+            idPrefix == null &&
             kinds.isEmpty() && authors.isEmpty() && owners.isEmpty() &&
             tags.isEmpty() && tagsAll.isEmpty() &&
             // The WEIGHTED key sets are recall constraints too (a dotProduct
@@ -1460,24 +1465,106 @@ class VespaEventIndex(
                 if (budget == null && group.size >= cap) {
                     // TOO WIDE TO RESOLVE ON THE CURSOR — a service that
                     // bulk-published 148,130 cards on one timestamp cannot be
-                    // paged by time at all, and the document-API visit is the
-                    // only mechanism that finishes it.
+                    // paged by time at all. It used to go to the document-API
+                    // scan from here, bounded at `boundary`, and that scan read
+                    // the WHOLE corpus whatever its bounds said: 22 to 51
+                    // minutes a time on staging's 516M documents (2026-10-28),
+                    // 19 of them in under two hours, with no NIP-77 audit of a
+                    // provider's run ever completing. The second is split by id
+                    // prefix instead, still on the attribute index.
                     //
                     // Everything strictly newer than the boundary is complete
-                    // and goes out now; the remainder is handed to the scan
-                    // BOUNDED AT `boundary`, so nothing already emitted can
-                    // arrive twice.
+                    // and goes out now; the split reads the boundary second
+                    // alone, and the cursor resumes strictly below it — so
+                    // nothing already emitted can arrive twice.
                     IngestStats.timed("walk.ties.dense") { }
                     val newer = hits.filter { it.createdAt > boundary }
                     if (newer.isNotEmpty() && !onPage(newer)) return
-                    return visitIdsByScan(query.copy(until = boundary), withDTag, onPage)
+                    if (!visitTieByIdPrefix(query.copy(since = boundary, until = boundary), withDTag, cap, onPage)) return
+                } else if (!onPage(hits.filter { it.createdAt > boundary } + group)) {
+                    return
                 }
-                if (!onPage(hits.filter { it.createdAt > boundary } + group)) return
             }
             // Strictly past the group just emitted in full.
             if (boundary <= (query.since ?: Long.MIN_VALUE)) return
             until = boundary - 1
         }
+    }
+
+    /**
+     * ONE `created_at` SECOND TOO DENSE FOR THE CURSOR, read whole through the
+     * attribute index by splitting it on id prefix. False when [onPage] asked
+     * the walk to stop.
+     *
+     * Ids are hashes, so one hex digit cuts a tie group into sixteen
+     * near-equal buckets, and each bucket is the same bounded id read the
+     * boundary already made, narrowed by [EventQuery.idPrefix]. A bucket that
+     * comes back short of [cap] is complete and goes out; one that fills it
+     * (or is cut) splits again on the next digit. Measured on the live corpus
+     * (2026-10-28) against `created_at = 1793074186`, 223,339 cards from one
+     * provider: the sixteen prefixes summed to the group EXACTLY, ~13 ms a
+     * count and 66 ms to read a 14,012-id bucket — where the scan this replaces
+     * took 22 to 51 minutes.
+     *
+     * [second] pins `created_at` to the one second, and that is what makes a
+     * prefix term cheap: `id`'s hash dictionary cannot seek a prefix, so the
+     * term filters what the rest of the query left standing, and here that is
+     * one second of one shape.
+     *
+     * BOUNDED BY QUERIES, NOT DEPTH — the lesson [MAX_CUT_NARROWINGS] already
+     * paid for: a depth bound lets every branch spend it. Each split costs
+     * sixteen reads out of [tiePrefixQueries], shared across the whole
+     * second; the default buys two full levels (see [MAX_TIE_PREFIX_QUERIES]).
+     * Whatever the budget cannot reach goes to ONE scan of the second, filtered
+     * to the unresolved prefixes — still complete, and booked as
+     * `walk.ties.prefix.budget` beside the `walk.scan` it buys.
+     *
+     * Depth-first in hex order, so buckets go out lowest ids first.
+     */
+    private suspend fun visitTieByIdPrefix(
+        second: EventQuery,
+        withDTag: Boolean,
+        cap: Int,
+        onPage: suspend (List<DocRef>) -> Boolean,
+    ): Boolean {
+        var queries = tiePrefixQueries
+        val unresolved = ArrayList<String>()
+
+        suspend fun bucket(prefix: String): Boolean {
+            // The root is the group the caller already read past the cap.
+            if (prefix.isNotEmpty()) {
+                val ids =
+                    try {
+                        idTimeRetrying(second.copy(idPrefix = prefix, limit = cap), withDTag, "walk.ties.prefix")
+                    } catch (cut: PartialAnswer) {
+                        // A cut is the engine saying this bucket is too big for
+                        // it, so it is answered the way a full bucket is.
+                        if (!cut.cutByMatchPhase) throw cut
+                        IngestStats.timed("walk.ties.prefix.cut") { }
+                        null
+                    }
+                if (ids != null && ids.size < cap) return ids.isEmpty() || onPage(ids)
+            }
+            if (prefix.length >= ID_HEX_LENGTH || queries < HEX_DIGITS.length) {
+                unresolved += prefix
+                return true
+            }
+            queries -= HEX_DIGITS.length
+            IngestStats.timed("walk.ties.prefix.split") { }
+            for (digit in HEX_DIGITS) if (!bucket(prefix + digit)) return false
+            return true
+        }
+
+        if (!bucket("")) return false
+        if (unresolved.isEmpty()) return true
+        IngestStats.timed("walk.ties.prefix.budget") { }
+        var carryOn = true
+        visitIdsByScan(second, withDTag) { page ->
+            val keep = page.filter { ref -> unresolved.any { ref.id.startsWith(it) } }
+            carryOn = keep.isEmpty() || onPage(keep)
+            carryOn
+        }
+        return carryOn
     }
 
     /**
@@ -1531,12 +1618,14 @@ class VespaEventIndex(
      * The document-API visit: a streaming scan with a selection expression,
      * evaluated per document with no index behind it.
      *
-     * ONE CALLER REACHES THIS, and it is not the one this comment used to name:
-     * the routing that sent "unkeyed" walks here is gone, along with the probe
-     * that guessed which walks were unkeyed. What is left is the boundary group
-     * too wide for the cursor to carry in one query — a service that
-     * bulk-published 148,130 cards on a single timestamp cannot be paged by
-     * time at all, and this is the only mechanism that finishes it.
+     * TWO LAST RESORTS REACH THIS, and neither is a routing choice: a
+     * match-phase cut the cursor could not clear by halving
+     * (`walk.cut.budget` / `walk.cut.unsplittable`), and the part of a dense
+     * second the id-prefix split ran out of budget for
+     * (`walk.ties.prefix.budget`, [visitTieByIdPrefix]). The dense second
+     * itself — a service that bulk-published 148,130 cards on one timestamp —
+     * used to come here whole, and that was 22 to 51 minutes a time on a 516M
+     * corpus; it is split on the attribute index now.
      *
      * Queries a selection can't express fall back to the search default.
      */
@@ -1566,13 +1655,12 @@ class VespaEventIndex(
         // selection against every document in the corpus and appear, on every
         // instrument this process has, as a walk doing nothing.
         //
-        // `walk.scan` calls are the SCAN RATE outright. They were once read
-        // against `walk.cursor.decide`, which counted every routing choice — but
-        // the probe that booked it is gone, and nothing books that stage now.
-        // Its pair today is [walk.ties.dense], the one thing that still sends a
-        // walk here: every scan has a dense boundary group behind it, so the two
-        // counts track each other and a gap between them is a walk that reached
-        // the scan some other way.
+        // `walk.scan` calls are the SCAN RATE outright. Every one has a booked
+        // reason behind it — `walk.cut.budget`, `walk.cut.unsplittable` or
+        // `walk.ties.prefix.budget` — and a scan with none of those beside it
+        // reached here some other way. `walk.ties.dense` is NOT one any more:
+        // a dense second is split by id prefix, so on a healthy cluster dense
+        // ties climb and scans stay at zero.
         //
         // It matters because the scan cannot narrow. A selection is evaluated
         // per document, so `created_at` bounds shrink what is RETURNED and not
@@ -2253,9 +2341,26 @@ class VespaEventIndex(
          */
         val RETRY_PAUSES_MILLIS = longArrayOf(0, 200, 1_000, 3_000)
 
-        // Pages' worth of one tied second past which the scan is the cheaper
-        // walk — see visitIds.
+        // Pages' worth of one tied second past which the cursor stops carrying
+        // the group in one read and splits it by id prefix — see visitIds.
         const val TIE_DENSE_FACTOR = 4
+
+        /**
+         * Bucket reads one dense second may spend on its id-prefix split
+         * ([visitTieByIdPrefix]) before the rest goes to a scan. Sixteen a
+         * split, so this is TWO FULL LEVELS — the root split and a split of
+         * every bucket under it, 256 buckets of up to 80,000 ids at the shipped
+         * cap: a second of ~20M ids, 90 times the densest staging has held
+         * (223,339 cards). One level less (256 reads) would leave the 16th
+         * bucket of any second past ~1.28M to the scan.
+         */
+        const val MAX_TIE_PREFIX_QUERIES = 16 + 16 * 16
+
+        /** One id-prefix split: a bucket per next hex digit. */
+        private const val HEX_DIGITS = "0123456789abcdef"
+
+        /** A whole event id in hex — a prefix this long names one id and cannot split. */
+        private const val ID_HEX_LENGTH = 64
 
         /** Hits a [searchScored] call fetches when the query names no limit — an inspection surface, not a recall path. */
         const val DEFAULT_SCORED_HITS = 100
