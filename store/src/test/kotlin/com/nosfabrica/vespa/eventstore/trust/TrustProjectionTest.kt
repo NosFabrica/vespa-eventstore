@@ -34,6 +34,7 @@ import com.nosfabrica.vespa.eventstore.engine.doc.serviceCells
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
+import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
@@ -1013,6 +1014,29 @@ class TrustProjectionTest {
             val out = st.batchInsert(listOf(list10040(author = observer2, serviceKey = service2)) + subjects.map { s -> card(signer = service2, about = s) })
             assertTrue(out.all { it is IEventStore.InsertOutcome.Accepted }, "$out")
             assertTrue(counting.markerKeysAdded.containsAll(subjects), "the batch's own list named their signer")
+            subjects.forEach { s -> assertEquals(87, counting.get(s)?.influenceScores?.get(ServiceKey(service2))) }
+        }
+
+    /**
+     * The same, when the list arrives as a PLAIN [Event] of kind 10040 rather
+     * than the typed class: a caller is free to hand the store either, and
+     * the batch's cover must read its services all the same. Address-keyed,
+     * with the list last, so the cards are admitted one call each before it —
+     * nothing but the planned cover can insure them.
+     */
+    @Test
+    fun `a batch carrying an untyped 10040 still insures the cards it names`() =
+        runBlocking {
+            val counting = MarkerCountingReputationIndex(InMemoryReputationIndex())
+            val st = NostrSemanticsStore(TrustProjection(InMemoryEventIndex(supersedesViaPut = true), counting), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+            st.insert(list10040())
+            st.insert(card(about = "c0".repeat(32)))
+            val subjects = (1..50).map { it.toString(16).padStart(64, 'e') }
+            val typed = list10040(author = observer2, serviceKey = service2)
+            val plain = Event(typed.id, typed.pubKey, typed.createdAt, typed.kind, typed.tags, typed.content, typed.sig)
+            val out = st.batchInsert(subjects.map { s -> card(signer = service2, about = s) } + plain)
+            assertTrue(out.all { it is IEventStore.InsertOutcome.Accepted }, "$out")
+            assertTrue(counting.markerKeysAdded.containsAll(subjects), "the untyped list named their signer too")
             subjects.forEach { s -> assertEquals(87, counting.get(s)?.influenceScores?.get(ServiceKey(service2))) }
         }
 

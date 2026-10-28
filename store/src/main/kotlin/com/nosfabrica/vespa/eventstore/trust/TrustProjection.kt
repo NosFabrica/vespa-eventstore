@@ -41,6 +41,7 @@ import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
+import com.vitorpamplona.quartz.utils.EventFactory
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -538,9 +539,15 @@ class TrustProjection(
      * the planned cover and each call's own cover name the same keys. A 10040
      * among them counts its services as named, as a call's `fresh` does: the
      * commit is about to store it, and its cards would then write cells.
+     * Matched by KIND, not class: a caller may hand the store a plain [Event]
+     * of kind 10040, and `as?` alone read that as naming nothing.
      */
     private fun insuranceForPlanned(events: List<Event>): ProjectionWork {
-        val lists = events.mapNotNull { it as? TrustProviderListEvent }
+        val lists =
+            events.mapNotNull { e ->
+                if (e.kind != TrustProviderListEvent.KIND) return@mapNotNull null
+                e as? TrustProviderListEvent ?: EventFactory.create(e.id, e.pubKey, e.createdAt, e.kind, e.tags, e.content, e.sig) as? TrustProviderListEvent
+            }
         val named = if (lists.isEmpty()) emptySet() else ProviderMap.providersIn(lists).services
         return putCover(events, { it.kind }, ::subjectOf, { it.pubKey }, insurableSigners(named))
     }

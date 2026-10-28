@@ -71,7 +71,8 @@ internal value class Stamp(
  * fires a write trigger exactly once, so a failure between them used to be
  * permanent drift — the retry comes back all-duplicates and can never repair
  * it. [insuring] persists what the op could invalidate BEFORE touching
- * anything. A surviving marker IS the drift, named.
+ * anything. A surviving marker CELL is the drift, named; the document itself
+ * may stand empty after a clean commit (see [insuring]), and that names nothing.
  *
  * The marker is one [ReputationDoc] under [MARKER_KEY], deliberately not
  * 64-hex so no card can collide with it ([subjectOf] admits only 64-hex).
