@@ -310,3 +310,12 @@ tasks.register<JavaExec>("cardRunProbe") {
     maxHeapSize = System.getenv("BENCH_HEAP") ?: "4g"
     workingDir = rootDir
 }
+
+tasks.register<JavaExec>("denseSecondProbe") {
+    group = "verification"
+    description = "Snapshot a captured provider run's densest second (issue #185) and check the ids against the capture"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.probe.DenseSecondProbe")
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "4g"
+    workingDir = rootDir
+}

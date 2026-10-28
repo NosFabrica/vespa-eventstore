@@ -78,6 +78,12 @@ schema event {
         #    for real corpora, where unique terms grow with every event (each id
         #    is unique). A/B'd against the B-tree default and `rank: filter`
         #    (rejected: no read win, slower feeds) — see benchmark/README.md.
+        #    ONE exception, on `id`: the id walk splits a created_at second too
+        #    dense for its cursor by id PREFIX (VespaEventIndex.visitTieByIdPrefix).
+        #    The hash dictionary cannot seek a prefix, so that term filters
+        #    what `created_at = T` left standing, which is why it is only ever
+        #    sent inside one second — measured ~13 ms a bucket of a 223k-card
+        #    second (2026-10-28). Not a reason to give `id` a B-tree.
         field id type string {
             indexing: attribute | summary
             attribute: fast-search

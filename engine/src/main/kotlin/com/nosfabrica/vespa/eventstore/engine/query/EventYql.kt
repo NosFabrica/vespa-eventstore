@@ -979,7 +979,7 @@ object EventYql {
      */
     internal fun clauseShape(q: EventQuery): String {
         val parts = ArrayList<String>(4)
-        if (q.ids.isNotEmpty() || q.idWeights.isNotEmpty()) parts += "ids"
+        if (q.ids.isNotEmpty() || q.idWeights.isNotEmpty() || q.idPrefix != null) parts += "ids"
         if (q.kinds.isNotEmpty()) parts += "kinds"
         if (q.authors.isNotEmpty() || q.authorWeights.isNotEmpty()) parts += "authors"
         if (q.owners.isNotEmpty()) parts += "owners"
@@ -1003,6 +1003,13 @@ object EventYql {
 
         if (q.ids.isNotEmpty()) clauses += hexIn("id", q.ids) ?: return null
         if (q.idWeights.isNotEmpty()) clauses += hexDotProduct("id", q.idWeights) ?: return null
+        // A PREFIX TERM on the `id` attribute — `dictionary { hash }` cannot
+        // seek a prefix, so this reads every id the REST of the query left
+        // standing, which is why its one caller pins `created_at` to a single
+        // second first (measured on the live corpus: ~13 ms a bucket of a
+        // 223k-card second, summing exactly to the group). Validated hex, so the
+        // literal needs no escaping.
+        if (q.idPrefix != null) clauses += "id contains ({prefix:true}\"${q.idPrefixHex() ?: return null}\")"
         if (q.kinds.isNotEmpty()) clauses += "kind in (${q.kinds.joinToString(", ")})"
         if (q.authors.isNotEmpty()) clauses += hexIn("pubkey", q.authors) ?: return null
         if (q.authorWeights.isNotEmpty()) clauses += hexDotProduct("pubkey", q.authorWeights) ?: return null

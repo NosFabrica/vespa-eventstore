@@ -64,6 +64,7 @@ class EventSelectionTest {
     @Test
     fun `refuses what a selection cannot express`() {
         assertNull(EventSelection.build(EventQuery(ids = listOf("f".repeat(64)))))
+        assertNull(EventSelection.build(EventQuery(idPrefix = "0")), "an id prefix: the scan filters its pages instead")
         assertNull(EventSelection.build(EventQuery(tags = mapOf("d" to listOf("x")))))
         assertNull(EventSelection.build(EventQuery(tagsAll = mapOf("t" to listOf("a", "b")))))
         assertNull(EventSelection.build(EventQuery(search = "vitor")))

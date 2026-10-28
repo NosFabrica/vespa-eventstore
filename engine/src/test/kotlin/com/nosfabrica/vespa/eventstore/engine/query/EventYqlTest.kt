@@ -1396,6 +1396,28 @@ class EventYqlTest {
         assertEquals("select ${EventYql.SUMMARY_FIELDS} from event where id in (\"$hexA\") order by created_at desc", q.yql)
     }
 
+    /**
+     * The dense-second split's bucket: a PREFIX term, which needs the
+     * `{prefix:true}` annotation — without it Vespa matches the literal as a
+     * whole id and every bucket would read empty, a walk that silently serves
+     * nothing of the second. Lowercased like every key here; anything that is
+     * not 1 to 64 hex characters can match no id, so it builds nothing.
+     */
+    @Test
+    fun `an id prefix compiles to an annotated prefix term, or to nothing`() {
+        val q = EventYql.buildIdTime(EventQuery(kinds = listOf(30382), idPrefix = "0A", since = 7, until = 7, limit = 10))!!
+        assertEquals(
+            "select id, created_at from event where id contains ({prefix:true}\"0a\") and kind in (30382) and created_at >= 7 and created_at <= 7 " +
+                "order by created_at desc limit 10",
+            q.yql,
+        )
+        assertEquals("ids,kinds,since,until", q.shape, "a prefix is an id constraint to the shape tally")
+        assertNotNull(EventYql.build(EventQuery(idPrefix = "f".repeat(64))), "a whole id is still a prefix")
+        listOf("", "g", "0a\"", "f".repeat(65)).forEach { bad ->
+            assertNull(EventYql.build(EventQuery(idPrefix = bad)), "'$bad' can match no id")
+        }
+    }
+
     @Test
     fun `unsatisfiable constraints build nothing`() {
         assertNull(EventYql.build(EventQuery(authors = listOf("not-hex"))), "no valid author")
