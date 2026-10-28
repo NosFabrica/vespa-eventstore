@@ -543,8 +543,9 @@ class ProjectionLedgerTest {
 
     /**
      * INSURANCE THAT PRODUCED NO WORK must not leave the marker standing. A
-     * batch of cards by a signer no 10040 maps insures every subject (one
-     * bulk marker write-ahead) and then writes no cells; with nothing
+     * batch of cards by a signer no 10040 maps, written before any provider
+     * pass is built, insures every subject (one bulk marker write-ahead: the
+     * projection cannot yet tell they are unmapped) and then writes no cells; with nothing
      * pending no drain ever rewrote the marker, so the next boot inherited
      * every one of those subjects as drift to re-derive to nothing.
      */
@@ -554,12 +555,15 @@ class ProjectionLedgerTest {
             val d = Deferred()
             // No 10040 at all: every card is by an unmapped signer.
             d.projection.putAll((1..100).map { i -> UserAssertionEvent(id(), service, next(), arrayOf(arrayOf("d", i.toString(16).padStart(64, 'a')), arrayOf("rank", "1")), "", "").toDoc() })
-            assertNull(d.marker(), "no work was left, so no marker stands")
+            // Its cells, not the document: the emptied marker a commit leaves
+            // is harmless, and reading it back to remove it cost two of the
+            // bracket's four round trips (issue #183).
+            assertTrue(d.marker()?.isEmpty() ?: true, "no work was left, so the marker names nothing")
             // The per-event path applies its cell inline (or, unmapped, nothing)
             // and leaves no work either; a list naming a fresh service is what
             // queues work, and its marker stands until the walk — then is gone.
             d.projection.put(card(40).toDoc())
-            assertNull(d.marker(), "a single card leaves no work behind")
+            assertTrue(d.marker()?.isEmpty() ?: true, "a single card leaves no work behind")
             d.projection.put(list10040().toDoc())
             assertNotNull(d.marker(), "the list's service walk is queued work, and the marker names it")
             d.projection.backlog.drain { it() }

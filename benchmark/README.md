@@ -1841,6 +1841,23 @@ of them. Skipping one needs the stored cell's value, which neither path has
 in hand today (the conditional put does not return the version it replaced),
 so it was left as the measured next step rather than guessed at.
 
+**The marker under load (issue #183).** The ~30 ms of marker above was an
+idle single node. On the 3-node staging cluster replaying a 17 h sync gap
+(~1,500 docs/s), `proj.marker` booked 43.3 s of a 300 s window, 484 calls at
+90 ms, against 155 commits: ~15% of the ingest lock. That is round-trip
+latency under feed load, and the bracket was 3 marker calls (4 round trips) per
+commit: write-ahead, clear, then a GET of the marker and a remove of the empty
+document. Two cuts followed. A commit's clean finish no longer reads back or
+removes the emptied marker (the empty document is harmless, and a drain that
+empties the ledger still removes it), so a commit is 2 marker calls. A card
+whose signer no 10040 maps is no longer insured at all, because it writes no
+cell. It is judged off the provider map's in-memory peek, and everything is
+insured whenever the peek has no answer. A mirror's by-kind card ingest is
+mostly such cards, and those commits now make no marker call. Neither cut has
+been measured on a loaded cluster yet. To check one, run `cardRunProbe` against
+a Vespa under concurrent feed, not an idle one, and report `proj.marker` calls
+per batch next to the total.
+
 ## Targeted benches (gradle tasks against a live Vespa)
 
 Beyond the head-to-head suite (`:benchmark:run`), these tasks each own one
