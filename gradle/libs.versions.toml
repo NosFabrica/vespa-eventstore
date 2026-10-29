@@ -6,7 +6,30 @@ app = "1.0.1"
 mavenPublish = "0.37.0"
 # Quartz from Maven Central (com.vitorpamplona.quartz:quartz, a release) — NIP-11 DSL + opt-out
 # SQLite FTS index.
-# 2.4.0 = the same code as c63c35ca76 (below): the release workflow publishes tag v2.4.0, and
+# 2.7.3 = tag v2.7.3 (fbe0912), from Central as before. 81 commits over v2.4.0 (8d6895c); scanned
+# against this store's imports (32 packages; a tree diff of quartz/src between the tags, main
+# sources). What reaches the store, all through SearchFieldExtractor and EventFactory:
+#  - SIX MORE SEARCHABLE KINDS, drss.io's reader: 30100 (feed list: title, feed titles), 30101 (list
+#    folder: title), 30102 (event list: title), 30104 (provenance folder: title), 31341 (show: name),
+#    31985 (provenance: the note, and its source as the website field). Stored ones index after
+#    store.reindexFullTextSearch(listOf(30100, 30101, 30102, 30104, 31341, 31985)). Kinds 30100-30104
+#    and 31985 are shared with other apps: an event without drss's shape parses as an
+#    UnrecognizedKindNNNNNEvent and stays unsearchable, as before.
+#  - KIND 30054 IS SPLIT: only a Podcasting-2.0 episode's shape is still a Podcasting20EpisodeEvent;
+#    drss.io's listening-progress records are DrssListenProgressEvent, the rest
+#    UnrecognizedKind30054Event, and neither is searchable. A progress record indexed under 2.4.0
+#    keeps its search fields until store.reindexFullTextSearch(listOf(30054)) re-reads it.
+#  - NAPPLETS (15129 / 35129 / 5129) now also carry their source url as the website field, like
+#    15128 / 35128 / 5128; stored ones gain it after store.reindexFullTextSearch(listOf(15129, 35129, 5129)).
+#  - Not reached here: relay-url policy (isLocalHost covers 100.64.0.0/10, single-label hosts and
+#    .lan/.home/.internal; the new isDialableFromOthers; parsers keep local relays and the filtered
+#    accessors are deprecated until 3.0.0), FilterMatcher/FilterIndex live fan-out speedups,
+#    LabelEvent.labeledRelayUrls normalizing through ReferenceTag, DTag.isTag. This store calls none
+#    of them on its own paths.
+#  - RUNTIME CLASSPATH (:store): quartz alone moves; the published POM names the same dependency
+#    versions as 2.4.0's.
+#
+# Prev 2.4.0 = the same code as c63c35ca76 (below): the release workflow publishes tag v2.4.0, and
 # git rev-parse v2.4.0^{commit} = c63c35ca7629. FROM CENTRAL, NOT JITPACK, because this store is
 # itself published to Central with quartz as an `api` dependency: a JitPack coordinate in its POM
 # is one a consumer without JitPack cannot resolve. With it, this build reads nothing from JitPack
@@ -163,7 +186,7 @@ mavenPublish = "0.37.0"
 # catch-all; SearchableEvent grows the read-path forEachIndexableField, no reindex).
 # Prev cecc3287b2 (2026-09-01: 17 catch-all kinds split into title/body roles, four
 # affiliation URLs, six doubled `t`-tag scans dropped; a ranking backfill).
-quartz = "2.4.0"
+quartz = "2.7.3"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 # Matches what Quartz brings transitively; Gradle would resolve to it regardless.
