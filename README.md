@@ -262,8 +262,12 @@ place column. URLs listed below fill the website column a profile's website does
 | **34139** | music playlist | title, description, content |
 | **54** | podcast episode | title, description, content |
 | **10154** | podcast show | title, description, website URLs |
-| **30054** | Podcasting-2.0 episode | title, description + host/guest names + soundbite titles, content |
+| **30054** | Podcasting-2.0 episode (only an episode's shape: drss.io's listening-progress records share the kind and are not searchable) | title, description + host/guest names + soundbite titles, content |
 | **30055** | Podcasting-2.0 trailer | title, content |
+| **31341** | drss.io show | name |
+| **30100** | drss.io feed list | title, feed titles |
+| **30101 / 30102 / 30104** | drss.io list folder / event list / provenance folder | title |
+| **31985** | drss.io provenance record | the note, source URL |
 | **2003** | torrent | title, file names, content, tracker URLs |
 | **2004** | torrent comment | content |
 | **9802** | highlight | comment + context (or, with no `context` tag, the quote's prefix and suffix), content |
@@ -328,7 +332,7 @@ place column. URLs listed below fill the website column a profile's website does
 | **9035 / 9036 / 8002 / 8003** | Buzz identity archive / unarchive request, and the relay's archived / unarchived notice | content (the reason) |
 | **15128 / 35128** | website | title, description, source URL |
 | **5128** | website snapshot | title, description, source URL |
-| **15129 / 35129 / 5129** | napplet root / named / snapshot | title, description |
+| **15129 / 35129 / 5129** | napplet root / named / snapshot | title, description, source URL |
 | **11333 / 33331** | Cyberspace avatar / object (an SNO 3-D shape) | name (the content is geometry, not indexed) |
 | **38192** | PlayStation-1 memory-card save | title, summary + region + filename |
 | **64** | chess game (NIP-64, PGN) | the PGN's event, site, player, team, annotator, opening and variation names, the PGN's `{comments}` — never the moves |
