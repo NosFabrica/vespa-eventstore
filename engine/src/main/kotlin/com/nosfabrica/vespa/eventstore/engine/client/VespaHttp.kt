@@ -42,6 +42,7 @@ import java.net.InetAddress
 import java.net.Proxy
 import java.net.Socket
 import java.time.Duration
+import java.util.concurrent.TimeUnit
 import javax.net.SocketFactory
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -49,12 +50,19 @@ import kotlin.coroutines.resumeWithException
 /**
  * The READ-side transport to Vespa: how bytes move and fail, with no knowledge
  * of what a request means ([VespaEventIndex]/[VespaReputationIndex] decide
- * that). Owns three transport-correctness decisions: clear-text HTTP/2 by
- * prior knowledge (the only way Vespa serves h2c), no read/call deadline (with
- * HTTP/2 PING liveness instead), and brief retries for transient overload
- * (5xx/429/IOException) so one failed page cannot kill a multi-hour walk.
+ * that). Owns four transport-correctness decisions: clear-text HTTP/2 by
+ * prior knowledge (the only way Vespa serves h2c), no deadline on the wait for
+ * an answer (with HTTP/2 PING liveness instead), an idle deadline on a body
+ * once it has started ([bodyIdleTimeout]), and brief retries for transient
+ * overload (5xx/429/IOException) so one failed page cannot kill a multi-hour walk.
  */
-internal class VespaHttp {
+internal class VespaHttp(
+    /**
+     * How long a response BODY may go silent once its headers have arrived; see
+     * [BODY_IDLE_TIMEOUT_SECONDS]. A test passes seconds instead of minutes.
+     */
+    private val bodyIdleTimeout: Duration = Duration.ofSeconds(BODY_IDLE_TIMEOUT_SECONDS),
+) {
     // Prior-knowledge h2c: Vespa serves h2c only that way, not via the
     // `Upgrade` handshake — a negotiating client (e.g. the JDK HttpClient)
     // silently falls back to HTTP/1.1, one TCP connection per in-flight read.
@@ -80,7 +88,8 @@ internal class VespaHttp {
             // long as it takes, and OkHttp cannot tell "engine still matching"
             // from "connection dead". Dead peers are caught by HTTP/2 PINGs
             // instead — unanswered pings fail the connection as a retryable
-            // IOException in seconds.
+            // IOException in seconds. That covers the wait for the HEADERS only:
+            // a body that stops on a live connection is [bodyIdleTimeout]'s.
             .readTimeout(Duration.ZERO)
             .callTimeout(Duration.ZERO)
             .pingInterval(Duration.ofSeconds(PING_INTERVAL_SECONDS))
@@ -240,7 +249,16 @@ internal class VespaHttp {
                         call: Call,
                         response: Response,
                     ) {
-                        val result = runCatching { response.use { HttpResp(it.code, Buffer().apply { writeAll(it.body.source()) }) } }
+                        val result =
+                            runCatching {
+                                response.use {
+                                    val body = it.body.source()
+                                    // Set here, after the headers: the stream's read timeout
+                                    // also governs the wait for them, which stays unbounded.
+                                    body.timeout().timeout(bodyIdleTimeout.toMillis(), TimeUnit.MILLISECONDS)
+                                    HttpResp(it.code, Buffer().apply { writeAll(body) })
+                                }
+                            }
                         if (cont.isCancelled) return
                         result
                             .onSuccess { cont.resume(it) }
@@ -290,6 +308,20 @@ internal class VespaHttp {
 
         /** Visit read deadline; see [visitHttp]. */
         const val VISIT_READ_TIMEOUT_SECONDS = 120L
+
+        /**
+         * The idle deadline on a response body, every query and page alike. The
+         * no-deadline rule above is for the wait on the engine: Vespa sends
+         * nothing until it has an answer, so a read timeout there cuts a slow
+         * query. Once the headers are out it is writing a result it already
+         * holds, and silence is a stalled stream, not matching. Measured
+         * (NosFabrica/vespa-relay#289): one `newestVersions` probe got its
+         * headers and part of its body, then nothing for 4 h 40 min, on a
+         * connection that kept carrying every other call, so its PINGs never
+         * failed. The cut is an IOException [send] retries. 120 s, the visit
+         * client's bound for the same failure.
+         */
+        const val BODY_IDLE_TIMEOUT_SECONDS = 120L
 
         /**
          * Liveness in place of read deadlines: unanswered HTTP/2 PINGs fail the

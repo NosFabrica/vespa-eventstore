@@ -48,10 +48,13 @@ import org.eclipse.jetty.server.Response
 import org.eclipse.jetty.server.Server
 import org.eclipse.jetty.server.ServerConnector
 import org.eclipse.jetty.util.Callback
+import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.net.URLDecoder
+import java.nio.ByteBuffer
 import java.util.Collections
 import java.util.zip.GZIPInputStream
+import java.util.zip.GZIPOutputStream
 
 /**
  * The slice of Vespa [VespaEventIndex] talks to, backed by an
@@ -93,6 +96,27 @@ class MockVespaEngine(
      * without completing its continuation on the failure path hangs forever.
      */
     @Volatile var abortBodiesMidStream: Int = 0
+
+    /**
+     * Stall the next N response bodies mid-stream: send headers and a gzipped
+     * fragment of JSON, then send nothing more, on a connection that stays up
+     * and keeps answering everything else. Nothing fails, so only a client-side
+     * deadline on the body ends the read. The shape measured on staging
+     * (NosFabrica/vespa-relay#289): an OkHttp thread in `onResponse`, inside
+     * `GzipSource`, for 4 h 40 min. Gzipped because Vespa compresses its
+     * answers and OkHttp inflates them transparently, so the deadline has to
+     * reach through `GzipSource` to the stream. Held exchanges end at [stop].
+     */
+    @Volatile var stallBodiesMidStream: Int = 0
+
+    /**
+     * Hold every answer this long before its headers: an engine still matching,
+     * which sends nothing at all until it has a result. 0 answers at once.
+     */
+    @Volatile var delayAnswersMs: Long = 0
+
+    /** The exchanges [stallBodiesMidStream] is holding open. */
+    private val stalled = Collections.synchronizedList(ArrayList<Callback>())
 
     /**
      * Answer every search with a DEGRADED coverage block naming this reason
@@ -323,6 +347,7 @@ class MockVespaEngine(
                         response: Response,
                         callback: Callback,
                     ): Boolean {
+                        delayAnswersMs.takeIf { it > 0 }?.let { Thread.sleep(it) }
                         if (abortBodiesMidStream > 0) {
                             abortBodiesMidStream--
                             response.status = 200
@@ -332,6 +357,21 @@ class MockVespaEngine(
                             response.headers.put(HttpHeader.CONTENT_LENGTH, 4096L)
                             Content.Sink.write(response, false, """{"root":{"children":[""", Callback.NOOP)
                             callback.failed(IOException("simulated mid-body abort"))
+                            return true
+                        }
+                        if (stallBodiesMidStream > 0) {
+                            stallBodiesMidStream--
+                            response.status = 200
+                            response.headers.put(HttpHeader.CONTENT_TYPE, "application/json")
+                            response.headers.put(HttpHeader.CONTENT_ENCODING, "gzip")
+                            // SYNC_FLUSH puts the fragment on the wire without ending the gzip member.
+                            val gzipped = ByteArrayOutputStream()
+                            GZIPOutputStream(gzipped, true).apply {
+                                write("""{"root":{"children":[""".encodeToByteArray())
+                                flush()
+                            }
+                            response.write(false, ByteBuffer.wrap(gzipped.toByteArray()), Callback.NOOP)
+                            stalled += callback
                             return true
                         }
                         val reply =
@@ -359,7 +399,13 @@ class MockVespaEngine(
 
     val port: Int get() = (server.connectors[0] as ServerConnector).localPort
 
-    fun stop() = server.stop()
+    fun stop() {
+        synchronized(stalled) {
+            stalled.forEach { it.failed(IOException("mock stopped")) }
+            stalled.clear()
+        }
+        server.stop()
+    }
 
     private fun handle(
         method: String,
