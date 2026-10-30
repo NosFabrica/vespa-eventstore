@@ -30,7 +30,7 @@ import kotlin.system.measureNanoTime
  * against TWO rank profiles on the same live corpus and reports, per term
  * class, how much the served ORDER differs (the current single-phase profile
  * is ground truth — it IS the tuned relevance) and how much each profile
- * costs. This is to ranking what ParityCheck is to recall: no ranking change
+ * costs. This is to ranking what StoreParity is to recall: no ranking change
  * ships without this being green.
  *
  * Metrics per term: overlap@10 and overlap@50 (fraction of baseline's top-K

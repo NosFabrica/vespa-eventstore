@@ -3431,20 +3431,29 @@ excluded from the fast default build, run by a dedicated CI job with
 
 ## Correctness parity (SQLite ↔ this store)
 
-The benchmark is also a **correctness gate**: `ParityCheck` loads the identical
-corpus into Quartz's SQLite store and this store, then asserts they return the
+The benchmark is also a **correctness gate**: `StoreParity` runs quartz's
+conformance battery (`StoreConformance`, `nip01Core.store.conformance`, since
+quartz 2.9.0; it replaced this module's own `ParityCheck`, every filter of which
+it holds) against Quartz's SQLite store and this store loaded with the identical
+corpus, and asserts they return the
 **same event ids, in the same newest-first order, with the same counts** across a
-battery of NIP-01 filters (kind scans, author timelines, id sets, `#p`/`#e` tags,
-`since`/`until` windows, replaceable/deletion effects, and the list-shaped
-follow-feed / id-set / wide-tag filters). The corpus advances
+battery of NIP-01 filters (kind scans, author timelines, id sets, `#p`/`#e`/`#d`
+tags, `tagsAll`, `since`/`until` windows, multi-filter unions,
+replaceable/deletion effects, and the list-shaped follow-feed / id-set /
+wide-tag filters). Each check names the STORE-* rules it exercises, so a FAIL
+line lists the suspect rules. The corpus advances
 `created_at` by a positive step per event, so timestamps are distinct and the
 newest-first order is a total order — the comparison is exact, not best-effort.
-It runs SQLite ↔ in-memory reference always, and SQLite ↔ **real Vespa** when
-`BENCH_VESPA_URL` is set. NIP-50 `search` is excluded (relevance ordering is
-engine-defined; FTS5 and BM25 legitimately differ).
+The benches run it over the workload they loaded (`NostrCorpus`): SQLite ↔
+in-memory reference always, and SQLite ↔ **real Vespa** when `BENCH_VESPA_URL`
+is set. The CI gates run it over quartz's `ConformanceCorpus`, which also
+re-offers events, deletes by address and deletes deletions: `StoreParityTest`
+(in-memory, every unit build) and `VespaParityIT` (real Vespa). NIP-50 `search`
+is excluded (relevance ordering is engine-defined; FTS5 and BM25 legitimately
+differ).
 
-Current status: **127/127 checks agree** across SQLite, the in-memory reference,
-and real Vespa.
+Current status: **155/155 checks agree** on `ConformanceCorpus(4000)` (127/127 on
+the old `ParityCheck` battery before quartz 2.9.0).
 
 ### A NIP-09 divergence the parity gate surfaced
 
@@ -3456,14 +3465,14 @@ Given N (note), D1 (kind 5 deleting N), D2 (kind 5 deleting D1):
 
 - **This store keeps `[D1, D2]`** — D2 targeting the deletion D1 is a no-op, per
   spec. (`Deletions.applyDeletion` skips kind-5/kind-62 targets.)
-- **Quartz's SQLite store keeps `[D2]`** — it has no such guard and erases D1,
-  **violating NIP-09**. (Confirmed in `sqlite/DeletionRequestModule.kt`: the
-  delete-by-id path has no kind-5/62 exclusion.)
+- **Quartz's SQLite store kept `[D2]`** until 2.9.0 — it had no such guard and
+  erased D1, **violating NIP-09**.
 
-So on this edge case **this store is correct and SQLite is not**. The corpus
-therefore has its deletions target real *non-deletion* events (what clients
-actually delete), keeping the parity gate a clean pass; the divergence is a
-SQLite bug to report upstream, not something to "fix" by breaking this store.
+Quartz fixed it upstream (2.9.0, "a kind 5 against a kind 5 or a kind 62 has no
+effect in the SQLite and fs stores"). Until then `NostrCorpus` had its deletions
+target real *non-deletion* events, keeping the parity gate a clean pass; it still
+does, since its output is what every number here was measured on, while the
+conformance corpus the CI gates use now carries the case (STORE-D05).
 
 ## Where to hammer performance (framework optimization targets)
 
