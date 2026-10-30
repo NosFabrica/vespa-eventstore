@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore.search
 
+import com.nosfabrica.vespa.eventstore.engine.doc.isHexKey
 import com.vitorpamplona.quartz.experimental.trustedLists.addressables.AddressableTrustedListEvent
 import com.vitorpamplona.quartz.experimental.trustedLists.addressables.tags.AddressMemberTag
 import com.vitorpamplona.quartz.experimental.trustedLists.events.EventTrustedListEvent
@@ -44,7 +45,6 @@ import com.vitorpamplona.quartz.nip51Lists.starterPack.StarterPackEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.addressables.AddressableAssertionEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.events.EventAssertionEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
-import com.vitorpamplona.quartz.utils.Hex
 
 /**
  * What a search hit SAYS SOMETHING ABOUT: the records a Trusted List, a NIP-85
@@ -296,7 +296,7 @@ internal object SearchReferences {
      * subject pubkey, so a value that is not one is a malformed assertion, and
      * asking the store for it would cost a query that can only miss.
      */
-    private fun TagArray.subjectKey(): HexKey? = dTag().takeIf { it.length == 64 && Hex.isHex64(it) }
+    private fun TagArray.subjectKey(): HexKey? = dTag().takeIf { isHexKey(it) }
 
     /** An assertion's `d` tag read as an a-coordinate, `kind:pubkey:d`. */
     private fun TagArray.subjectAddress(): String? = canonical(dTag())

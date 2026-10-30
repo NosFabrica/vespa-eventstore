@@ -26,12 +26,12 @@ import com.nosfabrica.vespa.eventstore.engine.async.QUERY_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
+import com.nosfabrica.vespa.eventstore.engine.doc.isHexKey
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.nosfabrica.vespa.eventstore.ingest.GuardBloom
 import com.nosfabrica.vespa.eventstore.mapping.toEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
-import com.vitorpamplona.quartz.utils.Hex
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -182,7 +182,7 @@ class TrustReconciler internal constructor(
             onProgress?.invoke(subjectsChecked)
         }
         index.visitIds(EventQuery(kinds = listOf(UserAssertionEvent.KIND)), withDTag = true) { page ->
-            page.forEach { it.dTag?.takeIf(Hex::isHex64)?.let(buffer::add) }
+            page.forEach { it.dTag?.takeIf(::isHexKey)?.let(buffer::add) }
             if (buffer.size >= VERIFY_BATCH) screenBatch()
             true
         }
@@ -194,8 +194,8 @@ class TrustReconciler internal constructor(
         // is judged there, not miscalled an orphan.
         var parentsChecked = 0
         reputations.visitPubkeys { page ->
-            parentsChecked += page.count { Hex.isHex64(it) }
-            confirm(page.filter { Hex.isHex64(it) && !seen.mightContain(it) })
+            parentsChecked += page.count { isHexKey(it) }
+            confirm(page.filter { isHexKey(it) && !seen.mightContain(it) })
             true
         }
         return TrustAudit(subjectsChecked, parentsChecked, driftCount, samples, repair)
@@ -500,7 +500,7 @@ class TrustReconciler internal constructor(
         reputations.visitPubkeys { page ->
             // Only real subjects (64-hex): the projection's own bookkeeping doc
             // (ProjectionLedger's marker) must not be "repaired" away mid-crash.
-            page.filterTo(buffer) { Hex.isHex64(it) }
+            page.filterTo(buffer) { isHexKey(it) }
             if (buffer.size >= ORPHAN_BATCH) flush()
             true
         }

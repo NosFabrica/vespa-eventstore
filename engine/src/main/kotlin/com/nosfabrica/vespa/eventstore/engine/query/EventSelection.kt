@@ -20,7 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore.engine.query
 
-import com.vitorpamplona.quartz.utils.Hex
+import com.nosfabrica.vespa.eventstore.engine.doc.isHexKey
 
 /**
  * Builds a Vespa *document selection* from an [EventQuery] — the expression
@@ -65,7 +65,7 @@ object EventSelection {
         keys: List<String>,
     ): String? {
         val hexes = keys.map { it.lowercase() }
-        if (hexes.any { !Hex.isHex64(it) }) return null
+        if (hexes.any { !isHexKey(it) }) return null
         return hexes.distinct().joinToString(" or ", "(", ")") { "event.$field==\"$it\"" }
     }
 }

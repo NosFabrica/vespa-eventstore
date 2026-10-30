@@ -19,12 +19,12 @@
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 package com.nosfabrica.vespa.eventstore.engine.query
+import com.nosfabrica.vespa.eventstore.engine.doc.isHexKey
 import com.nosfabrica.vespa.eventstore.engine.text.IndexableChars
 import com.nosfabrica.vespa.eventstore.engine.text.WHITESPACE
 import com.nosfabrica.vespa.eventstore.engine.tuning.ProcessKnobs
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip01Core.tags.isIndexableTagName
-import com.vitorpamplona.quartz.utils.Hex
 
 /**
  * Builds YQL over the `event` schema from an [EventQuery]. Returns null when
@@ -487,7 +487,7 @@ object EventYql {
                 // search. Only notSearch-free-and-text-free recall is plain.
                 q.search.isNullOrBlank() && q.phrases.isEmpty() -> RANK_UNRANKED
 
-                q.observer?.lowercase()?.takeIf(Hex::isHex64) != null -> RANK_SEARCH
+                q.observer?.lowercase()?.takeIf(::isHexKey) != null -> RANK_SEARCH
 
                 else -> RANK_TEXT
             }
@@ -511,7 +511,7 @@ object EventYql {
      * every author and a gate there could only cost reads.
      */
     fun gateFloor(q: EventQuery): Double? {
-        if (q.observer?.lowercase()?.takeIf(Hex::isHex64) == null) return null
+        if (q.observer?.lowercase()?.takeIf(::isHexKey) == null) return null
         val floor = q.minRank?.takeIf { it > 0.0 } ?: return null
         return when (profileOf(q)) {
             RANK_RECENCY_GATED, RANK_RECENCY_GATED_EXACT, RANK_DESC, RANK_ASC, RANK_FOLLOWERS, RANK_SEARCH -> floor
@@ -547,8 +547,8 @@ object EventYql {
         q: EventQuery,
         params: MutableMap<String, String>,
     ) {
-        params["ranking.features.query(user_q)"] = q.rankKey?.takeIf(Hex::isHex64)?.let { "{$it:1.0}" } ?: "{}"
-        params["ranking.features.query(followers_q)"] = q.followersKey?.takeIf(Hex::isHex64)?.let { "{$it:1.0}" } ?: "{}"
+        params["ranking.features.query(user_q)"] = q.rankKey?.takeIf(::isHexKey)?.let { "{$it:1.0}" } ?: "{}"
+        params["ranking.features.query(followers_q)"] = q.followersKey?.takeIf(::isHexKey)?.let { "{$it:1.0}" } ?: "{}"
         q.minRank?.let { params["ranking.features.query(min_rank)"] = it.toString() }
     }
 
@@ -591,7 +591,7 @@ object EventYql {
         val ranking = profileOf(q)
         val clauses = filterClauses(q, params, bodyPhrase = ranking == RANK_SEARCH) ?: return null
 
-        val observer = q.observer?.lowercase()?.takeIf(Hex::isHex64)
+        val observer = q.observer?.lowercase()?.takeIf(::isHexKey)
         if (ranking != RANK_UNRANKED && ranking != RANK_RECENCY && observer != null) lensParams(q, params)
         // A MEMBER PROFILE WITHOUT AN OBSERVER WOULD SATURATE, not degrade.
         // wot_mult() reads `min_rank`, which defaults to -1e9 so the gate in
@@ -831,8 +831,8 @@ object EventYql {
         pubkeys: Collection<String>,
         rankKey: String,
     ): VespaQuery? {
-        val hexes = pubkeys.map { it.lowercase() }.filter(Hex::isHex64).distinct()
-        if (hexes.isEmpty() || !Hex.isHex64(rankKey)) return null
+        val hexes = pubkeys.map { it.lowercase() }.filter(::isHexKey).distinct()
+        if (hexes.isEmpty() || !isHexKey(rankKey)) return null
         return VespaQuery(
             yql = "select pubkey from reputation where pubkey in (${hexes.joinToString(", ") { "\"$it\"" }})",
             params = mapOf("ranking.features.query(user_q)" to "{${rankKey.lowercase()}:1.0}", MATCH_THREADS to SINGLE_MATCH_THREAD),
@@ -841,7 +841,7 @@ object EventYql {
     }
 
     /** Whether a link query reads trust: a hex observer, through the observer gate's ranking. */
-    fun isLensed(q: EventQuery): Boolean = q.observer?.lowercase()?.takeIf(Hex::isHex64) != null && (q.ranking == RANK_RECENCY_GATED || q.ranking == RANK_RECENCY_GATED_EXACT)
+    fun isLensed(q: EventQuery): Boolean = q.observer?.lowercase()?.takeIf(::isHexKey) != null && (q.ranking == RANK_RECENCY_GATED || q.ranking == RANK_RECENCY_GATED_EXACT)
 
     private fun keyClause(keys: List<String>): String = keys.joinToString(", ", prefix = "tag_index in (", postfix = ")") { quote(it) }
 
@@ -903,7 +903,7 @@ object EventYql {
         val params = LinkedHashMap<String, String>()
         val clauses = filterClauses(q, params) ?: return null
         val where = whereOf(if (extra == null) clauses else clauses + extra)
-        if (ranking != RANK_UNRANKED && q.observer?.lowercase()?.takeIf(Hex::isHex64) != null) {
+        if (ranking != RANK_UNRANKED && q.observer?.lowercase()?.takeIf(::isHexKey) != null) {
             lensParams(q, params)
             // The gated profiles read no text signal (see [build]).
             params.keys.removeAll(TEXT_RANK_FEATURES)
@@ -1330,7 +1330,7 @@ object EventYql {
         values: List<String>,
     ): String? {
         val hexes = LinkedHashSet<String>(values.size * 2)
-        values.forEach { v -> v.lowercase().let { if (Hex.isHex64(it)) hexes += it } }
+        values.forEach { v -> v.lowercase().let { if (isHexKey(it)) hexes += it } }
         if (hexes.isEmpty()) return null
         val out = StringBuilder(field.length + 6 + hexes.size * 68).append(field).append(" in (")
         hexes.forEachIndexed { i, hex -> (if (i > 0) out.append(", ") else out).append('"').append(hex).append('"') }
@@ -1358,7 +1358,7 @@ object EventYql {
     ): String? {
         val entries =
             weights.entries
-                .mapNotNull { (key, weight) -> key.lowercase().takeIf(Hex::isHex64)?.let { it to weight } }
+                .mapNotNull { (key, weight) -> key.lowercase().takeIf(::isHexKey)?.let { it to weight } }
                 .distinctBy { it.first }
         if (entries.isEmpty()) return null
         return "dotProduct($field, {${entries.joinToString(", ") { (key, weight) -> "\"$key\": $weight" }}})"

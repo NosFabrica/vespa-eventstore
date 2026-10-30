@@ -22,12 +22,12 @@ package com.nosfabrica.vespa.eventstore.engine.memory
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
+import com.nosfabrica.vespa.eventstore.engine.doc.isHexKey
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.nosfabrica.vespa.eventstore.engine.query.FuzzyWordGroup
 import com.nosfabrica.vespa.eventstore.engine.query.PhraseRuns
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
-import com.vitorpamplona.quartz.utils.Hex
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -235,9 +235,9 @@ class InMemoryEventIndex(
                 (q.authorWeights.isNotEmpty() && authorWeights.isEmpty()) ||
                 (q.owners.isNotEmpty() && owners.isEmpty())
 
-        private fun List<String>.normHex(): HashSet<String> = mapTo(HashSet()) { it.lowercase() }.apply { retainAll { Hex.isHex64(it) } }
+        private fun List<String>.normHex(): HashSet<String> = mapTo(HashSet()) { it.lowercase() }.apply { retainAll { isHexKey(it) } }
 
-        private fun Map<String, Int>.normHexKeys(): Map<String, Int> = entries.mapNotNull { (key, weight) -> key.lowercase().takeIf(Hex::isHex64)?.let { it to weight } }.toMap()
+        private fun Map<String, Int>.normHexKeys(): Map<String, Int> = entries.mapNotNull { (key, weight) -> key.lowercase().takeIf(::isHexKey)?.let { it to weight } }.toMap()
 
         /**
          * `rawScore(pubkey) + rawScore(id)` for one document — the weight its

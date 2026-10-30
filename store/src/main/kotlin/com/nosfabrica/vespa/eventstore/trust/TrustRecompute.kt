@@ -28,6 +28,7 @@ import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationCells
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
+import com.nosfabrica.vespa.eventstore.engine.doc.isHexKey
 import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.mapping.toEvent
@@ -36,7 +37,6 @@ import com.nosfabrica.vespa.eventstore.runtime.WriteLocks
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
-import com.vitorpamplona.quartz.utils.Hex
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
@@ -260,7 +260,7 @@ internal class TrustRecompute(
             }
         }
         inner.visitIds(query, withDTag = true) { page ->
-            page.forEach { ref -> ref.dTag?.takeIf { Hex.isHex64(it) }?.let(buffer::add) }
+            page.forEach { ref -> ref.dTag?.takeIf { isHexKey(it) }?.let(buffer::add) }
             if (buffer.size >= RECOMPUTE_BATCH) flush()
             true // walk the whole corpus
         }
@@ -546,10 +546,10 @@ internal class TrustRecompute(
  * and admitting arbitrary strings would let a crafted card collide with the
  * projection's bookkeeping ids ([ProjectionLedger]).
  */
-internal fun subjectOf(doc: EventDoc): String? = doc.dTagOrEmpty().takeIf(Hex::isHex64)
+internal fun subjectOf(doc: EventDoc): String? = doc.dTagOrEmpty().takeIf(::isHexKey)
 
 /** [subjectOf] for an event not yet converted — the same rule (a missing d is empty, so never a subject). */
-internal fun subjectOf(event: Event): String? = event.tags.dTag()?.takeIf(Hex::isHex64)
+internal fun subjectOf(event: Event): String? = event.tags.dTag()?.takeIf(::isHexKey)
 
 /**
  * The card's rank tag clamped to the served 0..100 scale — providers are not

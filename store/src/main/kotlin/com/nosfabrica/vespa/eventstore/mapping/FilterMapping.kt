@@ -20,13 +20,13 @@
  */
 package com.nosfabrica.vespa.eventstore.mapping
 
+import com.nosfabrica.vespa.eventstore.engine.doc.isHexKey
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.nosfabrica.vespa.eventstore.engine.text.IndexableChars
 import com.nosfabrica.vespa.eventstore.engine.text.StemText
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip50Search.SearchQuery
-import com.vitorpamplona.quartz.utils.Hex
 
 /*
  * NIP-01/NIP-50 filter -> engine query translation. A pure mapping with no
@@ -171,7 +171,7 @@ internal class SearchIntent private constructor(
     val floor: Double? = parsed.extensions["filter"]?.let(::rankFloorOf)
 
     /** The `observer:` lens, lowercased; null when absent or not 64-hex (an `npub` is ignored, not decoded). */
-    val observer: String? = parsed.extensions["observer"]?.lowercase()?.takeIf(Hex::isHex64)
+    val observer: String? = parsed.extensions["observer"]?.lowercase()?.takeIf(::isHexKey)
 
     /** `include:spam`: the default trust floor waived. */
     val includeSpam: Boolean get() = parsed.includeSpam

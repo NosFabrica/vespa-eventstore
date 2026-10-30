@@ -33,6 +33,7 @@ import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.ScoredHit
 import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
+import com.nosfabrica.vespa.eventstore.engine.doc.isHexKey
 import com.nosfabrica.vespa.eventstore.engine.metrics.Activity
 import com.nosfabrica.vespa.eventstore.engine.metrics.CostLedger
 import com.nosfabrica.vespa.eventstore.engine.metrics.DegradedReads
@@ -44,7 +45,6 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.nosfabrica.vespa.eventstore.engine.query.VespaQuery
 import com.nosfabrica.vespa.eventstore.engine.requirePlainReplaceable
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
-import com.vitorpamplona.quartz.utils.Hex
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -394,7 +394,7 @@ class VespaEventIndex(
         // module's injection rule (64-hex before it reaches an expression).
         // A non-hex id from a direct caller falls back to the default, which
         // builds no expression from it.
-        if (!Hex.isHex64(doc.id)) return super.putIfNewer(doc)
+        if (!isHexKey(doc.id)) return super.putIfNewer(doc)
         val condition =
             "event.created_at < ${doc.createdAt} or " +
                 "(event.created_at == ${doc.createdAt} and event.id > \"${doc.id}\")"
@@ -1145,7 +1145,7 @@ class VespaEventIndex(
         val hexes =
             query.ids
                 .map { it.lowercase() }
-                .filter(Hex::isHex64)
+                .filter(::isHexKey)
                 .distinct()
         val docs =
             when {

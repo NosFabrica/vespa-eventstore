@@ -1549,6 +1549,9 @@ class EventYqlTest {
         assertEquals(EventYql.RANK_TRUST_CELL, cells.ranking)
         assertEquals("{${"5e".repeat(32)}:1.0}", cells.params["ranking.features.query(user_q)"])
         assertNull(EventYql.buildTrustCells(listOf("not-hex"), "5e".repeat(32)))
+        // A key with a tail past its 64 hex characters is not a key, in either slot.
+        assertNull(EventYql.buildTrustCells(listOf("ab".repeat(32) + "\") or true or (\""), "5e".repeat(32)))
+        assertNull(EventYql.buildTrustCells(listOf("ab".repeat(32)), "5e".repeat(32) + ":v2"))
     }
 
     private val linkId = "ab".repeat(32)
