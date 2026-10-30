@@ -834,17 +834,17 @@ class NostrSemanticsStore(
      * without [TrustProjection] resolves no lens and says so: the list is still
      * read, the services and cards are not.
      */
-    override suspend fun lensOf(pubkey: String): TrustLens =
+    override suspend fun lensOf(pubkey: String): TrustChain =
         withActivity(Activity.Query) {
             val key = pubkey.lowercase()
             require(key.length == 64 && Hex.isHex64(key)) { "pubkey must be 64-hex" }
             val trust = index as? TrustProjection
             if (trust == null) {
                 val listed = index.search(EventQuery(kinds = listOf(TrustProviderListEvent.KIND), authors = listOf(key), notExpiredAt = nowSecs(), limit = 1)).isNotEmpty()
-                return@withActivity TrustLens(key, listed, null, null, null, null, null, null)
+                return@withActivity TrustChain(key, listed, null, null, null, null, null, null)
             }
             val l = TrustExplain(index, trust.reputations, trust.recompute, nowSecs).lens(key)
-            TrustLens(key, l.hasProviderList, l.rankService, l.followersService, l.storedRankService, l.storedFollowersService, l.rankServiceHasCards, l.passAgeSecs)
+            TrustChain(key, l.hasProviderList, l.rankService, l.followersService, l.storedRankService, l.storedFollowersService, l.rankServiceHasCards, l.passAgeSecs)
         }
 
     /** The rank cells [liveGate] reads: the projection's reputation index, or none on a store assembled without it. */

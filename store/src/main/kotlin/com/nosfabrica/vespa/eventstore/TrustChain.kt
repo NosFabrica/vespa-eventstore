@@ -40,7 +40,7 @@ package com.nosfabrica.vespa.eventstore
  * [passAgeSecs] says how old it is — and the stored one is what the reads will
  * use after the next refresh.
  */
-class TrustLens(
+class TrustChain(
     val pubkey: String,
     /** A live (unexpired) kind-10040 by [pubkey] is stored. */
     val hasProviderList: Boolean,
@@ -87,5 +87,5 @@ class TrustLens(
     /** Whether the cached pass resolves this reader differently than their stored 10040 does. */
     val passDisagrees: Boolean get() = hasProviderList && (rankService != storedRankService || followersService != storedFollowersService)
 
-    override fun toString(): String = "TrustLens(${pubkey.take(16)}…, list=$hasProviderList, rank=${rankService?.take(16)}, stored=${storedRankService?.take(16)}, cards=$rankServiceHasCards, gap=$gap)"
+    override fun toString(): String = "TrustChain(${pubkey.take(16)}…, list=$hasProviderList, rank=${rankService?.take(16)}, stored=${storedRankService?.take(16)}, cards=$rankServiceHasCards, gap=$gap)"
 }

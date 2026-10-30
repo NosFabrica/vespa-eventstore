@@ -38,7 +38,7 @@ import kotlin.test.assertNull
  * provider has signed nothing here, a second one that has — the ranked page is
  * empty, and the relay's "any of the first eight" check said nothing.
  */
-class TrustLensTest {
+class TrustChainTest {
     private val reader = "0b".repeat(32)
     private val first = "5e".repeat(32)
     private val second = "6f".repeat(32)
@@ -60,7 +60,7 @@ class TrustLensTest {
             assertEquals(first, lens.storedRankService)
             assertEquals(first, lens.rankService, "the cached pass agrees once this process wrote the list")
             assertEquals(false, lens.rankServiceHasCards, "the second provider's card does not rank this reader's reads")
-            assertEquals(TrustLens.Gap.NO_RANK_CARDS, lens.gap)
+            assertEquals(TrustChain.Gap.NO_RANK_CARDS, lens.gap)
 
             store.batchInsert(listOf(card(first)))
             assertNull(store.lensOf(reader).gap, "with the first provider's card the chain is whole")
@@ -69,9 +69,9 @@ class TrustLensTest {
     @Test
     fun `each missing link is named in the order a read fails`() =
         runBlocking {
-            assertEquals(TrustLens.Gap.NO_PROVIDER_LIST, store.lensOf(reader).gap)
+            assertEquals(TrustChain.Gap.NO_PROVIDER_LIST, store.lensOf(reader).gap)
             store.batchInsert(listOf(TrustProviderListEvent(id(), reader, 1_000L + seq, arrayOf(arrayOf("30382:followers", first, "wss://s.example/")), "", "")))
-            assertEquals(TrustLens.Gap.NO_RANK_SERVICE, store.lensOf(reader).gap, "a followers-only list ranks nothing")
+            assertEquals(TrustChain.Gap.NO_RANK_SERVICE, store.lensOf(reader).gap, "a followers-only list ranks nothing")
             assertNull(store.lensOf(reader).rankServiceHasCards, "no service, no question")
         }
 

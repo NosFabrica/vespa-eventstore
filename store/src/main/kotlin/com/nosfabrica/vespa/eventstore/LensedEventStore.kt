@@ -94,8 +94,8 @@ interface LensedEventStore : IEventStore {
     ): Set<String>
 
     /**
-     * [pubkey]'s trust chain as this store follows it — see [TrustLens] and
+     * [pubkey]'s trust chain as this store follows it — see [TrustChain] and
      * [NostrSemanticsStore.lensOf]. Light enough for a per-sign-in check.
      */
-    suspend fun lensOf(pubkey: String): TrustLens
+    suspend fun lensOf(pubkey: String): TrustChain
 }
