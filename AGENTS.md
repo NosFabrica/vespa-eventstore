@@ -31,6 +31,14 @@ Three repos, one direction of dependency: quartz ← vespa-eventstore ← its co
 - **Policy that is the consumer's stays the consumer's**: wording of a notice, which deploy failure
   to survive, chart shapes and bucket decoders, editorial caps. The store hands back facts
   (`TrustChain`, `SchemaDeployException.serving`, a raw grouping root), never the decision.
+- **Skills that describe quartz come from quartz.** `.claude/skills/` still holds copies of
+  quartz's own `nostr-expert` and `event-store-semantics` and of the `searchable-events`,
+  `nip85-trusted-assertions` and `quartz-integration` skills. Quartz now ships those last three
+  as its distributed skill, `quartz/agent-skill/quartz/` (`SKILL.md` plus
+  `references/nip85-trusted-assertions.md` and `references/search-and-stores.md`), but that skill
+  describes APIs newer than the 2.8.0 this store pins. At the first quartz bump that includes it,
+  delete all five copies and install that skill (its `README.md` has the commands). Fix a
+  quartz fact in quartz's skill, not in a copy here.
 
 ## Commands
 
