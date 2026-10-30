@@ -23,6 +23,7 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.nosfabrica.vespa.eventstore.mapping.DEFAULT_MIN_RANK
 import com.vitorpamplona.quartz.nip01Core.core.Event
+import com.vitorpamplona.quartz.nip01Core.relay.filters.FilterMatcher
 
 /*
  * The query shapes a subject lookup runs under — every one of them a
@@ -61,24 +62,27 @@ internal fun EventQuery.accepts(
     event: Event,
     converted: Boolean,
 ): Boolean =
-    (ids.isEmpty() || event.id in ids) &&
-        (
-            if (converted) {
-                kinds.isNotEmpty() && SearchReferences.converts(event.kind, kinds)
-            } else {
-                admitsKind(event.kind)
-            }
-        ) &&
-        (authors.isEmpty() || event.pubKey in authors) &&
-        (since == null || event.createdAt >= since!!) &&
-        (until == null || event.createdAt <= until!!) &&
-        tags.all { (name, values) -> values.any { event.has(name, it) } } &&
-        tagsAll.all { (name, values) -> values.all { event.has(name, it) } }
-
-internal fun Event.has(
-    name: String,
-    value: String,
-): Boolean = tags.any { it.size > 1 && it[0] == name && it[1] == value }
+    (
+        if (converted) {
+            kinds.isNotEmpty() && SearchReferences.converts(event.kind, kinds)
+        } else {
+            admitsKind(event.kind)
+        }
+    ) &&
+        // Everything but the kind is NIP-01's own filter match, so it is
+        // Quartz's: the store used to hand-roll the same ids/authors/window/
+        // tags rules here. The one translation is the empty list, which an
+        // EventQuery reads as "no constraint" and a Filter as "matches
+        // nothing" — `LookupQueriesTest` holds the two readings equal.
+        FilterMatcher.match(
+            event,
+            ids = ids.ifEmpty { null },
+            authors = authors.ifEmpty { null },
+            tags = tags.ifEmpty { null },
+            tagsAll = tagsAll.ifEmpty { null },
+            since = since,
+            until = until,
+        )
 
 /** Whether a read asking for these kinds could serve one of [kind]. */
 internal fun EventQuery.admitsKind(kind: Int): Boolean = kinds.isEmpty() || kind in kinds

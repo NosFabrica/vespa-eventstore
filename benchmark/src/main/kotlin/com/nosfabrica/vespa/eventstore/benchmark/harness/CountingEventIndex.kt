@@ -84,6 +84,14 @@ class CountingEventIndex(
 
     override suspend fun scanAuthors(query: EventQuery): Set<String> = inner.scanAuthors(query)
 
+    override suspend fun newestVersions(
+        kind: Int,
+        authors: List<String>,
+    ): Map<String, DocRef> {
+        searches.incrementAndGet()
+        return inner.newestVersions(kind, authors)
+    }
+
     override suspend fun visitDocsPage(
         query: EventQuery,
         continuation: String?,

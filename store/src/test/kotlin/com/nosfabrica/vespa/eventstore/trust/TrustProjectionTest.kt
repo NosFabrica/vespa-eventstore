@@ -200,6 +200,38 @@ class TrustProjectionTest {
             assertEquals(serviceCells(service to 100), reputations.get(subject)?.influenceScores, "over-scale caps at 100")
         }
 
+    /**
+     * A rank that is not an Int, one beyond its range included, is NO rank:
+     * quartz's `RankTag.parseBounded` answers null for it, not 100, which is
+     * what this store's own clamp did before it read through quartz's. Pinned
+     * so a quartz that began clamping such a value would show here, not as a
+     * provider's garbage landing on the top rung.
+     */
+    @Test
+    fun `a rank beyond Int range is no rank, not the top of the scale`() =
+        runBlocking {
+            store.insert(list10040())
+            val tags = arrayOf(arrayOf("d", subject), arrayOf("rank", "99999999999"), arrayOf("followers", "120"))
+            store.insert(UserAssertionEvent(id(), service, next(), tags, "", ""))
+            val doc = reputations.get(subject)
+            assertTrue(doc?.influenceScores.isNullOrEmpty(), "no influence cell, got $doc")
+            assertEquals(serviceCells(service to 120.0), doc?.followerCounts, "the card's other cell still lands")
+        }
+
+    /**
+     * A card's subject is a pubkey as NIP-01 writes one, 64 LOWERCASE hex
+     * (quartz's `UserAssertionEvent.isSubjectPubKey`). An upper-case `d` is
+     * another address: it lands no cell, under either spelling.
+     */
+    @Test
+    fun `a card whose d is upper-case hex is about nobody`() =
+        runBlocking {
+            store.insert(list10040())
+            store.insert(card(about = subject.uppercase()))
+            assertNull(reputations.get(subject.uppercase()), "no cell under the upper-case key")
+            assertNull(reputations.get(subject), "nor under the subject it spells")
+        }
+
     @Test
     fun `supersession without a rank tag retracts the score`() =
         runBlocking {

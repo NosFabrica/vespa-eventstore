@@ -149,6 +149,44 @@ internal class TrustExplain(
         )
     }
 
+    /** [lens]'s answer: the chain's facts, cheap enough to read per sign-in. */
+    class Lens(
+        val hasProviderList: Boolean,
+        val rankService: String?,
+        val followersService: String?,
+        val storedRankService: String?,
+        val storedFollowersService: String?,
+        val rankServiceHasCards: Boolean?,
+        val passAgeSecs: Long?,
+    )
+
+    /**
+     * The LIGHT half of [explain]: the observer's stored list, both lenses
+     * (cached pass and stored list), and whether the rank service has signed
+     * anything here — three reads, each at most one document, where [explain]
+     * also counts profiles and cards ABOUT the subject (up to [MAX_CARDS] full
+     * documents) and reads its reputation parent. A sign-in notice runs this per
+     * AUTH; the explanation is an operator's page.
+     */
+    suspend fun lens(pubkey: String): Lens {
+        val lists = index.search(EventQuery(kinds = listOf(TrustProviderListEvent.KIND), authors = listOf(pubkey), notExpiredAt = nowSecs(), limit = 1))
+        val cached = recompute.providerMap().lensOf(pubkey)
+        val stored = ProviderMap.providersOf(lists).lensOf(pubkey)
+        // The service the reads WILL use once the pass catches up: the stored
+        // list's first rank provider, which is what [ProviderMap] resolves.
+        val service = stored.rank ?: cached.rank
+        val hasCards = service?.let { index.search(EventQuery(kinds = listOf(UserAssertionEvent.KIND), authors = listOf(it), limit = 1)).isNotEmpty() }
+        return Lens(
+            hasProviderList = lists.isNotEmpty(),
+            rankService = cached.rank,
+            followersService = cached.followers,
+            storedRankService = stored.rank,
+            storedFollowersService = stored.followers,
+            rankServiceHasCards = hasCards,
+            passAgeSecs = recompute.providerAgeSecs(),
+        )
+    }
+
     private companion object {
         /** Enough to say whether cards exist and roughly how many; this is a diagnostic, not a walk. */
         const val MAX_CARDS = 1000

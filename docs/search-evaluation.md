@@ -341,7 +341,7 @@ is logged. If it is ever built, it complements this protocol and does not replac
 ### 8.1 A corpus that holds the topics
 
 Use a local Vespa. Pull the topics' real pages and their authors' trust cards **read-only**
-from the live relay (CLAUDE.md: never feed it, never point a test at it), then load them with
+from the live relay (AGENTS.md: never feed it, never point a test at it), then load them with
 `exportLoad`. A capture is a plain JSON array of events. The 2026-10-23 run used, for every
 case query, the lensed page (`<q> observer:460c25…065c`, limit 150), the unranked page
 (`<q> include:spam`, limit 60), the observer's 10040, and the provider's 30382s for every

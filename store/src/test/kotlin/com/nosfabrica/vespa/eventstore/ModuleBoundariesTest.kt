@@ -53,6 +53,8 @@ class ModuleBoundariesTest {
             "engine.text" to 0,
             "engine.async" to 0,
             "engine.app" to 0,
+            // Process-wide settings (ProcessKnob): read by layers 0-5 alike, so it imports nothing.
+            "engine.tuning" to 0,
             "engine.doc" to 1,
             "engine.query" to 2,
             "engine" to 3,
@@ -74,7 +76,7 @@ class ModuleBoundariesTest {
      * cycles. `ingest/EventAdmission` throws `RejectedException` because that
      * is the store's public vocabulary for a rejection, and a value travelling
      * up is the opposite of a package reaching up. Naming the two composed
-     * types rather than the whole package is deliberate; CLAUDE.md says the
+     * types rather than the whole package is deliberate; AGENTS.md says the
      * same thing in prose.
      */
     private val facades = setOf("NostrSemanticsStore", "VespaEventStore")

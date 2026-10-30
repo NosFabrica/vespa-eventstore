@@ -21,21 +21,12 @@
 package com.nosfabrica.vespa.eventstore.search
 
 import com.vitorpamplona.quartz.experimental.trustedLists.addressables.AddressableTrustedListEvent
-import com.vitorpamplona.quartz.experimental.trustedLists.addressables.tags.AddressMemberTag
 import com.vitorpamplona.quartz.experimental.trustedLists.events.EventTrustedListEvent
-import com.vitorpamplona.quartz.experimental.trustedLists.events.tags.EventMemberTag
 import com.vitorpamplona.quartz.experimental.trustedLists.users.UserTrustedListEvent
-import com.vitorpamplona.quartz.experimental.trustedLists.users.tags.PubKeyMemberTag
-import com.vitorpamplona.quartz.nip01Core.core.Address
 import com.vitorpamplona.quartz.nip01Core.core.Event
-import com.vitorpamplona.quartz.nip01Core.core.HexKey
 import com.vitorpamplona.quartz.nip01Core.core.Kind
-import com.vitorpamplona.quartz.nip01Core.core.TagArray
 import com.vitorpamplona.quartz.nip01Core.core.isAddressable
-import com.vitorpamplona.quartz.nip01Core.tags.aTag.ATag
-import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
-import com.vitorpamplona.quartz.nip01Core.tags.events.ETag
-import com.vitorpamplona.quartz.nip01Core.tags.people.PTag
+import com.vitorpamplona.quartz.nip01Core.hints.SubjectReferences
 import com.vitorpamplona.quartz.nip32Labeling.LabelEvent
 import com.vitorpamplona.quartz.nip51Lists.followSet.FollowSetEvent
 import com.vitorpamplona.quartz.nip51Lists.mediaStarterPack.MediaStarterPackEvent
@@ -43,7 +34,6 @@ import com.vitorpamplona.quartz.nip51Lists.starterPack.StarterPackEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.addressables.AddressableAssertionEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.events.EventAssertionEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
-import com.vitorpamplona.quartz.utils.Hex
 
 /**
  * What a search hit SAYS SOMETHING ABOUT: the records a Trusted List, a NIP-85
@@ -58,9 +48,9 @@ import com.vitorpamplona.quartz.utils.Hex
  *
  * ## Dispatch is on the KIND, never on the runtime class
  *
- * Every accessor below is a tag read Quartz already publishes, but reached
- * through the kind rather than through `is UserTrustedListEvent`. That is
- * deliberate and it is the trap this file is written around: a CONSUMER may
+ * The reading is quartz's [SubjectReferences] (2.9.0), which reads the tags
+ * off the kind rather than through `is UserTrustedListEvent`, as this file
+ * did before it. That is the trap this file is written around: a CONSUMER may
  * force its own quartz over the one this module asks for (vespa-relay does,
  * with `resolutionStrategy { force(libs.quartz) }`), so the class this code
  * runs against is not necessarily the one it compiled against. A quartz
@@ -68,10 +58,13 @@ import com.vitorpamplona.quartz.utils.Hex
  * for kinds 30392-30395 at all. `toEvent()` then hands back a base [Event],
  * every `is` check goes false, and the expansion quietly stops happening with
  * nothing anywhere throwing. Reading the tags off the KIND cannot fail that
- * way — and it matters more here than it would in a consumer, because this
- * module's quartz pin is the one every consumer is forced onto.
+ * way. (A quartz older than 2.9.0 has no [SubjectReferences] at all, and that
+ * fails LOUDLY, at the first searching read: a missing method, not a silent
+ * empty expansion.)
  *
  * ## Which tag holds the subject, per family
+ *
+ * Quartz's table, of which this store expands every row ([KINDS]):
  *
  * | kind | family | subject |
  * |---|---|---|
@@ -225,157 +218,33 @@ internal object SearchReferences {
      */
     fun convertibleInto(kinds: List<Kind>): Set<Kind> = KINDS.filterTo(LinkedHashSet()) { it !in kinds && converts(it, kinds) }
 
-    /** The subjects of [event], or [References.NONE] for a kind that nominates nothing. */
-    fun of(event: Event): References =
-        when (event.kind) {
-            LabelEvent.KIND -> {
-                References(
-                    eventIds = event.tags.mapNotNull(ETag::parseId),
-                    pubKeys = event.tags.mapNotNull(PTag::parseKey),
-                    addresses = event.tags.mapNotNull { canonical(ATag.parseAddressId(it)) },
-                )
-            }
-
-            UserAssertionEvent.KIND -> {
-                References(pubKeys = listOfNotNull(event.tags.subjectKey()))
-            }
-
-            EventAssertionEvent.KIND -> {
-                References(eventIds = listOfNotNull(event.tags.subjectKey()))
-            }
-
-            AddressableAssertionEvent.KIND -> {
-                References(addresses = listOfNotNull(event.tags.subjectAddress()))
-            }
-
-            UserTrustedListEvent.KIND -> {
-                References(
-                    pubKeys = event.tags.mapNotNull(PubKeyMemberTag::parseKey),
-                    confidence = event.tags.memberScores(PubKeyMemberTag.TAG_NAME, PubKeyMemberTag::parseKey),
-                )
-            }
-
-            EventTrustedListEvent.KIND -> {
-                References(
-                    eventIds = event.tags.mapNotNull(EventMemberTag::parseId),
-                    confidence = event.tags.memberScores(EventMemberTag.TAG_NAME, EventMemberTag::parseId),
-                )
-            }
-
-            AddressableTrustedListEvent.KIND -> {
-                References(
-                    addresses = event.tags.mapNotNull { canonical(AddressMemberTag.parseAddressId(it)) },
-                    // Keyed by the CANONICAL coordinate, since that is what the
-                    // lookup files a found subject under — a member with an
-                    // upper-case key would otherwise carry a score nothing could
-                    // look up. (An `naddr1…` member never gets this far: since
-                    // Quartz d792ebc4bf `parseAddressId` takes only a
-                    // `kind:pubkey:d` shape, so such a member is not a pointer.)
-                    confidence = event.tags.memberScores(AddressMemberTag.TAG_NAME) { canonical(AddressMemberTag.parseAddressId(it)) },
-                )
-            }
-
-            FollowSetEvent.KIND, StarterPackEvent.KIND, MediaStarterPackEvent.KIND -> {
-                // Every public `p` tag, and no confidence: see [PEOPLE_LISTS].
-                // The PRIVATE half of a NIP-51 list is NIP-44 encrypted to its
-                // owner and a store holds no signer, so a reader who keeps a
-                // list private gets no expansion from it — the same blind spot,
-                // and the same safe direction, as `Delegations`.
-                References(pubKeys = event.tags.mapNotNull(PTag::parseKey))
-            }
-
-            else -> {
-                References.NONE
-            }
-        }
-
     /**
-     * An assertion's `d` tag read as a 64-hex key. Rejected rather than looked
-     * up when it is anything else: the `d` of a well-formed 30382 IS the
-     * subject pubkey, so a value that is not one is a malformed assertion, and
-     * asking the store for it would cost a query that can only miss.
-     */
-    private fun TagArray.subjectKey(): HexKey? = dTag().takeIf { it.length == 64 && Hex.isHex64(it) }
-
-    /** An assertion's `d` tag read as an a-coordinate, `kind:pubkey:d`. */
-    private fun TagArray.subjectAddress(): String? = canonical(dTag())
-
-    /**
-     * An `a` value as `kind:lowercase-hex:d`, or null when it names no
-     * addressable event.
+     * The subjects of [event], or [SubjectReferences.NONE] for a kind this
+     * store does not expand. The READING is quartz's ([SubjectReferences.of]:
+     * which tag holds the subject per family, ids and pubkeys as 64 lowercase
+     * hex, coordinates canonical, Trusted List scores on 0..100 or absent).
+     * The DECISION stays here: only a kind in [KINDS] is read, so a family a
+     * later quartz teaches [SubjectReferences] is not expanded, and above all
+     * not ungated, until this file names it in [DECLARATIONS] or beside the
+     * label.
      *
-     * NORMALIZED HERE so both sides of the match are the same string. The
-     * lookup recalls by (kind, author, `d`) and the result is recognized again
-     * by reassembling the coordinate from the event's OWN fields, which are
-     * canonical — so a value spelled as `naddr1…` (which `Address.parse`
-     * decodes; a 30384 `d` can be, a 30394 member no longer reaches here as
-     * one) or with an upper-case pubkey would be fetched and then silently
-     * dropped for failing to equal its own raw tag string. Nostr hex is
-     * lower-case by convention and the store holds it that way, so the
-     * publisher's spelling is the side that gives.
+     * Canonical values are what [SearchReferenceExpansion.admit] files a found
+     * subject under (the hit's own id, author, or reassembled coordinate), so
+     * an `e` / `p` member spelled in upper-case hex is served like its
+     * lowercase twin; it used to be looked up, found, and dropped for failing
+     * to equal its own raw tag string. An assertion's `d` must already be
+     * exact: a differently spelled `d` is a different address.
      */
-    private fun canonical(raw: String?): String? = raw?.let { Address.parse(it) }?.let { Address.assemble(it.kind, it.pubKeyHex.lowercase(), it.dTag) }
+    fun of(event: Event): SubjectReferences = if (event.kind in KINDS) SubjectReferences.of(event) else SubjectReferences.NONE
 }
+
+/** [SubjectReferences.scores] for [key] as a 0..1 weight, or null where the pointer said nothing. */
+internal fun SubjectReferences.weightOf(key: String): Double? = scores[key]?.let { it / 100.0 }
 
 /**
- * The three ways a nostr record can be named, kept apart because each is
- * recalled by a different filter shape: an id, a `kind:pubkey:d` coordinate,
- * or a pubkey — which resolves to that author's kind-0 profile, since a
- * pubkey names a person rather than an event.
+ * The same references with the PUBKEY shape shed — what a read admitting no
+ * kind 0 can do with a list of people. [SubjectReferences.scores] is kept
+ * whole: it is keyed by reference, so the shed entries are simply never looked
+ * up, and rebuilding it would cost a filter to save nothing.
  */
-internal class References(
-    val eventIds: List<HexKey> = emptyList(),
-    val pubKeys: List<HexKey> = emptyList(),
-    val addresses: List<String> = emptyList(),
-    /**
-     * HOW SURE THE POINTER IS, per reference, on quartz's 0..100 scale — empty
-     * for every pointer that expresses no confidence at all.
-     *
-     * Only Trusted List membership carries one. A NIP-32 label has no
-     * confidence field in the NIP, and a NIP-85 assertion's `d` IS its subject,
-     * so neither claim is probabilistic: an absent entry means "as sure as the
-     * pointer itself", not "unsure". Placement reads it that way.
-     *
-     * Out of 0..100 reads back as ABSENT rather than clamped, which is quartz's
-     * own rule for the same tag: a publisher counting on another scale is
-     * unscored, and pinning a 950 to 100 would rank that member above every
-     * honestly-scored peer.
-     */
-    val confidence: Map<String, Int> = emptyMap(),
-) {
-    val size: Int get() = eventIds.size + pubKeys.size + addresses.size
-
-    fun isEmpty() = size == 0
-
-    /** [confidence] for [key] as a 0..1 weight, or null where the pointer said nothing. */
-    fun weightOf(key: String): Double? = confidence[key]?.let { it / 100.0 }
-
-    /**
-     * The same references with the PUBKEY shape shed — what a read admitting no
-     * kind 0 can do with a list of people. [confidence] is kept whole: it is
-     * keyed by reference, so the shed entries are simply never looked up, and
-     * rebuilding it would cost a filter to save nothing.
-     */
-    fun withoutPubKeys(): References = References(eventIds, emptyList(), addresses, confidence)
-
-    companion object {
-        val NONE = References()
-    }
-}
-
-/** The 0..100 percentage at index 3 of a member tag, or null where the scale cannot express it. */
-private fun scoreOf(tag: Array<String>): Int? = tag.getOrNull(3)?.toIntOrNull()?.takeIf { it in 0..100 }
-
-/** `value -> score` for every member tag of [name] that carries a readable one. */
-internal fun TagArray.memberScores(
-    name: String,
-    valueOf: (Array<String>) -> String?,
-): Map<String, Int> =
-    buildMap {
-        this@memberScores.forEach { tag ->
-            if (tag.size > 1 && tag[0] == name) {
-                val value = valueOf(tag) ?: return@forEach
-                scoreOf(tag)?.let { put(value, it) }
-            }
-        }
-    }
+internal fun SubjectReferences.withoutPubKeys(): SubjectReferences = SubjectReferences(eventIds, emptyList(), addresses, scores)

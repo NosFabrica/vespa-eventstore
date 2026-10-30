@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.eventstore.search
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.nosfabrica.vespa.eventstore.mapping.DEFAULT_MIN_RANK
+import com.vitorpamplona.quartz.nip01Core.core.Event
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -157,5 +158,66 @@ class LookupQueriesTest {
         assertEquals(plain, plain.withMember(profile = null, confidence = 0.9, gamma = 1.0))
         assertEquals(plain, plain.withWeightedMember(profile = null, gamma = 1.0, pointerRelevance = 1.0, pointerText = 1.0, floorSpan = 0.5))
         assertEquals("member", plain.withMember("member", 0.9, 1.0).ranking, "a ranked one takes the member ladder")
+    }
+
+    /**
+     * `accepts` delegates everything but the kind to Quartz's `FilterMatcher`;
+     * this is the proof it answers exactly as the hand-rolled matcher it
+     * replaced, kept here verbatim as the reference, over every combination of
+     * present, absent and EMPTY constraint (an EventQuery's empty list means
+     * "no constraint", a Filter's "nothing") against events that sit on each
+     * boundary.
+     */
+    @Test
+    fun `accepts answers exactly as the matcher it replaced`() {
+        fun legacy(
+            q: EventQuery,
+            e: Event,
+            converted: Boolean,
+        ): Boolean {
+            fun has(
+                name: String,
+                value: String,
+            ) = e.tags.any { it.size > 1 && it[0] == name && it[1] == value }
+            return (q.ids.isEmpty() || e.id in q.ids) &&
+                (if (converted) q.kinds.isNotEmpty() && SearchReferences.converts(e.kind, q.kinds) else q.admitsKind(e.kind)) &&
+                (q.authors.isEmpty() || e.pubKey in q.authors) &&
+                (q.since == null || e.createdAt >= q.since!!) &&
+                (q.until == null || e.createdAt <= q.until!!) &&
+                q.tags.all { (name, values) -> values.any { has(name, it) } } &&
+                q.tagsAll.all { (name, values) -> values.all { has(name, it) } }
+        }
+        val events =
+            listOf(
+                Event(a, b, 100, 1, arrayOf(arrayOf("t", "x"), arrayOf("p", a)), "", ""),
+                Event(b, a, 200, 30392, arrayOf(arrayOf("d", "list"), arrayOf("t", "y"), arrayOf("t")), "", ""),
+                Event(a, a, 150, 1985, arrayOf(arrayOf("L", "x"), arrayOf("l", "x", "x")), "", ""),
+            )
+        val idsChoices = listOf(emptyList(), listOf(a), listOf(b, "ff".repeat(32)))
+        val authorChoices = listOf(emptyList(), listOf(a), listOf(b))
+        val windows = listOf(null to null, 100L to 100L, 101L to null, null to 199L, 150L to 200L)
+        val tagChoices = listOf(emptyMap(), mapOf("t" to listOf("x")), mapOf("t" to listOf("x", "y")), mapOf("t" to emptyList()), mapOf("t" to listOf("x"), "p" to listOf(a)))
+        val kindChoices = listOf(emptyList(), listOf(1), listOf(0), listOf(30392, 1985))
+        var checked = 0
+        for (ids in idsChoices) {
+            for (authors in authorChoices) {
+                for ((since, until) in windows) {
+                    for (tags in tagChoices) {
+                        for (all in tagChoices) {
+                            for (kinds in kindChoices) {
+                                val q = EventQuery(ids = ids, authors = authors, since = since, until = until, tags = tags, tagsAll = all, kinds = kinds)
+                                for (e in events) {
+                                    for (converted in listOf(false, true)) {
+                                        assertEquals(legacy(q, e, converted), q.accepts(e, converted), "$q on ${e.kind}/${e.createdAt} converted=$converted")
+                                        checked++
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assertEquals(idsChoices.size * authorChoices.size * windows.size * tagChoices.size * tagChoices.size * kindChoices.size * events.size * 2, checked)
     }
 }

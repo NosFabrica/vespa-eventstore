@@ -22,8 +22,9 @@ package com.nosfabrica.vespa.eventstore.benchmark
 
 import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.eventstore.benchmark.harness.Backends
-import com.nosfabrica.vespa.eventstore.benchmark.harness.NostrCorpus
-import com.nosfabrica.vespa.eventstore.benchmark.harness.ParityCheck
+import com.nosfabrica.vespa.eventstore.benchmark.harness.StoreParity
+import com.vitorpamplona.quartz.nip01Core.store.conformance.ConformanceCorpus
+import com.vitorpamplona.quartz.nip01Core.store.conformance.StoreConformance
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Tag
@@ -37,7 +38,10 @@ import kotlin.test.assertTrue
 /**
  * The correctness gate as a CI test: stand up a REAL Vespa in a container,
  * ingest the corpus, and assert this store answers every NIP-01 filter exactly
- * as Quartz's SQLite store does ([ParityCheck]). This is what proves the Vespa
+ * as Quartz's SQLite store does: quartz's conformance battery
+ * ([StoreConformance], through [StoreParity]) over quartz's [ConformanceCorpus],
+ * which also re-offers events, deletes by address and deletes a deletion
+ * (STORE-D02, D04, D05) where this module's own corpus never did. This is what proves the Vespa
  * query path — YQL, the streaming decode, the get fast path, reconstruction —
  * stays correct end to end; the in-memory reference can't catch a real-Vespa-only
  * divergence (as the empty-`sig` bug showed).
@@ -67,16 +71,17 @@ class VespaParityIT {
                 // so it must be passed explicitly) and waits until queries serve.
                 val store = VespaEventStore.open(url = queryUrl, autoDeploy = true, configUrl = configUrl)
                 store.use {
-                    val corpus = NostrCorpus.generate(NostrCorpus.Config(size = CORPUS_SIZE, seed = 42))
-                    runBlocking { corpus.chunked(1_000).forEach { store.batchInsert(it) } }
-
+                    val corpus = ConformanceCorpus.generate(ConformanceCorpus.Config(size = CORPUS_SIZE, seed = 42))
                     val sqlite = Backends.sqliteMemory()
-                    runBlocking { corpus.chunked(1_000).forEach { sqlite.batchInsert(it) } }
-                    val result = ParityCheck.run(corpus, "SQLite", sqlite, "Vespa", store)
+                    val report =
+                        runBlocking {
+                            StoreConformance.load(store, corpus, chunk = 1_000)
+                            StoreConformance.load(sqlite, corpus, chunk = 1_000)
+                            StoreParity.run(corpus, "SQLite", sqlite, "Vespa", store)
+                        }
                     sqlite.close()
 
-                    ParityCheck.report("Vespa", "SQLite", result)
-                    assertTrue(result.ok, "Vespa diverged from SQLite:\n" + result.mismatches.joinToString("\n"))
+                    assertTrue(report.ok, "Vespa diverged from SQLite: " + report.summary(limit = Int.MAX_VALUE))
                 }
             }
     }

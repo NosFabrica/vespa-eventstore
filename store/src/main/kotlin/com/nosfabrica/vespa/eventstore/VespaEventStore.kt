@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore
 
+import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.app.SchemaDeployer
 import com.nosfabrica.vespa.eventstore.engine.client.VespaEventIndex
 import com.nosfabrica.vespa.eventstore.engine.client.VespaReputationIndex
@@ -57,6 +58,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.net.URI
+import java.time.Duration
 
 /**
  * The library's public handle and front door: [open] wires the whole
@@ -67,8 +69,13 @@ import java.net.URI
  */
 class VespaEventStore internal constructor(
     /**
-     * The concrete store, exposed for Vespa-specific capabilities beyond the
-     * Quartz interface (e.g. `distinctTagValues`).
+     * The concrete store — an ESCAPE HATCH for ops and benchmarks, like
+     * [engine]. Every capability beyond Quartz's interface that a consumer's
+     * production path needs is delegated on this class through
+     * [LensedEventStore] (`liveGate`, `scoredProfileSearch`, the kind-scoped
+     * reindex, `distinctTagValues`), so `vespaEventStore.liveGate(...)` and
+     * `(anyStore as? LensedEventStore)?.liveGate(...)` both work; a consumer
+     * reaching through here for something else is a missing facade member.
      */
     val store: NostrSemanticsStore,
     /**
@@ -77,6 +84,8 @@ class VespaEventStore internal constructor(
      * behind every rule this store enforces.
      */
     private val eventIndex: VespaEventIndex,
+    /** [eventIndex] under the store's meter, for the reads [engine] books as production traffic. */
+    private val meteredIndex: EventIndex,
     /** Repair tool for the trust view over the engine index; see [reconcileTrust]. */
     private val reconciler: TrustReconciler,
     /** The projection, for the deferred-mode drain barrier ([awaitTrustProjection]). */
@@ -89,7 +98,7 @@ class VespaEventStore internal constructor(
     private val keyingProgress: TrustKeyingProgress = TrustKeyingProgress(),
     /** Opened with `readOnly = true`: the trust repairs below refuse too, as the store's own writes do. */
     private val readOnly: Boolean = false,
-) : IEventStore by store {
+) : LensedEventStore by store {
     private fun checkWritable(operation: String) {
         if (readOnly) readOnlyRefusal(operation)
     }
@@ -99,7 +108,7 @@ class VespaEventStore internal constructor(
      * for the two jobs that want that. Everything else should read through the
      * `IEventStore` surface this class delegates.
      */
-    val engine: EngineReads = EngineReads(eventIndex)
+    val engine: EngineReads = EngineReads(eventIndex, meteredIndex, store.metrics)
 
     /** The engine's feed-health status line (bulk-ingest backpressure), for progress/status output. */
     fun feedStatus(): String = eventIndex.feedStatus()
@@ -123,6 +132,36 @@ class VespaEventStore internal constructor(
      * waiting behind.
      */
     fun metrics(): CostLedger.Snapshot = store.metrics.snapshot()
+
+    /**
+     * Every number a status page reads off this store — the ledger, the
+     * process-wide ingest stages, holds, blocked split and degraded reads, the
+     * feed and background lines, and the engine's headroom — read at ONE
+     * instant ([StoreTelemetry]). The headroom probe is the one read that may
+     * do I/O, so it goes first and the counters follow it back to back; a
+     * failed probe leaves the last good reading (or null), never the page.
+     */
+    suspend fun telemetry(): StoreTelemetry {
+        val headroom =
+            try {
+                engineHeadroom()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
+        return StoreTelemetry(
+            atMillis = System.currentTimeMillis(),
+            metrics = metrics(),
+            stages = IngestStats.snapshot(),
+            held = IngestStats.heldAll(),
+            blocked = IngestStats.blockedSplit(),
+            degraded = DegradedReads.snapshot(),
+            feed = runCatching { feedStatus() }.getOrDefault(""),
+            background = backgroundStatus(),
+            headroom = headroom,
+        )
+    }
 
     /**
      * Wait until the reputation documents are keyed by service: a store fed
@@ -300,6 +339,7 @@ class VespaEventStore internal constructor(
          *
          * [autoDeploy] (default) deploys the bundled schema to [configUrl] on
          * first contact; turn it off when an operator owns schema deployment.
+         * [schema] says the same with more choices ([SchemaDeploy]).
          * [relay] is the store's own relay url (NIP-62 vanish scope / NIP-42
          * identity); null for a bare store. [endpoints] names every container
          * endpoint of a multi-container cluster — the feed client spreads its
@@ -406,11 +446,34 @@ class VespaEventStore internal constructor(
              */
             slowQueryThresholdMillis: Long? = null,
             readOnly: Boolean = false,
+            /**
+             * The operator settings ([EngineTuning]), as values. The default
+             * names none, and every one it leaves unnamed is read from the
+             * environment as `open()` always read it; a deployment that wants
+             * a typo to stop the boot passes `EngineTuning.fromEnv(System.getenv())`.
+             * Its per-process settings are PINNED here, for every store this
+             * process opens after.
+             */
+            tuning: EngineTuning = EngineTuning(),
+            /**
+             * How the bundled schema reaches Vespa — see [SchemaDeploy]. Follows
+             * [autoDeploy] unless set: [SchemaDeploy.IF_ABSENT] or
+             * [SchemaDeploy.NEVER], as before. [SchemaDeploy.IF_CHANGED] also
+             * pays the convergence wait an unchanged package may still owe,
+             * before any write; a caller that wants that wait beside its other
+             * boot steps, or to decide which deploy failures it survives, calls
+             * [deploySchema] itself and opens with [SchemaDeploy.NEVER]. A failed
+             * deploy throws [SchemaDeployException].
+             */
+            schema: SchemaDeploy = if (autoDeploy) SchemaDeploy.IF_ABSENT else SchemaDeploy.NEVER,
         ): VespaEventStore {
             require(!(readOnly && writers == WriterTopology.SINGLE_WRITER)) {
                 "readOnly with writers = SINGLE_WRITER: a store that writes nothing cannot be the only writer of its index"
             }
-            if (autoDeploy) SchemaDeployer(configUrl).deployIfAbsent(url)
+            // Before anything below reads one of them.
+            tuning.pinProcessKnobs()
+            val client = tuning.client()
+            deploySchema(url, configUrl, schema, tuning).awaitConvergence()
             val ledger = CostLedger(slowQueryThresholdNanos = slowQueryThresholdMillis?.let { it * 1_000_000 })
             // The ledger reaches the engine client too: rank profile, docs
             // matched and Vespa's own timing are only knowable from inside the
@@ -418,8 +481,8 @@ class VespaEventStore internal constructor(
             // The events' feed client is built here, unless nothing will write: a feed setting it
             // refuses stops the store from opening. The reputations' reads the same settings, so it
             // is left to its first write, and the open pays one client's handshake instead of two.
-            val eventIndex = VespaEventIndex(url, feedEndpoints = feedEndpoints, queryEndpoints = queryEndpoints, ledger = ledger, eagerFeed = !readOnly)
-            val reputations = VespaReputationIndex(url, endpoints = feedEndpoints, eagerFeed = false)
+            val eventIndex = VespaEventIndex(url, feedEndpoints = feedEndpoints, queryEndpoints = queryEndpoints, tuning = client, ledger = ledger, eagerFeed = !readOnly)
+            val reputations = VespaReputationIndex(url, endpoints = feedEndpoints, eagerFeed = false, tuning = client)
             // METERED AT THE ENGINE SEAM: everything below this line is what
             // actually reached Vespa, whichever route asked for it — the
             // store's own reads, the projection's, a sweep's. Nothing above
@@ -443,6 +506,7 @@ class VespaEventStore internal constructor(
                     maxHitsPerAuthor = maxHitsPerAuthor,
                     metrics = ledger,
                     readOnly = readOnly,
+                    guardOwnersDisabled = tuning.guardOwnersDisabled,
                 )
             // GAUGES: instantaneous, pulled at snapshot time, and read from
             // their owners rather than mirrored — a queue depth has no
@@ -511,7 +575,7 @@ class VespaEventStore internal constructor(
             ledger.gauge("trust.keying.visited") { keyingMigration.progress.visited.get() }
             ledger.gauge("trust.keying.total") { keyingMigration.progress.total.get() }
             ledger.gauge("trust.keying.keys.removed") { keyingMigration.progress.keysRemoved.get() }
-            return VespaEventStore(store, eventIndex, reconciler, trust, drainScope, keying, keyingMigration.progress, readOnly)
+            return VespaEventStore(store, eventIndex, metered, reconciler, trust, drainScope, keying, keyingMigration.progress, readOnly)
         }
 
         /**
@@ -551,14 +615,40 @@ class VespaEventStore internal constructor(
             return scope
         }
 
+        /**
+         * Bring the bundled schema to the Vespa at [url] as [mode] says, BEFORE
+         * opening a store — the step [open] runs itself, for a caller that
+         * needs its pieces: the convergence wait to run beside other boot work
+         * ([SchemaDeployment.awaitConvergence]), and the choice of which failed
+         * deploys to survive ([SchemaDeployException.serving]). Then
+         * `open(…, schema = SchemaDeploy.NEVER)`.
+         *
+         * [tuning] supplies the access-log choice for the deployed package
+         * (`VESPA_ACCESS_LOG` when it names none). [awaitTimeout] bounds
+         * [SchemaDeploy.AWAIT]'s wait for another process's deploy.
+         */
+        fun deploySchema(
+            url: String,
+            configUrl: String = deriveConfigUrl(url),
+            mode: SchemaDeploy = SchemaDeploy.IF_CHANGED,
+            tuning: EngineTuning = EngineTuning(),
+            awaitTimeout: Duration = Duration.ofMinutes(10),
+        ): SchemaDeployment = runSchemaDeploy(SchemaDeployer(configUrl), url, mode, tuning.accessLogOrEnv(), awaitTimeout)
+
         /** Backoff between drain retries after an engine failure. */
         private const val DRAIN_RETRY_MILLIS = 5_000L
 
         /** Backoff between background walk attempts after an engine failure — the same cadence as the drain's, for the same reason. */
         private const val BACKFILL_RETRY_MILLIS = 5_000L
 
-        /** The config server sits on :19071 by convention, on the same host as the :8080 query endpoint. */
-        internal fun deriveConfigUrl(queryUrl: String): String {
+        /**
+         * The config server for the Vespa whose query endpoint is [queryUrl]:
+         * the same scheme and host on :19071, Vespa's convention. What [open]
+         * deploys to when no `configUrl` is given — public so a consumer that
+         * deploys or waits on its own (a process that never deploys, a boot
+         * line naming the target) derives the same address instead of a copy.
+         */
+        fun deriveConfigUrl(queryUrl: String): String {
             val u = URI.create(queryUrl)
             return URI(u.scheme, null, u.host, 19071, null, null, null).toString()
         }

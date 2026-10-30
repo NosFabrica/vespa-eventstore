@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.eventstore.engine
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.vitorpamplona.quartz.nip01Core.core.isAddressable
+import com.vitorpamplona.quartz.nip01Core.core.isReplaceable
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 
 /**
@@ -310,6 +311,44 @@ interface EventIndex : AutoCloseable {
     suspend fun scanAuthors(query: EventQuery): Set<String> = countByAuthor(query).keys
 
     /**
+     * THE STORED WINNER OF EACH PLAIN-REPLACEABLE ADDRESS `(kind, author)` among
+     * [authors]: its (id, created_at), keyed by author, under NIP-01's rule —
+     * highest `created_at`, ties to the LOWEST id ([EventDoc.NEWEST_FIRST],
+     * the same comparator [putIfNewer] decides by). An author with nothing
+     * stored is absent. RAW: no expiry filter and no lens, like [existingIds] —
+     * it answers "what would an arriving version have to beat", which is a
+     * question about the corpus, not about what anyone may read.
+     *
+     * The ENGINE answers it because the engine owns the winner rule: a caller
+     * that reads the versions and picks one itself is a second copy of the
+     * tiebreak, and vespa-relay's ingest had exactly that copy — a full-document
+     * search with no limit, reduced client-side, unmetered (the stall that
+     * forced a body timeout into this client came through it).
+     *
+     * PLAIN REPLACEABLES ONLY (0, 3, 10000-19999): an addressable's address
+     * also carries its `d`, so "the newest version per author" names no address
+     * there, and answering it would hand back one arbitrary address's winner as
+     * if it were the author's. Refused rather than guessed.
+     *
+     * The default reads the versions and reduces them here — the in-memory
+     * reference's answer. The real client answers with ONE attribute-only
+     * grouping per chunk of authors and reads no document. A decorator MUST
+     * delegate to its inner index.
+     */
+    suspend fun newestVersions(
+        kind: Int,
+        authors: List<String>,
+    ): Map<String, DocRef> {
+        requirePlainReplaceable(kind)
+        // EventQuery reads an empty authors list as "every author": a question
+        // about NOBODY must not be answered with the whole kind.
+        if (authors.isEmpty()) return emptyMap()
+        return search(EventQuery(kinds = listOf(kind), authors = authors))
+            .groupBy { it.pubkey }
+            .mapValues { (_, versions) -> versions.minWith(EventDoc.NEWEST_FIRST).let { DocRef(it.id, it.createdAt) } }
+    }
+
+    /**
      * Store [doc] IFF it wins its NIP-01 address (highest `created_at`, ties to
      * the LOWEST id): true when stored (older versions removed), false when a
      * same-or-newer version already holds the address. Non-replaceable docs
@@ -354,6 +393,16 @@ interface EventIndex : AutoCloseable {
         return true
     }
 }
+
+/**
+ * [EventIndex.newestVersions]' precondition, shared by every implementation so
+ * the in-memory reference and the engine refuse the same kinds with the same words.
+ */
+fun requirePlainReplaceable(kind: Int) =
+    require(kind.isReplaceable()) {
+        "newestVersions($kind): only plain replaceable kinds (0, 3, 10000-19999) have one address per author" +
+            if (kind.isAddressable()) "; an addressable's address also carries its d tag" else ""
+    }
 
 /** One page of [EventIndex.visitDocsPage]: the docs plus the continuation for the next call (null = the walk is complete). */
 data class DocsPage(

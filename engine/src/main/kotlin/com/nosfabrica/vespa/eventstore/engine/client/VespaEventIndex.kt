@@ -42,6 +42,7 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventSelection
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.nosfabrica.vespa.eventstore.engine.query.VespaQuery
+import com.nosfabrica.vespa.eventstore.engine.requirePlainReplaceable
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import com.vitorpamplona.quartz.utils.Hex
 import kotlinx.coroutines.async
@@ -113,6 +114,14 @@ class VespaEventIndex(
      * a query container (visibility is decided on the content nodes).
      */
     queryEndpoints: List<String> = endpoints,
+    /**
+     * The per-instance settings below, as values ([ClientTuning]). Each
+     * parameter after this one DEFAULTS from it, so a caller sets a knob
+     * either way; a field left null reads its environment variable exactly as
+     * this client always did. `VespaEventStore.open(tuning = …)` passes the
+     * strictly-parsed one.
+     */
+    tuning: ClientTuning = ClientTuning(),
     // Ids per cursor page of a snapshot walk (visitIds). Exposed so a test can
     // drive the multi-page and tie-group paths without seeding tens of
     // thousands of docs; production has no reason to change it.
@@ -126,47 +135,37 @@ class VespaEventIndex(
      * host's cores — right when the store runs beside its content node; set
      * `VESPA_VISIT_SLICES` to 2 x the CONTENT NODE's cores when they differ.
      */
-    private val visitSlices: Int =
-        (
-            System.getenv("VESPA_VISIT_SLICES")?.toIntOrNull()
-                ?: (2 * Runtime.getRuntime().availableProcessors()).coerceIn(VespaVisits.SLICES_MIN, VespaVisits.SLICES_MAX)
-        ).coerceAtLeast(1),
+    private val visitSlices: Int = tuning.visitSlicesOrEnv(),
     /**
      * Backend bucket parallelism WITHIN each paged visit request, used only by
      * the paged fallback. `VESPA_VISIT_CONCURRENCY` overrides (Vespa accepts
      * 1..100). See [VespaVisits] for the measured rationale.
      */
-    private val visitConcurrency: Int =
-        (System.getenv("VESPA_VISIT_CONCURRENCY")?.toIntOrNull() ?: VespaVisits.DEFAULT_BUCKET_CONCURRENCY)
-            .coerceIn(1, 100),
+    private val visitConcurrency: Int = tuning.visitConcurrencyOrEnv(),
     /** Stream visit slices as JSON-Lines instead of paging; `VESPA_VISIT_STREAM=0` forces the paged fallback. See [VespaVisits]. */
-    private val visitStreaming: Boolean =
-        System.getenv("VESPA_VISIT_STREAM")?.let { it != "0" && !it.equals("false", ignoreCase = true) } ?: true,
+    private val visitStreaming: Boolean = tuning.visitStreamingOrEnv(),
     /** Window-plan bare recency scans via count probes; `VESPA_QUERY_PLANNER=0` disables. See [RecencyPlanner]. */
-    private val queryPlanning: Boolean =
-        System.getenv("VESPA_QUERY_PLANNER")?.let { it != "0" && !it.equals("false", ignoreCase = true) } ?: true,
+    private val queryPlanning: Boolean = tuning.queryPlanningOrEnv(),
     /**
      * How limit'd newest-first reads avoid walking their whole match set — see
      * [RecencyStrategy]. `VESPA_RECENCY_STRATEGY` overrides; the default is
      * [RecencyStrategy.SPECULATIVE] (`match_phase` restores the one this store
      * shipped with before it).
      */
-    private val recencyStrategy: RecencyStrategy = RecencyStrategy.fromEnv(),
+    private val recencyStrategy: RecencyStrategy = tuning.recencyStrategyOrEnv(),
     /**
      * Whether a limit'd newest-first read resolves its page from the
      * attribute-only `idtime` summary first and reads full documents only for
      * the ids that made it — see [recallSummaries]. `VESPA_ID_FIRST=0` turns it
      * off, which is also how the probes measure what it buys.
      */
-    private val idFirst: Boolean =
-        System.getenv("VESPA_ID_FIRST")?.let { it != "0" && !it.equals("false", ignoreCase = true) } ?: true,
+    private val idFirst: Boolean = tuning.idFirstOrEnv(),
     /**
      * Whether [RecencyStrategy.SPECULATIVE] starts a read where the last read
      * of its shape found its page ([RecencyWindowMemory]); `VESPA_RECENCY_MEMORY=0`
      * turns it off, which is also how the probe measures what it buys.
      */
-    recencyMemory: Boolean =
-        System.getenv("VESPA_RECENCY_MEMORY")?.let { it != "0" && !it.equals("false", ignoreCase = true) } ?: true,
+    recencyMemory: Boolean = tuning.recencyMemoryOrEnv(),
     /**
      * PROTOTYPE (#161), OFF by default: whether puts feed the body's edge
      * n-grams (`search_text_edge`, [com.nosfabrica.vespa.eventstore.engine.text.EdgeText]).
@@ -175,8 +174,7 @@ class VespaEventIndex(
      * so feeding it by default would make every write pay for an index nothing
      * reads, and a schema predating the column would refuse every body document.
      */
-    private val bodyEdgeFeed: Boolean =
-        System.getenv("VESPA_BODY_EDGE")?.let { it == "1" || it.equals("true", ignoreCase = true) } ?: false,
+    private val bodyEdgeFeed: Boolean = tuning.bodyEdgeFeedOrEnv(),
     /**
      * Documents per request through the bundled batch handler ([VespaBatchFeed]),
      * `VESPA_FEED_BATCH`, default [DEFAULT_FEED_BATCH] when unset or blank; 0 or 1 writes every
@@ -184,7 +182,7 @@ class VespaEventIndex(
      * operator's `off` must not turn batching on. A document the handler does not confirm is
      * re-put through the feed client.
      */
-    feedBatch: Int = feedBatchOf(System.getenv("VESPA_FEED_BATCH")),
+    feedBatch: Int = tuning.feedBatchOrEnv(),
     /**
      * WHERE ENGINE-LEVEL COST IS PUBLISHED, or null to publish none.
      *
@@ -207,6 +205,12 @@ class VespaEventIndex(
     // can reach the budget's edge with hundreds of docs — and LAST, so no
     // positional argument after it shifts.
     private val tiePrefixQueries: Int = MAX_TIE_PREFIX_QUERIES,
+    // The two knobs no test ever set by name, read from [tuning] like the rest.
+    // Last, after [tiePrefixQueries], for the same reason it is.
+    /** Address-keyed storage (`VESPA_ADDRESS_KEYED`); see [addressKeyed]. */
+    private val addressKeyed: Boolean = tuning.addressKeyedOrEnv(),
+    /** The hit ceiling for a query with no limit (`VESPA_UNBOUNDED_HITS`); see [hitsFor]. */
+    private val unboundedHits: Int = tuning.unboundedHitsOrEnv(),
 ) : EventIndex {
     private val documentApi = EndpointRotation(feedEndpoints, baseUrl)
 
@@ -218,7 +222,7 @@ class VespaEventIndex(
     /** The endpoint for one `/search/` request — round-robin across [queryEndpoints]. */
     private fun queryEndpoint(): String = searchApi.next()
 
-    private val feed = VespaFeed(documentApi.urls, eager = eagerFeed)
+    private val feed = VespaFeed(documentApi.urls, eager = eagerFeed, tuning = tuning)
 
     private val http = VespaHttp()
 
@@ -245,13 +249,13 @@ class VespaEventIndex(
 
     private val windowMemory: RecencyWindowMemory? = if (recencyMemory) RecencyWindowMemory() else null
 
-    // ADDRESS-KEYED mode (VESPA_ADDRESS_KEYED=1): replaceable/addressable events
-    // are stored under their NIP-01 address as the document id, so the engine
-    // enforces newest-wins with a conditional put (see [putIfNewer]) instead of
-    // the client's read-then-supersede. Regular events stay id-keyed. Default
-    // OFF. When ON, id lookups can no longer ride the document-API get, so they
-    // route through the `id`-attribute search, which finds both.
-    private val addressKeyed = System.getenv("VESPA_ADDRESS_KEYED").let { it == "1" || it?.toBooleanStrictOrNull() == true }
+    // ADDRESS-KEYED mode (VESPA_ADDRESS_KEYED=1, the [addressKeyed] parameter):
+    // replaceable/addressable events are stored under their NIP-01 address as
+    // the document id, so the engine enforces newest-wins with a conditional put
+    // (see [putIfNewer]) instead of the client's read-then-supersede. Regular
+    // events stay id-keyed. Default OFF. When ON, id lookups can no longer ride
+    // the document-API get, so they route through the `id`-attribute search,
+    // which finds both.
 
     // Under address-keying the engine enforces newest-wins (conditional put), so
     // the bulk path skips its version-read stage and calls putIfNewer instead.
@@ -263,10 +267,14 @@ class VespaEventIndex(
     // ---- get / put / remove -------------------------------------------------
 
     override suspend fun get(id: String): EventDoc? {
+        // A stored event's id is 64 hex, so anything else is absent, and it
+        // never reaches a url: kind-5 targets arrive here having passed only
+        // quartz's length check.
+        if (!Hex.isHexKey(id)) return null
         // Address-keyed replaceables aren't at the id docid; resolve by the id
         // attribute instead (finds regular AND replaceable).
         if (addressKeyed) return searchById(id)
-        val resp = http.get("${documentEndpoint()}/document/v1/$EVENT_NAMESPACE/$EVENT_DOCTYPE/docid/$id")
+        val resp = http.get("${documentEndpoint()}/document/v1/$EVENT_NAMESPACE/$EVENT_DOCTYPE/docid/${docIdSegment(id)}")
         if (resp.statusCode() == 404 && isAbsentDocument(resp.body())) return null
         require(resp.statusCode() < 400) { "vespa get ${resp.statusCode()}: ${resp.body().take(300)}" }
         return resp.decode(VESPA_JSON, DocEnvelope.serializer()).fields?.toDoc(withNearState = true)
@@ -390,7 +398,7 @@ class VespaEventIndex(
         // module's injection rule (64-hex before it reaches an expression).
         // A non-hex id from a direct caller falls back to the default, which
         // builds no expression from it.
-        if (!Hex.isHex64(doc.id)) return super.putIfNewer(doc)
+        if (!Hex.isHexKey(doc.id)) return super.putIfNewer(doc)
         val condition =
             "event.created_at < ${doc.createdAt} or " +
                 "(event.created_at == ${doc.createdAt} and event.id > \"${doc.id}\")"
@@ -1102,10 +1110,9 @@ class VespaEventIndex(
      * multi-node survival move) must set VESPA_UNBOUNDED_HITS to the same
      * value: no-limit queries then stay inside the engine's ceiling, and a
      * caller's explicit limit above it still fails loudly at the engine —
-     * that rejection is the operator's cap working, not a bug here.
+     * that rejection is the operator's cap working, not a bug here. The
+     * ceiling itself is the [unboundedHits] constructor parameter.
      */
-    private val unboundedHits: Int = System.getenv("VESPA_UNBOUNDED_HITS")?.toIntOrNull() ?: Int.MAX_VALUE
-
     private fun hitsFor(query: EventQuery): Int = query.limit ?: unboundedHits
 
     // ---- pure-id fast path --------------------------------------------------
@@ -1142,7 +1149,7 @@ class VespaEventIndex(
         val hexes =
             query.ids
                 .map { it.lowercase() }
-                .filter(Hex::isHex64)
+                .filter(Hex::isHexKey)
                 .distinct()
         val docs =
             when {
@@ -1885,6 +1892,50 @@ class VespaEventIndex(
         }
 
     /**
+     * A CALLER'S grouping [pipeline] over [query]'s match set
+     * ([EventYql.buildGrouping]), answered with Vespa's `root` node as it came:
+     * the statistics a dashboard reads, whose chart shapes are the caller's.
+     *
+     * Deliberately NOT a port member: Vespa's grouping language is this
+     * binding's, and the in-memory reference could only refuse it. The
+     * transport is every other grouping's — the query endpoint rotation, the
+     * engine-level ledger, and [queryRoot]'s coverage check, which throws on a
+     * degraded answer rather than hand back a partial statistic that reads as a
+     * whole one. A query that provably matches nothing answers an empty root
+     * without a round trip.
+     */
+    suspend fun group(
+        query: EventQuery,
+        pipeline: String,
+        source: String = EventYql.EVENT_SOURCE,
+    ): JsonObject {
+        val vq = EventYql.buildGrouping(query, pipeline, source) ?: return EMPTY_GROUPING_ROOT
+        return queryRoot(vq, hits = 0) ?: error("vespa answered a grouping with no root")
+    }
+
+    /**
+     * [EventIndex.newestVersions] as one attribute-only grouping per
+     * [VERSION_AUTHOR_CHUNK] authors ([EventYql.buildNewestVersions]): no
+     * document is read and no hit is materialized, where the read it replaces
+     * (vespa-relay's ingest probe) pulled every stored version of every author
+     * as a full document with no limit. Coverage-checked like every grouping
+     * ([queryRoot]): a partial answer would claim "nothing to beat" for an
+     * author whose version sat on the missing node.
+     */
+    override suspend fun newestVersions(
+        kind: Int,
+        authors: List<String>,
+    ): Map<String, DocRef> {
+        requirePlainReplaceable(kind)
+        val out = HashMap<String, DocRef>()
+        for (chunk in authors.distinct().chunked(VERSION_AUTHOR_CHUNK)) {
+            val vq = EventYql.buildNewestVersions(kind, chunk) ?: continue
+            queryRoot(vq, hits = 0)?.let { out.putAll(GroupingResults.newestPerAuthor(it)) }
+        }
+        return out
+    }
+
+    /**
      * [EventIndex.scoreLinks] in three reads, two of them concurrent:
      *
      *  1. PEOPLE ([EventYql.buildLinkPeople]): one grouping, key -> author ->
@@ -2278,6 +2329,18 @@ class VespaEventIndex(
         const val ID_GET_FANOUT = 32
 
         /**
+         * Authors per [newestVersions] grouping. The width the store's own
+         * version and guard reads are built at (BulkRecordInsert's CHECK_CHUNK)
+         * and the one vespa-relay's ingest already chunked to, so a relay batch
+         * stays one round trip; it bounds the YQL's length, not the answer.
+         */
+        const val VERSION_AUTHOR_CHUNK = 500
+
+        /** [group]'s answer to a query that matches nothing: Vespa's own shape for an empty match set. */
+        private val EMPTY_GROUPING_ROOT: JsonObject =
+            VESPA_JSON.parseToJsonElement("""{"id":"toplevel","relevance":1.0,"fields":{"totalCount":0},"children":[]}""").jsonObject
+
+        /**
          * How much of a slow read's YQL is kept. Bounded because the ring is
          * bounded in ROWS and a YQL with a thousand ids in it would make the
          * ring's memory a function of the query rather than of the ring.
@@ -2405,14 +2468,14 @@ class VespaEventIndex(
          * overlapped — and no operation waits in the client's queue past the
          * deadline that starts when it is enqueued (see [putAll]).
          */
-        const val FEED_CHUNK = 4_096
+        const val FEED_CHUNK = ClientTuning.MAX_FEED_BATCH
 
         /**
          * [feedBatch] unless `VESPA_FEED_BATCH` says otherwise: past 100 a request the gain
          * flattens, and a batch of 100 took a quarter off a production ingest's wall clock and 44%
          * off the relay's CPU against one put per request (benchmark/README.md).
          */
-        const val DEFAULT_FEED_BATCH = 100
+        const val DEFAULT_FEED_BATCH = ClientTuning.DEFAULT_FEED_BATCH
 
         /** `VESPA_FEED_BATCH` as [feedBatch] reads it. */
         internal fun feedBatchOf(value: String?): Int = value?.trim()?.takeIf { it.isNotEmpty() }?.let { it.toIntOrNull() ?: 0 } ?: DEFAULT_FEED_BATCH

@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.eventstore.engine.query
 import com.nosfabrica.vespa.eventstore.engine.text.IndexableChars
 import com.nosfabrica.vespa.eventstore.engine.text.WHITESPACE
+import com.nosfabrica.vespa.eventstore.engine.tuning.ProcessKnobs
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip01Core.tags.isIndexableTagName
 import com.vitorpamplona.quartz.utils.Hex
@@ -185,8 +186,10 @@ object EventYql {
      * `VESPA_MATCH_PHASE_MAX_HITS` overrides it, and MUST be set to whatever the
      * SERVING schema says — the two are mirrors, not independent knobs, and a
      * value above the schema's would claim a depth the engine does not have.
+     * `EngineTuning.matchPhaseMaxHits` on `open()` sets it strictly, for the
+     * process (it is read by this `object`, which no store instance owns).
      */
-    val MATCH_PHASE_MAX_HITS: Int = System.getenv("VESPA_MATCH_PHASE_MAX_HITS")?.toIntOrNull()?.coerceAtLeast(1) ?: 20_000
+    val MATCH_PHASE_MAX_HITS: Int get() = ProcessKnobs.matchPhaseMaxHits.value
 
     /**
      * A limit may use [RANK_RECENCY] only with this safety factor under
@@ -484,7 +487,7 @@ object EventYql {
                 // search. Only notSearch-free-and-text-free recall is plain.
                 q.search.isNullOrBlank() && q.phrases.isEmpty() -> RANK_UNRANKED
 
-                q.observer?.lowercase()?.takeIf(Hex::isHex64) != null -> RANK_SEARCH
+                q.observer?.lowercase()?.takeIf(Hex::isHexKey) != null -> RANK_SEARCH
 
                 else -> RANK_TEXT
             }
@@ -508,7 +511,7 @@ object EventYql {
      * every author and a gate there could only cost reads.
      */
     fun gateFloor(q: EventQuery): Double? {
-        if (q.observer?.lowercase()?.takeIf(Hex::isHex64) == null) return null
+        if (q.observer?.lowercase()?.takeIf(Hex::isHexKey) == null) return null
         val floor = q.minRank?.takeIf { it > 0.0 } ?: return null
         return when (profileOf(q)) {
             RANK_RECENCY_GATED, RANK_RECENCY_GATED_EXACT, RANK_DESC, RANK_ASC, RANK_FOLLOWERS, RANK_SEARCH -> floor
@@ -544,8 +547,8 @@ object EventYql {
         q: EventQuery,
         params: MutableMap<String, String>,
     ) {
-        params["ranking.features.query(user_q)"] = q.rankKey?.takeIf(Hex::isHex64)?.let { "{$it:1.0}" } ?: "{}"
-        params["ranking.features.query(followers_q)"] = q.followersKey?.takeIf(Hex::isHex64)?.let { "{$it:1.0}" } ?: "{}"
+        params["ranking.features.query(user_q)"] = q.rankKey?.takeIf(Hex::isHexKey)?.let { "{$it:1.0}" } ?: "{}"
+        params["ranking.features.query(followers_q)"] = q.followersKey?.takeIf(Hex::isHexKey)?.let { "{$it:1.0}" } ?: "{}"
         q.minRank?.let { params["ranking.features.query(min_rank)"] = it.toString() }
     }
 
@@ -588,7 +591,7 @@ object EventYql {
         val ranking = profileOf(q)
         val clauses = filterClauses(q, params, bodyPhrase = ranking == RANK_SEARCH) ?: return null
 
-        val observer = q.observer?.lowercase()?.takeIf(Hex::isHex64)
+        val observer = q.observer?.lowercase()?.takeIf(Hex::isHexKey)
         if (ranking != RANK_UNRANKED && ranking != RANK_RECENCY && observer != null) lensParams(q, params)
         // A MEMBER PROFILE WITHOUT AN OBSERVER WOULD SATURATE, not degrade.
         // wot_mult() reads `min_rank`, which defaults to -1e9 so the gate in
@@ -705,6 +708,38 @@ object EventYql {
     fun buildDistinctTagValues(q: EventQuery): VespaQuery? = grouping(q, """all(group(tag_index) each(output(count())))""")
 
     /**
+     * Each of [authors]' newest stored [kind] — `EventIndex.newestVersions` — as
+     * ONE grouping read entirely off attributes: author -> its single newest
+     * `created_at` -> every id at that second.
+     *
+     * A grouping, not the `idtime` summary: that summary is (id, created_at),
+     * so a hit there cannot say whose version it is, and adding `pubkey` to it
+     * would make every snapshot walk pay for a field none of them reads. Here
+     * no hit and no summary is produced at all.
+     *
+     * `max(1)` with `order(-max(created_at))` keeps one second per author, and
+     * the merge across content nodes is exact for it (each node's newest second
+     * is a candidate; the global newest is the max of the candidates). The ids
+     * at that second come back WHOLE — no `max()` — because the tiebreak is the
+     * lowest id and the grouping cannot order groups by a string; the reader
+     * takes the minimum (GroupingResults.newestPerAuthor). A tie inside one
+     * author's replaceable second is drift, so that list is almost always one.
+     *
+     * The author list caps nothing: one group per author that HAS a version,
+     * which the caller sized. Null when no author is a usable key.
+     */
+    fun buildNewestVersions(
+        kind: Int,
+        authors: List<String>,
+    ): VespaQuery? {
+        if (authors.isEmpty()) return null
+        return grouping(
+            EventQuery(kinds = listOf(kind), authors = authors),
+            "all(group(pubkey) each(all(group(created_at) max(1) order(-max(created_at)) each(all(group(id) each(output(count())))))))",
+        )
+    }
+
+    /**
      * The PEOPLE half of [EventIndex.scoreLinks]: the documents [linkers] would
      * serve that carry any of [keys] in `tag_index`, grouped key -> author ->
      * kind, each kind group carrying its count and `sum(relevance())` — under the
@@ -796,8 +831,8 @@ object EventYql {
         pubkeys: Collection<String>,
         rankKey: String,
     ): VespaQuery? {
-        val hexes = pubkeys.map { it.lowercase() }.filter(Hex::isHex64).distinct()
-        if (hexes.isEmpty() || !Hex.isHex64(rankKey)) return null
+        val hexes = pubkeys.map { it.lowercase() }.filter(Hex::isHexKey).distinct()
+        if (hexes.isEmpty() || !Hex.isHexKey(rankKey)) return null
         return VespaQuery(
             yql = "select pubkey from reputation where pubkey in (${hexes.joinToString(", ") { "\"$it\"" }})",
             params = mapOf("ranking.features.query(user_q)" to "{${rankKey.lowercase()}:1.0}", MATCH_THREADS to SINGLE_MATCH_THREAD),
@@ -806,7 +841,7 @@ object EventYql {
     }
 
     /** Whether a link query reads trust: a hex observer, through the observer gate's ranking. */
-    fun isLensed(q: EventQuery): Boolean = q.observer?.lowercase()?.takeIf(Hex::isHex64) != null && (q.ranking == RANK_RECENCY_GATED || q.ranking == RANK_RECENCY_GATED_EXACT)
+    fun isLensed(q: EventQuery): Boolean = q.observer?.lowercase()?.takeIf(Hex::isHexKey) != null && (q.ranking == RANK_RECENCY_GATED || q.ranking == RANK_RECENCY_GATED_EXACT)
 
     private fun keyClause(keys: List<String>): String = keys.joinToString(", ", prefix = "tag_index in (", postfix = ")") { quote(it) }
 
@@ -859,6 +894,8 @@ object EventYql {
          * what removes below-floor documents before they are grouped.
          */
         ranking: String = RANK_UNRANKED,
+        /** The document type grouped: `event`, or `reputation` for [buildGrouping]'s trust counts. */
+        source: String = EVENT_SOURCE,
     ): VespaQuery? {
         // A present limit <= 0 is the "matches nothing" sentinel (as in [build]);
         // a positive limit is about hits, not the grouping, so it is ignored.
@@ -866,7 +903,7 @@ object EventYql {
         val params = LinkedHashMap<String, String>()
         val clauses = filterClauses(q, params) ?: return null
         val where = whereOf(if (extra == null) clauses else clauses + extra)
-        if (ranking != RANK_UNRANKED && q.observer?.lowercase()?.takeIf(Hex::isHex64) != null) {
+        if (ranking != RANK_UNRANKED && q.observer?.lowercase()?.takeIf(Hex::isHexKey) != null) {
             lensParams(q, params)
             // The gated profiles read no text signal (see [build]).
             params.keys.removeAll(TEXT_RANK_FEATURES)
@@ -875,11 +912,67 @@ object EventYql {
         params["grouping.defaultMaxHits"] = UNLIMITED_GROUPS
         params[MATCH_THREADS] = SINGLE_MATCH_THREAD
         return VespaQuery(
-            yql = "select * from event where $where limit 0 | $pipeline",
+            yql = "select * from $source where $where limit 0 | $pipeline",
             params = params,
             ranking = ranking,
             shape = clauseShape(q),
         )
+    }
+
+    /** The event document type — every query here but [buildGrouping]'s reputation counts. */
+    const val EVENT_SOURCE = "event"
+
+    /** The trust projection's parent documents, one per scored pubkey (`reputation.sd`). */
+    const val REPUTATION_SOURCE = "reputation"
+
+    /**
+     * A CALLER'S OWN grouping [pipeline] over [q]'s match set — the generic
+     * aggregation behind `EngineReads.group`, for statistics whose shape is
+     * the caller's (a dashboard's charts) and whose plumbing must not be: the
+     * same [grouping] every aggregation here rides, so the group ceilings are
+     * off, no `order by` trips the match phase, the profile is unranked, and
+     * the WHERE clause is compiled from an [EventQuery] rather than written
+     * against the schema's field names by a consumer.
+     *
+     * [pipeline] is Vespa grouping language, `all(...)` or `each(...)`, and is
+     * sent as written: what it names (`created_at`, `pubkey`, `kind`,
+     * `tag_index`, `time.date(created_at)`) is the schema's vocabulary, which
+     * is the caller's to keep in step — the field names are part of this
+     * store's public surface the day a pipeline reads them. A second `|` would
+     * chain another grouping into the same response, so it is refused: one
+     * read, one tree.
+     *
+     * [REPUTATION_SOURCE] takes no filter: the event fields an [EventQuery]
+     * compiles to do not exist on that document type, so a filtered reputation
+     * grouping is refused rather than sent to fail. Null when [q] provably
+     * matches nothing.
+     */
+    fun buildGrouping(
+        q: EventQuery,
+        pipeline: String,
+        source: String = EVENT_SOURCE,
+    ): VespaQuery? {
+        val p = pipeline.trim()
+        require(p.startsWith("all(") || p.startsWith("each(")) { "a grouping pipeline starts with all( or each(, was: ${p.take(80)}" }
+        require(!chainsAnother(p)) { "one grouping per read: the pipeline may not chain another with '|'" }
+        require(source == EVENT_SOURCE || source == REPUTATION_SOURCE) { "unknown document type '$source'" }
+        require(source == EVENT_SOURCE || q == EventQuery()) { "a reputation grouping takes no filter: the event fields do not exist on reputation documents" }
+        return grouping(q, p, source = source)
+    }
+
+    /** Whether [pipeline] has a `|` outside a quoted string — a regex `filter` may carry one inside its quotes. */
+    private fun chainsAnother(pipeline: String): Boolean {
+        var quoted = false
+        var i = 0
+        while (i < pipeline.length) {
+            when (pipeline[i]) {
+                '\\' -> i++
+                '"' -> quoted = !quoted
+                '|' -> if (!quoted) return true
+            }
+            i++
+        }
+        return false
     }
 
     /** The trigram-net weight for the query's words (text_relevance's `w_gram`). */
@@ -1237,7 +1330,7 @@ object EventYql {
         values: List<String>,
     ): String? {
         val hexes = LinkedHashSet<String>(values.size * 2)
-        values.forEach { v -> v.lowercase().let { if (Hex.isHex64(it)) hexes += it } }
+        values.forEach { v -> v.lowercase().let { if (Hex.isHexKey(it)) hexes += it } }
         if (hexes.isEmpty()) return null
         val out = StringBuilder(field.length + 6 + hexes.size * 68).append(field).append(" in (")
         hexes.forEachIndexed { i, hex -> (if (i > 0) out.append(", ") else out).append('"').append(hex).append('"') }
@@ -1265,7 +1358,7 @@ object EventYql {
     ): String? {
         val entries =
             weights.entries
-                .mapNotNull { (key, weight) -> key.lowercase().takeIf(Hex::isHex64)?.let { it to weight } }
+                .mapNotNull { (key, weight) -> key.lowercase().takeIf(Hex::isHexKey)?.let { it to weight } }
                 .distinctBy { it.first }
         if (entries.isEmpty()) return null
         return "dotProduct($field, {${entries.joinToString(", ") { (key, weight) -> "\"$key\": $weight" }}})"

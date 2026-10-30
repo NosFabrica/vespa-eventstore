@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore.engine.client
 
+import com.nosfabrica.vespa.eventstore.engine.DocRef
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -83,6 +84,36 @@ internal object GroupingResults {
                 if (byKind.isNotEmpty()) people[person] = byKind
             }
             if (people.isNotEmpty()) out[key] = people
+        }
+        return out
+    }
+
+    /**
+     * [EventYql.buildNewestVersions]' shape — `group(pubkey)` -> `group(created_at)`
+     * (one, the newest) -> `group(id)` — as author -> the winning (id, created_at).
+     *
+     * The tiebreak happens HERE: the grouping hands back every id at the newest
+     * second because it cannot order groups by a string, and NIP-01 breaks the
+     * tie to the lowest id ([com.nosfabrica.vespa.eventstore.engine.doc.EventDoc.NEWEST_FIRST]).
+     * The newest second is re-taken as a max rather than trusted to be the only
+     * group, so a response that ever carries more than `max(1)` asked for still
+     * answers right. An author whose groups carry no readable value is absent —
+     * "nothing to beat" — which is the safe direction for a caller that only
+     * drops what a stored version provably beats.
+     */
+    fun newestPerAuthor(root: JsonObject): Map<String, DocRef> {
+        val out = LinkedHashMap<String, DocRef>()
+        for (authorGroup in groupsUnder(root, "pubkey")) {
+            val author = (authorGroup["value"] as? JsonPrimitive)?.content ?: continue
+            val newest =
+                groupsUnder(authorGroup, "created_at")
+                    .mapNotNull { g -> (g["value"] as? JsonPrimitive)?.content?.toLongOrNull()?.let { it to g } }
+                    .maxByOrNull { it.first } ?: continue
+            val id =
+                groupsUnder(newest.second, "id")
+                    .mapNotNull { (it["value"] as? JsonPrimitive)?.content }
+                    .minOrNull() ?: continue
+            out[author] = DocRef(id, newest.first)
         }
         return out
     }

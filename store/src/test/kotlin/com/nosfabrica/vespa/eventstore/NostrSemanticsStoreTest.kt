@@ -27,8 +27,8 @@ import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.mapping.SearchExtractors
-import com.nosfabrica.vespa.eventstore.mapping.addressOrNull
 import com.vitorpamplona.quartz.nip01Core.core.Event
+import com.vitorpamplona.quartz.nip01Core.core.addressTagOrNull
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.normalizeRelayUrl
@@ -448,8 +448,8 @@ open class NostrSemanticsStoreTest {
     /** NIP-01 standardized tags: a replaceable coordinate is "kind:pubkey:" — "(note: include the trailing colon)". */
     @Test
     fun `replaceable addresses keep the trailing colon`() {
-        assertEquals("0:$alice:", metadata().addressOrNull())
-        assertEquals("${UserAssertionEvent.KIND}:$alice:$bob", card(subject = bob).addressOrNull())
+        assertEquals("0:$alice:", metadata().addressTagOrNull())
+        assertEquals("${UserAssertionEvent.KIND}:$alice:$bob", card(subject = bob).addressTagOrNull())
     }
 
     /** FullTextSearchModule: only SearchableEvent kinds are searchable, via indexableContent(). */

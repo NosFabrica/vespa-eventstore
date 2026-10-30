@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.eventstore.search
 
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
+import com.vitorpamplona.quartz.nip01Core.hints.SubjectReferences
 
 /**
  * HOW ONE PAGE'S REFERENCES BECOME QUERIES — the grouping between "these are
@@ -64,7 +65,7 @@ internal class SubjectBatches(
      * one batch — the floor-off shape.
      */
     fun group(
-        planned: List<References>,
+        planned: List<SubjectReferences>,
         lensOfRow: IntArray,
         lens: Int,
         pointerRel: (Int) -> Double,
@@ -93,7 +94,7 @@ internal class SubjectBatches(
 
     /** [bucketed], as this lens's address lookups: the public name for what the buckets are FOR. */
     fun addressBuckets(
-        planned: List<References>,
+        planned: List<SubjectReferences>,
         lensOfRow: IntArray,
         lens: Int,
     ): List<Pair<Double?, LinkedHashSet<String>>> = bucketed(planned, lensOfRow, lens)
@@ -118,9 +119,9 @@ internal class SubjectBatches(
 
         fun take(
             batched: List<String>,
-            refs: References,
+            refs: SubjectReferences,
         ) {
-            batched.forEach { keys[it] = refs.confidence[it] ?: 0 }
+            batched.forEach { keys[it] = refs.scores[it] ?: 0 }
         }
 
         fun query(
@@ -171,7 +172,7 @@ internal class SubjectBatches(
      * each in the overwhelmingly common case where a list scores everybody or
      * nobody.
      */
-    private fun List<String>.splitByScored(refs: References): List<Pair<Boolean, List<String>>> {
+    private fun List<String>.splitByScored(refs: SubjectReferences): List<Pair<Boolean, List<String>>> {
         val (scored, unscored) = partition { refs.weightOf(it) != null }
         return listOfNotNull(
             (true to scored).takeIf { scored.isNotEmpty() },
@@ -201,7 +202,7 @@ internal class SubjectBatches(
      * query.
      */
     private fun bucketed(
-        planned: List<References>,
+        planned: List<SubjectReferences>,
         lensOfRow: IntArray,
         lens: Int,
     ): List<Pair<Double?, LinkedHashSet<String>>> {

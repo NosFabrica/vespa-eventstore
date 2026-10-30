@@ -182,7 +182,7 @@ class TrustReconciler internal constructor(
             onProgress?.invoke(subjectsChecked)
         }
         index.visitIds(EventQuery(kinds = listOf(UserAssertionEvent.KIND)), withDTag = true) { page ->
-            page.forEach { it.dTag?.takeIf(Hex::isHex64)?.let(buffer::add) }
+            page.forEach { it.dTag?.takeIf(UserAssertionEvent::isSubjectPubKey)?.let(buffer::add) }
             if (buffer.size >= VERIFY_BATCH) screenBatch()
             true
         }
@@ -194,8 +194,8 @@ class TrustReconciler internal constructor(
         // is judged there, not miscalled an orphan.
         var parentsChecked = 0
         reputations.visitPubkeys { page ->
-            parentsChecked += page.count { Hex.isHex64(it) }
-            confirm(page.filter { Hex.isHex64(it) && !seen.mightContain(it) })
+            parentsChecked += page.count { Hex.isHexKey(it) }
+            confirm(page.filter { Hex.isHexKey(it) && !seen.mightContain(it) })
             true
         }
         return TrustAudit(subjectsChecked, parentsChecked, driftCount, samples, repair)
@@ -500,7 +500,7 @@ class TrustReconciler internal constructor(
         reputations.visitPubkeys { page ->
             // Only real subjects (64-hex): the projection's own bookkeeping doc
             // (ProjectionLedger's marker) must not be "repaired" away mid-crash.
-            page.filterTo(buffer) { Hex.isHex64(it) }
+            page.filterTo(buffer) { Hex.isHexKey(it) }
             if (buffer.size >= ORPHAN_BATCH) flush()
             true
         }

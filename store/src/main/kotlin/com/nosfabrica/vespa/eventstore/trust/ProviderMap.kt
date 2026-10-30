@@ -386,20 +386,17 @@ internal class ProviderMap(
             val lenses = LinkedHashMap<ObserverKey, TrustProviders.Lens>()
             maps
                 .forEach { list ->
+                    // Every entry names a service the projection writes; the
+                    // LENS is quartz's pick, the FIRST usable entry per service
+                    // (TrustProviderListEvent.providerFor), so every reader of
+                    // the same list lands on the same provider.
+                    val rankEntries = list.providersFor(ProviderTypes.rank)
+                    val followerEntries = list.providersFor(ProviderTypes.followerCount)
+                    rankEntries.forEach { rank += it.pubkey }
+                    followerEntries.forEach { followers += it.pubkey }
                     var lens = lenses[ObserverKey(list.pubKey)] ?: TrustProviders.NO_LENS
-                    list.serviceProviders().forEach { entry ->
-                        when (entry.service) {
-                            ProviderTypes.rank -> {
-                                rank += entry.pubkey
-                                if (lens.rank == null) lens = lens.copy(rank = entry.pubkey)
-                            }
-
-                            ProviderTypes.followerCount -> {
-                                followers += entry.pubkey
-                                if (lens.followers == null) lens = lens.copy(followers = entry.pubkey)
-                            }
-                        }
-                    }
+                    if (lens.rank == null) rankEntries.firstOrNull()?.let { lens = lens.copy(rank = it.pubkey) }
+                    if (lens.followers == null) followerEntries.firstOrNull()?.let { lens = lens.copy(followers = it.pubkey) }
                     if (lens != TrustProviders.NO_LENS) lenses[ObserverKey(list.pubKey)] = lens
                 }
             return TrustProviders(rank, followers, lenses)

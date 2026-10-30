@@ -29,10 +29,12 @@ import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.ingest.Rejections
 import com.nosfabrica.vespa.eventstore.mapping.VespaText
-import com.nosfabrica.vespa.eventstore.mapping.addressOrNull
 import com.nosfabrica.vespa.eventstore.mapping.toDoc
 import com.nosfabrica.vespa.eventstore.mapping.toEvent
+import com.nosfabrica.vespa.eventstore.runtime.DEFAULT_DEDUP_CHUNK
+import com.nosfabrica.vespa.eventstore.runtime.StoreKnobs
 import com.vitorpamplona.quartz.nip01Core.core.Event
+import com.vitorpamplona.quartz.nip01Core.core.addressTagOrNull
 import com.vitorpamplona.quartz.nip01Core.core.isAddressable
 import com.vitorpamplona.quartz.nip01Core.core.isEphemeral
 import com.vitorpamplona.quartz.nip01Core.core.isReplaceable
@@ -191,7 +193,7 @@ internal class BulkRecordInsert(
                         .maxOrNull() ?: Long.MIN_VALUE
                 for (i in idxs) {
                     val e = events[i]
-                    val guard = maxOf(byId[e.id] ?: Long.MIN_VALUE, e.addressOrNull()?.let { byAddress[it] } ?: Long.MIN_VALUE)
+                    val guard = maxOf(byId[e.id] ?: Long.MIN_VALUE, e.addressTagOrNull()?.let { byAddress[it] } ?: Long.MIN_VALUE)
                     if (guard >= e.createdAt) {
                         outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.DELETED)
                     } else if (e.createdAt <= vanishAt) {
@@ -396,7 +398,7 @@ internal class BulkRecordInsert(
                     rows.map { events[it].id }.chunked(CHECK_CHUNK).forEach {
                         add(EventQuery(kinds = listOf(DeletionRequestEvent.KIND), authors = authors, tags = mapOf("e" to it)))
                     }
-                    rows.mapNotNull { events[it].addressOrNull() }.distinct().chunked(CHECK_CHUNK).forEach {
+                    rows.mapNotNull { events[it].addressTagOrNull() }.distinct().chunked(CHECK_CHUNK).forEach {
                         add(EventQuery(kinds = listOf(DeletionRequestEvent.KIND), authors = authors, tags = mapOf("a" to it)))
                     }
                 }
@@ -411,7 +413,7 @@ internal class BulkRecordInsert(
     private companion object {
         // Ids/authors/d-tags per check query. Not a result cap — no query here
         // carries a limit — just how wide one round trip is built.
-        const val CHECK_CHUNK = 500
+        const val CHECK_CHUNK = DEFAULT_DEDUP_CHUNK
 
         /**
          * Stage B's dedup chunk width alone (guard/version queries keep
@@ -419,8 +421,9 @@ internal class BulkRecordInsert(
          * still climbs at 2000 ids/chunk (~1.5x), but wider queries occupy the
          * engine longer and starve reads — so the default stays at the width
          * the REQ-latency A/B was measured at, and `VESPA_DEDUP_CHUNK` lets a
-         * sync-speed-first deployment widen it.
+         * sync-speed-first deployment widen it (`EngineTuning.dedupChunk`
+         * sets it strictly, for the process — see [StoreKnobs]).
          */
-        val DEDUP_CHUNK: Int = System.getenv("VESPA_DEDUP_CHUNK")?.toIntOrNull()?.coerceAtLeast(1) ?: CHECK_CHUNK
+        val DEDUP_CHUNK: Int get() = StoreKnobs.dedupChunk.value
     }
 }

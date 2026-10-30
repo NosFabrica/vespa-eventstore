@@ -56,9 +56,11 @@ import com.nosfabrica.vespa.eventstore.trust.Delegations
 import com.nosfabrica.vespa.eventstore.trust.Enrolment
 import com.nosfabrica.vespa.eventstore.trust.ProviderRefresher
 import com.nosfabrica.vespa.eventstore.trust.TrustCells
+import com.nosfabrica.vespa.eventstore.trust.TrustExplain
 import com.nosfabrica.vespa.eventstore.trust.TrustProjection
 import com.nosfabrica.vespa.eventstore.trust.TrustProviders
 import com.vitorpamplona.quartz.nip01Core.core.Event
+import com.vitorpamplona.quartz.nip01Core.core.HexKey
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
@@ -69,7 +71,9 @@ import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import com.vitorpamplona.quartz.nip01Core.store.StoreQueryContext
 import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
 import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
+import com.vitorpamplona.quartz.nip59Giftwrap.wraps.GiftWrapEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
+import com.vitorpamplona.quartz.nip65RelayList.AdvertisedRelayListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import com.vitorpamplona.quartz.utils.Hex
@@ -195,7 +199,14 @@ class NostrSemanticsStore(
      * [index], which `VespaEventStore.open` installs.
      */
     val metrics: CostLedger = CostLedger(),
-) : IEventStore {
+    /**
+     * `GUARD_OWNERS_DISABLE` as a value: true forces [WriterTopology.SHARED_STRICT]
+     * whatever [writers] says, false leaves [writers] alone, and null — the
+     * default — reads the environment variable as this store always has. LAST,
+     * so no positional argument shifts.
+     */
+    guardOwnersDisabled: Boolean? = null,
+) : LensedEventStore {
     init {
         require(!(readOnly && writers == WriterTopology.SINGLE_WRITER)) {
             "readOnly with writers = SINGLE_WRITER: a store that writes nothing cannot be the only writer of its index"
@@ -216,7 +227,21 @@ class NostrSemanticsStore(
 
     // Owners with any stored tombstone/vanish; everyone else's inserts skip the
     // NIP-09/62 guard probes entirely (see GuardOwners for the safety argument).
-    private val guards = GuardOwners(index, writers, guardRefreshMillis)
+    private val guards =
+        GuardOwners(
+            index,
+            writers,
+            guardRefreshMillis,
+            override =
+                when (guardOwnersDisabled) {
+                    // GUARD_OWNERS_DISABLE, read as it always was.
+                    null -> GuardOwners.envOverride()
+
+                    true -> WriterTopology.SHARED_STRICT
+
+                    false -> null
+                },
+        )
 
     /**
      * Bounds the provider pass's age when another process may store 10040s
@@ -270,7 +295,7 @@ class NostrSemanticsStore(
      * Non-hex is dropped rather than passed through: `EventYql` would drop it
      * anyway, and a value that cannot key a lens must not switch on the gate.
      */
-    private suspend fun connectionObserver(): String? = coroutineContext[StoreQueryContext]?.observer?.lowercase()?.takeIf(Hex::isHex64)
+    private suspend fun connectionObserver(): String? = coroutineContext[StoreQueryContext]?.observer?.lowercase()?.takeIf(Hex::isHexKey)
 
     /**
      * THE LENS, RESOLVED: the reputation tensors are keyed by SERVICE key, so
@@ -724,7 +749,7 @@ class NostrSemanticsStore(
      * lookup could land on a rebuilt map and query under a different service than
      * the one [ScoredSearch.rankService] reports.
      */
-    suspend fun scoredProfileSearch(
+    override suspend fun scoredProfileSearch(
         text: String,
         observer: String,
         limit: Int,
@@ -732,8 +757,7 @@ class NostrSemanticsStore(
         withActivity(Activity.Query) {
             require(limit > 0) { "limit must be positive" }
             val key = observer.lowercase()
-            // isHex64 reads the first 64 characters and ignores the rest.
-            require(key.length == 64 && Hex.isHex64(key)) { "observer must be 64-hex" }
+            require(Hex.isHexKey(key)) { "observer must be 64-hex" }
             val lens = providers()?.lensOf(key)
             val service = lens?.rank ?: return@withActivity ScoredSearch(emptyList(), null)
             val cutoff = nowSecs()
@@ -769,7 +793,7 @@ class NostrSemanticsStore(
      * shares. See [LiveGate]; call it in the subscription's own context, where
      * the connection observer is read from.
      */
-    suspend fun liveGate(filters: List<Filter>): LiveGate? {
+    override suspend fun liveGate(filters: List<Filter>): LiveGate? {
         val observer = connectionObserver()
         val cutoff = nowSecs()
         val compiled = filters.mapNotNull { f -> f.toExpiryQuery(cutoff, observer)?.let { f to it } }
@@ -801,6 +825,26 @@ class NostrSemanticsStore(
                 .joinToString(" ")
         }
     }
+
+    /**
+     * [pubkey]'s trust chain: their stored 10040, the lens it resolves to (the
+     * cached pass AND the stored list), and whether the rank service has signed
+     * anything here — three reads of at most one document each. A store built
+     * without [TrustProjection] resolves no lens and says so: the list is still
+     * read, the services and cards are not.
+     */
+    override suspend fun lensOf(pubkey: String): TrustChain =
+        withActivity(Activity.Query) {
+            val key = pubkey.lowercase()
+            require(Hex.isHexKey(key)) { "pubkey must be 64-hex" }
+            val trust = index as? TrustProjection
+            if (trust == null) {
+                val listed = index.search(EventQuery(kinds = listOf(TrustProviderListEvent.KIND), authors = listOf(key), notExpiredAt = nowSecs(), limit = 1)).isNotEmpty()
+                return@withActivity TrustChain(key, listed, null, null, null, null, null, null)
+            }
+            val l = TrustExplain(index, trust.reputations, trust.recompute, nowSecs).lens(key)
+            TrustChain(key, l.hasProviderList, l.rankService, l.followersService, l.storedRankService, l.storedFollowersService, l.rankServiceHasCards, l.passAgeSecs)
+        }
 
     /** The rank cells [liveGate] reads: the projection's reputation index, or none on a store assembled without it. */
     private val trustCells = TrustCells((index as? TrustProjection)?.reputations, nowSecs)
@@ -927,10 +971,10 @@ class NostrSemanticsStore(
      *
      * Empty values are skipped, and expiry is honored like [count].
      */
-    suspend fun distinctTagValues(
+    override suspend fun distinctTagValues(
         filter: Filter,
         tagName: String,
-        valueIndex: Int = 1,
+        valueIndex: Int,
         /**
          * Whether the caller's [where] actually looks at the tag. It cannot be
          * inferred — a lambda is opaque — and guessing wrong would answer a
@@ -942,8 +986,8 @@ class NostrSemanticsStore(
          * Boolean instead. The compiler caught it; the ordering keeps it caught
          * for good.
          */
-        unconditional: Boolean = false,
-        where: (List<String>) -> Boolean = { true },
+        unconditional: Boolean,
+        where: (List<String>) -> Boolean,
     ): Set<String> = withActivity(Activity.Query) { distinctTagValuesUnder(filter, tagName, valueIndex, unconditional, where) }
 
     /** [distinctTagValues]'s body; split for the reason [batchInsertUnder] is. */
@@ -1099,6 +1143,40 @@ class NostrSemanticsStore(
         }
     }
 
+    /**
+     * Every author with a live stored event and no live NIP-65 relay list
+     * (kind 10002), gift-wrap keys left out — Quartz's contract, answered off
+     * author scans instead of Quartz's default, which streams `query(Filter())`
+     * and so, on a store whose `query` returns a List, MATERIALIZES THE WHOLE
+     * CORPUS (211M events on the production relay) to read one field of each.
+     *
+     * Three [EventIndex.scanAuthors] walks — everyone, the 10002 authors, the
+     * 1059 authors — each a paged visit projecting `pubkey` alone, so the cost
+     * is O(events) in the engine and O(authors) here, never a decoded event.
+     * The gift-wrap rule ("a 1059's pubkey is a one-time key, not an author")
+     * is the one an author scan cannot express, since no [EventQuery] says "not
+     * kind 1059": a key that signed a 1059 is dropped unless it ALSO signed
+     * something else, which two per-author groupings per 500 such keys decide
+     * exactly. Raw corpus semantics, as the contract says "in this store":
+     * no lens; expiry honored like every read, so an author whose only 10002
+     * expired is missing. Order unspecified.
+     */
+    override suspend fun authorsMissingOutbox(): List<HexKey> =
+        withActivity(Activity.Snapshot) {
+            val live = EventQuery(notExpiredAt = nowSecs())
+            val withOutbox = index.scanAuthors(live.copy(kinds = listOf(AdvertisedRelayListEvent.KIND)))
+            val wrappers = index.scanAuthors(live.copy(kinds = listOf(GiftWrapEvent.KIND)))
+            val missing = LinkedHashSet<HexKey>()
+            for (author in index.scanAuthors(live)) if (author !in withOutbox) missing += author
+            for (chunk in missing.filter { it in wrappers }.chunked(OUTBOX_WRAPPER_CHUNK)) {
+                val all = index.countByAuthor(live.copy(authors = chunk))
+                val wraps = index.countByAuthor(live.copy(authors = chunk, kinds = listOf(GiftWrapEvent.KIND)))
+                // Only gift wraps under this key: a one-time key, not an author.
+                for (key in chunk) if ((all[key] ?: 0) <= (wraps[key] ?: 0)) missing -= key
+            }
+            missing.toList()
+        }
+
     override suspend fun deleteExpiredEvents() {
         checkWritable("deleteExpiredEvents")
         withActivity(Activity.Delete) {
@@ -1186,7 +1264,7 @@ class NostrSemanticsStore(
      * Only as complete as [kinds]: a kind left out is not repaired. When
      * unsure which kinds a change touched, run the unscoped walk.
      */
-    suspend fun reindexFullTextSearch(kinds: List<Int>) =
+    override suspend fun reindexFullTextSearch(kinds: List<Int>) =
         withActivity(Activity.Reconcile) {
             var cursor: String? = null
             do {
@@ -1196,10 +1274,10 @@ class NostrSemanticsStore(
         }
 
     /** Resumable form of the kind-scoped walk; the cursor is only valid for the same [kinds]. */
-    suspend fun reindexFullTextSearch(
+    override suspend fun reindexFullTextSearch(
         kinds: List<Int>,
         resumeFrom: String?,
-        batchSize: Int = IEventStore.DEFAULT_FTS_REINDEX_BATCH,
+        batchSize: Int,
     ): FtsReindexProgress {
         // An empty list is EventQuery's "every kind", the whole-corpus walk this
         // overload exists to avoid; asking for it by accident must not start one.
@@ -1336,6 +1414,9 @@ class NostrSemanticsStore(
     }
 
     private companion object {
+        /** Gift-wrap keys per pair of author groupings in [authorsMissingOutbox]: the width every author-chunked read here uses. */
+        const val OUTBOX_WRAPPER_CHUNK = 500
+
         /** The outcome key for an insert that failed on the ENGINE rather than on a rule. */
         const val OUTCOME_FAILED = "failed"
 

@@ -27,8 +27,8 @@ import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.ingest.Rejections
-import com.nosfabrica.vespa.eventstore.mapping.addressOrNull
 import com.vitorpamplona.quartz.nip01Core.core.Event
+import com.vitorpamplona.quartz.nip01Core.core.addressTagOrNull
 import com.vitorpamplona.quartz.nip01Core.core.isAddressable
 import com.vitorpamplona.quartz.nip01Core.core.isReplaceable
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
@@ -101,7 +101,7 @@ internal class BulkMixedInsert(
         val vanishes = events.filterIsInstance<RequestToVanishEvent>()
         val owners = events.map { it.owner() }.distinct()
         val batchIds = events.map { it.id }
-        val batchAddresses = events.mapNotNull { it.addressOrNull() }.distinct()
+        val batchAddresses = events.mapNotNull { it.addressTagOrNull() }.distinct()
         val records = events.filter { it !is DeletionRequestEvent && it !is RequestToVanishEvent }
         // Only owners with a provably stored tombstone/vanish (GuardOwners) can
         // guard this batch; everyone else's probes come back empty, so skip

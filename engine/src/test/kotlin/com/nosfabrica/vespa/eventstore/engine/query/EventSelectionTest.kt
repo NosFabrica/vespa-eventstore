@@ -84,5 +84,9 @@ class EventSelectionTest {
         // Injection rule: a non-64-hex key never reaches the expression.
         assertNull(EventSelection.build(EventQuery(authors = listOf("not-hex"))))
         assertNull(EventSelection.build(EventQuery(owners = listOf("\" or true"))))
+        // 64 hex followed by more is not a key: Hex.isHex64 reads only the
+        // first 64 characters, so the tail would be quoted into the selection.
+        assertNull(EventSelection.build(EventQuery(authors = listOf(alice + "\" or true or \""))))
+        assertNull(EventSelection.build(EventQuery(owners = listOf(bob + "00"))))
     }
 }

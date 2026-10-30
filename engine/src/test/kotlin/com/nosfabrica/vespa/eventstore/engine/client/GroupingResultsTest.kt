@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore.engine.client
 
+import com.nosfabrica.vespa.eventstore.engine.DocRef
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlin.test.Test
@@ -64,5 +65,49 @@ class GroupingResultsTest {
     fun `no groups is no links`() {
         val root = Json.parseToJsonElement("""{"id":"toplevel","fields":{"totalCount":0},"children":[{"id":"group:root:0"}]}""").jsonObject
         assertEquals(emptyMap(), GroupingResults.keyPersonKinds(root))
+    }
+
+    /**
+     * `EventYql.buildNewestVersions`' shape: author -> the newest second -> every
+     * id at it. The grouping cannot order ids, so the reader breaks the tie to
+     * the LOWEST id (NIP-01) — `bb…` here, although Vespa listed `cc…` first —
+     * and re-takes the newest second as a max rather than trusting the response
+     * to hold exactly the one `max(1)` asked for.
+     */
+    @Test
+    fun `newest versions read the newest second and break its tie to the lowest id`() {
+        val root =
+            Json
+                .parseToJsonElement(
+                    """
+                    {"id":"toplevel","relevance":1.0,"fields":{"totalCount":4},"children":[
+                      {"id":"group:root:0","relevance":1.0,"children":[
+                        {"id":"grouplist:pubkey","label":"pubkey","children":[
+                          {"id":"group:string:alice","relevance":1.0,"value":"alice","children":[
+                            {"id":"grouplist:created_at","label":"created_at","children":[
+                              {"id":"group:long:200","relevance":1.0,"value":"200","children":[
+                                {"id":"grouplist:id","label":"id","children":[
+                                  {"id":"group:string:cc","relevance":1.0,"value":"cc","fields":{"count()":1}},
+                                  {"id":"group:string:bb","relevance":1.0,"value":"bb","fields":{"count()":1}}]}]},
+                              {"id":"group:long:100","relevance":1.0,"value":"100","children":[
+                                {"id":"grouplist:id","label":"id","children":[
+                                  {"id":"group:string:aa","relevance":1.0,"value":"aa","fields":{"count()":1}}]}]}]}]},
+                          {"id":"group:string:bob","relevance":1.0,"value":"bob","children":[
+                            {"id":"grouplist:created_at","label":"created_at","children":[
+                              {"id":"group:long:50","relevance":1.0,"value":"50","children":[
+                                {"id":"grouplist:id","label":"id","children":[
+                                  {"id":"group:string:dd","relevance":1.0,"value":"dd","fields":{"count()":1}}]}]}]}]}]}]}]}
+                    """.trimIndent(),
+                ).jsonObject
+        assertEquals(
+            mapOf("alice" to DocRef("bb", 200), "bob" to DocRef("dd", 50)),
+            GroupingResults.newestPerAuthor(root),
+        )
+    }
+
+    @Test
+    fun `no author groups is nothing to beat`() {
+        val root = Json.parseToJsonElement("""{"id":"toplevel","fields":{"totalCount":0},"children":[{"id":"group:root:0"}]}""").jsonObject
+        assertEquals(emptyMap(), GroupingResults.newestPerAuthor(root))
     }
 }

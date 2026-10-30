@@ -6,7 +6,44 @@ app = "1.0.1"
 mavenPublish = "0.37.0"
 # Quartz from Maven Central (com.vitorpamplona.quartz:quartz, a release) — NIP-11 DSL + opt-out
 # SQLite FTS index.
-# 2.7.3 = tag v2.7.3 (fbe0912), from Central as before. 81 commits over v2.4.0 (8d6895c); scanned
+# 2.9.0 = vitorpamplona/quartz main @ 1813390 (the merge of quartz#64, over 644bbb5 "chore: release
+# 2.9.0"), from Central as before. 24 commits over 2.8.0 (89ae60a); a tree diff of quartz/src between
+# them, main sources, scanned against this store's imports (41 packages):
+#  - PUBLIC VERSIONS OF WHAT THIS STORE COPIED, which the following commits swap in and delete here:
+#    Hex.isHexKey (the exact-64-hex check; engine/doc/HexKeys.kt goes), Event.addressTagOrNull /
+#    addressOrNull (the NIP-01 address, dispatched on kind), NIP-85's subjectPubKey /
+#    isSubjectPubKey / boundedRank / RankTag.parseBounded and TrustProviderListEvent.providerFor /
+#    providersFor, nip01Core.hints.SubjectReferences (search expansion's pointer -> subjects),
+#    SearchQuery.OBSERVER / observer / languageCode, and nip01Core.store.conformance (the STORE-*
+#    keyed parity battery and its corpus, which :benchmark runs in place of its own).
+#  - REACHES A WRITE PATH ONCE: relay urls drop the ws/wss default port (9d7b439), so a NIP-62
+#    vanish naming `wss://<this relay>:443` now covers a store opened with `wss://<this relay>`
+#    (RequestToVanishEvent.shouldVanishFrom compares normalized urls). Strictly more erasure.
+#  - THE SQLITE REFERENCE MOVES: a kind 5 against a kind 5 or 62 has no effect there now (9b2328c),
+#    the rule this store always held, so the parity corpus may contain one.
+#  - Same answer: StoreQueryContext.observer is still the first authenticated key (its KDoc now says
+#    a store may GATE by it, which this store does); IEventStore's interface is unchanged;
+#    deletionsCovering, NIP-66/86/98, the relay client's paging, auth policies and negentropy
+#    uploads are code this store does not call. EventSearchMatcher's -word / phrase fix is the
+#    in-memory matcher; this store matches in Vespa.
+#  - No searchable kind, extractor or IEventStore member moved: nothing to reindex.
+#  - RUNTIME CLASSPATH (:store): quartz alone moves; quartz's build files have no diff in the range,
+#    so the published POM names the same dependency versions as 2.8.0's.
+#
+# Prev 2.8.0 = tag v2.8.0 (89ae60a, "chore(release): v2.8.0"), from Central as before. 19 commits over
+# 2.7.3 (baseline 32215cf, "chore: set version to 2.7.3"); a tree diff of quartz/src between them,
+# main sources, scanned against this store's imports (35 packages):
+#  - ALL OF IT IS THE RELAY SERVER'S LIVE FAN-OUT: nip01Core.relay.server (RelaySession, SessionSink,
+#    the new FanoutExecutor / LiveFrameSink, and backend/ EventIngest, LiveEventStore, RequestContext,
+#    SessionBackend, the new LiveSubscriptionBackend) and relay.filters.FilterIndex. This store
+#    imports none of them (its relay.filters imports are Filter and FilterMatcher, both unchanged),
+#    so no read, write or search path here moves. A consumer whose SessionBackend wraps this store
+#    (vespa-relay's ObserverBackend) is affected: see LiveSubscriptionBackend's KDoc.
+#  - No searchable kind, extractor or IEventStore member moved: nothing to reindex.
+#  - RUNTIME CLASSPATH (:store): quartz alone moves; its build changes only benchmark system
+#    properties, so the published POM names the same dependency versions as 2.7.3's.
+#
+# Prev 2.7.3 = tag v2.7.3 (fbe0912), from Central as before. 81 commits over v2.4.0 (8d6895c); scanned
 # against this store's imports (32 packages; a tree diff of quartz/src between the tags, main
 # sources). What reaches the store, all through SearchFieldExtractor and EventFactory:
 #  - SIX MORE SEARCHABLE KINDS, drss.io's reader: 30100 (feed list: title, feed titles), 30101 (list
@@ -186,7 +223,7 @@ mavenPublish = "0.37.0"
 # catch-all; SearchableEvent grows the read-path forEachIndexableField, no reindex).
 # Prev cecc3287b2 (2026-09-01: 17 catch-all kinds split into title/body roles, four
 # affiliation URLs, six doubled `t`-tag scans dropped; a ranking backfill).
-quartz = "2.7.3"
+quartz = "2.9.0"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 # Matches what Quartz brings transitively; Gradle would resolve to it regardless.

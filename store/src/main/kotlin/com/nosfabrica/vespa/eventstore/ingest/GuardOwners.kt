@@ -82,6 +82,13 @@ internal class GuardOwners(
     private val index: EventIndex,
     topology: WriterTopology = WriterTopology.SHARED_STRICT,
     private val refreshMillis: Long = DEFAULT_GUARD_REFRESH_MILLIS,
+    /**
+     * The operator's override of [topology]: [WriterTopology.SHARED_STRICT] to
+     * force every insert to probe, null to leave it. Defaults to
+     * `GUARD_OWNERS_DISABLE` ([envOverride]); `EngineTuning.guardOwnersDisabled`
+     * passes it as a value instead.
+     */
+    override: WriterTopology? = envOverride(),
 ) {
     private class Blooms(
         val deleters: GuardBloom,
@@ -99,8 +106,8 @@ internal class GuardOwners(
         val vanishers: MutableSet<String> = ConcurrentHashMap.newKeySet()
     }
 
-    /** The env override outranks the caller: an operator must be able to force the strict floor. */
-    private val mode = envOverride() ?: topology
+    /** The override outranks the caller: an operator must be able to force the strict floor. */
+    private val mode = override ?: topology
 
     @Volatile
     private var blooms: Blooms? = null
@@ -296,7 +303,7 @@ internal class GuardOwners(
     }
 
     internal companion object {
-        private const val ENV_DISABLE = "GUARD_OWNERS_DISABLE"
+        const val ENV_DISABLE = "GUARD_OWNERS_DISABLE"
 
         private val TRUTHY = setOf("1", "true", "yes", "on")
 

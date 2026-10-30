@@ -25,9 +25,9 @@ import com.nosfabrica.vespa.eventstore.benchmark.harness.BenchResults
 import com.nosfabrica.vespa.eventstore.benchmark.harness.BenchWorkload
 import com.nosfabrica.vespa.eventstore.benchmark.harness.CountingEventIndex
 import com.nosfabrica.vespa.eventstore.benchmark.harness.NostrCorpus
-import com.nosfabrica.vespa.eventstore.benchmark.harness.ParityCheck
 import com.nosfabrica.vespa.eventstore.benchmark.harness.RankQuality
 import com.nosfabrica.vespa.eventstore.benchmark.harness.SampledLatencies
+import com.nosfabrica.vespa.eventstore.benchmark.harness.StoreParity
 import com.nosfabrica.vespa.eventstore.benchmark.harness.VespaRunner
 import com.nosfabrica.vespa.eventstore.benchmark.harness.Warmup
 import com.nosfabrica.vespa.eventstore.benchmark.probe.AddrSmokeProbe
@@ -280,8 +280,7 @@ object EventStoreBenchmark {
             sqlite.batchInsert(it)
             candidate.batchInsert(it)
         }
-        val result = ParityCheck.run(corpus, "SQLite", sqlite, candidateName, candidate)
-        ParityCheck.report(candidateName, "SQLite", result)
+        StoreParity.run(corpus, "SQLite", sqlite, candidateName, candidate)
         sqlite.close()
         candidate.close()
     }

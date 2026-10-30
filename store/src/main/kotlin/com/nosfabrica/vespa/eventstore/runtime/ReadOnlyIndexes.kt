@@ -104,6 +104,11 @@ internal class ReadOnlyEventIndex(
 
     override suspend fun scanAuthors(query: EventQuery): Set<String> = inner.scanAuthors(query)
 
+    override suspend fun newestVersions(
+        kind: Int,
+        authors: List<String>,
+    ): Map<String, DocRef> = inner.newestVersions(kind, authors)
+
     override suspend fun put(doc: EventDoc) = readOnlyRefusal("put")
 
     override suspend fun putAll(docs: List<EventDoc>) = readOnlyRefusal("putAll")

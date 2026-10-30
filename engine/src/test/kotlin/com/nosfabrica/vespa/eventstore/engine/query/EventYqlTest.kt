@@ -1118,7 +1118,59 @@ class EventYqlTest {
         listOf(
             EventYql.buildDistinctAuthors(EventQuery())!!,
             EventYql.buildCount(EventQuery())!!,
+            EventYql.buildNewestVersions(0, listOf("ab".repeat(32)))!!,
         )
+
+    /**
+     * A caller's grouping rides the shared aggregation shape — ceilings off,
+     * unranked, no `order by` — over a WHERE compiled from the query, and the
+     * reputation source takes no filter. One grouping per read: a `|` outside
+     * a quoted regex is refused, one inside is the regex's.
+     */
+    @Test
+    fun `a caller's grouping compiles its filter and refuses what it cannot send`() {
+        val q = EventYql.buildGrouping(EventQuery(kinds = listOf(9735), since = 100, until = 200), "all(group(time.date(created_at)) each(output(count())))")!!
+        assertEquals(
+            "select * from event where kind in (9735) and created_at >= 100 and created_at <= 200 limit 0 | all(group(time.date(created_at)) each(output(count())))",
+            q.yql,
+        )
+        assertEquals(EventYql.RANK_UNRANKED, q.ranking)
+        assertEquals(EventYql.UNLIMITED_GROUPS, q.params["grouping.defaultMaxGroups"])
+        assertEquals(
+            "select * from reputation where true limit 0 | all(output(count()))",
+            EventYql.buildGrouping(EventQuery(), "all(output(count()))", EventYql.REPUTATION_SOURCE)!!.yql,
+        )
+        val regex = "all(group(tag_index) filter(regex(\"^(?:r:a|r:b)$\", tag_index)) each(output(count())))"
+        assertTrue(EventYql.buildGrouping(EventQuery(), regex)!!.yql.endsWith(regex), "a quoted | is the regex's")
+        assertFailsWith<IllegalArgumentException> { EventYql.buildGrouping(EventQuery(), "all(output(count())) | all(output(count()))") }
+        assertFailsWith<IllegalArgumentException> { EventYql.buildGrouping(EventQuery(), "group(kind)") }
+        assertFailsWith<IllegalArgumentException> { EventYql.buildGrouping(EventQuery(kinds = listOf(1)), "all(output(count()))", EventYql.REPUTATION_SOURCE) }
+        assertFailsWith<IllegalArgumentException> { EventYql.buildGrouping(EventQuery(), "all(output(count()))", "event; drop") }
+        assertNull(EventYql.buildGrouping(EventQuery(ids = listOf("nothex")), "all(output(count()))"), "a query that matches nothing sends nothing")
+    }
+
+    /**
+     * The newest-version probe reads ATTRIBUTES ONLY and is one grouping: no
+     * hits, no summary, unranked (a recency profile's match phase would cut the
+     * very versions it is asked about), and every author's newest second kept
+     * whole so the reader can break a tie to the lowest id.
+     */
+    @Test
+    fun `newest versions is an attribute-only grouping keeping one second per author`() {
+        val author = "ab".repeat(32)
+        val q = EventYql.buildNewestVersions(3, listOf(author))!!
+        assertTrue(q.yql.startsWith("select * from event where kind in (3) and pubkey in (\"$author\") limit 0 | "), q.yql)
+        assertTrue(
+            q.yql.endsWith(
+                "all(group(pubkey) each(all(group(created_at) max(1) order(-max(created_at)) each(all(group(id) each(output(count())))))))",
+            ),
+            q.yql,
+        )
+        assertEquals(EventYql.RANK_UNRANKED, q.ranking)
+        assertNull(q.params["presentation.summary"], "no hit is produced, so no summary is named")
+        assertNull(EventYql.buildNewestVersions(3, emptyList()), "no authors asks about nobody, never about every author")
+        assertNull(EventYql.buildNewestVersions(3, listOf("not hex")), "no usable author key matches nothing")
+    }
 
     /** Aggregations must answer over the whole match set: Vespa defaults to TEN groups without these. */
     @Test
@@ -1497,6 +1549,9 @@ class EventYqlTest {
         assertEquals(EventYql.RANK_TRUST_CELL, cells.ranking)
         assertEquals("{${"5e".repeat(32)}:1.0}", cells.params["ranking.features.query(user_q)"])
         assertNull(EventYql.buildTrustCells(listOf("not-hex"), "5e".repeat(32)))
+        // A key with a tail past its 64 hex characters is not a key, in either slot.
+        assertNull(EventYql.buildTrustCells(listOf("ab".repeat(32) + "\") or true or (\""), "5e".repeat(32)))
+        assertNull(EventYql.buildTrustCells(listOf("ab".repeat(32)), "5e".repeat(32) + ":v2"))
     }
 
     private val linkId = "ab".repeat(32)

@@ -65,7 +65,7 @@ object EventSelection {
         keys: List<String>,
     ): String? {
         val hexes = keys.map { it.lowercase() }
-        if (hexes.any { !Hex.isHex64(it) }) return null
+        if (hexes.any { !Hex.isHexKey(it) }) return null
         return hexes.distinct().joinToString(" or ", "(", ")") { "event.$field==\"$it\"" }
     }
 }

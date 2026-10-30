@@ -109,7 +109,7 @@ class TrustKeyingMigration internal constructor(
         progress.resumeFrom(stored.counter(KEYS_REMOVED), UNKNOWN_TOTAL)
         var any = false
         reputations.visitPubkeys { page ->
-            any = page.any(Hex::isHex64)
+            any = page.any(Hex::isHexKey)
             !any // one page decides; stop as soon as a real parent is seen
         }
         if (!any) {
@@ -182,7 +182,7 @@ class TrustKeyingMigration internal constructor(
         reputations.visitDocs { page ->
             val removals = ArrayList<CellRemoval>()
             for (doc in page) {
-                if (!Hex.isHex64(doc.pubkey)) continue
+                if (!Hex.isHexKey(doc.pubkey)) continue
                 parents++
                 val keys = (doc.influenceScores.keys + doc.followerCounts.keys).filterNot { it.hex in services }
                 for (key in keys) {

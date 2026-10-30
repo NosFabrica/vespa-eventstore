@@ -20,6 +20,8 @@
  */
 package com.nosfabrica.vespa.eventstore.engine.async
 
+import com.nosfabrica.vespa.eventstore.engine.tuning.ProcessKnob
+import com.nosfabrica.vespa.eventstore.engine.tuning.ProcessKnobs
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -33,9 +35,11 @@ import kotlinx.coroutines.sync.withPermit
  * Engine queries a batch stage keeps in flight. UNBOUNDED fan-out times out
  * proton's summary stage (`504 Summary data is incomplete`) — measured, on
  * heavy bulk-stage queries; lighter per-filter REQ queries can raise it via
- * `VESPA_QUERY_FANOUT` for a deployment's own hardware.
+ * `VESPA_QUERY_FANOUT` for a deployment's own hardware — or
+ * `EngineTuning.queryFanout` on `open()`, which parses it strictly and pins it
+ * for the process ([ProcessKnob]).
  */
-val QUERY_FANOUT: Int = System.getenv("VESPA_QUERY_FANOUT")?.toIntOrNull()?.coerceAtLeast(1) ?: 4
+val QUERY_FANOUT: Int get() = ProcessKnobs.queryFanout.value
 
 /**
  * Fan-out for address-keyed conditional PUTs ([EventIndex.putIfNewer]) in the
@@ -43,9 +47,10 @@ val QUERY_FANOUT: Int = System.getenv("VESPA_QUERY_FANOUT")?.toIntOrNull()?.coer
  * summary-stage 504), so this runs far higher than [QUERY_FANOUT]. 32 is the
  * measured sweet spot: the draft-churn A/B climbs 4→16 (939→1157 EPS) then
  * plateaus, 64 regresses slightly — beyond ~16 the per-batch dedup read is
- * the limiter. Overridable via VESPA_PUT_FANOUT.
+ * the limiter. Overridable via VESPA_PUT_FANOUT, or `EngineTuning.putFanout`
+ * (process-wide, like [QUERY_FANOUT]).
  */
-val PUT_FANOUT: Int = System.getenv("VESPA_PUT_FANOUT")?.toIntOrNull() ?: 32
+val PUT_FANOUT: Int get() = ProcessKnobs.putFanout.value
 
 /** Map [items] through [f] with at most [concurrency] in flight; results keep item order. */
 suspend fun <T, R> List<T>.mapBounded(

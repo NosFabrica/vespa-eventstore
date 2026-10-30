@@ -73,6 +73,13 @@ enum class Activity {
     ProviderRefresh,
 
     /**
+     * A consumer's own aggregation over the corpus (`EngineReads.group`): a
+     * dashboard's statistics, which are neither a REQ nor a COUNT and would
+     * otherwise land in [Other] and look like a forgotten declaration.
+     */
+    Aggregate,
+
+    /**
      * Work that reached the port with no activity declared. Not a bug by
      * itself — a bare index in a test has no store above it — but a busy
      * `Other` in production means an entry point forgot [withActivity].

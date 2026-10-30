@@ -33,6 +33,14 @@ import kotlin.random.Random
  * benchmarks hammer. Both stores under test are fed the SAME [Event] instances,
  * so any throughput difference is the store's, not the input's.
  *
+ * A WORKLOAD, not the conformance corpus. The correctness gate (`VespaParityIT`,
+ * `StoreParityTest`) runs on quartz's `ConformanceCorpus`, which this generator
+ * was the model for and which adds the shapes a conformance run needs and a
+ * throughput run must not have: re-offered duplicates (rejected cheaply, they
+ * would inflate an insert rate), deletions by address and deletions of
+ * deletions. This one stays as it is because every number recorded in
+ * `benchmark/README.md` was measured on exactly its output for a given seed.
+ *
  * Why generate rather than replay a capture: the benchmark must be deterministic
  * (a [Config.seed] fixes every id, author, timestamp and kind) and must exercise
  * the paths that actually cost the store — replaceable supersession, addressable
@@ -163,10 +171,11 @@ object NostrCorpus {
 
             // Deletions target a prior NON-deletion event by the same author.
             // A deletion targeting a deletion is a NIP-09 no-op ("a deletion request
-            // against a deletion request has no effect") — which THIS store honors
-            // but Quartz's SQLite store does not (it erases the earlier deletion).
-            // Keeping that case out of the corpus lets store<->SQLite parity be a
-            // clean pass; the divergence is called out in the module README.
+            // against a deletion request has no effect"), which Quartz's SQLite
+            // store got wrong until 2.9.0, so it was kept out of this corpus to keep
+            // store<->SQLite parity a clean pass. The parity gate now runs on
+            // quartz's ConformanceCorpus, which does carry it; this workload stays
+            // as measured.
             if (draft.kind != 5) {
                 val q = recentByAuthor.getOrPut(author) { ArrayDeque() }
                 q.addLast(id)
