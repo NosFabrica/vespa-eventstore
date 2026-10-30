@@ -29,6 +29,7 @@ import com.nosfabrica.vespa.eventstore.mapping.INCLUDE_SPAM_MIN_RANK
 import com.nosfabrica.vespa.eventstore.trust.Enrolment
 import com.vitorpamplona.quartz.nip01Core.core.Address
 import com.vitorpamplona.quartz.nip01Core.core.Event
+import com.vitorpamplona.quartz.nip01Core.hints.SubjectReferences
 
 /**
  * WHAT A SEARCH FOUND, PLUS WHAT IT POINTS AT: the events a NIP-32 label, a
@@ -412,7 +413,7 @@ internal class SearchReferenceExpansion(
         if (!limits.enabled || budget <= 0 || lenses.isEmpty()) return nothing()
 
         var any = false
-        val planned = ArrayList<References>(hits.size)
+        val planned = ArrayList<SubjectReferences>(hits.size)
         val lensOfRow = IntArray(hits.size) { NO_LENS }
         for ((i, hit) in hits.withIndex()) {
             val pointer = if (budget > 0) pointerOf(hit)?.takeIf { it.kind in SearchReferences.KINDS } else null
@@ -441,14 +442,14 @@ internal class SearchReferenceExpansion(
                 }
             val refs =
                 when {
-                    pointer == null || lens < 0 -> References.NONE
+                    pointer == null || lens < 0 -> SubjectReferences.NONE
 
                     // Resolved lazily, at most once per read — a page of labels
                     // never consults it at all, and neither does one with no
                     // declarations on it.
                     // The gate is PER OBSERVER and never pooled — see
                     // [unanimouslyAdmitted] and [resolved].
-                    SearchReferences.isDeclaration(pointer.kind) && !unanimouslyAdmitted(pointer) -> References.NONE
+                    SearchReferences.isDeclaration(pointer.kind) && !unanimouslyAdmitted(pointer) -> SubjectReferences.NONE
 
                     else -> plan(SearchReferences.of(pointer), lenses[lens])
                 }
@@ -494,12 +495,12 @@ internal class SearchReferenceExpansion(
      * that can never be served, starving an `e` or `a` subject further down.
      */
     private fun plan(
-        raw: References,
+        raw: SubjectReferences,
         under: EventQuery,
-    ): References {
+    ): SubjectReferences {
         val refs = if (under.admitsKind(SearchReferences.PROFILE_KIND) || raw.pubKeys.isEmpty()) raw else raw.withoutPubKeys()
         val room = minOf(limits.maxPerEvent, budget)
-        if (room <= 0 || refs.isEmpty()) return References.NONE
+        if (room <= 0 || refs.isEmpty()) return SubjectReferences.NONE
         if (refs.size <= room) {
             budget -= refs.size
             return refs
@@ -514,7 +515,7 @@ internal class SearchReferenceExpansion(
         // so the entries for members that did not survive cost a map and are
         // never read — while dropping it would silently unweight the one case
         // the cap exists for, a list long enough to truncate.
-        return References(ids, pubKeys, refs.addresses.take(room - ids.size - pubKeys.size), refs.confidence)
+        return SubjectReferences(ids, pubKeys, refs.addresses.take(room - ids.size - pubKeys.size), refs.scores)
     }
 
     /** The subjects one lens holds, keyed the three ways a pointer names one. */
@@ -534,7 +535,7 @@ internal class SearchReferenceExpansion(
      * needed to file it.
      */
     private suspend fun <R> lookUp(
-        planned: List<References>,
+        planned: List<SubjectReferences>,
         lensOfRow: IntArray,
         pointerRel: (Int) -> Double,
         pointerText: (Int) -> Double,
@@ -670,7 +671,7 @@ internal class SearchReferenceExpansion(
      * a hit of the same search, and one pointer's member is often another's.
      */
     private fun <R> admit(
-        refs: References,
+        refs: SubjectReferences,
         found: Found<R>?,
         keys: SubjectKeys<R>,
     ): List<Taken<R>> {

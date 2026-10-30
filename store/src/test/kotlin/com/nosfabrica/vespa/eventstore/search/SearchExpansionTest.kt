@@ -170,6 +170,24 @@ class SearchExpansionTest {
             assertEquals(listOf(list.id, profile.id), page(search("podcaster", listOf(0, 30392))))
         }
 
+    /**
+     * A member spelled in upper-case hex is the same person: quartz's
+     * `SubjectReferences` hands it back lowercased, which is the key a found
+     * profile is filed under. Before it, the raw spelling was looked up (the
+     * engine lowercases keys), found, and then dropped for not equalling its
+     * own tag string, so the list spliced nobody.
+     */
+    @Test
+    fun `a member spelled in upper-case hex is still brought`() =
+        runBlocking {
+            store.insert(profile)
+            store.insert(treasureMap(arrayOf("30392", curator, "wss://lists.example")))
+            val list = userList("Podcaster Trust List", members = listOf(subject.uppercase()))
+            store.insert(list)
+
+            assertEquals(listOf(list.id, profile.id), page(search("podcaster", listOf(0, 30392))))
+        }
+
     // ------------------------------------------------------------------
     // Conversion: a read that only wants the subjects' kinds
     // ------------------------------------------------------------------

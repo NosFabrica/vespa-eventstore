@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore.search
 
+import com.vitorpamplona.quartz.nip01Core.hints.SubjectReferences
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -44,7 +45,7 @@ class SubjectBatchesTest {
 
     /** One page's rows, all under lens 0, with the scores the caller would have read off them. */
     private fun group(
-        rows: List<References>,
+        rows: List<SubjectReferences>,
         rel: List<Double> = rows.map { 0.0 },
         text: List<Double> = rows.map { 0.0 },
         limits: SearchExpansionLimits = this.limits,
@@ -54,8 +55,8 @@ class SubjectBatchesTest {
     fun `references no pointer scored all share one query`() {
         val rows =
             listOf(
-                References(eventIds = listOf(key(1), key(2))),
-                References(eventIds = listOf(key(3))),
+                SubjectReferences(eventIds = listOf(key(1), key(2))),
+                SubjectReferences(eventIds = listOf(key(3))),
             )
         val batches = group(rows, rel = listOf(9.0, 3.0), text = listOf(2.0, 1.0)).ids
 
@@ -73,9 +74,9 @@ class SubjectBatchesTest {
     fun `scored references split by the pointer scores their query carries`() {
         val rows =
             listOf(
-                References(eventIds = listOf(key(1)), confidence = mapOf(key(1) to 90)),
-                References(eventIds = listOf(key(2)), confidence = mapOf(key(2) to 40)),
-                References(eventIds = listOf(key(3)), confidence = mapOf(key(3) to 70)),
+                SubjectReferences(eventIds = listOf(key(1)), scores = mapOf(key(1) to 90)),
+                SubjectReferences(eventIds = listOf(key(2)), scores = mapOf(key(2) to 40)),
+                SubjectReferences(eventIds = listOf(key(3)), scores = mapOf(key(3) to 70)),
             )
         // rows 0 and 2 earned the same pair; row 1 did not.
         val batches = group(rows, rel = listOf(9.0, 3.0, 9.0), text = listOf(2.0, 1.0, 2.0)).ids
@@ -97,8 +98,8 @@ class SubjectBatchesTest {
     fun `pointers that share a relevance but not a text band do not share a query`() {
         val rows =
             listOf(
-                References(eventIds = listOf(key(1)), confidence = mapOf(key(1) to 90)),
-                References(eventIds = listOf(key(2)), confidence = mapOf(key(2) to 90)),
+                SubjectReferences(eventIds = listOf(key(1)), scores = mapOf(key(1) to 90)),
+                SubjectReferences(eventIds = listOf(key(2)), scores = mapOf(key(2) to 90)),
             )
         val batches = group(rows, rel = listOf(9.0, 9.0), text = listOf(2.0, 1.0)).ids
 
@@ -116,8 +117,8 @@ class SubjectBatchesTest {
     fun `with no floor span the same page is a single query`() {
         val rows =
             listOf(
-                References(eventIds = listOf(key(1)), confidence = mapOf(key(1) to 90)),
-                References(eventIds = listOf(key(2)), confidence = mapOf(key(2) to 40)),
+                SubjectReferences(eventIds = listOf(key(1)), scores = mapOf(key(1) to 90)),
+                SubjectReferences(eventIds = listOf(key(2)), scores = mapOf(key(2) to 40)),
             )
         val batches = group(rows, rel = listOf(9.0, 3.0), text = listOf(2.0, 1.0), limits = limits.copy(subjectFloorSpan = null)).ids
 
@@ -135,8 +136,8 @@ class SubjectBatchesTest {
         val shared = key(7)
         val rows =
             listOf(
-                References(eventIds = listOf(shared), confidence = mapOf(shared to 90)),
-                References(eventIds = listOf(shared, key(8)), confidence = mapOf(shared to 10, key(8) to 10)),
+                SubjectReferences(eventIds = listOf(shared), scores = mapOf(shared to 90)),
+                SubjectReferences(eventIds = listOf(shared, key(8)), scores = mapOf(shared to 10, key(8) to 10)),
             )
         val batches = group(rows, rel = listOf(9.0, 3.0), text = listOf(2.0, 1.0)).ids
 
@@ -153,7 +154,7 @@ class SubjectBatchesTest {
      */
     @Test
     fun `one row's scored and unscored references become separate queries`() {
-        val rows = listOf(References(eventIds = listOf(key(1), key(2)), confidence = mapOf(key(1) to 90)))
+        val rows = listOf(SubjectReferences(eventIds = listOf(key(1), key(2)), scores = mapOf(key(1) to 90)))
         val batches = group(rows, rel = listOf(9.0), text = listOf(2.0)).ids
 
         assertEquals(2, batches.size)
@@ -165,7 +166,7 @@ class SubjectBatchesTest {
 
     @Test
     fun `ids and pubkeys are grouped apart`() {
-        val rows = listOf(References(eventIds = listOf(key(1)), pubKeys = listOf(key(2))))
+        val rows = listOf(SubjectReferences(eventIds = listOf(key(1)), pubKeys = listOf(key(2))))
         val grouped = group(rows)
 
         assertEquals(
@@ -195,9 +196,9 @@ class SubjectBatchesTest {
     fun `address buckets run unscored first, then most confident`() {
         val rows =
             listOf(
-                References(addresses = listOf("30023:a:low"), confidence = mapOf("30023:a:low" to 20)),
-                References(addresses = listOf("30023:a:none")),
-                References(addresses = listOf("30023:a:high"), confidence = mapOf("30023:a:high" to 95)),
+                SubjectReferences(addresses = listOf("30023:a:low"), scores = mapOf("30023:a:low" to 20)),
+                SubjectReferences(addresses = listOf("30023:a:none")),
+                SubjectReferences(addresses = listOf("30023:a:high"), scores = mapOf("30023:a:high" to 95)),
             )
         val buckets = SubjectBatches(limits).addressBuckets(rows, IntArray(rows.size), 0)
 

@@ -256,7 +256,10 @@ behind the pointer that named it: NIP-32 labels (1985), NIP-85 assertions
   below the page, on every searching read the relay serves.
 - **`SearchReferences` dispatches on the KIND, never `is UserTrustedListEvent`**:
   a consumer may force its own Quartz over ours, and a pin without those kinds
-  hands back a base `Event` whose `is` checks all go false — silently.
+  hands back a base `Event` whose `is` checks all go false — silently. The
+  reading is quartz's `SubjectReferences` (which dispatches the same way); WHICH
+  kinds are read, and which of them are gated, stays `SearchReferences.KINDS` /
+  `DECLARATIONS`, so a family a later quartz learns is not expanded until named here.
 - **The gate.** A declaration only unpacks for a reader whose own kind-10040
   named its signer FOR THAT KIND (`trust/Delegations`, derived in `ProviderMap`'s
   cached pass, so a 10040 write invalidates it with no code of its own). Both
