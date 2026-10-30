@@ -31,6 +31,7 @@ import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
 import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.mapping.toEvent
+import com.nosfabrica.vespa.eventstore.runtime.StoreKnobs
 import com.nosfabrica.vespa.eventstore.runtime.WriteLocks
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
@@ -509,21 +510,23 @@ internal class TrustRecompute(
          * page (the updates pipeline either way); what the page decides is how
          * long a live trust write waits: measured at 1000 on a loaded single
          * node, a card insert during a 234k-card walk waited 762 ms median,
-         * 1.1 s max — one page hold. `VESPA_TRUST_WALK_PAGE` overrides.
+         * 1.1 s max — one page hold. `VESPA_TRUST_WALK_PAGE` overrides, or
+         * `EngineTuning.trustWalkPage` (process-wide, [StoreKnobs]).
          */
-        val PROJECT_PAGE: Int = System.getenv("VESPA_TRUST_WALK_PAGE")?.toIntOrNull()?.coerceAtLeast(1) ?: 250
+        val PROJECT_PAGE: Int get() = StoreKnobs.trustWalkPage.value
 
         /**
          * Subjects per WRITE-GATE hold, which is a different question from
          * every batch size above it: those bound memory, this bounds how long
          * every other writer in the store waits. One [FETCH_CHUNK] of 50 took
          * ~1.9s on staging, so 500 is ~19s of hold against the ~13 minutes a
-         * whole 20,000-subject batch took. Overridable per deployment.
+         * whole 20,000-subject batch took. Overridable per deployment
+         * (`VESPA_TRUST_GATE_SLICE`, or `EngineTuning.trustGateSlice`).
          *
          * Lower is fairer and costs only the mutex round trip (microseconds
          * against seconds of work); higher approaches the old behaviour.
          */
-        val GATE_SLICE: Int = System.getenv("VESPA_TRUST_GATE_SLICE")?.toIntOrNull()?.coerceAtLeast(1) ?: 500
+        val GATE_SLICE: Int get() = StoreKnobs.trustGateSlice.value
 
         /** Registry key for the per-service card walk — the store's longest single operation. */
         const val WALK = "trust-service-walk"

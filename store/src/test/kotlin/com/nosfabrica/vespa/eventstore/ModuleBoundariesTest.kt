@@ -53,6 +53,8 @@ class ModuleBoundariesTest {
             "engine.text" to 0,
             "engine.async" to 0,
             "engine.app" to 0,
+            // Process-wide settings (ProcessKnob): read by layers 0-5 alike, so it imports nothing.
+            "engine.tuning" to 0,
             "engine.doc" to 1,
             "engine.query" to 2,
             "engine" to 3,

@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.eventstore.engine.query
 import com.nosfabrica.vespa.eventstore.engine.text.IndexableChars
 import com.nosfabrica.vespa.eventstore.engine.text.WHITESPACE
+import com.nosfabrica.vespa.eventstore.engine.tuning.ProcessKnobs
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip01Core.tags.isIndexableTagName
 import com.vitorpamplona.quartz.utils.Hex
@@ -185,8 +186,10 @@ object EventYql {
      * `VESPA_MATCH_PHASE_MAX_HITS` overrides it, and MUST be set to whatever the
      * SERVING schema says — the two are mirrors, not independent knobs, and a
      * value above the schema's would claim a depth the engine does not have.
+     * `EngineTuning.matchPhaseMaxHits` on `open()` sets it strictly, for the
+     * process (it is read by this `object`, which no store instance owns).
      */
-    val MATCH_PHASE_MAX_HITS: Int = System.getenv("VESPA_MATCH_PHASE_MAX_HITS")?.toIntOrNull()?.coerceAtLeast(1) ?: 20_000
+    val MATCH_PHASE_MAX_HITS: Int get() = ProcessKnobs.matchPhaseMaxHits.value
 
     /**
      * A limit may use [RANK_RECENCY] only with this safety factor under

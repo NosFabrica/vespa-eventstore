@@ -54,9 +54,13 @@ class SchemaDeployer(
      * The wait matters: `prepareandactivate` returns before the container serves,
      * and building the feed client in that gap fails its handshake.
      */
-    fun deployIfAbsent(queryUrl: String) {
+    fun deployIfAbsent(
+        queryUrl: String,
+        /** The package to deploy; [VespaApp.zipBytes] (which reads `VESPA_ACCESS_LOG`) unless the caller built one. */
+        zip: ByteArray = VespaApp.zipBytes(),
+    ) {
         if (isServing(queryUrl)) return
-        deploy()
+        deploy(zip)
         awaitServing(queryUrl)
     }
 

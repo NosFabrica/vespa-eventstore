@@ -51,10 +51,12 @@ class VespaReputationIndex(
     endpoints: List<String> = emptyList(),
     /** Build the feed client with the index, or on the first write: [VespaEventIndex]'s `eagerFeed`. */
     eagerFeed: Boolean = true,
+    /** The feed settings this index's own feed client is built with — the same ones [VespaEventIndex] takes. */
+    tuning: ClientTuning = ClientTuning(),
 ) : ReputationIndex {
     private val documentApi = EndpointRotation(endpoints, baseUrl)
 
-    private val feed = VespaFeed(documentApi.urls, eager = eagerFeed)
+    private val feed = VespaFeed(documentApi.urls, eager = eagerFeed, tuning = tuning)
 
     private val http = VespaHttp()
 

@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.eventstore
 
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.app.SchemaDeployer
+import com.nosfabrica.vespa.eventstore.engine.app.VespaApp
 import com.nosfabrica.vespa.eventstore.engine.client.VespaEventIndex
 import com.nosfabrica.vespa.eventstore.engine.client.VespaReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.metrics.Activity
@@ -414,11 +415,23 @@ class VespaEventStore internal constructor(
              */
             slowQueryThresholdMillis: Long? = null,
             readOnly: Boolean = false,
+            /**
+             * The operator settings ([EngineTuning]), as values. The default
+             * names none, and every one it leaves unnamed is read from the
+             * environment as `open()` always read it; a deployment that wants
+             * a typo to stop the boot passes `EngineTuning.fromEnv(System.getenv())`.
+             * Its per-process settings are PINNED here, for every store this
+             * process opens after.
+             */
+            tuning: EngineTuning = EngineTuning(),
         ): VespaEventStore {
             require(!(readOnly && writers == WriterTopology.SINGLE_WRITER)) {
                 "readOnly with writers = SINGLE_WRITER: a store that writes nothing cannot be the only writer of its index"
             }
-            if (autoDeploy) SchemaDeployer(configUrl).deployIfAbsent(url)
+            // Before anything below reads one of them.
+            tuning.pinProcessKnobs()
+            val client = tuning.client()
+            if (autoDeploy) SchemaDeployer(configUrl).deployIfAbsent(url, VespaApp.zipBytes(tuning.accessLogOrEnv()))
             val ledger = CostLedger(slowQueryThresholdNanos = slowQueryThresholdMillis?.let { it * 1_000_000 })
             // The ledger reaches the engine client too: rank profile, docs
             // matched and Vespa's own timing are only knowable from inside the
@@ -426,8 +439,8 @@ class VespaEventStore internal constructor(
             // The events' feed client is built here, unless nothing will write: a feed setting it
             // refuses stops the store from opening. The reputations' reads the same settings, so it
             // is left to its first write, and the open pays one client's handshake instead of two.
-            val eventIndex = VespaEventIndex(url, feedEndpoints = feedEndpoints, queryEndpoints = queryEndpoints, ledger = ledger, eagerFeed = !readOnly)
-            val reputations = VespaReputationIndex(url, endpoints = feedEndpoints, eagerFeed = false)
+            val eventIndex = VespaEventIndex(url, feedEndpoints = feedEndpoints, queryEndpoints = queryEndpoints, tuning = client, ledger = ledger, eagerFeed = !readOnly)
+            val reputations = VespaReputationIndex(url, endpoints = feedEndpoints, eagerFeed = false, tuning = client)
             // METERED AT THE ENGINE SEAM: everything below this line is what
             // actually reached Vespa, whichever route asked for it — the
             // store's own reads, the projection's, a sweep's. Nothing above
@@ -451,6 +464,7 @@ class VespaEventStore internal constructor(
                     maxHitsPerAuthor = maxHitsPerAuthor,
                     metrics = ledger,
                     readOnly = readOnly,
+                    guardOwnersDisabled = tuning.guardOwnersDisabled,
                 )
             // GAUGES: instantaneous, pulled at snapshot time, and read from
             // their owners rather than mirrored — a queue depth has no
@@ -565,8 +579,14 @@ class VespaEventStore internal constructor(
         /** Backoff between background walk attempts after an engine failure — the same cadence as the drain's, for the same reason. */
         private const val BACKFILL_RETRY_MILLIS = 5_000L
 
-        /** The config server sits on :19071 by convention, on the same host as the :8080 query endpoint. */
-        internal fun deriveConfigUrl(queryUrl: String): String {
+        /**
+         * The config server for the Vespa whose query endpoint is [queryUrl]:
+         * the same scheme and host on :19071, Vespa's convention. What [open]
+         * deploys to when no `configUrl` is given — public so a consumer that
+         * deploys or waits on its own (a process that never deploys, a boot
+         * line naming the target) derives the same address instead of a copy.
+         */
+        fun deriveConfigUrl(queryUrl: String): String {
             val u = URI.create(queryUrl)
             return URI(u.scheme, null, u.host, 19071, null, null, null).toString()
         }

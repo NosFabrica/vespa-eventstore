@@ -195,6 +195,13 @@ class NostrSemanticsStore(
      * [index], which `VespaEventStore.open` installs.
      */
     val metrics: CostLedger = CostLedger(),
+    /**
+     * `GUARD_OWNERS_DISABLE` as a value: true forces [WriterTopology.SHARED_STRICT]
+     * whatever [writers] says, false leaves [writers] alone, and null — the
+     * default — reads the environment variable as this store always has. LAST,
+     * so no positional argument shifts.
+     */
+    guardOwnersDisabled: Boolean? = null,
 ) : LensedEventStore {
     init {
         require(!(readOnly && writers == WriterTopology.SINGLE_WRITER)) {
@@ -216,7 +223,21 @@ class NostrSemanticsStore(
 
     // Owners with any stored tombstone/vanish; everyone else's inserts skip the
     // NIP-09/62 guard probes entirely (see GuardOwners for the safety argument).
-    private val guards = GuardOwners(index, writers, guardRefreshMillis)
+    private val guards =
+        GuardOwners(
+            index,
+            writers,
+            guardRefreshMillis,
+            override =
+                when (guardOwnersDisabled) {
+                    // GUARD_OWNERS_DISABLE, read as it always was.
+                    null -> GuardOwners.envOverride()
+
+                    true -> WriterTopology.SHARED_STRICT
+
+                    false -> null
+                },
+        )
 
     /**
      * Bounds the provider pass's age when another process may store 10040s

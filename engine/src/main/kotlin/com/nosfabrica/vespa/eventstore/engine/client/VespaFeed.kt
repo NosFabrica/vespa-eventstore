@@ -43,6 +43,8 @@ internal class VespaFeed(
      * the client's Jetty pool and HTTP/2 connections at all.
      */
     eager: Boolean = true,
+    /** The feed settings; a field left null reads its `VESPA_FEED_*` variable as before ([ClientTuning]). */
+    private val tuning: ClientTuning = ClientTuning(),
 ) {
     /**
      * Connections per endpoint. The tuned 32 is a CLUSTER budget, split across
@@ -56,7 +58,7 @@ internal class VespaFeed(
      * explicit); it can hit the same ceiling but fails loudly at startup.
      */
     private val connectionsPerEndpoint: Int =
-        System.getenv("VESPA_FEED_CONNECTIONS")?.toIntOrNull()
+        tuning.feedConnectionsOrEnv()
             ?: (32 / urls.size).coerceAtLeast(1)
 
     /**
@@ -64,11 +66,7 @@ internal class VespaFeed(
      * bytes), `gzip` or `none`. Read strictly: a misspelling fails at startup rather than
      * silently keeping the default.
      */
-    private val compression: FeedClientBuilder.Compression =
-        System.getenv("VESPA_FEED_COMPRESSION")?.trim()?.let { value ->
-            FeedClientBuilder.Compression.entries.firstOrNull { it.name.equals(value, ignoreCase = true) }
-                ?: error("VESPA_FEED_COMPRESSION must be auto, gzip or none, was '$value'")
-        } ?: FeedClientBuilder.Compression.auto
+    private val compression: FeedClientBuilder.Compression = tuning.feedCompressionOrEnv()
 
     private val built: Lazy<FeedClient> = lazy { build(urls.map { URI.create(it) }) }
 
@@ -96,13 +94,13 @@ internal class VespaFeed(
             // on small-core hosts (see [connectionsPerEndpoint]). The defaults
             // are the measured sweet spot for a small-core single-node host.
             .setConnectionsPerEndpoint(connectionsPerEndpoint)
-            .setMaxStreamPerConnection(System.getenv("VESPA_FEED_STREAMS")?.toIntOrNull() ?: 128)
+            .setMaxStreamPerConnection(tuning.feedStreamsOrEnv())
             .setCompression(compression)
             // Jetty asks for gzip on every request, so each ~150-byte ack came back gzipped and
             // was inflated with a fresh Inflater and an unpooled 8 KiB buffer per document.
             // A builder header replaces Jetty's own.
             .addRequestHeader("Accept-Encoding", "identity")
-            .apply { System.getenv("VESPA_FEED_INFLIGHT_FACTOR")?.toIntOrNull()?.let { setInitialInflightFactor(it) } }
+            .apply { tuning.feedInflightFactorOrEnv()?.let { setInitialInflightFactor(it) } }
             .setRetryStrategy(
                 object : FeedClient.RetryStrategy {
                     // Bounded: a dead Vespa should surface as failed ops, not a hang.
