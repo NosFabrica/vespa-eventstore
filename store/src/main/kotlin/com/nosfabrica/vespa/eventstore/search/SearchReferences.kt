@@ -24,6 +24,7 @@ import com.vitorpamplona.quartz.experimental.trustedLists.addressables.Addressab
 import com.vitorpamplona.quartz.experimental.trustedLists.addressables.tags.AddressMemberTag
 import com.vitorpamplona.quartz.experimental.trustedLists.events.EventTrustedListEvent
 import com.vitorpamplona.quartz.experimental.trustedLists.events.tags.EventMemberTag
+import com.vitorpamplona.quartz.experimental.trustedLists.tags.MemberTagFields
 import com.vitorpamplona.quartz.experimental.trustedLists.users.UserTrustedListEvent
 import com.vitorpamplona.quartz.experimental.trustedLists.users.tags.PubKeyMemberTag
 import com.vitorpamplona.quartz.nip01Core.core.Address
@@ -363,9 +364,6 @@ internal class References(
     }
 }
 
-/** The 0..100 percentage at index 3 of a member tag, or null where the scale cannot express it. */
-private fun scoreOf(tag: Array<String>): Int? = tag.getOrNull(3)?.toIntOrNull()?.takeIf { it in 0..100 }
-
 /** `value -> score` for every member tag of [name] that carries a readable one. */
 internal fun TagArray.memberScores(
     name: String,
@@ -375,7 +373,9 @@ internal fun TagArray.memberScores(
         this@memberScores.forEach { tag ->
             if (tag.size > 1 && tag[0] == name) {
                 val value = valueOf(tag) ?: return@forEach
-                scoreOf(tag)?.let { put(value, it) }
+                // Quartz's reading of the family's index-3 score: 0..100, anything
+                // else dropped rather than clamped (see MemberTagFields.score).
+                MemberTagFields.score(tag)?.let { put(value, it) }
             }
         }
     }
