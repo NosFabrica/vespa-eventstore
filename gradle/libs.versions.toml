@@ -6,7 +6,20 @@ app = "1.0.1"
 mavenPublish = "0.37.0"
 # Quartz from Maven Central (com.vitorpamplona.quartz:quartz, a release) — NIP-11 DSL + opt-out
 # SQLite FTS index.
-# 2.7.3 = tag v2.7.3 (fbe0912), from Central as before. 81 commits over v2.4.0 (8d6895c); scanned
+# 2.8.0 = tag v2.8.0 (89ae60a, "chore(release): v2.8.0"), from Central as before. 19 commits over
+# 2.7.3 (baseline 32215cf, "chore: set version to 2.7.3"); a tree diff of quartz/src between them,
+# main sources, scanned against this store's imports (35 packages):
+#  - ALL OF IT IS THE RELAY SERVER'S LIVE FAN-OUT: nip01Core.relay.server (RelaySession, SessionSink,
+#    the new FanoutExecutor / LiveFrameSink, and backend/ EventIngest, LiveEventStore, RequestContext,
+#    SessionBackend, the new LiveSubscriptionBackend) and relay.filters.FilterIndex. This store
+#    imports none of them (its relay.filters imports are Filter and FilterMatcher, both unchanged),
+#    so no read, write or search path here moves. A consumer whose SessionBackend wraps this store
+#    (vespa-relay's ObserverBackend) is affected: see LiveSubscriptionBackend's KDoc.
+#  - No searchable kind, extractor or IEventStore member moved: nothing to reindex.
+#  - RUNTIME CLASSPATH (:store): quartz alone moves; its build changes only benchmark system
+#    properties, so the published POM names the same dependency versions as 2.7.3's.
+#
+# Prev 2.7.3 = tag v2.7.3 (fbe0912), from Central as before. 81 commits over v2.4.0 (8d6895c); scanned
 # against this store's imports (32 packages; a tree diff of quartz/src between the tags, main
 # sources). What reaches the store, all through SearchFieldExtractor and EventFactory:
 #  - SIX MORE SEARCHABLE KINDS, drss.io's reader: 30100 (feed list: title, feed titles), 30101 (list
@@ -186,7 +199,7 @@ mavenPublish = "0.37.0"
 # catch-all; SearchableEvent grows the read-path forEachIndexableField, no reindex).
 # Prev cecc3287b2 (2026-09-01: 17 catch-all kinds split into title/body roles, four
 # affiliation URLs, six doubled `t`-tag scans dropped; a ranking backfill).
-quartz = "2.7.3"
+quartz = "2.8.0"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 # Matches what Quartz brings transitively; Gradle would resolve to it regardless.
