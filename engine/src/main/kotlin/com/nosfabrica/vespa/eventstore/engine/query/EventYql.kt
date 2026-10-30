@@ -705,6 +705,38 @@ object EventYql {
     fun buildDistinctTagValues(q: EventQuery): VespaQuery? = grouping(q, """all(group(tag_index) each(output(count())))""")
 
     /**
+     * Each of [authors]' newest stored [kind] — `EventIndex.newestVersions` — as
+     * ONE grouping read entirely off attributes: author -> its single newest
+     * `created_at` -> every id at that second.
+     *
+     * A grouping, not the `idtime` summary: that summary is (id, created_at),
+     * so a hit there cannot say whose version it is, and adding `pubkey` to it
+     * would make every snapshot walk pay for a field none of them reads. Here
+     * no hit and no summary is produced at all.
+     *
+     * `max(1)` with `order(-max(created_at))` keeps one second per author, and
+     * the merge across content nodes is exact for it (each node's newest second
+     * is a candidate; the global newest is the max of the candidates). The ids
+     * at that second come back WHOLE — no `max()` — because the tiebreak is the
+     * lowest id and the grouping cannot order groups by a string; the reader
+     * takes the minimum (GroupingResults.newestPerAuthor). A tie inside one
+     * author's replaceable second is drift, so that list is almost always one.
+     *
+     * The author list caps nothing: one group per author that HAS a version,
+     * which the caller sized. Null when no author is a usable key.
+     */
+    fun buildNewestVersions(
+        kind: Int,
+        authors: List<String>,
+    ): VespaQuery? {
+        if (authors.isEmpty()) return null
+        return grouping(
+            EventQuery(kinds = listOf(kind), authors = authors),
+            "all(group(pubkey) each(all(group(created_at) max(1) order(-max(created_at)) each(all(group(id) each(output(count())))))))",
+        )
+    }
+
+    /**
      * The PEOPLE half of [EventIndex.scoreLinks]: the documents [linkers] would
      * serve that carry any of [keys] in `tag_index`, grouped key -> author ->
      * kind, each kind group carrying its count and `sum(relevance())` — under the

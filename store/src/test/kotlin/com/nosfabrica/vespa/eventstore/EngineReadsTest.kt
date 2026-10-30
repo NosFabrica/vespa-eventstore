@@ -27,6 +27,7 @@ import com.nosfabrica.vespa.eventstore.engine.doc.SearchFields
 import com.nosfabrica.vespa.eventstore.engine.metrics.Activity
 import com.nosfabrica.vespa.eventstore.engine.metrics.CostLedger
 import com.nosfabrica.vespa.eventstore.engine.metrics.MeteredEventIndex
+import com.nosfabrica.vespa.eventstore.engine.metrics.PortCall
 import com.nosfabrica.vespa.eventstore.engine.metrics.withActivity
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import kotlinx.coroutines.runBlocking
@@ -47,6 +48,7 @@ class EngineReadsTest {
     private val mock = MockVespaEngine()
     private val index = VespaEventIndex(mock.url)
     private val ledger = CostLedger()
+    private val metered = MeteredEventIndex(ledger, index)
 
     /**
      * The search fields are given explicitly rather than derived: what a term
@@ -77,7 +79,7 @@ class EngineReadsTest {
     @Test
     fun `it reads the documents the engine really holds`() =
         runBlocking {
-            val engine = EngineReads(index)
+            val engine = EngineReads(index, metered)
             index.putAll(listOf(doc("1".repeat(64)), doc("2".repeat(64)), doc("3".repeat(64), kind = 7)))
 
             val at = mock.searchRequests.size
@@ -110,7 +112,7 @@ class EngineReadsTest {
     @Test
     fun `searchRanked carries the engine's relevance, not just the hits`() =
         runBlocking {
-            val engine = EngineReads(index)
+            val engine = EngineReads(index, metered)
             index.putAll(listOf(doc("1".repeat(64)), doc("2".repeat(64))))
             mock.relevanceOf = { if (it.id.startsWith("1")) 9.0 else 3.0 }
 
@@ -132,7 +134,7 @@ class EngineReadsTest {
     @Test
     fun `existingIds answers membership off the id attribute`() =
         runBlocking {
-            val engine = EngineReads(index)
+            val engine = EngineReads(index, metered)
             val held = listOf("1".repeat(64), "2".repeat(64))
             index.putAll(held.map { doc(it) })
 
@@ -151,15 +153,15 @@ class EngineReadsTest {
 
     /**
      * THE DOCUMENTED COST OF USING IT: the meter is a decorator one layer up,
-     * so a read taken here is invisible to `VespaEventStore.metrics()`. That is
-     * right for a health count and wrong for anything that walks the corpus —
-     * and it is a property of the wiring, so it is pinned rather than trusted.
+     * so a HARNESS read taken here is invisible to `VespaEventStore.metrics()`.
+     * That is right for a rank-quality run and wrong for anything that walks
+     * the corpus — and it is a property of the wiring, so it is pinned rather
+     * than trusted. The production probes are the other half, below.
      */
     @Test
-    fun `reads taken here are not metered`() =
+    fun `harness reads taken here are not metered`() =
         runBlocking {
-            val metered = MeteredEventIndex(ledger, index)
-            val engine = EngineReads(index)
+            val engine = EngineReads(index, metered)
             index.putAll(listOf(doc("1".repeat(64))))
 
             withActivity(Activity.Query) { engine.search(EventQuery()) }
@@ -167,5 +169,32 @@ class EngineReadsTest {
 
             withActivity(Activity.Query) { metered.search(EventQuery()) }
             assertTrue(ledger.snapshot().ports.isNotEmpty(), "the same read through the metered index must book one")
+        }
+
+    /**
+     * THE INGEST PROBES ARE METERED, as admission probes of the batch they
+     * precede: a mirror's dedup reads are the hottest read it makes, and they
+     * used to book nothing at all. Both land on [Activity.BatchInsert] whatever
+     * the caller's context, and on the port call that names their shape.
+     */
+    @Test
+    fun `the ingest probes are booked to the batch they precede`() =
+        runBlocking {
+            val engine = EngineReads(index, metered)
+            index.putAll(listOf(doc("1".repeat(64), kind = 3)))
+
+            engine.existingIds(listOf("1".repeat(64)))
+            engine.newestVersions(3, listOf("a".repeat(64)))
+            val booked =
+                ledger
+                    .snapshot()
+                    .ports
+                    .map { it.activity to it.call }
+                    .toSet()
+            assertEquals(
+                setOf(Activity.BatchInsert to PortCall.Exists, Activity.BatchInsert to PortCall.Group),
+                booked,
+                "booked: $booked",
+            )
         }
 }

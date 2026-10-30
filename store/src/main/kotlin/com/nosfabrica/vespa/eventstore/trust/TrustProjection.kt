@@ -153,6 +153,12 @@ class TrustProjection(
 
     override suspend fun scanAuthors(query: EventQuery): Set<String> = inner.scanAuthors(query)
 
+    // A read: nothing to react to, and the default would answer with full documents.
+    override suspend fun newestVersions(
+        kind: Int,
+        authors: List<String>,
+    ): Map<String, DocRef> = inner.newestVersions(kind, authors)
+
     override fun close() {
         inner.close()
         reputations.close()

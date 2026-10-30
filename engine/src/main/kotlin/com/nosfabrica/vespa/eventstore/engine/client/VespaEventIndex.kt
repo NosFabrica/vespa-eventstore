@@ -42,6 +42,7 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventSelection
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.nosfabrica.vespa.eventstore.engine.query.VespaQuery
+import com.nosfabrica.vespa.eventstore.engine.requirePlainReplaceable
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import com.vitorpamplona.quartz.utils.Hex
 import kotlinx.coroutines.async
@@ -1885,6 +1886,28 @@ class VespaEventIndex(
         }
 
     /**
+     * [EventIndex.newestVersions] as one attribute-only grouping per
+     * [VERSION_AUTHOR_CHUNK] authors ([EventYql.buildNewestVersions]): no
+     * document is read and no hit is materialized, where the read it replaces
+     * (vespa-relay's ingest probe) pulled every stored version of every author
+     * as a full document with no limit. Coverage-checked like every grouping
+     * ([queryRoot]): a partial answer would claim "nothing to beat" for an
+     * author whose version sat on the missing node.
+     */
+    override suspend fun newestVersions(
+        kind: Int,
+        authors: List<String>,
+    ): Map<String, DocRef> {
+        requirePlainReplaceable(kind)
+        val out = HashMap<String, DocRef>()
+        for (chunk in authors.distinct().chunked(VERSION_AUTHOR_CHUNK)) {
+            val vq = EventYql.buildNewestVersions(kind, chunk) ?: continue
+            queryRoot(vq, hits = 0)?.let { out.putAll(GroupingResults.newestPerAuthor(it)) }
+        }
+        return out
+    }
+
+    /**
      * [EventIndex.scoreLinks] in three reads, two of them concurrent:
      *
      *  1. PEOPLE ([EventYql.buildLinkPeople]): one grouping, key -> author ->
@@ -2276,6 +2299,14 @@ class VespaEventIndex(
 
         /** Concurrent document-API gets for a pure-id lookup. Gets are light (no summary stage to overrun), so this floats above QUERY_FANOUT. */
         const val ID_GET_FANOUT = 32
+
+        /**
+         * Authors per [newestVersions] grouping. The width the store's own
+         * version and guard reads are built at (BulkRecordInsert's CHECK_CHUNK)
+         * and the one vespa-relay's ingest already chunked to, so a relay batch
+         * stays one round trip; it bounds the YQL's length, not the answer.
+         */
+        const val VERSION_AUTHOR_CHUNK = 500
 
         /**
          * How much of a slow read's YQL is kept. Bounded because the ring is

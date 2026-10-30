@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore
 
+import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.app.SchemaDeployer
 import com.nosfabrica.vespa.eventstore.engine.client.VespaEventIndex
 import com.nosfabrica.vespa.eventstore.engine.client.VespaReputationIndex
@@ -77,6 +78,8 @@ class VespaEventStore internal constructor(
      * behind every rule this store enforces.
      */
     private val eventIndex: VespaEventIndex,
+    /** [eventIndex] under the store's meter, for the reads [engine] books as production traffic. */
+    private val meteredIndex: EventIndex,
     /** Repair tool for the trust view over the engine index; see [reconcileTrust]. */
     private val reconciler: TrustReconciler,
     /** The projection, for the deferred-mode drain barrier ([awaitTrustProjection]). */
@@ -99,7 +102,7 @@ class VespaEventStore internal constructor(
      * for the two jobs that want that. Everything else should read through the
      * `IEventStore` surface this class delegates.
      */
-    val engine: EngineReads = EngineReads(eventIndex)
+    val engine: EngineReads = EngineReads(eventIndex, meteredIndex)
 
     /** The engine's feed-health status line (bulk-ingest backpressure), for progress/status output. */
     fun feedStatus(): String = eventIndex.feedStatus()
@@ -511,7 +514,7 @@ class VespaEventStore internal constructor(
             ledger.gauge("trust.keying.visited") { keyingMigration.progress.visited.get() }
             ledger.gauge("trust.keying.total") { keyingMigration.progress.total.get() }
             ledger.gauge("trust.keying.keys.removed") { keyingMigration.progress.keysRemoved.get() }
-            return VespaEventStore(store, eventIndex, reconciler, trust, drainScope, keying, keyingMigration.progress, readOnly)
+            return VespaEventStore(store, eventIndex, metered, reconciler, trust, drainScope, keying, keyingMigration.progress, readOnly)
         }
 
         /**

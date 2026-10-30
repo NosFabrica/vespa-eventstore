@@ -231,6 +231,12 @@ class MeteredEventIndex(
 
     override suspend fun scanAuthors(query: EventQuery): Set<String> = meterResult(PortCall.Group, { inner.scanAuthors(query) }, { it.size.toLong() })
 
+    /** A grouping, booked as one: the authors it answered for are its denominator. */
+    override suspend fun newestVersions(
+        kind: Int,
+        authors: List<String>,
+    ): Map<String, DocRef> = meterResult(PortCall.Group, { inner.newestVersions(kind, authors) }, { it.size.toLong() })
+
     /**
      * Booked as ONE call however many pages it walks, with the documents it
      * streamed as the denominator — the walk is the unit of work a caller

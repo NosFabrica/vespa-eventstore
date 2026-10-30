@@ -20,12 +20,16 @@
  */
 package com.nosfabrica.vespa.eventstore
 
+import com.nosfabrica.vespa.eventstore.engine.DocRef
+import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.LinkScore
 import com.nosfabrica.vespa.eventstore.engine.LinkTarget
 import com.nosfabrica.vespa.eventstore.engine.LinkWeights
 import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.client.VespaEventIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
+import com.nosfabrica.vespa.eventstore.engine.metrics.Activity
+import com.nosfabrica.vespa.eventstore.engine.metrics.withActivity
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 
 /**
@@ -48,14 +52,27 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
  * supersession, the trust projection's reactions), reachable by autocomplete.
  * Nothing needed that; the read shapes below did.
  *
- * NOT METERED: reads made here appear in no activity on
- * `VespaEventStore.metrics()`, because the meter is a decorator one layer up.
- * That is right for a health count and wrong for anything that walks the
- * corpus, which will make the store look idle while Vespa is busy. Prefer the
- * `IEventStore` surface for real reads.
+ * TWO KINDS OF READ, metered differently on purpose:
+ *
+ *  - The HARNESS reads ([search], [searchRanked], [count], [scoreLinks]) are
+ *    NOT METERED: they appear in no activity on `VespaEventStore.metrics()`,
+ *    because the meter is a decorator one layer up, and a rank-quality run
+ *    measuring a profile should not book itself as the store's traffic.
+ *  - The PRODUCTION probes ([existingIds], [newestVersions]) a consumer's
+ *    ingest runs before every batch go THROUGH the meter, booked to
+ *    [Activity.BatchInsert] — they are the admission probes of the write that
+ *    follows, made a step early. They were unmetered when this type only had
+ *    [existingIds], so a mirror's dedup traffic, the hottest read it makes,
+ *    showed on the pulse page as nothing at all.
+ *
+ * A consumer's production path that needs another engine read is a missing
+ * member HERE, never a reason to reach for the concrete client: this type is
+ * where the schema's field names stop.
  */
 class EngineReads internal constructor(
     private val index: VespaEventIndex,
+    /** The same engine under the meter (`MeteredEventIndex`), for the production probes. */
+    private val metered: EventIndex,
 ) {
     /** Documents matching [query], with no lens applied. */
     suspend fun search(query: EventQuery): List<EventDoc> = index.search(query)
@@ -87,5 +104,27 @@ class EngineReads internal constructor(
      * gate hides. It follows that a hit here is NOT a promise that a read will
      * return the event — only that writing it again would be wasted work.
      */
-    suspend fun existingIds(ids: List<String>): Set<String> = index.existingIds(ids)
+    suspend fun existingIds(ids: List<String>): Set<String> = withActivity(Activity.BatchInsert) { metered.existingIds(ids) }
+
+    /**
+     * The stored winner of each `(kind, author)` address among [authors] — its
+     * id and `created_at` under NIP-01's rule (highest `created_at`, ties to
+     * the lowest id), the version an arriving replaceable has to BEAT to be
+     * stored. Authors with nothing stored are absent. See
+     * `EventIndex.newestVersions` for the contract; [kind] must be a plain
+     * replaceable (0, 3, 10000-19999), anything else is refused.
+     *
+     * What a pre-verification drop needs and no more: one attribute-only
+     * grouping per 500 authors, no document read, the tiebreak applied by the
+     * engine that also applies it on write — so a consumer holding this
+     * cannot drift from the rule that decides what is stored. Un-lensed and
+     * expiry-blind like [existingIds], for the same reason: "would writing
+     * this be wasted work" is a question about the corpus. Read before the
+     * writer lock, so it is a hint: a version stored between this read and the
+     * write is still caught by the store's own supersession.
+     */
+    suspend fun newestVersions(
+        kind: Int,
+        authors: List<String>,
+    ): Map<String, DocRef> = withActivity(Activity.BatchInsert) { metered.newestVersions(kind, authors) }
 }

@@ -1118,7 +1118,31 @@ class EventYqlTest {
         listOf(
             EventYql.buildDistinctAuthors(EventQuery())!!,
             EventYql.buildCount(EventQuery())!!,
+            EventYql.buildNewestVersions(0, listOf("ab".repeat(32)))!!,
         )
+
+    /**
+     * The newest-version probe reads ATTRIBUTES ONLY and is one grouping: no
+     * hits, no summary, unranked (a recency profile's match phase would cut the
+     * very versions it is asked about), and every author's newest second kept
+     * whole so the reader can break a tie to the lowest id.
+     */
+    @Test
+    fun `newest versions is an attribute-only grouping keeping one second per author`() {
+        val author = "ab".repeat(32)
+        val q = EventYql.buildNewestVersions(3, listOf(author))!!
+        assertTrue(q.yql.startsWith("select * from event where kind in (3) and pubkey in (\"$author\") limit 0 | "), q.yql)
+        assertTrue(
+            q.yql.endsWith(
+                "all(group(pubkey) each(all(group(created_at) max(1) order(-max(created_at)) each(all(group(id) each(output(count())))))))",
+            ),
+            q.yql,
+        )
+        assertEquals(EventYql.RANK_UNRANKED, q.ranking)
+        assertNull(q.params["presentation.summary"], "no hit is produced, so no summary is named")
+        assertNull(EventYql.buildNewestVersions(3, emptyList()), "no authors asks about nobody, never about every author")
+        assertNull(EventYql.buildNewestVersions(3, listOf("not hex")), "no usable author key matches nothing")
+    }
 
     /** Aggregations must answer over the whole match set: Vespa defaults to TEN groups without these. */
     @Test
