@@ -21,19 +21,18 @@
 package com.nosfabrica.vespa.eventstore.mapping
 
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
-import com.vitorpamplona.quartz.nip01Core.core.Address
 import com.vitorpamplona.quartz.nip01Core.core.Event
-import com.vitorpamplona.quartz.nip01Core.core.isAddressable
-import com.vitorpamplona.quartz.nip01Core.core.isReplaceable
 import com.vitorpamplona.quartz.nip01Core.store.owner
-import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
 import com.vitorpamplona.quartz.utils.EventFactory
 
 /*
  * Event <-> EventDoc, both directions, plus the derived-field helpers: the
  * exact stored form ([toDoc]), the typed reconstruction ([toEvent]), the owner
- * (gift-wrap recipient or author), and the NIP-01 replaceable/addressable
- * address. Pure, with no store state.
+ * (gift-wrap recipient or author). Pure, with no store state. The NIP-01
+ * replaceable/addressable address an [Event] occupies is quartz's
+ * `Event.addressTagOrNull()` (kind-dispatched, the fixed empty d-tag for a
+ * replaceable even with a stray `d`); [EventDoc.addressOrNull] is the same
+ * rule over the stored fields.
  */
 
 /**
@@ -53,18 +52,6 @@ internal fun Event.toDoc(): EventDoc =
         owner = owner(),
         search = SearchExtractors.extract(this),
     )
-
-/**
- * The NIP-01 address for replaceable/addressable kinds; null for regular
- * events. Replaceables use the fixed empty d-tag regardless of stray d tags,
- * matching Quartz's BaseReplaceableEvent.FIXED_D_TAG.
- */
-internal fun Event.addressOrNull(): String? =
-    when {
-        kind.isReplaceable() -> Address.assemble(kind, pubKey)
-        kind.isAddressable() -> Address.assemble(kind, pubKey, tags.dTag())
-        else -> null
-    }
 
 /**
  * Rebuild a stored [EventDoc] into its typed Quartz [Event] — the query result

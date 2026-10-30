@@ -24,9 +24,9 @@ import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
-import com.nosfabrica.vespa.eventstore.mapping.addressOrNull
 import com.nosfabrica.vespa.eventstore.mapping.toEvent
 import com.vitorpamplona.quartz.nip01Core.core.Event
+import com.vitorpamplona.quartz.nip01Core.core.addressTagOrNull
 import com.vitorpamplona.quartz.nip01Core.core.isAddressable
 import com.vitorpamplona.quartz.nip01Core.core.isReplaceable
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
@@ -82,7 +82,7 @@ internal class Deletions(
                     ),
                 ).isNotEmpty()
         if (deletionExists("e", event.id)) return true
-        val address = event.addressOrNull() ?: return false
+        val address = event.addressTagOrNull() ?: return false
         return deletionExists("a", address)
     }
 

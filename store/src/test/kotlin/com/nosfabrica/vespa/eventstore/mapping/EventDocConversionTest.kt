@@ -22,8 +22,10 @@ package com.nosfabrica.vespa.eventstore.mapping
 
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.vitorpamplona.quartz.nip01Core.core.Event
+import com.vitorpamplona.quartz.nip01Core.core.addressTagOrNull
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 
 /**
  * The [toEvent] fast path must be INDISTINGUISHABLE from the canonical
@@ -75,5 +77,31 @@ class EventDocConversionTest {
             val d = doc(kind, tags = emptyList(), content = "")
             assertEquals(Event.fromJson(d.toEventJson()).toJson(), d.toEvent().toJson(), "kind $kind empty")
         }
+    }
+
+    /**
+     * The ingest guards key an EVENT by quartz's `addressTagOrNull()`, the
+     * engine's supersession keys its stored DOC by [EventDoc.addressOrNull]:
+     * the two must name the same coordinate, or a version the guard admitted
+     * would supersede under another key. Covers the shapes where a rule could
+     * differ: a replaceable carrying a stray `d` (the fixed empty d wins), an
+     * addressable with no `d` (empty), with an empty first `d` before a valued
+     * one (the first `d` counts), and a regular kind (no address).
+     */
+    @Test
+    fun `an event and its stored doc name the same address`() {
+        val shapes =
+            listOf(
+                doc(0, tags = listOf(listOf("d", "stray"))),
+                doc(10002, tags = emptyList()),
+                doc(30023, tags = listOf(listOf("d", "slug"))),
+                doc(30023, tags = emptyList()),
+                doc(30023, tags = listOf(listOf("d", ""), listOf("d", "second"))),
+                doc(30382, tags = listOf(listOf("d", "e".repeat(64)))),
+            )
+        for (d in shapes) assertEquals(d.addressOrNull(), d.toEvent().addressTagOrNull(), "kind ${d.kind} tags ${d.tags}")
+        assertEquals("0:${"c".repeat(64)}:", doc(0, tags = listOf(listOf("d", "stray"))).toEvent().addressTagOrNull())
+        assertNull(doc(1).toEvent().addressTagOrNull())
+        assertNull(doc(1).addressOrNull())
     }
 }
