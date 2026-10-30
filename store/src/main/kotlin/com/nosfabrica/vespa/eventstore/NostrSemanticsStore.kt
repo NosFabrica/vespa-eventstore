@@ -60,6 +60,7 @@ import com.nosfabrica.vespa.eventstore.trust.TrustExplain
 import com.nosfabrica.vespa.eventstore.trust.TrustProjection
 import com.nosfabrica.vespa.eventstore.trust.TrustProviders
 import com.vitorpamplona.quartz.nip01Core.core.Event
+import com.vitorpamplona.quartz.nip01Core.core.HexKey
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
@@ -70,7 +71,9 @@ import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import com.vitorpamplona.quartz.nip01Core.store.StoreQueryContext
 import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
 import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
+import com.vitorpamplona.quartz.nip59Giftwrap.wraps.GiftWrapEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
+import com.vitorpamplona.quartz.nip65RelayList.AdvertisedRelayListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import com.vitorpamplona.quartz.utils.Hex
@@ -1141,6 +1144,40 @@ class NostrSemanticsStore(
         }
     }
 
+    /**
+     * Every author with a live stored event and no live NIP-65 relay list
+     * (kind 10002), gift-wrap keys left out — Quartz's contract, answered off
+     * author scans instead of Quartz's default, which streams `query(Filter())`
+     * and so, on a store whose `query` returns a List, MATERIALIZES THE WHOLE
+     * CORPUS (211M events on the production relay) to read one field of each.
+     *
+     * Three [EventIndex.scanAuthors] walks — everyone, the 10002 authors, the
+     * 1059 authors — each a paged visit projecting `pubkey` alone, so the cost
+     * is O(events) in the engine and O(authors) here, never a decoded event.
+     * The gift-wrap rule ("a 1059's pubkey is a one-time key, not an author")
+     * is the one an author scan cannot express, since no [EventQuery] says "not
+     * kind 1059": a key that signed a 1059 is dropped unless it ALSO signed
+     * something else, which two per-author groupings per 500 such keys decide
+     * exactly. Raw corpus semantics, as the contract says "in this store":
+     * no lens; expiry honored like every read, so an author whose only 10002
+     * expired is missing. Order unspecified.
+     */
+    override suspend fun authorsMissingOutbox(): List<HexKey> =
+        withActivity(Activity.Snapshot) {
+            val live = EventQuery(notExpiredAt = nowSecs())
+            val withOutbox = index.scanAuthors(live.copy(kinds = listOf(AdvertisedRelayListEvent.KIND)))
+            val wrappers = index.scanAuthors(live.copy(kinds = listOf(GiftWrapEvent.KIND)))
+            val missing = LinkedHashSet<HexKey>()
+            for (author in index.scanAuthors(live)) if (author !in withOutbox) missing += author
+            for (chunk in missing.filter { it in wrappers }.chunked(OUTBOX_WRAPPER_CHUNK)) {
+                val all = index.countByAuthor(live.copy(authors = chunk))
+                val wraps = index.countByAuthor(live.copy(authors = chunk, kinds = listOf(GiftWrapEvent.KIND)))
+                // Only gift wraps under this key: a one-time key, not an author.
+                for (key in chunk) if ((all[key] ?: 0) <= (wraps[key] ?: 0)) missing -= key
+            }
+            missing.toList()
+        }
+
     override suspend fun deleteExpiredEvents() {
         checkWritable("deleteExpiredEvents")
         withActivity(Activity.Delete) {
@@ -1378,6 +1415,9 @@ class NostrSemanticsStore(
     }
 
     private companion object {
+        /** Gift-wrap keys per pair of author groupings in [authorsMissingOutbox]: the width every author-chunked read here uses. */
+        const val OUTBOX_WRAPPER_CHUNK = 500
+
         /** The outcome key for an insert that failed on the ENGINE rather than on a rule. */
         const val OUTCOME_FAILED = "failed"
 
