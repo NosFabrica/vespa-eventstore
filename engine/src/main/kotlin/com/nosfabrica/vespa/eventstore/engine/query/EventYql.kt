@@ -894,6 +894,8 @@ object EventYql {
          * what removes below-floor documents before they are grouped.
          */
         ranking: String = RANK_UNRANKED,
+        /** The document type grouped: `event`, or `reputation` for [buildGrouping]'s trust counts. */
+        source: String = EVENT_SOURCE,
     ): VespaQuery? {
         // A present limit <= 0 is the "matches nothing" sentinel (as in [build]);
         // a positive limit is about hits, not the grouping, so it is ignored.
@@ -910,11 +912,67 @@ object EventYql {
         params["grouping.defaultMaxHits"] = UNLIMITED_GROUPS
         params[MATCH_THREADS] = SINGLE_MATCH_THREAD
         return VespaQuery(
-            yql = "select * from event where $where limit 0 | $pipeline",
+            yql = "select * from $source where $where limit 0 | $pipeline",
             params = params,
             ranking = ranking,
             shape = clauseShape(q),
         )
+    }
+
+    /** The event document type — every query here but [buildGrouping]'s reputation counts. */
+    const val EVENT_SOURCE = "event"
+
+    /** The trust projection's parent documents, one per scored pubkey (`reputation.sd`). */
+    const val REPUTATION_SOURCE = "reputation"
+
+    /**
+     * A CALLER'S OWN grouping [pipeline] over [q]'s match set — the generic
+     * aggregation behind `EngineReads.group`, for statistics whose shape is
+     * the caller's (a dashboard's charts) and whose plumbing must not be: the
+     * same [grouping] every aggregation here rides, so the group ceilings are
+     * off, no `order by` trips the match phase, the profile is unranked, and
+     * the WHERE clause is compiled from an [EventQuery] rather than written
+     * against the schema's field names by a consumer.
+     *
+     * [pipeline] is Vespa grouping language, `all(...)` or `each(...)`, and is
+     * sent as written: what it names (`created_at`, `pubkey`, `kind`,
+     * `tag_index`, `time.date(created_at)`) is the schema's vocabulary, which
+     * is the caller's to keep in step — the field names are part of this
+     * store's public surface the day a pipeline reads them. A second `|` would
+     * chain another grouping into the same response, so it is refused: one
+     * read, one tree.
+     *
+     * [REPUTATION_SOURCE] takes no filter: the event fields an [EventQuery]
+     * compiles to do not exist on that document type, so a filtered reputation
+     * grouping is refused rather than sent to fail. Null when [q] provably
+     * matches nothing.
+     */
+    fun buildGrouping(
+        q: EventQuery,
+        pipeline: String,
+        source: String = EVENT_SOURCE,
+    ): VespaQuery? {
+        val p = pipeline.trim()
+        require(p.startsWith("all(") || p.startsWith("each(")) { "a grouping pipeline starts with all( or each(, was: ${p.take(80)}" }
+        require(!chainsAnother(p)) { "one grouping per read: the pipeline may not chain another with '|'" }
+        require(source == EVENT_SOURCE || source == REPUTATION_SOURCE) { "unknown document type '$source'" }
+        require(source == EVENT_SOURCE || q == EventQuery()) { "a reputation grouping takes no filter: the event fields do not exist on reputation documents" }
+        return grouping(q, p, source = source)
+    }
+
+    /** Whether [pipeline] has a `|` outside a quoted string — a regex `filter` may carry one inside its quotes. */
+    private fun chainsAnother(pipeline: String): Boolean {
+        var quoted = false
+        var i = 0
+        while (i < pipeline.length) {
+            when (pipeline[i]) {
+                '\\' -> i++
+                '"' -> quoted = !quoted
+                '|' -> if (!quoted) return true
+            }
+            i++
+        }
+        return false
     }
 
     /** The trigram-net weight for the query's words (text_relevance's `w_gram`). */

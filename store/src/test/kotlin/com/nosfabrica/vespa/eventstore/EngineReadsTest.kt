@@ -49,6 +49,7 @@ class EngineReadsTest {
     private val index = VespaEventIndex(mock.url)
     private val ledger = CostLedger()
     private val metered = MeteredEventIndex(ledger, index)
+    private val reads = EngineReads(index, metered, ledger)
 
     /**
      * The search fields are given explicitly rather than derived: what a term
@@ -195,6 +196,28 @@ class EngineReadsTest {
                 setOf(Activity.BatchInsert to PortCall.Exists, Activity.BatchInsert to PortCall.Group),
                 booked,
                 "booked: $booked",
+            )
+        }
+
+    /**
+     * A consumer's own grouping comes back as Vespa's root and is booked to
+     * [Activity.Aggregate] — the statistics read vespa-relay used to post
+     * itself, unmetered. The real pipelines run against a real Vespa in
+     * `EngineGroupIT`; the mock only answers the plain count.
+     */
+    @Test
+    fun `a caller's grouping answers the root and is booked as an aggregate`() =
+        runBlocking {
+            index.putAll(listOf(doc("1".repeat(64)), doc("2".repeat(64)), doc("3".repeat(64), kind = 7)))
+            val root = reads.group("all(output(count()))", EventQuery(kinds = listOf(1)))
+            assertEquals("2", root.toString().substringAfter("\"count()\":").takeWhile { it.isDigit() }, "root: $root")
+            assertEquals(
+                setOf(Activity.Aggregate to PortCall.Group),
+                ledger
+                    .snapshot()
+                    .ports
+                    .map { it.activity to it.call }
+                    .toSet(),
             )
         }
 }

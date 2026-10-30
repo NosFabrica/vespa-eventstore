@@ -29,12 +29,16 @@ import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.client.VespaEventIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.metrics.Activity
+import com.nosfabrica.vespa.eventstore.engine.metrics.CostLedger
+import com.nosfabrica.vespa.eventstore.engine.metrics.PortCall
 import com.nosfabrica.vespa.eventstore.engine.metrics.withActivity
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
+import com.nosfabrica.vespa.eventstore.engine.query.EventYql
+import kotlinx.serialization.json.JsonObject
 
 /**
- * THE ENGINE, READ DIRECTLY — under the trust projection and under the meter,
- * for the two jobs that genuinely want that and nothing else.
+ * THE ENGINE, READ DIRECTLY — under the trust projection, for the jobs that
+ * genuinely want the corpus rather than a lensed answer, and nothing else.
  *
  *  - **What is actually stored**, as opposed to what a lens would serve: the
  *    orphan-score sweep's own checks count 30382s the trust view hides.
@@ -43,7 +47,10 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
  *    engine and not about the store's answer.
  *  - **Whether an id is already held**, before paying to verify it: an ingest
  *    that skips a duplicate wants membership in the corpus, which is a
- *    different question from whether the connecting user could see it.
+ *    different question from whether the connecting user could see it — and,
+ *    beside it, **which stored version an arriving replaceable must beat**.
+ *  - **What the corpus holds, aggregated**: a dashboard's counts and series,
+ *    in its own grouping pipelines.
  *
  * READ-ONLY, and that is the point of the type. This used to be the concrete
  * [VespaEventIndex] hanging off the front door, which handed every consumer
@@ -58,9 +65,10 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
  *    NOT METERED: they appear in no activity on `VespaEventStore.metrics()`,
  *    because the meter is a decorator one layer up, and a rank-quality run
  *    measuring a profile should not book itself as the store's traffic.
- *  - The PRODUCTION probes ([existingIds], [newestVersions]) a consumer's
- *    ingest runs before every batch go THROUGH the meter, booked to
- *    [Activity.BatchInsert] — they are the admission probes of the write that
+ *  - The PRODUCTION reads go THROUGH the meter. [group], a consumer's
+ *    statistics, books to [Activity.Aggregate]. The probes ([existingIds],
+ *    [newestVersions]) a consumer's
+ *    ingest runs before every batch book to [Activity.BatchInsert] — they are the admission probes of the write that
  *    follows, made a step early. They were unmetered when this type only had
  *    [existingIds], so a mirror's dedup traffic, the hottest read it makes,
  *    showed on the pulse page as nothing at all.
@@ -73,7 +81,20 @@ class EngineReads internal constructor(
     private val index: VespaEventIndex,
     /** The same engine under the meter (`MeteredEventIndex`), for the production probes. */
     private val metered: EventIndex,
+    /** The store's ledger, for the one production read the port does not carry ([group]). Null books nothing. */
+    private val ledger: CostLedger? = null,
 ) {
+    /** The document type a [group] read aggregates. */
+    enum class Source(
+        internal val docType: String,
+    ) {
+        /** The stored events. */
+        EVENTS(EventYql.EVENT_SOURCE),
+
+        /** The trust projection's parent documents, one per scored pubkey; counted only (the scores are tensors). */
+        REPUTATION(EventYql.REPUTATION_SOURCE),
+    }
+
     /** Documents matching [query], with no lens applied. */
     suspend fun search(query: EventQuery): List<EventDoc> = index.search(query)
 
@@ -127,4 +148,41 @@ class EngineReads internal constructor(
         kind: Int,
         authors: List<String>,
     ): Map<String, DocRef> = withActivity(Activity.BatchInsert) { metered.newestVersions(kind, authors) }
+
+    /**
+     * A GROUPING [pipeline] of the caller's over [query]'s match set: Vespa's
+     * grouping `root`, as it came, for the caller to read.
+     *
+     * For statistics whose SHAPE is the caller's — a dashboard's charts, its
+     * buckets and their decoders stay with it, so a new chart needs no store
+     * release (vespa-relay's `docs/decisions/relay-maintenance.md` objection to
+     * building stats on the store) — and whose PLUMBING is this store's: the
+     * WHERE clause compiled from an [EventQuery] (kinds and a `created_at`
+     * window are what a dashboard filters by: `since = now + 1` for "signed in
+     * the future"), the group ceilings off, unranked, the query endpoints
+     * rotated, a degraded answer REFUSED (it throws; a partial count is a wrong
+     * chart), and the read metered as [Activity.Aggregate]. vespa-relay posted
+     * the same YQL itself, with none of those.
+     *
+     * [pipeline] is Vespa grouping language starting `all(` or `each(` — one
+     * grouping, no `|` chaining another — and it names schema fields
+     * (`created_at`, `pubkey`, `kind`, `tag_index`), which that makes part of
+     * what this store keeps stable. [Source.REPUTATION] takes no filter. A
+     * query that provably matches nothing answers an empty root without a
+     * round trip. Un-lensed, like everything here: a statistic is about the
+     * corpus.
+     */
+    suspend fun group(
+        pipeline: String,
+        query: EventQuery = EventQuery(),
+        source: Source = Source.EVENTS,
+    ): JsonObject =
+        withActivity(Activity.Aggregate) {
+            val t0 = System.nanoTime()
+            try {
+                index.group(query, pipeline, source.docType)
+            } finally {
+                ledger?.port(Activity.Aggregate, PortCall.Group, System.nanoTime() - t0)
+            }
+        }
 }

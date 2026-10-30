@@ -1888,6 +1888,28 @@ class VespaEventIndex(
         }
 
     /**
+     * A CALLER'S grouping [pipeline] over [query]'s match set
+     * ([EventYql.buildGrouping]), answered with Vespa's `root` node as it came:
+     * the statistics a dashboard reads, whose chart shapes are the caller's.
+     *
+     * Deliberately NOT a port member: Vespa's grouping language is this
+     * binding's, and the in-memory reference could only refuse it. The
+     * transport is every other grouping's — the query endpoint rotation, the
+     * engine-level ledger, and [queryRoot]'s coverage check, which throws on a
+     * degraded answer rather than hand back a partial statistic that reads as a
+     * whole one. A query that provably matches nothing answers an empty root
+     * without a round trip.
+     */
+    suspend fun group(
+        query: EventQuery,
+        pipeline: String,
+        source: String = EventYql.EVENT_SOURCE,
+    ): JsonObject {
+        val vq = EventYql.buildGrouping(query, pipeline, source) ?: return EMPTY_GROUPING_ROOT
+        return queryRoot(vq, hits = 0) ?: error("vespa answered a grouping with no root")
+    }
+
+    /**
      * [EventIndex.newestVersions] as one attribute-only grouping per
      * [VERSION_AUTHOR_CHUNK] authors ([EventYql.buildNewestVersions]): no
      * document is read and no hit is materialized, where the read it replaces
@@ -2309,6 +2331,10 @@ class VespaEventIndex(
          * stays one round trip; it bounds the YQL's length, not the answer.
          */
         const val VERSION_AUTHOR_CHUNK = 500
+
+        /** [group]'s answer to a query that matches nothing: Vespa's own shape for an empty match set. */
+        private val EMPTY_GROUPING_ROOT: JsonObject =
+            VESPA_JSON.parseToJsonElement("""{"id":"toplevel","relevance":1.0,"fields":{"totalCount":0},"children":[]}""").jsonObject
 
         /**
          * How much of a slow read's YQL is kept. Bounded because the ring is

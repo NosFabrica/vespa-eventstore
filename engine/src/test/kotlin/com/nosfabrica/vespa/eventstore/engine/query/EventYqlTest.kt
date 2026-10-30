@@ -1122,6 +1122,34 @@ class EventYqlTest {
         )
 
     /**
+     * A caller's grouping rides the shared aggregation shape — ceilings off,
+     * unranked, no `order by` — over a WHERE compiled from the query, and the
+     * reputation source takes no filter. One grouping per read: a `|` outside
+     * a quoted regex is refused, one inside is the regex's.
+     */
+    @Test
+    fun `a caller's grouping compiles its filter and refuses what it cannot send`() {
+        val q = EventYql.buildGrouping(EventQuery(kinds = listOf(9735), since = 100, until = 200), "all(group(time.date(created_at)) each(output(count())))")!!
+        assertEquals(
+            "select * from event where kind in (9735) and created_at >= 100 and created_at <= 200 limit 0 | all(group(time.date(created_at)) each(output(count())))",
+            q.yql,
+        )
+        assertEquals(EventYql.RANK_UNRANKED, q.ranking)
+        assertEquals(EventYql.UNLIMITED_GROUPS, q.params["grouping.defaultMaxGroups"])
+        assertEquals(
+            "select * from reputation where true limit 0 | all(output(count()))",
+            EventYql.buildGrouping(EventQuery(), "all(output(count()))", EventYql.REPUTATION_SOURCE)!!.yql,
+        )
+        val regex = "all(group(tag_index) filter(regex(\"^(?:r:a|r:b)$\", tag_index)) each(output(count())))"
+        assertTrue(EventYql.buildGrouping(EventQuery(), regex)!!.yql.endsWith(regex), "a quoted | is the regex's")
+        assertFailsWith<IllegalArgumentException> { EventYql.buildGrouping(EventQuery(), "all(output(count())) | all(output(count()))") }
+        assertFailsWith<IllegalArgumentException> { EventYql.buildGrouping(EventQuery(), "group(kind)") }
+        assertFailsWith<IllegalArgumentException> { EventYql.buildGrouping(EventQuery(kinds = listOf(1)), "all(output(count()))", EventYql.REPUTATION_SOURCE) }
+        assertFailsWith<IllegalArgumentException> { EventYql.buildGrouping(EventQuery(), "all(output(count()))", "event; drop") }
+        assertNull(EventYql.buildGrouping(EventQuery(ids = listOf("nothex")), "all(output(count()))"), "a query that matches nothing sends nothing")
+    }
+
+    /**
      * The newest-version probe reads ATTRIBUTES ONLY and is one grouping: no
      * hits, no summary, unranked (a recency profile's match phase would cut the
      * very versions it is asked about), and every author's newest second kept

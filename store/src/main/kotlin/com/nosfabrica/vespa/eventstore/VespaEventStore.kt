@@ -108,7 +108,7 @@ class VespaEventStore internal constructor(
      * for the two jobs that want that. Everything else should read through the
      * `IEventStore` surface this class delegates.
      */
-    val engine: EngineReads = EngineReads(eventIndex, meteredIndex)
+    val engine: EngineReads = EngineReads(eventIndex, meteredIndex, store.metrics)
 
     /** The engine's feed-health status line (bulk-ingest backpressure), for progress/status output. */
     fun feedStatus(): String = eventIndex.feedStatus()
