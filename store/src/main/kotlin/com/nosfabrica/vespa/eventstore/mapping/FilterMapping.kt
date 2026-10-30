@@ -26,7 +26,6 @@ import com.nosfabrica.vespa.eventstore.engine.text.IndexableChars
 import com.nosfabrica.vespa.eventstore.engine.text.StemText
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip50Search.SearchQuery
-import com.vitorpamplona.quartz.utils.Hex
 
 /*
  * NIP-01/NIP-50 filter -> engine query translation. A pure mapping with no
@@ -106,13 +105,12 @@ internal fun Filter.toEventQuery(): EventQuery? {
     val observer = intent.observer
     // NIP-50 `language:<ISO-639-1>`: a hint that adds the stemmed body column for
     // that language, where one exists. Never a filter (see EventQuery.stemLanguage).
-    // A regional tag (`pt-BR`, `es_419`) names its language by the primary subtag.
-    val stemLanguage =
-        parsed.language
-            ?.lowercase()
-            ?.substringBefore('-')
-            ?.substringBefore('_')
-            ?.takeIf { it in StemText.LANGUAGES }
+    // A regional tag (`pt-BR`, `es_419`) names its language by the primary subtag,
+    // which is quartz's SearchQuery.languageCode. That reader is looser than a
+    // column name may be (it lets a non-ASCII letter whose lowercase is ASCII,
+    // U+0130, through), so the store's own gate stays: only a code in
+    // StemText.LANGUAGES, and so only ASCII, ever names a column.
+    val stemLanguage = parsed.languageCode?.takeIf { it in StemText.LANGUAGES }
     val ranked = intent.ranked
     return EventQuery(
         // Lowercased ONCE here: the engine matches hex keys uncased, but the
@@ -170,8 +168,12 @@ internal class SearchIntent private constructor(
     /** The `filter:rank:gte|gt:N` trust floor, or null when absent or malformed. */
     val floor: Double? = parsed.extensions["filter"]?.let(::rankFloorOf)
 
-    /** The `observer:` lens, lowercased; null when absent or not 64-hex (an `npub` is ignored, not decoded). */
-    val observer: String? = parsed.extensions["observer"]?.lowercase()?.takeIf(Hex::isHexKey)
+    /**
+     * The `observer:` lens, lowercased; null when absent or not 64-hex (an `npub`
+     * is ignored, not decoded): quartz's [SearchQuery.observer], the same check
+     * this store made, in the other order (hex first, then lowercased).
+     */
+    val observer: String? = parsed.observer
 
     /** `include:spam`: the default trust floor waived. */
     val includeSpam: Boolean get() = parsed.includeSpam

@@ -74,6 +74,21 @@ class FilterMappingTest {
         assertNull(map("notícias").stemLanguage)
     }
 
+    /**
+     * Quartz's `SearchQuery.languageCode` lets a non-ASCII letter through when
+     * its lowercase is ASCII (U+0130, the dotted capital I, lowercases to `i`),
+     * and lowercases the code with the full string mapping. A column name may
+     * only ever be one this store ships, so the `StemText.LANGUAGES` gate stays
+     * after it: nothing but `pt` / `es` names a column, however it is spelled.
+     */
+    @Test
+    fun `a language code with a non-ASCII letter names no column`() {
+        assertNull(map("notícias language:\u0130t").stemLanguage)
+        assertNull(map("notícias language:p\u0130").stemLanguage)
+        assertNull(map("notícias language:\u0130\u0130-BR").stemLanguage)
+        assertNull(map("notícias language:portuguese").stemLanguage, "not an ISO 639 code")
+    }
+
     @Test
     fun `include spam lowers the floor to zero instead of dropping it`() {
         val q = map("vitor include:spam")
@@ -161,6 +176,8 @@ class FilterMappingTest {
     fun `observer token is lowercased and non-hex is ignored`() {
         assertEquals("a".repeat(64), map("vitor observer:${"A".repeat(64)}").observer)
         assertNull(map("vitor observer:not-a-key").observer, "a non-hex observer is dropped")
+        assertNull(map("vitor observer:${"a".repeat(64)}zz").observer, "64 hex and a tail is not a key")
+        assertNull(map("vitor observer:npub1${"q".repeat(58)}").observer, "an npub is ignored, not decoded")
         assertNull(map("vitor").observer, "no token, no observer")
     }
 
