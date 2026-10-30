@@ -91,7 +91,8 @@ internal fun Filter.toEventQuery(): EventQuery? {
     // search word is always a requirement, never syntax, so a pure-negative
     // query arrives with search=null and takes the plain-recall paths instead of
     // masquerading as a ranked search.
-    val parsed = SearchQuery.parse(search)
+    val intent = SearchIntent.of(search)
+    val parsed = intent.parsed
     // A word that is entirely a NIP-30 `:shortcode:` is one term, matching the
     // term the feed side wrote for that badge ([Shortcodes]) — on requirements
     // and exclusions alike. Quoted phrases are left literal: quoting asks for
@@ -100,9 +101,9 @@ internal fun Filter.toEventQuery(): EventQuery? {
     // Exclusions no index can hold ("-₿") are vacuous either way — dropped.
     // An emoji is indexed ([IndexableChars]): "-🔥" is a real exclusion.
     val notSearch = (parsed.notTerms.map(Shortcodes::rewriteWord) + parsed.notPhrases).filter(IndexableChars::hasIndexable)
-    val sort = parsed.extensions["sort"]?.let(::rankReputationOf)
-    val floor = parsed.extensions["filter"]?.let(::rankFloorOf)
-    val observer = parsed.extensions["observer"]?.lowercase()?.takeIf(Hex::isHex64)
+    val sort = intent.sort
+    val floor = intent.floor
+    val observer = intent.observer
     // NIP-50 `language:<ISO-639-1>`: a hint that adds the stemmed body column for
     // that language, where one exists. Never a filter (see EventQuery.stemLanguage).
     // A regional tag (`pt-BR`, `es_419`) names its language by the primary subtag.
@@ -112,7 +113,7 @@ internal fun Filter.toEventQuery(): EventQuery? {
             ?.substringBefore('-')
             ?.substringBefore('_')
             ?.takeIf { it in StemText.LANGUAGES }
-    val ranked = parsed.hasText || sort != null
+    val ranked = intent.ranked
     return EventQuery(
         // Lowercased ONCE here: the engine matches hex keys uncased, but the
         // reference expansion compares them as strings against stored keys
@@ -146,6 +147,46 @@ internal fun Filter.toEventQuery(): EventQuery? {
         // NOTE_RECENCY_WEIGHT); the engine sends it only on the default profile.
         recencyWeight = NOTE_RECENCY_WEIGHT.takeIf { ranked && kinds?.toSet() == NOTE_KINDS },
     )
+}
+
+/**
+ * WHAT A FILTER'S SEARCH STRING ASKS OF THIS STORE beside its words — the ONE
+ * reading of the extensions, which [toEventQuery] compiles from and the facade's
+ * `ReadShape` reports to a consumer deciding policy before the read (a lens
+ * requirement, a ranked-read throttle).
+ *
+ * One reading because two drift, and did: vespa-relay re-derived "ranked" as
+ * `hasText || extension("sort") != null`, while [rankReputationOf] ignores a
+ * `sort:` value it does not recognise — so `sort:bogus` was throttled there as a
+ * ranked read and served here as plain recall. Anything that asks "what does
+ * this extension mean" asks it here.
+ */
+internal class SearchIntent private constructor(
+    val parsed: SearchQuery,
+) {
+    /** The rank profile a recognised `sort:` selects; null for none, or for a value this store ignores. */
+    val sort: String? = parsed.extensions["sort"]?.let(::rankReputationOf)
+
+    /** The `filter:rank:gte|gt:N` trust floor, or null when absent or malformed. */
+    val floor: Double? = parsed.extensions["filter"]?.let(::rankFloorOf)
+
+    /** The `observer:` lens, lowercased; null when absent or not 64-hex (an `npub` is ignored, not decoded). */
+    val observer: String? = parsed.extensions["observer"]?.lowercase()?.takeIf(Hex::isHex64)
+
+    /** `include:spam`: the default trust floor waived. */
+    val includeSpam: Boolean get() = parsed.includeSpam
+
+    /**
+     * Whether the read is RANKED by relevance: it carries text (terms or a
+     * phrase) or a recognised `sort:`. Exactly the condition that stamps the
+     * default floor on a query ([toEventQuery]'s `minRank`), and that a
+     * consumer's ranked-read throttle must agree with.
+     */
+    val ranked: Boolean get() = parsed.hasText || sort != null
+
+    companion object {
+        fun of(search: String?): SearchIntent = SearchIntent(SearchQuery.parse(search))
+    }
 }
 
 /**
