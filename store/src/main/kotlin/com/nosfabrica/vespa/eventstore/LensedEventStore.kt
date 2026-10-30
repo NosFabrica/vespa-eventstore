@@ -92,4 +92,10 @@ interface LensedEventStore : IEventStore {
         unconditional: Boolean = false,
         where: (List<String>) -> Boolean = { true },
     ): Set<String>
+
+    /**
+     * [pubkey]'s trust chain as this store follows it — see [TrustLens] and
+     * [NostrSemanticsStore.lensOf]. Light enough for a per-sign-in check.
+     */
+    suspend fun lensOf(pubkey: String): TrustLens
 }

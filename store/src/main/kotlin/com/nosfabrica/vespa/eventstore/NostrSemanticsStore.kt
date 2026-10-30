@@ -56,6 +56,7 @@ import com.nosfabrica.vespa.eventstore.trust.Delegations
 import com.nosfabrica.vespa.eventstore.trust.Enrolment
 import com.nosfabrica.vespa.eventstore.trust.ProviderRefresher
 import com.nosfabrica.vespa.eventstore.trust.TrustCells
+import com.nosfabrica.vespa.eventstore.trust.TrustExplain
 import com.nosfabrica.vespa.eventstore.trust.TrustProjection
 import com.nosfabrica.vespa.eventstore.trust.TrustProviders
 import com.vitorpamplona.quartz.nip01Core.core.Event
@@ -822,6 +823,26 @@ class NostrSemanticsStore(
                 .joinToString(" ")
         }
     }
+
+    /**
+     * [pubkey]'s trust chain: their stored 10040, the lens it resolves to (the
+     * cached pass AND the stored list), and whether the rank service has signed
+     * anything here — three reads of at most one document each. A store built
+     * without [TrustProjection] resolves no lens and says so: the list is still
+     * read, the services and cards are not.
+     */
+    override suspend fun lensOf(pubkey: String): TrustLens =
+        withActivity(Activity.Query) {
+            val key = pubkey.lowercase()
+            require(key.length == 64 && Hex.isHex64(key)) { "pubkey must be 64-hex" }
+            val trust = index as? TrustProjection
+            if (trust == null) {
+                val listed = index.search(EventQuery(kinds = listOf(TrustProviderListEvent.KIND), authors = listOf(key), notExpiredAt = nowSecs(), limit = 1)).isNotEmpty()
+                return@withActivity TrustLens(key, listed, null, null, null, null, null, null)
+            }
+            val l = TrustExplain(index, trust.reputations, trust.recompute, nowSecs).lens(key)
+            TrustLens(key, l.hasProviderList, l.rankService, l.followersService, l.storedRankService, l.storedFollowersService, l.rankServiceHasCards, l.passAgeSecs)
+        }
 
     /** The rank cells [liveGate] reads: the projection's reputation index, or none on a store assembled without it. */
     private val trustCells = TrustCells((index as? TrustProjection)?.reputations, nowSecs)
