@@ -22,7 +22,6 @@ package com.nosfabrica.vespa.eventstore
 
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.app.SchemaDeployer
-import com.nosfabrica.vespa.eventstore.engine.app.VespaApp
 import com.nosfabrica.vespa.eventstore.engine.client.VespaEventIndex
 import com.nosfabrica.vespa.eventstore.engine.client.VespaReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.metrics.Activity
@@ -59,6 +58,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.net.URI
+import java.time.Duration
 
 /**
  * The library's public handle and front door: [open] wires the whole
@@ -309,6 +309,7 @@ class VespaEventStore internal constructor(
          *
          * [autoDeploy] (default) deploys the bundled schema to [configUrl] on
          * first contact; turn it off when an operator owns schema deployment.
+         * [schema] says the same with more choices ([SchemaDeploy]).
          * [relay] is the store's own relay url (NIP-62 vanish scope / NIP-42
          * identity); null for a bare store. [endpoints] names every container
          * endpoint of a multi-container cluster — the feed client spreads its
@@ -424,6 +425,17 @@ class VespaEventStore internal constructor(
              * process opens after.
              */
             tuning: EngineTuning = EngineTuning(),
+            /**
+             * How the bundled schema reaches Vespa — see [SchemaDeploy]. Follows
+             * [autoDeploy] unless set: [SchemaDeploy.IF_ABSENT] or
+             * [SchemaDeploy.NEVER], as before. [SchemaDeploy.IF_CHANGED] also
+             * pays the convergence wait an unchanged package may still owe,
+             * before any write; a caller that wants that wait beside its other
+             * boot steps, or to decide which deploy failures it survives, calls
+             * [deploySchema] itself and opens with [SchemaDeploy.NEVER]. A failed
+             * deploy throws [SchemaDeployException].
+             */
+            schema: SchemaDeploy = if (autoDeploy) SchemaDeploy.IF_ABSENT else SchemaDeploy.NEVER,
         ): VespaEventStore {
             require(!(readOnly && writers == WriterTopology.SINGLE_WRITER)) {
                 "readOnly with writers = SINGLE_WRITER: a store that writes nothing cannot be the only writer of its index"
@@ -431,7 +443,7 @@ class VespaEventStore internal constructor(
             // Before anything below reads one of them.
             tuning.pinProcessKnobs()
             val client = tuning.client()
-            if (autoDeploy) SchemaDeployer(configUrl).deployIfAbsent(url, VespaApp.zipBytes(tuning.accessLogOrEnv()))
+            deploySchema(url, configUrl, schema, tuning).awaitConvergence()
             val ledger = CostLedger(slowQueryThresholdNanos = slowQueryThresholdMillis?.let { it * 1_000_000 })
             // The ledger reaches the engine client too: rank profile, docs
             // matched and Vespa's own timing are only knowable from inside the
@@ -572,6 +584,26 @@ class VespaEventStore internal constructor(
             signal.trySend(Unit)
             return scope
         }
+
+        /**
+         * Bring the bundled schema to the Vespa at [url] as [mode] says, BEFORE
+         * opening a store — the step [open] runs itself, for a caller that
+         * needs its pieces: the convergence wait to run beside other boot work
+         * ([SchemaDeployment.awaitConvergence]), and the choice of which failed
+         * deploys to survive ([SchemaDeployException.serving]). Then
+         * `open(…, schema = SchemaDeploy.NEVER)`.
+         *
+         * [tuning] supplies the access-log choice for the deployed package
+         * (`VESPA_ACCESS_LOG` when it names none). [awaitTimeout] bounds
+         * [SchemaDeploy.AWAIT]'s wait for another process's deploy.
+         */
+        fun deploySchema(
+            url: String,
+            configUrl: String = deriveConfigUrl(url),
+            mode: SchemaDeploy = SchemaDeploy.IF_CHANGED,
+            tuning: EngineTuning = EngineTuning(),
+            awaitTimeout: Duration = Duration.ofMinutes(10),
+        ): SchemaDeployment = runSchemaDeploy(SchemaDeployer(configUrl), url, mode, tuning.accessLogOrEnv(), awaitTimeout)
 
         /** Backoff between drain retries after an engine failure. */
         private const val DRAIN_RETRY_MILLIS = 5_000L
