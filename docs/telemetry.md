@@ -50,7 +50,7 @@ carefully:
 | **engine work** — docs matched, coverage, rank profile | the ranked-search cost that dominates a relay's CPU | **no** |
 
 Round trips are this codebase's native unit of cost. The bulk-insert design is
-justified in them, `benchmark/README.md` reports them per event, and CLAUDE.md
+justified in them, `benchmark/README.md` reports them per event, and AGENTS.md
 states a rule in them. There is no counter for them anywhere in the library.
 That absence says more about the shape of the current model than any complaint
 about its data structures: the model measures what was easy to time from inside
@@ -453,10 +453,10 @@ the symptom.
 
 ### 7.3 A performance contract that becomes executable
 
-`InMemoryEventIndex` is described in CLAUDE.md as the **executable
+`InMemoryEventIndex` is described in AGENTS.md as the **executable
 specification** of `EventQuery` semantics. Metering it makes it the executable
 specification of *cost* as well: with round trips counted at the port,
-CLAUDE.md's rule — "Never ingest in a loop over `insert()`" — becomes a unit test
+AGENTS.md's rule — "Never ingest in a loop over `insert()`" — becomes a unit test
 asserting round-trips-per-event for `batchInsert`, with no Vespa and no Docker.
 
 Today that rule is a comment, and the ~47× claim behind it is a benchmark
@@ -940,7 +940,7 @@ Four things this settles that no unit test could:
   first real run.
 - **`calls/doc 0.025`** is the amortization claim as a live number: one port
   call carried all forty documents. `TelemetryTest` turns the same measurement
-  into the gate CLAUDE.md's rule always deserved.
+  into the gate AGENTS.md's rule always deserved.
 
 ## 14. Audit findings
 

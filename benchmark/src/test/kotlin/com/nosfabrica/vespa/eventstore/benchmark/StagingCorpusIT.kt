@@ -54,7 +54,7 @@ import kotlin.test.assertTrue
  *    content per event, which is what makes the write path's derivation cost
  *    (`SearchExtractors`, measured at 9,527 ns/event) real rather than nominal.
  *  - **real dirt.** Staging holds notes dated in the year 2100; captured as-is,
- *    because that raw shape is the point (CLAUDE.md).
+ *    because that raw shape is the point (AGENTS.md).
  *
  * READ-ONLY AGAINST STAGING, and this test never touches it: the capture is a
  * separate offline step and this feeds a throwaway container. Staging deploys

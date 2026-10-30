@@ -1,10 +1,36 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+The one rules file for coding agents in this repository: Codex reads it directly, Claude Code
+through `CLAUDE.md`, which only points here. Change a rule here, never in `CLAUDE.md`, so the two
+cannot drift apart again (they had: each held sections the other lacked).
 
 ## What this is
 
 A Vespa-backed implementation of Quartz's `IEventStore` (Quartz is the Nostr library from Amethyst) that filters and ranks everything — REQs, COUNTs, and NIP-50 search — through each connecting user's NIP-85 web of trust. Kotlin 2.4 / JDK 21, Gradle multi-module. Published to Maven Central as `com.nosfabrica.vespa.eventstore:{store,engine}`.
+
+## What goes where
+
+Three repos, one direction of dependency: quartz ← vespa-eventstore ← its consumers (vespa-relay).
+
+- **Anything that knows a Vespa schema field, YQL, a rank profile, or what a search extension
+  MEANS lives in this store.** A consumer that writes YQL, names `created_at` / `tag_index` /
+  `pubkey` outside a grouping pipeline it hands to `EngineReads.group`, parses `sort:` /
+  `observer:` / `include:spam` itself (`ReadShape.of` answers that), re-implements the
+  supersession tiebreak (`EngineReads.newestVersions`), the provider map (`lensOf`), or a
+  `VESPA_*` parse (`EngineTuning.fromEnv`) holds a copy that will drift — vespa-relay's did, and
+  disagreed with the store on `sort:bogus` and on which rank provider is a reader's lens.
+- **A consumer's production path reaching through `.engine` or `.store` is a missing facade
+  member.** Add it to the facade (`VespaEventStore`, `LensedEventStore`, `EngineReads`, a root
+  DTO); the two hatches stay for ops and benchmarks. A capability both handles answer goes on
+  `LensedEventStore`, so `(store as? LensedEventStore)` is the consumer's only type test.
+- **A Nostr rule this store needs that quartz lacks goes upstream to quartz FIRST** (filter
+  matching, tag codecs, kind classification, NIP grammar). A local shim is allowed while the
+  quartz change is in flight, and its KDoc names that change; when quartz already has the rule,
+  call it (`FilterMatcher.match`, `MemberTagFields.score`). Build against a local quartz with
+  `-PquartzDir` (below) to land both together.
+- **Policy that is the consumer's stays the consumer's**: wording of a notice, which deploy failure
+  to survive, chart shapes and bucket decoders, editorial caps. The store hands back facts
+  (`TrustChain`, `SchemaDeployException.serving`, a raw grouping root), never the decision.
 
 ## Commands
 
@@ -24,8 +50,12 @@ A Vespa-backed implementation of Quartz's `IEventStore` (Quartz is the Nostr lib
 
 - First build installs git hooks (`.git-hooks` → `.git/hooks`): pre-commit runs `spotlessCheck`, pre-push runs `test`.
 - Spotless enforces ktlint plus the MIT license header (`.spotless/copyright.kt`) on every `.kt` file — new files without the header fail the build; `spotlessApply` inserts it.
-- Dependency versions live in `gradle/libs.versions.toml`. Quartz comes from **Maven Central**, a release (`com.vitorpamplona.quartz:quartz`, `quartz = "2.7.3"`) — not JitPack, because this store is published to Central with quartz as an `api` dependency; bumps are deliberate and the comment there records what the new pin contains. Nothing else here comes from JitPack either (`jitpack.yml` only lets JitPack build this store for vespa-relay). The published library version is `app`.
-- Benchmarks (against a live Vespa): `./gradlew :benchmark:run`, plus targeted tasks (`searchBench`, `queryBench`, `visitBench`, `multiFilterBench`, `rankAb`, …) — see `benchmark/README.md`, which is also the repo's performance knowledge base (measured numbers, config A/Bs, why decisions were made).
+- Dependency versions live in `gradle/libs.versions.toml`. Quartz comes from **Maven Central**, a release (`com.vitorpamplona.quartz:quartz`, `quartz = "2.8.0"`) — not JitPack, because this store is published to Central with quartz as an `api` dependency; bumps are deliberate and the comment there records what the new pin contains. Nothing else here comes from JitPack either (`jitpack.yml` only lets JitPack build this store for vespa-relay). The published library version is `app`.
+- **Building against a local quartz**: `./gradlew -PquartzDir=../quartz build` includes that
+  checkout as a composite build and substitutes it for the pinned artifact in every module (like
+  quartz's own `-PcryptoKmpDir`; `settings.gradle.kts`). For a change that needs quartz and this
+  store together — the published POM still names the pin, so the quartz release lands first.
+- Benchmarks (against a live Vespa): `./gradlew :benchmark:run`, plus targeted tasks (`searchBench`, `queryBench`, `visitBench`, `multiFilterBench`, `rankAb`, `searchTrace` — the per-clause-family latency split for one NIP-50 term, …) — see `benchmark/README.md`, which is also the repo's performance knowledge base (measured numbers, config A/Bs, why decisions were made).
 - Local Vespa for manual testing: `docker run --detach --name vespa --publish 8080:8080 --publish 19071:19071 vespaengine/vespa`; `VespaEventStore.open(url)` auto-deploys the bundled schema on first contact.
 
 ## The live system (real data to pull into a local environment)
@@ -66,29 +96,104 @@ stays hermetic (testcontainers). **Read only: never feed it, and never point a t
 
 ## Architecture
 
-Three modules, layered strictly bottom-up:
+Three modules, layered strictly bottom-up — and inside each, packages that are layered too.
+`ModuleBoundariesTest` (in `:store`) asserts the whole order below, so a new package is a
+deliberate decision (it fails until the layer table names it) rather than a drift:
 
-- **`:engine`** — the engine layer: the ports and shared helpers at the package root (`EventIndex`, `ReputationIndex`, `InMemoryEventIndex`, `ScoredHit`), document shapes (`doc/`), the `EventQuery` → YQL compiler (`query/`), and the Vespa client (`client/` — `VespaEventIndex` reads via OkHttp h2c, writes via Vespa's official feed client; `VespaReputationIndex`) plus the bundled Vespa application package.
-- **`:store`** — Nostr semantics on top: `NostrSemanticsStore` (the `IEventStore` implementation), the NIP-85 trust projection (`trust/`), per-kind search extraction (a thin wrapper over Quartz's `SearchFieldExtractor` in `mapping/SearchExtractors`), and `VespaEventStore.open()` — the public front door.
-- **`:benchmark`** — not published. Perf harness + the parity/rank-regression integration tests (the CI correctness gates).
+- **`:engine`** — the index port and its Vespa binding. Reading order is the layer order:
+  `text/` + `async/` + `app/` + `tuning/` (shared leaves: near-text derivation, bounded fan-out,
+  the bundled Vespa application package and its deployer, the process-wide `ProcessKnob`s) → `doc/` (document shapes) → `query/` (the
+  `EventQuery` → YQL compiler) → the package root (`EventIndex`, `ReputationIndex`, `ScoredHit`,
+  `Ranked` — the PORT) → `metrics/` (`MeteredEventIndex`, the cost ledger, `IngestStats`,
+  `DegradedReads`) → `memory/` + `client/` (the two implementations: the in-memory executable
+  spec, and `VespaEventIndex` reading via OkHttp h2c / writing via Vespa's feed client,
+  `VespaReputationIndex`).
+- **`:store`** — relay policy on top. `runtime/` and `mapping/` are leaves that import no other
+  store package (`WriterTopology` + background-worker failure accounting; the Quartz `Filter` →
+  `EventQuery` mapping, per-kind search extraction, Vespa text rules) → `ingest/` (the write
+  path: bulk inserts, the guard caches, NIP-09/62 enforcement, the rejection vocabulary),
+  `trust/` (the NIP-85 projection), `search/` (reference expansion) → the package root, which is
+  the FACADE: exactly the types a CONSUMER names, and nothing else. Today that is
+  `VespaEventStore.open()` (the front door), `NostrSemanticsStore` (the `IEventStore`
+  implementation), `LensedEventStore` (the capabilities beyond `IEventStore` that both of them
+  answer), the values a consumer passes in — `EngineTuning` (every operator setting, with the
+  strict `fromEnv`), `SchemaDeploy` — and the values it hands back or throws — `RejectedException`,
+  `EngineReads`, `TrustHealth`, `TrustChain` (`lensOf`), `ReadShape` (the search grammar's verdict
+  on a filter), `StoreTelemetry`, `SchemaDeployment` / `SchemaDeployException`, `LiveGate` (the
+  observer gate a relay applies to a subscription's live events), `ScoredSearch`
+  (`scoredProfileSearch`'s hits with their own engine scores, plus the rank service that scored them).
+  A new type here has to earn it by being named from outside; the machinery
+  behind one goes in a leaf (`TrustHealth` is a DTO, while the registries it reads stay
+  `internal` in `trust/`; `LiveGate`'s rank-cell cache is `trust/TrustCells`). Nothing below the root imports the two COMPOSED types
+(`NostrSemanticsStore`, `VespaEventStore`) — that is the cycle the layering exists to prevent.
+A value the store hands back or throws is not that: `ingest/EventAdmission` throws
+`RejectedException` because it is the store's public vocabulary for a rejection, and a value
+travelling up is the opposite of a package reaching up.
+- **`:benchmark`** — not published. `harness/` (backends, corpora, result plumbing, the parity
+  and rank-quality batteries), `bench/` (the timed suites), `probe/` (targeted A/Bs), `load/`
+  (corpus loaders and dumps), plus the parity/rank-regression integration tests — the CI
+  correctness gates.
 
-The stack `open()` assembles: `NostrSemanticsStore( TrustProjection( VespaEventIndex + VespaReputationIndex ) )`. Consumers see the Quartz `IEventStore` interface plus a few facade types at the `:store` package root (`EngineReads`, `TrustHealth`, `LiveGate`, `ScoredSearch`, …).
+The stack `open()` assembles: `NostrSemanticsStore( TrustProjection( VespaEventIndex + VespaReputationIndex ) )`.
+
+Two rules the compiler cannot hold, so tests do (`:store`, and they read the SOURCE — the test
+task declares both source trees as inputs so a violation added in `:engine` cannot leave them
+cached): `ModuleBoundariesTest` — the layer order above, no package unnamed by it, no facade
+import from below, and a test named after a class lives in that class's package.
+`PortDecoratorsTest` — every `EventIndex` decorator overrides every port member. That second one
+matters more than it sounds: several port members have DEFAULT bodies that are correct-but-slow
+answers for an engine that cannot do better, so a decorator that inherits one does not fail to
+decorate it, it ANSWERS with it. Adding a member to `EventIndex` means adding it to
+`TrustProjection` and `MeteredEventIndex` in the same commit.
+
+Consumers get the Quartz `IEventStore` surface (`VespaEventStore` delegates it), plus two deliberate
+escape hatches for ops and benchmarks: `store` (the concrete `NostrSemanticsStore`, for capabilities
+beyond the interface) and `engine` (read-only, un-metered, NOT trust-projected — what is really
+stored, and what a rank profile does). Both are documented at their declaration; prefer the
+`IEventStore` surface for real reads.
+
+**Where the seam actually is.** It is NOT "Nostr-free engine / Nostr-aware store" — `:engine` knows
+Nostr, deliberately: `EventIndex.putIfNewer` implements the NIP-01 supersession rule *and its
+tiebreak* (it has to, to be engine-atomic), `EventDoc` computes NIP-01 addresses and gates tags on
+`isIndexableTagName`, and `doc/TrustKeys` + `EventQuery.rankKey`/`followersKey` carry the NIP-85
+concepts the rank profiles in `event.sd` are written around. The real seam is **the index port and its Vespa binding**
+(what a document is, how a query compiles, how it travels) **versus relay policy** (write
+serialization, deletion / expiration / vanish enforcement, the trust projection, the search grammar,
+page assembly). So when hunting a rule: supersession and address computation are engine; anything a
+*relay* decides is store.
 
 ### The engine port and its executable spec
 
 `EventIndex` (`:engine`, `EventIndex.kt`) is the seam everything hangs on: get/put/remove + `EventQuery` recall, with a hard contract — read-your-writes per document, and an **acked put is visible to search**. That contract is what makes the store's query-then-write logic sound. There are two implementations: the real Vespa client, and `InMemoryEventIndex`, which is the **executable specification** of `EventQuery` matching semantics — store tests run against it with no Vespa. `MockVespaEngine` (testFixtures, a Jetty h2c server) additionally exercises the real HTTP clients' wire format.
 
-**Known blind spot**: the in-memory reference and the mock can miss real-Vespa-only divergences (e.g. Vespa omits empty-string fields from summaries; string attributes match uncased unless `match: cased`). Anything touching YQL, summaries, or the schema needs the integration gate (`-Pintegration`): `VespaParityIT` asserts exact result parity with Quartz's SQLite store (127/127 checks), `RankRegressionIT` pins search-ranking quality against a canonical corpus, `ObserverGateIT` pins the observer gate engine-side (trust-gated recall, both gated profiles), `OrphanSweepIT` pins the orphan-score sweep (the `distinctAuthors` grouping decides what gets deleted) — the mock cannot rank or gate.
+**Known blind spot**: the in-memory reference and the mock can miss real-Vespa-only divergences (e.g. Vespa omits empty-string fields from summaries; string attributes match uncased unless `match: cased`). Anything touching YQL, summaries, or the schema needs the integration gate (`-Pintegration`): `VespaParityIT` asserts exact result parity with Quartz's SQLite store (127/127 checks), `RankRegressionIT` pins search-ranking quality against a canonical corpus, `ObserverGateIT` pins the observer gate engine-side (trust-gated recall, both gated profiles), `OrphanSweepIT` pins the orphan-score sweep (the `distinctAuthors` grouping decides what gets deleted), `FilterMatrixIT` runs ~10k REQ+COUNT pairs through `open()` — NIP-01 shapes × lens modes × `sort:` × search shapes — against an in-test oracle (served set == oracle, COUNT == served), `NewestVersionsIT` holds the newest-version grouping to the in-memory reference, `EngineGroupIT` runs vespa-relay's statistics pipelines through `EngineReads.group` — the mock cannot rank, gate or run a grouping beyond a count.
+
+### Recency planning (`RecencyStrategy`, `engine/client/`)
+
+A limit'd newest-first read would otherwise make the engine walk its whole match set to keep the newest few — match time, not summaries or parsing, is nearly all of a feed REQ's cost at scale. `VESPA_RECENCY_STRATEGY` picks how that is bounded; the default `speculative` runs the read inside a `since` window anchored at its newest end, where a full page proves itself (everything outside is strictly older — true under the trust gate too) and a short one widens, falling back to the shipped `match_phase` behavior for narrow reads (`match_phase` is also the escape hatch). `RecencyWindowMemory` remembers per read shape where the last page was found (or that the shape is narrow), so repeated shapes resolve in one query (`VESPA_RECENCY_MEMORY=0` disables it). Pages are resolved ID-FIRST: every recency query (overfetch, tie windows, speculative attempts) projects to the attribute-only `idtime` summary, and one `id in (…)` query then reads exactly the page's documents (`VespaEventIndex.hydrate`; `VESPA_ID_FIRST=0` disables it) — on a corpus larger than memory, document reads were the load tail. All strategies serve the identical page; `./gradlew :benchmark:recencyStrategyProbe` asserts that against any loaded Vespa and prints the cost per strategy, and `recency.speculative.*` `IngestStats` stages count live outcomes. Internal existence probes opt out by stamping `RANK_UNRANKED` (a window can only add a round trip to them). Numbers and rejected alternatives: `benchmark/README.md`, "Recency strategies".
 
 ### Nostr semantics (`NostrSemanticsStore`)
 
 All writes serialize behind one `Mutex` (`withWriteLock`), making query-then-write atomic within the process. `insertLocked` enforces: dedup, replaceable/addressable supersession (NIP-01 tiebreak: same `created_at` → lowest id wins), NIP-09 deletions (same-owner only; deleting a deletion is a no-op — Quartz's SQLite store gets this wrong, we don't), NIP-40 expiration, NIP-62 vanish, ephemeral-never-stored. Rejections return typed `"duplicate:"`/`"replaced:"`/`"blocked:"` reasons (`Rejections.kt`). The store **never verifies signatures** — it deliberately holds unsigned rumors; verification is the caller's ingress job.
 
-The per-event `insert()` path pays admission-probe round trips; `batchInsert()` amortizes them (~47× fewer round trips). Never ingest in a loop over `insert()`.
+The per-event `insert()` path pays admission-probe round trips; `batchInsert()` amortizes them (~47× fewer round trips). Never ingest in a loop over `insert()`. The same holds one layer down, and is handled there: the trust projection reacts per STORE COMMIT, not per port call — the store wraps each trust-gated ingest commit in `TrustProjection.commit`, every put/remove inside it records its reaction, and the commit applies them in one crash-ledger bracket and one pipelined cell write. Per-call reaction made a 150,000-card assistant run (one `putIfNewer` per card on the address-keyed path) take ~18 minutes (`./gradlew :benchmark:cardRunProbe`). A new trust-gated write path should run inside a commit too; a call outside one opens its own.
 
 ### Trust projection (`store/trust/`)
 
-`TrustProjection` maintains per-pubkey `reputation` parent documents (which the event schema imports for ranking) as an `EventIndex` **decorator**: it observes `put`/`remove` on the index, so every deletion style (supersession, kind-5, vanish, sweep) updates trust tensors with zero deletion-specific code. Work is declared as `Dirt` in the crash-safe `DirtLedger` — settled inline, or (default in `open()`) drained by a background worker; `awaitTrustProjection()` is the read-your-writes barrier. `TrustReconciler` is the startup/ops repair for drift no write trigger can see, and owns the one trust-side deletion: `sweepOrphanScores()` drops the 30382s signed by services no 10040 names (never automatic; it refuses outright when no 10040 is readable, since that state is indistinguishable from a corpus mirrored before its provider lists).
+`TrustProjection` maintains per-pubkey `reputation` parent documents (which the event schema imports for ranking) as an `EventIndex` **decorator**: it observes `put`/`remove` on the index, so every deletion style (supersession, kind-5, vanish, sweep) updates trust tensors with zero deletion-specific code. Cells are keyed by the SERVICE that signed the 30382, never by the observer: a card is one cell update, a removal one cell remove, and the observer's kind 10040 is resolved to service keys per query (`NostrSemanticsStore.lensed`, `EventQuery.rankKey`/`followersKey`) — so a 10040 write costs nothing unless it names a service no list named before, whose stored cards are then walked into cells (`docs/service-keyed-trust.md`). That walk is the one deferred reaction, declared as `Dirt` in the crash-safe `DirtLedger` — settled inline, or (default in `open()`) drained by a background worker; `awaitTrustProjection()` is the read-your-writes barrier. `TrustKeyingMigration` re-keys a store fed before this model, once, at `open()`. `TrustReconciler` is the startup/ops repair for drift no write trigger can see, and owns the one trust-side deletion: `sweepOrphanScores()` drops the 30382s signed by services no 10040 names (never automatic; it refuses outright when no 10040 is readable, since that state is indistinguishable from a corpus mirrored before its provider lists).
+
+### Operator settings (`EngineTuning`)
+
+Every operator setting this library reads — the `VESPA_*` variables and `GUARD_OWNERS_DISABLE` —
+is a field of `EngineTuning` (store root), documented there with its variable, range and the
+code that reads it; `EngineTuning.VARIABLES` lists them. `open(tuning = EngineTuning.fromEnv(env))`
+parses STRICTLY (every bad variable named in one exception); a field left null is read the old,
+lenient way, so `open()` without a tuning is unchanged. Per-store settings travel as values
+(`ClientTuning` into the engine client, `guardOwnersDisabled` into the store); the few read as
+constants from places no store instance reaches (fan-outs, the match-phase depth, the dedup chunk,
+the trust walk's page and slice) are `ProcessKnob`s, pinned once per process by `open()`. **A new
+knob goes on `EngineTuning`** (field, `fromEnv`, `VARIABLES`) — never a bare `System.getenv` in the
+class that reads it, which is how ~25 lenient reads accumulated.
 
 ### The schema ships with the code
 
@@ -277,4 +382,4 @@ Only kinds Quartz parses as `SearchableEvent` are searchable. The per-kind decom
   day or less, not the wide ones four hand-run queries had suggested. Four
   queries are an anecdote. When the mechanism is not understood, write that down
   instead of inventing one.
-- Design docs in `docs/` (`scaling.md`, `multi-node-consistency.md`, `server-side-constraints.md`, `attribute-memory.md`, `embedded-vespa-study.md`, `telemetry.md`) record operator guidance and studied-but-rejected alternatives — check them before re-proposing one. `attribute-memory.md` is the per-field RAM budget of `event.sd` — read it before adding an attribute or reaching for `paged`.
+- Design docs in `docs/` (`scaling.md`, `multi-node-consistency.md`, `server-side-constraints.md`, `attribute-memory.md`, `embedded-vespa-study.md`, `recency-ranking.md`, `telemetry.md`, `locking.md` — every lock and blocking call, its verdict, and the owner-striped design that would replace the writer lock, `trust-gate-filter.md` — the observer gate as an imported match filter, measured and not shipped, `gated-count.md` — cheaper gated COUNTs: by author (exact) wins, sampling rejected, `search-evaluation.md` — how a search change is judged: topics, graded judgments, the measures, the statistics and the ship rule) record operator guidance and studied-but-rejected alternatives — check them before re-proposing one. `attribute-memory.md` is the per-field RAM budget of `event.sd` — read it before adding an attribute or reaching for `paged`.

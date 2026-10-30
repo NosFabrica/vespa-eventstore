@@ -76,7 +76,7 @@ class ModuleBoundariesTest {
      * cycles. `ingest/EventAdmission` throws `RejectedException` because that
      * is the store's public vocabulary for a rejection, and a value travelling
      * up is the opposite of a package reaching up. Naming the two composed
-     * types rather than the whole package is deliberate; CLAUDE.md says the
+     * types rather than the whole package is deliberate; AGENTS.md says the
      * same thing in prose.
      */
     private val facades = setOf("NostrSemanticsStore", "VespaEventStore")
