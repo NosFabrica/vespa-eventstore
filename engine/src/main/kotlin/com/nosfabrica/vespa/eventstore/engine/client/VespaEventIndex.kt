@@ -267,10 +267,14 @@ class VespaEventIndex(
     // ---- get / put / remove -------------------------------------------------
 
     override suspend fun get(id: String): EventDoc? {
+        // A stored event's id is 64 hex, so anything else is absent, and it
+        // never reaches a url: kind-5 targets arrive here having passed only
+        // quartz's length check.
+        if (!isHexKey(id)) return null
         // Address-keyed replaceables aren't at the id docid; resolve by the id
         // attribute instead (finds regular AND replaceable).
         if (addressKeyed) return searchById(id)
-        val resp = http.get("${documentEndpoint()}/document/v1/$EVENT_NAMESPACE/$EVENT_DOCTYPE/docid/$id")
+        val resp = http.get("${documentEndpoint()}/document/v1/$EVENT_NAMESPACE/$EVENT_DOCTYPE/docid/${docIdSegment(id)}")
         if (resp.statusCode() == 404 && isAbsentDocument(resp.body())) return null
         require(resp.statusCode() < 400) { "vespa get ${resp.statusCode()}: ${resp.body().take(300)}" }
         return resp.decode(VESPA_JSON, DocEnvelope.serializer()).fields?.toDoc(withNearState = true)

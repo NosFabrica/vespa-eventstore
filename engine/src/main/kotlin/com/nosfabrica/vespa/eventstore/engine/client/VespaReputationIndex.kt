@@ -63,7 +63,10 @@ class VespaReputationIndex(
     override suspend fun get(pubkey: String): ReputationDoc? = fields(pubkey)?.let(ReputationDoc::fromSummary)
 
     private suspend fun fields(pubkey: String): JsonObject? {
-        val resp = http.get("${documentApi.next()}/document/v1/$NAMESPACE/$DOCTYPE/docid/$pubkey")
+        // Not hex-checked: the store keeps non-hex marker documents here. The
+        // segment allow-list is what keeps a key inside its docid.
+        val segment = docIdSegment(pubkey) ?: return null
+        val resp = http.get("${documentApi.next()}/document/v1/$NAMESPACE/$DOCTYPE/docid/$segment")
         if (resp.statusCode() == 404 && isAbsentDocument(resp.body())) return null
         require(resp.statusCode() < 400) { "vespa reputation get ${resp.statusCode()}: ${resp.body().take(300)}" }
         return resp.decode(Json, JsonObject.serializer())["fields"]?.jsonObject

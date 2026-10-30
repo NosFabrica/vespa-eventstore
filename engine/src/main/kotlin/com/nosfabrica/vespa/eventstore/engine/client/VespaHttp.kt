@@ -332,3 +332,22 @@ internal class VespaHttp(
         const val PING_INTERVAL_SECONDS = 15L
     }
 }
+
+/**
+ * [id] as ONE path segment of a document-API url (`…/docid/<segment>`), or null
+ * when it cannot be one, which a get reads as absent. The ids and keys reaching
+ * a get come from signed events whose tags only quartz's length check has seen,
+ * and `../../../../../search/?yql=…` would leave the document API for any path
+ * on the container. Percent-encoding is not enough: Jetty refuses an encoded
+ * `/` with a 400 (so one bad tag would fail a whole deletion), and a whole `.`
+ * or `..` segment is a dot segment even encoded. So the segment is allow-listed
+ * to what this store's docids are made of: hex ids and pubkeys, and the
+ * reputation index's marker keys (letters, digits, `-`, `_`, `.`, `:`).
+ */
+internal fun docIdSegment(id: String): String? {
+    if (id.isEmpty() || id == "." || id == "..") return null
+    for (c in id) {
+        if (!(c in 'a'..'z' || c in 'A'..'Z' || c in '0'..'9' || c == '-' || c == '_' || c == '.' || c == ':')) return null
+    }
+    return id
+}
