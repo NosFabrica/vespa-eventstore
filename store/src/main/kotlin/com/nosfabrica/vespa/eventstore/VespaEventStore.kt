@@ -68,8 +68,13 @@ import java.net.URI
  */
 class VespaEventStore internal constructor(
     /**
-     * The concrete store, exposed for Vespa-specific capabilities beyond the
-     * Quartz interface (e.g. `distinctTagValues`).
+     * The concrete store — an ESCAPE HATCH for ops and benchmarks, like
+     * [engine]. Every capability beyond Quartz's interface that a consumer's
+     * production path needs is delegated on this class through
+     * [LensedEventStore] (`liveGate`, `scoredProfileSearch`, the kind-scoped
+     * reindex, `distinctTagValues`), so `vespaEventStore.liveGate(...)` and
+     * `(anyStore as? LensedEventStore)?.liveGate(...)` both work; a consumer
+     * reaching through here for something else is a missing facade member.
      */
     val store: NostrSemanticsStore,
     /**
@@ -92,7 +97,7 @@ class VespaEventStore internal constructor(
     private val keyingProgress: TrustKeyingProgress = TrustKeyingProgress(),
     /** Opened with `readOnly = true`: the trust repairs below refuse too, as the store's own writes do. */
     private val readOnly: Boolean = false,
-) : IEventStore by store {
+) : LensedEventStore by store {
     private fun checkWritable(operation: String) {
         if (readOnly) readOnlyRefusal(operation)
     }

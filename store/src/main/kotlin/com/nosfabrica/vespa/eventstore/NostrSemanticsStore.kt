@@ -195,7 +195,7 @@ class NostrSemanticsStore(
      * [index], which `VespaEventStore.open` installs.
      */
     val metrics: CostLedger = CostLedger(),
-) : IEventStore {
+) : LensedEventStore {
     init {
         require(!(readOnly && writers == WriterTopology.SINGLE_WRITER)) {
             "readOnly with writers = SINGLE_WRITER: a store that writes nothing cannot be the only writer of its index"
@@ -724,7 +724,7 @@ class NostrSemanticsStore(
      * lookup could land on a rebuilt map and query under a different service than
      * the one [ScoredSearch.rankService] reports.
      */
-    suspend fun scoredProfileSearch(
+    override suspend fun scoredProfileSearch(
         text: String,
         observer: String,
         limit: Int,
@@ -769,7 +769,7 @@ class NostrSemanticsStore(
      * shares. See [LiveGate]; call it in the subscription's own context, where
      * the connection observer is read from.
      */
-    suspend fun liveGate(filters: List<Filter>): LiveGate? {
+    override suspend fun liveGate(filters: List<Filter>): LiveGate? {
         val observer = connectionObserver()
         val cutoff = nowSecs()
         val compiled = filters.mapNotNull { f -> f.toExpiryQuery(cutoff, observer)?.let { f to it } }
@@ -927,10 +927,10 @@ class NostrSemanticsStore(
      *
      * Empty values are skipped, and expiry is honored like [count].
      */
-    suspend fun distinctTagValues(
+    override suspend fun distinctTagValues(
         filter: Filter,
         tagName: String,
-        valueIndex: Int = 1,
+        valueIndex: Int,
         /**
          * Whether the caller's [where] actually looks at the tag. It cannot be
          * inferred — a lambda is opaque — and guessing wrong would answer a
@@ -942,8 +942,8 @@ class NostrSemanticsStore(
          * Boolean instead. The compiler caught it; the ordering keeps it caught
          * for good.
          */
-        unconditional: Boolean = false,
-        where: (List<String>) -> Boolean = { true },
+        unconditional: Boolean,
+        where: (List<String>) -> Boolean,
     ): Set<String> = withActivity(Activity.Query) { distinctTagValuesUnder(filter, tagName, valueIndex, unconditional, where) }
 
     /** [distinctTagValues]'s body; split for the reason [batchInsertUnder] is. */
@@ -1186,7 +1186,7 @@ class NostrSemanticsStore(
      * Only as complete as [kinds]: a kind left out is not repaired. When
      * unsure which kinds a change touched, run the unscoped walk.
      */
-    suspend fun reindexFullTextSearch(kinds: List<Int>) =
+    override suspend fun reindexFullTextSearch(kinds: List<Int>) =
         withActivity(Activity.Reconcile) {
             var cursor: String? = null
             do {
@@ -1196,10 +1196,10 @@ class NostrSemanticsStore(
         }
 
     /** Resumable form of the kind-scoped walk; the cursor is only valid for the same [kinds]. */
-    suspend fun reindexFullTextSearch(
+    override suspend fun reindexFullTextSearch(
         kinds: List<Int>,
         resumeFrom: String?,
-        batchSize: Int = IEventStore.DEFAULT_FTS_REINDEX_BATCH,
+        batchSize: Int,
     ): FtsReindexProgress {
         // An empty list is EventQuery's "every kind", the whole-corpus walk this
         // overload exists to avoid; asking for it by accident must not start one.
