@@ -31,14 +31,19 @@ Three repos, one direction of dependency: quartz ← vespa-eventstore ← its co
 - **Policy that is the consumer's stays the consumer's**: wording of a notice, which deploy failure
   to survive, chart shapes and bucket decoders, editorial caps. The store hands back facts
   (`TrustChain`, `SchemaDeployException.serving`, a raw grouping root), never the decision.
-- **Skills that describe quartz come from quartz.** `.claude/skills/` still holds copies of
-  quartz's own `nostr-expert` and `event-store-semantics` and of the `searchable-events`,
-  `nip85-trusted-assertions` and `quartz-integration` skills. Quartz now ships those last three
-  as its distributed skill, `quartz/agent-skill/quartz/` (`SKILL.md` plus
-  `references/nip85-trusted-assertions.md` and `references/search-and-stores.md`), but that skill
-  describes APIs newer than the 2.8.0 this store pins. At the first quartz bump that includes it,
-  delete all five copies and install that skill (its `README.md` has the commands). Fix a
-  quartz fact in quartz's skill, not in a copy here.
+- **Skills that describe quartz come from quartz.** `.claude/skills/quartz/` is quartz's
+  distributed skill, installed unmodified from `quartz/agent-skill/quartz/` at the release this
+  store pins (now 2.9.0, quartz main @ 1813390; `SKILL.md` plus `references/nip85-trusted-assertions.md` and
+  `references/search-and-stores.md`); it replaced the copies of `nostr-expert`,
+  `event-store-semantics`, `searchable-events`, `nip85-trusted-assertions` and
+  `quartz-integration` this repo used to carry. Refresh it at every quartz bump, from a
+  checkout at the new tag, and commit it with the bump:
+  ```bash
+  rm -rf .claude/skills/quartz && cp -r ../quartz/quartz/agent-skill/quartz .claude/skills/
+  ```
+  (or the `curl` loop in quartz's `quartz/agent-skill/README.md`, pointed at the tag rather than
+  `main`). Never edit it here: fix a quartz fact in quartz's skill, and take it at the next bump.
+  This repo has no `.agents/` directory; Codex reads these rules from this file.
 
 ## Commands
 
