@@ -134,6 +134,36 @@ class VespaEventStore internal constructor(
     fun metrics(): CostLedger.Snapshot = store.metrics.snapshot()
 
     /**
+     * Every number a status page reads off this store — the ledger, the
+     * process-wide ingest stages, holds, blocked split and degraded reads, the
+     * feed and background lines, and the engine's headroom — read at ONE
+     * instant ([StoreTelemetry]). The headroom probe is the one read that may
+     * do I/O, so it goes first and the counters follow it back to back; a
+     * failed probe leaves the last good reading (or null), never the page.
+     */
+    suspend fun telemetry(): StoreTelemetry {
+        val headroom =
+            try {
+                engineHeadroom()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
+        return StoreTelemetry(
+            atMillis = System.currentTimeMillis(),
+            metrics = metrics(),
+            stages = IngestStats.snapshot(),
+            held = IngestStats.heldAll(),
+            blocked = IngestStats.blockedSplit(),
+            degraded = DegradedReads.snapshot(),
+            feed = runCatching { feedStatus() }.getOrDefault(""),
+            background = backgroundStatus(),
+            headroom = headroom,
+        )
+    }
+
+    /**
      * Wait until the reputation documents are keyed by service: a store fed
      * before the service-keyed model holds cells under observer keys that no
      * lens reads, and [TrustKeyingMigration] re-projects every named service
