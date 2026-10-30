@@ -58,7 +58,7 @@ Three repos, one direction of dependency: quartz ← vespa-eventstore ← its co
 
 - First build installs git hooks (`.git-hooks` → `.git/hooks`): pre-commit runs `spotlessCheck`, pre-push runs `test`.
 - Spotless enforces ktlint plus the MIT license header (`.spotless/copyright.kt`) on every `.kt` file — new files without the header fail the build; `spotlessApply` inserts it.
-- Dependency versions live in `gradle/libs.versions.toml`. Quartz comes from **Maven Central**, a release (`com.vitorpamplona.quartz:quartz`, `quartz = "2.8.0"`) — not JitPack, because this store is published to Central with quartz as an `api` dependency; bumps are deliberate and the comment there records what the new pin contains. Nothing else here comes from JitPack either (`jitpack.yml` only lets JitPack build this store for vespa-relay). The published library version is `app`.
+- Dependency versions live in `gradle/libs.versions.toml`. Quartz comes from **Maven Central**, a release (`com.vitorpamplona.quartz:quartz`, `quartz = "2.9.0"`) — not JitPack, because this store is published to Central with quartz as an `api` dependency; bumps are deliberate and the comment there records what the new pin contains. Nothing else here comes from JitPack either (`jitpack.yml` only lets JitPack build this store for vespa-relay). The published library version is `app`.
 - **Building against a local quartz**: `./gradlew -PquartzDir=../quartz build` includes that
   checkout as a composite build and substitutes it for the pinned artifact in every module (like
   quartz's own `-PcryptoKmpDir`; `settings.gradle.kts`). For a change that needs quartz and this
