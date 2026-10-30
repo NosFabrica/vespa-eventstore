@@ -24,7 +24,6 @@ import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.async.QUERY_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.async.forEachBounded
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
-import com.nosfabrica.vespa.eventstore.engine.doc.isHexKey
 import com.nosfabrica.vespa.eventstore.engine.metrics.Activity
 import com.nosfabrica.vespa.eventstore.engine.metrics.CostLedger
 import com.nosfabrica.vespa.eventstore.engine.metrics.withActivity
@@ -77,6 +76,7 @@ import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import com.vitorpamplona.quartz.nip65RelayList.AdvertisedRelayListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
+import com.vitorpamplona.quartz.utils.Hex
 import kotlinx.coroutines.sync.Mutex
 import kotlin.coroutines.coroutineContext
 
@@ -295,7 +295,7 @@ class NostrSemanticsStore(
      * Non-hex is dropped rather than passed through: `EventYql` would drop it
      * anyway, and a value that cannot key a lens must not switch on the gate.
      */
-    private suspend fun connectionObserver(): String? = coroutineContext[StoreQueryContext]?.observer?.lowercase()?.takeIf(::isHexKey)
+    private suspend fun connectionObserver(): String? = coroutineContext[StoreQueryContext]?.observer?.lowercase()?.takeIf(Hex::isHexKey)
 
     /**
      * THE LENS, RESOLVED: the reputation tensors are keyed by SERVICE key, so
@@ -757,7 +757,7 @@ class NostrSemanticsStore(
         withActivity(Activity.Query) {
             require(limit > 0) { "limit must be positive" }
             val key = observer.lowercase()
-            require(isHexKey(key)) { "observer must be 64-hex" }
+            require(Hex.isHexKey(key)) { "observer must be 64-hex" }
             val lens = providers()?.lensOf(key)
             val service = lens?.rank ?: return@withActivity ScoredSearch(emptyList(), null)
             val cutoff = nowSecs()
@@ -836,7 +836,7 @@ class NostrSemanticsStore(
     override suspend fun lensOf(pubkey: String): TrustChain =
         withActivity(Activity.Query) {
             val key = pubkey.lowercase()
-            require(isHexKey(key)) { "pubkey must be 64-hex" }
+            require(Hex.isHexKey(key)) { "pubkey must be 64-hex" }
             val trust = index as? TrustProjection
             if (trust == null) {
                 val listed = index.search(EventQuery(kinds = listOf(TrustProviderListEvent.KIND), authors = listOf(key), notExpiredAt = nowSecs(), limit = 1)).isNotEmpty()

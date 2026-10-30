@@ -33,7 +33,6 @@ import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.ScoredHit
 import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
-import com.nosfabrica.vespa.eventstore.engine.doc.isHexKey
 import com.nosfabrica.vespa.eventstore.engine.metrics.Activity
 import com.nosfabrica.vespa.eventstore.engine.metrics.CostLedger
 import com.nosfabrica.vespa.eventstore.engine.metrics.DegradedReads
@@ -45,6 +44,7 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.nosfabrica.vespa.eventstore.engine.query.VespaQuery
 import com.nosfabrica.vespa.eventstore.engine.requirePlainReplaceable
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
+import com.vitorpamplona.quartz.utils.Hex
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -270,7 +270,7 @@ class VespaEventIndex(
         // A stored event's id is 64 hex, so anything else is absent, and it
         // never reaches a url: kind-5 targets arrive here having passed only
         // quartz's length check.
-        if (!isHexKey(id)) return null
+        if (!Hex.isHexKey(id)) return null
         // Address-keyed replaceables aren't at the id docid; resolve by the id
         // attribute instead (finds regular AND replaceable).
         if (addressKeyed) return searchById(id)
@@ -398,7 +398,7 @@ class VespaEventIndex(
         // module's injection rule (64-hex before it reaches an expression).
         // A non-hex id from a direct caller falls back to the default, which
         // builds no expression from it.
-        if (!isHexKey(doc.id)) return super.putIfNewer(doc)
+        if (!Hex.isHexKey(doc.id)) return super.putIfNewer(doc)
         val condition =
             "event.created_at < ${doc.createdAt} or " +
                 "(event.created_at == ${doc.createdAt} and event.id > \"${doc.id}\")"
@@ -1149,7 +1149,7 @@ class VespaEventIndex(
         val hexes =
             query.ids
                 .map { it.lowercase() }
-                .filter(::isHexKey)
+                .filter(Hex::isHexKey)
                 .distinct()
         val docs =
             when {

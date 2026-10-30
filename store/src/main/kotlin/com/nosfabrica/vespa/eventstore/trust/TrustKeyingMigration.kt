@@ -24,8 +24,8 @@ import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.CellRemoval
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
-import com.nosfabrica.vespa.eventstore.engine.doc.isHexKey
 import com.nosfabrica.vespa.eventstore.runtime.BackgroundFailures
+import com.vitorpamplona.quartz.utils.Hex
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 
@@ -109,7 +109,7 @@ class TrustKeyingMigration internal constructor(
         progress.resumeFrom(stored.counter(KEYS_REMOVED), UNKNOWN_TOTAL)
         var any = false
         reputations.visitPubkeys { page ->
-            any = page.any(::isHexKey)
+            any = page.any(Hex::isHexKey)
             !any // one page decides; stop as soon as a real parent is seen
         }
         if (!any) {
@@ -182,7 +182,7 @@ class TrustKeyingMigration internal constructor(
         reputations.visitDocs { page ->
             val removals = ArrayList<CellRemoval>()
             for (doc in page) {
-                if (!isHexKey(doc.pubkey)) continue
+                if (!Hex.isHexKey(doc.pubkey)) continue
                 parents++
                 val keys = (doc.influenceScores.keys + doc.followerCounts.keys).filterNot { it.hex in services }
                 for (key in keys) {
