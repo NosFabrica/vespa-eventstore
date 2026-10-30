@@ -34,9 +34,8 @@ import com.nosfabrica.vespa.eventstore.mapping.toEvent
 import com.nosfabrica.vespa.eventstore.runtime.StoreKnobs
 import com.nosfabrica.vespa.eventstore.runtime.WriteLocks
 import com.vitorpamplona.quartz.nip01Core.core.Event
-import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
-import com.vitorpamplona.quartz.utils.Hex
+import com.vitorpamplona.quartz.nip85TrustedAssertions.users.subjectPubKey
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
@@ -260,7 +259,7 @@ internal class TrustRecompute(
             }
         }
         inner.visitIds(query, withDTag = true) { page ->
-            page.forEach { ref -> ref.dTag?.takeIf { Hex.isHexKey(it) }?.let(buffer::add) }
+            page.forEach { ref -> ref.dTag?.takeIf(UserAssertionEvent::isSubjectPubKey)?.let(buffer::add) }
             if (buffer.size >= RECOMPUTE_BATCH) flush()
             true // walk the whole corpus
         }
@@ -541,23 +540,29 @@ internal class TrustRecompute(
 }
 
 /**
- * The 30382's d tag is the SUBJECT — a pubkey, so only 64-hex counts. Anything
- * else can never join ranking (the reputation import matches hex author keys),
- * and admitting arbitrary strings would let a crafted card collide with the
- * projection's bookkeeping ids ([ProjectionLedger]).
+ * The 30382's d tag is the SUBJECT — a pubkey, so only a pubkey as NIP-01 writes
+ * one counts: quartz's [UserAssertionEvent.isSubjectPubKey], exactly 64
+ * LOWERCASE hex. Anything else can never join ranking (the reputation import
+ * matches an event's own lowercase author key), and admitting arbitrary strings
+ * would let a crafted card collide with the projection's bookkeeping ids
+ * ([ProjectionLedger]). An upper-case `d` is another ADDRESS, not this
+ * subject's card: it used to land a cell under its upper-case key that no
+ * event's author could import; it lands none now.
  */
-internal fun subjectOf(doc: EventDoc): String? = doc.dTagOrEmpty().takeIf(Hex::isHexKey)
+internal fun subjectOf(doc: EventDoc): String? = doc.dTagOrEmpty().takeIf(UserAssertionEvent::isSubjectPubKey)
 
-/** [subjectOf] for an event not yet converted — the same rule (a missing d is empty, so never a subject). */
-internal fun subjectOf(event: Event): String? = event.tags.dTag()?.takeIf(Hex::isHexKey)
+/** [subjectOf] for an event not yet converted: quartz's own reading of it. */
+internal fun subjectOf(event: Event): String? = event.tags.subjectPubKey()
 
-/**
- * The card's rank tag clamped to the served 0..100 scale — providers are not
- * trusted to stay on-scale, and both bounds are load-bearing: a NEGATIVE score
- * sits below `include:spam`'s min_rank=0 floor and would silently drop the
- * author from the one query shape that promises not to drop anyone; an
- * OVER-SCALE score would distort wot_mult()'s calibrated 0..100 tier-crossing
- * thresholds. Clamped at EVERY read of the tag — the fast path, the bulk path,
- * and the derive must land the same cell value or [TrustReconciler] reads drift.
+/*
+ * A card's rank is read through quartz's `UserAssertionEvent.boundedRank()`
+ * (`RankTag.parseBounded`): the rank tag clamped to the served 0..100 scale.
+ * Providers are not trusted to stay on-scale, and both bounds are load-bearing:
+ * a NEGATIVE score sits below `include:spam`'s min_rank=0 floor and would
+ * silently drop the author from the one query shape that promises not to drop
+ * anyone; an OVER-SCALE score would distort wot_mult()'s calibrated 0..100
+ * tier-crossing thresholds. Clamped at EVERY read of the tag — the fast path,
+ * the bulk path, and the derive must land the same cell value or
+ * [TrustReconciler] reads drift. A value that is not an Int (beyond its range
+ * included) is NO rank, never 100, exactly as this store's own reader had it.
  */
-internal fun UserAssertionEvent.boundedRank(): Int? = rank()?.coerceIn(0, 100)

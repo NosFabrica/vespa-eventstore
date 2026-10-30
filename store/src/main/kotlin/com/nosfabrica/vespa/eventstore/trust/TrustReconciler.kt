@@ -182,7 +182,7 @@ class TrustReconciler internal constructor(
             onProgress?.invoke(subjectsChecked)
         }
         index.visitIds(EventQuery(kinds = listOf(UserAssertionEvent.KIND)), withDTag = true) { page ->
-            page.forEach { it.dTag?.takeIf(Hex::isHexKey)?.let(buffer::add) }
+            page.forEach { it.dTag?.takeIf(UserAssertionEvent::isSubjectPubKey)?.let(buffer::add) }
             if (buffer.size >= VERIFY_BATCH) screenBatch()
             true
         }
