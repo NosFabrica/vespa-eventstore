@@ -396,6 +396,126 @@ class TrustReconcilerTest {
             assertEquals(serviceCells(service to 87), reps.get(subject)?.influenceScores)
         }
 
+    /**
+     * The 2026-11-03 report: a named service's card stored, its subject's
+     * parent carrying other services' cells but NOT that one, so every ranked
+     * read through that service's lens gated the author out.
+     */
+    @Test
+    fun `verify finds a stored card whose cell is missing beside other cells`() =
+        runBlocking {
+            store.insert(list10040())
+            store.insert(list10040(author = observer2, serviceKey = service2))
+            store.insert(card(rank = 70))
+            store.insert(card(signer = service2, rank = 12))
+            reputations.put(ReputationDoc(subject, serviceCells(service2 to 12), serviceCells(service2 to 120.0)))
+
+            val audit = reconciler.verify(repair = true)
+            assertEquals(1, audit.driftCount)
+            assertEquals(serviceCells(service to 70, service2 to 12), reputations.get(subject)?.influenceScores)
+            assertTrue(reconciler.verify().isClean(), "repair converged")
+        }
+
+    /**
+     * Phase 1 walks only named services' cards. A subject scored by nobody
+     * named is not walked — but a parent it still holds is reached by the
+     * orphan phase, judged against an empty derivation, and dropped.
+     */
+    @Test
+    fun `verify reaches a subject scored only by an unnamed service through its parent`() =
+        runBlocking {
+            store.insert(list10040())
+            store.insert(card())
+            val unnamedOnly = "e5".repeat(32)
+            store.insert(card(signer = service2, about = unnamedOnly, rank = 40))
+            reputations.put(ReputationDoc(unnamedOnly, serviceCells(service2 to 40), emptyMap()))
+
+            val audit = reconciler.verify(repair = true)
+            assertEquals(1, audit.subjectsChecked, "only the named service's subject is walked")
+            assertEquals(listOf(unnamedOnly), audit.drift.map { it.subject })
+            assertNull(audit.drift.single().expected, "nothing named scores it")
+            assertNull(reputations.get(unnamedOnly), "repaired: the parent is dropped")
+        }
+
+    /** With no 10040 at all, the walk must not fall back to every card: an empty `authors` is "anyone". */
+    @Test
+    fun `verify with nothing named walks no cards`() =
+        runBlocking {
+            store.insert(card())
+            val audit = reconciler.verify()
+            assertEquals(0, audit.subjectsChecked)
+            assertTrue(audit.isClean())
+        }
+
+    /** The derive fetches only the cards it keeps: a service no 10040 names is never asked for. */
+    @Test
+    fun `the derive asks only for named services' cards`() =
+        runBlocking {
+            store.insert(list10040())
+            store.insert(card())
+            store.insert(card(signer = service2, rank = 5))
+            val asked = ArrayList<EventQuery>()
+            val watched =
+                object : EventIndex by index {
+                    override suspend fun search(query: EventQuery) = index.search(query).also { if (query.kinds == listOf(UserAssertionEvent.KIND)) asked += query }
+                }
+            val derived = TrustProjection(watched, InMemoryReputationIndex()).recompute.let { it.deriveBatch(listOf(subject), it.providerMap()) }
+
+            assertEquals(serviceCells(service to 87), derived.getValue(subject).influenceScores, "the same derivation")
+            assertTrue(asked.isNotEmpty())
+            asked.forEach { assertEquals(listOf(service), it.authors, "the fetch named only the mapped service") }
+        }
+
+    /**
+     * A whole service drifted makes every subject a suspect. The confirm must
+     * hold the writer lock per slice, never for the whole batch (the 656 s
+     * stall recomputeBatchGated was written for), and the repair must write
+     * the derivation it judged rather than derive every subject again.
+     */
+    @Test
+    fun `verify repairs in gate-sized slices and derives each suspect once`() =
+        runBlocking {
+            store.insert(list10040())
+            val subjects = (1..TrustRecompute.GATE_SLICE * 2 + 7).map { "c" + it.toString(16).padStart(63, '0') }
+            store.batchInsert(subjects.map { card(about = it, rank = 33) })
+            reputations.docs.clear() // the whole service unprojected
+
+            var inGate = false
+            var holds = 0
+            var largestWrite = 0
+            var cardFetches = 0
+            val guarded =
+                object : ReputationIndex by reputations {
+                    override suspend fun putAll(reputations: List<ReputationDoc>) {
+                        check(inGate) { "projection write outside the writer lock" }
+                        largestWrite = maxOf(largestWrite, reputations.size)
+                        this@TrustReconcilerTest.reputations.putAll(reputations)
+                    }
+                }
+            val counted =
+                object : EventIndex by index {
+                    override suspend fun search(query: EventQuery) = index.search(query).also { if (inGate && query.tags.containsKey("d")) cardFetches += query.tags.getValue("d").size }
+                }
+            val proj = TrustProjection(counted, guarded)
+            val gated =
+                TrustReconciler(counted, guarded, proj.recompute, proj.backlog, gate = { body ->
+                    inGate = true
+                    holds++
+                    try {
+                        body()
+                    } finally {
+                        inGate = false
+                    }
+                })
+
+            val audit = gated.verify(repair = true)
+            assertEquals(subjects.size, audit.driftCount)
+            assertEquals(3, holds, "one hold per slice of ${TrustRecompute.GATE_SLICE}")
+            assertTrue(largestWrite <= TrustRecompute.GATE_SLICE, "no hold wrote more than a slice: $largestWrite")
+            assertEquals(subjects.size, cardFetches, "each suspect derived once under the lock, not again to repair")
+            assertTrue(reconciler.verify().isClean(), "repair converged")
+        }
+
     // ---- sweepOrphanScores: the scores nobody's 10040 can ever attribute ------
 
     @Test

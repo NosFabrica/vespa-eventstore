@@ -173,6 +173,23 @@ internal class TrustRecompute(
     }
 
     /**
+     * [recomputeBatch]'s write half with `removeEmpties`, for a caller that
+     * already holds [derived] — [deriveBatch]'s answer for [subjects], read
+     * under the same gate hold — so the subjects are not derived twice.
+     */
+    suspend fun writeDerived(
+        subjects: List<String>,
+        derived: Map<String, ReputationDoc>,
+    ) {
+        IngestStats.timed("proj.write") {
+            val present = subjects.mapNotNull { derived[it] }
+            if (present.isNotEmpty()) reputations.putAll(present)
+            val gone = subjects.filter { it !in derived }
+            if (gone.isNotEmpty()) reputations.removeAll(gone)
+        }
+    }
+
+    /**
      * The read side of [recomputeBatch]: what each subject's parent doc SHOULD
      * be — no writes; empty derivations are absent from the result. Also what
      * [TrustReconciler]'s verify audits against.
@@ -188,6 +205,14 @@ internal class TrustRecompute(
         // derived docs do accumulate — they are small, and one pipelined write
         // per batch beats one per chunk.
         val derived = LinkedHashMap<String, ReputationDoc>(subjects.size * 2)
+        // Only the cards [derive] keeps: a service no 10040 names is skipped
+        // there, so fetching its cards only ships and parses documents to throw
+        // away. Measured on search.brainstorm.world 2026-11-03: 76M of 164M
+        // stored 30382s were signed by services no list names, and a dense
+        // subject's 1,170 cards held 605 from named ones — half of every derive
+        // fetch was discarded. With nothing named there is nothing to derive.
+        val named = serviceProviders.services.toList()
+        if (named.isEmpty() || subjects.isEmpty()) return derived
         val cutoff = nowSecs()
         // SPLIT from the old shared `proj.fetch` (2026-09-04): this and
         // TrustProjection's writes both booked to that one name, so a
@@ -206,7 +231,9 @@ internal class TrustRecompute(
                 // a fetch that missed cards. That is the write-side counterpart
                 // of the read path's rounded-100 carve-out, and the failure
                 // that removed 17k parents on staging (2026-09-04).
-                produce = { chunk -> chunk to inner.search(EventQuery(kinds = listOf(UserAssertionEvent.KIND), tags = mapOf("d" to chunk), notExpiredAt = cutoff, complete = true)) },
+                produce = { chunk ->
+                    chunk to inner.search(EventQuery(kinds = listOf(UserAssertionEvent.KIND), authors = named, tags = mapOf("d" to chunk), notExpiredAt = cutoff, complete = true))
+                },
             ) { (chunk, docs) ->
                 // Serialized by forEachBounded, so this plain map needs no lock.
                 val bySubject = HashMap<String, MutableList<EventDoc>>(chunk.size * 2)

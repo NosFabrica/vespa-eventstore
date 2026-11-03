@@ -165,9 +165,13 @@ class TrustProjectionTest {
             val proj = TrustProjection(recording, reps)
             val derived = proj.recompute.deriveBatch(listOf(subject), proj.recompute.providerMap())
             assertEquals(serviceCells(service to 87), derived[subject]?.influenceScores, "derived through the fetch")
-            // The derivation's shape: cards BY SUBJECT (`d`), any signer, live at
-            // the cutoff — not the store's own by-author dedup read of the card.
-            val cardFetches = seen.filter { it.kinds == listOf(UserAssertionEvent.KIND) && it.authors.isEmpty() && it.notExpiredAt != null }
+            // The derivation's shape: cards BY SUBJECT (`d`), signed by a NAMED
+            // service, live at the cutoff — not the store's own by-author dedup
+            // read of the card, which names no subject list nor cutoff.
+            val cardFetches =
+                seen.filter {
+                    it.kinds == listOf(UserAssertionEvent.KIND) && it.authors == listOf(service) && it.tags.keys == setOf("d") && it.notExpiredAt != null
+                }
             // Likewise the attribution map's read: EVERY live 10040, not the store's by-author dedup read of the one arriving.
             val listReads = seen.filter { it.kinds == listOf(TrustProviderListEvent.KIND) && it.authors.isEmpty() }
             assertTrue(cardFetches.isNotEmpty() && cardFetches.all { it.complete }, "every unlimited card fetch is complete: $cardFetches")
