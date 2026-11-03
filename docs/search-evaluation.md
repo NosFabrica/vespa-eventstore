@@ -764,6 +764,41 @@ grading first. One known cost to look for there is the rerank window. The band i
 only, so a phrase document the first phase ranks below `rerank-count` (1 000 per node) never
 sees it. That is plausible on a query whose words are common apart and rare together.
 
+**Replayed on production's candidates (same day).** The same search, fetched live with
+`limit` 1 000 and every author's 30382 card from the lens's provider, then fed to a local Vespa.
+With the band off, the replay gives back production's live order (only adjacent near-ties
+swap). With it on (and the two fixes below), the top 100 holds all 94 of the 1 000 candidates
+that say "pico 8", "pico-8" or "pico8" (production's held 57). It pulls in documents
+production ranked below #200: six "Pico8" notes from a trust-98 author at
+#229–234, under ~120 Wikipedia pages titled "Pico …". Two gaps in the band showed up, and
+both are now fixed:
+
+- **"Pico8" in a body sat ×8 below "pico-8" in a body.** `w_phrase_pop` paid `body_phrase()`
+  only, so the joined spelling stayed at the bare body rung (550 against 4 550). Those notes
+  ranked under trust-50 one-word replies. `body_phrase_pop()` pays either spelling.
+  Side effect: a note that writes `#pico8` inline (weak rung from the tag, plus the joined
+  word in its body) now reads 8 000. The band already did the same for "Pico-8 … #pico8", so
+  "tagged and mentioned" sits one step over "mentioned".
+- **A phrase in the secondary tier was outside the band.** An nsite (kind 35128) described as
+  "A retro arcade style shooter game made in Pico-8", with an empty body and a title that is
+  its name, sat at #95 under the "Pico …" Wikipedia pages. `secondary_phrase()` reads it off
+  the per-word clause, the way `body_phrase()` reads the body. It now sits at #41.
+
+Still open, as judgment calls:
+
+- **The band can be crossed.** Phrase notes from trust-19–23 authors ("What is Pico-8?",
+  "This PICO-8 Handheld is No Fantasy") sit under the trust-87 ETF split. At ×100 the band
+  crosses at a trust-delta factor of ~5.5. A lexicographic band would also lift a trust-3
+  spammer's phrase over a trust-99 page titled the words apart. `phrase_band_300` is in the
+  sweep.
+- **A partial title still ranks inside the band.** The Picotron article (near rung,
+  "pico"→"Picotron") is #2, and the "Pico" disambiguation page (split rung) sits over the
+  trust-75 "PICO-8 fantasy console Education Edition" note. Both are on the band for a body
+  phrase, but both ride their title's partial rung.
+- **The band can't tell a mention from aboutness.** Inside the band a body phrase is one
+  rung, so "Pico-8*" (a one-word correction) outranks "PICO-8 fantasy console Education
+  Edition" on trust alone.
+
 ## 10. References
 
 - Cleverdon (1967), *The Cranfield tests on index language devices*: the paradigm.

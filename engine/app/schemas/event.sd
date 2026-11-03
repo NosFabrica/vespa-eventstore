@@ -1748,9 +1748,36 @@ schema event {
             expression: if (query(n_words) > 1, if (fieldMatch(search_primary).weight > 0.5, 1, 0), 0)
         }
 
+        # joined_phrase(), on the body alone: "Pico8" in a note IS the phrase,
+        # and must earn what "Pico-8" in a note earns (body_phrase_pop()).
+        function body_joined() {
+            expression: if (query(n_words) > 1, if (fieldMatch(search_text).weight > 0.5, 1, 0), 0)
+        }
+
+        # The body holds the phrase, spaced or joined — what query(w_phrase_pop)
+        # pays. body_phrase() alone left a note saying "Pico8" at the bare body
+        # rung (550) while its author's "Pico-8" note earned 550 + 4 000: on the
+        # production `pico 8` replay (2026-11-03, 1 000 candidates) a trust-98
+        # author's six "Pico8" notes sat x8 under their own "pico-8" notes,
+        # below trust-50 one-word replies, inside the band.
+        function body_phrase_pop() {
+            expression: max(body_phrase(), body_joined())
+        }
+
+        # The SECONDARY tier — summaries, descriptions, hashtags — holds every
+        # typed word adjacent and in order, through the per-word exact clause
+        # (it searches search_secondary, as it does search_text for
+        # body_phrase()), so no rank-only item is needed. An nsite described
+        # "A retro arcade style shooter game made in Pico-8" has an empty body
+        # and a title that is its name: without this it sat outside the band,
+        # under every Wikipedia page titled "Pico …" (the same replay).
+        function secondary_phrase() {
+            expression: field_holds_phrase(search_secondary)
+        }
+
         # THE PHRASE BAND's test — see query(w_phrase_mult).
         function phrase_match() {
-            expression: max(max(max(body_phrase(), title_phrase()), name_phrase()), joined_phrase())
+            expression: max(max(max(max(body_phrase(), title_phrase()), name_phrase()), joined_phrase()), secondary_phrase())
         }
 
         # The band itself: x query(w_phrase_mult) on a phrase match, x1 otherwise.
@@ -2409,7 +2436,7 @@ schema event {
             # fresh document than for an old one. Scaling by the same factor
             # the bands carry is what keeps "reorders within a band" true.
             # x phrase_mult(): the phrase band, see query(w_phrase_mult).
-            expression: (firstPhase + (precision_boost_pop() + body_phrase() * query(w_phrase_pop)) * wot_mult() * recency_mult()) * phrase_mult()
+            expression: (firstPhase + (precision_boost_pop() + body_phrase_pop() * query(w_phrase_pop)) * wot_mult() * recency_mult()) * phrase_mult()
             rerank-count: 1000
         }
 
@@ -2442,6 +2469,8 @@ schema event {
             title_phrase
             name_phrase
             joined_phrase
+            secondary_phrase
+            body_joined
             phrase_match
             name_match
             identity_match

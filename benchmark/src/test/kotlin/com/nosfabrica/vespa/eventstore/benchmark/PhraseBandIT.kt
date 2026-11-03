@@ -57,9 +57,10 @@ import kotlin.test.assertTrue
  * query(w_phrase_mult)), on the events of the report that motivated it —
  * production's `Pico 8` search, 2026-11-03 (benchmark/rank_cases.json `pico 8`).
  *
- * The fixture is 14 of that export's 160 events, verbatim and signed, each
- * with the trust its author had under the reporting observer's lens. Production
- * put the first two on top:
+ * The fixture is 14 of that export's 160 events, plus two from the same search
+ * replayed against production's 1 000 candidates later that day, verbatim and
+ * signed, each with the trust its author had under the reporting observer's
+ * lens. Production put the first two on top:
  *
  *  - a Spanish ETF article: "8%" in its title, "pico" ("peak") deep in its body
  *    — the SPLIT rung, one word of two in a title;
@@ -71,7 +72,11 @@ import kotlin.test.assertTrue
  *
  *  - every detector: the body phrase ("pico-8", "pico 8"), the title phrase (the
  *    wiki page titled "PICO-8"), the joined spelling ("pico8" in a body and as
- *    `#pico8`), and 0 on both intruders;
+ *    `#pico8`), the secondary tier (an nsite DESCRIBED "… made in Pico-8", body
+ *    empty), and 0 on both intruders;
+ *  - the joined spelling in a body earns the body phrase's query(w_phrase_pop):
+ *    one author's "Pico8" note scores as that author's "pico-8" note does, not
+ *    x8 under it (body_phrase_pop());
  *  - the band: every phrase match outranks both intruders, the wiki page — the
  *    title that IS the query, from a trust-32 author — and the Amethyst release
  *    notes (trust 98, the phrase only in a body heading) among them;
@@ -124,6 +129,10 @@ class PhraseBandIT {
                 assertEquals(1.0, page.of(AMETHYST_RELEASE).bodyPhrase, "the release notes say it in a heading")
                 assertEquals(1.0, page.of(JOINED_BODY).joinedPhrase, "\"pico8\" in a body is the phrase joined")
                 assertEquals(1.0, page.of(JOINED_TAG).joinedPhrase, "#pico8 is the phrase joined")
+                assertEquals(1.0, page.of(NSITE).secondaryPhrase, "a description saying \"made in Pico-8\" holds the phrase")
+                assertEquals(1.0, page.of(JOINED_NOTE).bodyJoined, "\"Pico8\" in a body is the phrase joined, in the body")
+                val joinedOverSpaced = page.of(JOINED_NOTE).relevance / page.of(SPACED_NOTE).relevance
+                assertTrue(joinedOverSpaced in 0.5..2.0, "one author's \"Pico8\" and \"pico-8\" notes share a rung: x$joinedOverSpaced")
 
                 val firstIntruder = intruders.minOf { ids.indexOf(it) }
                 val phrased = page.filter { it.phraseMatch > 0 }
@@ -141,6 +150,7 @@ class PhraseBandIT {
 
     private class Hit(
         val id: String,
+        val relevance: Double,
         val features: JsonObject,
     ) {
         private fun f(name: String) =
@@ -153,6 +163,8 @@ class PhraseBandIT {
         val bodyPhrase get() = f("body_phrase")
         val titlePhrase get() = f("title_phrase")
         val joinedPhrase get() = f("joined_phrase")
+        val bodyJoined get() = f("body_joined")
+        val secondaryPhrase get() = f("secondary_phrase")
         val perfectMatch get() = f("perfect_match")
     }
 
@@ -182,7 +194,14 @@ class PhraseBandIT {
         assertTrue(root["errors"] == null, "query failed: ${root["errors"]}")
         return root["children"]?.jsonArray.orEmpty().map {
             val fields = it.jsonObject.getValue("fields").jsonObject
-            Hit(fields.getValue("id").jsonPrimitive.content, fields.getValue("matchfeatures").jsonObject)
+            Hit(
+                fields.getValue("id").jsonPrimitive.content,
+                it.jsonObject
+                    .getValue("relevance")
+                    .jsonPrimitive.content
+                    .toDouble(),
+                fields.getValue("matchfeatures").jsonObject,
+            )
         }
     }
 
@@ -238,6 +257,11 @@ class PhraseBandIT {
         const val AMETHYST_RELEASE = "90b44719853e22e4910581676aa294fa362d5c3655dd56888a6b323643537c89"
         const val JOINED_BODY = "4ff461f3d1c4a226e1c862df68c5d0b0311f8c7dc1e68f2975d77d3239fe95d9"
         const val JOINED_TAG = "4a00c8142864a172ecc03b9328accbc50b0aeefbc87302f903a52f1fd763f8c0"
+
+        /** One trust-98 author: an nsite described "… made in Pico-8", a note saying "Pico8", one saying "pico-8". */
+        const val NSITE = "3da27513fe6d37874f7e53098d4a6097c740c77f2e61543f73194a681188b670"
+        const val JOINED_NOTE = "ecc1a0abec44604bdce57c8e41849a4d2b36b175f629e7906219172a59c4a6e6"
+        const val SPACED_NOTE = "358bac7e2e121790dbbfc5b7dee07f5da27410565dbb3b8d43b2b0828ff3e551"
 
         fun dockerAvailable(): Boolean = runCatching { DockerClientFactory.instance().isDockerAvailable }.getOrDefault(false)
     }

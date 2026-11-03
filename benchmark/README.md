@@ -72,13 +72,14 @@ measures what the emitted query actually does:
   with `-Pintegration`.
 
 - **`PhraseBandIT`** (test, `@Tag("integration")`) — the phrase band
-  (`event.sd` `phrase_match()`, `w_phrase_mult`) on 14 verbatim events of the
+  (`event.sd` `phrase_match()`, `w_phrase_mult`) on 16 verbatim events of the
   2026-11-03 `Pico 8` report (`src/test/resources/pico8_export.json`, with each
   author's trust under the reporting lens): every detector (body phrase, title
-  phrase, joined `pico8`; the name phrase is pinned by `RankRegressionIT`'s
+  phrase, joined `pico8`, an nsite's description; the name phrase is pinned by `RankRegressionIT`'s
   `Avi Burra` case) fires where it should and not on the two intruders (a
   title with "8%" over a body using "pico"; a title with "pic"), every phrase
   match outranks both, the page titled `PICO-8` leads with `perfect_match` 1.0,
+  one author's "Pico8" and "pico-8" notes share a rung (`body_phrase_pop()`),
   and `w_phrase_mult` 1 restores the reported order. Run with `-Pintegration`.
 
 - **`NameFrequencyRungIT`** (test, `@Tag("integration")`) — the perfect-match

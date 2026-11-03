@@ -835,6 +835,115 @@
    ],
    "content": "*Pico* may refer to:\n\n== Places\n=== The Moon\n\n* [[Mons Pico]], a lunar mountain in the northern part of the Mare Imbrium basin\n\n=== Portugal\n\n* Pico, a civil parish in the municipality of [[Vila Verde]]\n* [[Pico da Pedra]], a civil parish in the municipality of Ribeira Grande, São Miguel, Azores\n* [[Pico Island]], the largest island in the Central Group of the Azores archipelago\n* [[Mount Pico]] (Montanha do Pico), the distinctive stratovolcano that stands on the island of Pico\n* [[Pico da Vara]], the highest mountain on the island of São Miguel, Azores\n\n=== United States\n\n* [[M. Pico Building]], a building in Lafayette County, Florida\n* [[PICO Building (Sanford, Florida)]]\n* [[Camp Pico Blanco]], a summer camp in Monterey County, California\n* [[Pico Mountain]], a ski resort in Rutland County, Vermont\n* [[Pico Boulevard]], a major street in Los Angeles, California\n* [[Pico-Union, Los Angeles]], a neighborhood in Los Angeles\n* Pico, California, an unincorporated community now part of [[Pico Rivera, California]]\n* Pico School District, now part of the [[Whittier City School District]]\n\n=== Elsewhere\n\n* [[General Pico]], a city in the Province of La Pampa, Argentina\n* [[Pico da Neblina]], a mountain in the State of Amazonas, Brazil\n* [[Pico de Orizaba]], a volcano on the borders of Puebla State and Veracruz State, Mexico\n* [[Pico do Fogo]], a volcano on the island of Fogo, Cape Verde\n* [[Pico, Lazio]], a _comune_ in the Province of Frosinone, Italy\n* [[Pico Paraná]], a mountain in the State of Paraná, Brazil\n* [[Río Pico, Chubut]], a village in the Province of Chubut, Argentina\n\n== People\n\n* [[Giovanni Pico della Mirandola]] (1463-1494), Italian philosopher\n* [[Pío Pico]] (1801-1894), Mexican politician\n* [[Andrés Pico]] (1810-1876), Mexican general\n* [[Salomon Pico]] (1821-1860), Mexican soldier, Californio Bandit\n* [[Pico Iyer]] (born 1957), British writer\n* [[Jeff Pico]] (born 1966), American baseball player\n* [[Sol Picó]] (born 1967), Spanish dancer and choreographer\n* [[Anderson Pico]] (born 1988), Brazilian football player\n* [[Pico (footballer)]] (born 1988), Spanish footballer\n* [[Pico (Cape Verdean footballer)]] (born 1992), Irish-Cape Verdean footballer\n* [[Aaron Pico]] (born 1996), mixed martial artist, wrestler\n* [[Andres G. Pico]], American politician\n\n== Fictional characters\n\n* Pico, a Newgrounds character created by Tom Fulp that debuted in the Flash game _[[Pico's School]]_\n* Pico, a character created by American comedy duo [[The Jerky Boys]]\n* Pico de Paperis, an Italian name for [[Ludwig Von Drake]], a character in the American _Walt Disney_ cartoon series\n* Pico, the eponymous character of the hentai anime _[[Boku no Pico]]_\n* Pico West, a character in the animated web series _[[MechWest]]_\n\n== Science and medicine\n\n* pico-, a [[metric prefix]] denoting a factor of 10−12\n* [[PICO]] dark matter experiment\n* [[PICO process]], a medical technique to frame and answer a clinical question\n\n== Computing and electronics\n\n* [[Pico (text editor)]], a simple text editor\n* [[Pico (supercomputer)]], an IBM supercomputer\n* [[Sega Pico]], a video game system designed for young children\n* [[Pico-8]], a fantasy console and friendly game-making software\n* Pico projector, a [[handheld projector]]\n* [[Raspberry Pi Pico]], a microcontroller\n* [[Pico 4]], a virtual reality headset developed by ByteDance\n\n== Other uses\n\n* [[Beretta Pico]], a small, semi-automatic pistol manufactured in the United States by Beretta\n* [[Laser Pico]], a small sailing dinghy\n* [[Pico de gallo]], a salsa made from fresh vegetables, especially tomatoes, onions, and peppers\n* [[PICO National Network]], a U.S. religious training organization\n* [[Island Trees School District v. Pico]], a U.S. legal case\n* [[Pico (mango)]], a mango cultivar from the Philippines\n\n== See also\n\n* [[Pica (disambiguation)]]\n* [[Pico Agudo (disambiguation)]]\n* [[Picco (disambiguation)]]\n* [[Picus (disambiguation)]]\n* [[Piko (disambiguation)]]\n* [[Picon (disambiguation)]]\n* [[Picone (disambiguation)]]\n\n[NOTE]\n====\nSource: \"Pico\" on Wikipedia (https://en.wikipedia.org/wiki/Pico), by Wikipedia contributors\nLicense: CC BY-SA 4.0 — https://creativecommons.org/licenses/by-sa/4.0/\nModified: converted to AsciiDoc.\n====\n",
    "sig": "9ab1d726250a3a6f6bfe855e1d7d60b78cef08d31269978f34ee57cee3bfd642a56359a0eac827c526b3e586cde6c2437adb85dd21f467dc2dfff9a5ef22ebac"
+  },
+  {
+   "id": "3da27513fe6d37874f7e53098d4a6097c740c77f2e61543f73194a681188b670",
+   "pubkey": "bc28aad5b167f31dd37c66d8c95d400c6411d83275ed12c504f60965d1f9eec6",
+   "created_at": 1790929814,
+   "kind": 35128,
+   "tags": [
+    [
+     "path",
+     "/index.html",
+     "5ade5a0de94099bf27fb3dad2ebce9ab80e4eebe6ca217190221cc58a198d8d3"
+    ],
+    [
+     "path",
+     "/README.md",
+     "46b399de759d15addfc74932df82367117f9bee8db73fe5b19ea5c9656a2c54b"
+    ],
+    [
+     "path",
+     "/game.js",
+     "4bcd5367d246a055631bf48a83558eff213c6d6461d175e74356bfccc7cbe0d3"
+    ],
+    [
+     "path",
+     "/CNAME",
+     "750fde85d826fe5417a239488def0ed5b938053eee9c48f65453e6fabf949fca"
+    ],
+    [
+     "server",
+     "https://nsite.run"
+    ],
+    [
+     "server",
+     "https://nostr.download"
+    ],
+    [
+     "server",
+     "https://blssm.us"
+    ],
+    [
+     "server",
+     "https://blossom.ditto.pub"
+    ],
+    [
+     "server",
+     "https://blossom.primal.net"
+    ],
+    [
+     "relay",
+     "wss://nsite.run"
+    ],
+    [
+     "relay",
+     "wss://primus.nostr1.com"
+    ],
+    [
+     "relay",
+     "wss://theforest.nostr1.com"
+    ],
+    [
+     "relay",
+     "wss://relay.ditto.pub"
+    ],
+    [
+     "relay",
+     "wss://relay.dreamith.to"
+    ],
+    [
+     "relay",
+     "wss://hist.nostr.land"
+    ],
+    [
+     "d",
+     "pewpew"
+    ],
+    [
+     "title",
+     "PewPew"
+    ],
+    [
+     "description",
+     "A retro arcade style shooter game made in Pico-8"
+    ],
+    [
+     "client",
+     "nsite.run"
+    ]
+   ],
+   "content": "",
+   "sig": "b5879d3429b498d896a4c2995d0dc58809cd741cf99396496a9e06c07df88d231414cc72476f9d18dcdbf1a0428b408fcf102ba98427685420ef020e4955de01"
+  },
+  {
+   "id": "ecc1a0abec44604bdce57c8e41849a4d2b36b175f629e7906219172a59c4a6e6",
+   "pubkey": "bc28aad5b167f31dd37c66d8c95d400c6411d83275ed12c504f60965d1f9eec6",
+   "created_at": 1791246526,
+   "kind": 1,
+   "tags": [
+    [
+     "t",
+     "p"
+    ],
+    [
+     "client",
+     "Ditto",
+     "31990:781a1527055f74c1f70230f10384609b34548f8ab6a0a6caa74025827f9fdae5:ditto"
+    ]
+   ],
+   "content": "Someone made this in Pico8, absolutely fantastic, give it a try.\nhttps://www.lexaloffle.com/bbs/?pid=171379#p",
+   "sig": "a01622487cf4a3dd260de97af43e9e830f016e5d9b69655546853f38fada9f3c4a7f5979417a54217a010b1e3f7e320d84dde80c47d56631ab77c538a83b9ff5"
   }
  ],
  "scores": {
