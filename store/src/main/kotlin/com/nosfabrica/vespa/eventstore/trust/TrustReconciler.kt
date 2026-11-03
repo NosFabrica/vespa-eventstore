@@ -116,12 +116,12 @@ class TrustReconciler internal constructor(
      * FULL audit: does every reputation doc match its 10040+30382 records?
      * Queued deferred work is drained first — that is lag, not drift. Then:
      *
-     *  1. COMPLETENESS: every subject a NAMED service's stored 30382 scores is re-derived
+     *  1. COMPLETENESS: every subject with stored 30382s is re-derived
      *     ([TrustRecompute.deriveBatch]) and compared against the stored parent
      *     — catches missing docs, stale cells, cells under the wrong key, leftovers.
      *  2. ORPHANS: every stored parent's pubkey is checked against a
      *     [GuardBloom] of the subjects phase 1 saw. No false negatives, so
-     *     "not seen" proves the doc had no named service's records; a false positive
+     *     "not seen" proves the doc had no records; a false positive
      *     can only HIDE an orphan, never invent drift.
      *
      * Reported on the trust page's steps as [VERIFY], with the phase it is in.
@@ -139,19 +139,12 @@ class TrustReconciler internal constructor(
         onProgress: ((subjectsChecked: Int) -> Unit)? = null,
     ): TrustAudit {
         backlog.drain(gate)
-        // Phase 1 walks only the cards of services some 10040 names: [TrustRecompute.derive]
-        // skips every other card, so a subject scored by nobody named derives EMPTY,
-        // and if it still holds a parent, phase 2's orphan check reaches it (it is
-        // not in [seen]). On search.brainstorm.world (2026-11-03) that is 87.7M of
-        // 163.7M stored cards. A service named mid-walk needs nothing here: its
-        // own walk writes its cells, and phase 2 re-judges those parents.
-        val named = recompute.providerMap().services.toList()
-        val walk = EventQuery(kinds = listOf(UserAssertionEvent.KIND), authors = named)
+        val walk = EventQuery(kinds = listOf(UserAssertionEvent.KIND))
         // The bloom holds distinct SUBJECTS; sized by cards (a dense subject has
-        // hundreds), 163.7M cards at 1e-6 was ~590 MB of heap. Capped instead:
+        // hundreds), 164M cards at 1e-6 was ~590 MB of heap. Capped instead:
         // past the cap the false-positive rate rises gracefully, and a false
         // positive only skips a subject's check — it never invents drift.
-        val cards = if (named.isEmpty()) 0L else index.count(walk).toLong()
+        val cards = index.count(walk).toLong()
         val seen = GuardBloom(expectedInsertions = cards.coerceIn(1024L, VERIFY_BLOOM_MAX_SUBJECTS.toLong()).toInt(), fpp = 1e-6)
         val samples = ArrayList<TrustDrift>()
         var driftCount = 0
@@ -209,13 +202,11 @@ class TrustReconciler internal constructor(
         }
         // The denominator is CARDS, the numerator subjects: a subject spans many
         // cards, so the fraction under-reads and only ever finishes early.
-        TrustProgress.begin(VERIFY, "screening every named service's subjects", cards)
-        if (named.isNotEmpty()) {
-            index.visitIds(walk, withDTag = true) { page ->
-                page.forEach { it.dTag?.takeIf(UserAssertionEvent::isSubjectPubKey)?.let(buffer::add) }
-                if (buffer.size >= VERIFY_BATCH) screenBatch()
-                true
-            }
+        TrustProgress.begin(VERIFY, "screening every scored subject", cards)
+        index.visitIds(walk, withDTag = true) { page ->
+            page.forEach { it.dTag?.takeIf(UserAssertionEvent::isSubjectPubKey)?.let(buffer::add) }
+            if (buffer.size >= VERIFY_BATCH) screenBatch()
+            true
         }
         screenBatch()
 
@@ -510,22 +501,15 @@ class TrustReconciler internal constructor(
         // blind one.
         var derived = 0
         TrustProgress.begin(REBUILD, "deriving every card's subject")
-        // Only named services' cards: a subject no named service scores derives
-        // empty, and the parent sweep below reaches (and drops) its parent anyway.
-        // Nothing named means no card walk at all, never an unrestricted one — an
-        // empty `authors` is "anyone".
-        val named = recompute.providerMap().services.toList()
-        if (named.isNotEmpty()) {
-            recompute.recomputeWalk(
-                EventQuery(kinds = listOf(UserAssertionEvent.KIND), authors = named),
-                onSubjects = { n ->
-                    derived = n
-                    TrustProgress.advance(REBUILD, n.toLong())
-                    onProgress?.invoke(n, 0)
-                },
-                gate = gate,
-            )
-        }
+        recompute.recomputeWalk(
+            EventQuery(kinds = listOf(UserAssertionEvent.KIND)),
+            onSubjects = { n ->
+                derived = n
+                TrustProgress.advance(REBUILD, n.toLong())
+                onProgress?.invoke(n, 0)
+            },
+            gate = gate,
+        )
         TrustProgress.advance(REBUILD, derived.toLong(), phase = "sweeping parents the card walk cannot reach")
         val buffer = ArrayList<String>(ORPHAN_BATCH)
         var swept = 0

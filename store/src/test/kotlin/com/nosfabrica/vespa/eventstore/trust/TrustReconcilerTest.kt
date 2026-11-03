@@ -416,13 +416,9 @@ class TrustReconcilerTest {
             assertTrue(reconciler.verify().isClean(), "repair converged")
         }
 
-    /**
-     * Phase 1 walks only named services' cards. A subject scored by nobody
-     * named is not walked — but a parent it still holds is reached by the
-     * orphan phase, judged against an empty derivation, and dropped.
-     */
+    /** A parent whose only card is by a service nobody names derives empty: it is drift, and repair drops it. */
     @Test
-    fun `verify reaches a subject scored only by an unnamed service through its parent`() =
+    fun `verify drops a parent that only an unnamed service's card stands behind`() =
         runBlocking {
             store.insert(list10040())
             store.insert(card())
@@ -431,25 +427,18 @@ class TrustReconcilerTest {
             reputations.put(ReputationDoc(unnamedOnly, serviceCells(service2 to 40), emptyMap()))
 
             val audit = reconciler.verify(repair = true)
-            assertEquals(1, audit.subjectsChecked, "only the named service's subject is walked")
             assertEquals(listOf(unnamedOnly), audit.drift.map { it.subject })
             assertNull(audit.drift.single().expected, "nothing named scores it")
             assertNull(reputations.get(unnamedOnly), "repaired: the parent is dropped")
         }
 
-    /** With no 10040 at all, the walk must not fall back to every card: an empty `authors` is "anyone". */
+    /**
+     * The derive's fetch NEVER carries the named services: they are per user,
+     * so the set grows toward millions of keys, which no query can carry. The
+     * per-card lookup in derive drops the unnamed ones instead.
+     */
     @Test
-    fun `verify with nothing named walks no cards`() =
-        runBlocking {
-            store.insert(card())
-            val audit = reconciler.verify()
-            assertEquals(0, audit.subjectsChecked)
-            assertTrue(audit.isClean())
-        }
-
-    /** The derive fetches only the cards it keeps: a service no 10040 names is never asked for. */
-    @Test
-    fun `the derive asks only for named services' cards`() =
+    fun `the derive fetch carries no service list and still keeps only named cards`() =
         runBlocking {
             store.insert(list10040())
             store.insert(card())
@@ -461,9 +450,9 @@ class TrustReconcilerTest {
                 }
             val derived = TrustProjection(watched, InMemoryReputationIndex()).recompute.let { it.deriveBatch(listOf(subject), it.providerMap()) }
 
-            assertEquals(serviceCells(service to 87), derived.getValue(subject).influenceScores, "the same derivation")
+            assertEquals(serviceCells(service to 87), derived.getValue(subject).influenceScores, "the unnamed card is dropped")
             assertTrue(asked.isNotEmpty())
-            asked.forEach { assertEquals(listOf(service), it.authors, "the fetch named only the mapped service") }
+            asked.forEach { assertTrue(it.authors.isEmpty(), "no service list in the query: ${it.authors}") }
         }
 
     /**
