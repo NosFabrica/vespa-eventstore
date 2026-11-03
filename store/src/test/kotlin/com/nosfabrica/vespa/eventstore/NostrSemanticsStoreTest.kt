@@ -42,6 +42,7 @@ import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import com.vitorpamplona.quartz.utils.EventFactory
 import kotlinx.coroutines.runBlocking
+import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -980,14 +981,28 @@ open class NostrSemanticsStoreTest {
         var recalls = 0
         var counts = 0
 
+        /** Every query whose matches were enumerated, by recall or by id walk. */
+        val walked = mutableListOf<EventQuery>()
+
         override suspend fun search(query: EventQuery): List<EventDoc> {
             recalls++
+            walked += query
             return inner.search(query)
         }
 
         override suspend fun rawSearch(query: EventQuery): List<RawEvent> {
             recalls++
+            walked += query
             return inner.rawSearch(query)
+        }
+
+        override suspend fun visitIds(
+            query: EventQuery,
+            withDTag: Boolean,
+            onPage: suspend (List<DocRef>) -> Boolean,
+        ) {
+            walked += query
+            inner.visitIds(query, withDTag, onPage)
         }
 
         override suspend fun count(query: EventQuery): Int {
@@ -1017,6 +1032,63 @@ open class NostrSemanticsStoreTest {
             val filters = listOf(limited, all)
             assertEquals(store.query<Event>(filters).size, store.count(filters), "multi-filter dedup")
             assertEquals(5, store.count(filters))
+        }
+
+    /** STORE-C01 over every way filters relate: overlapping, disjoint by kind, author, id or window, limited or not. */
+    @Test
+    fun `a multi-filter count equals its REQ feed whatever the filters share`() =
+        runBlocking {
+            val carol = "c3".repeat(32)
+            val authors = listOf(alice, bob, carol)
+            val stored = mutableListOf<Event>()
+            (0 until 60).forEach { i ->
+                val e = Event(id(), authors[i % 3], 1_000L + i * 7 % 41, if (i % 4 == 0) 7 else 1, emptyArray(), "n$i", "")
+                store.insert(e)
+                stored += e
+            }
+            val random = Random(7)
+
+            fun <T> some(of: List<T>) = of.shuffled(random).take(1 + random.nextInt(of.size))
+
+            fun filter(): Filter {
+                val since = if (random.nextInt(3) == 0) 1_000L + random.nextInt(41) else null
+                return Filter(
+                    ids = if (random.nextInt(5) == 0) some(stored).take(8).map { it.id } else null,
+                    kinds = if (random.nextInt(3) > 0) some(listOf(1, 7)) else null,
+                    authors = if (random.nextInt(2) == 0) some(authors) else null,
+                    since = since,
+                    until = if (random.nextInt(3) == 0) (since ?: 1_000L) + random.nextInt(41) else null,
+                    limit = if (random.nextInt(3) == 0) 1 + random.nextInt(25) else null,
+                )
+            }
+            repeat(150) {
+                val filters = List(2 + random.nextInt(4)) { filter() }
+                assertEquals(store.query<Event>(filters).size, store.count(filters), "$filters")
+            }
+        }
+
+    /**
+     * A MULTI-FILTER COUNT HOLDS A PAGE, NOT THE UNION. Collecting every filter's ids to dedup them held about 110
+     * bytes a match: `{kinds:[1]},{kinds:[7]}` is 258M ids on the production corpus, and one such COUNT exhausted the
+     * relay's heap. Filters that cannot share an event are counted by the engine; within ones that can, the largest is
+     * counted and only the others are walked.
+     */
+    @Test
+    fun `a multi-filter count never walks its largest filter`() =
+        runBlocking {
+            val spy = CallCountingIndex(InMemoryEventIndex())
+            val counted = NostrSemanticsStore(spy, relay = "wss://sot.test/".normalizeRelayUrl())
+            (1..30).forEach { counted.insert(note(author = alice)) }
+            (1..4).forEach { counted.insert(note(author = bob)) }
+            (1..5).forEach { counted.insert(Event(id(), bob, next(), 7, emptyArray(), "+", "")) }
+            val notes = Filter(kinds = listOf(1))
+            spy.walked.clear()
+
+            assertEquals(39, counted.count(listOf(notes, Filter(kinds = listOf(7)))))
+            assertEquals(emptyList(), spy.walked, "kind-disjoint filters are counted, never walked")
+
+            assertEquals(39, counted.count(listOf(notes, Filter(authors = listOf(bob)))))
+            assertTrue(spy.walked.none { it.kinds == listOf(1) && it.ids.isEmpty() && it.authors.isEmpty() }, "the largest filter is counted: ${spy.walked}")
         }
 
     /** STORE-F10: an empty filter QUERIES everything and DELETES nothing — the reference's deliberate asymmetry, so a stray empty filter cannot wipe the store. */

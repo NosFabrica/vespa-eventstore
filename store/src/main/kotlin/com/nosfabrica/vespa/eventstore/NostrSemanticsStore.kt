@@ -21,8 +21,6 @@
 package com.nosfabrica.vespa.eventstore
 
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
-import com.nosfabrica.vespa.eventstore.engine.async.QUERY_FANOUT
-import com.nosfabrica.vespa.eventstore.engine.async.forEachBounded
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.metrics.Activity
 import com.nosfabrica.vespa.eventstore.engine.metrics.CostLedger
@@ -51,6 +49,7 @@ import com.nosfabrica.vespa.eventstore.search.SearchExpansionLimits
 import com.nosfabrica.vespa.eventstore.search.SearchReferenceExpansion
 import com.nosfabrica.vespa.eventstore.search.SearchReferences
 import com.nosfabrica.vespa.eventstore.search.SubjectKeys
+import com.nosfabrica.vespa.eventstore.search.countUnion
 import com.nosfabrica.vespa.eventstore.search.isRanked
 import com.nosfabrica.vespa.eventstore.trust.Delegations
 import com.nosfabrica.vespa.eventstore.trust.Enrolment
@@ -887,68 +886,35 @@ class NostrSemanticsStore(
                 // feed, so it contributes nothing to the count either.
                 .filterNot { (it.limit ?: 1) <= 0 }
         if (queries.isEmpty()) return 0
-        if (queries.size == 1) {
-            val q = queries[0]
-            return when {
-                // Ranked/searching: only the search path applies the observer's
-                // trust floor and spam gate, so the count must be of what the
-                // feed would SERVE, not of what the filter matches. That used to
-                // mean recalling the page and taking its size, which fetched a
-                // full document summary per counted event to produce an integer
-                // — 76.0s for a "bitcoin" COUNT on the production relay against
-                // 4.9s for the same search (2026-09-01). [EventIndex.count]
-                // answers the same gated number from the engine's own
-                // `totalCount` with one hit; the clamp below is unchanged, so
-                // the ANSWER is identical (STORE-C01: a count honours its
-                // filter's limit).
-                q.isRanked() || q.limit != null -> {
-                    val served = index.count(q.copy(limit = null))
-                    q.limit?.let { minOf(served, it) } ?: served
-                }
+        // Multi-filter: the feed dedups across filters, so the count is the union of their served sets —
+        // counted without holding it (search/UnionCount.kt).
+        return if (queries.size == 1) countOne(queries[0]) else countUnion(index, queries, ::countOne)
+    }
 
-                // Plain, unbounded: the engine's exact grouping count.
-                else -> {
-                    index.count(q)
-                }
+    /** One filter's served count, clamped to its limit (STORE-C01). */
+    private suspend fun countOne(q: EventQuery): Int =
+        when {
+            // Ranked/searching: only the search path applies the observer's
+            // trust floor and spam gate, so the count must be of what the
+            // feed would SERVE, not of what the filter matches. That used to
+            // mean recalling the page and taking its size, which fetched a
+            // full document summary per counted event to produce an integer
+            // — 76.0s for a "bitcoin" COUNT on the production relay against
+            // 4.9s for the same search (2026-09-01). [EventIndex.count]
+            // answers the same gated number from the engine's own
+            // `totalCount` with one hit; the clamp below is unchanged, so
+            // the ANSWER is identical (STORE-C01: a count honours its
+            // filter's limit).
+            q.isRanked() || q.limit != null -> {
+                val served = index.count(q.copy(limit = null))
+                q.limit?.let { minOf(served, it) } ?: served
+            }
+
+            // Plain, unbounded: the engine's exact grouping count.
+            else -> {
+                index.count(q)
             }
         }
-        // Multi-filter: the feed dedups across filters, so collect each
-        // filter's SERVED ids and count the union. Plain unbounded filters
-        // stream ids through the visit (no doc materialization).
-        //
-        // Fanned out at [QUERY_FANOUT], like the recall path: a COUNT summarizes
-        // the same feed a REQ serves and a relay allows as many filters here as
-        // there (20), so running them one after another made COUNT several times
-        // slower than the REQ it describes, for identical work. [forEachBounded]
-        // serializes the fold, which is what lets the id set stay a plain
-        // HashSet while the queries overlap.
-        val ids = HashSet<String>()
-        queries.forEachBounded(
-            QUERY_FANOUT,
-            produce = { q ->
-                // Every PLAIN filter streams ids, limited or not — the engine
-                // honours a limit on the id walk itself, so the relay's
-                // `limit: 100000` no longer turns a count into a full-summary
-                // recall (measured: 40 s for two window filters over 51k
-                // events, against 0.2 s counted singly). So does a gated
-                // RECENCY read (the observer gate on a plain filter): the walk
-                // gates engine-side and its newest N are that page's N
-                // (EventYql.walksInOrder). Only a filter whose ids ARE a
-                // ranking — terms, or a trust sort — recalls through search.
-                if (!q.isRanked() || EventYql.walksInOrder(q)) {
-                    val seen = ArrayList<String>()
-                    index.visitIds(q) { page ->
-                        page.forEach { seen += it.id }
-                        true
-                    }
-                    seen
-                } else {
-                    index.rawSearch(q).map { it.id }
-                }
-            },
-        ) { found -> ids += found }
-        return ids.size
-    }
 
     /**
      * Every distinct value of [tagName] at position [valueIndex] across
