@@ -223,6 +223,64 @@ class TrustReconcilerTest {
         }
 
     /**
+     * THE 2026-11-02 WIPE. A crash marker names a subject whose document is
+     * healthy; the restarted store's engine is not serving its 10040s yet (the
+     * cold read ProviderMap documents: it answers "none" while they are
+     * stored). The drain must not re-derive against that emptiness: every
+     * derivation comes out empty and `removeEmpties` deletes the document, so
+     * the subject loses every provider's cell and gets back only those of
+     * cards written after it — what search.brainstorm.world showed for
+     * dd664d5e: 422 of 698 named providers' cells gone, all of them older
+     * than 2026-11-02 07:40 UTC.
+     */
+    @Test
+    fun `a drain never derives against a provider pass the engine has not served`() =
+        runBlocking {
+            store.insert(list10040())
+            store.insert(list10040(author = observer2, serviceKey = service2))
+            store.insert(card(rank = 70))
+            store.insert(card(signer = service2, rank = 12))
+            val healthy = serviceCells(service to 70, service2 to 12)
+            assertEquals(healthy, reputations.get(subject)?.influenceScores)
+            reputations.put(ReputationDoc(ProjectionLedger.MARKER_KEY, serviceCells(subject to 1), emptyMap()))
+
+            var serving = false
+            val cold =
+                object : EventIndex by index {
+                    override suspend fun search(query: EventQuery) = if (!serving && query.kinds == listOf(TrustProviderListEvent.KIND)) emptyList() else index.search(query)
+                }
+            val restarted = TrustProjection(cold, reputations)
+            runCatching { restarted.backlog.drain(WriteGate.DIRECT) }
+            assertEquals(healthy, reputations.get(subject)?.influenceScores, "the cold drain left the document alone")
+            assertNotNull(reputations.get(ProjectionLedger.MARKER_KEY), "and kept the marker, so the work is not lost")
+
+            serving = true
+            restarted.backlog.drain(WriteGate.DIRECT)
+            assertEquals(healthy, reputations.get(subject)?.influenceScores, "re-derived once the lists are served")
+            assertNull(reputations.get(ProjectionLedger.MARKER_KEY), "marker cleared")
+        }
+
+    /** The other whole-document writers refuse a cold pass the same way: an audit-and-repair and the rebuild. */
+    @Test
+    fun `verify repair and rebuildAll refuse a provider pass the engine has not served`() =
+        runBlocking {
+            store.insert(list10040())
+            store.insert(card(rank = 70))
+            val healthy = serviceCells(service to 70)
+            val cold =
+                object : EventIndex by index {
+                    override suspend fun search(query: EventQuery) = if (query.kinds == listOf(TrustProviderListEvent.KIND)) emptyList() else index.search(query)
+                }
+            val restarted = TrustProjection(cold, reputations)
+            val coldReconciler = TrustReconciler(cold, reputations, restarted.recompute, restarted.backlog)
+
+            assertTrue(runCatching { coldReconciler.verify(repair = true) }.exceptionOrNull() is ProviderPassUnserved, "the audit refuses")
+            assertEquals(healthy, reputations.get(subject)?.influenceScores, "and wrote nothing")
+            assertTrue(runCatching { coldReconciler.rebuildAll() }.exceptionOrNull() is ProviderPassUnserved, "the rebuild refuses")
+            assertEquals(healthy, reputations.get(subject)?.influenceScores, "and wrote nothing")
+        }
+
+    /**
      * A provider shared by two observers holds ONE cell, its own: there is no
      * per-observer copy to go missing any more, and the reconcile calls the
      * shared service clean on that one cell.
@@ -394,6 +452,115 @@ class TrustReconcilerTest {
             val audit = TrustReconciler(idx, reps, proj.recompute, proj.backlog).verify()
             assertTrue(audit.isClean(), "the queue was settled, not reported")
             assertEquals(serviceCells(service to 87), reps.get(subject)?.influenceScores)
+        }
+
+    /**
+     * The 2026-11-03 report: a named service's card stored, its subject's
+     * parent carrying other services' cells but NOT that one, so every ranked
+     * read through that service's lens gated the author out.
+     */
+    @Test
+    fun `verify finds a stored card whose cell is missing beside other cells`() =
+        runBlocking {
+            store.insert(list10040())
+            store.insert(list10040(author = observer2, serviceKey = service2))
+            store.insert(card(rank = 70))
+            store.insert(card(signer = service2, rank = 12))
+            reputations.put(ReputationDoc(subject, serviceCells(service2 to 12), serviceCells(service2 to 120.0)))
+
+            val audit = reconciler.verify(repair = true)
+            assertEquals(1, audit.driftCount)
+            assertEquals(serviceCells(service to 70, service2 to 12), reputations.get(subject)?.influenceScores)
+            assertTrue(reconciler.verify().isClean(), "repair converged")
+        }
+
+    /** A parent whose only card is by a service nobody names derives empty: it is drift, and repair drops it. */
+    @Test
+    fun `verify drops a parent that only an unnamed service's card stands behind`() =
+        runBlocking {
+            store.insert(list10040())
+            store.insert(card())
+            val unnamedOnly = "e5".repeat(32)
+            store.insert(card(signer = service2, about = unnamedOnly, rank = 40))
+            reputations.put(ReputationDoc(unnamedOnly, serviceCells(service2 to 40), emptyMap()))
+
+            val audit = reconciler.verify(repair = true)
+            assertEquals(listOf(unnamedOnly), audit.drift.map { it.subject })
+            assertNull(audit.drift.single().expected, "nothing named scores it")
+            assertNull(reputations.get(unnamedOnly), "repaired: the parent is dropped")
+        }
+
+    /**
+     * The derive's fetch NEVER carries the named services: they are per user,
+     * so the set grows toward millions of keys, which no query can carry. The
+     * per-card lookup in derive drops the unnamed ones instead.
+     */
+    @Test
+    fun `the derive fetch carries no service list and still keeps only named cards`() =
+        runBlocking {
+            store.insert(list10040())
+            store.insert(card())
+            store.insert(card(signer = service2, rank = 5))
+            val asked = ArrayList<EventQuery>()
+            val watched =
+                object : EventIndex by index {
+                    override suspend fun search(query: EventQuery) = index.search(query).also { if (query.kinds == listOf(UserAssertionEvent.KIND)) asked += query }
+                }
+            val derived = TrustProjection(watched, InMemoryReputationIndex()).recompute.let { it.deriveBatch(listOf(subject), it.providerMap()) }
+
+            assertEquals(serviceCells(service to 87), derived.getValue(subject).influenceScores, "the unnamed card is dropped")
+            assertTrue(asked.isNotEmpty())
+            asked.forEach { assertTrue(it.authors.isEmpty(), "no service list in the query: ${it.authors}") }
+        }
+
+    /**
+     * A whole service drifted makes every subject a suspect. The confirm must
+     * hold the writer lock per slice, never for the whole batch (the 656 s
+     * stall recomputeBatchGated was written for), and the repair must write
+     * the derivation it judged rather than derive every subject again.
+     */
+    @Test
+    fun `verify repairs in gate-sized slices and derives each suspect once`() =
+        runBlocking {
+            store.insert(list10040())
+            val subjects = (1..TrustRecompute.GATE_SLICE * 2 + 7).map { "c" + it.toString(16).padStart(63, '0') }
+            store.batchInsert(subjects.map { card(about = it, rank = 33) })
+            reputations.docs.clear() // the whole service unprojected
+
+            var inGate = false
+            var holds = 0
+            var largestWrite = 0
+            var cardFetches = 0
+            val guarded =
+                object : ReputationIndex by reputations {
+                    override suspend fun putAll(reputations: List<ReputationDoc>) {
+                        check(inGate) { "projection write outside the writer lock" }
+                        largestWrite = maxOf(largestWrite, reputations.size)
+                        this@TrustReconcilerTest.reputations.putAll(reputations)
+                    }
+                }
+            val counted =
+                object : EventIndex by index {
+                    override suspend fun search(query: EventQuery) = index.search(query).also { if (inGate && query.tags.containsKey("d")) cardFetches += query.tags.getValue("d").size }
+                }
+            val proj = TrustProjection(counted, guarded)
+            val gated =
+                TrustReconciler(counted, guarded, proj.recompute, proj.backlog, gate = { body ->
+                    inGate = true
+                    holds++
+                    try {
+                        body()
+                    } finally {
+                        inGate = false
+                    }
+                })
+
+            val audit = gated.verify(repair = true)
+            assertEquals(subjects.size, audit.driftCount)
+            assertEquals(3, holds, "one hold per slice of ${TrustRecompute.GATE_SLICE}")
+            assertTrue(largestWrite <= TrustRecompute.GATE_SLICE, "no hold wrote more than a slice: $largestWrite")
+            assertEquals(subjects.size, cardFetches, "each suspect derived once under the lock, not again to repair")
+            assertTrue(reconciler.verify().isClean(), "repair converged")
         }
 
     // ---- sweepOrphanScores: the scores nobody's 10040 can ever attribute ------

@@ -121,8 +121,10 @@ class TrustReconciler internal constructor(
      *     — catches missing docs, stale cells, cells under the wrong key, leftovers.
      *  2. ORPHANS: every stored parent's pubkey is checked against a
      *     [GuardBloom] of the subjects phase 1 saw. No false negatives, so
-     *     "not seen" proves the doc had no records; a false positive (1e-6)
+     *     "not seen" proves the doc had no records; a false positive
      *     can only HIDE an orphan, never invent drift.
+     *
+     * Reported on the trust page's steps as [VERIFY], with the phase it is in.
      *
      * Both phases SCREEN lock-free — millions of clean subjects take no lock —
      * and only suspects are re-judged under the gate ([confirm]) after another
@@ -137,28 +139,50 @@ class TrustReconciler internal constructor(
         onProgress: ((subjectsChecked: Int) -> Unit)? = null,
     ): TrustAudit {
         backlog.drain(gate)
-        val seen = GuardBloom(expectedInsertions = index.count(EventQuery(kinds = listOf(UserAssertionEvent.KIND))).coerceAtLeast(1024), fpp = 1e-6)
+        val walk = EventQuery(kinds = listOf(UserAssertionEvent.KIND))
+        // The bloom holds distinct SUBJECTS; sized by cards (a dense subject has
+        // hundreds), 164M cards at 1e-6 was ~590 MB of heap. Capped instead:
+        // past the cap the false-positive rate rises gracefully, and a false
+        // positive only skips a subject's check — it never invents drift.
+        val cards = index.count(walk).toLong()
+        val seen = GuardBloom(expectedInsertions = cards.coerceIn(1024L, VERIFY_BLOOM_MAX_SUBJECTS.toLong()).toInt(), fpp = 1e-6)
         val samples = ArrayList<TrustDrift>()
         var driftCount = 0
         var subjectsChecked = 0
 
         // The gated re-judgement of screened suspects; also repairs, when asked.
+        // Held per GATE_SLICE, never for the whole list: a service that drifted
+        // whole (never projected, or a projection bug) makes EVERY subject of a
+        // 20,000-subject batch a suspect, and deriving all of them under one hold
+        // is the 656 s writer-lock stall [TrustRecompute.recomputeBatchGated]
+        // documents. Each slice is judged and repaired atomically on its own.
         suspend fun confirm(suspects: List<String>) {
             if (suspects.isEmpty()) return
             backlog.drain(gate) // settle work queued since the last drain before judging it
-            gate.holding {
-                val expected = recompute.deriveBatch(suspects, recompute.providerMap())
-                val drifted = ArrayList<String>()
-                suspects
-                    .mapBounded(QUERY_FANOUT) { it to reputations.get(it) }
-                    .forEach { (subject, actual) ->
-                        if (!matches(expected[subject], actual)) {
-                            driftCount++
-                            drifted += subject
-                            if (samples.size < VERIFY_DRIFT_SAMPLES) samples += TrustDrift(subject, expected[subject], actual)
-                        }
+            suspects.chunked(TrustRecompute.GATE_SLICE).forEach { slice ->
+                gate.holding {
+                    val providers = recompute.providerMap()
+                    // Judged against an unserved pass, EVERY scored document
+                    // reads as drift — refuse, as the repair below would.
+                    if (providers.isEmpty() && slice.any { reputations.get(it)?.isEmpty() == false }) {
+                        throw ProviderPassUnserved("the provider pass read no kind 10040 while scored documents exist; an audit against it would call them all drift")
                     }
-                if (repair && drifted.isNotEmpty()) recompute.recomputeBatch(drifted, recompute.providerMap(), removeEmpties = true)
+                    val expected = recompute.deriveBatch(slice, providers)
+                    val drifted = ArrayList<String>()
+                    slice
+                        .mapBounded(QUERY_FANOUT) { it to reputations.get(it) }
+                        .forEach { (subject, actual) ->
+                            if (!matches(expected[subject], actual)) {
+                                driftCount++
+                                drifted += subject
+                                if (samples.size < VERIFY_DRIFT_SAMPLES) samples += TrustDrift(subject, expected[subject], actual)
+                            }
+                        }
+                    // The derivation just judged IS the repair, read under this same
+                    // hold: writing it is what recomputeBatch(removeEmpties = true)
+                    // would do after deriving the same subjects a second time.
+                    if (repair && drifted.isNotEmpty()) recompute.writeDerived(drifted, expected, providers)
+                }
             }
         }
 
@@ -179,9 +203,13 @@ class TrustReconciler internal constructor(
                     .map { it.first }
             confirm(suspects)
             subjectsChecked += batch.size
+            TrustProgress.advance(VERIFY, subjectsChecked.toLong(), cards)
             onProgress?.invoke(subjectsChecked)
         }
-        index.visitIds(EventQuery(kinds = listOf(UserAssertionEvent.KIND)), withDTag = true) { page ->
+        // The denominator is CARDS, the numerator subjects: a subject spans many
+        // cards, so the fraction under-reads and only ever finishes early.
+        TrustProgress.begin(VERIFY, "screening every scored subject", cards)
+        index.visitIds(walk, withDTag = true) { page ->
             page.forEach { it.dTag?.takeIf(UserAssertionEvent::isSubjectPubKey)?.let(buffer::add) }
             if (buffer.size >= VERIFY_BATCH) screenBatch()
             true
@@ -193,11 +221,15 @@ class TrustReconciler internal constructor(
         // same gated confirm — a subject whose first records landed mid-audit
         // is judged there, not miscalled an orphan.
         var parentsChecked = 0
+        // A fresh step: phase 1's card denominator would be wrong here, and advance keeps it.
+        TrustProgress.begin(VERIFY, "checking reputation documents for orphans")
         reputations.visitPubkeys { page ->
             parentsChecked += page.count { Hex.isHexKey(it) }
             confirm(page.filter { Hex.isHexKey(it) && !seen.mightContain(it) })
+            TrustProgress.advance(VERIFY, parentsChecked.toLong())
             true
         }
+        TrustProgress.finish(VERIFY)
         return TrustAudit(subjectsChecked, parentsChecked, driftCount, samples, repair)
     }
 
@@ -512,6 +544,7 @@ class TrustReconciler internal constructor(
         /** Registry keys — the operator sees these strings, so they name the operation and not the method. */
         const val RECONCILE = "trust-reconcile"
         const val REBUILD = "trust-rebuild"
+        const val VERIFY = "trust-verify"
 
         // Cards sampled per service by [reconcile]: the never-triggered failure
         // is all-or-nothing per service, so a handful settles it.
@@ -533,6 +566,11 @@ class TrustReconciler internal constructor(
 
         // Drift examples carried in the [TrustAudit] report; the COUNT is always complete.
         const val VERIFY_DRIFT_SAMPLES = 100
+
+        // [verify]'s seen-subject bloom is sized for at most this many distinct
+        // subjects: ~58 MB at its 1e-6 rate. A few million pubkeys are scored at
+        // all; past the cap the rate degrades instead of the heap growing.
+        const val VERIFY_BLOOM_MAX_SUBJECTS = 16_000_000
 
         // Cards deleted per [sweepOrphanScores] round — one page read, one bulk
         // delete, one lock hold. Same size the store's own sweep pages at.

@@ -6,7 +6,24 @@ app = "1.0.1"
 mavenPublish = "0.37.0"
 # Quartz from Maven Central (com.vitorpamplona.quartz:quartz, a release) — NIP-11 DSL + opt-out
 # SQLite FTS index.
-# 2.9.0 = vitorpamplona/quartz main @ 1813390 (the merge of quartz#64, over 644bbb5 "chore: release
+# 2.13.0 = tag v2.13.0 (d99aae0, "chore(release): v2.13.0"), from Central as before. 44 commits over
+# 2.9.0 (9b070bd), through 2.10.0, 2.10.1, 2.11.0, 2.12.0 and 2.12.1; a tree diff of quartz/src
+# between the tags, main sources (29 files), scanned against this store's imports and vespa-relay's:
+#  - THE PARSE TABLE MOVES FOR ONE SHAPE: a kind 30078 carrying drss.io's listening-progress tags
+#    is a DrssListenProgressAppDataEvent now, not an AppSpecificDataEvent (9c53dfc). Both are
+#    BaseAddressableEvent and neither is a SearchableEvent, so the store replaces and deletes it by
+#    `d` as before and it stays unindexed. Its new AddressHintProvider is read by nothing here.
+#  - No searchable kind, extractor, SearchQuery, IEventStore member or nip01Core.store file moved
+#    (the conformance battery VespaParityIT runs is the same): nothing to reindex.
+#  - Code this store does not call: the relay client (a fleet subscribed at start dialed once and
+#    joined in one step; no AUTH after RelayAuthenticator.destroy(); RelayOfflineTracker's races),
+#    SurgeDns / BoundedDns (a resolver timeout is not a dead domain), NIP-03, Namecoin's ElectrumX,
+#    Jester chess, mapNotNullAsync. vespa-relay's sync calls the first three, and its pin note says so.
+#  - RUNTIME CLASSPATH (:store): quartz alone moves; quartz's build files have no diff in the range,
+#    so the published POM names the same dependency versions as 2.9.0's.
+#  - The distributed skill (.claude/skills/quartz) is re-copied from the tag: SKILL.md gains 6 lines.
+#
+# Prev 2.9.0 = vitorpamplona/quartz main @ 1813390 (the merge of quartz#64, over 644bbb5 "chore: release
 # 2.9.0"), from Central as before. 24 commits over 2.8.0 (89ae60a); a tree diff of quartz/src between
 # them, main sources, scanned against this store's imports (41 packages):
 #  - PUBLIC VERSIONS OF WHAT THIS STORE COPIED, which the following commits swap in and delete here:
@@ -223,7 +240,7 @@ mavenPublish = "0.37.0"
 # catch-all; SearchableEvent grows the read-path forEachIndexableField, no reindex).
 # Prev cecc3287b2 (2026-09-01: 17 catch-all kinds split into title/body roles, four
 # affiliation URLs, six doubled `t`-tag scans dropped; a ranking backfill).
-quartz = "2.9.0"
+quartz = "2.13.0"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 # Matches what Quartz brings transitively; Gradle would resolve to it regardless.
