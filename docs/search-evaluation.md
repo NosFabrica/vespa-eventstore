@@ -726,6 +726,192 @@ That is a recall gap for full-name queries against short handles, and a separate
 first, since those are the strata where the levers disagree. (3) A/B the two hypotheses above
 as candidate configs against this judgment set.
 
+### 9.1 The phrase band (2026-11-03, `pico 8`) — graded; no open loss
+
+Reported on production: on `Pico 8` (Everything tab, observer 460c25…065c) the first two
+results held the two words apart. A Spanish article had "8%" in its title and "pico" (peak)
+in its body, which is the split rung. A list titled "Posts including pic of …" with a body
+of `#[8]` references reached the near rung through one typo on one word. Both scored at
+23 000, above every note about PICO-8, which says it in a body (550) or as `#pico8` (4 000).
+Replayed on a local Vespa from the export, the order matched production #0–#7.
+`body_phrase()` already separated the groups exactly (0 on both intruders, 1 on every
+`pico 8` / `pico-8` note), but only as a 4 000 tie-break.
+
+The change (`event.sd` `phrase_match()`, `query(w_phrase_mult)`, shipped at 100) multiplies the
+second-phase score of any document holding the query as typed: adjacent in a body, a title or
+a profile's name, or joined (`pico8`) in a title, a hashtag or a body. The names count because
+`RankRegressionIT`'s `Avi Burra` pin failed without them: the band lifted an article titled
+"…Join Avi Burra's Journey…" over the profile named Avi Burra. It is a multiplier rather than the
+23k/60k rungs §9 rejected for `w_phrase_pop`, because a rung added flattens the ladder inside
+the band. Those rungs lifted body mentions over the pages titled the query. Multiplied, every
+ratio inside the band is unchanged, and the pages titled the query get the band too, which
+`w_phrase_pop` never gave them.
+
+What is measured: the `pico 8` page (`PhraseBandIT`, on 14 of the export's events). Every
+phrase match outranks both intruders, and the page titled `PICO-8` (trust 32) leads. A flat
++130 000 rung had left it under the trust-87 split. `RankRegressionIT`, `ThinSplitPhraseIT`,
+`SearchExactTextIT` and `NameFrequencyRungIT` hold unchanged. `FieldCoverageRankIT` holds with
+one pin deliberately moved: a split (`Verified` in a name, `human` in a bio) from a trust-100
+author used to cross the trust-50 profile named `Verified Human`. With the band that profile
+stays on top, which is the point of the band. The crossing is still pinned with the band off
+(`w_phrase_mult` 1), so the ladder beneath is still tested. Two of the pins moved before the
+`fieldMatch` guards existed. The rank-only name and title items, once matched, made
+`Verified Human Bot` and `Jon Gordon Fan Club` read `fieldCompleteness` 1.0; that was
+measured, then guarded (`field_completeness()`, `guarded_perfect()`). What is NOT measured:
+the judged topics. `rankAb --configs phrase_band_off,baseline` (plus `phrase_band_10` …
+`phrase_band_300`) against the judgment set is the ship gate, and the `pico 8` pool needs
+grading first. One known cost to look for there is the rerank window. The band is second-phase
+only, so a phrase document the first phase ranks below `rerank-count` (1 000 per node) never
+sees it. That is plausible on a query whose words are common apart and rare together.
+
+**Replayed on production's candidates (same day).** The same search, fetched live with
+`limit` 1 000 and every author's 30382 card from the lens's provider, then fed to a local Vespa.
+With the band off, the replay gives back production's live order (only adjacent near-ties
+swap). With it on (and the two fixes below), the top 100 holds all 94 of the 1 000 candidates
+that say "pico 8", "pico-8" or "pico8" (production's held 57). It pulls in documents
+production ranked below #200: six "Pico8" notes from a trust-98 author at
+#229–234, under ~120 Wikipedia pages titled "Pico …". Two gaps in the band showed up, and
+both are now fixed:
+
+- **"Pico8" in a body sat ×8 below "pico-8" in a body.** `w_phrase_pop` paid `body_phrase()`
+  only, so the joined spelling stayed at the bare body rung (550 against 4 550). Those notes
+  ranked under trust-50 one-word replies. `body_phrase_pop()` pays either spelling.
+  Side effect: a note that writes `#pico8` inline (weak rung from the tag, plus the joined
+  word in its body) now reads 8 000. The band already did the same for "Pico-8 … #pico8", so
+  "tagged and mentioned" sits one step over "mentioned".
+- **A phrase in the secondary tier was outside the band.** An nsite (kind 35128) described as
+  "A retro arcade style shooter game made in Pico-8", with an empty body and a title that is
+  its name, sat at #95 under the "Pico …" Wikipedia pages. `secondary_phrase()` reads it off
+  the per-word clause, the way `body_phrase()` reads the body. It now sits at #41.
+
+Still open, as judgment calls:
+
+- **The band can be crossed.** Phrase notes from trust-19–23 authors ("What is Pico-8?",
+  "This PICO-8 Handheld is No Fantasy") sit under the trust-87 ETF split. At ×100 the band
+  crosses at a trust-delta factor of ~5.5. A lexicographic band would also lift a trust-3
+  spammer's phrase over a trust-99 page titled the words apart. `phrase_band_300` is in the
+  sweep.
+- **A partial title still ranks inside the band.** The Picotron article (near rung,
+  "pico"→"Picotron") is #2, and the "Pico" disambiguation page (split rung) sits over the
+  trust-75 "PICO-8 fantasy console Education Edition" note. Both are on the band for a body
+  phrase, but both ride their title's partial rung.
+- **The band can't tell a mention from aboutness.** Inside the band a body phrase is one
+  rung, so "Pico-8*" (a one-word correction) outranks "PICO-8 fantasy console Education
+  Edition" on trust alone.
+
+**Graded (2026-11-03).** `capture_eval.py` over all 54 cases (11 890 events, plus the 1 000
+`pico 8` candidates above), loaded into a local Vespa at this branch. The pool was 299
+unjudged documents in the top 20 of `production`, `baseline`, `phrase_band_off`,
+`phrase_band_30` and `phrase_band_300`. Four blind model assessors graded them
+(`llm:claude`), each given only the worksheet rows and §4. After the merge every topic
+reads `judged@10` 1.000. The human re-grade §5.3 requires is still owed: a seeded 20% sample
+(60 rows) is drawn for it.
+
+nDCG@10 vs `production` (53 topics, paired, Holm over 4):
+
+| config | Δ mean | 95% CI | W/T/L | topical (n=23) | navigational (n=15) | prefix (n=6) |
+|---|---|---|---|---|---|---|
+| baseline (band ×100) | +0.029 | [−0.003, +0.067] | 16/29/8 | +0.071 | −0.009 | −0.003 |
+| phrase_band_off | +0.004 | [−0.005, +0.015] | 10/36/7 | +0.005 | +0.011 | −0.003 |
+| phrase_band_30 | +0.028 | [−0.005, +0.065] | 16/29/8 | +0.071 | −0.009 | −0.003 |
+| phrase_band_300 | +0.029 | [−0.003, +0.067] | 16/29/8 | +0.071 | −0.009 | −0.003 |
+
+`pico 8` goes from 0.51 to 0.82. The weight barely matters between ×30 and ×300; the band
+is the change. Losses over 0.1, every one fully judged:
+
+- **`Vitor P` −0.17, fixed before this table.** A note saying "… like Vitor P. Issue …"
+  held "vitor p" literally, took the band and led over the profile being typed toward.
+  `EventYql` no longer sends a phrase whose last word is a typed fragment (1–2 Latin
+  letters, under `MIN_PREFIX_LEN`). A digit stays a word, so `pico 8` keeps the band.
+- **`preston pysh` −0.30, RR −1.00: open.** The real profile (`85080d…`) is named
+  "preston", and "Pysh" appears only in its bio, as "@PrestonPysh". It holds no phrase,
+  while every video titled "Preston Pysh – …" takes ×100, so the profile leaves the page.
+- **`bitcoin white paper` −0.16, RR −0.90: open.** The pages that answer it spell it
+  "whitepaper": the `bitcoin-whitepaper` wiki (grade 3) and "Das Bitcoin-Whitepaper für
+  Kinder" (grade 3). Only the fully joined spelling counts, not a pair joined inside a longer
+  query, so the band lifts the "Bitcoin White Paper Day" meetup events (graded 1–2) over them.
+- `ai` −0.10 shows in every config, including `phrase_band_off`. It is a one-word query that
+  no band touches: a gap between this branch and the deployed relay, not this change.
+
+Verdict at that point: the CI's low end cleared −0.01, but two navigational/known-item
+losses were open defects.
+
+**Second round (same capture, same judgments, plus 3 newly pooled rows graded blind).**
+
+- **`bitcoin white paper`: fixed.** For 3–5 words, `EventYql` also sends the phrase with
+  ONE adjacent pair joined (`bitcoin whitepaper`, `bitcoinwhite paper`). Each is a weighted
+  positional phrase over `phrase_surface` (`PAIR_PHRASE_WEIGHT`, 1/100 of the joined term's
+  weight). `pair_phrase()` reads it as `fieldMatch(f).weight > query(pair_share)`, half of one
+  pair's share of the heavy weight sent, and a body pair also earns `w_phrase_pop`. The loss
+  is gone, and the topic's grade-3 pages lead.
+- **`preston pysh`: still open.** Putting the bio (`about`) on the phrase surface did
+  nothing on the real query. The word groups already search `about` for the joined word, and
+  when two identical terms reach one field, fieldMatch credits the match to the first one,
+  the light word-group term. On his profile, `fieldMatch(about).weight` read 1e-5 with
+  `matches` 1; a hand query without the word-group term read 0.99997. Reverted. The fix
+  needs the flag carried by the word group's own joined term (its weight, read per field),
+  which touches every recall clause's weight and is its own change.
+
+| config | Δ nDCG@10 vs production | 95% CI | W/T/L | topical | navigational | prefix |
+|---|---|---|---|---|---|---|
+| baseline (band ×100) | **+0.034** | **[+0.002, +0.071]** | 17/29/7 | +0.081 | −0.009 | −0.003 |
+| phrase_band_off | +0.005 | [−0.004, +0.017] | 11/35/7 | +0.009 | +0.011 | −0.003 |
+| phrase_band_30 | +0.032 | [+0.001, +0.069] | 17/29/7 | +0.081 | −0.009 | −0.003 |
+| phrase_band_300 | +0.034 | [+0.002, +0.071] | 17/29/7 | +0.081 | −0.009 | −0.003 |
+
+S@1 0.375 → 0.417 and S@3 0.563 → 0.604 (known-item, 48 topics). The top-author share is
+0.319 → 0.336, inside the guardrail. Losses over 0.1: `preston pysh` −0.30 (open, above)
+and `ai` −0.10, which shows in every config including `phrase_band_off`.
+
+**Tried and rejected: one rung for a tag plus a mention.** A note writing `#pico8` inline is
+on the weak rung through the tag (4 000) and also holds the joined word in its body, so
+`w_phrase_pop` adds on top: 8 000, against 4 550 for a note saying only "Pico-8". It looked
+like the tag paying twice, so `w_phrase_pop` was made a top-up to 4 550 that never stacks on a
+higher rung. Graded (48 newly pooled rows judged blind, then both versions re-scored on the
+same judgments):
+
+| version | Δ nDCG@10 vs production | 95% CI | `pico 8` | `proof of work` |
+|---|---|---|---|---|
+| stacked (shipped) | +0.033 | [+0.002, +0.069] | 0.82 | 0.58 |
+| top-up | +0.029 | [−0.003, +0.067] | 0.69 | 0.49 |
+
+Under the top-up the `pico 8` page orders by trust alone. Grade-2 replies from trust-100
+authors fill the top 10, and grade-3 posts sharing a game or cart (most of them tagged) fall
+below. So the second payment is a real signal: a note that both tags and mentions the topic
+is usually ABOUT it, and the band has no other aboutness signal. The new grades were reviewed
+against each topic's `need`. The lenient ones (two one-line `pico 8` notes at 2, two Lightning
+talks at 3) only favour the top-up, so the verdict holds.
+
+**`preston pysh`, split by the maintainer (2026-11-03).** The Everything tab ranks content, and
+a person's own profile is the Profiles tab's answer. So the case became two:
+
+- `preston pysh` (Everything tab, now **topical**): content by or about him (his shows and
+  talks 3, his own profile 2, quotes and mentions 1). Re-graded blind under that need: 22
+  documents pooled.
+- `preston pysh|profiles` (`kinds: [0]`, **navigational**): his profile (`85080d3bad…`) is the
+  answer, and profiles from other authors copying his bio, website or NIP-05 are 0. It carries
+  the original navigational grades, pruned to profiles; the posts graded there could never
+  appear on a profiles-only page, and still weighed on its ideal ranking. Production's
+  Profiles-tab page was captured live (4 profiles, his first), and the two not in the corpus
+  were loaded with their trust cards.
+
+A held-out row changed after its result was seen: stated here and in the case note, not
+hidden. On the Profiles tab his profile is #1 in every config, production included (the
+band lifts an impersonator named "Preston Pysh" ×100, from 2 200× below to 22× below).
+
+**Final graded read** (54 cases; 53 graded, as the Profiles-tab case has 4 judgments, under
+the 5 nDCG needs; 49 known-item):
+
+| config | Δ nDCG@10 vs production | 95% CI | p (Holm) | W/T/L | Δ RR | S@1 |
+|---|---|---|---|---|---|---|
+| baseline (band ×100) | **+0.040** | **[+0.011, +0.074]** | 0.025 | 18/29/6 | +0.072 [+0.022, +0.133] | 0.367 → 0.449 |
+| phrase_band_off | +0.005 | [−0.004, +0.016] | 0.381 | 11/35/7 | +0.007 | 0.367 |
+
+Topical +0.079 (24), navigational +0.012 (14), prefix −0.003 (6). `preston pysh` goes from 0.76
+to 0.83, `pico 8` from 0.51 to 0.82, `bitcoin white paper` from 0.52 to 0.60. The one loss over
+0.1 is `ai` (−0.10), present in `phrase_band_off` too: not this change. The top-author share is
+0.318 → 0.334. Every grade is `llm:claude`, and the human re-grade (§5.3) is still owed.
+
 ## 10. References
 
 - Cleverdon (1967), *The Cranfield tests on index language devices*: the paradigm.

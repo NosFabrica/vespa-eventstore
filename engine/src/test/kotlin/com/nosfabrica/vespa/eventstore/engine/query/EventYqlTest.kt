@@ -73,6 +73,67 @@ class EventYqlTest {
     }
 
     @Test
+    fun `a multi-word search carries the phrase band's title and name phrases and weighted joined term`() {
+        // event.sd's phrase_match(): the phrase in a body, a title, a name, or joined
+        // ("pico8") anywhere on the phrase surface — all rank-only, all on the
+        // `search` profile only, all beside the body phrase in one rank().
+        val lens = "c".repeat(64)
+
+        fun search(
+            text: String,
+            kinds: List<Int> = emptyList(),
+        ) = EventYql.build(EventQuery(search = text, kinds = kinds, observer = lens, minRank = 0.0))!!
+        val pico = search("Pico 8")
+        val title = """({label:"title_phrase",defaultIndex:"search_primary",grammar:"phrase"}userInput(@bp))"""
+        val joined = """(${EventYql.PHRASE_SURFACE} contains ({label:"joined_phrase",weight:${EventYql.JOINED_PHRASE_WEIGHT}}@wj))"""
+        val name = """({label:"name_phrase",defaultIndex:"${EventYql.NAME_SURFACE}",grammar:"phrase"}userInput(@bp))"""
+        assertTrue(pico.yql.contains(title), pico.yql)
+        assertTrue(pico.yql.contains(name), pico.yql)
+        assertTrue(pico.yql.contains(joined), pico.yql)
+        assertEquals("Pico8", pico.params["wj"])
+        assertEquals("2", pico.params["ranking.features.query(phrase_terms)"])
+
+        // A title exists where a body does not: the body-less kinds keep the
+        // title phrase and the joined term, and only lose the body phrase.
+        val bodyless = search("Pico 8", listOf(EventYql.BODYLESS_KINDS.first()))
+        assertFalse(bodyless.yql.contains("body_phrase"), bodyless.yql)
+        assertTrue(bodyless.yql.contains(title), bodyless.yql)
+        assertTrue(bodyless.yql.contains(joined), bodyless.yql)
+
+        // A joined word Vespa would cut in two is never sent: a `contains` term
+        // is not tokenized, so "don'ttrust" could not match what a body holds.
+        val punctuated = search("don't trust")
+        assertTrue(punctuated.yql.contains(title), punctuated.yql)
+        assertFalse(punctuated.yql.contains("joined_phrase"), punctuated.yql)
+
+        // 3+ words also send the phrase with ONE adjacent pair joined, each as a
+        // weighted positional phrase, and the share event.sd's pair_phrase_in()
+        // reads; two words have only the fully joined term.
+        val paper = search("bitcoin white paper")
+        val pairItem = Regex("""\(phrase_surface contains \(\{label:"pair_phrase",weight:${EventYql.PAIR_PHRASE_WEIGHT}\}phrase\(([^)]*)\)\)\)""")
+        val pairs = pairItem.findAll(paper.yql).map { m -> m.groupValues[1].split(", ").map { paper.params.getValue(it.removePrefix("@")) } }.toList()
+        assertEquals(listOf(listOf("bitcoinwhite", "paper"), listOf("bitcoin", "whitepaper")), pairs)
+        val heavy = EventYql.JOINED_PHRASE_WEIGHT + 2.0 * EventYql.PAIR_PHRASE_WEIGHT
+        assertEquals(0.5 * EventYql.PAIR_PHRASE_WEIGHT / heavy, paper.params.getValue("ranking.features.query(pair_share)").toDouble(), 1e-12)
+        assertFalse(pico.yql.contains("pair_phrase"), pico.yql)
+        assertNull(pico.params["ranking.features.query(pair_share)"])
+
+        // A last word still being typed is no phrase: "Vitor P" is a name half
+        // typed, not "vitor" then the token "p". A digit is a whole word, as is
+        // a word past the prefix floor.
+        val typing = search("Vitor P")
+        for (label in listOf("body_phrase", "title_phrase", "name_phrase", "joined_phrase")) assertFalse(typing.yql.contains(label), typing.yql)
+        assertNull(typing.params["ranking.features.query(phrase_terms)"])
+        assertTrue(search("Vitor Pam").yql.contains(title))
+        assertTrue(search("web 3").yql.contains(title))
+
+        // One word has no phrase; other profiles and reads carry none of it.
+        assertFalse(search("pico").yql.contains("title_phrase"))
+        assertFalse(EventYql.build(EventQuery(search = "Pico 8"))!!.yql.contains("joined_phrase"))
+        assertFalse(EventYql.buildCount(EventQuery(search = "Pico 8", observer = lens, minRank = 0.0))!!.yql.contains("title_phrase"))
+    }
+
+    @Test
     fun `phraseTokens counts what Vespa's tokenizer cuts, erring only high`() {
         // Each row read off Vespa's own query tokenization (2026-10-23).
         assertEquals(3, EventYql.phraseTokens("book of daniel"))

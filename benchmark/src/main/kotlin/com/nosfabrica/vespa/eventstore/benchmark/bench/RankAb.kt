@@ -150,6 +150,17 @@ object RankAb {
             "both_4k" to mapOf("w_split_min_coverage" to 0.5, "w_phrase_pop" to 4000.0),
             "both_23k" to mapOf("w_split_min_coverage" to 0.5, "w_phrase_pop" to 23000.0),
             "both_60k" to mapOf("w_split_min_coverage" to 0.5, "w_phrase_pop" to 60000.0),
+            // ---- the `pico 8` report (event.sd phrase_match(), query(w_phrase_mult)) ----
+            // The phrase band multiplies the whole second-phase score of a doc
+            // holding the query as typed — adjacent in a body or a title, or
+            // joined (`pico8`). `phrase_band_off` is the page before it; the
+            // ladder inside the band is unchanged at every multiplier, so the
+            // sweep moves only where the band sits against the non-phrase hits.
+            "phrase_band_off" to mapOf("w_phrase_mult" to 1.0),
+            "phrase_band_10" to mapOf("w_phrase_mult" to 10.0),
+            "phrase_band_30" to mapOf("w_phrase_mult" to 30.0),
+            "phrase_band_100" to mapOf("w_phrase_mult" to 100.0),
+            "phrase_band_300" to mapOf("w_phrase_mult" to 300.0),
             "name_df_off" to mapOf("perfect_df_lo" to 1.0, "perfect_df_hi" to 1.0),
             "name_df_2e4_6e4" to mapOf("perfect_df_lo" to 2e-4, "perfect_df_hi" to 6e-4, "perfect_df_min_docs" to 0.0),
             "name_df_2e4_2e3" to mapOf("perfect_df_lo" to 2e-4, "perfect_df_hi" to 2e-3, "perfect_df_min_docs" to 0.0),
@@ -601,6 +612,9 @@ object RankAb {
         println("is explained, and the guardrails (age, top-author share, latency) hold — docs/search-evaluation.md §6.")
     }
 
+    // A UTF-16 surrogate without its other half, which no encoder will write.
+    private val LONE_SURROGATE = Regex("[\\uD800-\\uDBFF](?![\\uDC00-\\uDFFF])|(?<![\\uD800-\\uDBFF])[\\uDC00-\\uDFFF]")
+
     /**
      * Writes the unjudged pool as a worksheet: one row per (topic, event),
      * `grade` left null for the assessor. BLIND, as TREC pools are: no rank,
@@ -654,7 +668,10 @@ object RankAb {
                     }
                 }
             }
-        Files.writeString(out, PRETTY.encodeToString(JsonArray.serializer(), rows) + "\n")
+        // Excerpts are cut at a char count, which can split an emoji's surrogate
+        // pair; a lone surrogate is unencodable and Files.writeString throws.
+        val json = PRETTY.encodeToString(JsonArray.serializer(), rows).replace(LONE_SURROGATE, "")
+        Files.writeString(out, json + "\n")
         println("\npool: ${rows.size} unjudged hit(s) in the top $depth of ${pages.size} config(s) over ${topics.size} topic(s) -> $out")
         println("grade each row 0-3 per docs/search-evaluation.md §4, set `by`, then: rankAb --merge $out")
     }
