@@ -863,6 +863,25 @@ S@1 0.375 → 0.417 and S@3 0.563 → 0.604 (known-item, 48 topics). The top-aut
 0.319 → 0.336, inside the guardrail. Losses over 0.1: `preston pysh` −0.30 (open, above)
 and `ai` −0.10, which shows in every config including `phrase_band_off`.
 
+**Tried and rejected: one rung for a tag plus a mention.** A note writing `#pico8` inline is
+on the weak rung through the tag (4 000) and also holds the joined word in its body, so
+`w_phrase_pop` adds on top: 8 000, against 4 550 for a note saying only "Pico-8". It looked
+like the tag paying twice, so `w_phrase_pop` was made a top-up to 4 550 that never stacks on a
+higher rung. Graded (48 newly pooled rows judged blind, then both versions re-scored on the
+same judgments):
+
+| version | Δ nDCG@10 vs production | 95% CI | `pico 8` | `proof of work` |
+|---|---|---|---|---|
+| stacked (shipped) | +0.033 | [+0.002, +0.069] | 0.82 | 0.58 |
+| top-up | +0.029 | [−0.003, +0.067] | 0.69 | 0.49 |
+
+Under the top-up the `pico 8` page orders by trust alone. Grade-2 replies from trust-100
+authors fill the top 10, and grade-3 posts sharing a game or cart (most of them tagged) fall
+below. So the second payment is a real signal: a note that both tags and mentions the topic
+is usually ABOUT it, and the band has no other aboutness signal. The new grades were reviewed
+against each topic's `need`. The lenient ones (two one-line `pico 8` notes at 2, two Lightning
+talks at 3) only favour the top-up, so the verdict holds.
+
 ## 10. References
 
 - Cleverdon (1967), *The Cranfield tests on index language devices*: the paradigm.
