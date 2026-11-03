@@ -1121,7 +1121,7 @@ object MockYql {
                     clause.startsWith("rank(") -> {
                         val args = splitTopLevel(clause.removePrefix("rank(").removeSuffix(")"), ", ")
                         require(
-                            args.size in 2..5 &&
+                            args.size in 2..10 &&
                                 SEARCH_CLAUSE.containsMatchIn(args[0]) &&
                                 args.drop(1).all { arg -> RANK_ONLY_CLAUSES.any { it.matches(arg) } } &&
                                 "bp" in params,
@@ -1194,6 +1194,7 @@ object MockYql {
             Regex("""^\(\{label:"title_phrase",defaultIndex:"search_primary",grammar:"phrase"\}userInput\(@bp\)\)$"""),
             Regex("""^\(\{label:"name_phrase",defaultIndex:"name_surface",grammar:"phrase"\}userInput\(@bp\)\)$"""),
             Regex("""^\(phrase_surface contains \(\{label:"joined_phrase",weight:\d+\}@wj\)\)$"""),
+            Regex("""^\(phrase_surface contains \(\{label:"pair_phrase",weight:\d+\}phrase\(@wv\d+_\d+(, @wv\d+_\d+)+\)\)\)$"""),
         )
 
     /**

@@ -610,8 +610,16 @@ schema event {
 
     # The columns a PHRASE counts in for phrase_match(): title, hashtags/summary,
     # body. Query-side only (a deploy, no re-feed); searched by nothing but the
-    # rank-only joined_phrase term EventYql adds on the `search` profile. All
-    # three share one match mode (plain text, stemming none), as a fieldset needs.
+    # rank-only joined and pair-joined items EventYql adds on the `search`
+    # profile. All three share one match mode (plain text, stemming none), as a
+    # fieldset needs.
+    #
+    # NOT a profile's bio, measured 2026-11-03: the word groups already search
+    # `about` for the joined word, and when two identical terms reach one field
+    # fieldMatch credits the match to the FIRST — the light word-group term — so
+    # the weighted flag never registers there (fieldMatch(about).weight 1e-5 on
+    # Preston Pysh's profile, whose bio says "@PrestonPysh"). The band on a bio
+    # needs the flag carried by the word group's own term instead.
     fieldset phrase_surface {
         fields: search_primary, search_secondary, search_text
     }
@@ -1015,6 +1023,11 @@ schema event {
             # counts it (phraseTokens) and sends it only with the rank-only
             # phrase item; unsent, 0 switches the band off.
             query(phrase_terms) double: 0.0
+            # pair_share — pair_phrase_in()'s threshold: half of ONE pair-joined
+            # phrase's share of the heavy term weight EventYql sent
+            # (EventYql.PAIR_PHRASE_WEIGHT). 2.0, above any share, is "no pair
+            # items sent": the test can never pass.
+            query(pair_share) double: 2.0
             # perfect_df_lo / perfect_df_hi — how COMMON the query word is AS A
             # NAME decides how much of the perfect-match rung a one-word query
             # pays (perfect_share()). The rung exists for navigational queries,
@@ -1743,6 +1756,23 @@ schema event {
             expression: if (query(n_words) > 1, if (max(max(fieldMatch(search_primary).weight, fieldMatch(search_secondary).weight), fieldMatch(search_text).weight) > 0.5, 1, 0), 0)
         }
 
+        # The phrase with ONE adjacent pair JOINED — "bitcoin whitepaper" for
+        # `bitcoin white paper` — in field f, through the weighted rank-only
+        # phrase items EventYql adds for 3+ words (EventYql.PAIR_PHRASE_WEIGHT):
+        # a matched pair pushes fieldMatch(f).weight past query(pair_share).
+        # The joined term (joined_phrase()) passes it too, being heavier.
+        function pair_phrase_in(f) {
+            expression: if (query(n_words) > 2, if (fieldMatch(f).weight > query(pair_share), 1, 0), 0)
+        }
+
+        # pair_phrase_in() anywhere on the phrase surface. Graded 2026-11-03: the
+        # pages answering `bitcoin white paper` (the `bitcoin-whitepaper` wiki,
+        # "Das Bitcoin-Whitepaper für Kinder", both grade 3) spell it so, and the
+        # band without this lifted "Bitcoin White Paper Day" meetups over them.
+        function pair_phrase() {
+            expression: max(max(pair_phrase_in(search_primary), pair_phrase_in(search_secondary)), pair_phrase_in(search_text))
+        }
+
         # joined_phrase(), on the title alone — primary_perfect() needs to know.
         function title_joined() {
             expression: if (query(n_words) > 1, if (fieldMatch(search_primary).weight > 0.5, 1, 0), 0)
@@ -1761,7 +1791,7 @@ schema event {
         # author's six "Pico8" notes sat x8 under their own "pico-8" notes,
         # below trust-50 one-word replies, inside the band.
         function body_phrase_pop() {
-            expression: max(body_phrase(), body_joined())
+            expression: max(max(body_phrase(), body_joined()), pair_phrase_in(search_text))
         }
 
         # The SECONDARY tier — summaries, descriptions, hashtags — holds every
@@ -1777,7 +1807,7 @@ schema event {
 
         # THE PHRASE BAND's test — see query(w_phrase_mult).
         function phrase_match() {
-            expression: max(max(max(max(body_phrase(), title_phrase()), name_phrase()), joined_phrase()), secondary_phrase())
+            expression: max(max(max(max(body_phrase(), title_phrase()), name_phrase()), max(joined_phrase(), pair_phrase())), secondary_phrase())
         }
 
         # The band itself: x query(w_phrase_mult) on a phrase match, x1 otherwise.
@@ -2471,6 +2501,7 @@ schema event {
             joined_phrase
             secondary_phrase
             body_joined
+            pair_phrase
             phrase_match
             name_match
             identity_match

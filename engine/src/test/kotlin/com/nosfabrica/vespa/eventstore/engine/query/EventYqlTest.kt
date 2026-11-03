@@ -106,6 +106,18 @@ class EventYqlTest {
         assertTrue(punctuated.yql.contains(title), punctuated.yql)
         assertFalse(punctuated.yql.contains("joined_phrase"), punctuated.yql)
 
+        // 3+ words also send the phrase with ONE adjacent pair joined, each as a
+        // weighted positional phrase, and the share event.sd's pair_phrase_in()
+        // reads; two words have only the fully joined term.
+        val paper = search("bitcoin white paper")
+        val pairItem = Regex("""\(phrase_surface contains \(\{label:"pair_phrase",weight:${EventYql.PAIR_PHRASE_WEIGHT}\}phrase\(([^)]*)\)\)\)""")
+        val pairs = pairItem.findAll(paper.yql).map { m -> m.groupValues[1].split(", ").map { paper.params.getValue(it.removePrefix("@")) } }.toList()
+        assertEquals(listOf(listOf("bitcoinwhite", "paper"), listOf("bitcoin", "whitepaper")), pairs)
+        val heavy = EventYql.JOINED_PHRASE_WEIGHT + 2.0 * EventYql.PAIR_PHRASE_WEIGHT
+        assertEquals(0.5 * EventYql.PAIR_PHRASE_WEIGHT / heavy, paper.params.getValue("ranking.features.query(pair_share)").toDouble(), 1e-12)
+        assertFalse(pico.yql.contains("pair_phrase"), pico.yql)
+        assertNull(pico.params["ranking.features.query(pair_share)"])
+
         // A last word still being typed is no phrase: "Vitor P" is a name half
         // typed, not "vitor" then the token "p". A digit is a whole word, as is
         // a word past the prefix floor.

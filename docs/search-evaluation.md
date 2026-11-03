@@ -726,7 +726,7 @@ That is a recall gap for full-name queries against short handles, and a separate
 first, since those are the strata where the levers disagree. (3) A/B the two hypotheses above
 as candidate configs against this judgment set.
 
-### 9.1 The phrase band (2026-11-03, `pico 8`) — graded; two losses open
+### 9.1 The phrase band (2026-11-03, `pico 8`) — graded; one loss open
 
 Reported on production: on `Pico 8` (Everything tab, observer 460c25…065c) the first two
 results held the two words apart. A Spanish article had "8%" in its title and "pico" (peak)
@@ -833,8 +833,35 @@ is the change. Losses over 0.1, every one fully judged:
 - `ai` −0.10 shows in every config, including `phrase_band_off`. It is a one-word query that
   no band touches: a gap between this branch and the deployed relay, not this change.
 
-Verdict: the CI's low end clears −0.01, but two navigational/known-item losses are open
-defects, so this does not ship until they are fixed and re-measured.
+Verdict at that point: the CI's low end cleared −0.01, but two navigational/known-item
+losses were open defects.
+
+**Second round (same capture, same judgments, plus 3 newly pooled rows graded blind).**
+
+- **`bitcoin white paper`: fixed.** For 3–5 words, `EventYql` also sends the phrase with
+  ONE adjacent pair joined (`bitcoin whitepaper`, `bitcoinwhite paper`). Each is a weighted
+  positional phrase over `phrase_surface` (`PAIR_PHRASE_WEIGHT`, 1/100 of the joined term's
+  weight). `pair_phrase()` reads it as `fieldMatch(f).weight > query(pair_share)`, half of one
+  pair's share of the heavy weight sent, and a body pair also earns `w_phrase_pop`. The loss
+  is gone, and the topic's grade-3 pages lead.
+- **`preston pysh`: still open.** Putting the bio (`about`) on the phrase surface did
+  nothing on the real query. The word groups already search `about` for the joined word, and
+  when two identical terms reach one field, fieldMatch credits the match to the first one,
+  the light word-group term. On his profile, `fieldMatch(about).weight` read 1e-5 with
+  `matches` 1; a hand query without the word-group term read 0.99997. Reverted. The fix
+  needs the flag carried by the word group's own joined term (its weight, read per field),
+  which touches every recall clause's weight and is its own change.
+
+| config | Δ nDCG@10 vs production | 95% CI | W/T/L | topical | navigational | prefix |
+|---|---|---|---|---|---|---|
+| baseline (band ×100) | **+0.034** | **[+0.002, +0.071]** | 17/29/7 | +0.081 | −0.009 | −0.003 |
+| phrase_band_off | +0.005 | [−0.004, +0.017] | 11/35/7 | +0.009 | +0.011 | −0.003 |
+| phrase_band_30 | +0.032 | [+0.001, +0.069] | 17/29/7 | +0.081 | −0.009 | −0.003 |
+| phrase_band_300 | +0.034 | [+0.002, +0.071] | 17/29/7 | +0.081 | −0.009 | −0.003 |
+
+S@1 0.375 → 0.417 and S@3 0.563 → 0.604 (known-item, 48 topics). The top-author share is
+0.319 → 0.336, inside the guardrail. Losses over 0.1: `preston pysh` −0.30 (open, above)
+and `ai` −0.10, which shows in every config including `phrase_band_off`.
 
 ## 10. References
 
