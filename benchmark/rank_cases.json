@@ -388,10 +388,22 @@
   {
     "query": "preston pysh",
     "expect": "",
-    "intent": "navigational",
-    "need": "NAVIGATIONAL: Preston Pysh, investor and podcast host (The Investor's Podcast, Bitcoin Fundamentals). 3 = his own profile; 2 = content about him, his shows; 1 = mentions; 0 = impersonators, unrelated.",
+    "intent": "topical",
+    "need": "TOPICAL (Everything tab): content by or about Preston Pysh, investor and podcast host (The Investor's Podcast, Bitcoin Fundamentals). 3 = his shows, interviews and talks he appears in, or his own notes; 2 = content substantially about him or his ideas, and his own profile (the Profiles tab is where it is the answer); 1 = mentions (a quote, a passing reference); 0 = impersonating profiles or posts from other authors claiming to be him, unrelated.",
     "split": "test",
-    "note": "HELD-OUT (2026-10-23, round 2): multi-word, chosen before any page was seen to confirm the split-coverage and body-phrase fixes for the 'book of daniel' report (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+    "note": "HELD-OUT (2026-10-23, round 2): multi-word, chosen before any page was seen to confirm the split-coverage and body-phrase fixes for the 'book of daniel' report (docs/search-evaluation.md §9, pre-registered there). Never tune on this row. RE-SCOPED 2026-11-03 by the maintainer, after its first graded read: the Everything tab ranks CONTENT, and a person's own profile is the Profiles tab's answer (the `preston pysh|profiles` case below). His profile is named only 'preston' and says '@PrestonPysh' in its bio, so the phrase band ranks every title naming him over it here (docs/search-evaluation.md §9.1). The navigational grades moved to that case; this one was re-graded blind under the need above. A change to a held-out row after seeing its result: stated, not hidden."
+  },
+  {
+    "id": "preston pysh|profiles",
+    "query": "preston pysh",
+    "kinds": [
+      0
+    ],
+    "expect": "",
+    "intent": "navigational",
+    "need": "NAVIGATIONAL (Profiles tab): Preston Pysh, investor and podcast host (The Investor's Podcast, Bitcoin Fundamentals). 3 = his own profile; 2 = content about him, his shows; 1 = mentions; 0 = impersonators, unrelated.",
+    "split": "test",
+    "note": "Split from `preston pysh` 2026-11-03 (see that case's note): the same query on the Profiles tab, where his own profile (author 85080d3bad…) is THE answer. Carries the navigational grades the original case was judged with."
   },
   {
     "query": "pico 8",

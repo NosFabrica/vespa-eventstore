@@ -726,7 +726,7 @@ That is a recall gap for full-name queries against short handles, and a separate
 first, since those are the strata where the levers disagree. (3) A/B the two hypotheses above
 as candidate configs against this judgment set.
 
-### 9.1 The phrase band (2026-11-03, `pico 8`) — graded; one loss open
+### 9.1 The phrase band (2026-11-03, `pico 8`) — graded; no open loss
 
 Reported on production: on `Pico 8` (Everything tab, observer 460c25…065c) the first two
 results held the two words apart. A Spanish article had "8%" in its title and "pico" (peak)
@@ -881,6 +881,36 @@ below. So the second payment is a real signal: a note that both tags and mention
 is usually ABOUT it, and the band has no other aboutness signal. The new grades were reviewed
 against each topic's `need`. The lenient ones (two one-line `pico 8` notes at 2, two Lightning
 talks at 3) only favour the top-up, so the verdict holds.
+
+**`preston pysh`, split by the maintainer (2026-11-03).** The Everything tab ranks content, and
+a person's own profile is the Profiles tab's answer. So the case became two:
+
+- `preston pysh` (Everything tab, now **topical**): content by or about him (his shows and
+  talks 3, his own profile 2, quotes and mentions 1). Re-graded blind under that need: 22
+  documents pooled.
+- `preston pysh|profiles` (`kinds: [0]`, **navigational**): his profile (`85080d3bad…`) is the
+  answer, and profiles from other authors copying his bio, website or NIP-05 are 0. It carries
+  the original navigational grades, pruned to profiles; the posts graded there could never
+  appear on a profiles-only page, and still weighed on its ideal ranking. Production's
+  Profiles-tab page was captured live (4 profiles, his first), and the two not in the corpus
+  were loaded with their trust cards.
+
+A held-out row changed after its result was seen: stated here and in the case note, not
+hidden. On the Profiles tab his profile is #1 in every config, production included (the
+band lifts an impersonator named "Preston Pysh" ×100, from 2 200× below to 22× below).
+
+**Final graded read** (54 cases; 53 graded, as the Profiles-tab case has 4 judgments, under
+the 5 nDCG needs; 49 known-item):
+
+| config | Δ nDCG@10 vs production | 95% CI | p (Holm) | W/T/L | Δ RR | S@1 |
+|---|---|---|---|---|---|---|
+| baseline (band ×100) | **+0.040** | **[+0.011, +0.074]** | 0.025 | 18/29/6 | +0.072 [+0.022, +0.133] | 0.367 → 0.449 |
+| phrase_band_off | +0.005 | [−0.004, +0.016] | 0.381 | 11/35/7 | +0.007 | 0.367 |
+
+Topical +0.079 (24), navigational +0.012 (14), prefix −0.003 (6). `preston pysh` goes from 0.76
+to 0.83, `pico 8` from 0.51 to 0.82, `bitcoin white paper` from 0.52 to 0.60. The one loss over
+0.1 is `ai` (−0.10), present in `phrase_band_off` too: not this change. The top-author share is
+0.318 → 0.334. Every grade is `llm:claude`, and the human re-grade (§5.3) is still owed.
 
 ## 10. References
 
