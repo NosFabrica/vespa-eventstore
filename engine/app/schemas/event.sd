@@ -608,6 +608,21 @@ schema event {
         summary tag_index {}
     }
 
+    # The columns a PHRASE counts in for phrase_match(): title, hashtags/summary,
+    # body. Query-side only (a deploy, no re-feed); searched by nothing but the
+    # rank-only joined_phrase term EventYql adds on the `search` profile. All
+    # three share one match mode (plain text, stemming none), as a fieldset needs.
+    fieldset phrase_surface {
+        fields: search_primary, search_secondary, search_text
+    }
+
+    # The NAMING columns of a profile, for the rank-only name_phrase item EventYql
+    # adds on the `search` profile (event.sd name_phrase()). Query-side only, like
+    # phrase_surface; both fields share one match mode.
+    fieldset name_surface {
+        fields: name, display_name
+    }
+
     fieldset default {
         fields: name, display_name, about, nip05, lud16, website, search_primary, search_secondary, search_text, search_location
     }
@@ -949,6 +964,49 @@ schema event {
             # rank 32) and cost `Verified Human` up to 0.10 (dev, §9). At 4 000
             # it breaks ties between otherwise equal hits and costs nothing.
             query(w_phrase_pop) double: 4000.0
+            # w_phrase_mult — THE PHRASE BAND: the document holds the query AS
+            # TYPED — every word, adjacent and in order — somewhere a reader
+            # would look: in the body (body_phrase()), in a title
+            # (title_phrase()), in a profile's name (name_phrase()), or spelled joined ("pico8" for `pico 8`, in a
+            # title, a hashtag or the body: joined_phrase()). See phrase_match().
+            #
+            # Reported 2026-11-03 (sot `Pico 8`, Everything tab; the `pico 8`
+            # case in benchmark/rank_cases.json, PhraseBandIT): the top two were
+            # a Spanish article with "8%" in its title and "pico" ("peak")
+            # 3 800 characters into its body — the SPLIT rung, one word of two
+            # in a title — and a list titled "Posts including pic of …" whose
+            # body is `#[3] … #[8] …` — a typo on ONE word reaching the NEAR
+            # rung, which never asks how much of the query matched. Both at
+            # 23 000, while every note actually about PICO-8 says it in a body
+            # (550) or a hashtag (4 000) — a gap no trust delta crosses.
+            # body_phrase() already told the two groups apart exactly (0 on both
+            # intruders, 1 on every "pico 8" / "pico-8" note), but at
+            # query(w_phrase_pop) it was a tie-break, not a band.
+            #
+            # A MULTIPLIER on the whole second-phase score, not a rung added to
+            # it, because a rung added flattens the ladder INSIDE the band: at a
+            # flat +130 000 a body mention (130 550) closed to x1.6 of the page
+            # whose title IS the query (≈ 340 000), the very loss the
+            # `book of daniel` sweep measured for w_phrase_pop at 23k and 60k
+            # (body mentions from rank-90+ authors over the pages about the
+            # book). Multiplied, every ratio inside the band is the ratio it was
+            # before — title-is-the-query over a body mention, token over near
+            # over weak over body — and the band sits wholly above the
+            # non-phrase ladder: x100 puts a body phrase (550 + w_phrase_pop
+            # 4 000, ×100 = 455 000) x18 over a split or a typo hit (23 000,
+            # ~2.9x trust delta to cross) and x3.3 over a title holding every
+            # word APART (~139 000, ~1.55x). Measured on the `pico 8` export: a
+            # flat +130 000 left the trust-32 wiki page titled "PICO-8" under
+            # the trust-87 split; x100 lifts it over every non-phrase hit.
+            #
+            # Multi-word only by construction (every detector is 0 on one
+            # word), so the single-word calibration — odell, jack, primal,
+            # amethyst — cannot move. Second phase only, like body_phrase():
+            # fieldMatch is a positional analysis. The cost of that is the
+            # RERANK WINDOW: a phrase document the first phase ranked below
+            # rerank-count never sees the band. 1.0 switches it off and
+            # restores the page as it was.
+            query(w_phrase_mult) double: 100.0
             # phrase_terms — how many TOKENS the typed words are to Vespa, the
             # run body_phrase() must find. Not n_words: Vespa splits a word at
             # punctuation ("don't" is two tokens), so a run as long as the WORD
@@ -1493,7 +1551,7 @@ schema event {
         # How much of the matched FIELD the query covers (0..1): 1.0 when the
         # query is the whole name — "Ode" the account beats "Ode Fan Club".
         function exactness() {
-            expression: max(max(fieldMatch(name).fieldCompleteness, fieldMatch(display_name).fieldCompleteness), fieldMatch(search_primary).fieldCompleteness)
+            expression: max(max(field_completeness(name), field_completeness(display_name)), primary_completeness())
         }
 
         # NOT here: a within-near ordering by CHARACTER coverage ("Ode" ->
@@ -1583,7 +1641,53 @@ schema event {
         }
 
         function perfect_match() {
-            expression: max(max(field_perfect(name), field_perfect(display_name)), field_perfect(search_primary))
+            expression: max(max(guarded_perfect(name), guarded_perfect(display_name)), primary_perfect())
+        }
+
+        # fieldMatch(f).fieldCompleteness — the share of the field's tokens the
+        # query matched — kept EXACT under the phrase band's rank-only items on a
+        # NAMING field (name_phrase() on name/display_name, title_phrase() on
+        # search_primary). Once such an item MATCHES, fieldMatch counts it among
+        # the field's matched terms, so a field merely CONTAINING the query reads
+        # whole: measured on a container Vespa, "Verified Human Bot" and "Jon
+        # Gordon Fan Club" read completeness 1.0 and outranked the profiles named
+        # exactly "Verified Human" and "Jon Gordon" (FieldCoverageRankIT,
+        # RankRegressionIT) — with the band switched off, so the items alone did
+        # it. On a field holding the phrase every typed token matched once, so the
+        # share it read before the items is the phrase's Vespa TOKEN count over
+        # the field's length: `Verified Human` 2/2, `Verified Human Bot` 2/3, a
+        # whole-query match on a 13-token title 2/13 = 0.15, as field_perfect()
+        # documents. An item cannot disturb a field it did not match.
+        function field_completeness(f) {
+            expression: if (field_holds_phrase(f) > 0, min(1.0, query(phrase_terms) / max(1.0, fieldLength(f))), fieldMatch(f).fieldCompleteness)
+        }
+
+        # field_completeness(search_primary), also guarded against the joined term
+        # (joined_phrase()), which searches the title too: a title spelling the
+        # query joined ("Pico8") matched ONE of its tokens, which the duplicate
+        # term would count twice.
+        function primary_completeness() {
+            expression: if (title_joined() > 0 && title_phrase() < 1, min(1.0, 1.0 / max(1.0, fieldLength(search_primary))), field_completeness(search_primary))
+        }
+
+        # field_perfect(f) on a NAMING field, kept exact under the phrase band's
+        # rank-only items: once an item matches, fieldMatch also reads a reversed
+        # pair that is not there (orderness) — measured on the `pico 8` export,
+        # the wiki page titled "PICO-8" fell from perfect_match 1.0 to 0.833 — and
+        # a whole field where there is none (see field_completeness()). A field
+        # holding the phrase holds every typed word, in order, BY DEFINITION, so
+        # its coverage and order factors are 1 and its completeness is
+        # field_completeness(f): exactly what field_perfect(f) read before the
+        # items existed.
+        function guarded_perfect(f) {
+            expression: if (field_holds_phrase(f) > 0, field_completeness(f), field_perfect(f))
+        }
+
+        # guarded_perfect(search_primary), also for a title spelling the query
+        # JOINED ("Pico8"): one token answering every typed word, so coverage and
+        # order are 1 and its completeness is primary_completeness().
+        function primary_perfect() {
+            expression: if (title_joined() > 0 && title_phrase() < 1, primary_completeness(), guarded_perfect(search_primary))
         }
 
         # The body holds every typed word adjacent and in order — see
@@ -1595,6 +1699,65 @@ schema event {
         # Gated on more than one token: a single token has no order to keep.
         function body_phrase() {
             expression: if (query(phrase_terms) > 1, if (fieldMatch(search_text).longestSequence >= query(phrase_terms), 1, 0), 0)
+        }
+
+        # The TITLE holds every typed word adjacent and in order — body_phrase()
+        # on search_primary, through the same rank-only phrase item EventYql adds
+        # against that column (label title_phrase). A title that IS the query
+        # reads 1 here and on perfect_match(); "Pico-8 Jam" reads 1 here only.
+        function title_phrase() {
+            expression: field_holds_phrase(search_primary)
+        }
+
+        # The same in a NAME: a profile whose name or display name holds every
+        # typed word adjacent and in order (`Avi Burra`), through the rank-only
+        # phrase item EventYql adds over the name_surface fieldset (label
+        # name_phrase). Without it the phrase band lifted an article titled
+        # "… Join Avi Burra's Journey …" over the profile NAMED Avi Burra
+        # (RankRegressionIT's 2026-08-05 pin), the strongest phrase match there is.
+        function name_phrase() {
+            expression: max(field_holds_phrase(name), field_holds_phrase(display_name))
+        }
+
+        # Field f holds the typed words adjacent and in order: its longest run of
+        # query terms adjacent in both query and field covers the phrase's Vespa
+        # TOKENS (query(phrase_terms), see body_phrase()). Reads the rank-only
+        # phrase items; 0 on a single word.
+        function field_holds_phrase(f) {
+            expression: if (query(phrase_terms) > 1, if (fieldMatch(f).longestSequence >= query(phrase_terms), 1, 0), 0)
+        }
+
+        # The query's words JOINED ("pico8" for `pico 8`) in a title, a hashtag or
+        # summary, or the body. EventYql adds that word as ONE rank-only term over
+        # the phrase_surface fieldset carrying a huge term weight
+        # (EventYql.JOINED_PHRASE_WEIGHT); fieldMatch(f).weight is the matched
+        # share of the query's whole term weight, so it passes one half on a field
+        # exactly when that term matched there. Nothing else in this schema reads
+        # a term's weight (bm25, matchCount and the fieldMatch completeness and
+        # order features do not), so the weight changes no other score.
+        # NAMES ARE NOT ON THE SURFACE, deliberately: a compound handle
+        # (@johncarvalho for "John Carvalho") is the people-search calibration
+        # perfect_match() documents as its known limit, and this band must not
+        # move it.
+        function joined_phrase() {
+            expression: if (query(n_words) > 1, if (max(max(fieldMatch(search_primary).weight, fieldMatch(search_secondary).weight), fieldMatch(search_text).weight) > 0.5, 1, 0), 0)
+        }
+
+        # joined_phrase(), on the title alone — primary_perfect() needs to know.
+        function title_joined() {
+            expression: if (query(n_words) > 1, if (fieldMatch(search_primary).weight > 0.5, 1, 0), 0)
+        }
+
+        # THE PHRASE BAND's test — see query(w_phrase_mult).
+        function phrase_match() {
+            expression: max(max(max(body_phrase(), title_phrase()), name_phrase()), joined_phrase())
+        }
+
+        # The band itself: x query(w_phrase_mult) on a phrase match, x1 otherwise.
+        # max(1, …) for the reason recency_mult() clamps: a weight below 1 must
+        # be a no-op, never a demotion of the documents that hold the phrase.
+        function phrase_mult() {
+            expression: if (phrase_match() > 0, max(1.0, query(w_phrase_mult)), 1.0)
         }
 
         # How common the query is AS A NAME: the largest share of indexed
@@ -2245,7 +2408,8 @@ schema event {
             # precision rules would mean something measurably different for a
             # fresh document than for an old one. Scaling by the same factor
             # the bands carry is what keeps "reorders within a band" true.
-            expression: firstPhase + (precision_boost_pop() + body_phrase() * query(w_phrase_pop)) * wot_mult() * recency_mult()
+            # x phrase_mult(): the phrase band, see query(w_phrase_mult).
+            expression: (firstPhase + (precision_boost_pop() + body_phrase() * query(w_phrase_pop)) * wot_mult() * recency_mult()) * phrase_mult()
             rerank-count: 1000
         }
 
@@ -2274,6 +2438,11 @@ schema event {
             # query(w_phrase_pop)).
             thin_split
             body_phrase
+            # The phrase band (query(w_phrase_mult)) and the detectors behind it.
+            title_phrase
+            name_phrase
+            joined_phrase
+            phrase_match
             name_match
             identity_match
             identity_text

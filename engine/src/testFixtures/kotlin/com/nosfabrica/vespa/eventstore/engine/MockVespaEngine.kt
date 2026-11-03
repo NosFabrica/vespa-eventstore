@@ -1120,7 +1120,12 @@ object MockYql {
                     // second recall constraint the reference never applies.
                     clause.startsWith("rank(") -> {
                         val args = splitTopLevel(clause.removePrefix("rank(").removeSuffix(")"), ", ")
-                        require(args.size == 2 && SEARCH_CLAUSE.containsMatchIn(args[0]) && BODY_PHRASE_CLAUSE.matches(args[1]) && "bp" in params) {
+                        require(
+                            args.size in 2..5 &&
+                                SEARCH_CLAUSE.containsMatchIn(args[0]) &&
+                                args.drop(1).all { arg -> RANK_ONLY_CLAUSES.any { it.matches(arg) } } &&
+                                "bp" in params,
+                        ) {
                             "unexpected rank() shape: $clause"
                         }
                         val stemLanguage = StemText.LANGUAGES.firstOrNull { "${StemText.field(it)} contains @s" in args[0] }
@@ -1177,8 +1182,19 @@ object MockYql {
     /** Exactly 3 parens (one word), 4 (AND'd words), or 5 (AND'd words with pair coverage) — anything else is drift. */
     private val SEARCH_CLAUSE = Regex("""^\({3,5}\{defaultIndex:""")
 
-    /** The rank-only body phrase EventYql adds to a multi-word search (event.sd body_phrase()). */
-    private val BODY_PHRASE_CLAUSE = Regex("""^\(\{label:"body_phrase",defaultIndex:"search_text",grammar:"phrase"\}userInput\(@bp\)\)$""")
+    /**
+     * The rank-only items EventYql adds to a multi-word search on the `search`
+     * profile: the body, title and name phrases (event.sd body_phrase() /
+     * title_phrase() / name_phrase()) and the weighted joined term (joined_phrase()). None of
+     * them constrains recall, so the reference ignores them.
+     */
+    private val RANK_ONLY_CLAUSES =
+        listOf(
+            Regex("""^\(\{label:"body_phrase",defaultIndex:"search_text",grammar:"phrase"\}userInput\(@bp\)\)$"""),
+            Regex("""^\(\{label:"title_phrase",defaultIndex:"search_primary",grammar:"phrase"\}userInput\(@bp\)\)$"""),
+            Regex("""^\(\{label:"name_phrase",defaultIndex:"name_surface",grammar:"phrase"\}userInput\(@bp\)\)$"""),
+            Regex("""^\(phrase_surface contains \(\{label:"joined_phrase",weight:\d+\}@wj\)\)$"""),
+        )
 
     /**
      * The required-phrase clause EventYql emits per quoted phrase — or per PIECE

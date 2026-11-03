@@ -981,6 +981,24 @@ object EventYql {
     /** The typed words as one body phrase, for the rank-only item behind event.sd's body_phrase(). */
     private const val P_BODY_PHRASE = "bp"
 
+    /** The typed words joined ("pico8"), set by [FuzzyWordGroup.clause]; also the rank-only joined_phrase term. */
+    private const val P_JOINED = "wj"
+
+    /** event.sd's fieldset of a profile's naming columns (name, display_name), for the rank-only name_phrase item. */
+    const val NAME_SURFACE = "name_surface"
+
+    /** event.sd's fieldset of the columns a phrase counts in for phrase_match(): title, hashtags/summary, body. */
+    const val PHRASE_SURFACE = "phrase_surface"
+
+    /**
+     * The rank-only joined term's weight — a FLAG, not a score: event.sd's
+     * joined_phrase() reads fieldMatch(f).weight, the matched share of the
+     * query's total term weight, and only this term can push it past one half.
+     * Vespa's default term weight is 100 and a word group runs to dozens of
+     * terms, so 10^7 is that share at > 0.99 whenever the term matched.
+     */
+    const val JOINED_PHRASE_WEIGHT = 10_000_000
+
     /** How many TOKENS that phrase is to Vespa — body_phrase()'s threshold; see [phraseTokens]. */
     private const val F_PHRASE_TERMS = "ranking.features.query(phrase_terms)"
 
@@ -1173,15 +1191,37 @@ object EventYql {
             // bm25(search_text) and reordered observer-less `text` pages that no
             // evaluation measured — and every other read (counts, id walks,
             // recency) would pay a positional phrase iterator for nothing.
+            //
+            // Beside it, the items event.sd's phrase_match() reads (the PHRASE
+            // BAND, query(w_phrase_mult)): the same phrase against the TITLE
+            // column and against a profile's NAMES (the [NAME_SURFACE]
+            // fieldset), read the same way (title_phrase() / name_phrase():
+            // fieldMatch(f).longestSequence), and the JOINED spelling — "pico8"
+            // for `pico 8` — as one heavily WEIGHTED term over the
+            // [PHRASE_SURFACE] fieldset (title, hashtags/summary, body). No other
+            // feature in the profile reads a term's weight, so the weight is a
+            // flag: joined_phrase() reads fieldMatch(f).weight, the matched share
+            // of the query's total term weight, which only this term can push
+            // past one half. The joined term is emitted only when it is ONE token
+            // to Vespa — a `contains` term is not tokenized, so "don'ttrust"
+            // could never match the two tokens a body holds — and the title
+            // phrase on every kind, a title existing where a body does not.
             val phrase = matchable.joinToString(" ")
-            clauses +=
-                if (bodyPhrase && matchable.size > 1 && bodyReachable && PhraseRuns.pieces(phrase) == listOf(phrase)) {
-                    params[P_BODY_PHRASE] = phrase
-                    params[F_PHRASE_TERMS] = phraseTokens(phrase).toString()
-                    "rank($words, ({label:\"body_phrase\",defaultIndex:\"search_text\",grammar:\"phrase\"}userInput(@$P_BODY_PHRASE)))"
-                } else {
-                    words
+            val phraseOk = bodyPhrase && matchable.size > 1 && PhraseRuns.pieces(phrase) == listOf(phrase)
+            val extras = ArrayList<String>()
+            if (phraseOk) {
+                params[P_BODY_PHRASE] = phrase
+                params[F_PHRASE_TERMS] = phraseTokens(phrase).toString()
+                if (bodyReachable) extras += "({label:\"body_phrase\",defaultIndex:\"search_text\",grammar:\"phrase\"}userInput(@$P_BODY_PHRASE))"
+                extras += "({label:\"title_phrase\",defaultIndex:\"search_primary\",grammar:\"phrase\"}userInput(@$P_BODY_PHRASE))"
+                extras += "({label:\"name_phrase\",defaultIndex:\"$NAME_SURFACE\",grammar:\"phrase\"}userInput(@$P_BODY_PHRASE))"
+                // [FuzzyWordGroup.clause] set @wj, the words joined, for 2+ words.
+                val joinedWord = params[P_JOINED]
+                if (joinedWord != null && phraseTokens(joinedWord) == 1) {
+                    extras += "($PHRASE_SURFACE contains ({label:\"joined_phrase\",weight:$JOINED_PHRASE_WEIGHT}@$P_JOINED))"
                 }
+            }
+            clauses += if (extras.isEmpty()) words else "rank($words, ${extras.joinToString(", ")})"
             // Short queries lean harder on the trigram safety net — judged by
             // the words that HAVE grams: an emoji beside "extraordinary" is no
             // reason to weight its trigrams up.

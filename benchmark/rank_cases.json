@@ -392,5 +392,12 @@
     "need": "NAVIGATIONAL: Preston Pysh, investor and podcast host (The Investor's Podcast, Bitcoin Fundamentals). 3 = his own profile; 2 = content about him, his shows; 1 = mentions; 0 = impersonators, unrelated.",
     "split": "test",
     "note": "HELD-OUT (2026-10-23, round 2): multi-word, chosen before any page was seen to confirm the split-coverage and body-phrase fixes for the 'book of daniel' report (docs/search-evaluation.md §9, pre-registered there). Never tune on this row."
+  },
+  {
+    "query": "pico 8",
+    "expect": "",
+    "intent": "topical",
+    "need": "PICO-8, the fantasy console by Lexaloffle (spelled 'pico 8', 'pico-8' or 'pico8'). 3 = a document about it (its wiki page, a release or note shipping PICO-8 support, a note about a PICO-8 game or cart); 2 = clearly relevant (a related fantasy console such as Picotron discussed alongside it, a #pico8 game post); 1 = mentions it in passing; 0 = matches the two words only apart (a title holding '8%' over a body using 'pico', 'peak', in Spanish; a title with 'pic' and a body of '#[8]' references) without being about it.",
+    "note": "reported 2026-11-03 (production, Everything tab, observer npub1gcxzte5… = 460c25…065c): #1 was a Spanish ETF article, title 'Los ETFs ya poseen casi el 8% …', body using 'pico' (peak) 3 800 characters in — the SPLIT rung (naming_coverage 0.5, one word of two, which w_split_min_coverage leaves alone by design); #2 a nosli list titled 'Posts including pic of …' whose body is '#[3] … #[8] …' — 'pico' reaching 'pic' by ONE typo, the NEAR rung, which asks nothing about coverage. Both at 23 000, while every note about PICO-8 says it in a body (550) or as #pico8 (the weak rung, 4 000): the Amethyst v1.21.0 release (trust 98) whose body heading reads '… and Pico 8' sat at #7. Reproduced on a local Vespa from the export (same order #0-#7): body_phrase() was 0 on both intruders and 1 on every 'pico 8'/'pico-8' note — the separator existed, at tie-break weight. Fixed by the phrase band (event.sd phrase_match(), query(w_phrase_mult), x100 on a phrase match); pinned by PhraseBandIT. Grade this topic's pool before tuning on it."
   }
 ]

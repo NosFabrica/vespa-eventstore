@@ -726,6 +726,44 @@ That is a recall gap for full-name queries against short handles, and a separate
 first, since those are the strata where the levers disagree. (3) A/B the two hypotheses above
 as candidate configs against this judgment set.
 
+### 9.1 The phrase band (2026-11-03, `pico 8`) — NOT YET A/B'd
+
+Reported on production: on `Pico 8` (Everything tab, observer 460c25…065c) the first two
+results held the two words apart. A Spanish article had "8%" in its title and "pico" (peak)
+in its body, which is the split rung. A list titled "Posts including pic of …" with a body
+of `#[8]` references reached the near rung through one typo on one word. Both scored at
+23 000, above every note about PICO-8, which says it in a body (550) or as `#pico8` (4 000).
+Replayed on a local Vespa from the export, the order matched production #0–#7.
+`body_phrase()` already separated the groups exactly (0 on both intruders, 1 on every
+`pico 8` / `pico-8` note), but only as a 4 000 tie-break.
+
+The change (`event.sd` `phrase_match()`, `query(w_phrase_mult)`, shipped at 100) multiplies the
+second-phase score of any document holding the query as typed: adjacent in a body, a title or
+a profile's name, or joined (`pico8`) in a title, a hashtag or a body. The names count because
+`RankRegressionIT`'s `Avi Burra` pin failed without them: the band lifted an article titled
+"…Join Avi Burra's Journey…" over the profile named Avi Burra. It is a multiplier rather than the
+23k/60k rungs §9 rejected for `w_phrase_pop`, because a rung added flattens the ladder inside
+the band. Those rungs lifted body mentions over the pages titled the query. Multiplied, every
+ratio inside the band is unchanged, and the pages titled the query get the band too, which
+`w_phrase_pop` never gave them.
+
+What is measured: the `pico 8` page (`PhraseBandIT`, on 14 of the export's events). Every
+phrase match outranks both intruders, and the page titled `PICO-8` (trust 32) leads. A flat
++130 000 rung had left it under the trust-87 split. `RankRegressionIT`, `ThinSplitPhraseIT`,
+`SearchExactTextIT` and `NameFrequencyRungIT` hold unchanged. `FieldCoverageRankIT` holds with
+one pin deliberately moved: a split (`Verified` in a name, `human` in a bio) from a trust-100
+author used to cross the trust-50 profile named `Verified Human`. With the band that profile
+stays on top, which is the point of the band. The crossing is still pinned with the band off
+(`w_phrase_mult` 1), so the ladder beneath is still tested. Two of the pins moved before the
+`fieldMatch` guards existed. The rank-only name and title items, once matched, made
+`Verified Human Bot` and `Jon Gordon Fan Club` read `fieldCompleteness` 1.0; that was
+measured, then guarded (`field_completeness()`, `guarded_perfect()`). What is NOT measured:
+the judged topics. `rankAb --configs phrase_band_off,baseline` (plus `phrase_band_10` …
+`phrase_band_300`) against the judgment set is the ship gate, and the `pico 8` pool needs
+grading first. One known cost to look for there is the rerank window. The band is second-phase
+only, so a phrase document the first phase ranks below `rerank-count` (1 000 per node) never
+sees it. That is plausible on a query whose words are common apart and rare together.
+
 ## 10. References
 
 - Cleverdon (1967), *The Cranfield tests on index language devices*: the paradigm.

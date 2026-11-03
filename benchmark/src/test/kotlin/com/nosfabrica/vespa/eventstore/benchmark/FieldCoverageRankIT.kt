@@ -156,8 +156,17 @@ class FieldCoverageRankIT {
                         // buy a split match a whole-field answer's place, where
                         // 10 used to. An OVERWHELMING advantage still does —
                         // that is what a rung means, not a wall.
-                        assertOrder(page, "perfect", "split_bio_t80", "a rung is worth more than a 30-point trust advantage")
-                        assertOrder(page, "split_bio_t100", "perfect", "…and less than a 50-point one: the rung is crossable")
+                        // Read with the PHRASE BAND off (query(w_phrase_mult) 1):
+                        // these pin the ladder beneath it, which the band multiplies
+                        // but does not change.
+                        val ladder = index.scored("verified human", mapOf("w_phrase_mult" to 1.0))
+                        assertOrder(ladder, "perfect", "split_bio_t80", "a rung is worth more than a 30-point trust advantage")
+                        assertOrder(ladder, "split_bio_t100", "perfect", "…and less than a 50-point one: the rung is crossable")
+                        // With the band ON, the profile that holds the query as
+                        // typed stays above the scattered match whatever the 50
+                        // points: the words split across a name and a bio are not
+                        // the phrase (event.sd phrase_match(), the `pico 8` report).
+                        assertOrder(page, "perfect", "split_bio_t100", "the phrase band keeps the whole-field answer above a better-trusted split")
 
                         // WHAT MUST NOT MOVE (1): a COMPOUND handle answers the
                         // whole query with one term against a one-token field,
@@ -209,7 +218,10 @@ class FieldCoverageRankIT {
     /** The same page with NO lens: no observer means `EventYql.profileOf` picks the pure-text profile. */
     private suspend fun VespaEventIndex.scoredText(text: String): List<ScoredHit> = searchScored(EventQuery(search = text, nowSecs = NOW, limit = 50))
 
-    private suspend fun VespaEventIndex.scored(text: String): List<ScoredHit> = searchScored(EventQuery(search = text, observer = OBSERVER, rankKey = OBSERVER, followersKey = OBSERVER, minRank = 2.0, nowSecs = NOW, limit = 50))
+    private suspend fun VespaEventIndex.scored(
+        text: String,
+        features: Map<String, Double> = emptyMap(),
+    ): List<ScoredHit> = searchScored(EventQuery(search = text, observer = OBSERVER, rankKey = OBSERVER, followersKey = OBSERVER, minRank = 2.0, nowSecs = NOW, limit = 50, rankFeatures = features))
 
     private fun label(hit: ScoredHit): String =
         SHAPES
