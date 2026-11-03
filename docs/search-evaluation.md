@@ -726,7 +726,7 @@ That is a recall gap for full-name queries against short handles, and a separate
 first, since those are the strata where the levers disagree. (3) A/B the two hypotheses above
 as candidate configs against this judgment set.
 
-### 9.1 The phrase band (2026-11-03, `pico 8`) — NOT YET A/B'd
+### 9.1 The phrase band (2026-11-03, `pico 8`) — graded; two losses open
 
 Reported on production: on `Pico 8` (Everything tab, observer 460c25…065c) the first two
 results held the two words apart. A Spanish article had "8%" in its title and "pico" (peak)
@@ -798,6 +798,43 @@ Still open, as judgment calls:
 - **The band can't tell a mention from aboutness.** Inside the band a body phrase is one
   rung, so "Pico-8*" (a one-word correction) outranks "PICO-8 fantasy console Education
   Edition" on trust alone.
+
+**Graded (2026-11-03).** `capture_eval.py` over all 54 cases (11 890 events, plus the 1 000
+`pico 8` candidates above), loaded into a local Vespa at this branch. The pool was 299
+unjudged documents in the top 20 of `production`, `baseline`, `phrase_band_off`,
+`phrase_band_30` and `phrase_band_300`. Four blind model assessors graded them
+(`llm:claude`), each given only the worksheet rows and §4. After the merge every topic
+reads `judged@10` 1.000. The human re-grade §5.3 requires is still owed: a seeded 20% sample
+(60 rows) is drawn for it.
+
+nDCG@10 vs `production` (53 topics, paired, Holm over 4):
+
+| config | Δ mean | 95% CI | W/T/L | topical (n=23) | navigational (n=15) | prefix (n=6) |
+|---|---|---|---|---|---|---|
+| baseline (band ×100) | +0.029 | [−0.003, +0.067] | 16/29/8 | +0.071 | −0.009 | −0.003 |
+| phrase_band_off | +0.004 | [−0.005, +0.015] | 10/36/7 | +0.005 | +0.011 | −0.003 |
+| phrase_band_30 | +0.028 | [−0.005, +0.065] | 16/29/8 | +0.071 | −0.009 | −0.003 |
+| phrase_band_300 | +0.029 | [−0.003, +0.067] | 16/29/8 | +0.071 | −0.009 | −0.003 |
+
+`pico 8` goes from 0.51 to 0.82. The weight barely matters between ×30 and ×300; the band
+is the change. Losses over 0.1, every one fully judged:
+
+- **`Vitor P` −0.17, fixed before this table.** A note saying "… like Vitor P. Issue …"
+  held "vitor p" literally, took the band and led over the profile being typed toward.
+  `EventYql` no longer sends a phrase whose last word is a typed fragment (1–2 Latin
+  letters, under `MIN_PREFIX_LEN`). A digit stays a word, so `pico 8` keeps the band.
+- **`preston pysh` −0.30, RR −1.00: open.** The real profile (`85080d…`) is named
+  "preston", and "Pysh" appears only in its bio, as "@PrestonPysh". It holds no phrase,
+  while every video titled "Preston Pysh – …" takes ×100, so the profile leaves the page.
+- **`bitcoin white paper` −0.16, RR −0.90: open.** The pages that answer it spell it
+  "whitepaper": the `bitcoin-whitepaper` wiki (grade 3) and "Das Bitcoin-Whitepaper für
+  Kinder" (grade 3). Only the fully joined spelling counts, not a pair joined inside a longer
+  query, so the band lifts the "Bitcoin White Paper Day" meetup events (graded 1–2) over them.
+- `ai` −0.10 shows in every config, including `phrase_band_off`. It is a one-word query that
+  no band touches: a gap between this branch and the deployed relay, not this change.
+
+Verdict: the CI's low end clears −0.01, but two navigational/known-item losses are open
+defects, so this does not ship until they are fixed and re-measured.
 
 ## 10. References
 

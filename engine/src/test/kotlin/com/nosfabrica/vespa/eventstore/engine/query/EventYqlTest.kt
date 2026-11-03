@@ -106,6 +106,15 @@ class EventYqlTest {
         assertTrue(punctuated.yql.contains(title), punctuated.yql)
         assertFalse(punctuated.yql.contains("joined_phrase"), punctuated.yql)
 
+        // A last word still being typed is no phrase: "Vitor P" is a name half
+        // typed, not "vitor" then the token "p". A digit is a whole word, as is
+        // a word past the prefix floor.
+        val typing = search("Vitor P")
+        for (label in listOf("body_phrase", "title_phrase", "name_phrase", "joined_phrase")) assertFalse(typing.yql.contains(label), typing.yql)
+        assertNull(typing.params["ranking.features.query(phrase_terms)"])
+        assertTrue(search("Vitor Pam").yql.contains(title))
+        assertTrue(search("web 3").yql.contains(title))
+
         // One word has no phrase; other profiles and reads carry none of it.
         assertFalse(search("pico").yql.contains("title_phrase"))
         assertFalse(EventYql.build(EventQuery(search = "Pico 8"))!!.yql.contains("joined_phrase"))

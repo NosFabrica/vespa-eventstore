@@ -1026,6 +1026,9 @@ object EventYql {
      */
     const val GLOBAL_MAX_GROUPS = "grouping.globalMaxGroups"
 
+    /** A trailing word too short to be anything but the start of one: 1-2 Latin letters. */
+    internal fun isTypedFragment(word: String): Boolean = word.length < FuzzyWordGroup.MIN_PREFIX_LEN && word.all { it in 'a'..'z' || it in 'A'..'Z' }
+
     /**
      * How many tokens Vespa cuts [phrase] into: event.sd body_phrase()'s
      * threshold, which the typed-word count `n_words` is not. Vespa splits a
@@ -1206,8 +1209,16 @@ object EventYql {
             // to Vespa — a `contains` term is not tokenized, so "don'ttrust"
             // could never match the two tokens a body holds — and the title
             // phrase on every kind, a title existing where a body does not.
+            //
+            // NOT when the last word is a FRAGMENT still being typed: one or two
+            // Latin letters, under [FuzzyWordGroup.MIN_PREFIX_LEN]. "Vitor P" is
+            // a name half typed, and as a phrase it is "vitor" then the token
+            // "p" — on the production capture (2026-11-03) a note saying "…
+            // misbehave, like Vitor P. Issue of …" took the band and led the
+            // page, over the profile the query was typing toward. A digit is a
+            // whole word ("pico 8"), and so is a short non-Latin word.
             val phrase = matchable.joinToString(" ")
-            val phraseOk = bodyPhrase && matchable.size > 1 && PhraseRuns.pieces(phrase) == listOf(phrase)
+            val phraseOk = bodyPhrase && matchable.size > 1 && PhraseRuns.pieces(phrase) == listOf(phrase) && !isTypedFragment(matchable.last())
             val extras = ArrayList<String>()
             if (phraseOk) {
                 params[P_BODY_PHRASE] = phrase

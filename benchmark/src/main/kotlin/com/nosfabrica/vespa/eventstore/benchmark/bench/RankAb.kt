@@ -612,6 +612,9 @@ object RankAb {
         println("is explained, and the guardrails (age, top-author share, latency) hold — docs/search-evaluation.md §6.")
     }
 
+    // A UTF-16 surrogate without its other half, which no encoder will write.
+    private val LONE_SURROGATE = Regex("[\\uD800-\\uDBFF](?![\\uDC00-\\uDFFF])|(?<![\\uD800-\\uDBFF])[\\uDC00-\\uDFFF]")
+
     /**
      * Writes the unjudged pool as a worksheet: one row per (topic, event),
      * `grade` left null for the assessor. BLIND, as TREC pools are: no rank,
@@ -665,7 +668,10 @@ object RankAb {
                     }
                 }
             }
-        Files.writeString(out, PRETTY.encodeToString(JsonArray.serializer(), rows) + "\n")
+        // Excerpts are cut at a char count, which can split an emoji's surrogate
+        // pair; a lone surrogate is unencodable and Files.writeString throws.
+        val json = PRETTY.encodeToString(JsonArray.serializer(), rows).replace(LONE_SURROGATE, "")
+        Files.writeString(out, json + "\n")
         println("\npool: ${rows.size} unjudged hit(s) in the top $depth of ${pages.size} config(s) over ${topics.size} topic(s) -> $out")
         println("grade each row 0-3 per docs/search-evaluation.md §4, set `by`, then: rankAb --merge $out")
     }
