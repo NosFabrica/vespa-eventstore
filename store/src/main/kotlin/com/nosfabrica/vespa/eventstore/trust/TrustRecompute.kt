@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.async.QUERY_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.async.forEachBounded
+import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationCells
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
@@ -159,6 +160,7 @@ internal class TrustRecompute(
         serviceProviders: TrustProviders,
         removeEmpties: Boolean,
     ) {
+        refuseUnservedPass(subjects, serviceProviders)
         val derived = deriveBatch(subjects, serviceProviders)
         IngestStats.timed("proj.write") {
             reputations.putAll(derived.values.toList())
@@ -180,12 +182,49 @@ internal class TrustRecompute(
     suspend fun writeDerived(
         subjects: List<String>,
         derived: Map<String, ReputationDoc>,
+        serviceProviders: TrustProviders,
     ) {
+        refuseUnservedPass(subjects, serviceProviders)
         IngestStats.timed("proj.write") {
             val present = subjects.mapNotNull { derived[it] }
             if (present.isNotEmpty()) reputations.putAll(present)
             val gone = subjects.filter { it !in derived }
             if (gone.isNotEmpty()) reputations.removeAll(gone)
+        }
+    }
+
+    /**
+     * NEVER WRITE A DERIVATION MADE AGAINST AN UNSERVED PROVIDER PASS.
+     *
+     * [ProviderMap] answers an empty 10040 read with an empty pass and does not
+     * cache it, because "no 10040s" and "the engine has not finished serving
+     * them" read the same — observed live, 271 stored lists read as none. A
+     * derive against that pass keeps no card, so every subject derives empty,
+     * and [recomputeBatch] with `removeEmpties` then DELETES each document: the
+     * subject loses every provider's cell and gets back only those of cards
+     * written after. That is the 2026-11-02 drift on search.brainstorm.world
+     * (dd664d5e: 422 of 698 named providers' cells gone, every one older than
+     * 07:40 UTC that day), and the restart path makes it likely — the ledger
+     * drain invalidates the pass on crash leftovers and re-derives exactly the
+     * subjects a dying process left marked, on the coldest engine it will see.
+     *
+     * The reconcile, the orphan sweep and the keying migration already refuse
+     * an empty pass; the drain, the walks and verify's repair did not. The
+     * evidence that the pass is wrong is the store itself: a stored document
+     * with cells says some list named its provider. A store that genuinely has
+     * no lists holds no scored document, so it passes untouched.
+     */
+    private suspend fun refuseUnservedPass(
+        subjects: List<String>,
+        serviceProviders: TrustProviders,
+    ) {
+        if (!serviceProviders.isEmpty() || subjects.isEmpty()) return
+        val scored = subjects.mapBounded(QUERY_FANOUT) { reputations.get(it) }.count { it != null && !it.isEmpty() }
+        if (scored > 0) {
+            throw ProviderPassUnserved(
+                "the provider pass read no kind 10040, yet $scored of ${subjects.size} subject(s) hold scored documents; " +
+                    "refusing to re-derive them against it (each would be deleted) until the engine serves its lists",
+            )
         }
     }
 
@@ -590,3 +629,8 @@ internal fun subjectOf(event: Event): String? = event.tags.subjectPubKey()
  * [TrustReconciler] reads drift. A value that is not an Int (beyond its range
  * included) is NO rank, never 100, exactly as this store's own reader had it.
  */
+
+/** A derivation refused because the provider pass read no 10040 while scored documents exist — see [TrustRecompute]. */
+class ProviderPassUnserved(
+    message: String,
+) : IllegalStateException(message)

@@ -223,6 +223,64 @@ class TrustReconcilerTest {
         }
 
     /**
+     * THE 2026-11-02 WIPE. A crash marker names a subject whose document is
+     * healthy; the restarted store's engine is not serving its 10040s yet (the
+     * cold read ProviderMap documents: it answers "none" while they are
+     * stored). The drain must not re-derive against that emptiness: every
+     * derivation comes out empty and `removeEmpties` deletes the document, so
+     * the subject loses every provider's cell and gets back only those of
+     * cards written after it — what search.brainstorm.world showed for
+     * dd664d5e: 422 of 698 named providers' cells gone, all of them older
+     * than 2026-11-02 07:40 UTC.
+     */
+    @Test
+    fun `a drain never derives against a provider pass the engine has not served`() =
+        runBlocking {
+            store.insert(list10040())
+            store.insert(list10040(author = observer2, serviceKey = service2))
+            store.insert(card(rank = 70))
+            store.insert(card(signer = service2, rank = 12))
+            val healthy = serviceCells(service to 70, service2 to 12)
+            assertEquals(healthy, reputations.get(subject)?.influenceScores)
+            reputations.put(ReputationDoc(ProjectionLedger.MARKER_KEY, serviceCells(subject to 1), emptyMap()))
+
+            var serving = false
+            val cold =
+                object : EventIndex by index {
+                    override suspend fun search(query: EventQuery) = if (!serving && query.kinds == listOf(TrustProviderListEvent.KIND)) emptyList() else index.search(query)
+                }
+            val restarted = TrustProjection(cold, reputations)
+            runCatching { restarted.backlog.drain(WriteGate.DIRECT) }
+            assertEquals(healthy, reputations.get(subject)?.influenceScores, "the cold drain left the document alone")
+            assertNotNull(reputations.get(ProjectionLedger.MARKER_KEY), "and kept the marker, so the work is not lost")
+
+            serving = true
+            restarted.backlog.drain(WriteGate.DIRECT)
+            assertEquals(healthy, reputations.get(subject)?.influenceScores, "re-derived once the lists are served")
+            assertNull(reputations.get(ProjectionLedger.MARKER_KEY), "marker cleared")
+        }
+
+    /** The other whole-document writers refuse a cold pass the same way: an audit-and-repair and the rebuild. */
+    @Test
+    fun `verify repair and rebuildAll refuse a provider pass the engine has not served`() =
+        runBlocking {
+            store.insert(list10040())
+            store.insert(card(rank = 70))
+            val healthy = serviceCells(service to 70)
+            val cold =
+                object : EventIndex by index {
+                    override suspend fun search(query: EventQuery) = if (query.kinds == listOf(TrustProviderListEvent.KIND)) emptyList() else index.search(query)
+                }
+            val restarted = TrustProjection(cold, reputations)
+            val coldReconciler = TrustReconciler(cold, reputations, restarted.recompute, restarted.backlog)
+
+            assertTrue(runCatching { coldReconciler.verify(repair = true) }.exceptionOrNull() is ProviderPassUnserved, "the audit refuses")
+            assertEquals(healthy, reputations.get(subject)?.influenceScores, "and wrote nothing")
+            assertTrue(runCatching { coldReconciler.rebuildAll() }.exceptionOrNull() is ProviderPassUnserved, "the rebuild refuses")
+            assertEquals(healthy, reputations.get(subject)?.influenceScores, "and wrote nothing")
+        }
+
+    /**
      * A provider shared by two observers holds ONE cell, its own: there is no
      * per-observer copy to go missing any more, and the reconcile calls the
      * shared service clean on that one cell.

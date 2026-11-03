@@ -161,7 +161,13 @@ class TrustReconciler internal constructor(
             backlog.drain(gate) // settle work queued since the last drain before judging it
             suspects.chunked(TrustRecompute.GATE_SLICE).forEach { slice ->
                 gate.holding {
-                    val expected = recompute.deriveBatch(slice, recompute.providerMap())
+                    val providers = recompute.providerMap()
+                    // Judged against an unserved pass, EVERY scored document
+                    // reads as drift — refuse, as the repair below would.
+                    if (providers.isEmpty() && slice.any { reputations.get(it)?.isEmpty() == false }) {
+                        throw ProviderPassUnserved("the provider pass read no kind 10040 while scored documents exist; an audit against it would call them all drift")
+                    }
+                    val expected = recompute.deriveBatch(slice, providers)
                     val drifted = ArrayList<String>()
                     slice
                         .mapBounded(QUERY_FANOUT) { it to reputations.get(it) }
@@ -175,7 +181,7 @@ class TrustReconciler internal constructor(
                     // The derivation just judged IS the repair, read under this same
                     // hold: writing it is what recomputeBatch(removeEmpties = true)
                     // would do after deriving the same subjects a second time.
-                    if (repair && drifted.isNotEmpty()) recompute.writeDerived(drifted, expected)
+                    if (repair && drifted.isNotEmpty()) recompute.writeDerived(drifted, expected, providers)
                 }
             }
         }
