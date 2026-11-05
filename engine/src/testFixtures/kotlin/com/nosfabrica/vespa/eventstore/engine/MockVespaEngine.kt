@@ -167,6 +167,16 @@ class MockVespaEngine(
     @Volatile var nonIdealStateCoverage: Boolean = false
 
     /**
+     * Answer every search the way a container answers while its content node is
+     * down: HTTP 200, no hits, `totalCount` 0, a coverage block that calls itself
+     * `full` at 100% over `nodes: 0`, and an `errors` entry naming the backend.
+     * Real Vespa 8 answered a grouping exactly this way during a content node
+     * restart (its plain hit queries came back 503 instead); answering every
+     * shape this way here covers both of the client's funnels.
+     */
+    @Volatile var contentUnreachable: Boolean = false
+
+    /**
      * An operator-capped query profile (`maxHits` below the match set, the
      * multi-node survival move): serve at most this many hits with the
      * coverage complete and `totalCount` still the whole match set — real
@@ -523,6 +533,7 @@ class MockVespaEngine(
     }
 
     private fun search(params: Map<String, String>): Reply {
+        if (contentUnreachable) return Reply(200, CONTENT_UNREACHABLE)
         PROFILE_ONLY_PARAMS.firstOrNull { it in params }?.let {
             return Reply(400, """{"message":"$it must be specified in a query profile."}""")
         }
@@ -903,6 +914,14 @@ class MockVespaEngine(
     private companion object {
         /** Vespa's flag for "the cluster is not in its ideal state" — the one degradation it names without a query having asked for anything. */
         const val NON_IDEAL_STATE = "non-ideal-state"
+
+        /** [contentUnreachable]'s body, as Vespa 8.763 sent it for a grouping with its one content node restarting. */
+        const val CONTENT_UNREACHABLE =
+            """{"root":{"id":"toplevel","relevance":1.0,"fields":{"totalCount":0},""" +
+                """"coverage":{"coverage":100,"documents":0,"full":true,"nodes":0,"results":2,"resultsFull":2},""" +
+                """"errors":[{"code":10,"summary":"Backend communication error","source":"content",""" +
+                """"message":"Connection failure on nodes with distribution-keys: 0"}],""" +
+                """"children":[{"id":"group:root:0","relevance":1.0,"continuation":{"this":""}}]}}"""
 
         /** Max docs per visit response — small enough that tests always cross a page boundary. */
         const val VISIT_PAGE_CAP = 7
