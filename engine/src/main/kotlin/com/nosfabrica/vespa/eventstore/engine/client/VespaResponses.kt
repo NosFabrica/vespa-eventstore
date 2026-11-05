@@ -91,6 +91,8 @@ internal class SearchRoot(
     val children: List<SearchHit> = emptyList(),
     val coverage: SearchCoverage = SearchCoverage(),
     val fields: SearchRootFields = SearchRootFields(),
+    /** What the engine failed at while answering; any at all refuses the answer ([refuseErrors]). */
+    val errors: List<SearchError> = emptyList(),
 ) {
     /**
      * [EventQuery.complete]'s check, on top of [SearchCoverage.requireComplete]:
@@ -168,7 +170,45 @@ class PartialAnswer(
     companion object {
         /** Vespa's flag for a match set the engine truncated. Also the label [degradation] carries. */
         const val MATCH_PHASE = "match-phase"
+
+        /** The label of an answer the engine reported errors beside ([refuseErrors]). */
+        const val ERRORS = "errors"
     }
+}
+
+/** One entry of a response's `root.errors`: Vespa's code, its summary, which part of it failed, and its message. */
+@Serializable
+internal class SearchError(
+    val code: Int = 0,
+    val summary: String = "",
+    val source: String? = null,
+    val message: String? = null,
+)
+
+/**
+ * Refuses a response that reports [errors], whatever its coverage says.
+ *
+ * A container whose content node is down still answers HTTP 200 to a grouping:
+ * no groups, `totalCount` 0, a coverage block calling itself `full` at 100%
+ * over `nodes: 0`, and one error, `Backend communication error` (Vespa 8.763,
+ * its single content node restarting). The coverage block cannot see that
+ * hole, since it counts only the nodes that answered, so read as an answer it
+ * is an empty corpus: a NIP-45 count of 0, a relay-discovery read with no
+ * relays in it. The errors are the only place the response says otherwise.
+ * Refused as [PartialAnswer] because that is what it is, and so the callers that
+ * wait out a settling cluster ([VespaEventIndex] retries a refused id walk) wait
+ * out a restarting node the same way.
+ */
+internal fun refuseErrors(errors: List<SearchError>) {
+    if (errors.isEmpty()) return
+    throw PartialAnswer(
+        degradation = PartialAnswer.ERRORS,
+        message =
+            "vespa answered with ${errors.size} error(s) beside its result: " +
+                errors.joinToString("; ") { e -> "${e.code} ${e.summary}${e.source?.let { " ($it)" }.orEmpty()}${e.message?.let { ": ${it.take(200)}" }.orEmpty()}" } +
+                ". The response is a PARTIAL answer, not a small one (a content node it could not reach answers as an empty corpus), " +
+                "so it is refused rather than returned.",
+    )
 }
 
 /**

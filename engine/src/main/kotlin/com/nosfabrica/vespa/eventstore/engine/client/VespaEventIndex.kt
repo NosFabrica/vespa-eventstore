@@ -49,6 +49,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.future.await
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -2112,8 +2113,8 @@ class VespaEventIndex(
     /**
      * The recall paths' `/search/` funnel, streamed straight into DTOs.
      * Together with [queryRoot] (the grouping/count paths, which need the tree)
-     * it is the only way a response reaches a caller, and both verify coverage —
-     * so nothing can accidentally accept a degraded answer.
+     * it is the only way a response reaches a caller, and both refuse reported
+     * errors and verify coverage — so nothing can accidentally accept a degraded answer.
      */
     private suspend fun searchRoot(
         vq: VespaQuery,
@@ -2138,6 +2139,18 @@ class VespaEventIndex(
         // degrading every read shows up in the numbers either way — it just
         // stops killing the reads that a subset already answers.
         val allowMatchPhase = vq.sampled || vq.ranking == EventYql.RANK_RECENCY || vq.ranking == EventYql.RANK_RECENCY_GATED
+        // Before the coverage check, which counts only the nodes that answered and so cannot see one that did not.
+        if (root.errors.isNotEmpty()) {
+            DegradedReads.record(
+                profile = vq.ranking,
+                flags = setOf(PartialAnswer.ERRORS),
+                shape = shapeOf(vq),
+                refused = true,
+                coverage = root.coverage.coverage,
+                documents = root.coverage.documents,
+            )
+            refuseErrors(root.errors)
+        }
         // RECORDED WHETHER OR NOT IT THROWS. A match-phase cut on a recency
         // profile is ALLOWED and returned silently, so a cluster degrading
         // every read shows up here before anything refuses and long before
@@ -2219,7 +2232,11 @@ class VespaEventIndex(
         )
         return envelope["root"]
             ?.jsonObject
-            ?.also { root -> root["coverage"]?.let { VESPA_JSON.decodeFromJsonElement(SearchCoverage.serializer(), it) }?.requireComplete() }
+            ?.also { root ->
+                // Before the coverage check, as in [searchRoot]: a node that did not answer is outside what coverage counts.
+                root["errors"]?.let { refuseErrors(VESPA_JSON.decodeFromJsonElement(ListSerializer(SearchError.serializer()), it)) }
+                root["coverage"]?.let { VESPA_JSON.decodeFromJsonElement(SearchCoverage.serializer(), it) }?.requireComplete()
+            }
     }
 
     /** [publish] for the grouping/count shape, whose tree is walked generically rather than decoded into [SearchRoot]. */
