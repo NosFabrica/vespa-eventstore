@@ -32,8 +32,8 @@ Three repos, one direction of dependency: quartz ← vespa-eventstore ← its co
   to survive, chart shapes and bucket decoders, editorial caps. The store hands back facts
   (`TrustChain`, `SchemaDeployException.serving`, a raw grouping root), never the decision.
 - **Skills that describe quartz come from quartz.** `.claude/skills/quartz/` is quartz's
-  distributed skill, installed unmodified from `quartz/agent-skill/quartz/` at the release this
-  store pins (now 2.15.1, tag v2.15.1 @ 93fdd45; `SKILL.md` plus `references/nip85-trusted-assertions.md` and
+  distributed skill, installed unmodified from `quartz/agent-skill/quartz/` at the commit this
+  store pins (now 3b85cf6290; `SKILL.md` plus `references/nip85-trusted-assertions.md` and
   `references/search-and-stores.md`); it replaced the copies of `nostr-expert`,
   `event-store-semantics`, `searchable-events`, `nip85-trusted-assertions` and
   `quartz-integration` this repo used to carry. Refresh it at every quartz bump, from a
@@ -41,8 +41,8 @@ Three repos, one direction of dependency: quartz ← vespa-eventstore ← its co
   ```bash
   rm -rf .claude/skills/quartz && cp -r ../quartz/quartz/agent-skill/quartz .claude/skills/
   ```
-  (or the `curl` loop in quartz's `quartz/agent-skill/README.md`, pointed at the tag rather than
-  `main`). Never edit it here: fix a quartz fact in quartz's skill, and take it at the next bump.
+  (or the `curl` loop in quartz's `quartz/agent-skill/README.md`, pointed at the pinned commit
+  rather than `main`). Never edit it here: fix a quartz fact in quartz's skill, and take it at the next bump.
   This repo has no `.agents/` directory; Codex reads these rules from this file.
 
 ## Commands
@@ -63,11 +63,11 @@ Three repos, one direction of dependency: quartz ← vespa-eventstore ← its co
 
 - First build installs git hooks (`.git-hooks` → `.git/hooks`): pre-commit runs `spotlessCheck`, pre-push runs `test`.
 - Spotless enforces ktlint plus the MIT license header (`.spotless/copyright.kt`) on every `.kt` file — new files without the header fail the build; `spotlessApply` inserts it.
-- Dependency versions live in `gradle/libs.versions.toml`. Quartz comes from **Maven Central**, a release (`com.vitorpamplona.quartz:quartz`, `quartz = "2.15.1"`) — not JitPack, because this store is published to Central with quartz as an `api` dependency; bumps are deliberate and the comment there records what the new pin contains. Nothing else here comes from JitPack either (`jitpack.yml` only lets JitPack build this store for vespa-relay). The published library version is `app`.
+- Dependency versions live in `gradle/libs.versions.toml`. Quartz comes from **JitPack**, pinned to a commit (`com.github.vitorpamplona.quartz:quartz`, `quartz = "3b85cf6290"`), the only thing this build reads from JitPack (`settings.gradle.kts` scopes the repository to quartz's group). Because quartz is an `api` dependency, the POM this store publishes to Central names that JitPack coordinate, so its consumers need JitPack too. Pin a commit JitPack builds (`curl https://jitpack.io/com/github/vitorpamplona/quartz/quartz-jvm/<ref>/quartz-jvm-<ref>.pom` answers 200); bumps are deliberate and the comment there records what the new pin contains. `jitpack.yml` is separate: it lets JitPack build this store for vespa-relay. The published library version is `app`.
 - **Building against a local quartz**: `./gradlew -PquartzDir=../quartz build` includes that
   checkout as a composite build and substitutes it for the pinned artifact in every module (like
   quartz's own `-PcryptoKmpDir`; `settings.gradle.kts`). For a change that needs quartz and this
-  store together — the published POM still names the pin, so the quartz release lands first.
+  store together — the published POM still names the pin, so the quartz commit lands first.
 - Benchmarks (against a live Vespa): `./gradlew :benchmark:run`, plus targeted tasks (`searchBench`, `queryBench`, `visitBench`, `multiFilterBench`, `rankAb`, `searchTrace` — the per-clause-family latency split for one NIP-50 term, …) — see `benchmark/README.md`, which is also the repo's performance knowledge base (measured numbers, config A/Bs, why decisions were made).
 - Local Vespa for manual testing: `docker run --detach --name vespa --publish 8080:8080 --publish 19071:19071 vespaengine/vespa`; `VespaEventStore.open(url)` auto-deploys the bundled schema on first contact.
 

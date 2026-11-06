@@ -9,15 +9,19 @@ pluginManagement {
 dependencyResolutionManagement {
     repositories {
         google()
-        // Quartz comes from Maven Central since 2.4.0 (libs.versions.toml), the last thing this build
-        // read from JitPack. jitpack.yml stays: JitPack still BUILDS this store for vespa-relay.
         mavenCentral()
+        // Quartz is pinned to a commit JitPack builds (libs.versions.toml), and JitPack serves
+        // nothing else here. jitpack.yml is separate: it lets JitPack BUILD this store for vespa-relay.
+        exclusiveContent {
+            forRepository { maven { url = uri("https://jitpack.io") } }
+            filter { includeGroup("com.github.vitorpamplona.quartz") }
+        }
     }
 }
 
 rootProject.name = "vespa-eventstore"
 
-// Quartz (com.vitorpamplona.quartz:quartz) comes from Maven Central, pinned in
+// Quartz (com.github.vitorpamplona.quartz:quartz) comes from JitPack, pinned to a commit in
 // gradle/libs.versions.toml. To change it alongside this store — a Nostr rule
 // this store needs that quartz lacks goes upstream first (AGENTS.md, "What goes
 // where") — point Gradle at a local checkout and it builds that checkout in
@@ -25,11 +29,11 @@ rootProject.name = "vespa-eventstore"
 //   ./gradlew -PquartzDir=../quartz build
 // Every module that names libs.quartz then compiles and tests against the
 // checkout's :quartz JVM variant. The published POM still names the pin, so a
-// change that needs the new quartz waits for its release before this store's.
+// change that needs the new quartz waits for a quartz commit JitPack builds.
 providers.gradleProperty("quartzDir").orNull?.let { dir ->
     includeBuild(dir) {
         dependencySubstitution {
-            substitute(module("com.vitorpamplona.quartz:quartz")).using(project(":quartz"))
+            substitute(module("com.github.vitorpamplona.quartz:quartz")).using(project(":quartz"))
         }
     }
 }

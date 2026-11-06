@@ -4,9 +4,29 @@ kotlin = "2.4.21"
 app = "1.0.1"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"
-# Quartz from Maven Central (com.vitorpamplona.quartz:quartz, a release) — NIP-11 DSL + opt-out
-# SQLite FTS index.
-# 2.15.1 = tag v2.15.1 (93fdd45, "chore(release): v2.15.1"), from Central as before (v2.16.0 is
+# Quartz from JitPack (com.github.vitorpamplona.quartz:quartz), pinned to a commit.
+# 3b85cf6290 = vitorpamplona/quartz 3b85cf62909d (2026-11-05, "Merge main (2.16.0) into the NIP-34
+# branch"), the second parent of main's head 2de1e03525 (the quartz#94 merge). Its tree is main's but
+# for jitpack.yml: main's head adds :quartz:publishAndroidPublicationToMavenLocal, which JitPack cannot
+# build (no Android SDK platform 37), so main's head 404s there and this commit builds clean.
+# FROM JITPACK AGAIN, so the published POM names com.github.vitorpamplona.quartz:quartz-jvm:3b85cf6290
+# and a consumer of this store needs JitPack in its repositories (Central publishing does not check).
+# vespa-relay maps JitPack's quartz group onto its own Central pin (build-logic), so it keeps 2.13.0
+# until it bumps. 32 commits over 2.15.1, through the v2.16.0 release (b4512877a5); a tree diff of
+# quartz/src between them, main sources, scanned against this store's imports (62 packages):
+#  - 2.15.1 -> 2.16.0 (14 commits) is all relay client: subscribeEventBatches, CachingEventDecoder's
+#    forged-copy scrutiny, withRelayCount retrying an unanswered COUNT. This store imports none of it.
+#  - 2.16.0 -> here (18 commits) is NIP-34: git objects, merges, patches, PRs, GRASP servers,
+#    repository state. ONE PARSE-TABLE ROW: kind 7321 is a GitReviewEvent now, not a bare Event. It
+#    is a BaseNoteEvent and not a SearchableEvent, so it stays unindexed and is stored as before.
+#  - nip50Search, nip01Core.store (VespaParityIT's battery), relay.filters, nip01Core.hints, nip85
+#    and the normalizer have no diff in the range: nothing to reindex.
+#  - RUNTIME CLASSPATH (:store): quartz's coordinates alone move; the POM's dependency versions
+#    are 2.15.1's (quartz's build files have no diff in the range).
+#  - The distributed skill (.claude/skills/quartz) is re-copied from this commit: one line over
+#    2.15.1's (subscribeEventBatches).
+#
+# Prev 2.15.1 = tag v2.15.1 (93fdd45, "chore(release): v2.15.1"), from Central as before (v2.16.0 is
 # tagged but not yet on Central). 62 commits over 2.13.0 (d99aae0), through 2.14.0, 2.14.1 and
 # 2.15.0; a tree diff of quartz/src between the tags, main sources (55 files), scanned against this
 # store's imports (62 packages):
@@ -262,7 +282,7 @@ mavenPublish = "0.37.0"
 # catch-all; SearchableEvent grows the read-path forEachIndexableField, no reindex).
 # Prev cecc3287b2 (2026-09-01: 17 catch-all kinds split into title/body roles, four
 # affiliation URLs, six doubled `t`-tag scans dropped; a ranking backfill).
-quartz = "2.15.1"
+quartz = "3b85cf6290"
 coroutines = "1.11.0"
 serialization = "1.12.0"
 # Matches what Quartz brings transitively; Gradle would resolve to it regardless.
@@ -291,7 +311,7 @@ ktlint = "1.8.0"
 testcontainers = "2.0.5"
 
 [libraries]
-quartz = { module = "com.vitorpamplona.quartz:quartz", version.ref = "quartz" }
+quartz = { module = "com.github.vitorpamplona.quartz:quartz", version.ref = "quartz" }
 kotlinx-coroutines = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
