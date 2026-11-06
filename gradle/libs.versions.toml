@@ -1,12 +1,34 @@
 [versions]
-kotlin = "2.4.0"
+kotlin = "2.4.21"
 # The library version published to Maven Central (com.nosfabrica.vespa.eventstore:*).
 app = "1.0.1"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"
 # Quartz from Maven Central (com.vitorpamplona.quartz:quartz, a release) — NIP-11 DSL + opt-out
 # SQLite FTS index.
-# 2.13.0 = tag v2.13.0 (d99aae0, "chore(release): v2.13.0"), from Central as before. 44 commits over
+# 2.15.1 = tag v2.15.1 (93fdd45, "chore(release): v2.15.1"), from Central as before (v2.16.0 is
+# tagged but not yet on Central). 62 commits over 2.13.0 (d99aae0), through 2.14.0, 2.14.1 and
+# 2.15.0; a tree diff of quartz/src between the tags, main sources (55 files), scanned against this
+# store's imports (62 packages):
+#  - NOTHING THIS STORE READS OR WRITES BY MOVES: nip50Search, nip01Core.store (the conformance
+#    battery VespaParityIT runs, 155/155), relay.filters, nip01Core.hints (SubjectReferences),
+#    nip85, the normalizer and EventFactory have no diff. No searchable kind or extractor moved:
+#    nothing to reindex.
+#  - Same answer, cheaper: Event.verify() checks id and signature through a per-thread
+#    EventVerifier that reuses its buffers (KiteWriter.idHashInto, Hex.decodeInto / isEqual).
+#  - Additive on classes this store imports: GitRepositoryEvent (30617) reads NIP-34 role records
+#    (`M`/`m`/`o`), becomes an AddressHintProvider and lists role subjects in linkedPubKeys();
+#    LabelEvent gains subjectEdit() (`#subject` renames). Search reads neither: a label's
+#    subjects come from SubjectReferences, which reads its e/p/a tags.
+#  - Code this store does not call: the relay client (fetchEvents / fetch, subscribeEvents with
+#    ResumePolicy, every live subscription resuming after a reconnect, startReq),
+#    NegentropyLocalIndex.withRelayCount, the rest of NIP-34. vespa-relay's sync calls the client.
+#  - RUNTIME CLASSPATH (:store): quartz moves, and kmp-negentropy v1.2.0 -> v1.2.1; the published
+#    POM's other versions are 2.13.0's.
+#  - The distributed skill (.claude/skills/quartz) is re-copied from the tag: SKILL.md gains the
+#    one-relay fetch, subscribeEvents and withRelayCount rows.
+#
+# Prev 2.13.0 = tag v2.13.0 (d99aae0, "chore(release): v2.13.0"), from Central as before. 44 commits over
 # 2.9.0 (9b070bd), through 2.10.0, 2.10.1, 2.11.0, 2.12.0 and 2.12.1; a tree diff of quartz/src
 # between the tags, main sources (29 files), scanned against this store's imports and vespa-relay's:
 #  - THE PARSE TABLE MOVES FOR ONE SHAPE: a kind 30078 carrying drss.io's listening-progress tags
@@ -240,30 +262,33 @@ mavenPublish = "0.37.0"
 # catch-all; SearchableEvent grows the read-path forEachIndexableField, no reindex).
 # Prev cecc3287b2 (2026-09-01: 17 catch-all kinds split into title/body roles, four
 # affiliation URLs, six doubled `t`-tag scans dropped; a ranking backfill).
-quartz = "2.13.0"
+quartz = "2.15.1"
 coroutines = "1.11.0"
-serialization = "1.11.0"
+serialization = "1.12.0"
 # Matches what Quartz brings transitively; Gradle would resolve to it regardless.
 sqlite = "2.7.1"
 # Likewise Quartz's own okhttp line (it already was, at the previous pin).
-okhttp = "5.5.0"
-ktor = "3.5.1"
+okhttp = "5.5.1"
+ktor = "3.6.1"
 # Vespa's official feed client: async document writes multiplexed over HTTP/2.
-vespa-feed = "8.714.25"
+vespa-feed = "8.781.11"
 # The container API the :bundle request handler compiles against (compile-only: Vespa provides it
 # at runtime). Only stable public API is used, so the bundle runs on any Vespa 8 container.
-vespa-container = "8.763.13"
+vespa-container = "8.781.11"
 # Lucene's analysis module, for its Portuguese and Spanish LIGHT stemmers (Savoy's,
 # the ones Lucene's own analyzers use) — engine/text/StemText. Apache-2.0 (checked
-# against the published POM); pulls in lucene-core.
-lucene = "9.12.2"
+# against the published POM); pulls in lucene-core. HELD ON 9.x: Lucene 10 makes both stemmer
+# classes package-private, reachable only through their TokenFilters. 9.12.3 is the line's last
+# patch and the one Vespa's own parent POM pins (lucene.vespa.version, 8.781.11).
+lucene = "9.12.3"
 # Test-only: a mock Vespa must speak h2c for the feed client (JDK HttpServer can't).
-# MUST match the Jetty line the feed client itself uses, or its client half breaks.
-jetty = "12.0.36"
-spotless = "8.8.0"
+# MUST match the Jetty line the feed client itself uses, or its client half breaks:
+# jetty.vespa.version in com.yahoo.vespa:parent at the vespa-feed version above.
+jetty = "12.0.40"
+spotless = "8.11.0"
 ktlint = "1.8.0"
 # Test-only: spins up a real Vespa container for the CI parity integration test.
-testcontainers = "1.20.4"
+testcontainers = "2.0.5"
 
 [libraries]
 quartz = { module = "com.vitorpamplona.quartz:quartz", version.ref = "quartz" }

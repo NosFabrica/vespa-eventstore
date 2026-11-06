@@ -33,7 +33,7 @@ Three repos, one direction of dependency: quartz ← vespa-eventstore ← its co
   (`TrustChain`, `SchemaDeployException.serving`, a raw grouping root), never the decision.
 - **Skills that describe quartz come from quartz.** `.claude/skills/quartz/` is quartz's
   distributed skill, installed unmodified from `quartz/agent-skill/quartz/` at the release this
-  store pins (now 2.13.0, tag v2.13.0 @ d99aae0; `SKILL.md` plus `references/nip85-trusted-assertions.md` and
+  store pins (now 2.15.1, tag v2.15.1 @ 93fdd45; `SKILL.md` plus `references/nip85-trusted-assertions.md` and
   `references/search-and-stores.md`); it replaced the copies of `nostr-expert`,
   `event-store-semantics`, `searchable-events`, `nip85-trusted-assertions` and
   `quartz-integration` this repo used to carry. Refresh it at every quartz bump, from a
@@ -63,7 +63,7 @@ Three repos, one direction of dependency: quartz ← vespa-eventstore ← its co
 
 - First build installs git hooks (`.git-hooks` → `.git/hooks`): pre-commit runs `spotlessCheck`, pre-push runs `test`.
 - Spotless enforces ktlint plus the MIT license header (`.spotless/copyright.kt`) on every `.kt` file — new files without the header fail the build; `spotlessApply` inserts it.
-- Dependency versions live in `gradle/libs.versions.toml`. Quartz comes from **Maven Central**, a release (`com.vitorpamplona.quartz:quartz`, `quartz = "2.13.0"`) — not JitPack, because this store is published to Central with quartz as an `api` dependency; bumps are deliberate and the comment there records what the new pin contains. Nothing else here comes from JitPack either (`jitpack.yml` only lets JitPack build this store for vespa-relay). The published library version is `app`.
+- Dependency versions live in `gradle/libs.versions.toml`. Quartz comes from **Maven Central**, a release (`com.vitorpamplona.quartz:quartz`, `quartz = "2.15.1"`) — not JitPack, because this store is published to Central with quartz as an `api` dependency; bumps are deliberate and the comment there records what the new pin contains. Nothing else here comes from JitPack either (`jitpack.yml` only lets JitPack build this store for vespa-relay). The published library version is `app`.
 - **Building against a local quartz**: `./gradlew -PquartzDir=../quartz build` includes that
   checkout as a composite build and substitutes it for the pinned artifact in every module (like
   quartz's own `-PcryptoKmpDir`; `settings.gradle.kts`). For a change that needs quartz and this
