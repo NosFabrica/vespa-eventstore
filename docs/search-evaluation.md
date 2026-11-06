@@ -912,6 +912,25 @@ to 0.83, `pico 8` from 0.51 to 0.82, `bitcoin white paper` from 0.52 to 0.60. Th
 0.1 is `ai` (−0.10), present in `phrase_band_off` too: not this change. The top-author share is
 0.318 → 0.334. Every grade is `llm:claude`, and the human re-grade (§5.3) is still owed.
 
+**Live check (2026-11-06, after #191 deployed).** `capture_eval.py` re-pulled all 54 cases from
+the relay, and the Profiles-tab page was captured with `kinds: [0]` by hand, since the
+script does not capture per-case `kinds`. The 19 newly surfaced documents in a top 10 were
+graded blind (`llm:claude`). Scored against the 2026-11-03 production capture on the same
+judgments:
+
+| run | nDCG@10 | known-item S@1 | S@3 |
+|---|---|---|---|
+| production 2026-11-03 | 0.571 | 0.367 | 0.571 |
+| production 2026-11-06 | 0.614 | 0.408 | 0.633 |
+
+The change is Δ +0.042 [+0.011, +0.079], p 0.013, W/T/L 22/21/10, topical +0.073. This
+mixes three days of new posts and the commits merged after #191. The local A/B read
++0.040. On `pico 8`, `preston pysh`, `bitcoin white paper` and `Vitor P`, the live top 10
+is the one the local replay served (18 of the `pico 8` top 20; the other two were posted
+since). Two RR drops (`amethyst`, `bitcoin white paper`, 1.0 → 0.5) are corpus changes,
+not ranking: a git-repository announcement (kind 30617, graded 2) published after the
+capture took #1 over the grade-3 answer.
+
 ## 10. References
 
 - Cleverdon (1967), *The Cranfield tests on index language devices*: the paradigm.

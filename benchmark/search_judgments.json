@@ -1103,6 +1103,11 @@
       "grade": 2,
       "by": "llm:claude",
       "at": "2026-11-03"
+    },
+    "9670c86bb55cdd3ec9f3a3fdc0de8f09894b82342ecca167569606b7a337ad22": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-11-06"
     }
   },
   "jose": {
@@ -1784,6 +1789,11 @@
       "grade": 2,
       "by": "llm:claude",
       "at": "2026-11-03"
+    },
+    "01fc5568caab87a1a6e5c8b057fb60259a9537f1ae6672ba21e326a030a68aab": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-11-06"
     }
   },
   "Vitor Pamp": {
@@ -2021,6 +2031,11 @@
       "grade": 2,
       "by": "llm:claude",
       "at": "2026-11-03"
+    },
+    "01fc5568caab87a1a6e5c8b057fb60259a9537f1ae6672ba21e326a030a68aab": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-11-06"
     }
   },
   "odell": {
@@ -2450,6 +2465,11 @@
       "grade": 2,
       "by": "llm:claude",
       "at": "2026-11-03"
+    },
+    "9670c86bb55cdd3ec9f3a3fdc0de8f09894b82342ecca167569606b7a337ad22": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-11-06"
     }
   },
   "divórcio e desabafa": {
@@ -3168,6 +3188,11 @@
       "grade": 0,
       "by": "llm:claude",
       "at": "2026-11-03"
+    },
+    "01fc5568caab87a1a6e5c8b057fb60259a9537f1ae6672ba21e326a030a68aab": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-11-06"
     }
   },
   "Avi Burra": {
@@ -4188,6 +4213,16 @@
       "grade": 1,
       "by": "llm:claude",
       "at": "2026-11-03"
+    },
+    "a11535cd089da047013e523f74a7d9f8a95b93405eaf7ce7369214a6c53b58b4": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-11-06"
+    },
+    "c567db4b605c90b3fd2602169d488ce4d2eedd14ccd5d32f53679a5729c6da92": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-11-06"
     }
   },
   "de extraordinary": {
@@ -4809,6 +4844,11 @@
       "grade": 2,
       "by": "llm:claude",
       "at": "2026-11-03"
+    },
+    "9670c86bb55cdd3ec9f3a3fdc0de8f09894b82342ecca167569606b7a337ad22": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-11-06"
     }
   },
   "bitcoin": {
@@ -5932,6 +5972,11 @@
       "grade": 1,
       "by": "llm:claude",
       "at": "2026-11-03"
+    },
+    "2790a546bbf7ce2d68909307ea6684fcaac335a1af43aa61e5e8865b883c2041": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-11-06"
     }
   },
   "ai": {
@@ -6139,6 +6184,16 @@
       "grade": 1,
       "by": "llm:claude",
       "at": "2026-11-03"
+    },
+    "aebf7131ce8564b65dc08c26db764c86b94ad62571029c5d242d3806d95fc8f8": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-11-06"
+    },
+    "bf57c0eb9cd43dec22e3e125213e3cc90c148f777829a398b7e38b28a8fe6923": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-11-06"
     }
   },
   "music": {
@@ -6523,6 +6578,16 @@
       "grade": 1,
       "by": "llm:claude",
       "at": "2026-11-03"
+    },
+    "4f913d86724c6193c1e8abbb062a9096e37c549bd257f5c428d969fde2ce2d12": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-11-06"
+    },
+    "7b112145e558f977c1952e703ac3c74ece2a045b57362e79e9a26087a6e77c79": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-11-06"
     }
   },
   "crypto": {
@@ -6857,6 +6922,11 @@
       "grade": 2,
       "by": "llm:claude",
       "at": "2026-11-03"
+    },
+    "9c7826373d5b52c567a06b67380d56cd2ecddca6e6eff1e48e75aeee67c2bbb2": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-11-06"
     }
   },
   "film": {
@@ -8582,6 +8652,16 @@
       "grade": 2,
       "by": "llm:claude",
       "at": "2026-11-03"
+    },
+    "3afb8be8de9018cf23fa4a1230a7d0979119af45272f92787978bb7aad0ffd09": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-11-06"
+    },
+    "e15aa5c19c0e032594b804b73d049b4a8fa83809b5617e3438bfdf004fb8cb4c": {
+      "grade": 3,
+      "by": "llm:claude",
+      "at": "2026-11-06"
     }
   },
   "web of trust": {
@@ -9400,6 +9480,16 @@
       "grade": 2,
       "by": "llm:claude",
       "at": "2026-11-03"
+    },
+    "52eeba36866dd9ec96e61a6c2e4844a002ed807f8a6f75623c8216bd21d42d69": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-11-06"
+    },
+    "8a0c0d8642bc1c8419206b1ec90c750db94c6a43d110a12d2321aac3a60ade85": {
+      "grade": 1,
+      "by": "llm:claude",
+      "at": "2026-11-06"
     }
   },
   "the art of war": {
@@ -9879,6 +9969,11 @@
       "grade": 3,
       "by": "llm:claude",
       "at": "2026-11-03"
+    },
+    "bd1e5db3f59a0e173d8f909a1ab2e98f7192449e73522ed2059ae108cdcb75af": {
+      "grade": 2,
+      "by": "llm:claude",
+      "at": "2026-11-06"
     }
   },
   "jack dorsey": {
