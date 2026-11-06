@@ -80,13 +80,15 @@ in `NostrClient` completion — import them by name:
 | Need | Use |
 | --- | --- |
 | All events for a filter | `fetchAll(relay, filter)` |
+| Every event one relay sends for a filter, as it arrives, until EOSE | `fetchEvents(relay, filters)` (a `Flow<Event>`) or `fetch(relay, filters) { event -> }` (returns the count): not verified, deduped or sorted; a CLOSED throws `SubscriptionClosedException`, an unreachable relay `RelayUnreachableException` |
 | First match | `fetchFirst(relay, filter)` |
 | More than a relay's per-REQ cap | `fetchAllPages(relay, filters) { event -> }`; only `PagedFetchResult.End.DRAINED` proves there is nothing more |
 | Verify/store as events arrive, per-relay results | `fetchAllWithHooks` |
 | Many relays at once | `fetchAllPagesFromPool`, `fetchAllPagesFromPoolWithHooks` |
-| Live subscription | `subscribeAsFlow(relay, filter)` (`…client.reqs`) |
+| Live subscription | `subscribeAsFlow(relay, filter)` (a list, for a screen) or `subscribe(relay, filters) { event -> }` (a callback; returns a `DynamicSubscription`), both in `…client.reqs`. Both resume after a reconnect and stay open through a CLOSED, which the client sends again on the next reconnect or AUTH |
+| Live tail for a long-running consumer (indexer, mirror) | `subscribeEvents(relay, filters, resume = CaughtUpResume())`, or `subscribeEvents(mapOf(relay to filters, …))` for several: one `Flow<Event>` with backpressure that, after a reconnect, resumes where its `ResumePolicy` says, per relay (by default from the newest event it delivered; read `resumeFrom(relay, filters)` or watch `CaughtUpResume.caughtUpAtFlow(relay)` to persist for restarts), and ends with `SubscriptionClosedException` naming the relay when one closes it. Writing in batches: `subscribeEventBatches(relay, filters, resume, maxBatch = 500)`, a `Flow<List<Event>>` whose resume point counts only processed batches. It resumes by `created_at`: events a relay stores late are not re-sent |
 | NIP-45 count | `count(relay, filter)`, `countMerged(relays, filter)` |
-| NIP-77 sync | `negentropySync`, `negentropySyncOrFetch` |
+| NIP-77 sync | `negentropySync`, `negentropySyncOrFetch`; with a `targetWindow` and an empty or small local side, pass `localIndex = index.withRelayCount(client, relay)` so windows split on the relay's count too |
 | Publish and wait for `OK` | `publishAndConfirm(event, relays)`, `publishAndConfirmDetailed` |
 | Publish many events to one relay | `publishStream(relay, events, maxInFlight) { event, ok -> }`; `publishRawStream` for events already held as JSON |
 | Keep one relay's socket between bursts | `client.keepConnected(relay)` … `client.releaseConnection(relay)` (counted holds; a member method, not an extension) |

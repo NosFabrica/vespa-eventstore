@@ -580,8 +580,9 @@ Make sure to have the following pre-requisites installed:
 1. Java 21+ (JDK 21)
 2. IntelliJ IDEA CE or Android Studio
 
-Kotlin 2.4 / JDK 21. Quartz comes from Maven Central
-(`com.vitorpamplona.quartz:quartz`), pinned in `gradle/libs.versions.toml`.
+Kotlin 2.4 / JDK 21. Quartz comes from JitPack
+(`com.github.vitorpamplona.quartz:quartz`), pinned to a commit in `gradle/libs.versions.toml`;
+a project depending on this store needs `maven("https://jitpack.io")` in its repositories.
 
 On first build the project installs the repo's git hooks (`.git-hooks` →
 `.git/hooks`) so [Spotless](https://github.com/diffplug/spotless) runs on commit
