@@ -5,12 +5,31 @@ app = "1.0.1"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"
 # Quartz from JitPack (com.github.vitorpamplona.quartz:quartz), pinned to a commit.
-# 3b85cf6290 = vitorpamplona/quartz 3b85cf62909d (2026-11-05, "Merge main (2.16.0) into the NIP-34
+# FROM JITPACK, so the published POM names com.github.vitorpamplona.quartz:quartz-jvm:<pin> and a
+# consumer of this store needs JitPack in its repositories (Central publishing does not check).
+#
+# 0102e83c81 = vitorpamplona/quartz main @ 2026-11-06, the quartz#95 merge (0102e83c814c). 18 commits
+# over 3b85cf6290 (below), which it descends from; JitPack builds it, Android variant included (its
+# image installs SDK platform 37 now). A tree diff of quartz/src between them, main sources, scanned
+# against this store's imports:
+#  - Same answer, faster: TagArray's predicate helpers (forEachTagged, anyTagged, mapValueTagged,
+#    any) become inline; Platform / ParallelUtils hand the parallel verifier its dispatcher; the
+#    native id hash, NIP-44 buffers and gift-wrap key cache are code this store does not run.
+#  - The SQLite reference store (VespaParityIT's oracle) reuses one savepoint name per batch
+#    insert: the same rows, fewer cached statements.
+#  - NIP-30: CustomEmoji's text split keeps an unknown `:code:` as text. That is the renderer;
+#    this store reads `emoji` tags through TagArray.emojis(), which has no diff.
+#  - Relay client and server (ParallelEventVerifier, IngestQueue's dispatcher): not called here.
+#  - No searchable kind, extractor, EventFactory row, nip01Core.store member or relay.filters
+#    file moved: nothing to reindex.
+#  - RUNTIME CLASSPATH (:store): quartz's version alone moves; the POM's dependency versions
+#    are 3b85cf6290's (quartz/build.gradle.kts gains only a benchmark system property).
+#  - The distributed skill (.claude/skills/quartz) is re-copied from this commit: no diff.
+#
+# Prev 3b85cf6290 = vitorpamplona/quartz 3b85cf62909d (2026-11-05, "Merge main (2.16.0) into the NIP-34
 # branch"), the second parent of main's head 2de1e03525 (the quartz#94 merge). Its tree is main's but
 # for jitpack.yml: main's head adds :quartz:publishAndroidPublicationToMavenLocal, which JitPack cannot
 # build (no Android SDK platform 37), so main's head 404s there and this commit builds clean.
-# FROM JITPACK AGAIN, so the published POM names com.github.vitorpamplona.quartz:quartz-jvm:3b85cf6290
-# and a consumer of this store needs JitPack in its repositories (Central publishing does not check).
 # vespa-relay maps JitPack's quartz group onto its own Central pin (build-logic), so it keeps 2.13.0
 # until it bumps. 32 commits over 2.15.1, through the v2.16.0 release (b4512877a5); a tree diff of
 # quartz/src between them, main sources, scanned against this store's imports (62 packages):
@@ -282,7 +301,7 @@ mavenPublish = "0.37.0"
 # catch-all; SearchableEvent grows the read-path forEachIndexableField, no reindex).
 # Prev cecc3287b2 (2026-09-01: 17 catch-all kinds split into title/body roles, four
 # affiliation URLs, six doubled `t`-tag scans dropped; a ranking backfill).
-quartz = "3b85cf6290"
+quartz = "0102e83c81"
 coroutines = "1.11.0"
 serialization = "1.12.0"
 # Matches what Quartz brings transitively; Gradle would resolve to it regardless.

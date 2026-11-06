@@ -33,7 +33,7 @@ Three repos, one direction of dependency: quartz ← vespa-eventstore ← its co
   (`TrustChain`, `SchemaDeployException.serving`, a raw grouping root), never the decision.
 - **Skills that describe quartz come from quartz.** `.claude/skills/quartz/` is quartz's
   distributed skill, installed unmodified from `quartz/agent-skill/quartz/` at the commit this
-  store pins (now 3b85cf6290; `SKILL.md` plus `references/nip85-trusted-assertions.md` and
+  store pins (now 0102e83c81; `SKILL.md` plus `references/nip85-trusted-assertions.md` and
   `references/search-and-stores.md`); it replaced the copies of `nostr-expert`,
   `event-store-semantics`, `searchable-events`, `nip85-trusted-assertions` and
   `quartz-integration` this repo used to carry. Refresh it at every quartz bump, from a
@@ -63,7 +63,7 @@ Three repos, one direction of dependency: quartz ← vespa-eventstore ← its co
 
 - First build installs git hooks (`.git-hooks` → `.git/hooks`): pre-commit runs `spotlessCheck`, pre-push runs `test`.
 - Spotless enforces ktlint plus the MIT license header (`.spotless/copyright.kt`) on every `.kt` file — new files without the header fail the build; `spotlessApply` inserts it.
-- Dependency versions live in `gradle/libs.versions.toml`. Quartz comes from **JitPack**, pinned to a commit (`com.github.vitorpamplona.quartz:quartz`, `quartz = "3b85cf6290"`), the only thing this build reads from JitPack (`settings.gradle.kts` scopes the repository to quartz's group). Because quartz is an `api` dependency, the POM this store publishes to Central names that JitPack coordinate, so its consumers need JitPack too. Pin a commit JitPack builds (`curl https://jitpack.io/com/github/vitorpamplona/quartz/quartz-jvm/<ref>/quartz-jvm-<ref>.pom` answers 200); bumps are deliberate and the comment there records what the new pin contains. `jitpack.yml` is separate: it lets JitPack build this store for vespa-relay. The published library version is `app`.
+- Dependency versions live in `gradle/libs.versions.toml`. Quartz comes from **JitPack**, pinned to a commit (`com.github.vitorpamplona.quartz:quartz`, `quartz = "0102e83c81"`), the only thing this build reads from JitPack (`settings.gradle.kts` scopes the repository to quartz's group). Because quartz is an `api` dependency, the POM this store publishes to Central names that JitPack coordinate, so its consumers need JitPack too. Pin a commit JitPack builds (`curl https://jitpack.io/com/github/vitorpamplona/quartz/quartz-jvm/<ref>/quartz-jvm-<ref>.pom` answers 200); bumps are deliberate and the comment there records what the new pin contains. `jitpack.yml` is separate: it lets JitPack build this store for vespa-relay. The published library version is `app`.
 - **Building against a local quartz**: `./gradlew -PquartzDir=../quartz build` includes that
   checkout as a composite build and substitutes it for the pinned artifact in every module (like
   quartz's own `-PcryptoKmpDir`; `settings.gradle.kts`). For a change that needs quartz and this
