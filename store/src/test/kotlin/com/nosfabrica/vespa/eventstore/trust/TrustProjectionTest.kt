@@ -689,7 +689,8 @@ class TrustProjectionTest {
         runBlocking {
             store.insert(list10040())
             store.insert(UserAssertionEvent(id(), service, next(), arrayOf(arrayOf("d", ProjectionLedger.MARKER_KEY), arrayOf("rank", "87")), "", ""))
-            assertNull(reputations.get(ProjectionLedger.MARKER_KEY))
+            // No cell of the card's: at most the emptied marker the list's commit leaves (ProjectionLedger.insuring).
+            assertTrue(reputations.get(ProjectionLedger.MARKER_KEY)?.isEmpty() ?: true)
             // And ordinary projection still works beside it.
             store.insert(card())
             assertEquals(serviceCells(service to 87), reputations.get(subject)?.influenceScores)
@@ -985,16 +986,16 @@ class TrustProjectionTest {
             val counting = MarkerCountingReputationIndex(InMemoryReputationIndex())
             val st = NostrSemanticsStore(TrustProjection(InMemoryEventIndex(), counting), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
             st.insert(list10040())
-            assertEquals(0, counting.markerCellAddCalls, "a list naming a service with no stored card owes no walk, so it insures nothing")
+            assertEquals(1, counting.markerCellAddCalls, "a single's backlog (here: the list's fresh service) is one cell-add call")
 
             val subjects = (1..100).map { it.toString(16).padStart(64, 'c') }
             val cellsBefore = counting.markerCellAdds
             st.batchInsert(subjects.map { s -> card(about = s) })
-            assertEquals(1, counting.markerCellAddCalls, "a bulk batch must not pay per-subject marker calls")
+            assertEquals(2, counting.markerCellAddCalls, "a bulk batch must not pay per-subject marker calls")
             assertEquals(100, counting.markerCellAdds - cellsBefore, "its one call names every subject it insures")
 
             st.insert(card())
-            assertEquals(2, counting.markerCellAddCalls, "a single's backlog is one cell-add call")
+            assertEquals(3, counting.markerCellAddCalls)
             assertEquals(0, counting.markerPuts, "the marker is never rewritten whole")
         }
 

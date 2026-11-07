@@ -241,10 +241,9 @@ class TrustProjection(
         puts: List<EventDoc>,
         removals: List<EventDoc>,
         fresh: Set<String>,
-        walks: Set<String>,
         op: suspend (CommitScope) -> T,
     ): T {
-        val scope = currentCoroutineContext()[CommitScope] ?: return commit { reacting(puts, removals, fresh, walks, op) }
+        val scope = currentCoroutineContext()[CommitScope] ?: return commit { reacting(puts, removals, fresh, op) }
         // A REMOVAL is the one point that settles what the commit buffered so
         // far, mid-commit: every removal path is a single sequential call (a
         // supersession's sweep, a deletion, a vanish page), never part of the
@@ -264,8 +263,10 @@ class TrustProjection(
         // [fresh] counts as named: this call's own list is about to name it.
         val insures = insurableSigners(fresh)
         val putCover = if (scope.coarse) servicesOf(puts, insures) else insuranceForPuts(puts, insures)
-        // Only the walks [fresh] is owed ([owingWalks]): a service with no stored card has nothing to re-walk after a crash.
-        scope.cover.extend(putCover + insuranceForRemovals(removals) + ProjectionWork(emptySet(), walks), call = true)
+        // EVERY fresh service, not only those [owingWalks] will find owed: a write that lands and
+        // then throws queues the cover, and its walks are what make the next drain drop the
+        // provider map the list made stale. A clean finish clears the ones nobody owes.
+        scope.cover.extend(putCover + insuranceForRemovals(removals) + ProjectionWork(emptySet(), fresh), call = true)
         val result =
             try {
                 op(scope)
@@ -300,12 +301,13 @@ class TrustProjection(
         // write lands, else a first-ever map read would already hold the new
         // list and the walk that projects its service would never run.
         val fresh = if (doc.kind == TrustProviderListEvent.KIND) freshServicesOf(listOf(doc)) else emptySet()
-        val walks = owingWalks(fresh)
-        return reacting(listOf(doc), emptyList(), fresh, walks) { scope ->
-            val stored = if (inner.supersedesViaPut) inner.putIfNewer(doc) else supersedeReading(doc)
-            // A loser records nothing: its fresh services were never written.
-            if (stored) stored(scope, listOf(doc), fresh, walks)
-            stored
+        return droppingProvidersOnFailure(doc.kind == TrustProviderListEvent.KIND) {
+            reacting(listOf(doc), emptyList(), fresh) { scope ->
+                val stored = if (inner.supersedesViaPut) inner.putIfNewer(doc) else supersedeReading(doc)
+                // A loser records nothing: its fresh services were never written.
+                if (stored) stored(scope, listOf(doc), fresh)
+                stored
+            }
         }
     }
 
@@ -333,10 +335,11 @@ class TrustProjection(
 
     override suspend fun put(doc: EventDoc) {
         val fresh = if (doc.kind == TrustProviderListEvent.KIND) freshServicesOf(listOf(doc)) else emptySet()
-        val walks = owingWalks(fresh)
-        reacting(listOf(doc), emptyList(), fresh, walks) { scope ->
-            inner.put(doc)
-            stored(scope, listOf(doc), fresh, walks)
+        droppingProvidersOnFailure(doc.kind == TrustProviderListEvent.KIND) {
+            reacting(listOf(doc), emptyList(), fresh) { scope ->
+                inner.put(doc)
+                stored(scope, listOf(doc), fresh)
+            }
         }
     }
 
@@ -352,12 +355,20 @@ class TrustProjection(
     override suspend fun putAll(docs: List<EventDoc>) {
         val lists = docs.filter { it.kind == TrustProviderListEvent.KIND }
         val fresh = if (lists.isEmpty()) emptySet() else freshServicesOf(lists)
-        val walks = owingWalks(fresh)
-        reacting(docs, emptyList(), fresh, walks) { scope ->
+        droppingProvidersOnFailure(lists.isNotEmpty()) { putAllReacting(docs, lists, fresh) }
+    }
+
+    /** [putAll] once its lists' fresh services are judged. */
+    private suspend fun putAllReacting(
+        docs: List<EventDoc>,
+        lists: List<EventDoc>,
+        fresh: Set<String>,
+    ) {
+        reacting(docs, emptyList(), fresh) { scope ->
             if (lists.isEmpty() && insuredBySubject(scope, docs, fresh)) {
                 // The cells and the documents they come from are different document types and read
                 // nothing of each other; a subject's insurance repairs either landing alone.
-                stored(scope, docs, fresh, walks)
+                stored(scope, docs, fresh)
                 supervisorScope {
                     val cells = async { flush(scope, storedOnly = true) }
                     // A failed cell write must not cut the documents short: they finish, then it throws.
@@ -368,7 +379,7 @@ class TrustProjection(
                 // A 10040 changes the provider map its batch's cells are written under, and insurance
                 // by service repairs only stored cards: the cells follow the documents.
                 IngestStats.timed("write") { inner.putAll(docs) }
-                stored(scope, docs, fresh, walks)
+                stored(scope, docs, fresh)
             }
         }
     }
@@ -382,20 +393,22 @@ class TrustProjection(
 
     /**
      * Stored trust docs, recorded: the provider map dropped NOW after any
-     * 10040 (so the rest of the commit sees the list), the [walks] its
-     * [fresh] services are owed ([owingWalks]), and the cards left for the flush.
+     * 10040 (so the rest of the commit sees the list), the walks its [fresh]
+     * services are owed ([owingWalks]), and the cards left for the flush.
      */
-    private fun stored(
+    private suspend fun stored(
         scope: CommitScope,
         docs: List<EventDoc>,
         fresh: Set<String>,
-        walks: Set<String>,
     ) {
         if (docs.any { it.kind == TrustProviderListEvent.KIND }) recompute.invalidateProviders()
+        // Counted AFTER the map is dropped: from here on every card of these services is
+        // flushed under the new map, so whatever the count finds was stored under the old one.
+        val walks = owingWalks(fresh, docs)
         // HERE, once the list is stored and its walk is about to be queued —
         // not where [fresh] is judged: a list that loses supersession queues
         // nothing, and releasing its services' skips then would lose them.
-        // Every fresh service's: one left unwalked has no stored card a skip could name.
+        // Every fresh service's: one left unwalked has no card stored under the old map.
         recompute.walkQueued(fresh)
         scope.walk(walks)
         scope.record(docs.filter { it.kind == UserAssertionEvent.KIND }, stored = true)
@@ -457,11 +470,12 @@ class TrustProjection(
     }
 
     /**
-     * Of the [fresh] services a list is about to name, the ones that already
-     * have stored cards: only those can hold a card without a cell, so only
-     * those are owed a walk. Every card stored after the list gets its cell
-     * when it is written, because the list drops the provider map and the
-     * next flush reads the new one.
+     * Of the [fresh] services a stored list just named, the ones with a card
+     * stored under the OLD provider map, which may lack its cell: only those
+     * are owed a walk. Called once the list is stored and the map dropped, so
+     * every card of these services from here on, [ownDocs] included, is
+     * flushed under the new map and writes its own cell. A count above the
+     * call's own cards of a service is a card stored before.
      *
      * A walk reads a service's cards as they are WHEN IT RUNS, not when it was
      * queued. A relay mirroring a provider's lists and its cards at once names
@@ -472,26 +486,55 @@ class TrustProjection(
      * (323); the walks ran 50-170 s in and re-applied 58k, 33k and 110k
      * cards that already had their cells, a quarter of the trust gate's time.
      *
-     * Counted under the trust gate the store holds for the write
-     * ([com.nosfabrica.vespa.eventstore.runtime.WriteLocks.gated]), before the
-     * list's write-ahead and the list itself, so no card of these services can
-     * land between the count and the list, and the marker names only the
-     * walks that are owed. One grouping per [WALK_CHECK_CHUNK] services. If the
-     * count fails, every fresh service is walked, as before.
+     * Exact for THIS process: the store holds the trust gate for the whole
+     * write ([com.nosfabrica.vespa.eventstore.runtime.WriteLocks.gated]). A
+     * second writer's card that lands after the count, under a map that does
+     * not name the service yet, is that writer's to walk, through its own
+     * skip memory ([ProviderMap.noteSkipped]); the walk this used to queue
+     * caught such a card only when it happened to run later
+     * (docs/multi-node-consistency.md). One grouping per [WALK_CHECK_CHUNK]
+     * services. If the count fails, every fresh service is walked, as before.
      */
-    private suspend fun owingWalks(fresh: Set<String>): Set<String> {
+    private suspend fun owingWalks(
+        fresh: Set<String>,
+        ownDocs: List<EventDoc>,
+    ): Set<String> {
         if (fresh.isEmpty()) return fresh
         return try {
-            val withCards = HashSet<String>()
+            val own = HashMap<String, Int>()
+            ownDocs.forEach { if (it.kind == UserAssertionEvent.KIND && it.pubkey in fresh) own.merge(it.pubkey, 1, Int::plus) }
+            val owed = LinkedHashSet<String>()
             for (chunk in fresh.chunked(WALK_CHECK_CHUNK)) {
-                inner.countByAuthor(EventQuery(kinds = listOf(UserAssertionEvent.KIND), authors = chunk)).forEach { (author, n) -> if (n > 0) withCards += author }
+                inner.countByAuthor(EventQuery(kinds = listOf(UserAssertionEvent.KIND), authors = chunk)).forEach { (author, n) ->
+                    if (author in fresh && n > (own[author] ?: 0)) owed += author
+                }
             }
-            fresh.filterTo(LinkedHashSet()) { it in withCards }
+            owed
         } catch (e: CancellationException) {
             throw e
         } catch (t: Throwable) {
             // Walking a service with no card costs one count and one empty listing: the old cost, never a missed cell.
             fresh
+        }
+    }
+
+    /**
+     * A call that carried a 10040 and threw may have stored it all the same
+     * (an ack lost after the engine applied the write, one bad document of a
+     * batch): the provider map is dropped either way, so the next flush does
+     * not judge the list's services unnamed. Its walks were queued with the
+     * cover ([ProjectionLedger.insuring]).
+     */
+    private suspend inline fun <T> droppingProvidersOnFailure(
+        carriesList: Boolean,
+        body: () -> T,
+    ): T {
+        if (!carriesList) return body()
+        return try {
+            body()
+        } catch (t: Throwable) {
+            recompute.invalidateProviders()
+            throw t
         }
     }
 
@@ -567,7 +610,7 @@ class TrustProjection(
         if (docs.isEmpty()) return inner.removeAll(ids)
         val byId = docs.associateBy { it.id }
         val plain = ids.filter { it !in byId }
-        reacting(emptyList(), docs, emptySet(), emptySet()) { scope ->
+        reacting(emptyList(), docs, emptySet()) { scope ->
             if (plain.isNotEmpty()) inner.removeAll(plain)
             inner.removeDocs(docs)
             removed(scope, docs)
@@ -580,7 +623,7 @@ class TrustProjection(
      */
     override suspend fun removeDocs(docs: List<EventDoc>) {
         if (docs.none { it.kind in TRUST_KINDS }) return inner.removeDocs(docs)
-        reacting(emptyList(), docs, emptySet(), emptySet()) { scope ->
+        reacting(emptyList(), docs, emptySet()) { scope ->
             // Timed for symmetry with putAll's `write`: this is a supersession's
             // other half — the sweep of the versions the winner replaced — on
             // the same bulk path inside the same writer lock, so leaving it

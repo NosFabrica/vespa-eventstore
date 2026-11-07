@@ -608,6 +608,62 @@ class ProjectionLedgerTest {
             assertEquals(40, d.rankOf(subject))
         }
 
+    /** Stores a 10040, then throws, once: an ack lost after the engine applied the write, or one bad document of a batch. */
+    private class LandsThenThrows(
+        private val inner: InMemoryEventIndex,
+    ) : EventIndex by inner {
+        var armed = false
+
+        override suspend fun putAll(docs: List<EventDoc>) {
+            inner.putAll(docs)
+            if (armed && docs.any { it.kind == TrustProviderListEvent.KIND }) {
+                armed = false
+                throw IllegalStateException("one document of the batch failed")
+            }
+        }
+
+        override suspend fun put(doc: EventDoc) {
+            inner.put(doc)
+            if (armed && doc.kind == TrustProviderListEvent.KIND) {
+                armed = false
+                throw IllegalStateException("timed out after the engine applied it")
+            }
+        }
+    }
+
+    /**
+     * A LIST THAT LANDED BUT THREW still names its service. The client's retry
+     * is a duplicate that never reaches the projection again, so the failed
+     * call itself must leave the provider map dropped and its walk queued.
+     */
+    @Test
+    fun `a list that landed but threw still scores the cards that follow it`() =
+        runBlocking {
+            val index = LandsThenThrows(InMemoryEventIndex())
+            val reputations = InMemoryReputationIndex()
+            val projection = TrustProjection(index, reputations)
+            projection.put(list10040(serviceKey = service2).toDoc())
+            projection.put(card(10, signer = service2).toDoc()) // a cached pass that names service2 only
+            index.armed = true
+            assertFailsWith<IllegalStateException> { projection.put(list10040().toDoc()) }
+            projection.put(card(40).toDoc())
+            assertEquals(40, reputations.get(subject)?.influenceScores?.get(ServiceKey(service)))
+        }
+
+    @Test
+    fun `a batch of a list and its cards that landed but threw still scores them`() =
+        runBlocking {
+            val index = LandsThenThrows(InMemoryEventIndex())
+            val reputations = InMemoryReputationIndex()
+            val projection = TrustProjection(index, reputations)
+            projection.put(list10040(serviceKey = service2).toDoc())
+            projection.put(card(10, signer = service2).toDoc())
+            index.armed = true
+            assertFailsWith<IllegalStateException> { projection.putAll(listOf(list10040().toDoc(), cardFor("cd".repeat(32), 40).toDoc())) }
+            projection.backlog.drain { it() } // the drain the failure woke
+            assertEquals(40, reputations.get("cd".repeat(32))?.influenceScores?.get(ServiceKey(service)))
+        }
+
     /** Counts each service walk's id listing. */
     private class CountingWalks(
         private val inner: InMemoryEventIndex,

@@ -129,7 +129,13 @@ one, that signer's walk is queued, so the skipped cards are projected — and a
 service another process named and already walked is not walked again where
 nothing was skipped. The memory is bounded (`trust.skipped.dropped` counts what
 did not fit) and does not survive a restart, so cards skipped before one — or
-before this change — need a reconcile with repair. `refreshTrustProviders()` is the
+before this change — need a reconcile with repair. This memory is the ONLY
+cover for a peer's cards: a process that stores a 10040 walks a newly named
+service only if it already has cards stored (`TrustProjection.owingWalks`),
+counted under that process's own trust gate. A card the peer stores after
+that count, under a pass that does not name the service yet, is the peer's
+to walk. The walk the list used to queue for every new service ran minutes
+later and caught such a card only by its timing. `refreshTrustProviders()` is the
 on-demand barrier; `explainTrust` reports a pass that disagrees with the stored
 list instead of blaming the list.
 
