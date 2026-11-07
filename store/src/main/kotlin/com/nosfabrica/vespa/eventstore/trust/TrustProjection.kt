@@ -42,9 +42,9 @@ import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import com.vitorpamplona.quartz.utils.EventFactory
-import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.async
 import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -177,7 +177,8 @@ class TrustProjection(
      * gate, which may make any number of port calls on this decorator, from
      * any number of coroutines — and apply what its trust writes change ONCE,
      * at the end: one crash-ledger bracket and one pipelined cell write for
-     * the commit, however its writes were split into calls.
+     * the commit, however its writes were split into calls (a `putAll` insured
+     * by subject writes its cells beside its documents instead, see [putAll]).
      *
      * The reaction used to be per CALL, and calls are not shaped by trust: the
      * bulk path's address-keyed supersession is one `putIfNewer` per event,
@@ -347,21 +348,31 @@ class TrustProjection(
         val lists = docs.filter { it.kind == TrustProviderListEvent.KIND }
         val fresh = if (lists.isEmpty()) emptySet() else freshServicesOf(lists)
         reacting(docs, emptyList(), fresh) { scope ->
-            if (lists.isEmpty()) {
-                // The cells and the documents they come from are different document types, read
-                // nothing of each other, and the commit's insurance repairs either landing alone.
+            if (lists.isEmpty() && insuredBySubject(scope, docs, fresh)) {
+                // The cells and the documents they come from are different document types and read
+                // nothing of each other; a subject's insurance repairs either landing alone.
                 stored(scope, docs, fresh)
-                coroutineScope {
-                    launch { flush(scope, storedOnly = true) }
+                supervisorScope {
+                    val cells = async { flush(scope, storedOnly = true) }
+                    // A failed cell write must not cut the documents short: they finish, then it throws.
                     IngestStats.timed("write") { inner.putAll(docs) }
+                    cells.await()
                 }
             } else {
-                // A 10040 changes the provider map its batch's cells are written under: after it lands.
+                // A 10040 changes the provider map its batch's cells are written under, and insurance
+                // by service repairs only stored cards: the cells follow the documents.
                 IngestStats.timed("write") { inner.putAll(docs) }
                 stored(scope, docs, fresh)
             }
         }
     }
+
+    /** Whether this call's puts are insured subject by subject, the cover that repairs a cell whose card was never stored. */
+    private fun insuredBySubject(
+        scope: CommitScope,
+        docs: List<EventDoc>,
+        fresh: Set<String>,
+    ): Boolean = !scope.coarse && insuranceForPuts(docs, insurableSigners(fresh)).toRewalk.isEmpty()
 
     /**
      * Stored trust docs, recorded: the provider map dropped NOW after any
@@ -727,8 +738,8 @@ class TrustProjection(
         /**
          * Card addresses a commit buffers before it flushes mid-way — a bound
          * on the buffer, not a batching knob: a relay's ingest batch (1000 by
-         * default, the mirror lane's 20,000 at most) flushes once at its end,
-         * and only a commit bigger than that splits. Past ~1000 cells a
+         * default, the mirror lane's 20,000 at most) flushes once, beside its
+         * `putAll` or at its end, and only a commit bigger than that splits. Past ~1000 cells a
          * flush is throughput-bound (5000 cells measured 16% cheaper per cell
          * than 1000), so a bigger buffer would buy nothing.
          */

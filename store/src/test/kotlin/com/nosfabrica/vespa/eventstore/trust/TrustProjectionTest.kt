@@ -661,6 +661,28 @@ class TrustProjectionTest {
             assertNull(reps.get(ProjectionLedger.MARKER_KEY)?.influenceScores?.takeIf { it.isNotEmpty() }, "marker cleared after the heal")
         }
 
+    /**
+     * Past the subject cap a commit is insured by SERVICE, whose repair walks only stored cards:
+     * a cell written beside a failed event write could never be found again. Such a commit writes
+     * its cells after its documents, so a failure leaves none.
+     */
+    @Test
+    fun `an event write that fails past the subject cap leaves no cell for a card never stored`() =
+        runBlocking {
+            val inner = InMemoryEventIndex()
+            val failing = FailingPutsEventIndex(inner)
+            val reps = InMemoryReputationIndex()
+            val st = NostrSemanticsStore(TrustProjection(failing, reps), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+            st.insert(list10040())
+
+            val subjects = (1..TrustProjection.DIRT_SUBJECT_CAP + 1).map { "c" + it.toString(16).padStart(63, '0') }
+            failing.failNext = true
+            assertFailsWith<RuntimeException> { st.batchInsert(subjects.map { s -> card(about = s) }) }
+            st.insert(card(about = subject))
+            assertEquals(0, subjects.count { reps.get(it)?.influenceScores?.isNotEmpty() == true }, "no cell for an unstored card")
+            assertEquals(serviceCells(service to 87), reps.get(subject)?.influenceScores)
+        }
+
     /** A crafted card cannot collide with the marker: subjects must be 64-hex. */
     @Test
     fun `a card whose d tag is the marker id projects nothing and breaks nothing`() =
