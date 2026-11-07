@@ -42,7 +42,9 @@ import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import com.vitorpamplona.quartz.utils.EventFactory
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -345,8 +347,19 @@ class TrustProjection(
         val lists = docs.filter { it.kind == TrustProviderListEvent.KIND }
         val fresh = if (lists.isEmpty()) emptySet() else freshServicesOf(lists)
         reacting(docs, emptyList(), fresh) { scope ->
-            IngestStats.timed("write") { inner.putAll(docs) }
-            stored(scope, docs, fresh)
+            if (lists.isEmpty()) {
+                // The cells and the documents they come from are different document types, read
+                // nothing of each other, and the commit's insurance repairs either landing alone.
+                stored(scope, docs, fresh)
+                coroutineScope {
+                    launch { flush(scope, storedOnly = true) }
+                    IngestStats.timed("write") { inner.putAll(docs) }
+                }
+            } else {
+                // A 10040 changes the provider map its batch's cells are written under: after it lands.
+                IngestStats.timed("write") { inner.putAll(docs) }
+                stored(scope, docs, fresh)
+            }
         }
     }
 

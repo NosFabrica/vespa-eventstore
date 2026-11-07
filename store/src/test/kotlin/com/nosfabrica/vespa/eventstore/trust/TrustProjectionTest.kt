@@ -42,6 +42,7 @@ import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -632,6 +633,32 @@ class TrustProjectionTest {
             st.batchInsert(batch)
             subjects.forEach { s -> assertEquals(serviceCells(service to 87), reps.get(s)?.influenceScores, "healed subject $s") }
             assertNull(reps.get(ProjectionLedger.MARKER_KEY), "marker cleared after the heal")
+        }
+
+    /**
+     * The other half: a commit writes its cards' cells beside the cards themselves, so a failed
+     * event write can leave cells for cards that were never stored. The marker names them, and
+     * the next trust write derives them back to what is stored: nothing.
+     */
+    @Test
+    fun `an event write that fails beside its cells heals at the next trust write`() =
+        runBlocking {
+            val inner = InMemoryEventIndex()
+            val failing = FailingPutsEventIndex(inner)
+            val reps = InMemoryReputationIndex()
+            val st = NostrSemanticsStore(TrustProjection(failing, reps), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+            st.insert(list10040())
+
+            val subjects = (1..20).map { it.toString(16).padStart(64, 'e') }
+            failing.failNext = true
+            assertFailsWith<RuntimeException> { st.batchInsert(subjects.map { s -> card(about = s) }) }
+            assertEquals(0, inner.search(EventQuery(kinds = listOf(UserAssertionEvent.KIND))).count { subjectOf(it) in subjects }, "no card stored")
+            assertTrue(subjects.all { reps.get(it)?.influenceScores?.isNotEmpty() == true }, "the drift under test: cells for cards never stored")
+
+            st.insert(card(about = subject))
+            subjects.forEach { assertNull(reps.get(it)?.influenceScores?.takeIf { cells -> cells.isNotEmpty() }, "no cell for an unstored card on $it") }
+            assertEquals(serviceCells(service to 87), reps.get(subject)?.influenceScores)
+            assertNull(reps.get(ProjectionLedger.MARKER_KEY)?.influenceScores?.takeIf { it.isNotEmpty() }, "marker cleared after the heal")
         }
 
     /** A crafted card cannot collide with the marker: subjects must be 64-hex. */
@@ -1355,5 +1382,21 @@ private class FailingCellsReputationIndex(
             throw RuntimeException("simulated projection failure")
         }
         inner.updateCells(updates)
+    }
+}
+
+private class FailingPutsEventIndex(
+    private val inner: InMemoryEventIndex,
+) : EventIndex by inner {
+    var failNext = false
+
+    override suspend fun putAll(docs: List<EventDoc>) {
+        if (failNext) {
+            failNext = false
+            // Long enough for the cells beside it to land first.
+            delay(200)
+            throw RuntimeException("simulated event write failure")
+        }
+        inner.putAll(docs)
     }
 }
