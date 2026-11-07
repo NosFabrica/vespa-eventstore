@@ -53,6 +53,7 @@ import java.io.IOException
 import java.net.URLDecoder
 import java.nio.ByteBuffer
 import java.util.Collections
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.zip.GZIPInputStream
 import java.util.zip.GZIPOutputStream
 
@@ -228,11 +229,20 @@ class MockVespaEngine(
     /** Answer the batch handler's updates as a package from before it took them does: each refused before dispatch. */
     @Volatile var batchHandlerPredatesUpdates: Boolean = false
 
+    // The counters below are bumped from Jetty's handler threads, several at once over HTTP/2:
+    // a `@Volatile var` and `++` lost increments (a feed client's five concurrent re-sends counted 9).
+
     /** Batches the batch handler stored. */
-    @Volatile var batchRequests: Int = 0
+    var batchRequests: Int
+        get() = batchRequestsCount.get()
+        set(value) = batchRequestsCount.set(value)
+    private val batchRequestsCount = AtomicInteger()
 
     /** Requests for a role this container does not serve, answered 404 (see the class KDoc). */
-    @Volatile var wrongRoleRequests: Int = 0
+    var wrongRoleRequests: Int
+        get() = wrongRoleRequestsCount.get()
+        set(value) = wrongRoleRequestsCount.set(value)
+    private val wrongRoleRequestsCount = AtomicInteger()
 
     /**
      * How a document UPDATE is answered, as status and body; null answers it 400 like any other
@@ -243,7 +253,10 @@ class MockVespaEngine(
     @Volatile var updateReply: Pair<Int, String>? = null
 
     /** Document updates answered through [updateReply]. */
-    @Volatile var updateRequests: Int = 0
+    var updateRequests: Int
+        get() = updateRequestsCount.get()
+        set(value) = updateRequestsCount.set(value)
+    private val updateRequestsCount = AtomicInteger()
 
     /** Each update answered through [updateReply], as its path and JSON body, in arrival order. */
     val updates: MutableList<Pair<String, String>> = Collections.synchronizedList(ArrayList())
@@ -253,7 +266,10 @@ class MockVespaEngine(
      * ids, so only this distinguishes which one ran — a correctness assertion
      * cannot, and the choice between them is worth 100x either way.
      */
-    @Volatile var visitRequests: Int = 0
+    var visitRequests: Int
+        get() = visitRequestsCount.get()
+        set(value) = visitRequestsCount.set(value)
+    private val visitRequestsCount = AtomicInteger()
 
     /**
      * Every `/search/` request's rank profile, in order — what lets a test see
@@ -428,7 +444,7 @@ class MockVespaEngine(
     ): Reply {
         val documentPath = path.startsWith("/document/v1/") || path == "/eventstore/v1/feed"
         if ((documentPath && !servesDocumentApi) || (path == "/search/" && !servesSearch)) {
-            wrongRoleRequests++
+            wrongRoleRequestsCount.incrementAndGet()
             // What real Vespa answers: the document API's own refusal is JSON with an error code,
             // an unbound path (a /search/ with no <search/>) is the HTTP server's HTML page.
             return if (documentPath) {
@@ -441,7 +457,7 @@ class MockVespaEngine(
         if (rawQuery.orEmpty().contains("dryRun=true")) return Reply(200, "{}")
         val docPrefix = "/document/v1/event/event/docid/"
         updateReply?.takeIf { method == "PUT" && path.startsWith("/document/v1/") }?.let { (status, reply) ->
-            updateRequests++
+            updateRequestsCount.incrementAndGet()
             updates += path to body
             return Reply(status, reply)
         }
@@ -468,7 +484,7 @@ class MockVespaEngine(
                 if (batchHandlerAbsent) return Reply(404, """{"message":"no handler"}""")
                 val all = Json.parseToJsonElement(body).jsonArray.map { it.jsonObject }
                 if (all.any { "update" in it }) {
-                    batchRequests++
+                    batchRequestsCount.incrementAndGet()
                     if (batchHandlerPredatesUpdates) {
                         return Reply(200, """{"count":${all.size},"failed":[${all.indices.joinToString(",") { """{"index":$it,"outcome":"REJECTED","message":"only put and remove are supported, not DocumentUpdate"}""" }}]}""")
                     }
@@ -477,7 +493,7 @@ class MockVespaEngine(
                             val id = op.getValue("update").jsonPrimitive.content
                             val (namespace, rest) = id.removePrefix("id:").split(":", limit = 2)
                             val (doctype, docId) = rest.split("::", limit = 2)
-                            updateRequests++
+                            updateRequestsCount.incrementAndGet()
                             updates += "/document/v1/$namespace/$doctype/docid/$docId" to buildJsonObject { put("fields", op.getValue("fields")) }.toString()
                             val (status, reply) = updateReply ?: (400 to "unmodelled")
                             i.takeUnless { status == 200 || (status == 404 && reply.trimStart().startsWith("{") && "error-code" !in reply) }
@@ -486,7 +502,7 @@ class MockVespaEngine(
                 }
                 val ops = all.map { it.getValue("fields").jsonObject }
                 ops.firstNotNullOfOrNull { refusal(it) }?.let { return it }
-                batchRequests++
+                batchRequestsCount.incrementAndGet()
                 runBlocking { ops.forEach { inner.put(EventDoc.fromSummary(it)) } }
                 Reply(200, """{"count":${ops.size},"failed":[]}""")
             }
@@ -514,7 +530,7 @@ class MockVespaEngine(
 
             // The visit walk: /document/v1/…/docid (no doc id) with a selection.
             method == "GET" && path == docPrefix.removeSuffix("/") -> {
-                visitRequests++
+                visitRequestsCount.incrementAndGet()
                 visit(params(rawQuery.orEmpty()))
             }
 
