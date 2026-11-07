@@ -36,6 +36,8 @@ import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -78,7 +80,10 @@ class ProjectionLedgerTest {
 
     private fun list10040(serviceKey: String = service) = TrustProviderListEvent(id(), observer, next(), arrayOf(arrayOf("30382:rank", serviceKey, "wss://scores.example.com/")), "", "")
 
-    private fun card(rank: Int) = UserAssertionEvent(id(), service, next(), arrayOf(arrayOf("d", subject), arrayOf("rank", rank.toString())), "", "")
+    private fun card(
+        rank: Int,
+        signer: String = service,
+    ) = UserAssertionEvent(id(), signer, next(), arrayOf(arrayOf("d", subject), arrayOf("rank", rank.toString())), "", "")
 
     private fun note() = MetadataEvent(id(), "cc".repeat(32), next(), emptyArray(), """{"name":"n"}""", "")
 
@@ -485,8 +490,9 @@ class ProjectionLedgerTest {
     fun `a plain write interleaved with a drain does not resurrect drained backlog`() =
         runBlocking {
             val d = Deferred()
-            d.projection.put(list10040().toDoc())
+            // The card first: a list owes a walk only to a service with cards already stored.
             d.projection.put(card(40).toDoc())
+            d.projection.put(list10040().toDoc())
 
             // The note's guarded() runs to completion on its own; the
             // interleaving is created by draining INSIDE its block, between
@@ -500,9 +506,10 @@ class ProjectionLedgerTest {
             }
 
             // A clean ledger: the next trust write that leaves work — a list
-            // naming a fresh service — must persist its own write-ahead. Under
-            // the lost-update bug `before` still named the drained entries, the
-            // delta was empty and nothing was persisted.
+            // naming a fresh service with a stored card — must persist its own
+            // write-ahead. Under the lost-update bug `before` still named the
+            // drained entries, the delta was empty and nothing was persisted.
+            d.projection.put(card(7, signer = service2).toDoc())
             d.projection.put(list10040(serviceKey = service2).toDoc())
             val marker = d.marker()
             assertNotNull(marker, "the list's write-ahead was persisted")
@@ -571,13 +578,96 @@ class ProjectionLedgerTest {
             assertEquals(40, d.rankOf(subject))
         }
 
+    /**
+     * A LIST OWES A WALK ONLY TO A SERVICE WITH STORED CARDS. A relay mirroring
+     * a provider's lists and cards at once names hundreds of services before
+     * their first card lands; walking each one later re-applied every card
+     * stored since, each of which had already written its cell.
+     */
+    @Test
+    fun `a list naming a service with no stored card queues no walk, and its cards still score`() =
+        runBlocking {
+            val d = Deferred()
+            d.projection.put(list10040().toDoc())
+            assertEquals(0L, d.projection.backlog.pendingServices(), "nothing stored for the walk to find")
+            assertTrue(d.marker()?.isEmpty() ?: true, "and nothing insured for a crash to re-walk")
+            d.projection.put(card(40).toDoc())
+            assertEquals(40, d.rankOf(subject), "a card stored after its list writes its own cell")
+        }
+
+    @Test
+    fun `a list naming a service whose cards are already stored still queues its walk`() =
+        runBlocking {
+            val d = Deferred()
+            d.projection.put(card(40).toDoc())
+            assertNull(d.rankOf(subject), "unnamed: the card wrote no cell")
+            d.projection.put(list10040().toDoc())
+            assertEquals(1L, d.projection.backlog.pendingServices())
+            assertTrue(ServiceKey(service) in assertNotNull(d.marker()).followerCounts, "the walk is insured")
+            d.projection.backlog.drain { it() }
+            assertEquals(40, d.rankOf(subject))
+        }
+
+    /** Counts each service walk's id listing. */
+    private class CountingWalks(
+        private val inner: InMemoryEventIndex,
+    ) : EventIndex by inner {
+        var walks = 0
+
+        override suspend fun visitIds(
+            query: EventQuery,
+            withDTag: Boolean,
+            onPage: suspend (List<DocRef>) -> Boolean,
+        ) {
+            walks++
+            inner.visitIds(query, withDTag, onPage)
+        }
+    }
+
+    /**
+     * TWO GATED DRAINS WALK A SERVICE ONCE. The background drainer and a
+     * reconcile's drain each snapshot the queue; a service leaves it only
+     * when retired, so both walked every queued service side by side.
+     */
+    @Test
+    fun `two gated drains at once walk a queued service once`() =
+        runBlocking {
+            val index = CountingWalks(InMemoryEventIndex())
+            val reputations = InMemoryReputationIndex()
+            val projection = TrustProjection(index, reputations)
+            projection.backlog.drainInBackground { }
+            projection.put(card(40).toDoc())
+            projection.put(list10040().toDoc())
+            assertEquals(1L, projection.backlog.pendingServices())
+            // A gate that yields before every page, so the second drain starts while the first is mid-walk.
+            val gate =
+                WriteGate { body ->
+                    delay(20)
+                    body()
+                }
+            coroutineScope {
+                launch { projection.backlog.drain(gate) }
+                launch { projection.backlog.drain(gate) }
+            }
+            assertEquals(1, index.walks, "the second drain waited, then found the walk retired")
+            assertEquals(0L, projection.backlog.pendingServices())
+            assertEquals(
+                40,
+                reputations
+                    .get(subject)
+                    ?.influenceScores
+                    ?.values
+                    ?.singleOrNull(),
+            )
+        }
+
     /** A failed round leaves the snapshot pending in memory as well as on disk, so the retry re-derives it. */
     @Test
     fun `a failed drain puts its snapshot back`() =
         runBlocking {
             val d = Deferred()
-            d.projection.put(list10040().toDoc())
             d.projection.put(card(40).toDoc())
+            d.projection.put(list10040().toDoc()) // owes the walk the failing drain attempts
             assertFailsWith<IllegalStateException> {
                 d.projection.backlog.drain { error("engine down") }
             }

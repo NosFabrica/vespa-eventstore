@@ -284,8 +284,8 @@ class VespaEventStore internal constructor(
      * The deferred-projection barrier: drain every queued trust reaction so
      * ranking reflects all inserts acked before the call (not the writes racing
      * it — the drain chases the queue until a pass finds nothing new). Safe
-     * alongside the background drainer (draining is idempotent; both take the
-     * writer lock per batch); a no-op with deferral off.
+     * alongside the background drainer: it waits for a running drain, then
+     * drains what is left (`ProjectionLedger.drain`); a no-op with deferral off.
      */
     suspend fun awaitTrustProjection() {
         // Draining writes the reputation documents; a reader's barrier is the writer's to call.
