@@ -336,8 +336,8 @@ class TrustProjection(
 
     /**
      * The bulk path: cards land as tensor-cell UPDATES with ZERO reads, one
-     * update per card (its service's cell on its subject), written when the
-     * commit flushes. Supersession guarantees each card here is the newest for
+     * update per card (its service's cell on its subject), written beside the
+     * documents (after them when the batch carries a 10040). Supersession guarantees each card here is the newest for
      * its (service, subject) address, and the cell is keyed by exactly that
      * service, so the update IS the derivation. A card that lost a tag drops
      * that dimension's cell in the same update (a tensor `remove`), so the one

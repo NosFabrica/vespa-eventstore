@@ -2863,7 +2863,10 @@ re-put through the feed client, a 404 (a package without the handler) parks the 
 five minutes before the next batch tries again (`feedStatus()` and the `feed.batch.parked` gauge
 say so meanwhile; it used to switch the path off for the life of the process, silently), and a
 batch the schema refuses (a fed column it lacks) takes the feed-client path whose
-schema-fallback net then leaves that column out of later batches. On by default, at 100 per
+schema-fallback net then leaves that column out of later batches. `VespaReputationIndex` sends
+trust cell updates the same way (`{"update": …}` operations, a document's only update in the call;
+a document with several stays on the feed client, which keeps their order), and a package whose
+handler predates updates refuses each one, which then goes back through the feed client. On by default, at 100 per
 request, since 2026-10-26 (below).
 
 Measured on another host than the tables above, after this session's container was recycled: the
