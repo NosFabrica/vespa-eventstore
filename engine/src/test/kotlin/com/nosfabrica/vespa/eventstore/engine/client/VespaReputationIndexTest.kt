@@ -270,6 +270,9 @@ class VespaReputationIndexTest {
         mock.updateReply = 400 to """{"message":"Field 'influence_scores' not found in document type 'reputation'"}"""
         assertFailsWith<Exception> { runBlocking { reputations.updateCells(five.map { ReputationCells(it, service, influence = 1, followers = 1.0) }) } }
         assertEquals(1, mock.batchRequests)
+        // The first refusal surfaces while the other re-sends may still be on their way to the engine.
+        val deadline = System.nanoTime() + 5_000_000_000L
+        while (mock.updateRequests < 10 && System.nanoTime() < deadline) Thread.sleep(10)
         assertEquals(10, mock.updateRequests, "each refused update tried once more through the feed client")
     }
 
