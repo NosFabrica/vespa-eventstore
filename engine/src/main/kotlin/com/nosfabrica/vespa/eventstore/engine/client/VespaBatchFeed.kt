@@ -33,7 +33,7 @@ import okio.BufferedSink
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * PUTS IN BATCHES, through the request handler this store ships in its application package
+ * PUTS AND UPDATES IN BATCHES, through the request handler this store ships in its application package
  * (`:bundle`, `BatchFeedHandler`, bound at [PATH]): one HTTP request carries [batchSize]
  * documents instead of one. On a warm engine most of what a `/document/v1` put costs Vespa is the
  * request around the document; batching 100 per request cut Vespa's CPU per live-relay event by
@@ -94,27 +94,48 @@ internal class VespaBatchFeed(
         docs: List<EventDoc>,
         docId: (EventDoc) -> String,
         body: (EventDoc) -> String,
-    ): List<EventDoc> {
-        if (!available || docs.isEmpty()) return docs
+    ): List<EventDoc> =
+        sendAll(docs) { batch ->
+            val ids = batch.map(docId)
+            operations(ids, batch.map(body))
+        }
+
+    /**
+     * Partial UPDATES in batches, as [putAll] sends puts: each item's update under the full
+     * document id [id] gives, its `{"fields": …}` [body], created when absent if [creates]. The
+     * handler dispatches a batch's operations at once, so an item must be the only update to its
+     * document in the call. Returns the items NOT confirmed applied; an update to a document that
+     * does not exist is applied, as a no-op, unless it creates one.
+     */
+    suspend fun <T> updateAll(
+        items: List<T>,
+        id: (T) -> String,
+        body: (T) -> String,
+        creates: (T) -> Boolean,
+    ): List<T> = sendAll(items) { batch -> updates(batch.map(id), batch.map(body), batch.map(creates)) }
+
+    /** [items] in batches of [batchSize], [concurrency] in flight, each batch as [request] writes it; returns those not confirmed. */
+    private suspend fun <T> sendAll(
+        items: List<T>,
+        request: (List<T>) -> RequestBody,
+    ): List<T> {
+        if (!available || items.isEmpty()) return items
         val gate = Semaphore(concurrency)
         return coroutineScope {
-            docs
+            items
                 .chunked(batchSize)
-                .map { batch -> async { gate.withPermit { send(batch, docId, body) } } }
+                .map { batch -> async { gate.withPermit { send(batch, request) } } }
                 .awaitAll()
                 .flatten()
         }
     }
 
-    private suspend fun send(
-        batch: List<EventDoc>,
-        docId: (EventDoc) -> String,
-        body: (EventDoc) -> String,
-    ): List<EventDoc> {
+    private suspend fun <T> send(
+        batch: List<T>,
+        request: (List<T>) -> RequestBody,
+    ): List<T> {
         if (!available) return batch
-        val bodies = batch.map(body)
-        val ids = batch.map(docId)
-        val resp = runCatching { http.post(endpoint() + PATH, operations(ids, bodies)) }.getOrNull() ?: return batch
+        val resp = runCatching { http.post(endpoint() + PATH, request(batch)) }.getOrNull() ?: return batch
         when (resp.statusCode()) {
             200 -> {}
 
@@ -189,6 +210,29 @@ internal class VespaBatchFeed(
             }
 
         private const val OPERATION_PREFIX = "{\"put\":\"id:$EVENT_NAMESPACE:$EVENT_DOCTYPE::"
+
+        /**
+         * The batch as a JSON array of `{"update": id, "create": …, "fields": …}`: [bodies] are each
+         * `{"fields":{…}}`, as `/document/v1` takes an update, and [ids] are full document ids.
+         */
+        internal fun updates(
+            ids: List<String>,
+            bodies: List<String>,
+            creates: List<Boolean>,
+        ): RequestBody =
+            object : RequestBody() {
+                override fun contentType() = JSON_MEDIA
+
+                override fun writeTo(sink: BufferedSink) {
+                    sink.writeByte('['.code)
+                    for (i in bodies.indices) {
+                        if (i > 0) sink.writeByte(','.code)
+                        sink.writeUtf8("{\"update\":\"").writeJsonEscaped(ids[i]).writeUtf8("\",\"create\":${creates[i]},")
+                        sink.writeUtf8(bodies[i], 1, bodies[i].length)
+                    }
+                    sink.writeByte(']'.code)
+                }
+            }
 
         private val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
 

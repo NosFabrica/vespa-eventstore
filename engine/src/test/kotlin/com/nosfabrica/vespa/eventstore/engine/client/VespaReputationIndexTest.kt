@@ -254,4 +254,31 @@ class VespaReputationIndexTest {
             "the later cell rides the later update",
         )
     }
+
+    private val five = (1..5).map { it.toString().repeat(64) }
+
+    @Test
+    fun `each document's only update rides one batch request`() {
+        mock.updateReply = 200 to """{"id":"x"}"""
+        runBlocking { reputations.updateCells(five.map { ReputationCells(it, service, influence = 1, followers = 1.0) }) }
+        assertEquals(1, mock.batchRequests, "five documents, one request")
+        assertEquals(five.map { "/document/v1/reputation/reputation/docid/$it" }.toSet(), mock.updates.map { it.first }.toSet())
+    }
+
+    @Test
+    fun `what a batch does not confirm is sent again on its own, so a real failure still surfaces`() {
+        mock.updateReply = 400 to """{"message":"Field 'influence_scores' not found in document type 'reputation'"}"""
+        assertFailsWith<Exception> { runBlocking { reputations.updateCells(five.map { ReputationCells(it, service, influence = 1, followers = 1.0) }) } }
+        assertEquals(1, mock.batchRequests)
+        assertEquals(10, mock.updateRequests, "each refused update tried once more through the feed client")
+    }
+
+    @Test
+    fun `without the handler the updates go through the feed client`() {
+        mock.batchHandlerAbsent = true
+        mock.updateReply = 200 to """{"id":"x"}"""
+        runBlocking { reputations.removeCells(five.map { CellRemoval(it, service, influence = true, followers = true) }) }
+        assertEquals(0, mock.batchRequests)
+        assertEquals(5, mock.updateRequests)
+    }
 }
