@@ -225,6 +225,9 @@ class MockVespaEngine(
     /** Answer the batch handler's path with 404, as an application package that predates it does. */
     @Volatile var batchHandlerAbsent: Boolean = false
 
+    /** Answer the batch handler's updates as a package from before it took them does: each refused before dispatch. */
+    @Volatile var batchHandlerPredatesUpdates: Boolean = false
+
     /** Batches the batch handler stored. */
     @Volatile var batchRequests: Int = 0
 
@@ -466,6 +469,9 @@ class MockVespaEngine(
                 val all = Json.parseToJsonElement(body).jsonArray.map { it.jsonObject }
                 if (all.any { "update" in it }) {
                     batchRequests++
+                    if (batchHandlerPredatesUpdates) {
+                        return Reply(200, """{"count":${all.size},"failed":[${all.indices.joinToString(",") { """{"index":$it,"outcome":"REJECTED","message":"only put and remove are supported, not DocumentUpdate"}""" }}]}""")
+                    }
                     val failed =
                         all.mapIndexedNotNull { i, op ->
                             val id = op.getValue("update").jsonPrimitive.content

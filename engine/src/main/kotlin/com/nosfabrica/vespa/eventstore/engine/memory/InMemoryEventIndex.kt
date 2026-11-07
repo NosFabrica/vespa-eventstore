@@ -81,11 +81,16 @@ class InMemoryEventIndex(
         }
     }
 
-    /** The docs [c] can match: those of its ids or its authors when it names either, else every doc. */
+    /** The docs [c] can match: none when it cannot match at all, those of its ids or its authors when it names either, else every doc. */
     private fun candidates(c: Compiled): Collection<EventDoc> =
         when {
+            c.unsatisfiable -> emptyList()
+
             c.ids.isNotEmpty() -> c.ids.mapNotNull { docs[it] }
-            c.authors.isNotEmpty() -> c.authors.flatMap { author -> byAuthor[author].orEmpty().mapNotNull { docs[it] } }
+
+            // A bucket left behind by a racing re-put under another pubkey names a doc that is not its author's.
+            c.authors.isNotEmpty() -> c.authors.flatMap { author -> byAuthor[author].orEmpty().mapNotNull { id -> docs[id]?.takeIf { it.pubkey == author } } }
+
             else -> docs.values
         }
 
@@ -251,7 +256,7 @@ class InMemoryEventIndex(
         private val idWeights = q.idWeights.normHexKeys()
         private val authorWeights = q.authorWeights.normHexKeys()
         private val idPrefix = q.idPrefixHex()
-        private val unsatisfiable =
+        val unsatisfiable =
             (q.ids.isNotEmpty() && ids.isEmpty()) ||
                 (q.idPrefix != null && idPrefix == null) ||
                 (q.authors.isNotEmpty() && authors.isEmpty()) ||

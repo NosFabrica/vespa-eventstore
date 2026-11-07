@@ -75,6 +75,12 @@ internal class VespaBatchFeed(
     /** False while a 404 has the batch path parked: the documents go through the feed client instead. */
     val available: Boolean get() = parkedUntil?.let { clock() - it >= 0 } ?: true
 
+    /** When updates may be batched again; null until a handler that predates them refuses a whole batch. */
+    @Volatile private var updatesParkedUntil: Long? = null
+
+    /** False while a handler without updates has the update path parked: they go through the feed client. */
+    val updatesAvailable: Boolean get() = available && (updatesParkedUntil?.let { clock() - it >= 0 } ?: true)
+
     private val notFoundCount = AtomicLong()
 
     /** 404s answered since this client opened; each one parked the batch path. */
@@ -112,7 +118,10 @@ internal class VespaBatchFeed(
         id: (T) -> String,
         body: (T) -> String,
         creates: (T) -> Boolean,
-    ): List<T> = sendAll(items) { batch -> updates(batch.map(id), batch.map(body), batch.map(creates)) }
+    ): List<T> {
+        if (!updatesAvailable) return items
+        return sendAll(items) { batch -> updates(batch.map(id), batch.map(body), batch.map(creates)) }
+    }
 
     /** [items] in batches of [batchSize], [concurrency] in flight, each batch as [request] writes it; returns those not confirmed. */
     private suspend fun <T> sendAll(
@@ -153,6 +162,11 @@ internal class VespaBatchFeed(
         }
         val answer = runCatching { resp.decode(VESPA_JSON, BatchAnswer.serializer()) }.getOrNull() ?: return batch
         if (answer.count != batch.size) return batch
+        // A handler that predates updates refuses every one before dispatch; asking it again only costs the round trip.
+        if (answer.failed.size == batch.size && answer.failed.all { it.message?.startsWith(NO_UPDATES) == true }) {
+            updatesParkedUntil = clock() + retryAfterMs
+            return batch
+        }
         sentCount.incrementAndGet()
         return answer.failed.map { batch[it.index] }
     }
@@ -181,6 +195,9 @@ internal class VespaBatchFeed(
     }
 
     companion object {
+        /** How a `BatchFeedHandler` that takes only puts and removes refuses an update. */
+        private const val NO_UPDATES = "only put and remove are supported"
+
         /** Where `BatchFeedHandler` is bound (engine/app/services.xml). */
         const val PATH = "/eventstore/v1/feed"
 

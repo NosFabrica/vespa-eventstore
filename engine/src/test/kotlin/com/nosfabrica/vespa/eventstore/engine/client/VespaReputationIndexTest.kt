@@ -284,4 +284,13 @@ class VespaReputationIndexTest {
         assertEquals(0, mock.batchRequests)
         assertEquals(5, mock.updateRequests)
     }
+
+    @Test
+    fun `a handler that predates updates is asked once, then the feed client takes them`() {
+        mock.batchHandlerPredatesUpdates = true
+        mock.updateReply = 200 to """{"id":"x"}"""
+        repeat(2) { runBlocking { reputations.updateCells(five.map { ReputationCells(it, service, influence = 1, followers = 1.0) }) } }
+        assertEquals(1, mock.batchRequests, "refused whole once, then parked")
+        assertEquals(10, mock.updateRequests, "every update applied through the feed client")
+    }
 }
