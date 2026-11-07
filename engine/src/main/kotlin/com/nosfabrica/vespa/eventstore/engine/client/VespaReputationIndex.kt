@@ -53,12 +53,21 @@ class VespaReputationIndex(
     eagerFeed: Boolean = true,
     /** The feed settings this index's own feed client is built with — the same ones [VespaEventIndex] takes. */
     tuning: ClientTuning = ClientTuning(),
+    /** Updates per request through the bundled batch handler, as [VespaEventIndex]'s `feedBatch`; 0 or 1 sends each alone. */
+    feedBatch: Int = tuning.feedBatchOrEnv(),
 ) : ReputationIndex {
     private val documentApi = EndpointRotation(endpoints, baseUrl)
 
     private val feed = VespaFeed(documentApi.urls, eager = eagerFeed, tuning = tuning)
 
     private val http = VespaHttp()
+
+    /** Null unless batching is on ([feedBatch]); a 404 parks it as it does the event index's. */
+    private val batchFeed: VespaBatchFeed? =
+        feedBatch.takeIf { it > 1 }?.let { VespaBatchFeed(http, documentApi::next, it, VespaEventIndex.BATCH_CONCURRENCY) }
+
+    /** Batches the bundled batch handler has applied since this index opened; 0 while batching is off. */
+    val feedBatchesSent: Long get() = batchFeed?.batchesSent ?: 0
 
     override suspend fun get(pubkey: String): ReputationDoc? = fields(pubkey)?.let(ReputationDoc::fromSummary)
 
@@ -94,8 +103,20 @@ class VespaReputationIndex(
      * overwrites existing cells). The feed client keeps per-document ordering,
      * satisfying [ReputationIndex.updateCells]'s list-order contract.
      */
-    override suspend fun updateCells(updates: List<ReputationCells>) {
-        documentUpdates(updates).chunked(VespaEventIndex.FEED_CHUNK).forEach { chunk -> updateCellsChunk(chunk) }
+    override suspend fun updateCells(updates: List<ReputationCells>) = send(documentUpdates(updates))
+
+    /**
+     * [updates] written: a document's only update in the call through the batch handler, when it
+     * is on, since a batch's operations run at once; the rest, and whatever a batch did not
+     * confirm, through the feed client, which keeps one document's updates in order. Every update
+     * here is a cell upsert or remove, so one sent twice lands once.
+     */
+    private suspend fun send(updates: List<CellUpdate>) {
+        val perDocument = updates.groupingBy { it.subject }.eachCount()
+        val (lone, ordered) = updates.partition { perDocument.getValue(it.subject) == 1 }
+        val unconfirmed =
+            batchFeed?.takeIf { lone.size > 1 }?.updateAll(lone, id = { "id:$NAMESPACE:$DOCTYPE::${it.subject}" }, body = { it.body }, creates = { it.creates }) ?: lone
+        (unconfirmed + ordered).chunked(VespaEventIndex.FEED_CHUNK).forEach { chunk -> updateCellsChunk(chunk) }
     }
 
     /** One document update: its body, and whether it may create the document. */
@@ -163,26 +184,20 @@ class VespaReputationIndex(
      * there is not merely n round trips but n CONCURRENT updates to the same
      * document id, which Vespa serialises behind each other.
      */
-    override suspend fun removeCells(removals: List<CellRemoval>) {
-        val byDocument =
+    override suspend fun removeCells(removals: List<CellRemoval>) =
+        send(
             removals
                 .groupBy { it.subject }
                 // At most MAX_CELLS_PER_UPDATE addresses an update; removes commute, so pieces need no order.
-                .flatMap { (subject, cells) -> cells.chunked(MAX_CELLS_PER_UPDATE).map { piece -> subject to (piece.filter { it.influence }.map { it.key } to piece.filter { it.followers }.map { it.key }) } }
-        byDocument.chunked(VespaEventIndex.FEED_CHUNK).forEach { chunk ->
-            chunk
-                .map { (subject, dimensions) ->
-                    val (influence, followers) = dimensions
-                    val body = cellsJson(subject, emptyMap(), emptyMap(), influence.map { it.hex }, followers.map { it.hex }, assignPubkey = false)
-                    feed.client.update(DocumentId.of(NAMESPACE, DOCTYPE, subject), body, feedParams())
-                }.forEach { op ->
-                    // Nothing to remove from a document that never existed is the intended
-                    // outcome. Vespa 8 answers that 200; a Vespa that answered 404 is still
-                    // tolerated, in its missing-document shape only.
-                    runCatching { op.await() }.onFailure { if (!it.isAbsentDocumentFailure()) throw it }
-                }
-        }
-    }
+                .flatMap { (subject, cells) ->
+                    cells.chunked(MAX_CELLS_PER_UPDATE).map { piece ->
+                        val influence = piece.filter { it.influence }.map { it.key.hex }
+                        val followers = piece.filter { it.followers }.map { it.key.hex }
+                        // Nothing to remove from a document that never existed is the intended outcome.
+                        CellUpdate(subject, cellsJson(subject, emptyMap(), emptyMap(), influence, followers, assignPubkey = false), creates = false)
+                    }
+                },
+        )
 
     /**
      * A partial-update body, one tensor op per field: an `add` of its cells,

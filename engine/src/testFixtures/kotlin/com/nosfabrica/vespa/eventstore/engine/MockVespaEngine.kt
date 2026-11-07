@@ -225,6 +225,9 @@ class MockVespaEngine(
     /** Answer the batch handler's path with 404, as an application package that predates it does. */
     @Volatile var batchHandlerAbsent: Boolean = false
 
+    /** Answer the batch handler's updates as a package from before it took them does: each refused before dispatch. */
+    @Volatile var batchHandlerPredatesUpdates: Boolean = false
+
     /** Batches the batch handler stored. */
     @Volatile var batchRequests: Int = 0
 
@@ -458,9 +461,30 @@ class MockVespaEngine(
             // The bundled batch handler (BatchFeedHandler): a JSON array of `{"put": id, "fields": …}`.
             // Like the real one, a field the schema lacks fails the WHOLE batch before anything is
             // stored (the document parser refuses it), and the answer comes once every put is done.
+            // An `{"update": id, …}` is answered as [updateReply] answers one on /document/v1, and
+            // recorded the same way; a missing-document 404 there is a done no-op here, as the
+            // real handler's document API answers it.
             method == "POST" && path == "/eventstore/v1/feed" -> {
                 if (batchHandlerAbsent) return Reply(404, """{"message":"no handler"}""")
-                val ops = Json.parseToJsonElement(body).jsonArray.map { it.jsonObject.getValue("fields").jsonObject }
+                val all = Json.parseToJsonElement(body).jsonArray.map { it.jsonObject }
+                if (all.any { "update" in it }) {
+                    batchRequests++
+                    if (batchHandlerPredatesUpdates) {
+                        return Reply(200, """{"count":${all.size},"failed":[${all.indices.joinToString(",") { """{"index":$it,"outcome":"REJECTED","message":"only put and remove are supported, not DocumentUpdate"}""" }}]}""")
+                    }
+                    val failed =
+                        all.mapIndexedNotNull { i, op ->
+                            val id = op.getValue("update").jsonPrimitive.content
+                            val (namespace, rest) = id.removePrefix("id:").split(":", limit = 2)
+                            val (doctype, docId) = rest.split("::", limit = 2)
+                            updateRequests++
+                            updates += "/document/v1/$namespace/$doctype/docid/$docId" to buildJsonObject { put("fields", op.getValue("fields")) }.toString()
+                            val (status, reply) = updateReply ?: (400 to "unmodelled")
+                            i.takeUnless { status == 200 || (status == 404 && reply.trimStart().startsWith("{") && "error-code" !in reply) }
+                        }
+                    return Reply(200, """{"count":${all.size},"failed":[${failed.joinToString(",") { """{"index":$it,"outcome":"ERROR"}""" }}]}""")
+                }
+                val ops = all.map { it.getValue("fields").jsonObject }
                 ops.firstNotNullOfOrNull { refusal(it) }?.let { return it }
                 batchRequests++
                 runBlocking { ops.forEach { inner.put(EventDoc.fromSummary(it)) } }

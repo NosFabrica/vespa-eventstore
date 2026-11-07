@@ -28,6 +28,7 @@ import com.yahoo.document.DocumentOperation;
 import com.yahoo.document.DocumentPut;
 import com.yahoo.document.DocumentRemove;
 import com.yahoo.document.DocumentTypeManager;
+import com.yahoo.document.DocumentUpdate;
 import com.yahoo.document.json.JsonReader;
 import com.yahoo.documentapi.AsyncParameters;
 import com.yahoo.documentapi.AsyncSession;
@@ -57,7 +58,9 @@ import java.util.concurrent.TimeUnit;
  *
  * <p>The body is a standard Vespa JSON feed: an array of operations, each exactly what
  * {@code /document/v1} would take for that document plus its id ({@code {"put": "id:…",
- * "fields": {…}}}, or {@code {"remove": "id:…"}}). Every operation is dispatched through the
+ * "fields": {…}}}, {@code {"update": "id:…", "create": true, "fields": {…}}}, or {@code {"remove": "id:…"}}).
+ * An update to a document that does not exist, without {@code create}, is answered done, as
+ * Vespa answers it on {@code /document/v1}: nothing to update is not a failure. Every operation is dispatched through the
  * container's own document API, on the default route, so it passes the same indexing chain and
  * the same routing selection a {@code /document/v1} put does: the stored document is the same.
  *
@@ -158,7 +161,8 @@ public class BatchFeedHandler extends ThreadedHttpRequestHandler {
             Result result;
             if (operation instanceof DocumentPut put) result = session.put(put, parameters);
             else if (operation instanceof DocumentRemove remove) result = session.remove(remove, parameters);
-            else return "only put and remove are supported, not " + operation.getClass().getSimpleName();
+            else if (operation instanceof DocumentUpdate update) result = session.update(update, parameters);
+            else return "only put, update and remove are supported, not " + operation.getClass().getSimpleName();
             switch (result.type()) {
                 case SUCCESS:
                     return null;

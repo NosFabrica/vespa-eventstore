@@ -22,8 +22,12 @@ package com.nosfabrica.vespa.eventstore.benchmark
 
 import com.nosfabrica.vespa.eventstore.engine.app.SchemaDeployer
 import com.nosfabrica.vespa.eventstore.engine.client.VespaEventIndex
+import com.nosfabrica.vespa.eventstore.engine.client.VespaReputationIndex
+import com.nosfabrica.vespa.eventstore.engine.doc.CellRemoval
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
+import com.nosfabrica.vespa.eventstore.engine.doc.ReputationCells
 import com.nosfabrica.vespa.eventstore.engine.doc.SearchFields
+import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assumptions.assumeTrue
@@ -77,6 +81,43 @@ class BatchFeedIT {
                             index.search(EventQuery(kinds = listOf(1), search = "tarantellas", limit = 400)).map { it.id }.toSet(),
                             "every batched note is found by search",
                         )
+                    }
+                }
+            }
+    }
+
+    @Test
+    fun `batched cell updates land, and an update to a missing document stays a no-op`() {
+        assumeTrue(dockerAvailable(), "Docker not available — skipping the batch-feed IT")
+
+        GenericContainer("vespaengine/vespa:latest")
+            .withExposedPorts(QUERY_PORT, CONFIG_PORT)
+            .waitingFor(Wait.forHttp("/state/v1/health").forPort(CONFIG_PORT).forStatusCode(200))
+            .withStartupTimeout(Duration.ofMinutes(5))
+            .use { vespa ->
+                vespa.start()
+                val queryUrl = "http://${vespa.host}:${vespa.getMappedPort(QUERY_PORT)}"
+                SchemaDeployer("http://${vespa.host}:${vespa.getMappedPort(CONFIG_PORT)}").deployIfAbsent(queryUrl)
+                VespaReputationIndex(queryUrl, feedBatch = 100).use { reps ->
+                    runBlocking {
+                        val service = ServiceKey("5e".repeat(32))
+                        val subjects = List(250) { "b" + (it + 1).toString(16).padStart(63, '0') }
+                        reps.updateCells(subjects.mapIndexed { i, s -> ReputationCells(s, service, influence = i % 100, followers = i.toDouble()) })
+                        assertEquals(3L, reps.feedBatchesSent, "250 updates went through the handler in three batches")
+                        subjects.forEachIndexed { i, s ->
+                            val doc = reps.get(s)!!
+                            assertEquals(mapOf(service to i % 100), doc.influenceScores, "the cell, as sent")
+                            assertEquals(mapOf(service to i.toDouble()), doc.followerCounts)
+                        }
+
+                        // A retraction creates nothing: on a document that was never written it is done, not failed.
+                        val absent = List(5) { "c" + (it + 1).toString(16).padStart(63, '0') }
+                        reps.updateCells(absent.map { ReputationCells(it, service, influence = null, followers = null, dropInfluence = true, dropFollowers = true) })
+                        assertEquals(4L, reps.feedBatchesSent)
+                        absent.forEach { assertNull(reps.get(it), "no document conjured for $it") }
+
+                        reps.removeCells(subjects.take(10).map { CellRemoval(it, service, influence = true, followers = false) })
+                        subjects.take(10).forEach { assertEquals(emptyMap(), reps.get(it)!!.influenceScores, "the removed cell is gone") }
                     }
                 }
             }

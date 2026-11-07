@@ -55,15 +55,44 @@ class InMemoryEventIndex(
     // order: every recall sorts by [EventDoc.NEWEST_FIRST], a total order.
     private val docs = ConcurrentHashMap<String, EventDoc>()
 
+    /**
+     * Ids by pubkey, so a recall naming its authors reads their docs instead of scanning every
+     * one: the bulk mixed path's replay asks per event, by author, over its whole snapshot.
+     * Mutated with [docs] inside the author's own `compute`, so a bucket never loses a live id.
+     */
+    private val byAuthor = ConcurrentHashMap<String, MutableSet<String>>()
+
     override suspend fun get(id: String): EventDoc? = docs[id]
 
     override suspend fun put(doc: EventDoc) {
-        docs[doc.id] = doc
+        val previous = docs[doc.id]
+        if (previous != null && previous.pubkey != doc.pubkey) remove(doc.id)
+        byAuthor.compute(doc.pubkey) { _, ids ->
+            docs[doc.id] = doc
+            (ids ?: ConcurrentHashMap.newKeySet()).apply { add(doc.id) }
+        }
     }
 
     override suspend fun remove(id: String) {
-        docs.remove(id)
+        val doc = docs[id] ?: return
+        byAuthor.compute(doc.pubkey) { _, ids ->
+            docs.remove(id)
+            ids?.apply { remove(id) }?.ifEmpty { null }
+        }
     }
+
+    /** The docs [c] can match: none when it cannot match at all, those of its ids or its authors when it names either, else every doc. */
+    private fun candidates(c: Compiled): Collection<EventDoc> =
+        when {
+            c.unsatisfiable -> emptyList()
+
+            c.ids.isNotEmpty() -> c.ids.mapNotNull { docs[it] }
+
+            // A bucket left behind by a racing re-put under another pubkey names a doc that is not its author's.
+            c.authors.isNotEmpty() -> c.authors.flatMap { author -> byAuthor[author].orEmpty().mapNotNull { id -> docs[id]?.takeIf { it.pubkey == author } } }
+
+            else -> docs.values
+        }
 
     /**
      * THE MEMBER RUNGS, REPRODUCED — the one rank profile this reference does
@@ -176,7 +205,7 @@ class InMemoryEventIndex(
         // EventYql.build (which returns null for it, never a negative take).
         if ((query.limit ?: 1) <= 0) return emptyList()
         val c = Compiled(query)
-        val hits = docs.values.filter { c.matches(it) }.sortedWith(EventDoc.NEWEST_FIRST)
+        val hits = candidates(c).filter { c.matches(it) }.sortedWith(EventDoc.NEWEST_FIRST)
         return query.limit?.let(hits::take) ?: hits
     }
 
@@ -185,14 +214,14 @@ class InMemoryEventIndex(
         // positive limit is about hits, not the count, and is ignored.
         if ((query.limit ?: 1) <= 0) return 0
         val c = Compiled(query)
-        return docs.values.count { c.matches(it) }
+        return candidates(c).count { c.matches(it) }
     }
 
     /** Same sentinel rule as [count]: a positive limit bounds HITS, never a grouping. */
     override suspend fun countByAuthor(query: EventQuery): Map<String, Int> {
         if ((query.limit ?: 1) <= 0) return emptyMap()
         val c = Compiled(query)
-        return docs.values
+        return candidates(c)
             .filter { c.matches(it) }
             .groupingBy { it.pubkey }
             .eachCount()
@@ -214,9 +243,9 @@ class InMemoryEventIndex(
         // Key constraints normalize exactly as EventYql.hexIn: lowercase, valid
         // 64-hex only. A constraint whose values are ALL invalid is
         // unsatisfiable (hexIn returns null), not unconstrained.
-        private val ids = q.ids.normHex()
+        val ids = q.ids.normHex()
         private val kinds = q.kinds.toHashSet()
-        private val authors = q.authors.normHex()
+        val authors = q.authors.normHex()
         private val owners = q.owners.normHex()
 
         // A WEIGHTED recall constrains exactly as its unweighted twin does —
@@ -227,7 +256,7 @@ class InMemoryEventIndex(
         private val idWeights = q.idWeights.normHexKeys()
         private val authorWeights = q.authorWeights.normHexKeys()
         private val idPrefix = q.idPrefixHex()
-        private val unsatisfiable =
+        val unsatisfiable =
             (q.ids.isNotEmpty() && ids.isEmpty()) ||
                 (q.idPrefix != null && idPrefix == null) ||
                 (q.authors.isNotEmpty() && authors.isEmpty()) ||
@@ -263,7 +292,7 @@ class InMemoryEventIndex(
 
         fun matches(d: EventDoc): Boolean {
             if (unsatisfiable) return false
-            val pairs = if (tagAny.isEmpty() && tagAll.isEmpty()) emptyList() else d.tagIndex()
+            // The scalar fields first: the tag pairs are built per doc, and most docs fail before them.
             return (ids.isEmpty() || d.id in ids) &&
                 (idWeights.isEmpty() || d.id in idWeights) &&
                 (idPrefix == null || d.id.startsWith(idPrefix)) &&
@@ -271,10 +300,9 @@ class InMemoryEventIndex(
                 (authors.isEmpty() || d.pubkey in authors) &&
                 (authorWeights.isEmpty() || d.pubkey in authorWeights) &&
                 (owners.isEmpty() || d.owner in owners) &&
-                tagAny.all { set -> pairs.any { it in set } } &&
-                tagAll.all { required -> required.all { it in pairs } } &&
                 (q.since == null || d.createdAt >= q.since) &&
                 (q.until == null || d.createdAt <= q.until) &&
+                matchesTags(d) &&
                 (q.expiresBefore == null || (d.expiresAt()?.let { it < q.expiresBefore } == true)) &&
                 (q.notExpiredAt == null || (d.expiresAt() ?: EventDoc.NO_EXPIRATION) > q.notExpiredAt) &&
                 (q.search.isNullOrBlank() || d.search.matches(q.search.trim(), stemLanguage = bodyStem)) &&
@@ -284,6 +312,12 @@ class InMemoryEventIndex(
                 // [PhraseRuns.pieces], since those are all the engine can run.
                 phrasePieces.all { pieces -> pieces.all { d.search.containsPhrase(it) } } &&
                 exclusionPieces.none { pieces -> pieces.all { d.search.containsPhrase(it) } }
+        }
+
+        private fun matchesTags(d: EventDoc): Boolean {
+            if (tagAny.isEmpty() && tagAll.isEmpty()) return true
+            val pairs = d.tagIndex()
+            return tagAny.all { set -> pairs.any { it in set } } && tagAll.all { required -> required.all { it in pairs } }
         }
     }
 

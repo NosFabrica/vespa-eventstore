@@ -33,7 +33,7 @@ import okio.BufferedSink
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * PUTS IN BATCHES, through the request handler this store ships in its application package
+ * PUTS AND UPDATES IN BATCHES, through the request handler this store ships in its application package
  * (`:bundle`, `BatchFeedHandler`, bound at [PATH]): one HTTP request carries [batchSize]
  * documents instead of one. On a warm engine most of what a `/document/v1` put costs Vespa is the
  * request around the document; batching 100 per request cut Vespa's CPU per live-relay event by
@@ -75,6 +75,12 @@ internal class VespaBatchFeed(
     /** False while a 404 has the batch path parked: the documents go through the feed client instead. */
     val available: Boolean get() = parkedUntil?.let { clock() - it >= 0 } ?: true
 
+    /** When updates may be batched again; null until a handler that predates them refuses a whole batch. */
+    @Volatile private var updatesParkedUntil: Long? = null
+
+    /** False while a handler without updates has the update path parked: they go through the feed client. */
+    val updatesAvailable: Boolean get() = available && (updatesParkedUntil?.let { clock() - it >= 0 } ?: true)
+
     private val notFoundCount = AtomicLong()
 
     /** 404s answered since this client opened; each one parked the batch path. */
@@ -94,27 +100,51 @@ internal class VespaBatchFeed(
         docs: List<EventDoc>,
         docId: (EventDoc) -> String,
         body: (EventDoc) -> String,
-    ): List<EventDoc> {
-        if (!available || docs.isEmpty()) return docs
+    ): List<EventDoc> =
+        sendAll(docs) { batch ->
+            val ids = batch.map(docId)
+            operations(ids, batch.map(body))
+        }
+
+    /**
+     * Partial UPDATES in batches, as [putAll] sends puts: each item's update under the full
+     * document id [id] gives, its `{"fields": …}` [body], created when absent if [creates]. The
+     * handler dispatches a batch's operations at once, so an item must be the only update to its
+     * document in the call. Returns the items NOT confirmed applied; an update to a document that
+     * does not exist is applied, as a no-op, unless it creates one.
+     */
+    suspend fun <T> updateAll(
+        items: List<T>,
+        id: (T) -> String,
+        body: (T) -> String,
+        creates: (T) -> Boolean,
+    ): List<T> {
+        if (!updatesAvailable) return items
+        return sendAll(items) { batch -> updates(batch.map(id), batch.map(body), batch.map(creates)) }
+    }
+
+    /** [items] in batches of [batchSize], [concurrency] in flight, each batch as [request] writes it; returns those not confirmed. */
+    private suspend fun <T> sendAll(
+        items: List<T>,
+        request: (List<T>) -> RequestBody,
+    ): List<T> {
+        if (!available || items.isEmpty()) return items
         val gate = Semaphore(concurrency)
         return coroutineScope {
-            docs
+            items
                 .chunked(batchSize)
-                .map { batch -> async { gate.withPermit { send(batch, docId, body) } } }
+                .map { batch -> async { gate.withPermit { send(batch, request) } } }
                 .awaitAll()
                 .flatten()
         }
     }
 
-    private suspend fun send(
-        batch: List<EventDoc>,
-        docId: (EventDoc) -> String,
-        body: (EventDoc) -> String,
-    ): List<EventDoc> {
+    private suspend fun <T> send(
+        batch: List<T>,
+        request: (List<T>) -> RequestBody,
+    ): List<T> {
         if (!available) return batch
-        val bodies = batch.map(body)
-        val ids = batch.map(docId)
-        val resp = runCatching { http.post(endpoint() + PATH, operations(ids, bodies)) }.getOrNull() ?: return batch
+        val resp = runCatching { http.post(endpoint() + PATH, request(batch)) }.getOrNull() ?: return batch
         when (resp.statusCode()) {
             200 -> {}
 
@@ -132,6 +162,11 @@ internal class VespaBatchFeed(
         }
         val answer = runCatching { resp.decode(VESPA_JSON, BatchAnswer.serializer()) }.getOrNull() ?: return batch
         if (answer.count != batch.size) return batch
+        // A handler that predates updates refuses every one before dispatch; asking it again only costs the round trip.
+        if (answer.failed.size == batch.size && answer.failed.all { it.message?.startsWith(NO_UPDATES) == true }) {
+            updatesParkedUntil = clock() + retryAfterMs
+            return batch
+        }
         sentCount.incrementAndGet()
         return answer.failed.map { batch[it.index] }
     }
@@ -160,6 +195,9 @@ internal class VespaBatchFeed(
     }
 
     companion object {
+        /** How a `BatchFeedHandler` that takes only puts and removes refuses an update. */
+        private const val NO_UPDATES = "only put and remove are supported"
+
         /** Where `BatchFeedHandler` is bound (engine/app/services.xml). */
         const val PATH = "/eventstore/v1/feed"
 
@@ -189,6 +227,29 @@ internal class VespaBatchFeed(
             }
 
         private const val OPERATION_PREFIX = "{\"put\":\"id:$EVENT_NAMESPACE:$EVENT_DOCTYPE::"
+
+        /**
+         * The batch as a JSON array of `{"update": id, "create": …, "fields": …}`: [bodies] are each
+         * `{"fields":{…}}`, as `/document/v1` takes an update, and [ids] are full document ids.
+         */
+        internal fun updates(
+            ids: List<String>,
+            bodies: List<String>,
+            creates: List<Boolean>,
+        ): RequestBody =
+            object : RequestBody() {
+                override fun contentType() = JSON_MEDIA
+
+                override fun writeTo(sink: BufferedSink) {
+                    sink.writeByte('['.code)
+                    for (i in bodies.indices) {
+                        if (i > 0) sink.writeByte(','.code)
+                        sink.writeUtf8("{\"update\":\"").writeJsonEscaped(ids[i]).writeUtf8("\",\"create\":${creates[i]},")
+                        sink.writeUtf8(bodies[i], 1, bodies[i].length)
+                    }
+                    sink.writeByte(']'.code)
+                }
+            }
 
         private val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
 
