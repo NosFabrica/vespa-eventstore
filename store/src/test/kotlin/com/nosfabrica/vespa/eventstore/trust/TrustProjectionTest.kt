@@ -689,7 +689,8 @@ class TrustProjectionTest {
         runBlocking {
             store.insert(list10040())
             store.insert(UserAssertionEvent(id(), service, next(), arrayOf(arrayOf("d", ProjectionLedger.MARKER_KEY), arrayOf("rank", "87")), "", ""))
-            assertNull(reputations.get(ProjectionLedger.MARKER_KEY))
+            // No cell of the card's: at most the emptied marker the list's commit leaves (ProjectionLedger.insuring).
+            assertTrue(reputations.get(ProjectionLedger.MARKER_KEY)?.isEmpty() ?: true)
             // And ordinary projection still works beside it.
             store.insert(card())
             assertEquals(serviceCells(service to 87), reputations.get(subject)?.influenceScores)

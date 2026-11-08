@@ -331,7 +331,8 @@ class ProviderRefresherTest {
             listReads = ListReads.SERVE
             assertEquals(serviceA, lensOf(bystander).rank)
             store.refreshTrustProviders()
-            assertEquals(listOf(serviceNew), walked, "only the service the local write named")
+            // Not even the service the local write named: it had no stored card, so its list owed no walk.
+            assertEquals(emptyList(), walked, "no service is walked")
         }
 
     /**

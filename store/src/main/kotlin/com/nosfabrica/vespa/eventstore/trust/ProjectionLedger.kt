@@ -107,17 +107,19 @@ internal value class Stamp(
  * WHY A ROUND LEAVES ITS UNRETIRED REMAINDER PENDING. A trust write's
  * write-ahead is computed against the ledger, so the marker keeps covering the
  * in-flight remainder however that write-ahead is persisted, and a round that
- * fails leaves nothing to restore. A second drain — the read-your-writes
- * barrier, a verify — still returns only once the work is visible, because it
- * SKIPS what another drain already retired (retired means written and acked)
- * and re-derives the rest, idempotently. Skipping is what keeps two concurrent
- * drains of one ledger, the background loop's and [TrustReconciler]'s, from
- * each deriving the whole snapshot; on staging they were splitting one
+ * fails leaves nothing to restore. A second drain still SKIPS what another
+ * drain already retired (retired means written and acked) and re-derives the
+ * rest, idempotently; on staging two concurrent drains were splitting one
  * process's derive budget between two passes doing identical work.
  *
- * NOT a mutex around [drain], deliberately: an inline drain runs while its
- * caller holds the writer lock, so blocking it on a round that needs that same
- * lock would deadlock.
+ * Skipping alone did not keep them apart: a service is skipped once RETIRED,
+ * not while another drain walks it, so the background loop and
+ * [TrustReconciler]'s drain walked the same services side by side. Gated
+ * drains therefore take turns ([drain]): the read-your-writes barrier or a
+ * verify waits for the running round, then drains what is left. An inline
+ * drain ([WriteGate.DIRECT]) does not wait: it runs while its caller holds the
+ * writer lock, so blocking it on a round that needs that same lock would
+ * deadlock.
  */
 internal class ProjectionLedger(
     private val reputations: ReputationIndex,
@@ -422,8 +424,26 @@ internal class ProjectionLedger(
      * has nothing left it can do — a throw, because the caller reads that as
      * "retry after a backoff" and a clean return as "nothing is stuck".
      * Always with the marker intact, so a retry loses nothing.
+     *
+     * ONE GATED DRAIN AT A TIME. The background drainer and a reconcile, a
+     * verify or an audit each drain, and two at once snapshot the same queue
+     * and walk the same services side by side: a service is skipped only once
+     * it is RETIRED, not while another drain is walking it. Measured on a
+     * relay mirroring a provider's lists and cards: in its first 330 s, 144 of
+     * the 270 services walked were walked twice, a second apart, the largest
+     * 110k cards each time. A second gated caller now waits for the running
+     * drain, then drains what is left, which is what it asked for: everything
+     * pending, settled. Not an inline drain ([WriteGate.DIRECT]): its caller
+     * holds the writer lock that a running drain's next page waits for.
      */
     suspend fun drain(gate: WriteGate) {
+        if (gate === WriteGate.DIRECT) drainRounds(gate) else gatedDrains.withLock { drainRounds(gate) }
+    }
+
+    /** Serializes gated [drain]s. */
+    private val gatedDrains = Mutex()
+
+    private suspend fun drainRounds(gate: WriteGate) {
         // ONE UNIT'S FAILURE IS ONE UNIT'S. Every read a unit makes can fail
         // for reasons that say nothing about the other units — an engine that
         // truncated a sorted read, a node a hair short of its target, a
