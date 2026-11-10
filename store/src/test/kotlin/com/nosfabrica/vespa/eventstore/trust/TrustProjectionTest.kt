@@ -35,6 +35,7 @@ import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.vitorpamplona.quartz.nip01Core.core.Event
+import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
@@ -1207,6 +1208,88 @@ class TrustProjectionTest {
         }
 
     /**
+     * A RE-SIGN THROUGH THE BULK PATH OWES NO WALK. Both bulk planners supersede a
+     * 10040 as `removeDocs(old)` then `putAll(new)`, and the removal drops the
+     * provider map, so the new list's services used to be judged against an index
+     * holding NEITHER version: every service only this observer named read as
+     * fresh, and its whole card corpus was walked again for cells that were all
+     * there. Only a service the list names for the first time is owed one.
+     */
+    private fun assertBulkResignWalksOnlyTheNewService(mixed: Boolean) =
+        runBlocking {
+            val proj = TrustProjection(InMemoryEventIndex(), InMemoryReputationIndex())
+            proj.backlog.drainInBackground { }
+            val st = NostrSemanticsStore(proj, relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+            st.insert(card(signer = service, rank = 87))
+            st.insert(card(signer = service2, rank = 42)) // stored, named by nobody yet
+            st.insert(list10040(serviceKey = service, at = 100))
+            assertEquals(setOf(service), proj.backlog.queuedRewalks(), "the first list owes its service a walk")
+            proj.backlog.drain { it() }
+            assertEquals(0L, proj.backlog.pendingServices())
+
+            val resign =
+                TrustProviderListEvent(
+                    id(),
+                    observer,
+                    200,
+                    arrayOf(arrayOf("30382:rank", service, "wss://scores.example.com/"), arrayOf("30382:rank", service2, "wss://scores.example.com/")),
+                    "",
+                    "",
+                )
+            val padding = (1..BULK_MIN).map { MetadataEvent(id(), "cc".repeat(32), next(), emptyArray(), """{"name":"n"}""", "") }
+            // A kind 5 (of one of the notes) sends the batch down the mixed planner instead.
+            val deletion = if (mixed) listOf(DeletionRequestEvent(id(), "cc".repeat(32), next(), arrayOf(arrayOf("e", padding.first().id)), "", "")) else emptyList()
+            val out = st.batchInsert(listOf(resign) + padding + deletion)
+            assertTrue(out.all { it is IEventStore.InsertOutcome.Accepted }, "$out")
+            assertEquals(listOf(resign.id), st.query<TrustProviderListEvent>(Filter(kinds = listOf(TrustProviderListEvent.KIND))).map { it.id }, "superseded")
+
+            assertEquals(setOf(service2), proj.backlog.queuedRewalks(), "only the newly named service is walked")
+            proj.backlog.drain { it() }
+            assertEquals(serviceCells(service to 87, service2 to 42), proj.reputations.get(subject)?.influenceScores)
+        }
+
+    @Test
+    fun `a 10040 re-signed through the bulk records path walks only the service it newly names`() = assertBulkResignWalksOnlyTheNewService(mixed = false)
+
+    @Test
+    fun `a 10040 re-signed through the mixed bulk path walks only the service it newly names`() = assertBulkResignWalksOnlyTheNewService(mixed = true)
+
+    /**
+     * What a removal remembers as named is forgotten once a card of that service is SKIPPED: a
+     * commit that removes the list, settles a card of its service under the map that no longer
+     * names it (a later removal flushes), and only then stores a list naming it again holds a
+     * card with no cell, which only the walk can reach.
+     */
+    @Test
+    fun `a service unnamed mid-commit long enough to skip a card is walked when re-named`() =
+        runBlocking {
+            val proj = TrustProjection(InMemoryEventIndex(), InMemoryReputationIndex())
+            proj.backlog.drainInBackground { }
+            val st = NostrSemanticsStore(proj, relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+            val old = list10040(serviceKey = service, at = 100)
+            st.insert(old)
+            val doomed = card(signer = service2)
+            st.insert(doomed)
+            val later = "cd".repeat(32)
+            // One small batch, so one commit admitted event by event: the list goes, a card of its
+            // service lands, a second removal flushes that card under a map naming nobody, and a
+            // newer list names the service again.
+            val out =
+                st.batchInsert(
+                    listOf(
+                        DeletionRequestEvent(id(), observer, next(), arrayOf(arrayOf("e", old.id)), "", ""),
+                        card(signer = service, about = later, rank = 33),
+                        DeletionRequestEvent(id(), service2, next(), arrayOf(arrayOf("e", doomed.id)), "", ""),
+                        list10040(serviceKey = service, at = 300),
+                    ),
+                )
+            assertTrue(out.all { it is IEventStore.InsertOutcome.Accepted }, "$out")
+            assertEquals(setOf(service), proj.backlog.queuedRewalks(), "the skipped card is owed its walk")
+            proj.backlog.drain { it() }
+            assertEquals(serviceCells(service to 33), proj.reputations.get(later)?.influenceScores)
+        }
+
+    /**
      * The commit, not the call, is the unit of reaction — so a batch too small
      * for the bulk path (under BULK_MIN, admitted one event at a time through
      * putIfNewer) is still one cell write, which no batch-shaped port member
@@ -1324,6 +1407,9 @@ class TrustProjectionTest {
             }
         }
 }
+
+/** Mirrors NostrSemanticsStore's private BULK_MIN — the batch size that takes the bulk path. */
+private const val BULK_MIN = 16
 
 /** Counts marker-doc traffic, separating pipelined cell adds from whole-doc puts. */
 private class MarkerCountingReputationIndex(

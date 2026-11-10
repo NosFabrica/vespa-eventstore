@@ -257,6 +257,7 @@ class TrustProjection(
         // removeDocs-then-putAll — and settling between the two is exactly the
         // retract-then-rewrite the commit exists to avoid.
         if (removals.isNotEmpty()) settle(scope)
+        rememberNamedBeforeRemoval(scope, removals)
         // A commit insured by SERVICE (a planned batch past DIRT_SUBJECT_CAP)
         // keeps its puts insured by service: per-subject cover here would be a
         // marker write per card, the very cost the commit exists to remove.
@@ -417,7 +418,9 @@ class TrustProjection(
     /**
      * Removed trust docs, recorded. A removed 10040 drops the provider map
      * now; the cells its services own stay — no lens resolves to an unnamed
-     * service, so they are dead weight for the orphan sweep.
+     * service, so they are dead weight for the orphan sweep — and its services
+     * stay named for the rest of the commit's freshness judgement, so the
+     * newer version a supersession writes next owes no walk ([freshServicesOf]).
      */
     private fun removed(
         scope: CommitScope,
@@ -456,7 +459,12 @@ class TrustProjection(
         scope.flushing(storedOnly) { ops ->
             val puts = ops.filter { it.stored }
             val map = if (puts.isEmpty()) null else recompute.providerMap()
-            if (map != null) scope.rederive(recompute.applyCards(puts.map { it.doc }, map))
+            if (map != null) {
+                // A remembered service whose card this flush SKIPS (its list removed, the new one not
+                // yet stored) has a card with no cell: a list naming it later must walk it again.
+                if (scope.remembersNamed()) scope.forgetNamed(puts.mapNotNullTo(HashSet()) { op -> op.doc.pubkey.takeUnless(map::maps) })
+                scope.rederive(recompute.applyCards(puts.map { it.doc }, map))
+            }
             val removals = ArrayList<CellRemoval>()
             for (op in ops) {
                 val subject = subjectOf(op.doc) ?: continue
@@ -538,12 +546,49 @@ class TrustProjection(
         }
     }
 
-    /** The services [lists] name that the CURRENT map does not — the ones whose stored cards have no cells yet. Read before the lists are written. */
+    /**
+     * The services [lists] name that the CURRENT map does not — the ones whose stored cards have no
+     * cells yet. Read before the lists are written.
+     *
+     * Nor one a list REMOVED earlier in this commit named ([rememberNamedBeforeRemoval]): the bulk
+     * paths supersede a 10040 as `removeDocs(old)` then `putAll(new)`, and the removal drops the map,
+     * so the map read here is rebuilt from an index holding NEITHER version. A re-signed list then
+     * judged every service only it named fresh, and the walk [owingWalks] found owed re-applied the
+     * whole service — ~200k cards for a personalized key — for cells that were all there. The
+     * single-event path never had it: [putIfNewer] judges before its own supersession removes.
+     */
     private suspend fun freshServicesOf(lists: List<EventDoc>): Set<String> {
         val named = ProviderMap.trustServicesOf(lists)
         if (named.isEmpty()) return emptySet()
         val before = recompute.providerMap()
-        return named.filterNot(before::maps).toSet()
+        val scope = currentCoroutineContext()[CommitScope]
+        return named.filterNot { before.maps(it) || scope?.wasNamedBeforeRemoval(it) == true }.toSet()
+    }
+
+    /**
+     * Before [removals] land, remember which services their 10040s name that the map names NOW —
+     * whose cards have their cells, or a walk queued — so a list this commit writes next does not
+     * judge them fresh ([freshServicesOf]). Read before the removal drops the map; the map is
+     * usually cached here, since the commit's own puts read it. A read that fails remembers
+     * nothing, which only costs the redundant walk this exists to avoid.
+     */
+    private suspend fun rememberNamedBeforeRemoval(
+        scope: CommitScope,
+        removals: List<EventDoc>,
+    ) {
+        val lists = removals.filter { it.kind == TrustProviderListEvent.KIND }
+        if (lists.isEmpty()) return
+        val named = ProviderMap.trustServicesOf(lists)
+        if (named.isEmpty()) return
+        val map =
+            try {
+                recompute.providerMap()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                return
+            }
+        scope.rememberNamed(named.filterTo(HashSet(), map::maps))
     }
 
     /**
@@ -752,6 +797,21 @@ class TrustProjection(
         private val walks = LinkedHashSet<String>()
         private val rederive = LinkedHashSet<String>()
         private val flushLock = Mutex()
+
+        /** Services a 10040 this commit removed named while the map still did — see [freshServicesOf]. */
+        private val namedBeforeRemoval = HashSet<String>()
+
+        fun rememberNamed(services: Set<String>) {
+            if (services.isNotEmpty()) synchronized(lock) { namedBeforeRemoval += services }
+        }
+
+        fun forgetNamed(services: Set<String>) {
+            if (services.isNotEmpty()) synchronized(lock) { namedBeforeRemoval -= services }
+        }
+
+        fun wasNamedBeforeRemoval(service: String): Boolean = synchronized(lock) { service in namedBeforeRemoval }
+
+        fun remembersNamed(): Boolean = synchronized(lock) { namedBeforeRemoval.isNotEmpty() }
 
         fun record(
             cards: List<EventDoc>,
