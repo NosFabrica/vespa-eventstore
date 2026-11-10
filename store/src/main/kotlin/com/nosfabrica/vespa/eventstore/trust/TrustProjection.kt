@@ -358,6 +358,40 @@ class TrustProjection(
         droppingProvidersOnFailure(lists.isNotEmpty()) { putAllReacting(docs, lists, fresh) }
     }
 
+    /**
+     * The reindex's re-put ([EventIndex.putAllIfStored]): forwarded, so the
+     * engine's test-and-set put decides what is still stored, and reacted to
+     * for the docs it WROTE only. A card or list dropped because it was
+     * superseded or deleted since the page was read must not have its cells
+     * applied or its fresh services released: the version that replaced it
+     * reacted on its own write. Insurance still covers every doc offered,
+     * because which ones the engine keeps is unknown until it answers, and an
+     * insured doc that was dropped just re-derives to what is stored.
+     *
+     * The cells follow the documents here, as in [putAll]'s by-service branch:
+     * a cell written beside a put that then failed its condition would name a
+     * card that is not stored.
+     */
+    override suspend fun putAllIfStored(docs: List<EventDoc>): Set<String> {
+        if (docs.isEmpty()) return emptySet()
+        val lists = docs.filter { it.kind == TrustProviderListEvent.KIND }
+        val offeredFresh = if (lists.isEmpty()) emptySet() else freshServicesOf(lists)
+        return droppingProvidersOnFailure(lists.isNotEmpty()) {
+            reacting(docs, emptyList(), offeredFresh) { scope ->
+                val written = IngestStats.timed("write") { inner.putAllIfStored(docs) }
+                val kept = docs.filter { it.id in written }
+                // Only the KEPT lists' services: a list that lost must not
+                // release its services' skips. Narrowed from the judgment made
+                // before the write rather than judged again, because a cold map
+                // rebuilt now would already see the re-put lists.
+                val keptLists = kept.filter { it.kind == TrustProviderListEvent.KIND }
+                val fresh = if (keptLists.isEmpty()) emptySet() else offeredFresh intersect ProviderMap.trustServicesOf(keptLists).toSet()
+                if (kept.isNotEmpty()) stored(scope, kept, fresh)
+                written
+            }
+        }
+    }
+
     /** [putAll] once its lists' fresh services are judged. */
     private suspend fun putAllReacting(
         docs: List<EventDoc>,

@@ -82,9 +82,12 @@ reindex reads its page with no lock held (#160): a kind-scoped walk over a
 sparse selection can scan for seconds before a page fills, and holding
 `writes` across that scan stalled every other write in the process. It then
 takes `writes` for the page's plain docs, and both locks in order for its
-trust docs, and in each case re-checks that every doc is still stored before
-re-putting it (events are immutable, so an id that still exists is exactly
-the page's copy; one superseded or deleted since the read is dropped).
+trust docs, and in each case re-puts only docs still stored
+(`EventIndex.putAllIfStored`). On Vespa that is a test-and-set put per doc,
+`event.id == "<id>"` and never created, so a doc superseded or deleted since
+the read fails its condition and is not written. The engine evaluates the
+condition, so it holds against a writer in another process too, which no lock
+here orders.
 
 **A pure-record batch is split by trust.** The cards and provider lists in a
 batch commit under the gate; everything else commits under `writes` alone,

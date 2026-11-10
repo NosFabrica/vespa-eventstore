@@ -1292,7 +1292,7 @@ class NostrSemanticsStore(
         // its server timeout (VespaVisits.SERVER_TIMEOUT_SECONDS), so one page
         // can take seconds. Holding [writes] across it stalled every other write
         // in the process (client EVENTs, deletes, NIP-86) for the whole scan.
-        // Only the re-put takes the lock now, after the re-check below.
+        // Only the re-put takes a lock now.
         val page = index.visitDocsPage(scope, resumeFrom, batchSize)
         // ONE pipelined write per page: serial awaited puts pay per-op ack
         // latency — hours of it on a churny reindex.
@@ -1319,35 +1319,23 @@ class NostrSemanticsStore(
             if (columnsChanged || nearStale || bodyRefeed || stemRefeed) changed += doc.copy(search = fields)
         }
         // A page can carry cards, and the projection applies their cells
-        // INLINE on putAll — the same documents the drain re-derives — so those
+        // INLINE on the re-put — the same documents the drain re-derives — so those
         // queue for the trust gate like every other write that touches
         // reputation, in the gate-then-[writes] order [gated] holds. Values
         // agree either way — the card is the newest for its address — so this
         // is the split's rule kept at its fifth entry point, not a repair.
         val (trust, plain) = changed.partition { it.kind in TrustProjection.TRUST_KINDS }
-        if (plain.isNotEmpty()) locks.underWrites(WriteLocks.REINDEX) { putStillStored(plain) }
-        if (trust.isNotEmpty()) locks.gated(trust = true, WriteLocks.REINDEX, WriteLocks.REINDEX_TRUST) { putStillStored(trust) }
+        // Each half is re-put only where its doc is STILL stored
+        // ([EventIndex.putAllIfStored]), because the page was read without a
+        // lock: a supersession, a NIP-09 delete, a vanish or an expiry sweep may
+        // have removed a doc since, and re-putting the page's copy would bring a
+        // replaced or erased event back. On Vespa that is one test-and-set put
+        // per doc, so it holds against a writer in another process too. The
+        // locks stay for in-process order: the projection's cells, and the
+        // default implementation's read-then-write.
+        if (plain.isNotEmpty()) locks.underWrites(WriteLocks.REINDEX) { index.putAllIfStored(plain) }
+        if (trust.isNotEmpty()) locks.gated(trust = true, WriteLocks.REINDEX, WriteLocks.REINDEX_TRUST) { index.putAllIfStored(trust) }
         return FtsReindexProgress(cursor = page.continuation, processedThisBatch = page.docs.size, done = page.continuation == null)
-    }
-
-    /**
-     * Re-put the reindex's re-derived [docs], minus any no longer stored. Runs
-     * under the caller's lock, because the page was read without one: a
-     * supersession, a NIP-09 delete, a vanish or an expiry sweep may have
-     * removed a doc since, and re-putting the page's copy would bring a
-     * replaced or erased event back. Events are immutable, so an id that is
-     * STILL stored is exactly the doc the page holds — near-tier evidence
-     * included, which a re-read would not carry.
-     *
-     * This also narrows, but cannot close, the window against a writer in
-     * ANOTHER process (a sync), which does not share this lock: a removal there
-     * can still land between this check and the put. Before #160 that window
-     * was the whole visit plus the put, for plain kinds and cards alike.
-     */
-    private suspend fun putStillStored(docs: List<EventDoc>) {
-        val alive = index.existingIds(docs.map { it.id })
-        val still = docs.filter { it.id in alive }
-        if (still.isNotEmpty()) index.putAll(still)
     }
 
     /**

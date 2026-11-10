@@ -470,6 +470,8 @@ class MockVespaEngine(
                         .getValue("fields")
                         .jsonObject
                 refusal(fields)?.let { return it }
+                val condition = rawQuery?.let { params(it)["condition"] }
+                if (condition != null) return conditionalPut(path, path.removePrefix(docPrefix), condition, rawQuery.contains("create=true"), EventDoc.fromSummary(fields))
                 runBlocking { inner.put(EventDoc.fromSummary(fields)) }
                 Reply(200, """{"id":"$path"}""")
             }
@@ -503,8 +505,25 @@ class MockVespaEngine(
                 val ops = all.map { it.getValue("fields").jsonObject }
                 ops.firstNotNullOfOrNull { refusal(it) }?.let { return it }
                 batchRequestsCount.incrementAndGet()
-                runBlocking { ops.forEach { inner.put(EventDoc.fromSummary(it)) } }
-                Reply(200, """{"count":${ops.size},"failed":[]}""")
+                // A put may carry a test-and-set condition, which the real handler's JSON feed
+                // reader passes through; one that fails is listed CONDITION_FAILED, not written.
+                val failed = ArrayList<Int>()
+                all.forEachIndexed { i, op ->
+                    val doc = EventDoc.fromSummary(ops[i])
+                    val condition = op["condition"]?.jsonPrimitive?.content
+                    if (condition == null) {
+                        runBlocking { inner.put(doc) }
+                    } else {
+                        val docId =
+                            op
+                                .getValue("put")
+                                .jsonPrimitive.content
+                                .substringAfter("::")
+                        val holds = putIfConditionHolds(docId, condition, doc) ?: return Reply(400, """{"message":"mock: unsupported test-and-set condition '$condition'"}""")
+                        if (!holds) failed += i
+                    }
+                }
+                Reply(200, """{"count":${ops.size},"failed":[${failed.joinToString(",") { """{"index":$it,"outcome":"CONDITION_FAILED","message":"TEST_AND_SET_CONDITION_FAILED"}""" }}]}""")
             }
 
             method == "DELETE" && path.startsWith(docPrefix) -> {
@@ -940,6 +959,54 @@ class MockVespaEngine(
 
     /** The stored `tags` field exactly as a feed wrote it (EventDoc.indexFields serializes the tag array to one JSON string). */
     private fun tagsJson(doc: EventDoc): String = JsonArray(doc.tags.map { tag -> JsonArray(tag.map(::JsonPrimitive)) }).toString()
+
+    /** Serialises [conditionalPut]'s check-and-write, the atomicity a content node gives a test-and-set put. */
+    private val conditionalPuts = Any()
+
+    /**
+     * A test-and-set put: the one condition shape the client sends,
+     * `event.id == "<id>"` ([VespaEventIndex.putAllIfStored]), held as the
+     * engine holds it. The document at [docId] must exist and hold that event,
+     * or the answer is 412 and nothing is written. A missing document fails
+     * the condition too unless [create] is set, which that path never sets.
+     * Any other condition is refused outright, so a new shape cannot pass
+     * here on a semantics the mock does not have.
+     */
+    private fun conditionalPut(
+        path: String,
+        docId: String,
+        condition: String,
+        create: Boolean,
+        doc: EventDoc,
+    ): Reply {
+        if (create) return Reply(400, """{"message":"mock: create=true with a condition is not modelled"}""")
+        val holds = putIfConditionHolds(docId, condition, doc) ?: return Reply(400, """{"message":"mock: unsupported test-and-set condition '$condition'"}""")
+        // Vespa 8.781.11, measured: 412 for a missing document and for one holding another
+        // event alike, and nothing written in either case.
+        return if (holds) {
+            Reply(200, """{"id":"$path"}""")
+        } else {
+            Reply(412, """{"pathId":"$path","id":"id:event:event::$docId","message":"[UNKNOWN(251013) @ mock]: ReturnCode(TEST_AND_SET_CONDITION_FAILED, Condition did not match document)"}""")
+        }
+    }
+
+    /**
+     * Write [doc] at [docId] iff the stored document there holds the event [condition] names
+     * (`event.id == "<id>"`, the one shape modelled): true when written, false when the
+     * condition failed (a missing document fails it), null for a shape the mock does not model.
+     */
+    private fun putIfConditionHolds(
+        docId: String,
+        condition: String,
+        doc: EventDoc,
+    ): Boolean? {
+        val wanted = Regex("""^event\.id\s*==\s*"([0-9a-f]{64})"$""").find(condition.trim())?.groupValues?.get(1) ?: return null
+        return synchronized(conditionalPuts) {
+            val holds = runBlocking { inner.get(docId) }?.id == wanted
+            if (holds) runBlocking { inner.put(doc) }
+            holds
+        }
+    }
 
     private fun params(rawQuery: String): Map<String, String> =
         rawQuery

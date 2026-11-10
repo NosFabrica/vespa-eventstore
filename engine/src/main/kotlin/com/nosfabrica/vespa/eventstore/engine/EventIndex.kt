@@ -349,6 +349,34 @@ interface EventIndex : AutoCloseable {
     }
 
     /**
+     * Re-put [docs] only where each is STILL stored as that same event, and
+     * return the ids written. A doc removed since the caller read it (a
+     * supersession, a NIP-09 delete, a vanish, an expiry sweep) is dropped, not
+     * brought back. Events are immutable, so "still stored" is "a document
+     * holding this event id still exists".
+     *
+     * For a writer that read [docs] without holding off other writers (the
+     * full-text reindex reads its page unlocked, #160): a plain [putAll] would
+     * roll a replaced or erased event back in.
+     *
+     * The real client OVERRIDES this with one test-and-set put per doc
+     * (`event.id == "<id>"`, never created), so the check and the write are
+     * one engine operation. That holds against a writer in another process
+     * too, which no lock in this one can order. This default reads, then
+     * writes ([existingIds], then [putAll]), so it is atomic only where the
+     * caller's lock orders every writer, as in the in-memory reference's
+     * tests. A REACTING decorator (the trust projection) must forward to inner
+     * and react to the ids written, not to [docs].
+     */
+    suspend fun putAllIfStored(docs: List<EventDoc>): Set<String> {
+        if (docs.isEmpty()) return emptySet()
+        val alive = existingIds(docs.map { it.id })
+        val still = docs.filter { it.id in alive }
+        if (still.isNotEmpty()) putAll(still)
+        return still.mapTo(HashSet()) { it.id }
+    }
+
+    /**
      * Store [doc] IFF it wins its NIP-01 address (highest `created_at`, ties to
      * the LOWEST id): true when stored (older versions removed), false when a
      * same-or-newer version already holds the address. Non-replaceable docs

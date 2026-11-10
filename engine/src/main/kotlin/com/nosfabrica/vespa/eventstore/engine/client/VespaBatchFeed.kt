@@ -107,6 +107,25 @@ internal class VespaBatchFeed(
         }
 
     /**
+     * [putAll] with a test-and-set condition on every put ([condition] renders it, e.g.
+     * `event.id == "<id>"`), never created: the reindex's re-put ([VespaEventIndex.putAllIfStored]).
+     * The handler passes the condition through the JSON feed reader, and a put whose document is
+     * missing or fails the condition is answered `CONDITION_FAILED` with nothing written (measured
+     * on Vespa 8.781.11). Returns the documents whose condition FAILED, then the ones not confirmed
+     * either way (a failed batch, any other outcome), which the caller re-sends by the feed client.
+     */
+    suspend fun putAllIfStored(
+        docs: List<EventDoc>,
+        docId: (EventDoc) -> String,
+        body: (EventDoc) -> String,
+        condition: (EventDoc) -> String,
+    ): Pair<List<EventDoc>, List<EventDoc>> {
+        val failures = sendAllAnswered(docs) { batch -> operations(batch.map(docId), batch.map(body), batch.map(condition)) }
+        val (refused, unconfirmed) = failures.partition { it.second == CONDITION_FAILED }
+        return refused.map { it.first } to unconfirmed.map { it.first }
+    }
+
+    /**
      * Partial UPDATES in batches, as [putAll] sends puts: each item's update under the full
      * document id [id] gives, its `{"fields": …}` [body], created when absent if [creates]. The
      * handler dispatches a batch's operations at once, so an item must be the only update to its
@@ -127,8 +146,17 @@ internal class VespaBatchFeed(
     private suspend fun <T> sendAll(
         items: List<T>,
         request: (List<T>) -> RequestBody,
-    ): List<T> {
-        if (!available || items.isEmpty()) return items
+    ): List<T> = sendAllAnswered(items, request).map { it.first }
+
+    /**
+     * [sendAll], keeping WHY each item was not confirmed: the outcome the handler named for it
+     * (`CONDITION_FAILED`, `ERROR`, …), or null when its whole batch failed unanswered.
+     */
+    private suspend fun <T> sendAllAnswered(
+        items: List<T>,
+        request: (List<T>) -> RequestBody,
+    ): List<Pair<T, String?>> {
+        if (!available || items.isEmpty()) return items.map { it to null }
         val gate = Semaphore(concurrency)
         return coroutineScope {
             items
@@ -142,33 +170,34 @@ internal class VespaBatchFeed(
     private suspend fun <T> send(
         batch: List<T>,
         request: (List<T>) -> RequestBody,
-    ): List<T> {
-        if (!available) return batch
-        val resp = runCatching { http.post(endpoint() + PATH, request(batch)) }.getOrNull() ?: return batch
+    ): List<Pair<T, String?>> {
+        val unanswered = { batch.map { it to null } }
+        if (!available) return unanswered()
+        val resp = runCatching { http.post(endpoint() + PATH, request(batch)) }.getOrNull() ?: return unanswered()
         when (resp.statusCode()) {
             200 -> {}
 
             404 -> {
                 notFoundCount.incrementAndGet()
                 parkedUntil = clock() + retryAfterMs
-                return batch
+                return unanswered()
             }
 
             // A 400 is a body the handler would not parse — typically a field the serving schema
             // lacks; the feed client's path answers it document by document and flips the fallbacks.
             else -> {
-                return batch
+                return unanswered()
             }
         }
-        val answer = runCatching { resp.decode(VESPA_JSON, BatchAnswer.serializer()) }.getOrNull() ?: return batch
-        if (answer.count != batch.size) return batch
+        val answer = runCatching { resp.decode(VESPA_JSON, BatchAnswer.serializer()) }.getOrNull() ?: return unanswered()
+        if (answer.count != batch.size) return unanswered()
         // A handler that predates updates refuses every one before dispatch; asking it again only costs the round trip.
         if (answer.failed.size == batch.size && answer.failed.all { it.message?.startsWith(NO_UPDATES) == true }) {
             updatesParkedUntil = clock() + retryAfterMs
-            return batch
+            return unanswered()
         }
         sentCount.incrementAndGet()
-        return answer.failed.map { batch[it.index] }
+        return answer.failed.map { batch[it.index] to it.outcome }
     }
 
     @Serializable
@@ -195,6 +224,9 @@ internal class VespaBatchFeed(
     }
 
     companion object {
+        /** The handler's outcome for a put whose test-and-set condition failed, the document missing included. */
+        const val CONDITION_FAILED = "CONDITION_FAILED"
+
         /** How a `BatchFeedHandler` that takes only puts and removes refuses an update. */
         private const val NO_UPDATES = "only put and remove are supported"
 
@@ -209,6 +241,7 @@ internal class VespaBatchFeed(
         internal fun operations(
             ids: List<String>,
             bodies: List<String>,
+            conditions: List<String>? = null,
         ): RequestBody =
             object : RequestBody() {
                 override fun contentType() = JSON_MEDIA
@@ -220,6 +253,8 @@ internal class VespaBatchFeed(
                         // feedJson() is `{"fields":{…}}`: the operation is the same object with the id in front.
                         // Escaped: an address-keyed id carries the author's own d tag.
                         sink.writeUtf8(OPERATION_PREFIX).writeJsonEscaped(ids[i]).writeUtf8("\",")
+                        // A test-and-set condition rides beside the id, as the JSON feed format puts it.
+                        conditions?.let { sink.writeUtf8("\"condition\":\"").writeJsonEscaped(it[i]).writeUtf8("\",") }
                         sink.writeUtf8(bodies[i], 1, bodies[i].length)
                     }
                     sink.writeByte(']'.code)

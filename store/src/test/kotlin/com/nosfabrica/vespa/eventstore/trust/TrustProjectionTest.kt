@@ -242,6 +242,28 @@ class TrustProjectionTest {
             assertNoCells(reputations, subject, "the newest version is the whole truth")
         }
 
+    /**
+     * The reindex's re-put reacts to what the engine WROTE (#160). A card
+     * superseded after its page was read is dropped by the engine, and its old
+     * rank must not land in the cell over the newer card's. A card still
+     * stored is re-put and keeps its cell.
+     */
+    @Test
+    fun `a reindex re-put the engine drops applies no cells`() =
+        runBlocking {
+            store.insert(list10040())
+            val old = card(rank = 10, at = 100)
+            store.insert(old)
+            val newer = card(rank = 90, at = 200)
+            store.insert(newer)
+
+            assertEquals(emptySet(), projection.putAllIfStored(listOf(EventDoc.fromEventJson(old.toJson()))))
+            assertEquals(ReputationDoc(subject, serviceCells(service to 90), serviceCells(service to 120.0)), reputations.get(subject), "the dropped card's rank did not land")
+
+            assertEquals(setOf(newer.id), projection.putAllIfStored(listOf(EventDoc.fromEventJson(newer.toJson()))))
+            assertEquals(ReputationDoc(subject, serviceCells(service to 90), serviceCells(service to 120.0)), reputations.get(subject), "the kept card's cell stands")
+        }
+
     @Test
     fun `kind 5 deletion of the score erases the cell`() =
         runBlocking {

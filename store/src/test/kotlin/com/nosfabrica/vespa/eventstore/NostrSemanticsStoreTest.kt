@@ -791,6 +791,46 @@ open class NostrSemanticsStoreTest {
         }
 
     /**
+     * [index], as the store under test sees it during a reindex: [onVisit] runs
+     * after each page is read and before it is re-put, and every doc handed to
+     * the re-put is recorded in [offered]. Wrapping [index] rather than a fresh
+     * in-memory one is what lets NostrSemanticsStoreWireTest run these over the
+     * real client and the mock's test-and-set put.
+     */
+    private fun reindexHooked(
+        offered: MutableList<String> = mutableListOf(),
+        onVisit: suspend () -> Unit,
+    ): EventIndex =
+        object : EventIndex by index {
+            override suspend fun visitDocsPage(
+                query: EventQuery,
+                resumeFrom: String?,
+                maxDocs: Int,
+            ): DocsPage {
+                val page = index.visitDocsPage(query, resumeFrom, maxDocs)
+                onVisit()
+                return page
+            }
+
+            override suspend fun putAllIfStored(docs: List<EventDoc>): Set<String> {
+                offered += docs.map { it.id }
+                return index.putAllIfStored(docs)
+            }
+        }
+
+    /** Walk [kinds] to the end on [store], one page at a time. */
+    private suspend fun reindexAll(
+        store: NostrSemanticsStore,
+        kinds: List<Int>,
+    ) {
+        var cursor: String? = null
+        do {
+            val progress = store.reindexFullTextSearch(kinds, cursor)
+            cursor = progress.cursor
+        } while (!progress.done)
+    }
+
+    /**
      * #160: a reindex page reads its visit with NO write lock held. A sparse
      * kind-scoped visit can scan for seconds before its page fills, and every
      * other write in the process used to wait behind it. Here the visit is
@@ -799,25 +839,19 @@ open class NostrSemanticsStoreTest {
     @Test
     fun `a reindex page's visit does not hold back other writes`() =
         runBlocking {
-            val inner = InMemoryEventIndex()
             val visiting = CompletableDeferred<Unit>()
             val release = CompletableDeferred<Unit>()
-            val engine =
-                object : EventIndex by inner {
-                    override suspend fun visitDocsPage(
-                        query: EventQuery,
-                        resumeFrom: String?,
-                        maxDocs: Int,
-                    ): DocsPage {
+            val store =
+                NostrSemanticsStore(
+                    reindexHooked {
                         visiting.complete(Unit)
                         release.await()
-                        return inner.visitDocsPage(query, resumeFrom, maxDocs)
-                    }
-                }
-            val store = NostrSemanticsStore(engine, relay = "wss://sot.test/".normalizeRelayUrl())
-            inner.put(EventDoc.fromEventJson(metadata(name = "satoshi").toJson()))
+                    },
+                    relay = "wss://sot.test/".normalizeRelayUrl(),
+                )
+            index.put(EventDoc.fromEventJson(metadata(name = "satoshi").toJson()))
 
-            val walk = launch { store.reindexFullTextSearch(listOf(0), null) }
+            val walk = launch { reindexAll(store, listOf(0)) }
             try {
                 visiting.await()
                 val written = withTimeoutOrNull(5_000) { store.insert(note()) }
@@ -839,30 +873,63 @@ open class NostrSemanticsStoreTest {
     @Test
     fun `a reindex does not re-put a doc superseded while its page was read`() =
         runBlocking {
-            val inner = InMemoryEventIndex()
             val old = metadata(name = "satoshi")
             val newer = metadata(name = "nakamoto")
+            val offered = mutableListOf<String>()
             lateinit var store: NostrSemanticsStore
-            val engine =
-                object : EventIndex by inner {
-                    override suspend fun visitDocsPage(
-                        query: EventQuery,
-                        resumeFrom: String?,
-                        maxDocs: Int,
-                    ): DocsPage =
-                        inner.visitDocsPage(query, resumeFrom, maxDocs).also {
-                            // Read, but not yet re-put: the newer version lands now.
-                            withTimeout(5_000) { store.insert(newer) }
-                        }
-                }
-            store = NostrSemanticsStore(engine, relay = "wss://sot.test/".normalizeRelayUrl())
+            store = NostrSemanticsStore(reindexHooked(offered) { withTimeout(5_000) { store.insert(newer) } }, relay = "wss://sot.test/".normalizeRelayUrl())
             // Stored without search columns, so the walk finds it drifted.
-            inner.put(EventDoc.fromEventJson(old.toJson()))
+            index.put(EventDoc.fromEventJson(old.toJson()))
 
-            val progress = store.reindexFullTextSearch(listOf(0), null)
-            assertTrue(progress.done)
+            reindexAll(store, listOf(0))
+            assertTrue(old.id in offered, "the page offered the old profile for re-put, so the drop below is the condition's")
             assertEquals(listOf(newer.id), store.query<Event>(Filter(kinds = listOf(0), authors = listOf(alice))).map { it.id })
             assertEquals(0, store.count(Filter(search = "satoshi")), "the replaced profile was re-put")
+        }
+
+    /**
+     * A NIP-09 delete that lands while a reindex page is being read: the
+     * deleted note must stay deleted. A check limited to replaceable kinds
+     * would bring it back.
+     */
+    @Test
+    fun `a reindex does not re-put a note deleted while its page was read`() =
+        runBlocking {
+            val target = note(content = "delete me")
+            val offered = mutableListOf<String>()
+            lateinit var store: NostrSemanticsStore
+            store =
+                NostrSemanticsStore(
+                    reindexHooked(offered) { withTimeout(5_000) { store.insert(DeletionRequestEvent(id(), alice, next(), arrayOf(arrayOf("e", target.id)), "", "")) } },
+                    relay = "wss://sot.test/".normalizeRelayUrl(),
+                )
+            index.put(EventDoc.fromEventJson(target.toJson()))
+
+            reindexAll(store, listOf(1))
+            assertTrue(target.id in offered, "the page offered the note for re-put, so the drop below is the condition's")
+            assertEquals(null, index.get(target.id), "the deleted note was brought back")
+        }
+
+    /**
+     * The trust half of a page goes through the gate and the projection, and
+     * gets the same condition: a card superseded while its page was read is
+     * not re-put, and the newer card stays the address's only version.
+     */
+    @Test
+    fun `a reindex does not re-put a card superseded while its page was read`() =
+        runBlocking {
+            // A petname, so the card extracts a name column and the walk finds it drifted.
+            fun named(at: Long) = UserAssertionEvent(id(), alice, at, arrayOf(arrayOf("d", bob), arrayOf("petname", "Bramblecast"), arrayOf("rank", "50")), "", "")
+            val old = named(next())
+            val newer = named(next())
+            val offered = mutableListOf<String>()
+            lateinit var store: NostrSemanticsStore
+            store = NostrSemanticsStore(reindexHooked(offered) { withTimeout(5_000) { store.insert(newer) } }, relay = "wss://sot.test/".normalizeRelayUrl())
+            index.put(EventDoc.fromEventJson(old.toJson()))
+
+            reindexAll(store, listOf(UserAssertionEvent.KIND))
+            assertTrue(old.id in offered, "the page offered the old card for re-put, so the drop below is the condition's")
+            assertEquals(listOf(newer.id), store.query<Event>(Filter(kinds = listOf(UserAssertionEvent.KIND), authors = listOf(alice))).map { it.id })
         }
 
     /**
@@ -894,6 +961,11 @@ open class NostrSemanticsStoreTest {
                     // the recording above — re-enter the interface default here so
                     // it supersedes through THIS wrapper's put instead.
                     override suspend fun putIfNewer(doc: EventDoc): Boolean = super.putIfNewer(doc)
+
+                    // The reindex's re-put, for the same reason: `by inner` would hand it
+                    // to the delegate's own write and dodge the recording above. The
+                    // interface default checks, then writes through THIS wrapper's putAll.
+                    override suspend fun putAllIfStored(docs: List<EventDoc>): Set<String> = super.putAllIfStored(docs)
 
                     // Models the real client's `[document]` visit: it reports the
                     // near arrays each doc ACTUALLY holds — derived-by-current-code
@@ -949,6 +1021,8 @@ open class NostrSemanticsStoreTest {
                     override suspend fun putAll(docs: List<EventDoc>) = docs.forEach { put(it) }
 
                     override suspend fun putIfNewer(doc: EventDoc): Boolean = super.putIfNewer(doc)
+
+                    override suspend fun putAllIfStored(docs: List<EventDoc>): Set<String> = super.putAllIfStored(docs)
                 }
             val store = NostrSemanticsStore(engine, relay = "wss://sot.test/".normalizeRelayUrl())
             // Through the factory, as a relay parses it: a bare Event of kind 1 is
@@ -987,6 +1061,8 @@ open class NostrSemanticsStoreTest {
                     override suspend fun putAll(docs: List<EventDoc>) = docs.forEach { put(it) }
 
                     override suspend fun putIfNewer(doc: EventDoc): Boolean = super.putIfNewer(doc)
+
+                    override suspend fun putAllIfStored(docs: List<EventDoc>): Set<String> = super.putAllIfStored(docs)
                 }
             val store = NostrSemanticsStore(engine, relay = "wss://sot.test/".normalizeRelayUrl())
             val portuguese = EventFactory.create<Event>(id(), alice, next(), 1, emptyArray(), "As eleições foram adiadas para o próximo ano, mas ainda não há data", "")

@@ -297,5 +297,13 @@ class MeteredEventIndex(
      */
     override suspend fun putIfNewer(doc: EventDoc): Boolean = meter(PortCall.Put, 1) { inner.putIfNewer(doc) }
 
+    /**
+     * Forwarded for the same reason as [putIfNewer]: the default reads then
+     * writes through `this`, which would count an Exists and a Put the engine
+     * never saw, and would lose the real client's test-and-set put. Counted as
+     * a Put of the docs offered.
+     */
+    override suspend fun putAllIfStored(docs: List<EventDoc>): Set<String> = meter(PortCall.Put, docs.size.toLong()) { inner.putAllIfStored(docs) }
+
     override fun close() = inner.close()
 }

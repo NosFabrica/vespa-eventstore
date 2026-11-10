@@ -115,6 +115,8 @@ internal class ReadOnlyEventIndex(
 
     override suspend fun putIfNewer(doc: EventDoc): Boolean = readOnlyRefusal("putIfNewer")
 
+    override suspend fun putAllIfStored(docs: List<EventDoc>): Set<String> = readOnlyRefusal("putAllIfStored")
+
     override suspend fun remove(id: String) = readOnlyRefusal("remove")
 
     override suspend fun removeAll(ids: List<String>) = readOnlyRefusal("removeAll")
