@@ -457,7 +457,22 @@ class NostrSemanticsStore(
         withActivity(Activity.Insert) { insertOne(event) }
     }
 
-    private suspend fun insertOne(event: Event) = lockedForWrite(event) { admission.admit(event) }
+    /**
+     * The I/O-free verdicts ([EventAdmission.settle]) are answered BEFORE the
+     * writer lock, holding nothing: they read only the event, so no other
+     * writer can change them, and an ephemeral OK used to queue behind
+     * whatever held the lock to learn that nothing would be written.
+     *
+     * NOT for a trust kind ([touchesTrust]): its write is a trust COMMIT, and a
+     * commit settles the projection's ledger even when it writes nothing —
+     * that is how a re-offer heals a batch whose cells failed after its events
+     * landed. An expired card keeps that, at the cost of the wait; an ephemeral
+     * kind is never a trust kind.
+     */
+    private suspend fun insertOne(event: Event) {
+        if (touchesTrust(event)) return lockedForWrite(event) { admission.admit(event) }
+        if (!admission.settle(event)) lockedForWrite(event) { admission.admitStored(event) }
+    }
 
     /**
      * Run [body] under this store's TRUST writer lock. For the trust
@@ -541,6 +556,15 @@ class NostrSemanticsStore(
 
     /** [batchInsert]'s body; split because `withActivity` cannot express a non-local return. */
     private suspend fun batchInsertUnder(events: List<Event>): List<IEventStore.InsertOutcome> {
+        // A batch decided WITHOUT I/O (all ephemeral, expired or unstorable)
+        // is answered holding nothing, like the single insert, unless it
+        // carries a trust kind (whose commit settles the ledger — see
+        // [insertOne]). `all` stops at the first event that needs the store,
+        // which in an ordinary batch is the first one, so this costs one
+        // event's checks.
+        if (events.all { admission.localOutcome(it) != null } && events.none { touchesTrust(it) }) {
+            return events.map { admission.localOutcome(it)!! }
+        }
         if (events.any { it is DeletionRequestEvent || it is RequestToVanishEvent }) {
             return lockedForBatch(events) { if (events.size < BULK_MIN) events.map { admission.tryAdmit(it) } else bulkMixed.run(events) }
         }
@@ -576,6 +600,13 @@ class NostrSemanticsStore(
         // batch is mostly duplicates, and insuring those would be marker writes
         // for cells nobody writes.
         val planned = if (trust) plan.events.filterIndexed { i, _ -> plan.outcome[i] == null } else emptyList()
+        // Every event decided lock-free (duplicates, ephemeral, expired — a
+        // mirror's re-offer of what it fed last time): the commit would write
+        // nothing and change no outcome, so it does not queue for the lock.
+        // A TRUST run commits anyway: an empty trust commit still settles the
+        // projection's ledger, and an all-duplicates re-offer of a batch whose
+        // cells failed is exactly the write that heals it (TrustProjectionTest).
+        if (!trust && plan.outcome.all { it != null }) return plan.outcome.map { it!! }
         return locks.gated(trust, WriteLocks.INGEST) { committing(trust, planned) { bulkRecords.commit(plan) } }
     }
 

@@ -53,7 +53,10 @@ internal class WriteLocks {
      * 10040 — so it was excluded against work it cannot conflict with. Measured
      * on staging: an ephemeral event, which takes the lock and returns without
      * storing anything, took 35-41 SECONDS to answer OK while the trust drain
-     * held the lock re-deriving reputation documents.
+     * held the lock re-deriving reputation documents. (An ephemeral insert
+     * now takes neither lock: the verdicts that need no I/O — ephemeral,
+     * expired, unstorable text — are answered before them, in
+     * `NostrSemanticsStore.insertOne`.)
      *
      * What a plain insert genuinely needs exclusion for is the DELETION race —
      * check `isDeleted`, then put, with a kind-5 landing in between would

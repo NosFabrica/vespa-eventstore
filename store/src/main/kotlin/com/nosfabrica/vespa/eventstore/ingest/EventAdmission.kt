@@ -65,12 +65,49 @@ internal class EventAdmission(
      * [BulkMixedInsert] the real store's while it replays against a snapshot.
      */
     suspend fun admit(event: Event) {
-        if (event.kind.isEphemeral()) return
-        if (event.isExpired()) throw RejectedException(Rejections.EXPIRED)
-        // Text the engine refuses is a property of the event, so it is settled
-        // here with the other no-I/O checks rather than surfacing as a feed
-        // exception three round trips later. See [VespaText].
-        if (VespaText.firstIllegalField(event) != null) throw RejectedException(Rejections.UNSTORABLE_TEXT)
+        if (!settle(event)) admitStored(event)
+    }
+
+    /**
+     * The verdicts that need NO I/O — ephemeral (accepted, never stored),
+     * NIP-40 expired, text the engine cannot store — as an outcome, or null
+     * when the event needs the store's reads. A property of the event alone,
+     * so it is safe WITHOUT the writer lock, and `NostrSemanticsStore` asks it
+     * before taking one: an ephemeral OK used to queue behind the lock's holder
+     * (35-41 s measured on staging, see `WriteLocks`) to learn that nothing
+     * would be written. Same precedence as the bulk planner's stage A.
+     */
+    fun localOutcome(event: Event): IEventStore.InsertOutcome? =
+        when {
+            event.kind.isEphemeral() -> IEventStore.InsertOutcome.Accepted
+
+            event.isExpired() -> IEventStore.InsertOutcome.Rejected(Rejections.EXPIRED)
+
+            // Text the engine refuses is a property of the event, so it is
+            // settled with the other no-I/O checks rather than surfacing as a
+            // feed exception three round trips later. See [VespaText].
+            VespaText.firstIllegalField(event) != null -> IEventStore.InsertOutcome.Rejected(Rejections.UNSTORABLE_TEXT)
+
+            else -> null
+        }
+
+    /**
+     * [localOutcome] in [admit]'s idiom: true when the event is accepted with
+     * nothing to store, a [RejectedException] when it is rejected, false when
+     * it needs [admitStored].
+     */
+    fun settle(event: Event): Boolean {
+        val outcome = localOutcome(event) ?: return false
+        if (outcome is IEventStore.InsertOutcome.Rejected) throw RejectedException(outcome.reason)
+        return true
+    }
+
+    /**
+     * The rules that READ THE STORE, for an event [settle] left undecided —
+     * the half that needs the caller's writer lock. Not a public shortcut past
+     * [settle]: an ephemeral event handed straight here would be stored.
+     */
+    suspend fun admitStored(event: Event) {
         // The admission reads — dedup, NIP-09 tombstone, NIP-62 vanish — are
         // independent, so fire them together and check in the original
         // precedence (duplicate > deleted > vanished). The dup GET deliberately
