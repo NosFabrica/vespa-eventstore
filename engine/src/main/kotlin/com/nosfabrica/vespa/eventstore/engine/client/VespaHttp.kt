@@ -120,6 +120,22 @@ internal class VespaHttp(
 
     private val jsonMedia = "application/json; charset=utf-8".toMediaType()
 
+    /**
+     * Releases this client's own threads and sockets: its [Dispatcher]'s executor (whose threads
+     * are not daemons, and idle a minute before exiting) and its connection pool (every idle
+     * HTTP/2 connection, each with its reader on OkHttp's task runner, kept five minutes and
+     * PINGed meanwhile). [visitHttp] shares both, so this closes it too. There is no cache.
+     *
+     * OkHttp's own recipe, and graceful the way it is: a call already running finishes, one
+     * enqueued after this fails with an [IOException], and the connection a running call returns
+     * to the pool after [evictAll][okhttp3.ConnectionPool.evictAll] is left to the pool's own
+     * idle eviction. The index owning this client closes it last, after its feed has drained.
+     */
+    fun close() {
+        http.dispatcher.executorService.shutdown()
+        http.connectionPool.evictAll()
+    }
+
     /** GET [url], retrying transient overload — the document-API get path. */
     suspend fun get(url: String): HttpResp =
         send(

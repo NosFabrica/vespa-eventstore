@@ -84,6 +84,8 @@ class TrustKeyingMigration internal constructor(
     private val reputations: ReputationIndex,
     private val reconciler: TrustReconciler,
     private val recompute: TrustRecompute,
+    /** Parents between durable counter writes — [PERSIST_EVERY_PARENTS]; a test lowers it to reach one. */
+    private val persistEveryParents: Int = PERSIST_EVERY_PARENTS,
 ) {
     /** Where this migration has got to, for gauges and [BackgroundFailures]-style status. */
     internal val progress = TrustKeyingProgress()
@@ -106,7 +108,7 @@ class TrustKeyingMigration internal constructor(
         // of this migration is `does the document exist`, and a partial marker
         // answering 200 would tell all of them it was done.
         val stored = reputations.get(PROGRESS_KEY)
-        progress.resumeFrom(stored.counter(KEYS_REMOVED), UNKNOWN_TOTAL)
+        progress.resumeFrom(stored.keysRemoved(), UNKNOWN_TOTAL)
         var any = false
         reputations.visitPubkeys { page ->
             any = page.any(Hex::isHexKey)
@@ -156,7 +158,7 @@ class TrustKeyingMigration internal constructor(
         // none and both surfaces say "unknown" rather than one of them printing
         // "100%, eta 0m0s" over a walk with hours left.
         TrustProgress.begin(KEYING, "sweeping cells no 10040 names", UNKNOWN_TOTAL)
-        progress.resumeFrom(stored.counter(KEYS_REMOVED), UNKNOWN_TOTAL)
+        progress.resumeFrom(stored.keysRemoved(), UNKNOWN_TOTAL)
         val removed = sweepUnmappedCells(providers.services, onProgress)
         reputations.put(marker())
         reputations.remove(PROGRESS_KEY) // the phases were scaffolding; the marker is the answer
@@ -166,11 +168,26 @@ class TrustKeyingMigration internal constructor(
     }
 
     /**
-     * Drop every cell whose key is not in [services], across every stored
-     * parent — pipelined removes, a page at a time, no gate: a cell keyed by
-     * an unnamed key is read by no lens and written by no live path, so
-     * nothing can race this. The projection's own bookkeeping documents
-     * (non-hex ids) are never touched.
+     * Drop every cell whose key is not in [services] — nor named by the
+     * provider map as it stands when the page's removals are sent — across
+     * every stored parent: pipelined removes, a page at a time. The
+     * projection's own bookkeeping documents (non-hex ids) are never touched.
+     *
+     * [services] is a snapshot taken before the reconcile, and this walk runs
+     * for hours beside live ingest ([run] is launched in the background at
+     * `open()`). A cell keyed by a service no list named THEN is not
+     * unwritable: a 10040 stored during the run names it, its walk and its new
+     * cards write cells, and a sweep judging by the snapshot alone stripped
+     * them as it reached their parents — no lens-reachable drift any write
+     * would repair before the next reconcile. So a page with anything to
+     * remove re-reads the map UNDER [TrustReconciler.gate], the trust gate
+     * every 10040 write and every cell write takes, and keeps what it names:
+     * a list stored before that hold is in the map read (the write drops the
+     * cached pass), and one stored after it walks its service over this
+     * page's removals. A page with nothing to remove by the snapshot takes no
+     * lock. Like the orphan sweep's re-check, this is exact for ONE writer: a
+     * peer's 10040 reaches this map only at the provider refresher's tick
+     * (docs/multi-node-consistency.md).
      */
     suspend fun sweepUnmappedCells(
         services: Set<String>,
@@ -179,30 +196,40 @@ class TrustKeyingMigration internal constructor(
         var parents = 0
         var removed = 0
         var lastPersistedAt = 0
+        // What earlier runs removed ([run] resumes it from the progress document): the walk
+        // restarts from its first parent, so this run's removals ADD to it. Set from this run's
+        // count alone, the gauge a resumed run had just adopted fell back to zero at its first page.
+        val removedBefore = progress.keysRemoved.get()
         reputations.visitDocs { page ->
-            val removals = ArrayList<CellRemoval>()
+            val candidates = ArrayList<CellRemoval>()
             for (doc in page) {
                 if (!Hex.isHexKey(doc.pubkey)) continue
                 parents++
                 val keys = (doc.influenceScores.keys + doc.followerCounts.keys).filterNot { it.hex in services }
                 for (key in keys) {
-                    removals += CellRemoval(doc.pubkey, key, influence = key in doc.influenceScores, followers = key in doc.followerCounts)
+                    candidates += CellRemoval(doc.pubkey, key, influence = key in doc.influenceScores, followers = key in doc.followerCounts)
                 }
             }
-            if (removals.isNotEmpty()) {
-                reputations.removeCells(removals)
-                removed += removals.size
+            if (candidates.isNotEmpty()) {
+                reconciler.gate.holding {
+                    val named = recompute.providerMap()
+                    val removals = candidates.filterNot { named.maps(it.key.hex) }
+                    if (removals.isNotEmpty()) {
+                        reputations.removeCells(removals)
+                        removed += removals.size
+                    }
+                }
             }
             progress.record(parents.toLong())
-            progress.keysRemoved.set(removed.toLong())
+            progress.keysRemoved.set(removedBefore + removed)
             TrustProgress.advance(KEYING, parents.toLong())
             onProgress?.invoke(parents, removed)
             // Counters durable every so often, so a restart reports what the
             // last process achieved instead of starting the number at zero.
             // Every page would be a document write per page of a corpus walk.
-            if (parents - lastPersistedAt >= PERSIST_EVERY_PARENTS) {
+            if (parents - lastPersistedAt >= persistEveryParents) {
                 lastPersistedAt = parents
-                reputations.put(progressDoc(reconciled = true, keysRemoved = removed.toLong()))
+                reputations.put(progressDoc(reconciled = true, keysRemoved = removedBefore + removed))
             }
             true
         }
@@ -255,8 +282,22 @@ class TrustKeyingMigration internal constructor(
         /** The reconcile — the corpus-scale half — landed; a resumed run starts at the sweep. */
         private const val RECONCILED = "reconciled"
 
-        /** Cell keys removed so far, carried across restarts so the number never walks backwards. */
+        /**
+         * Cell keys removed so far, carried across restarts so the number never walks backwards —
+         * on the FOLLOWER tensor, whose cells are floats, split at [KEYS_REMOVED_SPLIT] into a low
+         * cell ([KEYS_REMOVED]) and a high one ([KEYS_REMOVED_HIGH]) so each part is an integer a
+         * float holds exactly. It used to ride `influence_scores`, which is `tensor<int8>`
+         * (reputation.sd): a count past 127 is not representable there, and every sweep of a real
+         * corpus passes 127 before its first durable write (what the engine stores instead was not
+         * measured). An int8 cell an earlier version left under this name is not read back.
+         */
         private const val KEYS_REMOVED = "keys-removed"
+
+        /** The high part of [KEYS_REMOVED]: the count divided by [KEYS_REMOVED_SPLIT]. */
+        private const val KEYS_REMOVED_HIGH = "keys-removed-high"
+
+        /** 2^24: every integer below it is exact in a float, so the low part is too. */
+        private const val KEYS_REMOVED_SPLIT = 1L shl 24
 
         /**
          * A denominator this migration never legitimately had. The cell is
@@ -275,11 +316,17 @@ class TrustKeyingMigration internal constructor(
 
         private fun ReputationDoc?.has(flag: String): Boolean = this?.influenceScores?.containsKey(ServiceKey(flag)) == true
 
-        private fun ReputationDoc?.counter(name: String): Long = (this?.influenceScores?.get(ServiceKey(name)) ?: 0).toLong()
+        /** [KEYS_REMOVED] as [progressDoc] wrote it: the high part times the split, plus the low part. */
+        private fun ReputationDoc?.keysRemoved(): Long {
+            val cells = this?.followerCounts ?: return 0
+            val low = cells[ServiceKey(KEYS_REMOVED)]?.toLong() ?: 0
+            val high = cells[ServiceKey(KEYS_REMOVED_HIGH)]?.toLong() ?: 0
+            return high * KEYS_REMOVED_SPLIT + low
+        }
 
         /**
-         * The marker as cells: flags present or absent, counters as their
-         * values. Like [ProjectionLedger]'s marker this borrows the reputation
+         * The marker as cells: flags present or absent (int8 influence
+         * cells), the counter on the float follower cells ([KEYS_REMOVED]). Like [ProjectionLedger]'s marker this borrows the reputation
          * tensors as a small key-value store — the ids are non-hex so no card
          * can collide, and no lens reads them.
          */
@@ -291,8 +338,12 @@ class TrustKeyingMigration internal constructor(
         ): ReputationDoc {
             val cells = LinkedHashMap<ServiceKey, Int>()
             if (reconciled) cells[ServiceKey(RECONCILED)] = 1
-            if (keysRemoved > 0) cells[ServiceKey(KEYS_REMOVED)] = keysRemoved.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
-            return ReputationDoc(PROGRESS_KEY, cells)
+            val counts = LinkedHashMap<ServiceKey, Double>()
+            if (keysRemoved > 0) {
+                counts[ServiceKey(KEYS_REMOVED)] = (keysRemoved % KEYS_REMOVED_SPLIT).toDouble()
+                counts[ServiceKey(KEYS_REMOVED_HIGH)] = (keysRemoved / KEYS_REMOVED_SPLIT).toDouble()
+            }
+            return ReputationDoc(PROGRESS_KEY, cells, counts)
         }
     }
 }

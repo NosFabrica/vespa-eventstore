@@ -197,11 +197,13 @@ class HoldStackTest {
     fun `wait time is attributed to whatever was holding`() {
         // `lock.ingest.wait 41s` only prompts a question; split by holder it
         // names a fix.
-        IngestStats.addBlocked("lock.ingest.wait", "proj.fetch.derive", 38_000_000_000)
-        IngestStats.addBlocked("lock.ingest.wait", "write", 2_100_000_000)
-        IngestStats.addBlocked("lock.ingest.wait", "proj.fetch.derive", 400_000_000)
+        val derive = IngestStats.Held("lock.gate.hold", 0, "derive 499 subject(s) in 10 chunk(s)", trustGate, shape = "derive")
+        val write = IngestStats.Held("lock.ingest.hold", 0, null, writeLock)
+        IngestStats.addBlocked("lock.ingest.wait", derive, 38_000_000_000)
+        IngestStats.addBlocked("lock.ingest.wait", write, 2_100_000_000)
+        IngestStats.addBlocked("lock.ingest.wait", derive, 400_000_000)
         val split = IngestStats.blockedSplit()["lock.ingest.wait"]!!
-        assertEquals(38_400_000_000, split["proj.fetch.derive"], "repeat attributions accumulate")
-        assertEquals(2_100_000_000, split["write"])
+        assertEquals(38_400_000_000, split["derive"], "repeat attributions accumulate, under the work's shape")
+        assertEquals(2_100_000_000, split["lock.ingest.hold"], "and a holder that named no work under its stage")
     }
 }

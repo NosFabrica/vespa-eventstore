@@ -22,7 +22,10 @@ package com.nosfabrica.vespa.eventstore.trust
 
 import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 
 /**
  * AN AUTHOR'S RANK CELL UNDER ONE SERVICE, READ FOR THE LIVE GATE.
@@ -79,6 +82,14 @@ internal class TrustCells(
      * reputation read, not two thousand, and the same again at every TTL
      * expiry. A failed read fails every waiter (the live gate drops, closed)
      * and is not cached, so the next event retries.
+     *
+     * A CANCELLED read is not a failed one. The owner's subscription closing
+     * mid-read hands its CancellationException to the deferred every waiter
+     * awaits, and a waiter rethrowing it reads as ITS OWN cancellation: the
+     * relay's cold-author check did exactly that and dropped the live event
+     * without a word, for a subscriber still connected. A waiter whose own
+     * coroutine is active reads again instead — becoming the owner, as
+     * [ProviderMap.live] does for its shared rebuild.
      */
     suspend fun read(
         author: String,
@@ -91,7 +102,14 @@ internal class TrustCells(
             synchronized(entries) {
                 inFlight[k]?.let { it to false } ?: (CompletableDeferred<Double>().also { inFlight[k] = it } to true)
             }
-        if (!owner) return pending.await()
+        if (!owner) {
+            return try {
+                pending.await()
+            } catch (e: CancellationException) {
+                currentCoroutineContext().ensureActive()
+                read(author, service)
+            }
+        }
         try {
             val score =
                 reputations

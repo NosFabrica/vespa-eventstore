@@ -52,7 +52,8 @@ class TrustReconciler internal constructor(
     private val reputations: ReputationIndex,
     private val recompute: TrustRecompute,
     private val backlog: ProjectionLedger,
-    private val gate: WriteGate = WriteGate.DIRECT,
+    /** Also the keying migration's, for its sweep's removals ([TrustKeyingMigration.sweepUnmappedCells]). */
+    internal val gate: WriteGate = WriteGate.DIRECT,
     private val nowSecs: () -> Long = { System.currentTimeMillis() / 1000 },
 ) {
     /** What [reconcile] found: services examined, and the ones it had to re-derive. */

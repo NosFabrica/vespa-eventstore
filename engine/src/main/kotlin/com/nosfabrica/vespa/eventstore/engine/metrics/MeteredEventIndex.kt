@@ -29,6 +29,7 @@ import com.nosfabrica.vespa.eventstore.engine.LinkWeights
 import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
+import com.nosfabrica.vespa.eventstore.engine.text.WHITESPACE
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 
 /**
@@ -169,8 +170,9 @@ class MeteredEventIndex(
         query.observer?.let { ledger.byObserver.add(it.take(OBSERVER_KEY_CHARS), weight) }
         val terms = query.search ?: return
         // Distinct, so a term repeated inside one query is not charged twice
-        // for one call's worth of work.
-        for (term in terms.split(' ', '\t', '\n').filter { it.isNotEmpty() }.distinct()) {
+        // for one call's worth of work. Split the way the query compiler splits
+        // (WHITESPACE), so a row here is a word the engine was actually sent.
+        for (term in terms.split(WHITESPACE).filter { it.isNotEmpty() }.distinct()) {
             ledger.byTerm.add(term, weight)
         }
     }

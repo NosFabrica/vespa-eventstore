@@ -195,6 +195,34 @@ class LiveGateTest {
         }
     }
 
+    /**
+     * The single-flight read's OWNER being cancelled (its subscription closed
+     * mid-read) is not the waiters' failure: a waiter that is still active
+     * must get the cell, not the owner's CancellationException — which the
+     * relay rethrew as its own and silently dropped the event.
+     */
+    @Test
+    fun `a waiter on a cold read outlives the cancelled reader it was waiting on`() {
+        val counting = CountingReputations(InMemoryReputationIndex())
+        val cold = NostrSemanticsStore(TrustProjection(InMemoryEventIndex(), counting), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+        runBlocking {
+            cold.batchInsert(listOf(UserAssertionEvent(id(), service, 1_000L, arrayOf(arrayOf("d", trusted), arrayOf("rank", "90")), "", "")))
+            cold.insert(TrustProviderListEvent(id(), observer, 1_000L, arrayOf(arrayOf("30382:rank", service, "wss://scores.example.com/")), "", ""))
+            val g = assertNotNull(cold.liveGate(listOf(Filter(kinds = listOf(1), search = "observer:$observer"))))
+            counting.gets.set(0)
+            counting.gate = CompletableDeferred()
+            val owner = async(Dispatchers.Default) { g.admits(note(trusted)) }
+            while (counting.gets.get() == 0) delay(5) // the owner's read is in flight
+            val waiter = async(Dispatchers.Default) { g.admits(note(trusted)) }
+            delay(100) // the waiter is parked on the owner's read
+            owner.cancel()
+            counting.gate?.complete(Unit)
+            val answer = runCatching { waiter.await() }
+            assertEquals(true, answer.getOrNull(), "the waiter's own answer, not ${answer.exceptionOrNull()}")
+            assertTrue(owner.isCancelled)
+        }
+    }
+
     @Test
     fun `a store with no 10040s gates live events without a provider query each`() {
         // An empty pass is never cached, so the gate must not lean on the cache for it.

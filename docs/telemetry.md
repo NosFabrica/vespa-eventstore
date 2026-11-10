@@ -1118,6 +1118,16 @@ holder wrote about itself from inside its own critical section. It is the
 24-minute `proj.fetch` mystery of §7, reproduced on real data and attributed
 without anyone having to guess.
 
+That row was also an open key. The split was keyed by the holder's detail, and
+the detail carries this call's counts, so every distinct `derive N subject(s)`
+added a row that was never dropped, and every snapshot copied all of them — §4's
+cardinality rule, broken by the one map it was not written about. The split
+now books a holder by a constant SHAPE its annotation names (`derive`, `cell
+update`, `project service`), or by its hold stage when it names none; the
+detail with its counts stays where it is read live, on the held lock
+(`IngestStats.Held.shape`, `WriteLocksTest`). Under that keying the row above
+reads `behind derive`.
+
 ---
 
 ## 16. Two sections nothing produced

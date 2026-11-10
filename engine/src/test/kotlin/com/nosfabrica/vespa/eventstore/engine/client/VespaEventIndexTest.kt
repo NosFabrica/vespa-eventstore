@@ -958,6 +958,40 @@ class VespaEventIndexTest {
             }
         }
 
+    /**
+     * A PAGE PAST ONE HYDRATION CHUNK READS ITS CHUNKS AT ONCE. A 5,000-limit
+     * REQ is three `id in (…)` lookups of [VespaEventIndex.HYDRATE_CHUNK], and
+     * they were issued back to back — three document-store round trips where
+     * one would do. Overlap is read off the mock's in-flight gauge, not a
+     * clock, and the page must stay the page: every document, in order.
+     *
+     * Verified to fail with the serial loop restored: peak 1.
+     */
+    @Test
+    fun `a hydration of several chunks fetches them concurrently, in page order`() =
+        runBlocking {
+            val chunks = 3
+            val n = VespaEventIndex.HYDRATE_CHUNK * (chunks - 1) + 100
+            val now = System.currentTimeMillis() / 1000
+            seedBulk((1..n).map { doc(kind = 1, at = now - it) })
+            val q = EventQuery(kinds = listOf(1), limit = n, nowSecs = now)
+            VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.SPECULATIVE, recencyMemory = false).use { idFirst ->
+                mock.holdIdLookupsMs = 500
+                mock.idLookupsInFlightPeak = 0
+                val before = mock.searchRequests.size
+                val page =
+                    try {
+                        idFirst.search(q)
+                    } finally {
+                        mock.holdIdLookupsMs = 0
+                    }
+                val hydrate = mock.searchRequests.drop(before).filter { it.getValue("yql").contains(" where id in (") }
+                assertEquals(chunks, hydrate.size, "one lookup per chunk: ${hydrate.map { it["hits"] }}")
+                assertEquals(chunks, mock.idLookupsInFlightPeak, "every chunk in flight at once")
+                assertEquals(reference.search(q).map { it.id }, page.map { it.id }, "and the page is the page, in order")
+            }
+        }
+
     /** Id-first moves reads, never answers: every strategy, every branch, the same page with it on and off. */
     @Test
     fun `id-first and documents-first serve the same pages`() =
@@ -1805,6 +1839,188 @@ class VespaEventIndexTest {
             } finally {
                 scanning.close()
                 IngestStats.reset()
+            }
+        }
+
+    /**
+     * WORDS TYPED WITH AN IME SPACE ARE TWO WORDS, on the wire and in the spec
+     * alike. `ビットコイン　価格` (U+3000 between them, what a Japanese IME types)
+     * was ONE word to Java's ASCII `\\s`: the reference then required the
+     * literal U+3000-joined run and the engine was sent one term holding both,
+     * so a note carrying both words apart was missed by each. Verified to fail
+     * with WHITESPACE back on `\\s+`.
+     */
+    @Test
+    fun `a search split by an ideographic space requires each word, not the run`() =
+        runBlocking {
+            val both = doc(kind = 1, content = "価格が上がった。ビットコインは強い", search = SearchFields(text = "価格が上がった。ビットコインは強い"))
+            val one = doc(kind = 1, content = "ビットコインの話", search = SearchFields(text = "ビットコインの話"))
+            seed(both, one)
+            val q = EventQuery(kinds = listOf(1), search = "ビットコイン\u3000価格")
+            assertEquals(listOf(both.id), reference.search(q).map { it.id }, "the spec: both words, anywhere")
+            check(q)
+        }
+
+    /**
+     * A DEPLOYMENT THAT CAPS `maxHits` STILL WALKS, and walks exactly. The
+     * cursor's page asked for `idPageSize + TIE_SLACK` hits (20,064 by default)
+     * whatever VESPA_UNBOUNDED_HITS said, and the limited walk's one-page read
+     * `limit + TIE_SLACK`, while the tie-group read beside them was already
+     * clamped — so under a cap below the overfetch every page was refused 400
+     * and nothing fell back. The cap here sits below the page size itself, and
+     * ties straddle the shrunken page boundaries in a scrambled engine order,
+     * so a clamp that broke the boundary resolution would lose or repeat ids.
+     *
+     * Verified to fail with the clamps reverted: the first page is refused
+     * ("124 hits requested, configured limit: 50.").
+     */
+    @Test
+    fun `a walk under a deployed hits cap pages inside it and stays exact`() =
+        runBlocking {
+            val ivy = "d9".repeat(32)
+            // Seconds of 1..13 events each, and one 30-wide second, so ties land
+            // on boundaries of every page size the clamp can produce.
+            val docs = (0 until 240).map { doc(kind = 1, pubkey = ivy, at = 1_700_000_000L + (it * it) % 97) } + (1..30).map { doc(kind = 1, pubkey = ivy, at = 1_700_000_050L) }
+            seedBulk(docs)
+            mock.refuseHitsAbove = 50
+            mock.scrambleTieOrder = true
+            val capped = VespaEventIndex(mock.url, tuning = ClientTuning(unboundedHits = 50), idPageSize = 60)
+            try {
+                val q = EventQuery(kinds = listOf(1), authors = listOf(ivy))
+                val all = ArrayList<DocRef>()
+                capped.visitIds(q) {
+                    all += it
+                    true
+                }
+                assertEquals(docs.size, all.size, "every id, each exactly once")
+                assertEquals(docs.map { it.id }.toSet(), all.map { it.id }.toSet())
+                // A limit inside the cap takes the one-page read; one past the cap
+                // but inside a page must not ask for itself in one query either.
+                for (limit in listOf(20, 55, 130)) {
+                    val got = ArrayList<DocRef>()
+                    capped.visitIds(q.copy(limit = limit)) {
+                        got += it
+                        true
+                    }
+                    assertEquals(
+                        reference.search(q.copy(limit = limit)).map { it.id }.sorted(),
+                        got.map { it.id }.sorted(),
+                        "limit $limit: the newest N with NIP-01's lowest-id tiebreak",
+                    )
+                }
+                assertTrue(mock.searchRequests.all { (it["hits"]?.toInt() ?: 0) <= 50 }, "no request may ask past the deployed cap")
+            } finally {
+                mock.refuseHitsAbove = null
+                mock.scrambleTieOrder = false
+                capped.close()
+            }
+        }
+
+    /**
+     * THE REQ PATH UNDER THE SAME CAP. A recency read asked for `limit +
+     * TIE_SLACK` hits however close the limit sat to a deployed `maxHits`, so a
+     * REQ the cap admits (limit 48 under a cap of 48) was refused 400 for this
+     * client's own overfetch. The slack now stops at the cap, and the page must
+     * stay NIP-01's: ties straddle every boundary below, served in a scrambled
+     * engine order, so a clamp that trusted a slack-less answer would keep the
+     * engine's arbitrary members instead of the lowest ids. Both the
+     * speculative default and the shipped match-phase plan are read.
+     *
+     * Verified to fail with the clamp reverted: "76 hits requested, configured
+     * limit: 48." on the first limit; with only the `>=` reverted to `>`, the
+     * limit AT the cap serves the engine's arbitrary boundary members.
+     */
+    @Test
+    fun `a recency read under a deployed hits cap stays inside it and stays exact`() =
+        runBlocking {
+            val now = System.currentTimeMillis() / 1000
+            val uma = "da".repeat(32)
+            // Five events a second, so every limit below ends inside a tie group.
+            val docs = (0 until 150).map { doc(kind = 1, pubkey = uma, at = now - 10 - it / 5) }
+            seedBulk(docs)
+            mock.refuseHitsAbove = 48
+            mock.scrambleTieOrder = true
+            try {
+                for (strategy in listOf(RecencyStrategy.SPECULATIVE, RecencyStrategy.MATCH_PHASE)) {
+                    VespaEventIndex(mock.url, tuning = ClientTuning(unboundedHits = 48), recencyStrategy = strategy, recencyMemory = false).use { capped ->
+                        for (limit in listOf(12, 29, 43, 48)) {
+                            val q = EventQuery(kinds = listOf(1), authors = listOf(uma), limit = limit, nowSecs = now)
+                            assertEquals(reference.search(q).map { it.id }, capped.search(q).map { it.id }, "$strategy, limit $limit: NIP-01's page, lowest ids at the boundary")
+                        }
+                    }
+                }
+                assertTrue(mock.searchRequests.all { (it["hits"]?.toInt() ?: 0) <= 48 }, "no request may ask past the deployed cap")
+            } finally {
+                mock.refuseHitsAbove = null
+                mock.scrambleTieOrder = false
+            }
+        }
+
+    /** A walk the observer gates: the lens [EventYql.gateFloor] reads, on the recency-gated profile a lensed termless read takes. */
+    private fun gated(q: EventQuery) = q.copy(observer = "0b".repeat(32), rankKey = "0c".repeat(32), minRank = 10.0, ranking = EventYql.RANK_RECENCY_GATED)
+
+    /**
+     * A GATED WALK'S LAST RESORT GATES TOO. The document-API scan is not a
+     * search, so it has no rank profile and no drop-limit: a selection built
+     * from a lensed query streamed every author the lens drops. The walk reached
+     * it on exactly the shape a provider's cards have — one dense second, its
+     * id-prefix split out of budget — so a NIP-77 snapshot declared through an
+     * observer handed over the below-floor authors in that second.
+     *
+     * Verified to fail with EventSelection's gate check removed: the scan
+     * serves the below-floor author's 20 ids alongside the trusted 200.
+     */
+    @Test
+    fun `a gated walk that runs out of prefix budget never scans the gate away`() =
+        runBlocking {
+            IngestStats.reset()
+            val trusted = "d5".repeat(32)
+            val spam = "d6".repeat(32)
+            seedBulk((1..200).map { doc(kind = 30382, pubkey = trusted, at = 1_700_000_000L) } + (1..20).map { doc(kind = 30382, pubkey = spam, at = 1_700_000_000L) })
+            mock.belowFloorAuthors = setOf(spam)
+            mock.visitRequests = 0
+            val walking = VespaEventIndex(mock.url, idPageSize = 1)
+            try {
+                val got = ArrayList<DocRef>()
+                walking.visitIds(gated(EventQuery(kinds = listOf(30382), authors = listOf(trusted, spam)))) { page ->
+                    got += page
+                    true
+                }
+                val stages = IngestStats.snapshot()
+                assertNotNull(stages["walk.ties.prefix.budget"], "the walk must reach the last resort this pins; stages seen: ${stages.keys.sorted()}")
+                val spamIds = reference.search(EventQuery(authors = listOf(spam))).map { it.id }.toSet()
+                assertEquals(emptyList(), got.filter { it.id in spamIds }.map { it.id }, "a below-floor author's ids left a gated walk")
+                assertEquals(200, got.distinctBy { it.id }.size, "and every trusted id still arrives")
+                assertEquals(200, got.size, "each exactly once")
+                assertEquals(0, mock.visitRequests, "a selection cannot carry the gate, so a gated walk never visits")
+            } finally {
+                mock.belowFloorAuthors = emptySet()
+                walking.close()
+                IngestStats.reset()
+            }
+        }
+
+    /** The same gate on the other selection-backed reads that a search would gate: the tags projection and the reindex page. */
+    @Test
+    fun `the selection-backed projections of a gated query keep the gate`() =
+        runBlocking {
+            val trusted = "d7".repeat(32)
+            val spam = "d8".repeat(32)
+            seed(doc(kind = 10002, pubkey = trusted, tags = listOf(listOf("r", "wss://kept.example/"))), doc(kind = 10002, pubkey = spam, tags = listOf(listOf("r", "wss://gated.example/"))))
+            mock.belowFloorAuthors = setOf(spam)
+            mock.visitRequests = 0
+            try {
+                val q = gated(EventQuery(kinds = listOf(10002)))
+                val tags = ArrayList<List<List<String>>>()
+                index.visitTags(q) {
+                    tags += it
+                    true
+                }
+                assertEquals(listOf(listOf(listOf("r", "wss://kept.example/"))), tags, "visitTags")
+                assertEquals(listOf(trusted), index.visitDocsPage(q, null, 10).docs.map { it.pubkey }, "visitDocsPage")
+                assertEquals(0, mock.visitRequests, "neither may take the ungated visit")
+            } finally {
+                mock.belowFloorAuthors = emptySet()
             }
         }
 

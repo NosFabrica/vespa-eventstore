@@ -68,6 +68,26 @@ class NearTextTest {
         assertTrue("pamplona" in NearText.tokens("Vitor Pamplona"))
     }
 
+    /**
+     * A NAME TYPED WITH AN IME SPACE IS TWO TOKENS. A Japanese or Chinese IME
+     * puts U+3000 IDEOGRAPHIC SPACE between words, and Java's `\\s` is ASCII
+     * only, so "山田　太郎" was ONE token and the joined whole-name variant
+     * multi-token names get never existed. Verified to fail with WHITESPACE
+     * back on `\\s+`.
+     */
+    @Test
+    fun `tokens split on unicode whitespace, the ideographic space included`() {
+        val tokens = NearText.tokens("山田\u3000太郎")
+        assertTrue("山田" in tokens && "太郎" in tokens, "each word its own token: $tokens")
+        assertTrue("山田太郎" in tokens, "and the whole-name join: $tokens")
+        assertFalse(tokens.any { '\u3000' in it }, "no token carries the separator: $tokens")
+        // The rule IS Kotlin's isWhitespace, which trim() applies to the same
+        // strings first — over the whole BMP, so the two can never disagree.
+        for (c in Char.MIN_VALUE..Char.MAX_VALUE) {
+            assertEquals(c.isWhitespace(), WHITESPACE.matches(c.toString()), "U+%04X".format(c.code))
+        }
+    }
+
     @Test
     fun `cjk runs emit suffixes so given names inside unsegmented names are reachable`() {
         // "太郎" (given name) must be able to prefix-match "中村太郎".

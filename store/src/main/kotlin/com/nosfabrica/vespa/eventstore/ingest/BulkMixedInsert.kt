@@ -28,7 +28,6 @@ import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.ingest.Rejections
 import com.vitorpamplona.quartz.nip01Core.core.Event
-import com.vitorpamplona.quartz.nip01Core.core.addressTagOrNull
 import com.vitorpamplona.quartz.nip01Core.core.isAddressable
 import com.vitorpamplona.quartz.nip01Core.core.isReplaceable
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
@@ -47,15 +46,25 @@ import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
  * intra-batch ordering for free), then write the net diff in bulk. Correct by
  * construction — the replay runs the same code the per-event path does. Runs
  * under the writer lock, so query-then-write stays atomic.
+ *
+ * ONE ERASE IS NOT REPLAYED IN MEMORY: a vanish's sweep of the owner's stored
+ * history. That history is unbounded, so it is never preloaded; the replay
+ * sweeps what the snapshot holds, and [run] then applies the vanish to the
+ * real index through [Deletions.applyVanish] — the per-event path's own paged
+ * sweep — before it writes the batch's survivors (see [run] for why that order
+ * is exact).
  */
 internal class BulkMixedInsert(
     private val index: EventIndex,
     private val relay: NormalizedRelayUrl?,
     private val nowSecs: () -> Long,
     private val guards: GuardOwners,
-    /** The store's own sweep page size: a vanish in the batch sweeps the snapshot through it. */
+    /** The store's own sweep page size: a vanish in the batch sweeps the snapshot, and then the index, through it. */
     private val sweepPage: Int,
 ) {
+    /** The vanish erase against the REAL index — the per-event path's paged [Deletions.sweep]. */
+    private val erase = Deletions(index, relay, sweepPage)
+
     /** Preload, replay, write the diff. Callers hold the store's writer lock across the whole run. */
     suspend fun run(events: List<Event>): List<IEventStore.InsertOutcome> {
         val snapshot = InMemoryEventIndex()
@@ -76,6 +85,24 @@ internal class BulkMixedInsert(
         val removed = beforeDocs.filter { it.id !in afterIds }
         val added = after.filter { it.id !in before }
         if (removed.isNotEmpty()) index.removeDocs(removed)
+        // The vanishes' erase of what the snapshot never held. Per owner, the
+        // newest ADMITTED vanish covering this relay decides it: each one
+        // erases the owner's stored history up to its own created_at, so for
+        // documents stored BEFORE this batch the union is the newest one's
+        // window, whatever the batch order. Applied after the removes and
+        // BEFORE the puts, which is what makes it exact: the index then holds
+        // no event of this batch, and the replay already decided every one of
+        // them (an owner's event inside a window was erased or VANISHED there;
+        // the surviving request itself, which its own window covers, is put
+        // after). Paged by [sweepPage], so neither the read nor the remove is
+        // ever the whole history, and a deployment that caps unlimited hits
+        // cannot cut it short: the preload query this replaced came back
+        // truncated there, and the vanish was reported Accepted over the rest.
+        outcomes
+            .zip(events)
+            .mapNotNull { (outcome, e) -> (e as? RequestToVanishEvent)?.takeIf { outcome is IEventStore.InsertOutcome.Accepted && it.shouldVanishFrom(relay) } }
+            .groupBy { it.pubKey }
+            .forEach { (_, vanishes) -> erase.applyVanish(vanishes.maxBy { it.createdAt }) }
         if (added.isNotEmpty()) index.putAll(added)
         added.forEach {
             when (it.kind) {
@@ -89,19 +116,19 @@ internal class BulkMixedInsert(
     /**
      * Load every stored doc [run]'s replay could read — a SUPERSET of what the
      * per-event insert's queries touch: existing ids, the owners'
-     * tombstones/vanishes, address versions, deletion a-tag targets, and each
-     * vanish owner's history. Fanned out as independent reads; the replay then
-     * needs no further I/O.
+     * tombstones/vanishes, address versions and deletion a-tag targets. Fanned
+     * out as independent reads; the replay then needs no further I/O. NOT a
+     * vanish owner's history: [run] erases that from the index, paged, after
+     * the replay — nothing the replay DECIDES reads it (dedup, guards and
+     * supersession each have their own preload above).
      */
     private suspend fun preloadWorkingSet(
         snapshot: InMemoryEventIndex,
         events: List<Event>,
     ) {
         val deletions = events.filterIsInstance<DeletionRequestEvent>()
-        val vanishes = events.filterIsInstance<RequestToVanishEvent>()
         val owners = events.map { it.owner() }.distinct()
         val batchIds = events.map { it.id }
-        val batchAddresses = events.mapNotNull { it.addressTagOrNull() }.distinct()
         val records = events.filter { it !is DeletionRequestEvent && it !is RequestToVanishEvent }
         // Only owners with a provably stored tombstone/vanish (GuardOwners) can
         // guard this batch; everyone else's probes come back empty, so skip
@@ -115,12 +142,15 @@ internal class BulkMixedInsert(
                 // Existing docs by id: batch ids + every deletion's e-tag targets.
                 (batchIds + deletions.flatMap { it.deleteEventIds() }).distinct().chunked(PRELOAD_CHUNK).forEach { add(EventQuery(ids = it)) }
 
-                // Guards + immunity: the owners' stored tombstones (targeting this
-                // batch's ids/addresses) and their vanishes — only for flagged owners.
-                flaggedDeleters.chunked(PRELOAD_CHUNK).forEach { auth ->
-                    if (batchIds.isNotEmpty()) add(EventQuery(kinds = listOf(DeletionRequestEvent.KIND), authors = auth, tags = mapOf("e" to batchIds)))
-                    if (batchAddresses.isNotEmpty()) add(EventQuery(kinds = listOf(DeletionRequestEvent.KIND), authors = auth, tags = mapOf("a" to batchAddresses)))
-                }
+                // Guards: the flagged owners' stored tombstones targeting THEIR
+                // OWN records in this batch (NIP-09 is same-owner-only, and a
+                // kind 5/62 is immune, so nobody else's ids can be covered), in
+                // the record path's shape — see [tombstoneQueries]. This sent the
+                // WHOLE batch's ids and addresses, unchunked, in every owner
+                // chunk's query: one YQL per chunk as wide as the batch, under
+                // both locks. Then their vanishes.
+                val flagged = flaggedDeleters.toHashSet()
+                addAll(tombstoneQueries(records.filter { it.owner() in flagged }.groupBy { it.owner() }, PRELOAD_CHUNK))
                 flaggedVanishers.chunked(PRELOAD_CHUNK).forEach { auth ->
                     add(EventQuery(kinds = listOf(RequestToVanishEvent.KIND), authors = auth))
                 }
@@ -182,17 +212,6 @@ internal class BulkMixedInsert(
                             add(EventQuery(kinds = listOf(ka.first), authors = listOf(ka.second), tags = mapOf("d" to ds), until = until))
                         }
                     }
-
-                // Vanish sweep: the owner's history UP TO the vanish's own
-                // created_at. The replay's sweep filters by `until` anyway, so
-                // nothing newer was ever a candidate — and pulling it left this
-                // the one unbounded preload, materializing a prolific owner's
-                // ENTIRE history in the snapshot under the writer lock. Several
-                // vanishes by one owner take the widest window, since each still
-                // replays against its own until.
-                vanishes.groupBy { it.pubKey }.forEach { (owner, evs) ->
-                    add(EventQuery(owners = listOf(owner), until = evs.maxOf { it.createdAt }))
-                }
             }
 
         IngestStats.timed("preload") {

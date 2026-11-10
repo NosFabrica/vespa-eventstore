@@ -20,6 +20,15 @@
  */
 package com.nosfabrica.vespa.eventstore.engine.client
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineName
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonArray
@@ -51,10 +60,21 @@ import java.util.concurrent.atomic.AtomicReference
  * old. A probe that fails leaves the last good answer in place rather than
  * blanking the panel — the moment this matters most is the moment the engine
  * is least able to answer.
+ *
+ * ONE REFRESH AT A TIME, and a BOUNDED one. The query client this rides
+ * deliberately has no deadline on the wait for an answer ([VespaHttp]), so a
+ * metrics endpoint that accepted the request and never answered held its
+ * caller forever, and while the cache was stale every page render started its
+ * own GET: renders piled up, each holding a slot of the client's shared
+ * request budget. Now the first caller past the TTL starts the one refresh,
+ * every caller meanwhile awaits that same one, and it gives up after
+ * [deadlineMillis] (a failure like any other: the last good answer stands).
  */
 class EngineResources internal constructor(
     internal val http: VespaHttp,
     internal val endpoint: () -> String,
+    /** How long one refresh may take, retries included; see [DEADLINE_MILLIS]. */
+    private val deadlineMillis: Long = DEADLINE_MILLIS,
 ) {
     /** One content node's headroom, as proton reports it: 0.0-1.0 of the limit that blocks feed. */
     class NodeUsage(
@@ -79,13 +99,60 @@ class EngineResources internal constructor(
 
     private val cached = AtomicReference<Usage?>(null)
 
-    /** The last reading, refreshed when older than [TTL_MILLIS]. Null only before the first success. */
+    /** The refresh in flight, if any: what every caller past the TTL awaits. */
+    private val refreshing = AtomicReference<Deferred<Usage?>?>(null)
+
+    /**
+     * Where a refresh runs: OWNED BY NO CALLER, so a caller cancelled while it
+     * waits (a page render abandoned) cancels only its own wait, and the
+     * others still get the answer. Nothing to close: a refresh ends within
+     * [deadlineMillis] whatever the engine does.
+     */
+    private val refreshes = CoroutineScope(SupervisorJob() + Dispatchers.Default + CoroutineName("engine-resources"))
+
+    /**
+     * The last reading, refreshed when older than [TTL_MILLIS]. Null only
+     * before the first success. Callers that find it stale share one refresh
+     * (see the class KDoc); each may be cancelled alone.
+     */
     suspend fun usage(nowMillis: Long = System.currentTimeMillis()): Usage? {
         cached.get()?.let { if (nowMillis - it.atMillis < TTL_MILLIS) return it }
-        val fresh = runCatching { read(nowMillis) }.getOrNull()
         // Keep the last good answer on failure: see the class KDoc.
-        if (fresh != null) cached.set(fresh)
-        return fresh ?: cached.get()
+        return refresh(nowMillis).await() ?: cached.get()
+    }
+
+    /**
+     * The refresh in flight, or a new one. The refresh catches every failure
+     * of its own, its deadline included, and completes with null, so a waiter
+     * only ever receives a reading or null: never another coroutine's
+     * exception, nor a cancellation. Started LAZY so that a caller losing the
+     * race to install it drops it without a request having been sent.
+     */
+    private fun refresh(nowMillis: Long): Deferred<Usage?> {
+        while (true) {
+            refreshing.get()?.let { return it }
+            val mine =
+                refreshes.async(start = CoroutineStart.LAZY) {
+                    val fresh =
+                        try {
+                            // A missed deadline is null here; a failed read throws, and is null below.
+                            withTimeoutOrNull(deadlineMillis) { read(nowMillis) }
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (_: Exception) {
+                            null
+                        }
+                    if (fresh != null) cached.set(fresh)
+                    fresh
+                }
+            if (refreshing.compareAndSet(null, mine)) {
+                // Cleared when it completes, so the next stale read starts afresh.
+                mine.invokeOnCompletion { refreshing.compareAndSet(mine, null) }
+                mine.start()
+                return mine
+            }
+            mine.cancel()
+        }
     }
 
     private suspend fun read(nowMillis: Long): Usage {
@@ -139,6 +206,14 @@ class EngineResources internal constructor(
 
         /** How stale a reading may be before a caller triggers another. A status page, not an alarm. */
         const val TTL_MILLIS = 15_000L
+
+        /**
+         * One refresh's deadline: how long a status page waits on the engine
+         * before showing the last good reading. A page's patience, chosen, not
+         * measured: this endpoint's latency has not been measured here, and
+         * should be well under it.
+         */
+        const val DEADLINE_MILLIS = 5_000L
 
         private const val MEMORY = "resource_usage.memory"
         private const val DISK = "resource_usage.disk"

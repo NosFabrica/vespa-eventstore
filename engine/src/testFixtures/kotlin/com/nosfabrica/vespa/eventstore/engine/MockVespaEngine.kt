@@ -53,6 +53,7 @@ import java.io.IOException
 import java.net.URLDecoder
 import java.nio.ByteBuffer
 import java.util.Collections
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.zip.GZIPInputStream
 import java.util.zip.GZIPOutputStream
@@ -115,6 +116,55 @@ class MockVespaEngine(
      * which sends nothing at all until it has a result. 0 answers at once.
      */
     @Volatile var delayAnswersMs: Long = 0
+
+    /**
+     * While set, every document WRITE (a document-API or batch-handler POST, PUT or DELETE, but
+     * not the feed client's `dryRun` handshake) waits for this latch before it is answered: an
+     * engine that has stopped acking, held open for exactly as long as a test wants, where
+     * [delayAnswersMs] would be a guess at how long is long enough. [heldWrites] counts arrivals.
+     * [stop] releases it.
+     */
+    @Volatile var holdWrites: CountDownLatch? = null
+
+    /** Document writes that have reached [holdWrites] (whether or not it is still closed). */
+    val heldWrites: Int get() = heldWritesCount.get()
+    private val heldWritesCount = AtomicInteger()
+
+    /**
+     * How `/metrics/v2/values` (the headroom probe, [EngineResources][com.nosfabrica.vespa.eventstore.engine.client.EngineResources])
+     * is answered: by default one content node at half its memory limit and a quarter of its disk.
+     */
+    @Volatile var metricsReply: Pair<Int, String> =
+        200 to
+            """{"nodes":[{"hostname":"mock-0.local","services":[{"name":"vespa.searchnode","metrics":[{"values":""" +
+            """{"content.proton.resource_usage.memory.average":0.5,"content.proton.resource_usage.disk.average":0.25}}]}]}]}"""
+
+    /** While set, a metrics request waits for this latch before it is answered: a metrics endpoint that never answers. [stop] releases it. */
+    @Volatile var holdMetrics: CountDownLatch? = null
+
+    /** `/metrics/v2/values` requests received (counted on arrival, before [holdMetrics]). */
+    val metricsRequests: Int get() = metricsRequestsCount.get()
+    private val metricsRequestsCount = AtomicInteger()
+
+    /** Document-API removes served. */
+    val documentRemoves: Int get() = documentRemovesCount.get()
+    private val documentRemovesCount = AtomicInteger()
+
+    /**
+     * Hold every `id in (…)` lookup — the id-first hydration's document read —
+     * this long while it counts as in flight, so [idLookupsInFlightPeak] can say
+     * how many a client really overlapped. A gauge rather than a stopwatch: two
+     * lookups either overlap inside the hold or they do not, however loaded the
+     * machine running the test is. 0 holds nothing.
+     */
+    @Volatile var holdIdLookupsMs: Long = 0
+
+    /** The most `id in (…)` lookups ever in flight at once while [holdIdLookupsMs] held them. Settable to reset. */
+    var idLookupsInFlightPeak: Int
+        get() = idLookupsPeak.get()
+        set(value) = idLookupsPeak.set(value)
+    private val idLookupsPeak = AtomicInteger()
+    private val idLookupsInFlight = AtomicInteger()
 
     /** The exchanges [stallBodiesMidStream] is holding open. */
     private val stalled = Collections.synchronizedList(ArrayList<Callback>())
@@ -185,6 +235,17 @@ class MockVespaEngine(
      * whatever was asked.
      */
     @Volatile var hitsCap: Int? = null
+
+    /**
+     * The other half of an operator-capped `maxHits`: a request ASKING for more
+     * hits than the cap is refused outright — HTTP 400 naming the configured
+     * limit, the shape real Vespa answers a `hits` above `maxHits` with — where
+     * [hitsCap] models the trim of an answer inside it. A client that sizes a
+     * request past VESPA_UNBOUNDED_HITS on its own initiative (an overfetch,
+     * not the caller's limit) is the bug this exposes. Null (the default)
+     * refuses nothing.
+     */
+    @Volatile var refuseHitsAbove: Int? = null
 
     /**
      * Serve streamed visits (`stream=true`) the paged JSON shape instead of
@@ -332,6 +393,21 @@ class MockVespaEngine(
      */
     @Volatile var relevanceOf: ((EventDoc) -> Double)? = null
 
+    /**
+     * THE OBSERVER GATE, modelled as far as a mock can: authors whose events a
+     * query ranked by a GATING profile drops — the recency-gated pair, the trust
+     * sorts and `search`, whenever the request carries `query(min_rank)`, which
+     * is the `user_score >= min_rank` drop-limit real Vespa applies there
+     * (EventYql.gateFloor). The mock holds no reputation tensors, so WHO is below
+     * the floor is the test's to say. A document-API visit is not a search and
+     * is never gated — exactly real Vespa's asymmetry, and the one a gated walk
+     * must not fall through. While it is set, an EMPTY lens (`query(user_q)`
+     * = `{}`, what an unresolved observer sends) trusts nobody and drops every
+     * document, as real Vespa's empty tensor scores every author 0 — so a read
+     * that forgot to resolve its lens shows. Empty (the default) gates nobody.
+     */
+    @Volatile var belowFloorAuthors: Set<String> = emptySet()
+
     /** Every `/search/` request's parameters, in order — a test reads the rung each query of a descent asked for. */
     val searchRequests = java.util.concurrent.CopyOnWriteArrayList<Map<String, String>>()
 
@@ -429,6 +505,8 @@ class MockVespaEngine(
     val port: Int get() = (server.connectors[0] as ServerConnector).localPort
 
     fun stop() {
+        holdWrites?.countDown()
+        holdMetrics?.countDown()
         synchronized(stalled) {
             stalled.forEach { it.failed(IOException("mock stopped")) }
             stalled.clear()
@@ -442,6 +520,11 @@ class MockVespaEngine(
         rawQuery: String?,
         body: String,
     ): Reply {
+        if (method == "GET" && path == "/metrics/v2/values") {
+            metricsRequestsCount.incrementAndGet()
+            holdMetrics?.await()
+            return metricsReply.let { (status, body) -> Reply(status, body) }
+        }
         val documentPath = path.startsWith("/document/v1/") || path == "/eventstore/v1/feed"
         if ((documentPath && !servesDocumentApi) || (path == "/search/" && !servesSearch)) {
             wrongRoleRequestsCount.incrementAndGet()
@@ -455,6 +538,10 @@ class MockVespaEngine(
         }
         // The feed client opens with a no-op handshake request (?dryRun=true).
         if (rawQuery.orEmpty().contains("dryRun=true")) return Reply(200, "{}")
+        holdWrites?.takeIf { documentPath && method in WRITE_METHODS }?.let {
+            heldWritesCount.incrementAndGet()
+            it.await()
+        }
         val docPrefix = "/document/v1/event/event/docid/"
         updateReply?.takeIf { method == "PUT" && path.startsWith("/document/v1/") }?.let { (status, reply) ->
             updateRequestsCount.incrementAndGet()
@@ -527,6 +614,7 @@ class MockVespaEngine(
             }
 
             method == "DELETE" && path.startsWith(docPrefix) -> {
+                documentRemovesCount.incrementAndGet()
                 runBlocking { inner.remove(path.removePrefix(docPrefix)) }
                 Reply(200, """{"id":"$path"}""")
             }
@@ -608,6 +696,14 @@ class MockVespaEngine(
             return Reply(400, """{"message":"Requested rank profile '${params["ranking"]}' is undefined for document type 'event'"}""")
         }
         val yql = params["yql"] ?: return Reply(400, """{"message":"missing yql"}""")
+        if (holdIdLookupsMs > 0 && " where id in (" in yql) {
+            idLookupsPeak.accumulateAndGet(idLookupsInFlight.incrementAndGet(), ::maxOf)
+            try {
+                Thread.sleep(holdIdLookupsMs)
+            } finally {
+                idLookupsInFlight.decrementAndGet()
+            }
+        }
         params["ranking"]?.let { searchRankings += it }
         searchRequests += params
         // The existence check rides a dedicated attribute-only summary class; a
@@ -632,6 +728,9 @@ class MockVespaEngine(
             return Reply(400, """{"message":"Could not create query from YQL: Field '$field' does not exist."}""")
         }
         val hits = params["hits"]?.toIntOrNull() ?: 10
+        refuseHitsAbove?.let { max ->
+            if (hits > max) return Reply(400, """{"root":{"errors":[{"code":4,"summary":"Invalid query parameter","message":"$hits hits requested, configured limit: $max."}]}}""")
+        }
         // The exact-count query (EventYql.buildCount): "… limit 0 | all(output(count()))".
         // The author list/histogram (EventYql.buildDistinctAuthors): "… |
         // all(group(pubkey) each(output(count())))" — the `each(...)` is what
@@ -643,13 +742,20 @@ class MockVespaEngine(
         val isAuthorHistogram = yql.contains("group(pubkey)") && yql.contains("each(output(count()))")
         val grouped = isCount || isAuthorHistogram
         val query = MockYql.parse(yql.substringBefore("|").trim(), params).let { if (grouped) it.copy(limit = null) else it }
+        val gates = belowFloorAuthors.isNotEmpty() && params["ranking"] in GATING_PROFILES && "ranking.features.query(min_rank)" in params
         // The limit cut must be applied AFTER any tie scrambling: real Vespa's
         // single-key sort picks boundary-tie MEMBERSHIP arbitrarily, and a cut
         // inside the reference's tiebroken order would hide exactly the bug
         // [scrambleTieOrder] exists to surface.
         val matches =
             runBlocking { inner.search(query.copy(limit = null)) }
-                .let { docs -> relevanceOf?.let { score -> docs.sortedByDescending(score) } ?: docs }
+                .let { docs ->
+                    when {
+                        !gates -> docs
+                        params["ranking.features.query(user_q)"] == "{}" -> emptyList()
+                        else -> docs.filter { it.pubkey !in belowFloorAuthors }
+                    }
+                }.let { docs -> relevanceOf?.let { score -> docs.sortedByDescending(score) } ?: docs }
                 .let { sorted ->
                     if (scrambleTieOrder && !grouped) {
                         // created_at groups stay newest-first; ids within each
@@ -1019,6 +1125,9 @@ class MockVespaEngine(
             }
 
     private companion object {
+        /** The methods [holdWrites] holds: the document API's put, update and remove, and the batch handler's POST. */
+        val WRITE_METHODS = setOf("POST", "PUT", "DELETE")
+
         /** Vespa's flag for "the cluster is not in its ideal state" — the one degradation it names without a query having asked for anything. */
         const val NON_IDEAL_STATE = "non-ideal-state"
 
@@ -1045,6 +1154,17 @@ class MockVespaEngine(
          * aggregation against a real Vespa while these tests stayed green.
          */
         val PROFILE_ONLY_PARAMS = listOf("maxHits", "maxOffset", "grouping.globalMaxGroups")
+
+        /** The profiles whose first phase drops `user_score < min_rank` — EventYql.gateFloor's list, which [belowFloorAuthors] gates on. */
+        val GATING_PROFILES =
+            setOf(
+                EventYql.RANK_RECENCY_GATED,
+                EventYql.RANK_RECENCY_GATED_EXACT,
+                EventYql.RANK_DESC,
+                EventYql.RANK_ASC,
+                EventYql.RANK_FOLLOWERS,
+                EventYql.RANK_SEARCH,
+            )
     }
 }
 

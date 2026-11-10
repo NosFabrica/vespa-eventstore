@@ -31,6 +31,7 @@ import com.nosfabrica.vespa.eventstore.engine.LinkWeights
 import com.nosfabrica.vespa.eventstore.engine.Linker
 import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.ScoredHit
+import com.nosfabrica.vespa.eventstore.engine.async.QUERY_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.metrics.Activity
@@ -343,7 +344,7 @@ class VespaEventIndex(
         // one flag for good.
         var attempt = 0
         while (true) {
-            val retry = docs.map { putOp(it) }
+            val retry = feed.enqueueAll(docs, ::putOp)
             try {
                 retry.forEach { it.await() }
                 return
@@ -357,17 +358,19 @@ class VespaEventIndex(
     private fun removeOp(id: String) = feed.client.remove(DocumentId.of(EVENT_NAMESPACE, EVENT_DOCTYPE, id), feedParams())
 
     override suspend fun put(doc: EventDoc) {
-        awaitPuts(listOf(doc), listOf(putOp(doc)))
+        awaitPuts(listOf(doc), listOf(feed.enqueue { putOp(doc) }))
     }
 
     /**
      * Puts stay in flight together — the feed client multiplexes them over
      * HTTP/2 — in chunks of [FEED_CHUNK]: the per-operation deadline
-     * ([feedParams]) is measured from ENQUEUE, not from dispatch, and the
-     * throttler admits about `connections x streams` at a time, so a single
-     * call that enqueued far more than that had its tail expire in the queue
-     * before its first dispatch — most of the batch landed and the call still
-     * threw. A chunk the size of the admission window loses no pipelining.
+     * ([feedParams]) is measured from ENQUEUE, not from dispatch, so a single
+     * call that enqueued far more than the client keeps in flight had its tail
+     * expire before its first dispatch — most of the batch landed and the call
+     * still threw. What the client keeps in flight is its throttler's window
+     * (`targetInflight`), not `connections x streams`: see [FEED_CHUNK]. Past
+     * that window an enqueue WAITS for a slot, on the enqueuing thread, which
+     * is why every operation here is handed over through [VespaFeed.enqueueAll].
      */
     override suspend fun putAll(docs: List<EventDoc>) {
         // Batched first when it is on: whatever it does not confirm stored goes the feed client's
@@ -381,7 +384,7 @@ class VespaEventIndex(
                     body = { it.feedJson(includeNear = fallbacks.nearFieldsAvailable, includeEdge = feedsEdge(), includeStem = fallbacks.stemFieldsAvailable) },
                 )
             } ?: docs
-        rest.chunked(FEED_CHUNK).forEach { chunk -> awaitPuts(chunk, chunk.map { putOp(it) }) }
+        rest.chunked(FEED_CHUNK).forEach { chunk -> awaitPuts(chunk, feed.enqueueAll(chunk, ::putOp)) }
     }
 
     /**
@@ -407,12 +410,14 @@ class VespaEventIndex(
         // Same write-side near-column net as [awaitPuts]; this path builds its
         // own operation (the test-and-set condition), so it carries its own.
         suspend fun attempt(): Result =
-            feed.client
-                .put(
-                    DocumentId.of(EVENT_NAMESPACE, EVENT_DOCTYPE, address),
-                    doc.feedJson(includeNear = fallbacks.nearFieldsAvailable, includeEdge = feedsEdge(), includeStem = fallbacks.stemFieldsAvailable),
-                    feedParams().createIfNonExistent(true).testAndSetCondition(condition),
-                ).await()
+            feed
+                .enqueue {
+                    feed.client.put(
+                        DocumentId.of(EVENT_NAMESPACE, EVENT_DOCTYPE, address),
+                        doc.feedJson(includeNear = fallbacks.nearFieldsAvailable, includeEdge = feedsEdge(), includeStem = fallbacks.stemFieldsAvailable),
+                        feedParams().createIfNonExistent(true).testAndSetCondition(condition),
+                    )
+                }.await()
         var refusals = 0
         var result: Result
         while (true) {
@@ -519,7 +524,7 @@ class VespaEventIndex(
         // Under address-keying the doc may live at an address docid, so resolve
         // it before removing.
         val docId = if (addressKeyed) get(id)?.let { docIdOf(it) } ?: id else id
-        feed.client.remove(DocumentId.of(EVENT_NAMESPACE, EVENT_DOCTYPE, docId), feedParams()).await()
+        feed.enqueue { removeOp(docId) }.await()
     }
 
     /** All removes in flight together over HTTP/2, like [putAll]. */
@@ -531,13 +536,13 @@ class VespaEventIndex(
             ids.mapBounded(ID_GET_FANOUT) { remove(it) }
             return
         }
-        ids.chunked(FEED_CHUNK).forEach { chunk -> chunk.map { removeOp(it) }.forEach { it.await() } }
+        ids.chunked(FEED_CHUNK).forEach { chunk -> feed.enqueueAll(chunk, ::removeOp).forEach { it.await() } }
     }
 
     /** Bulk remove with the docs in hand: the docid comes straight from each doc, so no address-keyed resolve-by-get per id. Chunked like [putAll]. */
     override suspend fun removeDocs(docs: List<EventDoc>) {
         docs.chunked(FEED_CHUNK).forEach { chunk ->
-            chunk.map { feed.client.remove(DocumentId.of(EVENT_NAMESPACE, EVENT_DOCTYPE, docIdOf(it)), feedParams()) }.forEach { it.await() }
+            feed.enqueueAll(chunk) { removeOp(docIdOf(it)) }.forEach { it.await() }
         }
     }
 
@@ -612,7 +617,8 @@ class VespaEventIndex(
      * overfetches [TIE_SLACK] extra hits — if anything older than T arrived, or
      * the engine ran out of matches, the whole T tie group is in hand and an
      * in-memory sort resolves the boundary. Only a wider tie group pays one
-     * extra `[T,T]` window query.
+     * extra `[T,T]` window query — as does a limit within [TIE_SLACK] of a
+     * deployed hits cap, where the slack is clamped to the cap ([recallPage]).
      *
      * Ranked queries keep the engine's score order untouched. The gated profiles
      * are recency-ordered too (score IS created_at), so they take this path.
@@ -654,28 +660,37 @@ class VespaEventIndex(
      * made (EventIndex.existingIds). A document deleted between the two queries
      * drops out of the page: one short page on a rare interleaving, the race
      * [RecencyPlanner.window] already accepts.
+     *
+     * ONE round trip, however many chunks: a page past [HYDRATE_CHUNK] (a
+     * 5,000-limit REQ is three) reads its chunks CONCURRENTLY, at most
+     * [QUERY_FANOUT] in flight — the bound that keeps document reads from
+     * timing out proton's summary stage. They used to go back to back, three
+     * document-store round trips for one page. A failed chunk cancels the rest
+     * and fails the read, as the loop did; the page keeps its own order, since
+     * it is rebuilt from [page], not from the order chunks answered in.
      */
     private suspend fun hydrate(page: List<VespaSummary>): List<VespaSummary> {
         if (page.isEmpty()) return page
+        val chunks = page.map { it.id }.chunked(HYDRATE_CHUNK)
+        // The common page is one chunk: no fan-out machinery for it.
+        val fetched = if (chunks.size == 1) listOf(hydrateChunk(chunks[0])) else chunks.mapBounded(QUERY_FANOUT) { hydrateChunk(it) }
         val full = HashMap<String, VespaSummary>(page.size * 2)
-        page.map { it.id }.chunked(HYDRATE_CHUNK).forEach { ids ->
-            // COMPLETENESS IS COUNTED HERE, not read off the coverage flag: this
-            // is a lookup of named ids, so an answer holding every one of them is
-            // whole whatever the engine reports — and one that is short AND
-            // degraded is a partial answer, refused like any other. (Short and
-            // undegraded is the deletion race above.)
-            val vq = EventYql.build(EventQuery(ids = ids, ranking = EventYql.RANK_UNRANKED, limit = ids.size))?.copy(sampled = true) ?: return@forEach
-            val root = searchRoot(vq, hits = ids.size)
-            var got = 0
-            root.children.forEach { hit ->
-                hit.fields?.takeIf { it.id.isNotEmpty() }?.let {
-                    full[it.id] = it
-                    got++
-                }
-            }
-            if (got < ids.size) root.coverage.requireComplete(allowMatchPhase = false)
-        }
+        for (hits in fetched) for (hit in hits) full[hit.id] = hit
         return page.mapNotNull { full[it.id] }
+    }
+
+    /** One [hydrate] lookup: the documents for [ids], by `id in (…)`. */
+    private suspend fun hydrateChunk(ids: List<String>): List<VespaSummary> {
+        // COMPLETENESS IS COUNTED HERE, not read off the coverage flag: this
+        // is a lookup of named ids, so an answer holding every one of them is
+        // whole whatever the engine reports — and one that is short AND
+        // degraded is a partial answer, refused like any other. (Short and
+        // undegraded is the deletion race above.)
+        val vq = EventYql.build(EventQuery(ids = ids, ranking = EventYql.RANK_UNRANKED, limit = ids.size))?.copy(sampled = true) ?: return emptyList()
+        val root = searchRoot(vq, hits = ids.size)
+        val got = root.children.mapNotNull { hit -> hit.fields?.takeIf { it.id.isNotEmpty() } }
+        if (got.size < ids.size) root.coverage.requireComplete(allowMatchPhase = false)
+        return got
     }
 
     /**
@@ -714,16 +729,26 @@ class VespaEventIndex(
         // profile whose degradation this client refuses. Page the band instead —
         // the caller's limit is honoured either way, which is the contract.
         if (limit > EventYql.MATCH_PHASE_BAND && q.ranking == null) return pagedRecency(q, limit, idOnly)
-        val fetch = q.copy(limit = limit + TIE_SLACK).keepingProfileOf(q)
+        // The slack stops at the deployed cap (VESPA_UNBOUNDED_HITS), as the id
+        // walk's does: an operator who capped the query profile's `maxHits` has
+        // the engine refuse any request past it, and the overfetch is this
+        // client's choice, not the caller's — asked for whole, a REQ the cap
+        // admits was refused for it. A limit past the cap itself still fails
+        // at the engine, which is the operator's cap working ([hitsFor]).
+        val fetchLimit = minOf(limit + TIE_SLACK, maxOf(limit, unboundedHits))
+        val fetch = q.copy(limit = fetchLimit).keepingProfileOf(q)
         var hits =
             recallRoot(fetch, idOnly)?.children?.mapNotNull { it.fields }?.filter { it.id.isNotEmpty() }
                 ?: return emptyList()
-        if (hits.size > limit) {
+        // `>=`, not `>`: with the slack clamped away a FULL answer is exactly
+        // `limit` long, and its boundary group may still have been cut.
+        if (hits.size >= limit) {
             val t = hits[limit - 1].createdAt
             // The tie group at T arrived complete if the engine either ran out
             // of matches before the overfetch limit or already emitted a doc
-            // strictly older than T.
-            val complete = hits.size < fetch.limit!! || hits.last().createdAt < t
+            // strictly older than T — which a slack-less full answer, ending AT
+            // T, never has, so it reads the group by its window.
+            val complete = hits.size < fetchLimit || hits.last().createdAt < t
             if (!complete) {
                 // A gated query's tie window must stay gated (the exact variant
                 // — a [t,t] window is tiny) or the rerun would resurrect
@@ -1301,7 +1326,10 @@ class VespaEventIndex(
             // recallSummaries restores). A NIP-77 snapshot of the filter then
             // disagreed with its own REQ at exactly that seam. Overfetch, and
             // read the straddling group whole, as recallSummaries does.
-            if (query.limit <= idPageSize) {
+            // INSIDE THE CAP as well as the page: a limit past a deployed
+            // `maxHits` cannot be one query, and the cursor serves the same
+            // newest N a page at a time.
+            if (query.limit <= minOf(idPageSize, unboundedHits)) {
                 val hits = newestExact(query, withDTag, query.limit)
                 if (hits.isNotEmpty()) onPage(hits)
                 return
@@ -1432,8 +1460,18 @@ class VespaEventIndex(
         onPage: suspend (List<DocRef>) -> Boolean,
     ) {
         var until: Long? = query.until
+        // INSIDE THE DEPLOYED CAP, like the tie-group read below. An operator
+        // who capped the query profile's `maxHits` (VESPA_UNBOUNDED_HITS) has
+        // the engine refuse any request asking past it, and the overfetch is
+        // this walk's own choice, not the caller's limit — asked for whole, it
+        // made every page of every walk a 400 on a cap under 20,064. So the
+        // fetch shrinks to the cap and the PAGE shrinks inside it, keeping the
+        // slack (halved when the cap is too small to spare a whole one). The
+        // boundary logic below needs only `pageSize <= fetchLimit`: a short
+        // slack just reads the boundary group by its window more often.
+        val fetchLimit = minOf(idPageSize + TIE_SLACK, unboundedHits)
+        val pageSize = minOf(idPageSize, fetchLimit - minOf(TIE_SLACK, fetchLimit / 2))
         while (true) {
-            val fetchLimit = idPageSize + TIE_SLACK
             val hits =
                 try {
                     idTimeRetrying(query.copy(until = until, limit = fetchLimit), withDTag, "walk.ids.page")
@@ -1525,7 +1563,7 @@ class VespaEventIndex(
                 return
             }
 
-            val boundary = hits[idPageSize - 1].createdAt
+            val boundary = hits[pageSize - 1].createdAt
             // The boundary group arrived complete only if the engine already
             // emitted something strictly older than it.
             if (hits.last().createdAt < boundary) {
@@ -1697,12 +1735,17 @@ class VespaEventIndex(
         withDTag: Boolean,
         limit: Int,
     ): List<DocRef> {
-        val fetch = limit + TIE_SLACK
+        // The slack stops at the deployed cap, as the cursor's does — the
+        // caller routes only a limit inside the cap here ([visitIds]). A fetch
+        // with no slack left is still exact: a full answer then ends AT t, never
+        // past it, so the check below reads the group by its window.
+        val fetch = minOf(limit + TIE_SLACK, maxOf(limit, unboundedHits))
         val hits = idTimeRetrying(query.copy(limit = fetch), withDTag, "walk.limited.onepage")
-        if (hits.size <= limit) return hits.sortedWith(DOCREF_NEWEST_FIRST)
+        // Fewer than asked for: the engine ran out, so every tie is in hand.
+        if (hits.size < fetch) return hits.sortedWith(DOCREF_NEWEST_FIRST).take(limit)
         val t = hits[limit - 1].createdAt
-        // Complete if the engine ran out, or already emitted something older than t.
-        val complete = hits.size < fetch || hits.last().createdAt < t
+        // Complete if the engine already emitted something older than t.
+        val complete = hits.last().createdAt < t
         if (complete) return hits.sortedWith(DOCREF_NEWEST_FIRST).take(limit)
         val newer = hits.filter { it.createdAt > t }
         val cap = minOf(idPageSize * TIE_DENSE_FACTOR + 1, unboundedHits)
@@ -1740,7 +1783,10 @@ class VespaEventIndex(
      * used to come here whole, and that was 22 to 51 minutes a time on a 516M
      * corpus; it is split on the attribute index now.
      *
-     * Queries a selection can't express fall back to the search default.
+     * Queries a selection can't express fall back to the search default —
+     * every GATED walk among them ([EventYql.walksGated]): a visit has no rank
+     * profile to carry the observer gate, so the search, which gates
+     * engine-side, finishes it ([EventSelection.build]).
      */
     private suspend fun visitIdsByScan(
         query: EventQuery,
@@ -1857,7 +1903,9 @@ class VespaEventIndex(
      * [countByAuthor]'s grouping is complete too, but it materializes every
      * group in one response; this streams, which is what the corpus-wide
      * guard-owner Bloom preload needs — a missed author would be a false
-     * negative.
+     * negative. A GATED query has no selection ([EventSelection.build]) and so
+     * takes the grouping, which is raw like every aggregation here: no caller
+     * lenses an author scan, and its answer is the same set either way.
      */
     override suspend fun scanAuthors(query: EventQuery): Set<String> {
         val selection = EventSelection.build(query) ?: return super.scanAuthors(query)
@@ -2399,15 +2447,26 @@ class VespaEventIndex(
      * snapshot is synchronous and must stay that way, so a page that wants
      * headroom asks for it rather than making every counter read do I/O.
      * [EngineResources] caches, so calling this per page render is one request
-     * per [EngineResources.TTL_MILLIS] and no more.
+     * per [EngineResources.TTL_MILLIS] and no more: concurrent renders share
+     * the one refresh, which gives up after [EngineResources.DEADLINE_MILLIS].
      */
     suspend fun engineHeadroom(): EngineResources.Usage? = resources.usage()
 
     /** Feed operations in flight right now — the gauge behind a backpressure tile. */
     fun feedInflight(): Long = feed.inflight()
 
-    /** Graceful: waits for in-flight feed operations before closing the connections. */
-    override fun close() = feed.close()
+    /**
+     * Graceful: the feed first (it waits for its writes in flight), then the read transport,
+     * whose OkHttp dispatcher and connection pool nothing else would ever release
+     * ([VespaHttp.close]) — even when the feed's close throws.
+     */
+    override fun close() {
+        try {
+            feed.close()
+        } finally {
+            http.close()
+        }
+    }
 
     internal companion object {
         /**
@@ -2562,10 +2621,20 @@ class VespaEventIndex(
 
         /**
          * Operations enqueued per awaited chunk on every pipelined feed call.
-         * At or above the throttler's admission window (the default 32
-         * connections x 128 streams), so nothing is serialised that would have
-         * overlapped — and no operation waits in the client's queue past the
-         * deadline that starts when it is enqueued (see [putAll]).
+         *
+         * The admission window is the feed client's throttler, not the
+         * transport: `targetInflight` starts at 2 x connections per endpoint x
+         * endpoints (64 with the default 32 connections), is held there by
+         * pushback, and may climb to 256x that (vespa-feed-client 8.781.11,
+         * `StaticThrottler` / `DynamicThrottler`). An enqueue past it waits on
+         * the enqueuing thread for a slot ([VespaFeed.enqueueAll]). What the
+         * transport can carry at once is connections x streams (32 x 128 =
+         * 4096 by default), which is this chunk: a window that has climbed
+         * past it would leave the excess queued inside Jetty with its deadline
+         * running, so a chunk no larger than that keeps every enqueued
+         * operation on the wire while it is awaited (see [putAll]), and at the
+         * floor a chunk is ~64 windows, so nothing is serialised that would
+         * have overlapped.
          */
         const val FEED_CHUNK = ClientTuning.MAX_FEED_BATCH
 

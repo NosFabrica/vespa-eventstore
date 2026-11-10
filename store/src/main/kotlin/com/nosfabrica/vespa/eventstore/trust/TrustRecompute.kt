@@ -256,8 +256,9 @@ internal class TrustRecompute(
         // TrustProjection's writes both booked to that one name, so a
         // gate held for 24 minutes could not be attributed to either. The
         // annotation names the shape of THIS call — the chunk count is the
-        // loop, the subject count is the work.
-        IngestStats.annotateHold("derive ${subjects.size} subject(s) in ${(subjects.size + FETCH_CHUNK - 1) / FETCH_CHUNK} chunk(s), fanout $QUERY_FANOUT", WriteLocks.TRUST_GATE)
+        // loop, the subject count is the work. The counts are for the live
+        // hold; a waiter's split books it as `derive`, a closed key.
+        IngestStats.annotateHold("derive ${subjects.size} subject(s) in ${(subjects.size + FETCH_CHUNK - 1) / FETCH_CHUNK} chunk(s), fanout $QUERY_FANOUT", WriteLocks.TRUST_GATE, shape = "derive")
         IngestStats.timed("proj.fetch.derive") {
             subjects.chunked(FETCH_CHUNK).forEachBounded(
                 QUERY_FANOUT,
@@ -370,7 +371,7 @@ internal class TrustRecompute(
         }
         unmapped?.let(providers::noteSkipped)
         if (updates.isEmpty()) return unapplied
-        IngestStats.annotateHold("cell update over ${updates.size} card(s)", WriteLocks.TRUST_GATE)
+        IngestStats.annotateHold("cell update over ${updates.size} card(s)", WriteLocks.TRUST_GATE, shape = "cell update")
         IngestStats.timed("proj.write") { reputations.updateCells(updates) }
         return unapplied
     }
@@ -470,7 +471,7 @@ internal class TrustRecompute(
                     launch {
                         for (ids in batches) {
                             gate.holding {
-                                IngestStats.annotateHold("project service ${service.take(8)}: ${ids.size} card(s)", WriteLocks.TRUST_GATE)
+                                IngestStats.annotateHold("project service ${service.take(8)}: ${ids.size} card(s)", WriteLocks.TRUST_GATE, shape = "project service")
                                 // NOT `complete`: a card superseded between the id
                                 // listing and this fetch is SIMPLY GONE, by design.
                                 // Asking the engine to see everything on a read
