@@ -41,7 +41,11 @@ import com.vitorpamplona.quartz.nip59Giftwrap.wraps.GiftWrapEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import com.vitorpamplona.quartz.utils.EventFactory
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -784,6 +788,81 @@ open class NostrSemanticsStoreTest {
 
             assertFailsWith<IllegalArgumentException> { store.reindexFullTextSearch(emptyList(), null) }
             Unit
+        }
+
+    /**
+     * #160: a reindex page reads its visit with NO write lock held. A sparse
+     * kind-scoped visit can scan for seconds before its page fills, and every
+     * other write in the process used to wait behind it. Here the visit is
+     * parked mid-read, and an ordinary insert must still complete.
+     */
+    @Test
+    fun `a reindex page's visit does not hold back other writes`() =
+        runBlocking {
+            val inner = InMemoryEventIndex()
+            val visiting = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val engine =
+                object : EventIndex by inner {
+                    override suspend fun visitDocsPage(
+                        query: EventQuery,
+                        resumeFrom: String?,
+                        maxDocs: Int,
+                    ): DocsPage {
+                        visiting.complete(Unit)
+                        release.await()
+                        return inner.visitDocsPage(query, resumeFrom, maxDocs)
+                    }
+                }
+            val store = NostrSemanticsStore(engine, relay = "wss://sot.test/".normalizeRelayUrl())
+            inner.put(EventDoc.fromEventJson(metadata(name = "satoshi").toJson()))
+
+            val walk = launch { store.reindexFullTextSearch(listOf(0), null) }
+            try {
+                visiting.await()
+                val written = withTimeoutOrNull(5_000) { store.insert(note()) }
+                assertTrue(written != null, "an insert waited out the reindex's visit")
+            } finally {
+                release.complete(Unit)
+            }
+            walk.join()
+            assertEquals(1, store.count(Filter(search = "satoshi")), "the page still re-derives once released")
+        }
+
+    /**
+     * #160's other half: with the page read outside the lock, a doc may be
+     * superseded between the visit and the re-put, and re-putting the page's
+     * copy would bring the replaced version back beside the new one. The
+     * newer profile lands while the page is being read; afterwards it must be
+     * the address's only version.
+     */
+    @Test
+    fun `a reindex does not re-put a doc superseded while its page was read`() =
+        runBlocking {
+            val inner = InMemoryEventIndex()
+            val old = metadata(name = "satoshi")
+            val newer = metadata(name = "nakamoto")
+            lateinit var store: NostrSemanticsStore
+            val engine =
+                object : EventIndex by inner {
+                    override suspend fun visitDocsPage(
+                        query: EventQuery,
+                        resumeFrom: String?,
+                        maxDocs: Int,
+                    ): DocsPage =
+                        inner.visitDocsPage(query, resumeFrom, maxDocs).also {
+                            // Read, but not yet re-put: the newer version lands now.
+                            withTimeout(5_000) { store.insert(newer) }
+                        }
+                }
+            store = NostrSemanticsStore(engine, relay = "wss://sot.test/".normalizeRelayUrl())
+            // Stored without search columns, so the walk finds it drifted.
+            inner.put(EventDoc.fromEventJson(old.toJson()))
+
+            val progress = store.reindexFullTextSearch(listOf(0), null)
+            assertTrue(progress.done)
+            assertEquals(listOf(newer.id), store.query<Event>(Filter(kinds = listOf(0), authors = listOf(alice))).map { it.id })
+            assertEquals(0, store.count(Filter(search = "satoshi")), "the replaced profile was re-put")
         }
 
     /**

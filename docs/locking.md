@@ -78,10 +78,13 @@ of cards is most of the time. The order is now `trustGate` then `writes`,
 through one helper (`gated`) so it is a property of the file: a card waits for
 the drain holding nothing, then takes `writes` for one short hold. The drain
 and the reconciler never take `writes`, so the pair stays deadlock-free. The
-reindex, which reads its page under `writes`, hands the lock back and re-takes
-both in order for the trust docs on the page, re-checking that each is still
-stored before re-putting it (events are immutable, so an id that still exists
-is exactly the page's copy).
+reindex reads its page with no lock held (#160): a kind-scoped walk over a
+sparse selection can scan for seconds before a page fills, and holding
+`writes` across that scan stalled every other write in the process. It then
+takes `writes` for the page's plain docs, and both locks in order for its
+trust docs, and in each case re-checks that every doc is still stored before
+re-putting it (events are immutable, so an id that still exists is exactly
+the page's copy; one superseded or deleted since the read is dropped).
 
 **A pure-record batch is split by trust.** The cards and provider lists in a
 batch commit under the gate; everything else commits under `writes` alone,

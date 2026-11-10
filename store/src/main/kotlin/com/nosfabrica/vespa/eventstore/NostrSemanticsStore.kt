@@ -1286,61 +1286,68 @@ class NostrSemanticsStore(
     ): FtsReindexProgress {
         // Every reindex and backfill overload pages through here.
         checkWritable(if (refeedBodies) "backfillBodyEdge" else "reindexFullTextSearch")
-        val (progress, trustDocs) =
-            locks.underWrites(WriteLocks.REINDEX) {
-                val page = index.visitDocsPage(scope, resumeFrom, batchSize)
-                // ONE pipelined write per page: serial awaited puts pay per-op ack
-                // latency — hours of it on a churny reindex.
-                val changed = ArrayList<EventDoc>()
-                for (doc in page.docs) {
-                    val fields = SearchExtractors.extract(doc.toEvent())
-                    // The near-tier arrays are FED data derived from the search
-                    // columns at put time, so identical columns can still hide a
-                    // stale or MISSING near tier (a corpus fed before those fields
-                    // existed). storedNearFields is the visit's evidence of what the
-                    // engine holds (null = no evidence). Checked second, since a
-                    // changed column already forces the re-put.
-                    val columnsChanged = fields != doc.search
-                    val nearStale = !columnsChanged && doc.storedNearFields?.let { it != fields.nearFieldsWritten() } == true
-                    // [backfillBodyEdge]: a body is re-put unconditionally — its
-                    // edge column is invisible to every drift check above.
-                    val bodyRefeed = refeedBodies && fields.text != null
-                    // The stemmed body columns are FED and index-only too, so no visit
-                    // can show them missing or stale: a body that would carry stems is
-                    // re-put on every walk. That is how a corpus fed before the columns
-                    // existed gets them, at the cost of re-putting the Portuguese and
-                    // Spanish bodies (about 1% of kind 1s on the live relay) per walk.
-                    val stemRefeed = !columnsChanged && !nearStale && !bodyRefeed && fields.stemFields().isNotEmpty()
-                    if (columnsChanged || nearStale || bodyRefeed || stemRefeed) changed += doc.copy(search = fields)
-                }
-                // A page can carry cards, and the projection applies their
-                // cells INLINE on putAll — the same documents the drain
-                // re-derives — so those queue for the trust gate like every
-                // other write that touches reputation. The gate comes BEFORE
-                // [writes] (see [trustGate]), and this page was read under
-                // [writes] alone, so they are handed out and re-taken in order
-                // below rather than stalling the page (and every writer behind
-                // it) on a drain slice. Values agree either way — the card is
-                // the newest for its address — so this is the split's rule
-                // kept at its fifth entry point, not a repair.
-                val (trust, plain) = changed.partition { it.kind in TrustProjection.TRUST_KINDS }
-                if (plain.isNotEmpty()) index.putAll(plain)
-                FtsReindexProgress(cursor = page.continuation, processedThisBatch = page.docs.size, done = page.continuation == null) to trust
-            }
-        if (trustDocs.isNotEmpty()) {
-            locks.gated(trust = true, WriteLocks.REINDEX, WriteLocks.REINDEX_TRUST) {
-                // [writes] was released to take the gate in order, so a
-                // supersession may have landed since the page was read, and
-                // re-putting the page's copy of a replaced card would roll the
-                // newer version back. Events are immutable, so an id that is
-                // STILL stored is exactly the doc the page holds — near-tier
-                // evidence included, which a re-read would not carry.
-                val alive = index.existingIds(trustDocs.map { it.id })
-                val still = trustDocs.filter { it.id in alive }
-                if (still.isNotEmpty()) index.putAll(still)
-            }
+        // THE PAGE IS READ WITH NO LOCK HELD (#160). The visit is a read, and on
+        // a sparse selection — a kind-scoped repair — it is most of the page's
+        // time: Vespa scans buckets until it has [batchSize] matches or reaches
+        // its server timeout (VespaVisits.SERVER_TIMEOUT_SECONDS), so one page
+        // can take seconds. Holding [writes] across it stalled every other write
+        // in the process (client EVENTs, deletes, NIP-86) for the whole scan.
+        // Only the re-put takes the lock now, after the re-check below.
+        val page = index.visitDocsPage(scope, resumeFrom, batchSize)
+        // ONE pipelined write per page: serial awaited puts pay per-op ack
+        // latency — hours of it on a churny reindex.
+        val changed = ArrayList<EventDoc>()
+        for (doc in page.docs) {
+            val fields = SearchExtractors.extract(doc.toEvent())
+            // The near-tier arrays are FED data derived from the search
+            // columns at put time, so identical columns can still hide a
+            // stale or MISSING near tier (a corpus fed before those fields
+            // existed). storedNearFields is the visit's evidence of what the
+            // engine holds (null = no evidence). Checked second, since a
+            // changed column already forces the re-put.
+            val columnsChanged = fields != doc.search
+            val nearStale = !columnsChanged && doc.storedNearFields?.let { it != fields.nearFieldsWritten() } == true
+            // [backfillBodyEdge]: a body is re-put unconditionally — its
+            // edge column is invisible to every drift check above.
+            val bodyRefeed = refeedBodies && fields.text != null
+            // The stemmed body columns are FED and index-only too, so no visit
+            // can show them missing or stale: a body that would carry stems is
+            // re-put on every walk. That is how a corpus fed before the columns
+            // existed gets them, at the cost of re-putting the Portuguese and
+            // Spanish bodies (about 1% of kind 1s on the live relay) per walk.
+            val stemRefeed = !columnsChanged && !nearStale && !bodyRefeed && fields.stemFields().isNotEmpty()
+            if (columnsChanged || nearStale || bodyRefeed || stemRefeed) changed += doc.copy(search = fields)
         }
-        return progress
+        // A page can carry cards, and the projection applies their cells
+        // INLINE on putAll — the same documents the drain re-derives — so those
+        // queue for the trust gate like every other write that touches
+        // reputation, in the gate-then-[writes] order [gated] holds. Values
+        // agree either way — the card is the newest for its address — so this
+        // is the split's rule kept at its fifth entry point, not a repair.
+        val (trust, plain) = changed.partition { it.kind in TrustProjection.TRUST_KINDS }
+        if (plain.isNotEmpty()) locks.underWrites(WriteLocks.REINDEX) { putStillStored(plain) }
+        if (trust.isNotEmpty()) locks.gated(trust = true, WriteLocks.REINDEX, WriteLocks.REINDEX_TRUST) { putStillStored(trust) }
+        return FtsReindexProgress(cursor = page.continuation, processedThisBatch = page.docs.size, done = page.continuation == null)
+    }
+
+    /**
+     * Re-put the reindex's re-derived [docs], minus any no longer stored. Runs
+     * under the caller's lock, because the page was read without one: a
+     * supersession, a NIP-09 delete, a vanish or an expiry sweep may have
+     * removed a doc since, and re-putting the page's copy would bring a
+     * replaced or erased event back. Events are immutable, so an id that is
+     * STILL stored is exactly the doc the page holds — near-tier evidence
+     * included, which a re-read would not carry.
+     *
+     * This also narrows, but cannot close, the window against a writer in
+     * ANOTHER process (a sync), which does not share this lock: a removal there
+     * can still land between this check and the put. Before #160 that window
+     * was the whole visit plus the put, for plain kinds and cards alike.
+     */
+    private suspend fun putStillStored(docs: List<EventDoc>) {
+        val alive = index.existingIds(docs.map { it.id })
+        val still = docs.filter { it.id in alive }
+        if (still.isNotEmpty()) index.putAll(still)
     }
 
     /**
