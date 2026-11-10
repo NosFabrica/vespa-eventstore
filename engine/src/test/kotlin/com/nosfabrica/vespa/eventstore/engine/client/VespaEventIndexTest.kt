@@ -1775,6 +1775,25 @@ class VespaEventIndexTest {
         }
 
     /**
+     * WORDS TYPED WITH AN IME SPACE ARE TWO WORDS, on the wire and in the spec
+     * alike. `ビットコイン　価格` (U+3000 between them, what a Japanese IME types)
+     * was ONE word to Java's ASCII `\\s`: the reference then required the
+     * literal U+3000-joined run and the engine was sent one term holding both,
+     * so a note carrying both words apart was missed by each. Verified to fail
+     * with WHITESPACE back on `\\s+`.
+     */
+    @Test
+    fun `a search split by an ideographic space requires each word, not the run`() =
+        runBlocking {
+            val both = doc(kind = 1, content = "価格が上がった。ビットコインは強い", search = SearchFields(text = "価格が上がった。ビットコインは強い"))
+            val one = doc(kind = 1, content = "ビットコインの話", search = SearchFields(text = "ビットコインの話"))
+            seed(both, one)
+            val q = EventQuery(kinds = listOf(1), search = "ビットコイン\u3000価格")
+            assertEquals(listOf(both.id), reference.search(q).map { it.id }, "the spec: both words, anywhere")
+            check(q)
+        }
+
+    /**
      * A DEPLOYMENT THAT CAPS `maxHits` STILL WALKS, and walks exactly. The
      * cursor's page asked for `idPageSize + TIE_SLACK` hits (20,064 by default)
      * whatever VESPA_UNBOUNDED_HITS said, and the limited walk's one-page read

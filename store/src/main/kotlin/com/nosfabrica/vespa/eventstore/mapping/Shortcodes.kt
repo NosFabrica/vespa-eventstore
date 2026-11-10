@@ -78,7 +78,12 @@ internal object Shortcodes {
     /** A word that is one shortcode and nothing else — the only thing the query side rewrites. */
     private val WHOLE_WORD = Regex(":[A-Za-z0-9_-]+:")
 
-    private val WHITESPACE = Regex("\\s+")
+    /**
+     * The engine's word separator (`engine/text/Whitespace.kt`, internal to that
+     * module): Unicode whitespace, not Java's ASCII `\s`, so a shortcode after an
+     * IME's U+3000 is a word of its own here exactly as it is to the engine.
+     */
+    private val WHITESPACE = Regex("[\\s\\p{Z}\\u001C-\\u001F]+")
 
     /**
      * The term one declared shortcode indexes as; null when the code carries
