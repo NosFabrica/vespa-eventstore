@@ -105,7 +105,7 @@ engine could take over:
 
 | decision | cross-document? | engine can enforce it? |
 |---|---|---|
-| dedup (`get(id)` then put) | no | already safe lock-free — a raced duplicate is an idempotent re-put of identical bytes (the bulk planner runs it outside the lock today) |
+| dedup (`get(id)` then put) | no | already safe lock-free — a raced duplicate is an idempotent re-put of identical bytes (the bulk planner runs it outside the lock today); a raced REPLACEABLE is caught again by the locked version read, which finds the event itself stored and answers `duplicate:` rather than removing and re-putting it |
 | replaceable/addressable supersession | no (one address) | **yes** — `putIfNewer` under address-keying is a server-side test-and-set (`docs/server-side-constraints.md`); the read-then-supersede default is not |
 | NIP-09 tombstone / NIP-62 vanish guard | **yes** — the kind-5 is one document, the event it must block another | **no** — Vespa conditions see only the document they address |
 

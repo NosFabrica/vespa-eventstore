@@ -71,10 +71,14 @@ internal class BulkRecordInsert(
     private val guards: GuardOwners,
 ) {
     /**
-     * What [plan] resolved lock-free (stages A–B). Dedup can race — a slipped
-     * duplicate is an idempotent re-put of identical bytes. The guard and
-     * supersession reads canNOT race: they decide against the store's current
-     * state, so they run in [commit], atomic with the writes.
+     * What [plan] resolved lock-free (stages A–B). Dedup can race: an event a
+     * neighbouring batch commits between this plan and its commit slips
+     * through. For a REGULAR event that is an idempotent re-put of identical
+     * bytes. A REPLACEABLE one is caught again in [commit], whose locked
+     * version read returns the stored copy itself — and that must be answered
+     * as a duplicate, never as a winner (removing the copy and re-putting it).
+     * The guard and supersession reads canNOT race: they decide against the
+     * store's current state, so they run in [commit], atomic with the writes.
      */
     internal class Plan(
         val events: List<Event>,
@@ -238,6 +242,19 @@ internal class BulkRecordInsert(
                         }
                     }
                 }
+                // The condition refuses an IDENTICAL incumbent too, so a loser
+                // whose own id is stored is the raced duplicate (see [Plan]),
+                // not a stale version: `duplicate:` (OK true), which is what the
+                // per-event path's locked dup GET answers. One existence read
+                // over the losers only — usually none, so usually no round trip.
+                val losers = groups.values.flatten().filter { outcome[it] != null }
+                val storedLosers =
+                    losers
+                        .map { events[it].id }
+                        .chunked(DEDUP_CHUNK)
+                        .flatMap { index.existingIds(it) }
+                        .toSet()
+                losers.forEach { i -> if (events[i].id in storedLosers) outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.DUPLICATE) }
             }
             if (toPut.isNotEmpty()) index.putAll(toPut.values.map { it.toDoc() })
             alive().forEach { i -> outcome[i] = IEventStore.InsertOutcome.Accepted }
@@ -306,6 +323,16 @@ internal class BulkRecordInsert(
                 var bestInRun: Int? = null
                 for (i in idxs) {
                     val e = events[i]
+                    // Already stored: the raced duplicate (see [Plan]). Without
+                    // this, `lost` is false for the store's best when it IS this
+                    // event (same created_at, same id), so the stored copy was
+                    // removed, the same bytes re-put, and the event reported
+                    // Accepted. The per-event path's dup GET runs first and says
+                    // duplicate; so does this, and the address keeps its doc.
+                    if (versions.any { it.id == e.id }) {
+                        outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.DUPLICATE)
+                        continue
+                    }
                     val lost = bestId != null && (bestAt > e.createdAt || (bestAt == e.createdAt && bestId < e.id))
                     if (lost) {
                         outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.REPLACED)

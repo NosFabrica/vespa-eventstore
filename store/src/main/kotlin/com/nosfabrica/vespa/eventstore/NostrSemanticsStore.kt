@@ -506,7 +506,8 @@ class NostrSemanticsStore(
      *  - PURE RECORDS: [BulkRecordInsert] chunks the read checks and pipelines
      *    one [EventIndex.putAll]; its dedup reads run outside the writer lock
      *    so parallel relays overlap them (a raced duplicate is an idempotent
-     *    re-put); guards and supersession stay under it.
+     *    re-put, or for a replaceable kind caught by the locked version read
+     *    and answered `duplicate:`); guards and supersession stay under it.
      *  - CONTAINS kind 5/62: [BulkMixedInsert] batch-reads the working set and
      *    replays the per-event rules in memory, order preserved, then writes
      *    the diff.

@@ -21,6 +21,8 @@
 package com.nosfabrica.vespa.eventstore.ingest
 
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
+import com.nosfabrica.vespa.eventstore.engine.EventIndex
+import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.ingest.Rejections
@@ -271,4 +273,72 @@ class BulkRecordInsertTest {
             )
             assertEquals(null, index.get(target.id), "the covered event must not be stored")
         }
+
+    /**
+     * Records every id removed and put, and runs [afterDedup] once, right after
+     * the lock-free dedup read has answered — the window in which a neighbouring
+     * writer's commit makes this batch's plan stale.
+     */
+    private class RacingIndex(
+        private val inner: InMemoryEventIndex,
+    ) : EventIndex by inner {
+        var afterDedup: (suspend () -> Unit)? = null
+        val removed = mutableListOf<String>()
+        val put = mutableListOf<String>()
+
+        override suspend fun existingIds(ids: List<String>): Set<String> {
+            val answer = inner.existingIds(ids)
+            afterDedup?.also { afterDedup = null }?.invoke()
+            return answer
+        }
+
+        override suspend fun put(doc: EventDoc) {
+            put += doc.id
+            inner.put(doc)
+        }
+
+        override suspend fun putAll(docs: List<EventDoc>) = docs.forEach { put(it) }
+
+        override suspend fun remove(id: String) {
+            removed += id
+            inner.remove(id)
+        }
+
+        override suspend fun removeAll(ids: List<String>) = ids.forEach { remove(it) }
+
+        override suspend fun removeDocs(docs: List<EventDoc>) = docs.forEach { remove(it.id) }
+
+        override suspend fun putIfNewer(doc: EventDoc): Boolean = super<EventIndex>.putIfNewer(doc)
+    }
+
+    /**
+     * The raced replaceable duplicate: two batches carry the same kind-0, and the
+     * other one commits it between this batch's lock-free dedup and its locked
+     * commit. The version read in commit then finds the event ITSELF as the
+     * address's best. It is a duplicate — what the per-event path, whose dup GET
+     * runs under the lock, answers — not a winner: removing the stored copy and
+     * re-putting it reported `Accepted`, left the address empty between the two
+     * writes, and handed the projection a remove and a put for one unchanged event.
+     */
+    private fun racedReplaceableDuplicate(supersedesViaPut: Boolean) =
+        runBlocking {
+            val index = RacingIndex(InMemoryEventIndex(supersedesViaPut = supersedesViaPut))
+            val store = NostrSemanticsStore(index, relay = relayUrl)
+            val profile = Event(id(), alice, next(), 0, emptyArray(), "{\"name\":\"alice\"}", "")
+            index.afterDedup = { store.insert(profile) }
+            val batch = padding(20) + profile
+
+            val outcome = store.batchInsert(batch)[batch.indexOf(profile)]
+
+            assertEquals(IEventStore.InsertOutcome.Rejected(Rejections.DUPLICATE), outcome, "a raced duplicate is a duplicate, got $outcome")
+            assertEquals(listOf(profile.id), index.put.filter { it == profile.id }, "only the racing writer may put it")
+            assertTrue(profile.id !in index.removed, "the stored copy must not be removed")
+            assertEquals(profile.id, index.get(profile.id)?.id, "the event stays stored")
+        }
+
+    @Test
+    fun `a replaceable stored between plan and commit is a duplicate, never removed and re-put`() = racedReplaceableDuplicate(supersedesViaPut = false)
+
+    @Test
+    fun `the putIfNewer branch reports a raced replaceable duplicate as a duplicate`() = racedReplaceableDuplicate(supersedesViaPut = true)
 }
