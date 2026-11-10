@@ -924,6 +924,40 @@ class VespaEventIndexTest {
             }
         }
 
+    /**
+     * A PAGE PAST ONE HYDRATION CHUNK READS ITS CHUNKS AT ONCE. A 5,000-limit
+     * REQ is three `id in (…)` lookups of [VespaEventIndex.HYDRATE_CHUNK], and
+     * they were issued back to back — three document-store round trips where
+     * one would do. Overlap is read off the mock's in-flight gauge, not a
+     * clock, and the page must stay the page: every document, in order.
+     *
+     * Verified to fail with the serial loop restored: peak 1.
+     */
+    @Test
+    fun `a hydration of several chunks fetches them concurrently, in page order`() =
+        runBlocking {
+            val chunks = 3
+            val n = VespaEventIndex.HYDRATE_CHUNK * (chunks - 1) + 100
+            val now = System.currentTimeMillis() / 1000
+            seedBulk((1..n).map { doc(kind = 1, at = now - it) })
+            val q = EventQuery(kinds = listOf(1), limit = n, nowSecs = now)
+            VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.SPECULATIVE, recencyMemory = false).use { idFirst ->
+                mock.holdIdLookupsMs = 500
+                mock.idLookupsInFlightPeak = 0
+                val before = mock.searchRequests.size
+                val page =
+                    try {
+                        idFirst.search(q)
+                    } finally {
+                        mock.holdIdLookupsMs = 0
+                    }
+                val hydrate = mock.searchRequests.drop(before).filter { it.getValue("yql").contains(" where id in (") }
+                assertEquals(chunks, hydrate.size, "one lookup per chunk: ${hydrate.map { it["hits"] }}")
+                assertEquals(chunks, mock.idLookupsInFlightPeak, "every chunk in flight at once")
+                assertEquals(reference.search(q).map { it.id }, page.map { it.id }, "and the page is the page, in order")
+            }
+        }
+
     /** Id-first moves reads, never answers: every strategy, every branch, the same page with it on and off. */
     @Test
     fun `id-first and documents-first serve the same pages`() =

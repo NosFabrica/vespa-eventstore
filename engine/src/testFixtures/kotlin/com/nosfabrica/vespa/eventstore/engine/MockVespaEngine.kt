@@ -150,6 +150,22 @@ class MockVespaEngine(
     val documentRemoves: Int get() = documentRemovesCount.get()
     private val documentRemovesCount = AtomicInteger()
 
+    /**
+     * Hold every `id in (…)` lookup — the id-first hydration's document read —
+     * this long while it counts as in flight, so [idLookupsInFlightPeak] can say
+     * how many a client really overlapped. A gauge rather than a stopwatch: two
+     * lookups either overlap inside the hold or they do not, however loaded the
+     * machine running the test is. 0 holds nothing.
+     */
+    @Volatile var holdIdLookupsMs: Long = 0
+
+    /** The most `id in (…)` lookups ever in flight at once while [holdIdLookupsMs] held them. Settable to reset. */
+    var idLookupsInFlightPeak: Int
+        get() = idLookupsPeak.get()
+        set(value) = idLookupsPeak.set(value)
+    private val idLookupsPeak = AtomicInteger()
+    private val idLookupsInFlight = AtomicInteger()
+
     /** The exchanges [stallBodiesMidStream] is holding open. */
     private val stalled = Collections.synchronizedList(ArrayList<Callback>())
 
@@ -658,6 +674,14 @@ class MockVespaEngine(
             return Reply(400, """{"message":"Requested rank profile '${params["ranking"]}' is undefined for document type 'event'"}""")
         }
         val yql = params["yql"] ?: return Reply(400, """{"message":"missing yql"}""")
+        if (holdIdLookupsMs > 0 && " where id in (" in yql) {
+            idLookupsPeak.accumulateAndGet(idLookupsInFlight.incrementAndGet(), ::maxOf)
+            try {
+                Thread.sleep(holdIdLookupsMs)
+            } finally {
+                idLookupsInFlight.decrementAndGet()
+            }
+        }
         params["ranking"]?.let { searchRankings += it }
         searchRequests += params
         // The existence check rides a dedicated attribute-only summary class; a

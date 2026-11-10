@@ -31,6 +31,7 @@ import com.nosfabrica.vespa.eventstore.engine.LinkWeights
 import com.nosfabrica.vespa.eventstore.engine.Linker
 import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.ScoredHit
+import com.nosfabrica.vespa.eventstore.engine.async.QUERY_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.metrics.Activity
@@ -576,28 +577,37 @@ class VespaEventIndex(
      * made (EventIndex.existingIds). A document deleted between the two queries
      * drops out of the page: one short page on a rare interleaving, the race
      * [RecencyPlanner.window] already accepts.
+     *
+     * ONE round trip, however many chunks: a page past [HYDRATE_CHUNK] (a
+     * 5,000-limit REQ is three) reads its chunks CONCURRENTLY, at most
+     * [QUERY_FANOUT] in flight — the bound that keeps document reads from
+     * timing out proton's summary stage. They used to go back to back, three
+     * document-store round trips for one page. A failed chunk cancels the rest
+     * and fails the read, as the loop did; the page keeps its own order, since
+     * it is rebuilt from [page], not from the order chunks answered in.
      */
     private suspend fun hydrate(page: List<VespaSummary>): List<VespaSummary> {
         if (page.isEmpty()) return page
+        val chunks = page.map { it.id }.chunked(HYDRATE_CHUNK)
+        // The common page is one chunk: no fan-out machinery for it.
+        val fetched = if (chunks.size == 1) listOf(hydrateChunk(chunks[0])) else chunks.mapBounded(QUERY_FANOUT) { hydrateChunk(it) }
         val full = HashMap<String, VespaSummary>(page.size * 2)
-        page.map { it.id }.chunked(HYDRATE_CHUNK).forEach { ids ->
-            // COMPLETENESS IS COUNTED HERE, not read off the coverage flag: this
-            // is a lookup of named ids, so an answer holding every one of them is
-            // whole whatever the engine reports — and one that is short AND
-            // degraded is a partial answer, refused like any other. (Short and
-            // undegraded is the deletion race above.)
-            val vq = EventYql.build(EventQuery(ids = ids, ranking = EventYql.RANK_UNRANKED, limit = ids.size))?.copy(sampled = true) ?: return@forEach
-            val root = searchRoot(vq, hits = ids.size)
-            var got = 0
-            root.children.forEach { hit ->
-                hit.fields?.takeIf { it.id.isNotEmpty() }?.let {
-                    full[it.id] = it
-                    got++
-                }
-            }
-            if (got < ids.size) root.coverage.requireComplete(allowMatchPhase = false)
-        }
+        for (hits in fetched) for (hit in hits) full[hit.id] = hit
         return page.mapNotNull { full[it.id] }
+    }
+
+    /** One [hydrate] lookup: the documents for [ids], by `id in (…)`. */
+    private suspend fun hydrateChunk(ids: List<String>): List<VespaSummary> {
+        // COMPLETENESS IS COUNTED HERE, not read off the coverage flag: this
+        // is a lookup of named ids, so an answer holding every one of them is
+        // whole whatever the engine reports — and one that is short AND
+        // degraded is a partial answer, refused like any other. (Short and
+        // undegraded is the deletion race above.)
+        val vq = EventYql.build(EventQuery(ids = ids, ranking = EventYql.RANK_UNRANKED, limit = ids.size))?.copy(sampled = true) ?: return emptyList()
+        val root = searchRoot(vq, hits = ids.size)
+        val got = root.children.mapNotNull { hit -> hit.fields?.takeIf { it.id.isNotEmpty() } }
+        if (got.size < ids.size) root.coverage.requireComplete(allowMatchPhase = false)
+        return got
     }
 
     /**
