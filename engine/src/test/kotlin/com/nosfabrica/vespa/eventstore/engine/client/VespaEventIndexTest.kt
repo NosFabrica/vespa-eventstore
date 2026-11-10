@@ -235,6 +235,42 @@ class VespaEventIndexTest {
             }
         }
 
+    /**
+     * Visits go over HTTP/1.1 on their own connections; queries stay on the
+     * shared HTTP/2 connection. Measured against a real Vespa 8.781.11: a visit
+     * page multiplexed on the store's busy h2c connection sometimes stopped
+     * mid-body (headers and the first bytes sent, then nothing until the client's
+     * 120 s read timeout), in 4 of 15 reindex walks. The same visits over
+     * HTTP/1.1 stalled in 0 of 30 walks, and 0 of 2,400+ pages from a separate
+     * HTTP/1.1 client (benchmark/README.md, `reindexLockProbe`). Every visit
+     * transport is covered: a reindex page, the paged walk, the streamed slices.
+     */
+    @Test
+    fun `visits ride HTTP 1 1 and queries stay on HTTP 2`() =
+        runBlocking {
+            seed(doc(), doc(), doc())
+            mock.protocols.clear()
+            index.visitDocsPage(EventQuery(kinds = listOf(1)), null, 10)
+            index.visitTags(EventQuery(kinds = listOf(1))) { true }
+            index.scanAuthors(EventQuery(kinds = listOf(1)))
+            VespaEventIndex(mock.url, visitStreaming = true, visitSlices = 2).use { streamed ->
+                streamed.scanAuthors(EventQuery(kinds = listOf(1)))
+            }
+            index.search(EventQuery(kinds = listOf(1), limit = 10))
+
+            val visits = mock.protocols.filter { (path, _) -> path == "/document/v1/event/event/docid" }
+            assertTrue(visits.size >= 5, "every visit transport ran: $visits")
+            assertEquals(setOf("HTTP/1.1"), visits.map { it.second }.toSet(), "visits")
+            assertEquals(
+                setOf("HTTP/2.0"),
+                mock.protocols
+                    .filter { it.first == "/search/" }
+                    .map { it.second }
+                    .toSet(),
+                "queries",
+            )
+        }
+
     private fun doc(
         kind: Int = 1,
         pubkey: String = "a1".repeat(32),

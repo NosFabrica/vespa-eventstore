@@ -1828,19 +1828,59 @@ the latencies, and it only showed as fewer inserts than fit. The writer now has 
 thread of its own, the probe prints how many inserts the no-walk pace would fit,
 and every number above is from that version.
 
-**A separate, older stall showed up here.** Now and then one visit request went
-silent until the client's 120 s visit read timeout fired, once or twice, and the
-walk resumed on the retry (one retry re-read 8 docs twice). The container's access
-log showed no visit arriving in the gap. On the first day it hit 3 of 18 walks,
-one of them with the OLD code and only lock-free READS overlapping the visit. On
-the second it hit 2 of 42, both on the new code with inserts overlapping. It is
-the wedge `VespaHttp.visitHttp`'s KDoc describes, not something #160's change
-introduced, but a visit can now overlap this process's writes as well as its
-reads. Not investigated further.
+**A separate, older stall showed up here.** Now and then one visit page went
+silent until the client's 120 s visit read timeout fired: 3 of 18 walks on the
+first day, 2 of 42 on the second, once with the OLD code and only reads
+overlapping it. It was not #160's change. It was the shared HTTP/2 connection,
+and visits now leave it: see "A visit page that stops mid-body" below.
 
 ```bash
 PROBE_DOCS=2000000 PROBE_EVERY=200 PROBE_WALKS=3 PROBE_DRIFT=1 ./gradlew :benchmark:reindexLockProbe
 ```
+
+## A visit page that stops mid-body (2026-11-10)
+
+**What it looked like.** A reindex walk's page took 121 s instead of ~0.3 s,
+now and then: the client's visit read timeout (120 s) firing, then the retry
+succeeding. The container's access log showed nothing for the page, because a
+request the client resets is never logged.
+
+**What the wire showed.** `reindexLockProbe` (2M docs, re-putting walks) ran
+under `tcpdump` on both hops of the local Docker proxy, decoded with
+`tshark -d tcp.port==8080,http2`. Two stalls in one run, both on the store's
+shared h2c connection:
+
+| stream | headers | body before the stall | then |
+|---|---|---|---|
+| 1561 | 200 in 0.21 s | 29,754 B in 3 DATA frames, in 0.23 s | nothing; client RST at +120.2 s |
+| 22681 | 200 in 0.22 s | 10 B, exactly `{"pathId":` | nothing; client RST at +120.2 s |
+
+The request reached the container, which answered and began the body, then
+stopped writing that one stream. It was not flow control. The client grants
+16,777,216 B per stream (its SETTINGS) and the page is ~38 KB. The connection
+kept over 11.5 MB of credit all run, and about 2 MB of other streams' DATA
+flowed on it during each stall. These are the frames on the container's side of
+the proxy, so the container stopped sending; the Docker proxy dropped nothing.
+
+**HTTP/1.1 does not stall.** During the next 6 minutes of the same load, the
+same visit ran from a separate HTTP/1.1 client (Python `http.client`, one
+connection per page). It walked 2,400+ pages and none went silent for more than
+5 s. Over the same minutes the store's own visits, still on h2c, stalled in 2 of
+12 walks. With `VespaHttp.visitHttp` moved to HTTP/1.1 on a pool of its own,
+the same load gave 0 stalls in 30 walks, against 4 in 15 before on the same day
+(odds of that by chance, at the old rate: about 1 in 11,000). Steady-state walk
+time was unchanged: median of walks 2-3, 4.65 s after and 4.6 s before. The
+store's visits reused one keep-alive connection per JVM (90 requests, 3
+connections).
+
+**What stays open.** Why Vespa's container stops writing a stream on a busy h2c
+connection was not found. Its log had nothing at warning level, and no public
+Vespa or Jetty report matched. Two proton `compactfixup.attribute.enumstore`
+events fell within 1.5 s of the two captured stalls, and a third did not, so
+that is a lead, not a cause. Queries still share the h2c connection. The
+`newestVersions` body that went silent for 4 h 40 min in production
+(`VespaHttp.BODY_IDLE_TIMEOUT_SECONDS`, vespa-relay#289) has the same shape, and
+the body idle timeout is what bounds those.
 
 ## One assistant run: 150,000 cards by one service (`cardRunProbe`, 2026-10-26)
 
