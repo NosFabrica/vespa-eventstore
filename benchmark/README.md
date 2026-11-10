@@ -1775,6 +1775,73 @@ rest as a phrase, so positive words drop them. The live gate judges streamed
 events by the same rewritten phrases. `SearchExactTextIT` runs every shape
 against a real Vespa.
 
+## A scoped reindex holding the write lock (`reindexLockProbe`, 2026-11-10, #160)
+
+`reindexPage` used to read its visit page while holding `writes`. A kind-scoped
+walk over a sparse selection scans many documents per page, so every other write
+in the process waited out each scan. Measured on a single local
+`vespaengine/vespa:latest` 8.781.11 (4 cores, 15 GB) with 2,000,000 synthetic
+docs, every 200th one a kind 30023 (0.5%). For scale only: #160 estimated
+staging's 66-kind repair at "on the order of 3M of 445M" docs (~0.7%), and that
+was never counted. The walk is `reindexFullTextSearch(listOf(30023))` at batch
+1,000, 10 pages. While it runs, the probe inserts plain kind-1 notes from the
+SAME store every 25 ms, on a thread of their own. `PROBE_DRIFT=1` strips the
+30023s' search columns before each walk, so every walk re-puts all 10,000.
+
+Steady state, walks 2 and 3 of each run, all on the same corpus and the same day.
+"Under the lock" is `lock.reindex.hold`. The no-walk insert p50 was 11.6–13.7 ms
+across these runs:
+
+| `reindexPage` | walk | under the lock | inserts during the walk |
+|---|---|---|---|
+| re-putting, before (visit under the lock) | 2.8–2.9 s | 2.6–2.7 s | 10–11 per walk, **p50 264 ms** |
+| re-putting, existence check + batched put | 2.9–3.1 s | 1.47–1.54 s | ~40, p50 18–20 ms, p95 153–158 ms |
+| re-putting, test-and-set put, one per request | 5.3 s | 3.4–3.7 s | ~42, p50 18 ms, p95 419 ms |
+| **re-putting, test-and-set put, batched (shipped)** | 2.9–3.2 s | 1.39–1.65 s | 39–45, p50 15–20 ms, p95 153–180 ms |
+| visit-only, before | 1.5 s | 1.38–1.39 s | 10 per walk, p50 130–132 ms |
+| **visit-only, shipped** | 1.5–1.6 s | 0 | 34–38, p50 17.5–20.1 ms, p95 24–29 ms |
+
+Before, each insert waited out about one page. The visit and the drift check now
+run with no lock held. Only the re-put takes `writes` (or the trust gate for
+cards), as `EventIndex.putAllIfStored`: one test-and-set put per doc,
+`event.id == "<id>"` and never created, batched through the bundled handler.
+Measured by hand on this Vespa: a put whose document is missing, or holds another
+event, answers `CONDITION_FAILED` (412 on `/document/v1`) and writes nothing.
+`ConditionalRePutIT` pins that on both client paths and both storage layouts.
+
+What the condition costs: about what the existence query it replaced did. The lock
+time per re-putting page is the same ~140–165 ms, so it buys correctness, not
+speed. It is atomic in the engine, so it also holds against a writer in another
+process, which the existence check could not. Sent one per request, it held the
+lock 2.3x as long, because the feed client sends one document per request where
+the batch handler sends 100. That is why it rides the batch. The remaining p95 of
+inserts during a re-putting walk is that put phase.
+
+Page time follows the selection's DENSITY. This corpus is 220x smaller than
+staging, so the seconds-long pages #160 predicts for a sparser set (75k of 445M)
+are an extrapolation, not a measurement.
+
+**The probe's first version misled.** It ran the writer on `runBlocking`'s one
+thread, shared with the walk, and the walk's CPU work (extraction, request
+building) held back each insert before its timer started. That hid the wait from
+the latencies, and it only showed as fewer inserts than fit. The writer now has a
+thread of its own, the probe prints how many inserts the no-walk pace would fit,
+and every number above is from that version.
+
+**A separate, older stall showed up here.** Now and then one visit request went
+silent until the client's 120 s visit read timeout fired, once or twice, and the
+walk resumed on the retry (one retry re-read 8 docs twice). The container's access
+log showed no visit arriving in the gap. On the first day it hit 3 of 18 walks,
+one of them with the OLD code and only lock-free READS overlapping the visit. On
+the second it hit 2 of 42, both on the new code with inserts overlapping. It is
+the wedge `VespaHttp.visitHttp`'s KDoc describes, not something #160's change
+introduced, but a visit can now overlap this process's writes as well as its
+reads. Not investigated further.
+
+```bash
+PROBE_DOCS=2000000 PROBE_EVERY=200 PROBE_WALKS=3 PROBE_DRIFT=1 ./gradlew :benchmark:reindexLockProbe
+```
+
 ## One assistant run: 150,000 cards by one service (`cardRunProbe`, 2026-10-26)
 
 **The production report.** brainstorm's GrapeRank run publishes ~150,000 kind
@@ -1893,6 +1960,7 @@ timing is also a proof:
 | `recencyStrategyProbe` | the four `RecencyStrategy` options on the dominant feed shapes, plain and gated (`BENCH_OBSERVER`), with engine queries per REQ | any loaded store, read-only (`BENCH_NOW` pins the clock to a frozen corpus) | all four strategies must serve the identical page, ids and order |
 | `transportProbe` | read-transport isolation: JDK h1 / OkHttp h1 / OkHttp h2c on identical queries across body sizes | any loaded store | — |
 | `pinReplayProbe` | a Quartz pin bump on real data: per-kind drift between what the engine holds and what the new pin derives, the scoped `reindexFullTextSearch(kinds)`, NIP-50 probes before and after (procedure: `pin_replay.py`) | a capture of the moved kinds plus a control set of the unmoved searchable kinds, loaded at the OLD pin | before the repair every stale kind must be on the list; after it `--require-clean` fails on any stale doc; `pin_replay.py grade` fails unless each added term hits only after, each dropped term only before, each control both times |
+| `reindexLockProbe` | a kind-scoped `reindexFullTextSearch(kinds)` over a sparse kind: per-page time, time under `lock.reindex`, and the latency of plain `insert()`s (or, with `PROBE_LOAD=read`, lock-free reads) from the same store, on their own thread, while it walks; `PROBE_DRIFT=1` makes every walk re-put | feeds `PROBE_DOCS` synthetic docs once, every `PROBE_EVERY`-th a kind 30023 with no search columns | none: it reports latencies; compare against the no-walk baseline it prints first |
 | `cardRunProbe` | one GrapeRank assistant run: `N` same-service 30382s through `batchInsert` at relay batch size and concurrency, then the run that supersedes them, with the projection's stage split (`proj.write`, `proj.marker`) | its own synthetic cards, written into the store (a fresh service per invocation) | 200 sampled subjects must carry the run's rank in the service's cell |
 | `trustProbe` | the trust write path under a real lens: bulk card ingest, single card inserts, a 10040 re-sign, a provider swap (with cards inserted on a clock during each walk to read the gate wait), a provider re-publishing its corpus (`--load-then-republish`), and the lensed page after the swap (`--query-only`) — the harness behind `docs/service-keyed-trust.md` | captured 10040s and two providers' 30382 corpora (JSON arrays; the doc says how they were pulled from staging) | the lensed `sort:rank` page must follow the CURRENT 10040's provider |
 

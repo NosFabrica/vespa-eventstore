@@ -433,6 +433,88 @@ class VespaEventIndex(
         }
     }
 
+    /**
+     * One test-and-set put per doc, conditioned on the document at its docid
+     * still holding THIS event (`event.id == "<id>"`) and never created. A doc
+     * deleted since the caller read it has no document, and a superseded one
+     * either has none (id-keyed: the old version was removed) or holds the
+     * newer event (address-keyed: same docid). Either way the engine answers
+     * `conditionNotMet` and writes nothing, so the check and the write are one
+     * operation in every process, with no read round trip ([EventIndex.putAllIfStored]).
+     *
+     * Batched first when it is on, like [putAll]: the bundled handler passes the
+     * condition through and answers `CONDITION_FAILED` for a doc it did not
+     * write. Measured on a local Vespa with 1,000-doc reindex pages, the
+     * per-request path held the reindex's lock ~2.3x as long as batched puts
+     * (benchmark/README.md, `reindexLockProbe`). Whatever the batch does not
+     * settle goes through the feed client, one conditional put per doc, in
+     * flight together per [FEED_CHUNK] with the same write-side net for a
+     * schema missing a fed column.
+     *
+     * One case reads as written without being written: an event already past
+     * its NIP-40 expiry, which the routing selection (`expires_at > now()`)
+     * drops with a success, as it does for [putAll]. It was about to be swept.
+     */
+    override suspend fun putAllIfStored(docs: List<EventDoc>): Set<String> {
+        // The id is interpolated into the engine condition, so it must be 64
+        // hex before it reaches an expression; a stored event's id always is,
+        // so anything else is simply not stored.
+        val eligible = docs.filter { Hex.isHexKey(it.id) }
+        val written = HashSet<String>()
+        val rest =
+            batchFeed?.takeIf { eligible.size > 1 }?.let { batches ->
+                val (refused, unconfirmed) =
+                    batches.putAllIfStored(
+                        eligible,
+                        docId = ::docIdOf,
+                        body = { it.feedJson(includeNear = fallbacks.nearFieldsAvailable, includeEdge = feedsEdge(), includeStem = fallbacks.stemFieldsAvailable) },
+                        condition = ::storedCondition,
+                    )
+                val settled = (refused + unconfirmed).mapTo(HashSet()) { it.id }
+                eligible.forEach { if (it.id !in settled) written += it.id }
+                unconfirmed
+            } ?: eligible
+        for (chunk in rest.chunked(FEED_CHUNK)) {
+            var pending = chunk
+            var refusals = 0
+            while (pending.isNotEmpty()) {
+                val ops = pending.map { ifStoredOp(it) }
+                val refused = ArrayList<EventDoc>()
+                var failure: Throwable? = null
+                // Every op is awaited before anything is thrown: they are in
+                // flight, and an unawaited future surfaces on an unrelated call.
+                ops.forEachIndexed { i, op ->
+                    try {
+                        when (op.await().type()) {
+                            Result.Type.success -> written += pending[i].id
+                            Result.Type.conditionNotMet -> Unit
+                            else -> failure = failure ?: IllegalStateException("vespa conditional re-put of ${pending[i].id} returned an unknown result")
+                        }
+                    } catch (e: Throwable) {
+                        if (fallbacks.isMissingFedColumn(e.message)) refused += pending[i] else failure = failure ?: e
+                    }
+                }
+                failure?.let { throw it }
+                // Each refusal names one unknown column; near, edge and stem are three.
+                if (refused.isNotEmpty() && ++refusals > FED_COLUMN_GENERATIONS) {
+                    error("vespa refused ${refused.size} conditional re-puts for unknown columns after $FED_COLUMN_GENERATIONS demotions")
+                }
+                pending = refused
+            }
+        }
+        return written
+    }
+
+    private fun ifStoredOp(doc: EventDoc) =
+        feed.client.put(
+            DocumentId.of(EVENT_NAMESPACE, EVENT_DOCTYPE, docIdOf(doc)),
+            doc.feedJson(includeNear = fallbacks.nearFieldsAvailable, includeEdge = feedsEdge(), includeStem = fallbacks.stemFieldsAvailable),
+            feedParams().testAndSetCondition(storedCondition(doc)),
+        )
+
+    /** [putAllIfStored]'s condition: the document at [doc]'s docid holds THIS event. [doc]'s id is 64 hex by then. */
+    private fun storedCondition(doc: EventDoc): String = "event.id == \"${doc.id}\""
+
     override suspend fun remove(id: String) {
         // Under address-keying the doc may live at an address docid, so resolve
         // it before removing.

@@ -201,6 +201,40 @@ class VespaEventIndexTest {
         assertFalse(isAbsentDocument(""))
     }
 
+    /**
+     * The reindex's re-put on the wire: one test-and-set put per doc, never
+     * created, so a doc removed since it was read is not brought back. The
+     * in-memory reference answers the same.
+     */
+    @Test
+    fun `putAllIfStored writes only docs still stored, as the reference does`() =
+        runBlocking {
+            val kept = doc(content = "kept")
+            val gone = doc(content = "gone")
+            seed(kept, gone)
+            index.remove(gone.id)
+            reference.remove(gone.id)
+            val page = listOf(kept, gone).map { it.copy(search = SearchFields(text = "rederived")) }
+            val notHex = kept.copy(id = "not-an-event-id")
+
+            val batches = index.feedBatchesSent
+            assertEquals(setOf(kept.id), index.putAllIfStored(page + notHex))
+            assertEquals(batches + 1, index.feedBatchesSent, "the conditional puts rode the batch handler")
+            assertEquals(setOf(kept.id), reference.putAllIfStored(page))
+            assertEquals("rederived", index.get(kept.id)?.search?.text, "the kept doc carries the new column")
+            assertEquals(null, index.get(gone.id), "the removed doc stays removed")
+            assertTrue(index.putAllIfStored(emptyList()).isEmpty())
+
+            // The per-document path, with batching off: one test-and-set put each, same answer.
+            VespaEventIndex(mock.url, feedBatch = 1).use { single ->
+                val again = page.map { it.copy(search = SearchFields(text = "single")) }
+                assertEquals(setOf(kept.id), single.putAllIfStored(again))
+                assertEquals(0L, single.feedBatchesSent)
+                assertEquals("single", index.get(kept.id)?.search?.text)
+                assertEquals(null, index.get(gone.id))
+            }
+        }
+
     private fun doc(
         kind: Int = 1,
         pubkey: String = "a1".repeat(32),

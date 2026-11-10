@@ -319,3 +319,12 @@ tasks.register<JavaExec>("denseSecondProbe") {
     maxHeapSize = System.getenv("BENCH_HEAP") ?: "4g"
     workingDir = rootDir
 }
+
+tasks.register<JavaExec>("reindexLockProbe") {
+    group = "verification"
+    description = "Time a kind-scoped FTS reindex's pages and the plain inserts it stalls (#160) (PROBE_DOCS, PROBE_EVERY, PROBE_WALKS)"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.probe.ReindexLockProbe")
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "2g"
+    workingDir = rootDir
+}

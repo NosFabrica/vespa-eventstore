@@ -66,7 +66,7 @@ class CountingEventIndex(
         listOf(gets, puts, putCalls, removes, removeCalls, searches, counts).forEach { it.set(0) }
     }
 
-    // FORWARDED, all seven of them. This class exists to measure the STORE's
+    // FORWARDED, all eight of them. This class exists to measure the STORE's
     // I/O amplification against the real client, and a port member it does not
     // override is answered by `EventIndex`'s default — which is a different
     // implementation with different round trips. `putIfNewer` is the sharp one:
@@ -75,6 +75,14 @@ class CountingEventIndex(
     // rather than the client's one conditional put, and the number this harness
     // reports for a draft-churn corpus was measuring the port, not the engine.
     override suspend fun putIfNewer(doc: EventDoc): Boolean = inner.putIfNewer(doc)
+
+    // The same trap: the default is `existingIds` + `putAll` through THIS object,
+    // two calls where the client makes one round of test-and-set puts.
+    override suspend fun putAllIfStored(docs: List<EventDoc>): Set<String> {
+        putCalls.incrementAndGet()
+        puts.addAndGet(docs.size.toLong())
+        return inner.putAllIfStored(docs)
+    }
 
     override suspend fun removeDocs(docs: List<EventDoc>) = inner.removeDocs(docs)
 

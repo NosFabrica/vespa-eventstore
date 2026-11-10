@@ -108,6 +108,16 @@ atomically. Two admission rules fit inside it:
   replaceable/draft churn dominates ingest (~9% of this corpus mix; the batch
   path already amortizes the read path's searches).
 
+  **The reindex's re-put is a conditional put too** (#160,
+  [`EventIndex.putAllIfStored`]): `event.id == "<id>"`, never created, on either
+  docid scheme. The full-text reindex reads its page with no lock held, so a doc
+  may be superseded or deleted before the re-put. The engine answers
+  `CONDITION_FAILED` for a missing document or one now holding another event,
+  and writes nothing (measured on 8.781.11, pinned by `ConditionalRePutIT`). The
+  bundled batch handler passes the condition through, so these ride batches of
+  100 like any put. Lock time per reindex page matched the existence check it
+  replaced (benchmark/README.md, `reindexLockProbe`).
+
   Scope note: the fast path engages on the raw `VespaEventIndex`. Through the
   production trust-projection decorator, supersession deliberately stays
   read-based so the projection's write reactions still see both the superseded

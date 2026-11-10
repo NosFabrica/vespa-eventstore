@@ -158,7 +158,7 @@ enum class PortCall {
     /** `get` — a single document by id. */
     Get,
 
-    /** `put` / `putAll` / `putIfNewer`'s store. */
+    /** `put` / `putAll` / `putAllIfStored` / `putIfNewer`'s store. */
     Put,
 
     /** `remove` / `removeAll` / `removeDocs`. */

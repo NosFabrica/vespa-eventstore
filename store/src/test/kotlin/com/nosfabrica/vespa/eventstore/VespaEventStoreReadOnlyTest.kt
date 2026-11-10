@@ -130,6 +130,7 @@ class VespaEventStoreReadOnlyTest {
                 "put" to { port.put(other) },
                 "putAll" to { port.putAll(listOf(other)) },
                 "putIfNewer" to { port.putIfNewer(other) },
+                "putAllIfStored" to { port.putAllIfStored(listOf(stored)) },
                 "remove" to { port.remove(stored.id) },
                 "removeAll" to { port.removeAll(listOf(stored.id)) },
                 "removeDocs" to { port.removeDocs(listOf(stored)) },

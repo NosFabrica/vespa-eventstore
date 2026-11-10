@@ -81,6 +81,26 @@ class InMemoryEventIndex(
         }
     }
 
+    /**
+     * The engine's test-and-set put, held exactly: the "still stored?" check
+     * and the write run inside the author's own `compute`, the same monitor
+     * [remove] mutates under, so a removal cannot land between them. Same
+     * event id means same pubkey, so the bucket is the stored doc's too.
+     */
+    override suspend fun putAllIfStored(docs: List<EventDoc>): Set<String> {
+        val written = HashSet<String>()
+        for (doc in docs) {
+            byAuthor.compute(doc.pubkey) { _, ids ->
+                if (this.docs[doc.id]?.pubkey == doc.pubkey) {
+                    this.docs[doc.id] = doc
+                    written += doc.id
+                }
+                ids
+            }
+        }
+        return written
+    }
+
     /** The docs [c] can match: none when it cannot match at all, those of its ids or its authors when it names either, else every doc. */
     private fun candidates(c: Compiled): Collection<EventDoc> =
         when {
