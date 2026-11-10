@@ -8,7 +8,15 @@ mavenPublish = "0.37.0"
 # FROM JITPACK, so the published POM names com.github.vitorpamplona.quartz:quartz-jvm:<pin> and a
 # consumer of this store needs JitPack in its repositories (Central publishing does not check).
 #
-# 288217a = vitorpamplona/quartz main @ 2026-11-09, the quartz#102 merge (288217a0e4). 21 commits
+# ce558d9 = vitorpamplona/quartz main @ 2026-11-10, the quartz#106 merge (ce558d90e7): 288217a (below)
+# plus one catalog line. quartz's libschnorr256k1-kotlin moves 1d851c2 -> 867bb13 (JitPack, the same
+# group settings.gradle.kts already routes): BIP-340 signing with no aux randomness, field compares
+# on unreduced values and FieldP.add's double carry fixed, plus batch-verify and field speedups.
+# Only Cashu, RoboSats ratings and the deprecated utils.secp256k1.Secp256k1 shim call it; Event.verify()
+# on the JVM stays on ACINQ's libsecp256k1. No quartz source moves.
+#  - RUNTIME CLASSPATH (:store): quartz and schnorr256k1-kotlin-jvm move (1d851c2 -> 867bb13), nothing else.
+#
+# Prev 288217a = vitorpamplona/quartz main @ 2026-11-09, the quartz#102 merge (288217a0e4). 21 commits
 # over 0102e83c81 (below), which it descends from; JitPack builds it (quartz-jvm's POM answers 200).
 # A tree diff of quartz/src between them, main sources (28 files), scanned against this store's
 # imports:
@@ -321,7 +329,7 @@ mavenPublish = "0.37.0"
 # catch-all; SearchableEvent grows the read-path forEachIndexableField, no reindex).
 # Prev cecc3287b2 (2026-09-01: 17 catch-all kinds split into title/body roles, four
 # affiliation URLs, six doubled `t`-tag scans dropped; a ranking backfill).
-quartz = "288217a"
+quartz = "ce558d9"
 coroutines = "1.11.0"
 serialization = "1.12.0"
 # Matches what Quartz brings transitively; Gradle would resolve to it regardless.
