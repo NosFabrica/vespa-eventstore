@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore.trust
 
+import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.serviceCells
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
@@ -236,5 +237,59 @@ class TrustKeyingMigrationTest {
                 "and the line must say so rather than invent a percentage: $linesWhileSweeping",
             )
             assertNull(reputations.get(TrustKeyingMigration.PROGRESS_KEY), "the scaffolding is cleared when the migration finishes")
+        }
+
+    /**
+     * Pages the sweep one parent at a time, each read when its page is
+     * reached (as a real visit reads), and runs [beforePage] ahead of every
+     * page but the first: the moment live ingest lands between two pages.
+     */
+    private class PagedVisit(
+        private val inner: InMemoryReputationIndex,
+        private val beforePage: suspend () -> Unit,
+    ) : ReputationIndex by inner {
+        override suspend fun visitDocs(onPage: suspend (List<ReputationDoc>) -> Boolean) {
+            val keys = inner.docs.keys.sorted()
+            for ((i, key) in keys.withIndex()) {
+                if (i > 0) beforePage()
+                val doc = inner.get(key) ?: continue
+                if (!onPage(listOf(doc))) return
+            }
+        }
+    }
+
+    /**
+     * A SERVICE NAMED DURING THE SWEEP KEEPS ITS CELLS. The sweep runs for
+     * hours beside live ingest, and judged every cell by the providers it
+     * read before the reconcile: a 10040 naming a new service mid-run had its
+     * service's cells written by the walk and the cards — and then stripped,
+     * parent by parent, as the sweep reached them.
+     */
+    @Test
+    fun `a service a 10040 names during the sweep keeps the cells it writes`() =
+        runBlocking {
+            seedObserverKeyedStore()
+            val late = "6e".repeat(32)
+            // Sorts after the other parents, so the sweep reaches it after ingest has landed;
+            // already a parent (an old observer-keyed cell), so the walk visits it.
+            val lateSubject = "fe".repeat(32)
+            reputations.put(ReputationDoc(lateSubject, serviceCells(observer to 10)))
+            var named = false
+            val paged =
+                PagedVisit(reputations) {
+                    if (named) return@PagedVisit
+                    named = true
+                    // Live ingest, through the projection: a card the new service already
+                    // signed, then the list naming it, whose walk writes the card's cell.
+                    projection.put(UserAssertionEvent(id(), late, 2_000L, arrayOf(arrayOf("d", lateSubject), arrayOf("rank", "55")), "", "").toDoc())
+                    projection.put(TrustProviderListEvent(id(), "0c".repeat(32), 2_001L, arrayOf(arrayOf("30382:rank", late, "wss://scores.example.com/")), "", "").toDoc())
+                    assertEquals(serviceCells(observer to 10, late to 55), reputations.get(lateSubject)?.influenceScores, "the walk wrote the cell")
+                }
+            val sweeping = TrustKeyingMigration(paged, reconciler, projection.recompute)
+            val done = sweeping.run()
+            assertTrue(named, "ingest landed mid-sweep, or this asserts nothing")
+            assertEquals(serviceCells(late to 55), reputations.get(lateSubject)?.influenceScores, "the newly named service's cell survived the sweep")
+            assertEquals(3, done.keysRemoved, "the observer's keys still went, the late parent's too")
+            assertEquals(serviceCells(service to 87), reputations.get(subject)?.influenceScores)
         }
 }

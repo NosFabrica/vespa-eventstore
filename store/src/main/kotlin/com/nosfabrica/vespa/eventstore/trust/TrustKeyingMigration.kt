@@ -166,11 +166,26 @@ class TrustKeyingMigration internal constructor(
     }
 
     /**
-     * Drop every cell whose key is not in [services], across every stored
-     * parent — pipelined removes, a page at a time, no gate: a cell keyed by
-     * an unnamed key is read by no lens and written by no live path, so
-     * nothing can race this. The projection's own bookkeeping documents
-     * (non-hex ids) are never touched.
+     * Drop every cell whose key is not in [services] — nor named by the
+     * provider map as it stands when the page's removals are sent — across
+     * every stored parent: pipelined removes, a page at a time. The
+     * projection's own bookkeeping documents (non-hex ids) are never touched.
+     *
+     * [services] is a snapshot taken before the reconcile, and this walk runs
+     * for hours beside live ingest ([run] is launched in the background at
+     * `open()`). A cell keyed by a service no list named THEN is not
+     * unwritable: a 10040 stored during the run names it, its walk and its new
+     * cards write cells, and a sweep judging by the snapshot alone stripped
+     * them as it reached their parents — no lens-reachable drift any write
+     * would repair before the next reconcile. So a page with anything to
+     * remove re-reads the map UNDER [TrustReconciler.gate], the trust gate
+     * every 10040 write and every cell write takes, and keeps what it names:
+     * a list stored before that hold is in the map read (the write drops the
+     * cached pass), and one stored after it walks its service over this
+     * page's removals. A page with nothing to remove by the snapshot takes no
+     * lock. Like the orphan sweep's re-check, this is exact for ONE writer: a
+     * peer's 10040 reaches this map only at the provider refresher's tick
+     * (docs/multi-node-consistency.md).
      */
     suspend fun sweepUnmappedCells(
         services: Set<String>,
@@ -180,18 +195,24 @@ class TrustKeyingMigration internal constructor(
         var removed = 0
         var lastPersistedAt = 0
         reputations.visitDocs { page ->
-            val removals = ArrayList<CellRemoval>()
+            val candidates = ArrayList<CellRemoval>()
             for (doc in page) {
                 if (!Hex.isHexKey(doc.pubkey)) continue
                 parents++
                 val keys = (doc.influenceScores.keys + doc.followerCounts.keys).filterNot { it.hex in services }
                 for (key in keys) {
-                    removals += CellRemoval(doc.pubkey, key, influence = key in doc.influenceScores, followers = key in doc.followerCounts)
+                    candidates += CellRemoval(doc.pubkey, key, influence = key in doc.influenceScores, followers = key in doc.followerCounts)
                 }
             }
-            if (removals.isNotEmpty()) {
-                reputations.removeCells(removals)
-                removed += removals.size
+            if (candidates.isNotEmpty()) {
+                reconciler.gate.holding {
+                    val named = recompute.providerMap()
+                    val removals = candidates.filterNot { named.maps(it.key.hex) }
+                    if (removals.isNotEmpty()) {
+                        reputations.removeCells(removals)
+                        removed += removals.size
+                    }
+                }
             }
             progress.record(parents.toLong())
             progress.keysRemoved.set(removed.toLong())
