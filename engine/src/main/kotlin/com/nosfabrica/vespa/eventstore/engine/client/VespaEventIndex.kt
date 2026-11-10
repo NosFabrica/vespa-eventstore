@@ -2321,7 +2321,8 @@ class VespaEventIndex(
      * snapshot is synchronous and must stay that way, so a page that wants
      * headroom asks for it rather than making every counter read do I/O.
      * [EngineResources] caches, so calling this per page render is one request
-     * per [EngineResources.TTL_MILLIS] and no more.
+     * per [EngineResources.TTL_MILLIS] and no more: concurrent renders share
+     * the one refresh, which gives up after [EngineResources.DEADLINE_MILLIS].
      */
     suspend fun engineHeadroom(): EngineResources.Usage? = resources.usage()
 

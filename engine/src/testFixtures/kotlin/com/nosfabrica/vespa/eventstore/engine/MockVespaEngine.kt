@@ -130,6 +130,22 @@ class MockVespaEngine(
     val heldWrites: Int get() = heldWritesCount.get()
     private val heldWritesCount = AtomicInteger()
 
+    /**
+     * How `/metrics/v2/values` (the headroom probe, [EngineResources][com.nosfabrica.vespa.eventstore.engine.client.EngineResources])
+     * is answered: by default one content node at half its memory limit and a quarter of its disk.
+     */
+    @Volatile var metricsReply: Pair<Int, String> =
+        200 to
+            """{"nodes":[{"hostname":"mock-0.local","services":[{"name":"vespa.searchnode","metrics":[{"values":""" +
+            """{"content.proton.resource_usage.memory.average":0.5,"content.proton.resource_usage.disk.average":0.25}}]}]}]}"""
+
+    /** While set, a metrics request waits for this latch before it is answered: a metrics endpoint that never answers. [stop] releases it. */
+    @Volatile var holdMetrics: CountDownLatch? = null
+
+    /** `/metrics/v2/values` requests received (counted on arrival, before [holdMetrics]). */
+    val metricsRequests: Int get() = metricsRequestsCount.get()
+    private val metricsRequestsCount = AtomicInteger()
+
     /** Document-API removes served. */
     val documentRemoves: Int get() = documentRemovesCount.get()
     private val documentRemovesCount = AtomicInteger()
@@ -448,6 +464,7 @@ class MockVespaEngine(
 
     fun stop() {
         holdWrites?.countDown()
+        holdMetrics?.countDown()
         synchronized(stalled) {
             stalled.forEach { it.failed(IOException("mock stopped")) }
             stalled.clear()
@@ -461,6 +478,11 @@ class MockVespaEngine(
         rawQuery: String?,
         body: String,
     ): Reply {
+        if (method == "GET" && path == "/metrics/v2/values") {
+            metricsRequestsCount.incrementAndGet()
+            holdMetrics?.await()
+            return metricsReply.let { (status, body) -> Reply(status, body) }
+        }
         val documentPath = path.startsWith("/document/v1/") || path == "/eventstore/v1/feed"
         if ((documentPath && !servesDocumentApi) || (path == "/search/" && !servesSearch)) {
             wrongRoleRequestsCount.incrementAndGet()
