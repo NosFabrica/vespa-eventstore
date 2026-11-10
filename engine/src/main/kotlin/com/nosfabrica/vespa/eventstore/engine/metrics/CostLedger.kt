@@ -486,7 +486,17 @@ class CostLedger(
         )
     }
 
-    /** Test seam: forget everything. */
+    /**
+     * Forget every count: a test's clean slate, and a probe's between variants
+     * (`RecencyStrategyProbe`). EVERY accumulated table, the per-caller engine
+     * table with the per-profile one: they book the same queries and must not
+     * drift, and a reset that cleared only one left [Snapshot.engineByCaller]
+     * reporting queries [Snapshot.engine] said never happened.
+     *
+     * Not the gauges: they hold no count, only the suppliers the store
+     * registered once at open, so clearing them would not zero a reading but
+     * unregister it for the life of the ledger.
+     */
     fun reset() {
         slots.forEach {
             it.calls.reset()
@@ -496,6 +506,7 @@ class CostLedger(
         }
         outcomes.clear()
         engine.clear()
+        engineByCaller.clear()
         byObserver.reset()
         byTerm.reset()
         for (i in slowRing.indices) slowRing[i] = null
