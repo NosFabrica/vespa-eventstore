@@ -1774,6 +1774,61 @@ class VespaEventIndexTest {
             }
         }
 
+    /**
+     * A DEPLOYMENT THAT CAPS `maxHits` STILL WALKS, and walks exactly. The
+     * cursor's page asked for `idPageSize + TIE_SLACK` hits (20,064 by default)
+     * whatever VESPA_UNBOUNDED_HITS said, and the limited walk's one-page read
+     * `limit + TIE_SLACK`, while the tie-group read beside them was already
+     * clamped — so under a cap below the overfetch every page was refused 400
+     * and nothing fell back. The cap here sits below the page size itself, and
+     * ties straddle the shrunken page boundaries in a scrambled engine order,
+     * so a clamp that broke the boundary resolution would lose or repeat ids.
+     *
+     * Verified to fail with the clamps reverted: the first page is refused
+     * ("124 hits requested, configured limit: 50.").
+     */
+    @Test
+    fun `a walk under a deployed hits cap pages inside it and stays exact`() =
+        runBlocking {
+            val ivy = "d9".repeat(32)
+            // Seconds of 1..13 events each, and one 30-wide second, so ties land
+            // on boundaries of every page size the clamp can produce.
+            val docs = (0 until 240).map { doc(kind = 1, pubkey = ivy, at = 1_700_000_000L + (it * it) % 97) } + (1..30).map { doc(kind = 1, pubkey = ivy, at = 1_700_000_050L) }
+            seedBulk(docs)
+            mock.refuseHitsAbove = 50
+            mock.scrambleTieOrder = true
+            val capped = VespaEventIndex(mock.url, tuning = ClientTuning(unboundedHits = 50), idPageSize = 60)
+            try {
+                val q = EventQuery(kinds = listOf(1), authors = listOf(ivy))
+                val all = ArrayList<DocRef>()
+                capped.visitIds(q) {
+                    all += it
+                    true
+                }
+                assertEquals(docs.size, all.size, "every id, each exactly once")
+                assertEquals(docs.map { it.id }.toSet(), all.map { it.id }.toSet())
+                // A limit inside the cap takes the one-page read; one past the cap
+                // but inside a page must not ask for itself in one query either.
+                for (limit in listOf(20, 55, 130)) {
+                    val got = ArrayList<DocRef>()
+                    capped.visitIds(q.copy(limit = limit)) {
+                        got += it
+                        true
+                    }
+                    assertEquals(
+                        reference.search(q.copy(limit = limit)).map { it.id }.sorted(),
+                        got.map { it.id }.sorted(),
+                        "limit $limit: the newest N with NIP-01's lowest-id tiebreak",
+                    )
+                }
+                assertTrue(mock.searchRequests.all { (it["hits"]?.toInt() ?: 0) <= 50 }, "no request may ask past the deployed cap")
+            } finally {
+                mock.refuseHitsAbove = null
+                mock.scrambleTieOrder = false
+                capped.close()
+            }
+        }
+
     /** A walk the observer gates: the lens [EventYql.gateFloor] reads, on the recency-gated profile a lensed termless read takes. */
     private fun gated(q: EventQuery) = q.copy(observer = "0b".repeat(32), rankKey = "0c".repeat(32), minRank = 10.0, ranking = EventYql.RANK_RECENCY_GATED)
 

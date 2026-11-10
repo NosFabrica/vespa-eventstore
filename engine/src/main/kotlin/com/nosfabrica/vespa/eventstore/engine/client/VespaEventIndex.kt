@@ -1223,7 +1223,10 @@ class VespaEventIndex(
             // recallSummaries restores). A NIP-77 snapshot of the filter then
             // disagreed with its own REQ at exactly that seam. Overfetch, and
             // read the straddling group whole, as recallSummaries does.
-            if (query.limit <= idPageSize) {
+            // INSIDE THE CAP as well as the page: a limit past a deployed
+            // `maxHits` cannot be one query, and the cursor serves the same
+            // newest N a page at a time.
+            if (query.limit <= minOf(idPageSize, unboundedHits)) {
                 val hits = newestExact(query, withDTag, query.limit)
                 if (hits.isNotEmpty()) onPage(hits)
                 return
@@ -1354,8 +1357,18 @@ class VespaEventIndex(
         onPage: suspend (List<DocRef>) -> Boolean,
     ) {
         var until: Long? = query.until
+        // INSIDE THE DEPLOYED CAP, like the tie-group read below. An operator
+        // who capped the query profile's `maxHits` (VESPA_UNBOUNDED_HITS) has
+        // the engine refuse any request asking past it, and the overfetch is
+        // this walk's own choice, not the caller's limit — asked for whole, it
+        // made every page of every walk a 400 on a cap under 20,064. So the
+        // fetch shrinks to the cap and the PAGE shrinks inside it, keeping the
+        // slack (halved when the cap is too small to spare a whole one). The
+        // boundary logic below needs only `pageSize <= fetchLimit`: a short
+        // slack just reads the boundary group by its window more often.
+        val fetchLimit = minOf(idPageSize + TIE_SLACK, unboundedHits)
+        val pageSize = minOf(idPageSize, fetchLimit - minOf(TIE_SLACK, fetchLimit / 2))
         while (true) {
-            val fetchLimit = idPageSize + TIE_SLACK
             val hits =
                 try {
                     idTimeRetrying(query.copy(until = until, limit = fetchLimit), withDTag, "walk.ids.page")
@@ -1447,7 +1460,7 @@ class VespaEventIndex(
                 return
             }
 
-            val boundary = hits[idPageSize - 1].createdAt
+            val boundary = hits[pageSize - 1].createdAt
             // The boundary group arrived complete only if the engine already
             // emitted something strictly older than it.
             if (hits.last().createdAt < boundary) {
@@ -1619,12 +1632,17 @@ class VespaEventIndex(
         withDTag: Boolean,
         limit: Int,
     ): List<DocRef> {
-        val fetch = limit + TIE_SLACK
+        // The slack stops at the deployed cap, as the cursor's does — the
+        // caller routes only a limit inside the cap here ([visitIds]). A fetch
+        // with no slack left is still exact: a full answer then ends AT t, never
+        // past it, so the check below reads the group by its window.
+        val fetch = minOf(limit + TIE_SLACK, maxOf(limit, unboundedHits))
         val hits = idTimeRetrying(query.copy(limit = fetch), withDTag, "walk.limited.onepage")
-        if (hits.size <= limit) return hits.sortedWith(DOCREF_NEWEST_FIRST)
+        // Fewer than asked for: the engine ran out, so every tie is in hand.
+        if (hits.size < fetch) return hits.sortedWith(DOCREF_NEWEST_FIRST).take(limit)
         val t = hits[limit - 1].createdAt
-        // Complete if the engine ran out, or already emitted something older than t.
-        val complete = hits.size < fetch || hits.last().createdAt < t
+        // Complete if the engine already emitted something older than t.
+        val complete = hits.last().createdAt < t
         if (complete) return hits.sortedWith(DOCREF_NEWEST_FIRST).take(limit)
         val newer = hits.filter { it.createdAt > t }
         val cap = minOf(idPageSize * TIE_DENSE_FACTOR + 1, unboundedHits)

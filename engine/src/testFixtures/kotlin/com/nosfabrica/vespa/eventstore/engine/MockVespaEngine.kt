@@ -221,6 +221,17 @@ class MockVespaEngine(
     @Volatile var hitsCap: Int? = null
 
     /**
+     * The other half of an operator-capped `maxHits`: a request ASKING for more
+     * hits than the cap is refused outright — HTTP 400 naming the configured
+     * limit, the shape real Vespa answers a `hits` above `maxHits` with — where
+     * [hitsCap] models the trim of an answer inside it. A client that sizes a
+     * request past VESPA_UNBOUNDED_HITS on its own initiative (an overfetch,
+     * not the caller's limit) is the bug this exposes. Null (the default)
+     * refuses nothing.
+     */
+    @Volatile var refuseHitsAbove: Int? = null
+
+    /**
      * Serve streamed visits (`stream=true`) the paged JSON shape instead of
      * JSON Lines — an older Vespa that doesn't speak the streamed protocol.
      * The client must detect the content type and fall back to the paged walk.
@@ -671,6 +682,9 @@ class MockVespaEngine(
             return Reply(400, """{"message":"Could not create query from YQL: Field '$field' does not exist."}""")
         }
         val hits = params["hits"]?.toIntOrNull() ?: 10
+        refuseHitsAbove?.let { max ->
+            if (hits > max) return Reply(400, """{"root":{"errors":[{"code":4,"summary":"Invalid query parameter","message":"$hits hits requested, configured limit: $max."}]}}""")
+        }
         // The exact-count query (EventYql.buildCount): "… limit 0 | all(output(count()))".
         // The author list/histogram (EventYql.buildDistinctAuthors): "… |
         // all(group(pubkey) each(output(count())))" — the `each(...)` is what
