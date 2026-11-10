@@ -308,7 +308,14 @@ class VespaReputationIndex(
         }
     }
 
-    override fun close() = feed.close()
+    /** As [VespaEventIndex.close]: the feed, gracefully, then the read transport ([VespaHttp.close]). */
+    override fun close() {
+        try {
+            feed.close()
+        } finally {
+            http.close()
+        }
+    }
 
     private companion object {
         const val NAMESPACE = "reputation"

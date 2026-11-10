@@ -2328,8 +2328,18 @@ class VespaEventIndex(
     /** Feed operations in flight right now — the gauge behind a backpressure tile. */
     fun feedInflight(): Long = feed.inflight()
 
-    /** Graceful: waits for in-flight feed operations before closing the connections. */
-    override fun close() = feed.close()
+    /**
+     * Graceful: the feed first (it waits for its writes in flight), then the read transport,
+     * whose OkHttp dispatcher and connection pool nothing else would ever release
+     * ([VespaHttp.close]) — even when the feed's close throws.
+     */
+    override fun close() {
+        try {
+            feed.close()
+        } finally {
+            http.close()
+        }
+    }
 
     internal companion object {
         /**
