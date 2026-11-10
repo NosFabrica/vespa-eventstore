@@ -582,7 +582,9 @@ Make sure to have the following pre-requisites installed:
 
 Kotlin 2.4 / JDK 21. Quartz comes from JitPack
 (`com.github.vitorpamplona.quartz:quartz`), pinned to a commit in `gradle/libs.versions.toml`;
-a project depending on this store needs `maven("https://jitpack.io")` in its repositories.
+a project depending on this store needs `maven("https://jitpack.io")` in its repositories. A
+repository filtered to groups needs two: `com.github.vitorpamplona.quartz` and quartz's own JitPack
+dependency, `com.github.vitorpamplona.libschnorr256k1-kotlin`.
 
 On first build the project installs the repo's git hooks (`.git-hooks` →
 `.git/hooks`) so [Spotless](https://github.com/diffplug/spotless) runs on commit

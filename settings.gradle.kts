@@ -11,10 +11,15 @@ dependencyResolutionManagement {
         google()
         mavenCentral()
         // Quartz is pinned to a commit JitPack builds (libs.versions.toml), and JitPack serves
-        // nothing else here. jitpack.yml is separate: it lets JitPack BUILD this store for vespa-relay.
+        // nothing else here but the one dependency quartz itself takes from JitPack
+        // (libschnorr256k1-kotlin, until it is on Central). jitpack.yml is separate: it lets
+        // JitPack BUILD this store for vespa-relay.
         exclusiveContent {
             forRepository { maven { url = uri("https://jitpack.io") } }
-            filter { includeGroup("com.github.vitorpamplona.quartz") }
+            filter {
+                includeGroup("com.github.vitorpamplona.quartz")
+                includeGroup("com.github.vitorpamplona.libschnorr256k1-kotlin")
+            }
         }
     }
 }
