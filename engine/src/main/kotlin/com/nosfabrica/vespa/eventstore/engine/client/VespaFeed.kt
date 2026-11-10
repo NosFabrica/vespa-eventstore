@@ -22,6 +22,9 @@ package com.nosfabrica.vespa.eventstore.engine.client
 
 import ai.vespa.feed.client.FeedClient
 import ai.vespa.feed.client.FeedClientBuilder
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
 import java.net.URI
 import javax.net.ssl.KeyManager
 import javax.net.ssl.SSLContext
@@ -70,8 +73,58 @@ internal class VespaFeed(
 
     private val built: Lazy<FeedClient> = lazy { build(urls.map { URI.create(it) }) }
 
-    /** The tuned client. Operations go straight through it; only construction and health live here. */
+    /**
+     * The tuned client. Only construction and health live here; operations go through it, but
+     * HANDED to it by [enqueue] / [enqueueAll], never from a caller's own dispatcher.
+     */
     val client: FeedClient get() = built.value
+
+    /**
+     * [op] run on [Dispatchers.IO]: one operation handed to [client]. See [enqueueAll].
+     */
+    suspend fun <R> enqueue(op: () -> R): R = withContext(Dispatchers.IO) { op() }
+
+    /**
+     * [op] applied to each of [items] in order on [Dispatchers.IO], cancellation checked before
+     * each: the futures (or whatever [op] returns) of operations handed to [client], in [items]'
+     * order.
+     *
+     * Handing an operation to the client is NOT asynchronous once its throttle window is full.
+     * `HttpRequestStrategy.acquireSlot` (vespa-feed-client 8.781.11) spins
+     * `while (inflight >= throttler.targetInflight()) Thread.sleep(1)` on the CALLER's thread, and
+     * that window sits at 2 x [connectionsPerEndpoint] x endpoints (64 by default) whenever the
+     * engine pushes back. A chunk of [VespaEventIndex.FEED_CHUNK] operations enqueued from the
+     * store's own `Dispatchers.Default` therefore held one of its threads for as long as the
+     * engine took to answer all but the last window of them — seconds, tens under a feed block —
+     * and nothing could stop it: cancellation does not interrupt `Thread.sleep`.
+     *
+     * [Dispatchers.IO] because that wait is exactly a blocking call: the pool is elastic, so a
+     * parked enqueuer costs a thread from the pool made for that rather than one of the cores
+     * reads and the store run on (and from `Default`, kotlinx.coroutines documents, the switch
+     * usually stays on the same thread and only moves it to the other pool's budget). A dedicated narrower dispatcher
+     * would bound nothing worth bounding: every enqueuer waits on the same window, and the writes
+     * that enqueue are already few (the store serialises its writers), so a limit would only queue
+     * a lone reputation update behind another call's whole chunk.
+     *
+     * Cancellation is checked between operations, never inside one: interrupting the thread
+     * would be worse than waiting, since `enqueue` records the operation as its document's
+     * in-flight one BEFORE `acquireSlot`, and an interrupt there leaves that record standing, so
+     * every later operation on the document would wait on a future that never completes. A
+     * cancelled call therefore enqueues at most the one operation whose slot it is waiting for,
+     * then stops; what it already enqueued is in flight and lands (or fails) unawaited, as it
+     * does when a call is cancelled while awaiting. Order within [items] is enqueue order, which
+     * is what the client's per-document ordering keys on.
+     */
+    suspend fun <T, R> enqueueAll(
+        items: List<T>,
+        op: (T) -> R,
+    ): List<R> =
+        withContext(Dispatchers.IO) {
+            items.map {
+                ensureActive()
+                op(it)
+            }
+        }
 
     init {
         if (eager) built.value

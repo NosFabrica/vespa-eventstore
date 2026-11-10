@@ -53,6 +53,7 @@ import java.io.IOException
 import java.net.URLDecoder
 import java.nio.ByteBuffer
 import java.util.Collections
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.zip.GZIPInputStream
 import java.util.zip.GZIPOutputStream
@@ -115,6 +116,23 @@ class MockVespaEngine(
      * which sends nothing at all until it has a result. 0 answers at once.
      */
     @Volatile var delayAnswersMs: Long = 0
+
+    /**
+     * While set, every document WRITE (a document-API or batch-handler POST, PUT or DELETE, but
+     * not the feed client's `dryRun` handshake) waits for this latch before it is answered: an
+     * engine that has stopped acking, held open for exactly as long as a test wants, where
+     * [delayAnswersMs] would be a guess at how long is long enough. [heldWrites] counts arrivals.
+     * [stop] releases it.
+     */
+    @Volatile var holdWrites: CountDownLatch? = null
+
+    /** Document writes that have reached [holdWrites] (whether or not it is still closed). */
+    val heldWrites: Int get() = heldWritesCount.get()
+    private val heldWritesCount = AtomicInteger()
+
+    /** Document-API removes served. */
+    val documentRemoves: Int get() = documentRemovesCount.get()
+    private val documentRemovesCount = AtomicInteger()
 
     /** The exchanges [stallBodiesMidStream] is holding open. */
     private val stalled = Collections.synchronizedList(ArrayList<Callback>())
@@ -429,6 +447,7 @@ class MockVespaEngine(
     val port: Int get() = (server.connectors[0] as ServerConnector).localPort
 
     fun stop() {
+        holdWrites?.countDown()
         synchronized(stalled) {
             stalled.forEach { it.failed(IOException("mock stopped")) }
             stalled.clear()
@@ -455,6 +474,10 @@ class MockVespaEngine(
         }
         // The feed client opens with a no-op handshake request (?dryRun=true).
         if (rawQuery.orEmpty().contains("dryRun=true")) return Reply(200, "{}")
+        holdWrites?.takeIf { documentPath && method in WRITE_METHODS }?.let {
+            heldWritesCount.incrementAndGet()
+            it.await()
+        }
         val docPrefix = "/document/v1/event/event/docid/"
         updateReply?.takeIf { method == "PUT" && path.startsWith("/document/v1/") }?.let { (status, reply) ->
             updateRequestsCount.incrementAndGet()
@@ -508,6 +531,7 @@ class MockVespaEngine(
             }
 
             method == "DELETE" && path.startsWith(docPrefix) -> {
+                documentRemovesCount.incrementAndGet()
                 runBlocking { inner.remove(path.removePrefix(docPrefix)) }
                 Reply(200, """{"id":"$path"}""")
             }
@@ -952,6 +976,9 @@ class MockVespaEngine(
             }
 
     private companion object {
+        /** The methods [holdWrites] holds: the document API's put, update and remove, and the batch handler's POST. */
+        val WRITE_METHODS = setOf("POST", "PUT", "DELETE")
+
         /** Vespa's flag for "the cluster is not in its ideal state" — the one degradation it names without a query having asked for anything. */
         const val NON_IDEAL_STATE = "non-ideal-state"
 

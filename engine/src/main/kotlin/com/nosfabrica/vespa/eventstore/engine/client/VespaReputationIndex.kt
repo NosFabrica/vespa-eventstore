@@ -88,14 +88,16 @@ class VespaReputationIndex(
             feedParams(),
         )
 
+    private fun removeOp(pubkey: String) = feed.client.remove(DocumentId.of(NAMESPACE, DOCTYPE, pubkey), feedParams())
+
     override suspend fun put(reputation: ReputationDoc) {
-        putOp(reputation).await()
+        feed.enqueue { putOp(reputation) }.await()
     }
 
     /** All puts stay in flight together — the feed client multiplexes them over HTTP/2. */
     override suspend fun putAll(reputations: List<ReputationDoc>) {
         // Chunked for the enqueue-time deadline, as VespaEventIndex.putAll is.
-        reputations.chunked(VespaEventIndex.FEED_CHUNK).forEach { chunk -> chunk.map { putOp(it) }.forEach { it.await() } }
+        reputations.chunked(VespaEventIndex.FEED_CHUNK).forEach { chunk -> feed.enqueueAll(chunk, ::putOp).forEach { it.await() } }
     }
 
     /**
@@ -166,8 +168,8 @@ class VespaReputationIndex(
     private fun ReputationCells.isPlainAdd(): Boolean = (influence != null || followers != null) && !(influence == null && dropInfluence) && !(followers == null && dropFollowers)
 
     private suspend fun updateCellsChunk(updates: List<CellUpdate>) {
-        updates
-            .map { u -> u.creates to feed.client.update(DocumentId.of(NAMESPACE, DOCTYPE, u.subject), u.body, feedParams().createIfNonExistent(u.creates)) }
+        feed
+            .enqueueAll(updates) { u -> u.creates to feed.client.update(DocumentId.of(NAMESPACE, DOCTYPE, u.subject), u.body, feedParams().createIfNonExistent(u.creates)) }
             .forEach { (creates, op) ->
                 if (creates) op.await() else runCatching { op.await() }.onFailure { if (!it.isAbsentDocumentFailure()) throw it }
             }
@@ -247,13 +249,13 @@ class VespaReputationIndex(
     }
 
     override suspend fun remove(pubkey: String) {
-        feed.client.remove(DocumentId.of(NAMESPACE, DOCTYPE, pubkey), feedParams()).await()
+        feed.enqueue { removeOp(pubkey) }.await()
     }
 
     /** All removes in flight together over HTTP/2, like [putAll]. */
     override suspend fun removeAll(pubkeys: List<String>) {
         pubkeys.chunked(VespaEventIndex.FEED_CHUNK).forEach { chunk ->
-            chunk.map { feed.client.remove(DocumentId.of(NAMESPACE, DOCTYPE, it), feedParams()) }.forEach { it.await() }
+            feed.enqueueAll(chunk, ::removeOp).forEach { it.await() }
         }
     }
 

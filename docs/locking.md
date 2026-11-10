@@ -14,7 +14,8 @@ Terminology, because "blocking" means two different things here:
   the store is this kind.
 - A **JVM monitor** (`synchronized`) or a **blocking I/O call** parks a thread.
   The store's monitors are all nanosecond-scale and uncontended; the blocking
-  I/O is confined to boot and to one walk that runs on `Dispatchers.IO`.
+  I/O is confined to boot and to two calls that run on `Dispatchers.IO`: the
+  streamed visit walk and handing a write to the feed client.
 
 ## Inventory and verdicts
 
@@ -29,13 +30,13 @@ Terminology, because "blocking" means two different things here:
 | `Concurrency.mapBounded` / `forEachBounded` | coroutine `Semaphore`, `Mutex` | fan-out width; a serialised accumulator | **fine** — both suspend; the accumulator mutex could be a single-consumer `Channel`, which is the same thing spelled longer |
 | `IngestStats`, `BackgroundFailures`, `GuardBloom`, `SchemaFallbacks`, `ProviderMap.cached`, `VespaEventIndex.nextUrl` | atomics / `@Volatile` | counters, flags, a cache | **already lock-free** |
 | `VespaHttp.send` | `suspendCancellableCoroutine` over OkHttp `enqueue` | every read | **non-blocking** |
-| `VespaEventIndex` / `VespaReputationIndex` feed ops | `CompletableFuture.await()` (kotlinx) | every write | **non-blocking** |
+| `VespaEventIndex` / `VespaReputationIndex` feed ops | `VespaFeed.enqueueAll` on `Dispatchers.IO`, then `CompletableFuture.await()` (kotlinx) | every write | **thread-blocking to enqueue, offloaded; the await suspends** — once the client's throttle window is full (64 in flight at its floor), handing it an operation spins `Thread.sleep(1)` in `HttpRequestStrategy.acquireSlot` on the enqueuing thread until one completes. It used to do that on the store's `Dispatchers.Default` thread, for as long as a 4,096-operation chunk took to drain; it now runs on `Dispatchers.IO`, with cancellation checked between operations (not by interrupt, which would strand the document's in-flight record in the client) — `FeedEnqueueTest` |
 | `VespaVisits.streamOnce` | `call.execute()` + `readUtf8Line()` on `Dispatchers.IO` | the streamed JSON-Lines visit | **thread-blocking, deliberately** — a streamed body is a pull-based `BufferedSource`; it is offloaded, bounded by `VESPA_VISIT_CONCURRENCY`, and a guard child aborts the socket on cancellation. The async alternative (JDK `HttpClient` + `BodySubscribers.fromLineSubscriber` bridged to a `Channel`) is a rewrite of the walk for no measured gain |
 | `SchemaDeployer` | JDK `HttpClient.send` + `Thread.sleep` | boot-time deploy and readiness poll | **thread-blocking at boot only**, inside the non-suspending `VespaEventStore.open()`; a `suspend` `open` (or an `openAsync`) using `sendAsync().await()` and `delay()` is a public-API change, not a fix |
 | `VespaFeed.close` | `FeedClient.close(true)` | graceful shutdown | **blocking at shutdown only** |
 | tests, benchmarks | `runBlocking` | entry points | expected |
 
-Nothing in the serving path parks a thread. The lock-wait a client can feel is
+Nothing in the serving path parks a thread of the dispatcher it was called on. The lock-wait a client can feel is
 coroutine suspension on `writes` — which is why the rest of this note is about
 that one lock.
 

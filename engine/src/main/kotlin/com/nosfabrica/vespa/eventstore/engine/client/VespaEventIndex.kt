@@ -343,7 +343,7 @@ class VespaEventIndex(
         // one flag for good.
         var attempt = 0
         while (true) {
-            val retry = docs.map { putOp(it) }
+            val retry = feed.enqueueAll(docs, ::putOp)
             try {
                 retry.forEach { it.await() }
                 return
@@ -357,17 +357,19 @@ class VespaEventIndex(
     private fun removeOp(id: String) = feed.client.remove(DocumentId.of(EVENT_NAMESPACE, EVENT_DOCTYPE, id), feedParams())
 
     override suspend fun put(doc: EventDoc) {
-        awaitPuts(listOf(doc), listOf(putOp(doc)))
+        awaitPuts(listOf(doc), listOf(feed.enqueue { putOp(doc) }))
     }
 
     /**
      * Puts stay in flight together — the feed client multiplexes them over
      * HTTP/2 — in chunks of [FEED_CHUNK]: the per-operation deadline
-     * ([feedParams]) is measured from ENQUEUE, not from dispatch, and the
-     * throttler admits about `connections x streams` at a time, so a single
-     * call that enqueued far more than that had its tail expire in the queue
-     * before its first dispatch — most of the batch landed and the call still
-     * threw. A chunk the size of the admission window loses no pipelining.
+     * ([feedParams]) is measured from ENQUEUE, not from dispatch, so a single
+     * call that enqueued far more than the client keeps in flight had its tail
+     * expire before its first dispatch — most of the batch landed and the call
+     * still threw. What the client keeps in flight is its throttler's window
+     * (`targetInflight`), not `connections x streams`: see [FEED_CHUNK]. Past
+     * that window an enqueue WAITS for a slot, on the enqueuing thread, which
+     * is why every operation here is handed over through [VespaFeed.enqueueAll].
      */
     override suspend fun putAll(docs: List<EventDoc>) {
         // Batched first when it is on: whatever it does not confirm stored goes the feed client's
@@ -381,7 +383,7 @@ class VespaEventIndex(
                     body = { it.feedJson(includeNear = fallbacks.nearFieldsAvailable, includeEdge = feedsEdge(), includeStem = fallbacks.stemFieldsAvailable) },
                 )
             } ?: docs
-        rest.chunked(FEED_CHUNK).forEach { chunk -> awaitPuts(chunk, chunk.map { putOp(it) }) }
+        rest.chunked(FEED_CHUNK).forEach { chunk -> awaitPuts(chunk, feed.enqueueAll(chunk, ::putOp)) }
     }
 
     /**
@@ -407,12 +409,14 @@ class VespaEventIndex(
         // Same write-side near-column net as [awaitPuts]; this path builds its
         // own operation (the test-and-set condition), so it carries its own.
         suspend fun attempt(): Result =
-            feed.client
-                .put(
-                    DocumentId.of(EVENT_NAMESPACE, EVENT_DOCTYPE, address),
-                    doc.feedJson(includeNear = fallbacks.nearFieldsAvailable, includeEdge = feedsEdge(), includeStem = fallbacks.stemFieldsAvailable),
-                    feedParams().createIfNonExistent(true).testAndSetCondition(condition),
-                ).await()
+            feed
+                .enqueue {
+                    feed.client.put(
+                        DocumentId.of(EVENT_NAMESPACE, EVENT_DOCTYPE, address),
+                        doc.feedJson(includeNear = fallbacks.nearFieldsAvailable, includeEdge = feedsEdge(), includeStem = fallbacks.stemFieldsAvailable),
+                        feedParams().createIfNonExistent(true).testAndSetCondition(condition),
+                    )
+                }.await()
         var refusals = 0
         var result: Result
         while (true) {
@@ -437,7 +441,7 @@ class VespaEventIndex(
         // Under address-keying the doc may live at an address docid, so resolve
         // it before removing.
         val docId = if (addressKeyed) get(id)?.let { docIdOf(it) } ?: id else id
-        feed.client.remove(DocumentId.of(EVENT_NAMESPACE, EVENT_DOCTYPE, docId), feedParams()).await()
+        feed.enqueue { removeOp(docId) }.await()
     }
 
     /** All removes in flight together over HTTP/2, like [putAll]. */
@@ -449,13 +453,13 @@ class VespaEventIndex(
             ids.mapBounded(ID_GET_FANOUT) { remove(it) }
             return
         }
-        ids.chunked(FEED_CHUNK).forEach { chunk -> chunk.map { removeOp(it) }.forEach { it.await() } }
+        ids.chunked(FEED_CHUNK).forEach { chunk -> feed.enqueueAll(chunk, ::removeOp).forEach { it.await() } }
     }
 
     /** Bulk remove with the docs in hand: the docid comes straight from each doc, so no address-keyed resolve-by-get per id. Chunked like [putAll]. */
     override suspend fun removeDocs(docs: List<EventDoc>) {
         docs.chunked(FEED_CHUNK).forEach { chunk ->
-            chunk.map { feed.client.remove(DocumentId.of(EVENT_NAMESPACE, EVENT_DOCTYPE, docIdOf(it)), feedParams()) }.forEach { it.await() }
+            feed.enqueueAll(chunk) { removeOp(docIdOf(it)) }.forEach { it.await() }
         }
     }
 
@@ -2480,10 +2484,20 @@ class VespaEventIndex(
 
         /**
          * Operations enqueued per awaited chunk on every pipelined feed call.
-         * At or above the throttler's admission window (the default 32
-         * connections x 128 streams), so nothing is serialised that would have
-         * overlapped — and no operation waits in the client's queue past the
-         * deadline that starts when it is enqueued (see [putAll]).
+         *
+         * The admission window is the feed client's throttler, not the
+         * transport: `targetInflight` starts at 2 x connections per endpoint x
+         * endpoints (64 with the default 32 connections), is held there by
+         * pushback, and may climb to 256x that (vespa-feed-client 8.781.11,
+         * `StaticThrottler` / `DynamicThrottler`). An enqueue past it waits on
+         * the enqueuing thread for a slot ([VespaFeed.enqueueAll]). What the
+         * transport can carry at once is connections x streams (32 x 128 =
+         * 4096 by default), which is this chunk: a window that has climbed
+         * past it would leave the excess queued inside Jetty with its deadline
+         * running, so a chunk no larger than that keeps every enqueued
+         * operation on the wire while it is awaited (see [putAll]), and at the
+         * floor a chunk is ~64 windows, so nothing is serialised that would
+         * have overlapped.
          */
         const val FEED_CHUNK = ClientTuning.MAX_FEED_BATCH
 
