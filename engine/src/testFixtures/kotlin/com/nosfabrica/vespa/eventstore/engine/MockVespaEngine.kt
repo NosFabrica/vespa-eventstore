@@ -366,6 +366,18 @@ class MockVespaEngine(
      */
     @Volatile var relevanceOf: ((EventDoc) -> Double)? = null
 
+    /**
+     * THE OBSERVER GATE, modelled as far as a mock can: authors whose events a
+     * query ranked by a GATING profile drops — the recency-gated pair, the trust
+     * sorts and `search`, whenever the request carries `query(min_rank)`, which
+     * is the `user_score >= min_rank` drop-limit real Vespa applies there
+     * (EventYql.gateFloor). The mock holds no reputation tensors, so WHO is below
+     * the floor is the test's to say. A document-API visit is not a search and
+     * is never gated — exactly real Vespa's asymmetry, and the one a gated walk
+     * must not fall through. Empty (the default) gates nobody.
+     */
+    @Volatile var belowFloorAuthors: Set<String> = emptySet()
+
     /** Every `/search/` request's parameters, in order — a test reads the rung each query of a descent asked for. */
     val searchRequests = java.util.concurrent.CopyOnWriteArrayList<Map<String, String>>()
 
@@ -670,12 +682,14 @@ class MockVespaEngine(
         val isAuthorHistogram = yql.contains("group(pubkey)") && yql.contains("each(output(count()))")
         val grouped = isCount || isAuthorHistogram
         val query = MockYql.parse(yql.substringBefore("|").trim(), params).let { if (grouped) it.copy(limit = null) else it }
+        val gates = belowFloorAuthors.isNotEmpty() && params["ranking"] in GATING_PROFILES && "ranking.features.query(min_rank)" in params
         // The limit cut must be applied AFTER any tie scrambling: real Vespa's
         // single-key sort picks boundary-tie MEMBERSHIP arbitrarily, and a cut
         // inside the reference's tiebroken order would hide exactly the bug
         // [scrambleTieOrder] exists to surface.
         val matches =
             runBlocking { inner.search(query.copy(limit = null)) }
+                .let { docs -> if (gates) docs.filter { it.pubkey !in belowFloorAuthors } else docs }
                 .let { docs -> relevanceOf?.let { score -> docs.sortedByDescending(score) } ?: docs }
                 .let { sorted ->
                     if (scrambleTieOrder && !grouped) {
@@ -1027,6 +1041,17 @@ class MockVespaEngine(
          * aggregation against a real Vespa while these tests stayed green.
          */
         val PROFILE_ONLY_PARAMS = listOf("maxHits", "maxOffset", "grouping.globalMaxGroups")
+
+        /** The profiles whose first phase drops `user_score < min_rank` — EventYql.gateFloor's list, which [belowFloorAuthors] gates on. */
+        val GATING_PROFILES =
+            setOf(
+                EventYql.RANK_RECENCY_GATED,
+                EventYql.RANK_RECENCY_GATED_EXACT,
+                EventYql.RANK_DESC,
+                EventYql.RANK_ASC,
+                EventYql.RANK_FOLLOWERS,
+                EventYql.RANK_SEARCH,
+            )
     }
 }
 

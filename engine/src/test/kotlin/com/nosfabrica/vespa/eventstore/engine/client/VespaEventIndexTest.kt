@@ -1774,6 +1774,74 @@ class VespaEventIndexTest {
             }
         }
 
+    /** A walk the observer gates: the lens [EventYql.gateFloor] reads, on the recency-gated profile a lensed termless read takes. */
+    private fun gated(q: EventQuery) = q.copy(observer = "0b".repeat(32), rankKey = "0c".repeat(32), minRank = 10.0, ranking = EventYql.RANK_RECENCY_GATED)
+
+    /**
+     * A GATED WALK'S LAST RESORT GATES TOO. The document-API scan is not a
+     * search, so it has no rank profile and no drop-limit: a selection built
+     * from a lensed query streamed every author the lens drops. The walk reached
+     * it on exactly the shape a provider's cards have — one dense second, its
+     * id-prefix split out of budget — so a NIP-77 snapshot declared through an
+     * observer handed over the below-floor authors in that second.
+     *
+     * Verified to fail with EventSelection's gate check removed: the scan
+     * serves the below-floor author's 20 ids alongside the trusted 200.
+     */
+    @Test
+    fun `a gated walk that runs out of prefix budget never scans the gate away`() =
+        runBlocking {
+            IngestStats.reset()
+            val trusted = "d5".repeat(32)
+            val spam = "d6".repeat(32)
+            seedBulk((1..200).map { doc(kind = 30382, pubkey = trusted, at = 1_700_000_000L) } + (1..20).map { doc(kind = 30382, pubkey = spam, at = 1_700_000_000L) })
+            mock.belowFloorAuthors = setOf(spam)
+            mock.visitRequests = 0
+            val walking = VespaEventIndex(mock.url, idPageSize = 1)
+            try {
+                val got = ArrayList<DocRef>()
+                walking.visitIds(gated(EventQuery(kinds = listOf(30382), authors = listOf(trusted, spam)))) { page ->
+                    got += page
+                    true
+                }
+                val stages = IngestStats.snapshot()
+                assertNotNull(stages["walk.ties.prefix.budget"], "the walk must reach the last resort this pins; stages seen: ${stages.keys.sorted()}")
+                val spamIds = reference.search(EventQuery(authors = listOf(spam))).map { it.id }.toSet()
+                assertEquals(emptyList(), got.filter { it.id in spamIds }.map { it.id }, "a below-floor author's ids left a gated walk")
+                assertEquals(200, got.distinctBy { it.id }.size, "and every trusted id still arrives")
+                assertEquals(200, got.size, "each exactly once")
+                assertEquals(0, mock.visitRequests, "a selection cannot carry the gate, so a gated walk never visits")
+            } finally {
+                mock.belowFloorAuthors = emptySet()
+                walking.close()
+                IngestStats.reset()
+            }
+        }
+
+    /** The same gate on the other selection-backed reads that a search would gate: the tags projection and the reindex page. */
+    @Test
+    fun `the selection-backed projections of a gated query keep the gate`() =
+        runBlocking {
+            val trusted = "d7".repeat(32)
+            val spam = "d8".repeat(32)
+            seed(doc(kind = 10002, pubkey = trusted, tags = listOf(listOf("r", "wss://kept.example/"))), doc(kind = 10002, pubkey = spam, tags = listOf(listOf("r", "wss://gated.example/"))))
+            mock.belowFloorAuthors = setOf(spam)
+            mock.visitRequests = 0
+            try {
+                val q = gated(EventQuery(kinds = listOf(10002)))
+                val tags = ArrayList<List<List<String>>>()
+                index.visitTags(q) {
+                    tags += it
+                    true
+                }
+                assertEquals(listOf(listOf(listOf("r", "wss://kept.example/"))), tags, "visitTags")
+                assertEquals(listOf(trusted), index.visitDocsPage(q, null, 10).docs.map { it.pubkey }, "visitDocsPage")
+                assertEquals(0, mock.visitRequests, "neither may take the ungated visit")
+            } finally {
+                mock.belowFloorAuthors = emptySet()
+            }
+        }
+
     /**
      * THE PAGE SIZE IS THE WALK'S COST, INVERTED. The engine matches every
      * document in the cursor's remaining range per page and the limit does not

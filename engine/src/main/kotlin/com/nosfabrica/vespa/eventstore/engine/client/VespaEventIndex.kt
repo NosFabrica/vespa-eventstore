@@ -1662,7 +1662,10 @@ class VespaEventIndex(
      * used to come here whole, and that was 22 to 51 minutes a time on a 516M
      * corpus; it is split on the attribute index now.
      *
-     * Queries a selection can't express fall back to the search default.
+     * Queries a selection can't express fall back to the search default —
+     * every GATED walk among them ([EventYql.walksGated]): a visit has no rank
+     * profile to carry the observer gate, so the search, which gates
+     * engine-side, finishes it ([EventSelection.build]).
      */
     private suspend fun visitIdsByScan(
         query: EventQuery,
@@ -1779,7 +1782,9 @@ class VespaEventIndex(
      * [countByAuthor]'s grouping is complete too, but it materializes every
      * group in one response; this streams, which is what the corpus-wide
      * guard-owner Bloom preload needs — a missed author would be a false
-     * negative.
+     * negative. A GATED query has no selection ([EventSelection.build]) and so
+     * takes the grouping, which is raw like every aggregation here: no caller
+     * lenses an author scan, and its answer is the same set either way.
      */
     override suspend fun scanAuthors(query: EventQuery): Set<String> {
         val selection = EventSelection.build(query) ?: return super.scanAuthors(query)

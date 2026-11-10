@@ -33,9 +33,10 @@ import com.vitorpamplona.quartz.utils.Hex
  * weighted key sets ([EventQuery.idWeights] / [EventQuery.authorWeights]),
  * tags, any search constraint (including `notSearch`: a silently dropped
  * exclusion would stream exactly the docs the query subtracted), a limit, the
- * expiry-sweep bound, or a non-64-hex key — and the caller falls back to the
- * ranked `/search/` path. Keys are validated to 64-hex BEFORE they are quoted
- * into the expression (same injection rule as [EventYql]).
+ * expiry-sweep bound, an observer GATE ([EventYql.gateFloor]), or a non-64-hex
+ * key — and the caller falls back to the ranked `/search/` path. Keys are
+ * validated to 64-hex BEFORE they are quoted into the expression (same
+ * injection rule as [EventYql]).
  */
 object EventSelection {
     fun build(q: EventQuery): String? {
@@ -49,6 +50,17 @@ object EventSelection {
         // silent-superset failure this builder returns null to avoid.
         if (q.idWeights.isNotEmpty() || q.authorWeights.isNotEmpty()) return null
         if (!q.search.isNullOrBlank() || q.phrases.isNotEmpty() || q.notSearch.isNotEmpty() || q.limit != null || q.expiresBefore != null) return null
+        // THE OBSERVER GATE, for the same reason again: it is a RECALL
+        // constraint (the gated profiles' `user_score >= min_rank` drop-limit)
+        // that lives in a rank profile, and a visit has none. Omitting it
+        // streamed every author the lens drops — and the id walk reaches a scan
+        // exactly when it is out of better options (a cut past the narrowing
+        // budget, a dense second past the prefix budget), so a NIP-77 snapshot
+        // declared through an observer handed over the corpus the gate exists
+        // to withhold, on precisely the provider-card seconds that take that
+        // route. Null sends the caller to the search path, which gates
+        // engine-side on the one floor every read reads.
+        if (EventYql.gateFloor(q) != null) return null
         val clauses = ArrayList<String>()
         if (q.kinds.isNotEmpty()) clauses += q.kinds.joinToString(" or ", "(", ")") { "event.kind==$it" }
         if (q.authors.isNotEmpty()) clauses += keyGroup("pubkey", q.authors) ?: return null
