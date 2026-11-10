@@ -535,7 +535,8 @@ class VespaEventIndex(
      * overfetches [TIE_SLACK] extra hits — if anything older than T arrived, or
      * the engine ran out of matches, the whole T tie group is in hand and an
      * in-memory sort resolves the boundary. Only a wider tie group pays one
-     * extra `[T,T]` window query.
+     * extra `[T,T]` window query — as does a limit within [TIE_SLACK] of a
+     * deployed hits cap, where the slack is clamped to the cap ([recallPage]).
      *
      * Ranked queries keep the engine's score order untouched. The gated profiles
      * are recency-ordered too (score IS created_at), so they take this path.
@@ -646,16 +647,26 @@ class VespaEventIndex(
         // profile whose degradation this client refuses. Page the band instead —
         // the caller's limit is honoured either way, which is the contract.
         if (limit > EventYql.MATCH_PHASE_BAND && q.ranking == null) return pagedRecency(q, limit, idOnly)
-        val fetch = q.copy(limit = limit + TIE_SLACK).keepingProfileOf(q)
+        // The slack stops at the deployed cap (VESPA_UNBOUNDED_HITS), as the id
+        // walk's does: an operator who capped the query profile's `maxHits` has
+        // the engine refuse any request past it, and the overfetch is this
+        // client's choice, not the caller's — asked for whole, a REQ the cap
+        // admits was refused for it. A limit past the cap itself still fails
+        // at the engine, which is the operator's cap working ([hitsFor]).
+        val fetchLimit = minOf(limit + TIE_SLACK, maxOf(limit, unboundedHits))
+        val fetch = q.copy(limit = fetchLimit).keepingProfileOf(q)
         var hits =
             recallRoot(fetch, idOnly)?.children?.mapNotNull { it.fields }?.filter { it.id.isNotEmpty() }
                 ?: return emptyList()
-        if (hits.size > limit) {
+        // `>=`, not `>`: with the slack clamped away a FULL answer is exactly
+        // `limit` long, and its boundary group may still have been cut.
+        if (hits.size >= limit) {
             val t = hits[limit - 1].createdAt
             // The tie group at T arrived complete if the engine either ran out
             // of matches before the overfetch limit or already emitted a doc
-            // strictly older than T.
-            val complete = hits.size < fetch.limit!! || hits.last().createdAt < t
+            // strictly older than T — which a slack-less full answer, ending AT
+            // T, never has, so it reads the group by its window.
+            val complete = hits.size < fetchLimit || hits.last().createdAt < t
             if (!complete) {
                 // A gated query's tie window must stay gated (the exact variant
                 // — a [t,t] window is tiny) or the rerun would resurrect

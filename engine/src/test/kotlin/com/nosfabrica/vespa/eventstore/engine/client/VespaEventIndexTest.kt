@@ -1882,6 +1882,46 @@ class VespaEventIndexTest {
             }
         }
 
+    /**
+     * THE REQ PATH UNDER THE SAME CAP. A recency read asked for `limit +
+     * TIE_SLACK` hits however close the limit sat to a deployed `maxHits`, so a
+     * REQ the cap admits (limit 48 under a cap of 48) was refused 400 for this
+     * client's own overfetch. The slack now stops at the cap, and the page must
+     * stay NIP-01's: ties straddle every boundary below, served in a scrambled
+     * engine order, so a clamp that trusted a slack-less answer would keep the
+     * engine's arbitrary members instead of the lowest ids. Both the
+     * speculative default and the shipped match-phase plan are read.
+     *
+     * Verified to fail with the clamp reverted: "76 hits requested, configured
+     * limit: 48." on the first limit; with only the `>=` reverted to `>`, the
+     * limit AT the cap serves the engine's arbitrary boundary members.
+     */
+    @Test
+    fun `a recency read under a deployed hits cap stays inside it and stays exact`() =
+        runBlocking {
+            val now = System.currentTimeMillis() / 1000
+            val uma = "da".repeat(32)
+            // Five events a second, so every limit below ends inside a tie group.
+            val docs = (0 until 150).map { doc(kind = 1, pubkey = uma, at = now - 10 - it / 5) }
+            seedBulk(docs)
+            mock.refuseHitsAbove = 48
+            mock.scrambleTieOrder = true
+            try {
+                for (strategy in listOf(RecencyStrategy.SPECULATIVE, RecencyStrategy.MATCH_PHASE)) {
+                    VespaEventIndex(mock.url, tuning = ClientTuning(unboundedHits = 48), recencyStrategy = strategy, recencyMemory = false).use { capped ->
+                        for (limit in listOf(12, 29, 43, 48)) {
+                            val q = EventQuery(kinds = listOf(1), authors = listOf(uma), limit = limit, nowSecs = now)
+                            assertEquals(reference.search(q).map { it.id }, capped.search(q).map { it.id }, "$strategy, limit $limit: NIP-01's page, lowest ids at the boundary")
+                        }
+                    }
+                }
+                assertTrue(mock.searchRequests.all { (it["hits"]?.toInt() ?: 0) <= 48 }, "no request may ask past the deployed cap")
+            } finally {
+                mock.refuseHitsAbove = null
+                mock.scrambleTieOrder = false
+            }
+        }
+
     /** A walk the observer gates: the lens [EventYql.gateFloor] reads, on the recency-gated profile a lensed termless read takes. */
     private fun gated(q: EventQuery) = q.copy(observer = "0b".repeat(32), rankKey = "0c".repeat(32), minRank = 10.0, ranking = EventYql.RANK_RECENCY_GATED)
 
