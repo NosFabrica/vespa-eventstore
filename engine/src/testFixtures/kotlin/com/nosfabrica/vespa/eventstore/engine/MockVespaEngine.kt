@@ -401,7 +401,10 @@ class MockVespaEngine(
      * (EventYql.gateFloor). The mock holds no reputation tensors, so WHO is below
      * the floor is the test's to say. A document-API visit is not a search and
      * is never gated — exactly real Vespa's asymmetry, and the one a gated walk
-     * must not fall through. Empty (the default) gates nobody.
+     * must not fall through. While it is set, an EMPTY lens (`query(user_q)`
+     * = `{}`, what an unresolved observer sends) trusts nobody and drops every
+     * document, as real Vespa's empty tensor scores every author 0 — so a read
+     * that forgot to resolve its lens shows. Empty (the default) gates nobody.
      */
     @Volatile var belowFloorAuthors: Set<String> = emptySet()
 
@@ -727,8 +730,13 @@ class MockVespaEngine(
         // [scrambleTieOrder] exists to surface.
         val matches =
             runBlocking { inner.search(query.copy(limit = null)) }
-                .let { docs -> if (gates) docs.filter { it.pubkey !in belowFloorAuthors } else docs }
-                .let { docs -> relevanceOf?.let { score -> docs.sortedByDescending(score) } ?: docs }
+                .let { docs ->
+                    when {
+                        !gates -> docs
+                        params["ranking.features.query(user_q)"] == "{}" -> emptyList()
+                        else -> docs.filter { it.pubkey !in belowFloorAuthors }
+                    }
+                }.let { docs -> relevanceOf?.let { score -> docs.sortedByDescending(score) } ?: docs }
                 .let { sorted ->
                     if (scrambleTieOrder && !grouped) {
                         // created_at groups stay newest-first; ids within each

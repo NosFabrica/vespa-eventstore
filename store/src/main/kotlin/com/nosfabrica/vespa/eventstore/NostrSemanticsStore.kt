@@ -967,7 +967,10 @@ class NostrSemanticsStore(
      * ~157s for every relay url in 3.27M NIP-65 lists. Any other shape takes
      * the walk and gets the exact set.
      *
-     * Empty values are skipped, and expiry is honored like [count].
+     * Empty values are skipped, and expiry is honored like [count]. An
+     * `observer:` on [filter] reads through that observer's lens like every
+     * read here: the values come from the GATED set, and a gated select always
+     * walks, since the grouping cannot gate.
      */
     override suspend fun distinctTagValues(
         filter: Filter,
@@ -996,13 +999,17 @@ class NostrSemanticsStore(
         unconditional: Boolean,
         where: (List<String>) -> Boolean,
     ): Set<String> {
-        val q = filter.toExpiryQuery(nowSecs()) ?: return emptySet()
+        // lensed, like every other read: a filter's `observer:` token must reach
+        // the engine as the services its 10040 names, or the gate reads the
+        // empty lens ("trusts nobody") and the select answers nothing.
+        val q = filter.toExpiryQuery(nowSecs())?.let { lensed(listOf(it)).single() } ?: return emptySet()
         // THE FAST PATH, and every one of these conditions is load-bearing.
         // `tag_index` is lossy in three ways at once — single-letter names,
         // first values only, nothing of the rest of the tag — so a grouping
         // over it answers this question and no other. Drop any condition and
-        // the answer silently widens.
-        if (unconditional && valueIndex == 1 && tagName.length == 1) {
+        // the answer silently widens. Including the GATE: a grouping runs
+        // unranked, so a gated select would get every author's values.
+        if (unconditional && valueIndex == 1 && tagName.length == 1 && EventYql.gateFloor(q) == null) {
             index.distinctTagIndexValues(q, tagName)?.let { return it }
         }
         val out = HashSet<String>()
