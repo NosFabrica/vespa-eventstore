@@ -319,6 +319,12 @@ class MockVespaEngine(
         set(value) = updateRequestsCount.set(value)
     private val updateRequestsCount = AtomicInteger()
 
+    /**
+     * The HTTP version each request arrived on (`HTTP/1.1`, `HTTP/2.0`), as path and version, in
+     * arrival order: which transport a client path chose, which no response can show.
+     */
+    val protocols: MutableList<Pair<String, String>> = Collections.synchronizedList(ArrayList())
+
     /** Each update answered through [updateReply], as its path and JSON body, in arrival order. */
     val updates: MutableList<Pair<String, String>> = Collections.synchronizedList(ArrayList())
 
@@ -452,6 +458,7 @@ class MockVespaEngine(
                         response: Response,
                         callback: Callback,
                     ): Boolean {
+                        protocols += request.httpURI.path to request.connectionMetaData.httpVersion.asString()
                         delayAnswersMs.takeIf { it > 0 }?.let { Thread.sleep(it) }
                         if (abortBodiesMidStream > 0) {
                             abortBodiesMidStream--

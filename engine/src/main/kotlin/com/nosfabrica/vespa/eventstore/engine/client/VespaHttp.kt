@@ -28,6 +28,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.decodeFromStream
 import okhttp3.Call
 import okhttp3.Callback
+import okhttp3.ConnectionPool
 import okhttp3.Dispatcher
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -105,16 +106,34 @@ internal class VespaHttp(
             .build()
 
     /**
-     * The visit walk's client: [http] plus a READ timeout, which visits need
-     * and queries must not have. Visit pages are small and stream steadily, so
-     * silence means a wedged visitor session (measured live: pings stay
-     * answered while the response never comes — without a deadline the walk
-     * hangs FOREVER). The timeout surfaces the wedge as an IOException the
-     * paged retry / streamed resume machinery handles.
+     * The visit walk's client: HTTP/1.1 on connections of its own, plus a READ
+     * timeout, which visits need and queries must not have.
+     *
+     * NOT THE SHARED HTTP/2 CONNECTION. Measured against Vespa 8.781.11 with a
+     * packet capture (benchmark/README.md, "A visit page that stops mid-body"):
+     * a visit page multiplexed on the store's busy h2c connection sometimes got
+     * its 200 headers and its first bytes, once exactly `{"pathId":`, and then
+     * nothing, until this client's read timeout reset the stream 120 s later.
+     * It happened in 4 of 15 reindex walks. Flow control was not the cause: the
+     * stream had 16 MB of credit, the connection over 11 MB, and other streams
+     * on the connection kept flowing throughout. The same visits from a
+     * separate HTTP/1.1 client, during the same minutes, never stalled in
+     * 2,400+ pages. Over HTTP/1.1 here, 0 of 30 walks stalled. It fits the
+     * production report this timeout was added for (pings stay answered while
+     * the response never comes), unconfirmed as the same cause: a PING proves
+     * the connection, not a stream.
+     * Visit pages are serial, so this costs one keep-alive connection per
+     * running walk, not one per page.
+     *
+     * The timeout stays: it is what turns any silence left, on either
+     * protocol, into an IOException the paged retry and the streamed resume
+     * handle.
      */
     private val visitHttp =
         http
             .newBuilder()
+            .protocols(listOf(Protocol.HTTP_1_1))
+            .connectionPool(ConnectionPool())
             .readTimeout(Duration.ofSeconds(VISIT_READ_TIMEOUT_SECONDS))
             .build()
 
@@ -124,7 +143,8 @@ internal class VespaHttp(
      * Releases this client's own threads and sockets: its [Dispatcher]'s executor (whose threads
      * are not daemons, and idle a minute before exiting) and its connection pool (every idle
      * HTTP/2 connection, each with its reader on OkHttp's task runner, kept five minutes and
-     * PINGed meanwhile). [visitHttp] shares both, so this closes it too. There is no cache.
+     * PINGed meanwhile). [visitHttp] shares the dispatcher and has a pool of its own (HTTP/1.1
+     * connections), evicted here too. There is no cache.
      *
      * OkHttp's own recipe, and graceful the way it is: a call already running finishes, one
      * enqueued after this fails with an [IOException], and the connection a running call returns
@@ -134,6 +154,7 @@ internal class VespaHttp(
     fun close() {
         http.dispatcher.executorService.shutdown()
         http.connectionPool.evictAll()
+        visitHttp.connectionPool.evictAll()
     }
 
     /** GET [url], retrying transient overload — the document-API get path. */
