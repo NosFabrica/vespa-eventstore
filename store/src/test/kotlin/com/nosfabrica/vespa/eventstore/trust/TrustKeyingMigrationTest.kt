@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.eventstore.trust
 
 import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
+import com.nosfabrica.vespa.eventstore.engine.doc.ReputationCells
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.serviceCells
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
@@ -31,6 +32,7 @@ import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -291,5 +293,56 @@ class TrustKeyingMigrationTest {
             assertEquals(serviceCells(late to 55), reputations.get(lateSubject)?.influenceScores, "the newly named service's cell survived the sweep")
             assertEquals(3, done.keysRemoved, "the observer's keys still went, the late parent's too")
             assertEquals(serviceCells(service to 87), reputations.get(subject)?.influenceScores)
+        }
+
+    /**
+     * The engine's cell types, modelled where the in-memory index does not:
+     * `influence_scores` is `tensor<int8>` and `follower_counts`
+     * `tensor<float>` (reputation.sd), so a value written outside int8's
+     * range, or past a float's precision, does not come back as written. Paged
+     * one parent at a time like [PagedVisit], so a sweep crosses page
+     * boundaries a test can stop it at.
+     */
+    private class EngineCellTypes(
+        private val inner: InMemoryReputationIndex,
+    ) : ReputationIndex by inner {
+        override suspend fun put(reputation: ReputationDoc) = inner.put(reputation.copy(influenceScores = reputation.influenceScores.mapValues { it.value.toByte().toInt() }, followerCounts = reputation.followerCounts.mapValues { it.value.toFloat().toDouble() }))
+
+        override suspend fun updateCells(updates: List<ReputationCells>) = inner.updateCells(updates.map { it.copy(influence = it.influence?.toByte()?.toInt(), followers = it.followers?.toFloat()?.toDouble()) })
+
+        override suspend fun visitDocs(onPage: suspend (List<ReputationDoc>) -> Boolean) {
+            for (key in inner.docs.keys.sorted()) {
+                val doc = inner.get(key) ?: continue
+                if (!onPage(listOf(doc))) return
+            }
+        }
+    }
+
+    /**
+     * THE KEYS-REMOVED COUNTER SURVIVES A RESTART PAST 127. It rode the int8
+     * influence tensor, so the count every real sweep reaches before its first
+     * durable write came back wrapped; and the resumed run then overwrote the
+     * adopted count with its own, from zero, at its first page.
+     */
+    @Test
+    fun `a keys-removed count past 127 is resumed whole by the next process`() =
+        runBlocking {
+            val cells = EngineCellTypes(reputations)
+            index.put(list10040().toDoc())
+            val parents = (1..300).map { "b" + it.toString(16).padStart(63, '0') }
+            parents.forEach { reputations.put(ReputationDoc(it, serviceCells(observer to 10))) }
+
+            // The first process persists its count at parent 200 and dies at parent 250.
+            val first = TrustKeyingMigration(cells, reconciler, projection.recompute, persistEveryParents = 200)
+            assertFailsWith<IllegalStateException> { first.run { visited, _ -> check(visited < 250) { "crash" } } }
+            assertTrue(reputations.get(TrustKeyingMigration.PROGRESS_KEY) != null, "the count was persisted before the crash")
+
+            val second = TrustKeyingMigration(cells, reconciler, projection.recompute, persistEveryParents = 200)
+            val seen = mutableListOf<Long>()
+            val done = second.run { _, _ -> seen += second.progress.keysRemoved.get() }
+            assertEquals(200L, seen.first(), "the resumed run starts from the persisted count")
+            assertEquals(50, done.keysRemoved, "this run removed what the first left")
+            assertEquals(250L, second.progress.keysRemoved.get(), "and adds it to what it resumed")
+            parents.forEach { assertTrue(reputations.get(it)?.isEmpty() ?: true, "swept: $it") }
         }
 }
