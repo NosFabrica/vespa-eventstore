@@ -106,7 +106,21 @@ internal class VespaFeed(
                     // Bounded: a dead Vespa should surface as failed ops, not a hang.
                     override fun retries() = 5
                 },
-            ).build()
+            )
+            // The client's default breaker half-opens after 10 s with no success, and every
+            // half-open makes its request strategy replace the whole Jetty cluster (one pool of
+            // `feedclient-N` threads and up to one HttpClient per connection). The replaced
+            // cluster is closed only by a request on it completing AFTER the swap; one idle at
+            // the swap, as it is when its last request was a fast refusal, is never closed, not
+            // even by close() (vespa-feed-client 8.781.11, HttpRequestStrategy.ResettableCluster).
+            // A feed block's 507s are failures, and any success between them (Vespa still takes
+            // removes during a block) re-arms the swap: staging relays kept ~500 such threads an
+            // hour of block, for good (#199; FeedClientThreadLeakTest holds one swap). Fused,
+            // it never half-opens, so nothing is replaced. What that gives up: the half-open
+            // trickle (one dispatch per 100 ms) and its uncounted retries, which [retries]
+            // already bounds; the breaker never opened anyway (no doom period was set).
+            .setCircuitBreaker(FeedClient.CircuitBreaker.FUSED)
+            .build()
 
     /**
      * One-line feed health: cumulative acks, live in-flight window, per-request
