@@ -8,7 +8,27 @@ mavenPublish = "0.37.0"
 # FROM JITPACK, so the published POM names com.github.vitorpamplona.quartz:quartz-jvm:<pin> and a
 # consumer of this store needs JitPack in its repositories (Central publishing does not check).
 #
-# 0102e83c81 = vitorpamplona/quartz main @ 2026-11-06, the quartz#95 merge (0102e83c814c). 18 commits
+# 288217a = vitorpamplona/quartz main @ 2026-11-09, the quartz#102 merge (288217a0e4). 21 commits
+# over 0102e83c81 (below), which it descends from; JitPack builds it (quartz-jvm's POM answers 200).
+# A tree diff of quartz/src between them, main sources (28 files), scanned against this store's
+# imports:
+#  - A NEW JITPACK DEPENDENCY. quartz#99 moves its pure-Kotlin secp256k1 into its own library,
+#    com.github.vitorpamplona.libschnorr256k1-kotlin:schnorr256k1-kotlin (1d851c2, from JitPack
+#    until 1.0.1 is on Central), a runtime dependency of quartz-jvm. settings.gradle.kts lets JitPack
+#    serve that group too, and a consumer of this store needs the same. Only Cashu, RoboSats ratings
+#    and the deprecated utils.secp256k1.Secp256k1 shim call it: Event.verify() on the JVM stays on
+#    ACINQ's libsecp256k1 (Secp256k1Instance), so every signature this store checks is checked as before.
+#  - JVM 21 BYTECODE (quartz#100). This store's toolchain is 21 already.
+#  - Relay client only: CachingEventDecoder's whitespace scan and known-event lookup (quartz#96,
+#    #97). Not called here.
+#  - Not reached: NIP-60 Cashu's swap fee (#103), Namecoin's ElectrumX trust-on-first-use (#102).
+#  - nip50Search, nip01Core.store (VespaParityIT's battery), relay.filters, nip01Core.hints, nip85,
+#    EventFactory and every event class have no diff: nothing to reindex.
+#  - RUNTIME CLASSPATH (:store): quartz moves and schnorr256k1-kotlin-jvm:1d851c2 joins; the POM's
+#    other dependency versions are 0102e83c81's.
+#  - The distributed skill (.claude/skills/quartz) is re-copied from this commit: no diff.
+#
+# Prev 0102e83c81 = vitorpamplona/quartz main @ 2026-11-06, the quartz#95 merge (0102e83c814c). 18 commits
 # over 3b85cf6290 (below), which it descends from; JitPack builds it, Android variant included (its
 # image installs SDK platform 37 now). A tree diff of quartz/src between them, main sources, scanned
 # against this store's imports:
@@ -301,7 +321,7 @@ mavenPublish = "0.37.0"
 # catch-all; SearchableEvent grows the read-path forEachIndexableField, no reindex).
 # Prev cecc3287b2 (2026-09-01: 17 catch-all kinds split into title/body roles, four
 # affiliation URLs, six doubled `t`-tag scans dropped; a ranking backfill).
-quartz = "0102e83c81"
+quartz = "288217a"
 coroutines = "1.11.0"
 serialization = "1.12.0"
 # Matches what Quartz brings transitively; Gradle would resolve to it regardless.
