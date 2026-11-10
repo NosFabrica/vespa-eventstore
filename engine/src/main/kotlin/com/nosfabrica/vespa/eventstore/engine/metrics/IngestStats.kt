@@ -189,6 +189,17 @@ object IngestStats {
          * different label than the holder. Empty when a caller does not say.
          */
         val lock: String = "",
+        /**
+         * The CLOSED class of [detail], or null: what the wait split
+         * ([addBlocked]) keys this holder by, where [detail] is only ever shown
+         * live. A detail is free text with this call's counts in it (`derive
+         * 499 subject(s) in 10 chunk(s)`), so keyed by it the split gained a
+         * row per distinct count, for good, and copied all of them on every
+         * snapshot — the open cardinality docs/telemetry.md §4 forbids. A
+         * shape is a constant the annotator names (`derive`); without one, a
+         * holder is keyed by its [stage].
+         */
+        val shape: String? = null,
     ) {
         fun heldForMillis(): Long = (System.nanoTime() - sinceNanos) / 1_000_000
     }
@@ -226,8 +237,10 @@ object IngestStats {
     fun annotateHold(
         detail: String,
         lock: String,
+        /** A CONSTANT naming [detail]'s kind of work, for the wait split; see [Held.shape]. Never a value computed per call. */
+        shape: String? = null,
     ) {
-        held.replaceAll { _, h -> if (h.lock == lock) Held(h.stage, h.sinceNanos, detail, h.lock) else h }
+        held.replaceAll { _, h -> if (h.lock == lock) Held(h.stage, h.sinceNanos, detail, h.lock, shape) else h }
     }
 
     /** Called on release of the lock booked under [stage]. Tolerates a missing begin — an unmatched end is a no-op, never a wrong holder. */
@@ -241,8 +254,11 @@ object IngestStats {
     /** Every lock held right now, longest first. */
     fun heldAll(): List<Held> = held.values.sortedBy { it.sinceNanos }
 
-    /** The most specific label a hold can offer: what it is doing, else which lock it is. */
+    /** The most specific label a hold can offer: what it is doing, else which lock it is. Live display only; the wait split keys by [shapeOf]. */
     fun labelOf(h: Held): String = h.detail ?: h.stage
+
+    /** The closed label a hold is booked under in the wait split: its [Held.shape], else its stage. */
+    fun shapeOf(h: Held): String = h.shape ?: h.stage
 
     /**
      * WHO HOLDS THE MUTEX NAMED [lock] RIGHT NOW — the causal edge, for the
@@ -264,21 +280,27 @@ object IngestStats {
      */
     fun holderOf(lock: String): Held? = held.values.filter { it.lock == lock }.minByOrNull { it.sinceNanos }
 
+    /**
+     * Wait stage -> holder -> nanos, never forgotten. CLOSED on both axes: wait
+     * stages are the store's fixed lock labels, and holders are keyed by
+     * [shapeOf], a stage or a constant shape, never by a hold's free-text
+     * detail (see [Held.shape]).
+     */
     private val blocked = ConcurrentHashMap<String, ConcurrentHashMap<String, AtomicLong>>()
 
-    /** Book [nanos] of [waitStage] as time spent behind [holder]. */
+    /** Book [nanos] of [waitStage] as time spent behind [holder], keyed by [shapeOf] it. */
     fun addBlocked(
         waitStage: String,
-        holder: String,
+        holder: Held,
         nanos: Long,
     ) {
         blocked
             .computeIfAbsent(waitStage) { ConcurrentHashMap() }
-            .computeIfAbsent(holder) { AtomicLong() }
+            .computeIfAbsent(shapeOf(holder)) { AtomicLong() }
             .addAndGet(nanos)
     }
 
-    /** Wait time per lock stage, split by what was holding when the waiter arrived. */
+    /** Wait time per lock stage, split by what was holding when the waiter arrived ([shapeOf] it). */
     fun blockedSplit(): Map<String, Map<String, Long>> = blocked.mapValues { (_, row) -> row.mapValues { it.value.get() } }
 
     /** Test seam: forget every stage, hold and attribution. */

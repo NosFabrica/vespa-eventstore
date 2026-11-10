@@ -52,7 +52,7 @@ class StoreTelemetry internal constructor(
     val stages: Map<String, IngestStats.Stage>,
     /** Every writer-lock hold in flight, oldest first, process-wide — `IngestStats.heldAll()`. */
     val held: List<IngestStats.Held>,
-    /** What ingest was waiting behind: lock -> holder stage -> waits, process-wide — `IngestStats.blockedSplit()`. */
+    /** What ingest was waiting behind: wait stage -> holder (its stage, or the closed shape of its work) -> waits, process-wide — `IngestStats.blockedSplit()`. */
     val blocked: Map<String, Map<String, Long>>,
     /** Engine answers that came back degraded, by profile and shape, process-wide — `DegradedReads.snapshot()`. */
     val degraded: List<DegradedReads.Reading>,

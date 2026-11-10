@@ -120,8 +120,9 @@ internal class WriteLocks {
         // WHAT THIS WRITER IS ABOUT TO QUEUE BEHIND, sampled before we block —
         // the one causal edge in this design. Keyed by the MUTEX, not the stage
         // label, because several labels share each mutex and a label match
-        // silently attributes nothing (docs/telemetry.md §15.1).
-        val blockedBy = IngestStats.holderOf(stage.lock)?.let { IngestStats.labelOf(it) }
+        // silently attributes nothing (docs/telemetry.md §15.1). The hold as it
+        // stands now; the split books it by its closed shape, not its detail.
+        val blockedBy = IngestStats.holderOf(stage.lock)
         var acquired = 0L
         try {
             return mutex.withLock {
