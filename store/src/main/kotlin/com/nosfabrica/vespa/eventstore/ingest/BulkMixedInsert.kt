@@ -28,7 +28,6 @@ import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.ingest.Rejections
 import com.vitorpamplona.quartz.nip01Core.core.Event
-import com.vitorpamplona.quartz.nip01Core.core.addressTagOrNull
 import com.vitorpamplona.quartz.nip01Core.core.isAddressable
 import com.vitorpamplona.quartz.nip01Core.core.isReplaceable
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
@@ -101,7 +100,6 @@ internal class BulkMixedInsert(
         val vanishes = events.filterIsInstance<RequestToVanishEvent>()
         val owners = events.map { it.owner() }.distinct()
         val batchIds = events.map { it.id }
-        val batchAddresses = events.mapNotNull { it.addressTagOrNull() }.distinct()
         val records = events.filter { it !is DeletionRequestEvent && it !is RequestToVanishEvent }
         // Only owners with a provably stored tombstone/vanish (GuardOwners) can
         // guard this batch; everyone else's probes come back empty, so skip
@@ -115,12 +113,15 @@ internal class BulkMixedInsert(
                 // Existing docs by id: batch ids + every deletion's e-tag targets.
                 (batchIds + deletions.flatMap { it.deleteEventIds() }).distinct().chunked(PRELOAD_CHUNK).forEach { add(EventQuery(ids = it)) }
 
-                // Guards + immunity: the owners' stored tombstones (targeting this
-                // batch's ids/addresses) and their vanishes — only for flagged owners.
-                flaggedDeleters.chunked(PRELOAD_CHUNK).forEach { auth ->
-                    if (batchIds.isNotEmpty()) add(EventQuery(kinds = listOf(DeletionRequestEvent.KIND), authors = auth, tags = mapOf("e" to batchIds)))
-                    if (batchAddresses.isNotEmpty()) add(EventQuery(kinds = listOf(DeletionRequestEvent.KIND), authors = auth, tags = mapOf("a" to batchAddresses)))
-                }
+                // Guards: the flagged owners' stored tombstones targeting THEIR
+                // OWN records in this batch (NIP-09 is same-owner-only, and a
+                // kind 5/62 is immune, so nobody else's ids can be covered), in
+                // the record path's shape — see [tombstoneQueries]. This sent the
+                // WHOLE batch's ids and addresses, unchunked, in every owner
+                // chunk's query: one YQL per chunk as wide as the batch, under
+                // both locks. Then their vanishes.
+                val flagged = flaggedDeleters.toHashSet()
+                addAll(tombstoneQueries(records.filter { it.owner() in flagged }.groupBy { it.owner() }, PRELOAD_CHUNK))
                 flaggedVanishers.chunked(PRELOAD_CHUNK).forEach { auth ->
                     add(EventQuery(kinds = listOf(RequestToVanishEvent.KIND), authors = auth))
                 }

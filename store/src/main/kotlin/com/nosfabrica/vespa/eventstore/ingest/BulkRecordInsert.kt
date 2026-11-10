@@ -392,50 +392,18 @@ internal class BulkRecordInsert(
      * fetched before, as full summaries, per content batch: a heavy deleter
      * (an outbox stream is ~98% kind 5) with 100k stored tombstones made every
      * batch carrying one of their events pull all 100k under the writer lock.
-     * Two tag-narrowed queries per chunk instead, the shape the mixed path's
-     * preload already takes; a doc named by both arrives once.
-     *
-     * EACH OWNER CHUNK CARRIES ONLY ITS OWN EVENTS' KEYS, and both sides are
-     * chunked. Two ways to get this wrong, and this path has now had both:
-     *
-     *  - The batch's ids UNCHUNKED. A 20,000-event batch — the size a mirror
-     *    feeds, and the size this path exists for — compiled one YQL holding
-     *    20,000 `tag_index contains "e:<64-hex>"` terms, ~1.4 MB of query
-     *    text, under the writer lock, once per owner chunk.
-     *  - Chunked but CROSSED. Pairing every owner chunk with every id chunk is
-     *    the cartesian product: 6 queries became 240 for that same batch, and
-     *    8,000 for a 100k one — the overwhelming majority matching nothing,
-     *    because an owner chunk was paired with ids nobody in it authored.
-     *
-     * NIP-09 is same-owner-only ([Deletions.isDeleted]), so a tombstone by
-     * owner X can only cover X's own events: pairing X's chunk with X's keys
-     * loses nothing and makes the query count LINEAR in the batch. Each round
-     * trip keeps the bounded shape its siblings have ([guardDocs], the mixed
-     * path's preload).
+     * Tag-narrowed queries instead, built by [tombstoneQueries] (which the
+     * mixed path's preload shares); a doc named by both arrives once.
      */
     private suspend fun tombstoneDocs(
         flagged: Map<String, List<Int>>,
         events: List<Event>,
-    ): Map<String, List<EventDoc>> {
-        val queries =
-            flagged.entries.chunked(CHECK_CHUNK).flatMap { chunk ->
-                val authors = chunk.map { it.key }
-                val rows = chunk.flatMap { it.value }
-                buildList {
-                    rows.map { events[it].id }.chunked(CHECK_CHUNK).forEach {
-                        add(EventQuery(kinds = listOf(DeletionRequestEvent.KIND), authors = authors, tags = mapOf("e" to it)))
-                    }
-                    rows.mapNotNull { events[it].addressTagOrNull() }.distinct().chunked(CHECK_CHUNK).forEach {
-                        add(EventQuery(kinds = listOf(DeletionRequestEvent.KIND), authors = authors, tags = mapOf("a" to it)))
-                    }
-                }
-            }
-        return queries
+    ): Map<String, List<EventDoc>> =
+        tombstoneQueries(flagged.mapValues { (_, rows) -> rows.map { events[it] } }, CHECK_CHUNK)
             .mapBounded(QUERY_FANOUT) { index.search(it) }
             .flatten()
             .distinctBy { it.id }
             .groupBy { it.pubkey }
-    }
 
     private companion object {
         // Ids/authors/d-tags per check query. Not a result cap — no query here
@@ -454,3 +422,45 @@ internal class BulkRecordInsert(
         val DEDUP_CHUNK: Int get() = StoreKnobs.dedupChunk.value
     }
 }
+
+/**
+ * The kind-5 queries that recall every tombstone [owned]'s owners stored
+ * against [owned]'s own events: per chunk of [chunk] owners, their events'
+ * ids (`e`) and addresses (`a`), each chunked by [chunk] too. [owned] is keyed
+ * by OWNER ([owner], the gift-wrap recipient for kind 1059), which is the
+ * author of any tombstone that can cover the event.
+ *
+ * EACH OWNER CHUNK CARRIES ONLY ITS OWN EVENTS' KEYS, and both sides are
+ * chunked. Two ways to get this wrong, and the record path has had both (the
+ * mixed path's preload had the first until it came here):
+ *
+ *  - The batch's ids UNCHUNKED. A 20,000-event batch — the size a mirror
+ *    feeds, and the size the bulk paths exist for — compiled one YQL holding
+ *    20,000 `tag_index contains "e:<64-hex>"` terms, ~1.4 MB of query
+ *    text, under the writer lock, once per owner chunk.
+ *  - Chunked but CROSSED. Pairing every owner chunk with every id chunk is
+ *    the cartesian product: 6 queries became 240 for that same batch, and
+ *    8,000 for a 100k one — the overwhelming majority matching nothing,
+ *    because an owner chunk was paired with ids nobody in it authored.
+ *
+ * NIP-09 is same-owner-only ([Deletions.isDeleted]), so a tombstone by owner
+ * X can only cover X's own events: pairing X's chunk with X's keys loses
+ * nothing and makes the query count LINEAR in the batch. No query carries a
+ * limit: each feeds a write decision.
+ */
+internal fun tombstoneQueries(
+    owned: Map<String, List<Event>>,
+    chunk: Int,
+): List<EventQuery> =
+    owned.entries.chunked(chunk).flatMap { owners ->
+        val authors = owners.map { it.key }
+        val evs = owners.flatMap { it.value }
+        buildList {
+            evs.map { it.id }.distinct().chunked(chunk).forEach {
+                add(EventQuery(kinds = listOf(DeletionRequestEvent.KIND), authors = authors, tags = mapOf("e" to it)))
+            }
+            evs.mapNotNull { it.addressTagOrNull() }.distinct().chunked(chunk).forEach {
+                add(EventQuery(kinds = listOf(DeletionRequestEvent.KIND), authors = authors, tags = mapOf("a" to it)))
+            }
+        }
+    }
