@@ -334,9 +334,11 @@ internal class ProjectionLedger(
      * left, which the cover must hold, named directly or reachable through an
      * insured service's walk. On failure the whole cover becomes pending.
      *
-     * The marker may transiently OVER-cover until a drain narrows it —
-     * deliberate: narrowing here would cost a doc-sized write per batch, while
-     * over-coverage only costs a crash some redundant, idempotent re-derives.
+     * A clean finish clears the marker cells this bracket wrote for entries
+     * the ledger does not hold — one pipelined cell remove, the mirror of the
+     * write-ahead. What stays OVER-covered is a failed op's cover, queued
+     * whole until a drain retires it: over-coverage only costs a crash some
+     * redundant, idempotent re-derives.
      */
     suspend fun <T> insuring(
         couldInvalidate: ProjectionWork,
@@ -358,14 +360,22 @@ internal class ProjectionLedger(
         // ADDED, never assigned: `before + workLeft` written back would
         // resurrect whatever a concurrent drain retired since the read above.
         val queued = queue(outcome.workLeft)
-        // Insurance persisted, no work left, nothing pending: the marker names
-        // subjects nobody will ever drain — a clean commit whose cells are all
-        // written, or a batch of cards by a signer no 10040 maps, insured
-        // because the provider map could not yet say so
+        // Insurance persisted for entries no work is pending on: the marker
+        // names subjects nobody will ever drain — a clean commit whose cells
+        // are all written, or a batch of cards by a signer no 10040 maps,
+        // insured because the provider map could not yet say so
         // (TrustProjection.insurableSigners), that found no cells to write. No
         // drain rewrites the marker for work that does not exist, so it stood, and the next boot
         // inherited hundreds of subjects to re-derive to nothing and dropped the
         // provider cache for it. One remove here keeps the marker honest.
+        //
+        // NARROWED TO THIS BRACKET'S SPENT CELLS, not gated on an empty ledger.
+        // It used to clear only when NOTHING was pending anywhere, and the
+        // ledger is rarely empty for long: during a service walk, or while one
+        // poisoned unit stays queued, every commit's write-ahead stayed, and a
+        // restart adopted all of them as crash leftovers. An entry still
+        // pending keeps its cell — it is the ledger's insurance now, whoever
+        // wrote it, and [retire] clears it when it lands.
         //
         // THE CELLS, NOT THE DOCUMENT. This used to go on to drop the emptied
         // document ([dropMarkerIfEmpty]: a GET, then a remove), so a commit's
@@ -377,8 +387,8 @@ internal class ProjectionLedger(
         // the safer half for a second writer — the drop could still take a
         // peer cell that landed between its GET and its remove. A drain that
         // empties the ledger still drops it ([retire]); a commit no longer does.
-        val persisted = cover.persisted
-        if (!persisted.isEmpty() && queued.isEmpty()) clearMarkerCells(persisted)
+        val spent = cover.persisted - queued
+        if (!spent.isEmpty()) clearMarkerCells(spent)
         val deferred = onWorkQueued
         if (deferred == null) {
             drain(WriteGate.DIRECT) // settle inline: the caller holds the writer lock

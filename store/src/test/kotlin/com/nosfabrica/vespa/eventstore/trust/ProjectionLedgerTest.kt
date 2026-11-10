@@ -664,6 +664,30 @@ class ProjectionLedgerTest {
             assertEquals(40, reputations.get("cd".repeat(32))?.influenceScores?.get(ServiceKey(service)))
         }
 
+    /**
+     * A CLEAN COMMIT CLEARS ITS OWN WRITE-AHEAD EVEN WHILE OTHER WORK IS
+     * PENDING. The clear used to wait for an EMPTY ledger, so during a service
+     * walk — or behind one poisoned unit — every commit's insured subjects
+     * stayed in the marker, and a restart adopted all of them as crash
+     * leftovers to re-derive. The pending walk's own cell must stay.
+     */
+    @Test
+    fun `a clean commit clears its marker cells while an unrelated walk is pending`() =
+        runBlocking {
+            val d = Deferred()
+            d.projection.put(card(40).toDoc())
+            d.projection.put(list10040().toDoc())
+            assertEquals(setOf(service), d.projection.backlog.queuedRewalks(), "a walk stays pending: the drainer never runs")
+
+            val other = "cd".repeat(32)
+            d.projection.put(cardFor(other, 70).toDoc())
+            assertEquals(70, d.rankOf(other), "a clean commit: its cell is written")
+            assertEquals(0L, d.projection.backlog.pendingSubjects(), "and it left no work")
+            val marker = assertNotNull(d.marker())
+            assertEquals(emptySet(), marker.influenceScores.keys, "no subject of the clean commit is left insured")
+            assertEquals(setOf(ServiceKey(service)), marker.followerCounts.keys, "the pending walk keeps its insurance")
+        }
+
     /** Counts each service walk's id listing. */
     private class CountingWalks(
         private val inner: InMemoryEventIndex,
