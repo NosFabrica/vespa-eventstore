@@ -34,6 +34,7 @@ import com.vitorpamplona.quartz.nip01Core.store.owner
 import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
 import com.vitorpamplona.quartz.nip23LongContent.LongFormContentEvent
 import com.vitorpamplona.quartz.nip59Giftwrap.wraps.GiftWrapEvent
+import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import kotlinx.coroutines.runBlocking
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.test.Test
@@ -91,21 +92,47 @@ class BulkMixedInsertTest {
         override suspend fun putIfNewer(doc: EventDoc): Boolean = super<EventIndex>.putIfNewer(doc)
     }
 
+    /**
+     * A deployment whose query profile caps `maxHits` (`VESPA_UNBOUNDED_HITS`):
+     * a search with NO limit comes back holding at most [cap] hits, newest
+     * first, and nothing says it was cut. A limit'd search is served whole.
+     */
+    private class HitsCappedIndex(
+        private val inner: InMemoryEventIndex,
+        private val cap: Int,
+    ) : EventIndex by inner {
+        val queries = CopyOnWriteArrayList<EventQuery>()
+
+        override suspend fun search(query: EventQuery): List<EventDoc> {
+            queries += query
+            val all = inner.search(query)
+            return if (query.limit == null && query.ids.isEmpty()) all.take(cap) else all
+        }
+
+        override suspend fun putIfNewer(doc: EventDoc): Boolean = super<EventIndex>.putIfNewer(doc)
+    }
+
+    private fun vanish(
+        author: String,
+        at: Long,
+    ) = RequestToVanishEvent(id(), author, at, arrayOf(arrayOf("relay", "ALL_RELAYS")), "", "")
+
     /** The same [prelude] + [batch] through batchInsert and through insert, one by one: outcomes and stored ids must agree. */
     private fun assertMixedMatchesSequential(
         prelude: List<Event>,
         batch: List<Event>,
         writers: WriterTopology,
+        sweepPage: Int = 10_000,
     ): List<IEventStore.InsertOutcome> =
         runBlocking {
-            assertTrue(batch.size >= 16 && batch.any { it is DeletionRequestEvent }, "the batch must take the bulk mixed path")
+            assertTrue(batch.size >= 16 && batch.any { it is DeletionRequestEvent || it is RequestToVanishEvent }, "the batch must take the bulk mixed path")
             val bulkIndex = InMemoryEventIndex()
-            val bulkStore = NostrSemanticsStore(bulkIndex, relay = relayUrl, writers = writers)
+            val bulkStore = NostrSemanticsStore(bulkIndex, relay = relayUrl, writers = writers, sweepPage = sweepPage)
             prelude.forEach { bulkStore.insert(it) }
             val bulk = bulkStore.batchInsert(batch)
 
             val seqIndex = InMemoryEventIndex()
-            val seqStore = NostrSemanticsStore(seqIndex, relay = relayUrl, writers = writers)
+            val seqStore = NostrSemanticsStore(seqIndex, relay = relayUrl, writers = writers, sweepPage = sweepPage)
             prelude.forEach { seqStore.insert(it) }
             val sequential =
                 batch.map { ev ->
@@ -173,6 +200,67 @@ class BulkMixedInsertTest {
             for (blocked in listOf(target, post, wrap)) {
                 assertEquals(IEventStore.InsertOutcome.Rejected(Rejections.DELETED), outcomes[batch.indexOf(blocked)], "$writers: ${blocked.kind} must stay deleted")
             }
+        }
+    }
+
+    /**
+     * A vanish in a mixed batch erases the owner's WHOLE history up to it, the
+     * per-event path's paged sweep, not the part one unlimited preload query
+     * happened to return. That query was the batch's one read with no bound —
+     * a prolific owner's every event materialized in the snapshot under both
+     * locks, then removed in one call — and on a deployment that caps
+     * unlimited hits it came back CUT, so the replay erased what it had loaded
+     * and reported the vanish Accepted over the rest.
+     */
+    @Test
+    fun `a vanish in a mixed batch erases the owner's history past a hits cap`() =
+        runBlocking {
+            val index = HitsCappedIndex(InMemoryEventIndex(), cap = 10)
+            val store = NostrSemanticsStore(index, relay = relayUrl, sweepPage = 4)
+            val history = (1..25).map { note(alice, at = 100L + it) }
+            history.forEach { store.insert(it) }
+            val bobs = (1..15).map { note(bob) }
+            index.queries.clear()
+
+            val outcomes = store.batchInsert(bobs + vanish(alice, at = 1_000))
+
+            assertTrue(outcomes.all { it == IEventStore.InsertOutcome.Accepted }, "every event is admitted, got $outcomes")
+            val survivors = history.filter { index.get(it.id) != null }
+            assertEquals(emptyList(), survivors.map { it.createdAt }, "the vanish must erase all of alice's history, not the first hits-cap of it")
+            assertTrue(bobs.all { index.get(it.id) != null }, "nobody else's events are touched")
+            val unbounded = index.queries.filter { it.owners.isNotEmpty() && it.limit == null }
+            assertEquals(emptyList(), unbounded, "no read of an owner's history may go out without a page bound")
+        }
+
+    /**
+     * Parity with the per-event path around a vanish, with a sweep page far
+     * below the history: events before it in the batch are admitted and then
+     * erased, older ones after it are vanished, newer ones stay, a stored
+     * profile the batch supersedes is erased by the vanish rather than by the
+     * supersession, a gift wrap is its recipient's to vanish, and the vanish
+     * survives its own erase.
+     */
+    @Test
+    fun `a vanish in a mixed batch matches the per-event path`() {
+        val stored =
+            (1..25).map { note(alice, at = 100L + it) } +
+                listOf(
+                    Event(id(), alice, 50, 0, emptyArray(), "{}", ""),
+                    GiftWrapEvent(id(), stranger, 60, arrayOf(arrayOf("p", alice)), "sealed", ""),
+                    note(bob, at = 70),
+                )
+        val batch =
+            (1..12).map { note(bob) } +
+                listOf(
+                    note(alice, at = 90),
+                    vanish(alice, at = 1_000),
+                    note(alice, at = 500),
+                    note(alice, at = 2_000),
+                    Event(id(), alice, 1_500, 0, emptyArray(), "{\"name\":\"new\"}", ""),
+                    GiftWrapEvent(id(), stranger, 800, arrayOf(arrayOf("p", alice)), "late", ""),
+                )
+        for (writers in listOf(WriterTopology.SINGLE_WRITER, WriterTopology.SHARED_STRICT)) {
+            assertMixedMatchesSequential(prelude = stored, batch = batch, writers = writers, sweepPage = 4)
         }
     }
 }

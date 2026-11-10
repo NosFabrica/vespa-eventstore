@@ -200,14 +200,16 @@ class SweepPagingTest {
         }
 
     /**
-     * The bulk path (a batch carrying a vanish) preloads the owner's history
-     * into an in-memory snapshot for the replay. Unbounded, that is the ENTIRE
+     * The bulk path (a batch carrying a vanish) used to preload the owner's
+     * history into the replay's in-memory snapshot: unbounded, the ENTIRE
      * history in RAM under the writer lock — the one thing [PAGE]-sized sweep
-     * rounds exist to prevent. It must be bounded by the vanish's own
-     * created_at, which is all its sweep can reach anyway.
+     * rounds exist to prevent — and later bounded by the vanish's created_at
+     * but still one unlimited read. It now erases that history with the
+     * per-event path's sweep, after the replay: every owner read is bounded
+     * by the vanish's own created_at AND by the page.
      */
     @Test
-    fun `a bulk vanish preloads only the history its sweep can reach`() =
+    fun `a bulk vanish reads only the history its sweep can reach, a page at a time`() =
         runBlocking {
             store.batchInsert((1..CORPUS).map { note(at = 6_000L + it) })
 
@@ -218,10 +220,10 @@ class SweepPagingTest {
             val reads = index.queries.toList()
 
             val ownerReads = reads.filter { it.owners == listOf(alice) }
-            assertTrue(ownerReads.isNotEmpty(), "the vanish preloads the owner's history: $reads")
+            assertTrue(ownerReads.isNotEmpty(), "the vanish sweeps the owner's history: $reads")
             assertTrue(
-                ownerReads.all { it.until == 6_010L },
-                "bounded by the vanish's created_at, not the whole history: $ownerReads",
+                ownerReads.all { it.until == 6_010L && it.limit == PAGE },
+                "bounded by the vanish's created_at and by the sweep page, never the whole history: $ownerReads",
             )
             // And the semantics are untouched: everything at or before the
             // vanish is gone, everything after it survives.
