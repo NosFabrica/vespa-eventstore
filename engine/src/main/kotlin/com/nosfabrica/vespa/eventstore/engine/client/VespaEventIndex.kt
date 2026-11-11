@@ -31,6 +31,7 @@ import com.nosfabrica.vespa.eventstore.engine.LinkWeights
 import com.nosfabrica.vespa.eventstore.engine.Linker
 import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.ScoredHit
+import com.nosfabrica.vespa.eventstore.engine.ServedDegraded
 import com.nosfabrica.vespa.eventstore.engine.async.QUERY_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
@@ -813,9 +814,12 @@ class VespaEventIndex(
         idOnly: Boolean,
     ): List<VespaSummary> =
         // A read that may be SERVED partial watches for it ([ServedDegraded]): a page off part of
-        // the corpus is thinner than the shape's real rate, and [learn] must not remember it.
+        // the corpus is thinner than the shape's real rate, and [learn] must not remember it. Its
+        // own tracker, so an earlier read's mark cannot reach [learn]; passed on to the caller's.
         if (q.acceptsPartial && windowMemory != null) {
-            withContext(ServedDegraded()) { speculativeAttempts(q, limit, idOnly) }
+            val outer = currentCoroutineContext()[ServedDegraded]
+            val own = ServedDegraded()
+            withContext(own) { speculativeAttempts(q, limit, idOnly) }.also { if (own.seen) outer?.mark() }
         } else {
             speculativeAttempts(q, limit, idOnly)
         }
@@ -2339,7 +2343,7 @@ class VespaEventIndex(
             )
         }
         refusal?.let { throw it }
-        if (!root.coverage.undegraded) currentCoroutineContext()[ServedDegraded]?.seen = true
+        if (root.coverage.missingDocuments) ServedDegraded.markCurrent()
         if (vq.complete) root.requireEverything()
         return root
     }
@@ -2432,7 +2436,7 @@ class VespaEventIndex(
             documents = coverage.documents,
         )
         refusal?.let { throw it }
-        currentCoroutineContext()[ServedDegraded]?.seen = true
+        if (coverage.missingDocuments) ServedDegraded.markCurrent()
     }
 
     /** [publish] for the grouping/count shape, whose tree is walked generically rather than decoded into [SearchRoot]. */

@@ -31,8 +31,6 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
-import kotlin.coroutines.AbstractCoroutineContextElement
-import kotlin.coroutines.CoroutineContext
 
 /**
  * The wire shapes Vespa's document/search/visit APIs answer with, decoded as
@@ -251,6 +249,14 @@ internal class SearchCoverage(
         get() = (degraded?.get("match-phase") as? JsonPrimitive)?.content == "true"
 
     /**
+     * Degraded by MORE than a match-phase cut: documents the engine did not search at all (a node
+     * missing, a bare shortfall). On a served answer that is what a partial allowance let through;
+     * the cut alone is a recency profile's own optimization, which the recall verifies or reruns.
+     */
+    val missingDocuments: Boolean
+        get() = !undegraded && setFlags != setOf(PartialAnswer.MATCH_PHASE)
+
+    /**
      * The engine reports complete coverage and names no degradation — the whole
      * question this guard asks, and deliberately NOT [full].
      *
@@ -345,16 +351,6 @@ internal class SearchCoverage(
 
 /** Vespa's flag for documents the ideal state expects that are not active anywhere: a node down, replicas not yet ready. */
 private const val NON_IDEAL_STATE = "non-ideal-state"
-
-/**
- * Installed by a caller that must not LEARN from a degraded answer it is served (the speculative
- * recency window's memory); the two response funnels set [seen] when they serve one.
- */
-internal class ServedDegraded : AbstractCoroutineContextElement(ServedDegraded) {
-    @Volatile var seen: Boolean = false
-
-    companion object Key : CoroutineContext.Key<ServedDegraded>
-}
 
 @Serializable
 internal class SearchHit(

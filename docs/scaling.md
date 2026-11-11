@@ -60,7 +60,8 @@ deployment, that invariant must survive:
     `withContext(AcceptPartial)` (vespa-relay does this for REQs and profile
     search): there a cluster MISSING documents (a node offline, so
     `non-ideal-state` below 100%) is served from what it could still
-    search, and booked `served` in `DegradedReads`. Counts, negentropy and
+    search, and booked `served` in `DegradedReads`; a `PartialServed` beside
+    it tells the caller whether that read was partial. Counts, negentropy and
     every write path's own reads still refuse. If you would rather search
     keep 100% through a node loss, run `redundancy` 2 or more with
     `searchable-copies` equal to it, so a ready replica takes over at once.
