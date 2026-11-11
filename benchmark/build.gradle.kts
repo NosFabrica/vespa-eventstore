@@ -47,7 +47,7 @@ tasks.test {
     // Vespa, an observer to lens through). Gradle does NOT forward the daemon's
     // system properties to the test JVM, so a test reading them sees null and
     // self-skips — which looks exactly like a passing run.
-    listOf("itVespa", "itCorpus", "itObserver").forEach { name ->
+    listOf("itVespa", "itCorpus", "itObserver", "itGrowDocs", "itGrowVariants").forEach { name ->
         System.getProperty(name)?.let { systemProperty(name, it) }
     }
 

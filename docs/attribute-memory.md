@@ -488,3 +488,151 @@ set. A reader that knows only `.last` therefore finds nothing on the very
 endpoint #69 quotes, and reports it as "no per-field metrics" rather than as a
 parsing gap. `attribute_memory.py` now takes the best available aggregation per
 metric.
+
+## 7. The growth reserve — what `allocation.growfactor` can and cannot reach
+
+Study for [#206](https://github.com/NosFabrica/vespa-eventstore/issues/206):
+staging attributes allocated ~20% ahead of what they use (`id` 24.81 GiB
+allocated against 20.33 GiB used), counted by the feed block, given back by a
+restart and re-taken by the next growth step. The proposal was to lower
+proton's `documentdb[].allocation.growfactor` / `multivaluegrowfactor` (both
+default 0.2) through a `<config name="vespa.config.search.core.proton">`
+override in `services.xml`. Measured first, as the issue asked, on Vespa
+8.781.11 with `AttributeGrowthIT` (`benchmark/`, below). **The override cannot
+be shipped: it never reaches proton. And even if it did, it would govern only
+about two fifths of the reserve.**
+
+### 7.1 A `services.xml` override of `allocation` is a silent no-op
+
+`documentdb` is an array in `proton.def`, and the config model **appends** a
+user override of an array to the entries it generates; it does not merge into
+them. The config server then serves the search node two `event` entries: the
+model's own entry first, still at 0.2, and the override after it. Proton picks a
+document type's entry by the FIRST `inputdoctypename` match
+(`find_document_db_config_entry` in `documentdbconfigmanager.cpp`), so it reads
+the default:
+
+```
+served documentdb entries (stock):     reputation 0.2, event 0.2
+served documentdb entries (override):  reputation 0.2, event 0.2, event 0.05
+```
+
+Placing the `<config>` on the content `<node>` instead of the cluster appends it
+the same way. Nothing in `services.xml` exposes `allocation` either.
+`searchnode > resizing` only covers `initialnumdocs` / `amortize-count`, and is
+deprecated and ignored. The deploy returns 200 with no config change actions
+either way, so **Vespa will not tell you**.
+
+Measured, not inferred. At 3,000,000 documents the two packages allocate the
+same bytes, attribute by attribute, to 0.1 MiB, including every single-value
+document vector, which is exactly what `growfactor` sizes. The six single-value
+attributes each hold 14.0 MiB allocated against 11.4 used, 1.23× (a 0.05 factor
+would leave at most ~1.05×):
+
+| allocated MiB @ 3.0M docs | stock | override 0.05 |
+|---|---:|---:|
+| `id` | 364.3 | 364.3 |
+| `tag_index` | 304.4 | 304.3 |
+| document meta store | 130.8 | 130.8 |
+| `created_at` / `kind` / `expires_at` | 47.3 / 30.8 / 27.7 | 47.3 / 30.8 / 27.7 |
+| all attributes + meta store | 1,154.6 | 1,154.6 |
+
+Feed rate was the same within noise: 5.3–6.6k docs/s per segment in both runs.
+
+**The tempting fix is worse.** Leave out `<configid>` from the override item and
+the config server cannot build the proton config at all. It serves the search
+node an EMPTY one and logs only at INFO (`Unable to resolve instance for builder
+'ProtonConfig$Builder', returning empty config … must be initialized:
+[configid]`). Proton then logs `No document databases in config, trying to
+re-fetch bootstrap config` and keeps the config it had. Observed over a live
+document db: it keeps serving, but takes no further config change (a rank
+profile, a tuning) until the package is fixed. Restating every entry with its
+`configid` does not help either: it is still appended.
+
+### 7.2 Where the reserve actually is, and which rule grows it
+
+Proton's state API splits each attribute's memory by component
+(`/state/v1/custom/component/documentdb/event/subdb/ready/attribute/<name>`).
+The rule that grows each component is in Vespa's source (master, read
+2026-11-11):
+
+| component | grows by | settable? |
+|---|---|---|
+| per-document vector (lid → value / enum ref), meta store lid table | `TypeStableVector` × (1 + `growfactor`) | `allocation.growfactor`, unreachable (§7.1) |
+| multi-value array store (`tag_index`, the near columns) | array-store buffers × `multivaluegrowfactor` | `allocation.multivaluegrowfactor`, unreachable (§7.1) |
+| enum-store values (every distinct `id`, `pubkey`, tag value, …) | `ALLOC_GROW_FACTOR = 0.2`, hard-coded (`unique_store_allocator.hpp`, `unique_store_string_allocator.cpp`) | no |
+| B-tree dictionary and posting lists | `DEFAULT_ALLOC_GROW_FACTOR = 0.2`, hard-coded (`buffer_type.cpp`) | no |
+| **hash** dictionary (`id`, `pubkey`, `owner`, `tag_index`: `dictionary { hash }`) | a full shard **doubles** (`size*2+2`, 3 shards; `sharded_hash_map.cpp`) | no |
+
+Measured at 3,000,000 documents (stock, settled; the attribute statistics lag
+their components by seconds, so the IT pauses the feed until two reads agree).
+At that checkpoint the reserve was 146.9 MiB, 12.7% of allocation. Across the
+ten checkpoints it ranged from 12.7% to 23.7%, a sawtooth set by where each
+structure sits in its own growth cycle:
+
+| rule | reserve MiB | share |
+|---|---:|---:|
+| hard-coded: dictionaries (of which `id`'s hash dictionary 43.7: 94.0 allocated, 50.3 used) | 52.0 | 35% |
+| hard-coded: enum-store values | 25.0 | 17% |
+| hard-coded: posting lists (+ change vectors 0.7) | 13.3 | 9% |
+| `multivaluegrowfactor`: multi-value arrays | 24.3 | 17% |
+| `growfactor`: six single-value document vectors 15.9, `author_ref` 10.9, meta store 5.7 | 32.5 | 22% |
+
+The last row is an upper bound for `growfactor`. `author_ref` and the meta store
+also carry B-tree structures that the state API does not split out.
+
+So **~61% of the reserve grows by rules no configuration reaches.** Had the
+override worked, 0.05 would have cut the other ~39% by at most three quarters:
+~29% of the reserve, ~4% of attribute memory at this checkpoint. The largest
+single item is the one #206 pointed at, `id`. But its reserve is mostly its hash
+dictionary, which doubles, not the 20% steps the issue assumed.
+
+### 7.3 What this does not establish
+
+- **Shares at staging scale.** 3M documents is ~1.5% of one staging node
+  (~200M). A buffer's 20% step is scale-free, but a hash shard's doubling is
+  not a steady fraction, and the fixed minimum buffer sizes still weigh at 3M.
+  The same read answers this on staging directly, read-only, one attribute at a
+  time (the state port comes from `vespa-model-inspect service searchnode`,
+  `STATE` in its listing):
+  ```bash
+  curl -s localhost:19113/state/v1/custom/component/documentdb/event/subdb/ready/attribute/id \
+    | jq '{total: .status.memoryUsage, values: .enumStore.valuesMemoryUsage,
+           dictionary: .enumStore.dictionaryMemoryUsage, postings: .posting_store.memory_usage.total}'
+  ```
+  If `id`'s dictionary carries GiBs of slack there, as its 46% here suggests,
+  that is the reserve to name in an upstream Vespa request.
+- **How much of the reserve is resident.** At 3M documents attributes are
+  ~40% of proton's `RssAnon`. `RssAnon` swung by ±1 GiB between checkpoints as
+  the memory index filled and flushed (809 → 1,341 → 859 MiB), which buries any
+  growth-step transient. Peak `RssAnon` was 3.06 GiB (stock) and 3.17 GiB
+  (override, same config in effect). The transient's mechanism is in the source:
+  a document vector copies into the new array and holds the old one until
+  readers release it (`TypeStableVectorBase::expand`), and a hash shard holds
+  its old map the same way. Its size at staging scale is not measured.
+- **Online shrink.** The source has one path: lid-space compaction calls
+  `TypeStableVectorBase::shrink`, which still keeps `growfactor` headroom over
+  the new size. Datastore buffers give space back only by compaction of dead
+  entries (`max_dead_bytes_ratio`). Neither returns an unfilled reserve, which
+  matches the restart-only recovery #206 observed.
+
+### 7.4 What follows
+
+- **Do not add `allocation` to `services.xml`**, bundled or the brainstorm-k8s
+  override. Appended, it does nothing. Without `configid`, it freezes proton's
+  config. The bundled `services.xml` says so next to its proton `<config>`.
+- **The lever is upstream.** Vespa would have to expose `allocation` through
+  the content cluster's tuning (the model sets every other `documentdb[]`
+  field), or merge array overrides by key. Even then, most of the reserve
+  measured here is hard-coded growth that no setting reaches.
+- **#206's own third point stands, and is now the whole answer.** The reserve
+  buys margin, not capacity; the real fixes are more memory per node or a
+  fifth content node (§4.6). Rolling restarts still return it, but only until
+  the next growth cycle.
+
+```bash
+# the measurement (Docker; ~20 min for both variants at 3M docs on 4 cores)
+./gradlew :benchmark:test -Pintegration -DitGrowDocs=3000000 \
+    -DitGrowVariants=stock,0.05 --tests '*AttributeGrowthIT*'
+grep -ho 'tests="[0-9]*" skipped="[0-9]*"' benchmark/build/test-results/test/*AttributeGrowthIT*.xml
+```

@@ -147,6 +147,15 @@
          (no store semantics) may still prefer more; re-measure with
          BENCH_MIXED before changing. -->
     <config name="vespa.config.search.core.proton">
+      <!-- No <documentdb> block here, on purpose: do not add one to lower
+           allocation.growfactor (#206). `documentdb` is an array, the config
+           model APPENDS an override after the entry it generates, and proton
+           reads the first entry per document type — so the override is a
+           silent no-op (measured: identical bytes at 3M docs). Without a
+           <configid> it is worse: the config server serves an EMPTY proton
+           config and proton stops accepting config changes. Most of the
+           reserve grows by vespalib's hard-coded factors anyway.
+           docs/attribute-memory.md §7; AttributeGrowthIT measures it. -->
       <feeding>
         <concurrency>0.4</concurrency>
       </feeding>
