@@ -53,9 +53,17 @@ deployment, that invariant must survive:
     So the deadline is at Vespa's maximum and soft timeout is off. Note
     `Query.setTimeout` rejects anything >= 1000000000 ms — do not "max" this
     field to 2147483647 the way `maxHits` is maxed, it fails every query.
-    `VespaEventIndex` checks `coverage.full` on every search response and
+    `VespaEventIndex` checks coverage on every search response and
     refuses a degraded one, so no other degradation source (node coverage,
     match-phase) can pass a partial answer off as a complete one either.
+    The one exception is a client read the consumer wrapped in
+    `withContext(AcceptPartial)` (vespa-relay does this for REQs and profile
+    search): there a cluster MISSING documents (a node offline, so
+    `non-ideal-state` below 100%) is served from what it could still
+    search, and booked `served` in `DegradedReads`. Counts, negentropy and
+    every write path's own reads still refuse. If you would rather search
+    keep 100% through a node loss, run `redundancy` 2 or more with
+    `searchable-copies` equal to it, so a ready replica takes over at once.
   - In `services.xml`: the **GC selection** on the event document
     (`selection="event.expires_at > now()"` + `garbage-collection="true"`) —
     NIP-40 expiry is enforced by the engine; dropping it silently disables

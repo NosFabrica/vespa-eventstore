@@ -665,6 +665,7 @@ object EventYql {
             ranking = ranking,
             complete = q.complete,
             sampled = q.sampled,
+            acceptsPartial = q.acceptsPartial,
             shape = clauseShape(q),
         )
     }
@@ -818,6 +819,7 @@ object EventYql {
             yql = "select id, tag_index from event where ${whereOf(clauses + keyClause(usable) + "kind = $ZAP_RECEIPT_KIND")}",
             params = params,
             ranking = ranking,
+            acceptsPartial = q.acceptsPartial,
             shape = clauseShape(q),
         )
     }
@@ -915,6 +917,7 @@ object EventYql {
             yql = "select * from $source where $where limit 0 | $pipeline",
             params = params,
             ranking = ranking,
+            acceptsPartial = q.acceptsPartial,
             shape = clauseShape(q),
         )
     }

@@ -637,7 +637,7 @@ class VespaEventIndex(
                 fallbacks.markIdTimeSummaryMissing()
                 return recallPage(q, planned, idOnly = false)
             }
-        return hydrate(page)
+        return hydrate(page, q.acceptsPartial)
     }
 
     /**
@@ -669,27 +669,34 @@ class VespaEventIndex(
      * and fails the read, as the loop did; the page keeps its own order, since
      * it is rebuilt from [page], not from the order chunks answered in.
      */
-    private suspend fun hydrate(page: List<VespaSummary>): List<VespaSummary> {
+    private suspend fun hydrate(
+        page: List<VespaSummary>,
+        /** The recall's [EventQuery.acceptsPartial]: a page served off part of the corpus hydrates under the same allowance. */
+        acceptsPartial: Boolean,
+    ): List<VespaSummary> {
         if (page.isEmpty()) return page
         val chunks = page.map { it.id }.chunked(HYDRATE_CHUNK)
         // The common page is one chunk: no fan-out machinery for it.
-        val fetched = if (chunks.size == 1) listOf(hydrateChunk(chunks[0])) else chunks.mapBounded(QUERY_FANOUT) { hydrateChunk(it) }
+        val fetched = if (chunks.size == 1) listOf(hydrateChunk(chunks[0], acceptsPartial)) else chunks.mapBounded(QUERY_FANOUT) { hydrateChunk(it, acceptsPartial) }
         val full = HashMap<String, VespaSummary>(page.size * 2)
         for (hits in fetched) for (hit in hits) full[hit.id] = hit
         return page.mapNotNull { full[it.id] }
     }
 
     /** One [hydrate] lookup: the documents for [ids], by `id in (…)`. */
-    private suspend fun hydrateChunk(ids: List<String>): List<VespaSummary> {
+    private suspend fun hydrateChunk(
+        ids: List<String>,
+        acceptsPartial: Boolean,
+    ): List<VespaSummary> {
         // COMPLETENESS IS COUNTED HERE, not read off the coverage flag: this
         // is a lookup of named ids, so an answer holding every one of them is
         // whole whatever the engine reports — and one that is short AND
         // degraded is a partial answer, refused like any other. (Short and
         // undegraded is the deletion race above.)
-        val vq = EventYql.build(EventQuery(ids = ids, ranking = EventYql.RANK_UNRANKED, limit = ids.size))?.copy(sampled = true) ?: return emptyList()
+        val vq = EventYql.build(EventQuery(ids = ids, ranking = EventYql.RANK_UNRANKED, limit = ids.size, acceptsPartial = acceptsPartial))?.copy(sampled = true) ?: return emptyList()
         val root = searchRoot(vq, hits = ids.size)
         val got = root.children.mapNotNull { hit -> hit.fields?.takeIf { it.id.isNotEmpty() } }
-        if (got.size < ids.size) root.coverage.requireComplete(allowMatchPhase = false)
+        if (got.size < ids.size) root.coverage.requireComplete(allowMatchPhase = false, acceptsPartial = acceptsPartial)
         return got
     }
 
@@ -2161,7 +2168,7 @@ class VespaEventIndex(
                     if (!lensed) {
                         emptyMap()
                     } else {
-                        val cells = EventYql.buildTrustCells(zaps.map { it.second }, narrowed.rankKey ?: "")?.let { queryRoot(it, hits = zaps.size) }
+                        val cells = EventYql.buildTrustCells(zaps.map { it.second }, narrowed.rankKey ?: "")?.let { queryRoot(it.copy(acceptsPartial = narrowed.acceptsPartial), hits = zaps.size) }
                         cells
                             ?.get("children")
                             ?.jsonArray
@@ -2269,6 +2276,10 @@ class VespaEventIndex(
         // degrading every read shows up in the numbers either way — it just
         // stops killing the reads that a subset already answers.
         val allowMatchPhase = vq.sampled || vq.ranking == EventYql.RANK_RECENCY || vq.ranking == EventYql.RANK_RECENCY_GATED
+        // `acceptsPartial` (a page served to a client, see EventQuery) may also
+        // take a cluster MISSING documents; [SearchCoverage.refusal] is the
+        // whole verdict, decided once so the tally books what is thrown.
+        val refusal = root.coverage.refusal(allowMatchPhase = allowMatchPhase, acceptsPartial = vq.acceptsPartial)
         // Before the coverage check, which counts only the nodes that answered and so cannot see one that did not.
         if (root.errors.isNotEmpty()) {
             DegradedReads.record(
@@ -2282,20 +2293,21 @@ class VespaEventIndex(
             refuseErrors(root.errors)
         }
         // RECORDED WHETHER OR NOT IT THROWS. A match-phase cut on a recency
-        // profile is ALLOWED and returned silently, so a cluster degrading
-        // every read shows up here before anything refuses and long before
-        // anyone notices ranked pages getting shorter.
+        // profile is ALLOWED and returned silently, and so is a client page
+        // over a cluster missing a node, so a cluster degrading every read
+        // shows up here before anything refuses and long before anyone
+        // notices pages getting shorter.
         if (!root.coverage.undegraded) {
             DegradedReads.record(
                 profile = vq.ranking,
                 flags = root.coverage.setFlags,
                 shape = shapeOf(vq),
-                refused = !allowMatchPhase,
+                refused = refusal != null,
                 coverage = root.coverage.coverage,
                 documents = root.coverage.documents,
             )
         }
-        root.coverage.requireComplete(allowMatchPhase = allowMatchPhase)
+        refusal?.let { throw it }
         if (vq.complete) root.requireEverything()
         return root
     }
@@ -2365,7 +2377,7 @@ class VespaEventIndex(
             ?.also { root ->
                 // Before the coverage check, as in [searchRoot]: a node that did not answer is outside what coverage counts.
                 root["errors"]?.let { refuseErrors(VESPA_JSON.decodeFromJsonElement(ListSerializer(SearchError.serializer()), it)) }
-                root["coverage"]?.let { VESPA_JSON.decodeFromJsonElement(SearchCoverage.serializer(), it) }?.requireComplete()
+                root["coverage"]?.let { VESPA_JSON.decodeFromJsonElement(SearchCoverage.serializer(), it) }?.requireComplete(acceptsPartial = vq.acceptsPartial)
             }
     }
 

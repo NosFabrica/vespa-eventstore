@@ -350,7 +350,17 @@ class NostrSemanticsStore(
      */
     private val pages = PageAssembly(searchExpansion, maxHitsPerAuthor, { observer -> if (observer == null) Enrolment.NONE else delegations().of(observer) }, linkRerank)
 
-    /** How the page assembly reads and recalls a stored document. */
+    /**
+     * How the page assembly reads and recalls a stored document.
+     *
+     * EVERY ENGINE READ A PAGE MAKES GOES THROUGH [served], and only those: the
+     * recall, the expansion's companions and spliced subjects, the `sort:links`
+     * rerank. Under [AcceptPartial] a cluster missing a node answers them with
+     * the corpus it can still reach (`EventQuery.acceptsPartial`) rather than
+     * with an error. The lens and the delegations this read resolves on the
+     * way are NOT pages — both are cached, and a partial read cached there
+     * would outlive the outage — so they keep refusing.
+     */
     private val docPage =
         PageAssembly.Projection(
             newestFirst = EventDoc.NEWEST_FIRST,
@@ -359,9 +369,9 @@ class NostrSemanticsStore(
             kindOf = EventDoc::kind,
             authorOf = EventDoc::pubkey,
             pointerOf = { if (it.kind in SearchReferences.KINDS) it.toEvent() else null },
-            search = { index.search(it) },
-            searchRanked = { index.searchRanked(it) },
-            scoreLinks = { targets, linkers, weights -> index.scoreLinks(targets, linkers, weights) },
+            search = { index.search(served(it)) },
+            searchRanked = { index.searchRanked(served(it)) },
+            scoreLinks = { targets, linkers, weights -> index.scoreLinks(targets, served(linkers), weights) },
         )
 
     /** The same, off a raw row — the projection the wire-serving path uses. */
@@ -373,10 +383,18 @@ class NostrSemanticsStore(
             kindOf = RawEvent::kind,
             authorOf = RawEvent::pubKey,
             pointerOf = { if (it.kind in SearchReferences.KINDS) it.toEvent() else null },
-            search = { index.rawSearch(it) },
-            searchRanked = { index.rawSearchRanked(it) },
-            scoreLinks = { targets, linkers, weights -> index.scoreLinks(targets, linkers, weights) },
+            search = { index.rawSearch(served(it)) },
+            searchRanked = { index.rawSearchRanked(served(it)) },
+            scoreLinks = { targets, linkers, weights -> index.scoreLinks(targets, served(linkers), weights) },
         )
+
+    /**
+     * [q] as a page read: allowed a partial answer when the caller installed
+     * [AcceptPartial], strict otherwise. Read off the context per query rather
+     * than once per page, because the expansion builds its own queries and
+     * this is the one place every one of them passes.
+     */
+    private suspend fun served(q: EventQuery): EventQuery = if (!q.acceptsPartial && coroutineContext[AcceptPartial] != null) q.copy(acceptsPartial = true) else q
 
     private val bulkRecords = BulkRecordInsert(index, relay, guards)
 
@@ -800,7 +818,7 @@ class NostrSemanticsStore(
             if (q == null || (q.search == null && q.phrases.isEmpty())) return@withActivity ScoredSearch(emptyList(), service)
             val hits =
                 index
-                    .searchRanked(q)
+                    .searchRanked(served(q))
                     // An engine that does not rank reports no score; one is never invented.
                     // NaN/Inf has no JSON form and no place in an order: dropped, not serialized.
                     .mapNotNull { r -> r.score?.takeIf { it.isFinite() }?.let { ScoredSearch.Hit(r.hit.pubkey, it) } }

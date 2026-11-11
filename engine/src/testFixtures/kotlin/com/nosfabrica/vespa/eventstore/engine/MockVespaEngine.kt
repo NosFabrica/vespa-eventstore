@@ -823,7 +823,10 @@ class MockVespaEngine(
                     "root",
                     buildJsonObject {
                         put("fields", buildJsonObject { put("totalCount", JsonPrimitive(matches.size)) })
-                        put("coverage", if (cut) matchPhaseCoverage(matches.size) else coverage(matches.size))
+                        // `documents` is what the engine SEARCHED, not what matched:
+                        // real Vespa reports the active corpus it covered (624M on
+                        // production while a node was down, over a handful of hits).
+                        put("coverage", if (cut) matchPhaseCoverage(inner.size()) else coverage(inner.size()))
                         put("children", children)
                     },
                 )
