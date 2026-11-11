@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.eventstore
 
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
+import com.nosfabrica.vespa.eventstore.engine.ServedDegraded
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.metrics.Activity
 import com.nosfabrica.vespa.eventstore.engine.metrics.CostLedger
@@ -77,6 +78,7 @@ import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEve
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import com.vitorpamplona.quartz.utils.Hex
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.withContext
 import kotlin.coroutines.coroutineContext
 
 /**
@@ -313,6 +315,7 @@ class NostrSemanticsStore(
     private suspend fun lensed(queries: List<EventQuery>): List<EventQuery> {
         if (queries.none { it.observer != null }) return queries
         val providers = providers() ?: return queries
+        if (providers.partial) ServedDegraded.markCurrent()
         return queries.map { q ->
             val lens = providers.servedLensOf(q.observer ?: return@map q)
             q.copy(rankKey = lens.rank, followersKey = lens.followers)
@@ -330,6 +333,20 @@ class NostrSemanticsStore(
 
     /** Whether the caller installed [AcceptPartial] around this read. */
     private suspend fun servesPartial(): Boolean = coroutineContext[AcceptPartial] != null
+
+    /**
+     * [block], reporting to the caller's [PartialServed] whether any engine read behind it was
+     * served part of the corpus. Its own engine tracker per call, so a report covers this read.
+     */
+    private suspend fun <T> reportingPartial(block: suspend () -> T): T {
+        val report = coroutineContext[PartialServed] ?: return block()
+        val seen = ServedDegraded()
+        try {
+            return withContext(seen) { block() }
+        } finally {
+            if (seen.seen) report.served = true
+        }
+    }
 
     /**
      * The live gate's lens lookup, the same `lensOf(observer).rank` [lensed] stamps on a stored read,
@@ -763,8 +780,11 @@ class NostrSemanticsStore(
     override suspend fun <T : Event> query(filters: List<Filter>): List<T> = withActivity(Activity.Query) { queryUnder(filters) }
 
     /** [query]'s body; split for the reason [batchInsertUnder] is. */
+    private suspend fun <T : Event> queryUnder(filters: List<Filter>): List<T> = reportingPartial { pageOf(filters) }
+
+    /** [queryUnder]'s page. */
     @Suppress("UNCHECKED_CAST")
-    private suspend fun <T : Event> queryUnder(filters: List<Filter>): List<T> {
+    private suspend fun <T : Event> pageOf(filters: List<Filter>): List<T> {
         val observer = connectionObserver()
         val cutoff = nowSecs()
         val queries = lensed(filters.mapNotNull { it.toExpiryQuery(cutoff, observer) })
@@ -784,10 +804,14 @@ class NostrSemanticsStore(
         filters: List<Filter>,
         onEach: (RawEvent) -> Unit,
     ) = withActivity(Activity.Query) {
-        val observer = connectionObserver()
-        val cutoff = nowSecs()
-        val queries = lensed(filters.mapNotNull { it.toExpiryQuery(cutoff, observer) })
-        pages.serve(queries, filters, rawPage).forEach(onEach)
+        val rows =
+            reportingPartial {
+                val observer = connectionObserver()
+                val cutoff = nowSecs()
+                val queries = lensed(filters.mapNotNull { it.toExpiryQuery(cutoff, observer) })
+                pages.serve(queries, filters, rawPage)
+            }
+        rows.forEach(onEach)
     }
 
     /**
@@ -814,20 +838,29 @@ class NostrSemanticsStore(
         text: String,
         observer: String,
         limit: Int,
+    ): ScoredSearch = withActivity(Activity.Query) { reportingPartial { scoredProfiles(text, observer, limit) } }
+
+    /** [scoredProfileSearch]'s body. */
+    private suspend fun scoredProfiles(
+        text: String,
+        observer: String,
+        limit: Int,
     ): ScoredSearch =
-        withActivity(Activity.Query) {
+        run {
             require(limit > 0) { "limit must be positive" }
             val key = observer.lowercase()
             require(Hex.isHexKey(key)) { "observer must be 64-hex" }
-            val lens = providers()?.servedLensOf(key)
-            val service = lens?.rank ?: return@withActivity ScoredSearch(emptyList(), null)
+            val providers = providers()
+            if (providers?.partial == true) ServedDegraded.markCurrent()
+            val lens = providers?.servedLensOf(key)
+            val service = lens?.rank ?: return@run ScoredSearch(emptyList(), null)
             val cutoff = nowSecs()
             val q =
                 Filter(kinds = listOf(MetadataEvent.KIND), search = text, limit = limit)
                     .toExpiryQuery(cutoff, key)
                     ?.copy(observer = key, rankKey = service, followersKey = lens.followers, ranking = null, minRank = DEFAULT_MIN_RANK, includeSpam = false)
             // Extensions alone leave nothing to match on.
-            if (q == null || (q.search == null && q.phrases.isEmpty())) return@withActivity ScoredSearch(emptyList(), service)
+            if (q == null || (q.search == null && q.phrases.isEmpty())) return@run ScoredSearch(emptyList(), service)
             val hits =
                 index
                     .searchRanked(served(q))

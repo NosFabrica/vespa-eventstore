@@ -39,7 +39,8 @@ import kotlin.coroutines.CoroutineContext
  * ("the response is a PARTIAL answer, not a small one, so it is refused").
  * Under it they are served from the part of the corpus that answered, and
  * every such answer is booked `served` in the engine's `DegradedReads`, so a
- * relay running partial stays visible.
+ * relay running partial stays visible. Install a [PartialServed] beside it to
+ * learn whether THIS read was one of them (to tell the client, say).
  *
  * WHAT IT COVERS: [NostrSemanticsStore.query], [NostrSemanticsStore.rawQuery]
  * and [NostrSemanticsStore.scoredProfileSearch], every engine read their page

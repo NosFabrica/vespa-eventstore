@@ -21,15 +21,18 @@
 package com.nosfabrica.vespa.eventstore.engine.client
 
 import com.nosfabrica.vespa.eventstore.engine.MockVespaEngine
+import com.nosfabrica.vespa.eventstore.engine.ServedDegraded
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.metrics.DegradedReads
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -381,4 +384,54 @@ class VespaCoverageTest {
 
             assertEquals(n, index.search(EventQuery(kinds = listOf(1), limit = n, acceptsPartial = true)).size)
         }
+
+    /**
+     * [ServedDegraded] says whether a read was served PART of the corpus: marked by a served
+     * partial page (through the speculative read's own tracker), and a served partial grouping;
+     * not by a complete answer, nor by one refused, which never reached the caller.
+     */
+    @Test
+    fun `a read served part of the corpus marks ServedDegraded`() =
+        runBlocking {
+            index.put(doc("1".repeat(64)))
+
+            suspend fun marked(read: suspend () -> Unit): Boolean = ServedDegraded().also { t -> withContext(t) { runCatching { read() } } }.seen
+
+            assertFalse(marked { index.search(EventQuery(limit = 10, acceptsPartial = true)) }, "a complete page")
+            mock.nonIdealStateCoverage = true
+            assertTrue(marked { index.search(EventQuery(limit = 10, acceptsPartial = true)) }, "a limit'd page, through the speculative read")
+            assertTrue(marked { index.search(EventQuery(acceptsPartial = true)) }, "an unlimited page")
+            assertTrue(marked { index.count(EventQuery(acceptsPartial = true)) }, "a grouping")
+            assertFalse(marked { index.search(EventQuery(limit = 10)) }, "a refused page reached nobody")
+        }
+
+    /** A recency profile's own match-phase cut is proven or rerun by the recall, so it is not partial. */
+    @Test
+    fun `a match-phase cut the profile asked for does not mark ServedDegraded`() =
+        runBlocking {
+            repeat(70) { i -> index.put(doc(i.toString(16).padStart(64, '0')).copy(createdAt = 1_700_000_000L + i)) }
+            mock.degradeCoverage = "match-phase"
+
+            val tracker = ServedDegraded()
+            withContext(tracker) { assertEquals(1, index.search(EventQuery(limit = 1, acceptsPartial = true)).size) }
+            assertFalse(tracker.seen)
+        }
+
+    @Test
+    fun `missing documents is any degradation but a match-phase cut`() {
+        fun cov(
+            coverage: Int,
+            vararg flags: String,
+        ) = SearchCoverage(
+            full = false,
+            coverage = coverage,
+            degraded = if (flags.isEmpty()) null else buildJsonObject { flags.forEach { put(it, JsonPrimitive(true)) } },
+            documents = 10,
+        )
+        assertFalse(cov(100).missingDocuments, "undegraded")
+        assertFalse(cov(40, "match-phase").missingDocuments)
+        assertTrue(cov(75, "non-ideal-state").missingDocuments)
+        assertTrue(cov(40, "match-phase", "non-ideal-state").missingDocuments)
+        assertTrue(cov(97).missingDocuments, "a bare shortfall")
+    }
 }

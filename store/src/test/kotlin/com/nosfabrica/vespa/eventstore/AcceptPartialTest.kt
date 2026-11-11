@@ -26,6 +26,7 @@ import com.nosfabrica.vespa.eventstore.engine.LinkTarget
 import com.nosfabrica.vespa.eventstore.engine.LinkWeights
 import com.nosfabrica.vespa.eventstore.engine.MockVespaEngine
 import com.nosfabrica.vespa.eventstore.engine.Ranked
+import com.nosfabrica.vespa.eventstore.engine.ServedDegraded
 import com.nosfabrica.vespa.eventstore.engine.client.PartialAnswer
 import com.nosfabrica.vespa.eventstore.engine.client.VespaEventIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
@@ -46,6 +47,7 @@ import java.util.Collections
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -128,12 +130,14 @@ class AcceptPartialTest {
         val hidden: MutableSet<String> = Collections.synchronizedSet(HashSet())
         val asked: MutableList<Pair<String, EventQuery>> = Collections.synchronizedList(ArrayList())
 
-        private fun check(
+        private suspend fun check(
             call: String,
             q: EventQuery,
         ) {
             asked += call to q
-            if (down && !q.acceptsPartial) throw PartialAnswer("vespa searched only 75% of the corpus (non-ideal-state)", "non-ideal-state")
+            if (!down) return
+            if (!q.acceptsPartial) throw PartialAnswer("vespa searched only 75% of the corpus (non-ideal-state)", "non-ideal-state")
+            ServedDegraded.markCurrent()
         }
 
         private fun reachable(id: String) = !down || id !in hidden
@@ -247,5 +251,41 @@ class AcceptPartialTest {
 
             assertEquals(listOf(alice), withContext(AcceptPartial) { store.scoredProfileSearch("alice", observer, limit = 10) }.hits.map { it.pubkey })
             assertTrue(runCatching { store.scoredProfileSearch("alice", observer, limit = 10) }.isFailure)
+        }
+
+    /** [PartialServed] reports a partial answer on every client read path, and nothing on a complete one. */
+    @Test
+    fun `PartialServed reports whether a client read was served partial`() =
+        runBlocking {
+            mock.inner.put(note)
+
+            suspend fun reported(read: suspend () -> Unit): Boolean = PartialServed().also { r -> withContext(AcceptPartial + r) { read() } }.served
+            val feed = Filter(kinds = listOf(1), limit = 10)
+            val search = Filter(kinds = listOf(1), search = "hello")
+
+            assertFalse(reported { store.query<Event>(listOf(feed)) }, "a complete page is not partial")
+            assertFalse(reported { store.query<Event>(listOf(search)) })
+            mock.nonIdealStateCoverage = true
+            assertTrue(reported { store.query<Event>(listOf(feed)) }, "a feed REQ")
+            assertTrue(reported { store.query<Event>(listOf(search)) }, "a NIP-50 search")
+            assertTrue(reported { store.rawQuery(listOf(feed)) { } }, "the raw path")
+        }
+
+    /** A lens read from the lists a degraded cluster could still search makes the read partial too. */
+    @Test
+    fun `a lensed read off a partial provider pass is reported partial`() =
+        runBlocking {
+            val outage = Outage(InMemoryEventIndex())
+            val store = trusted(outage)
+            store.insert(list10040(observer))
+            store.insert(MetadataEvent(id(), "a1".repeat(32), 2_000L, emptyArray(), """{"name":"alice"}""", ""))
+            outage.down = true
+
+            val page = PartialServed()
+            withContext(AcceptPartial + page) { store.query<Event>(listOf(Filter(kinds = listOf(0), search = "observer:$observer"))) }
+            assertTrue(page.served, "the page")
+            val scored = PartialServed()
+            withContext(AcceptPartial + scored) { store.scoredProfileSearch("alice", observer, limit = 10) }
+            assertTrue(scored.served, "the scored profile search")
         }
 }
