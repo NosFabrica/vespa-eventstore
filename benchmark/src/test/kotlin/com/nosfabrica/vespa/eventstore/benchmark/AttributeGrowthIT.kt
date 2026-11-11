@@ -89,8 +89,8 @@ import kotlin.test.assertTrue
  *     (`sharded_hash_map.cpp`) — none of which any config reaches.
  *
  * Measured at 3M documents (docs/attribute-memory.md §7): the override run
- * allocates the same bytes as stock attribute by attribute, and ~61% of the
- * reserve sits in the hard-coded rules.
+ * allocates the same bytes as stock attribute by attribute, and most of the
+ * reserve sits in the hard-coded rules (~60%).
  *
  * Alongside: proton's `RssAnon` (what the feed block divides by its limit),
  * sampled every [SAMPLE_MILLIS] so a growth step's transient shows as the peak
@@ -626,7 +626,7 @@ class AttributeGrowthIT {
      * id would fill B-tree nodes left to right and understate their slack.
      */
     private fun doc(seq: Int): EventDoc {
-        val rnd = SplittableRandom(seq * 0x9E3779B97F4A7C15uL.toLong() + 1)
+        val rnd = SplittableRandom(seq * SEED_STRIDE + 1)
         val kind = pickKind(rnd.nextInt(100))
         val author = AUTHORS[rnd.nextInt(AUTHORS.size)]
         val createdAt = 1_700_000_000L + seq / 4
@@ -735,6 +735,15 @@ class AttributeGrowthIT {
         const val SETTLE_MILLIS = 3_000L
         const val SETTLE_TRIES = 20
         val SIG = "e".repeat(128)
+
+        /**
+         * Seed multiplier for a document's own random stream. NOT 0x9E3779B97F4A7C15:
+         * that is SplittableRandom's stream increment, so seeding document `seq` with
+         * `seq * GAMMA` makes its stream document `seq - 1`'s shifted by one draw —
+         * documents that draw a variable number of values before their id then draw
+         * the SAME id, and overwrite one another (measured: ~60% of notes lost).
+         */
+        const val SEED_STRIDE = -0x40a7b892e31b1a47L
 
         /** `searchnode state=RUNNING mode=AUTO pid=453 exitstatus=0 id="content/search/cluster.content/0"` */
         val SEARCHNODE_PID = Regex("""^searchnode state=\S+\s+mode=\S+\s+pid=(\d+)""", RegexOption.MULTILINE)

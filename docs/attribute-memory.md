@@ -525,19 +525,19 @@ either way, so **Vespa will not tell you**.
 
 Measured, not inferred. At 3,000,000 documents the two packages allocate the
 same bytes, attribute by attribute, to 0.1 MiB, including every single-value
-document vector, which is exactly what `growfactor` sizes. The six single-value
-attributes each hold 14.0 MiB allocated against 11.4 used, 1.23× (a 0.05 factor
-would leave at most ~1.05×):
+document vector, which is exactly what `growfactor` sizes. The single-value
+attributes each hold 14.0 MiB of document vector against ~11.3 used, 1.24× (a
+0.05 factor would leave at most ~1.05×):
 
 | allocated MiB @ 3.0M docs | stock | override 0.05 |
 |---|---:|---:|
 | `id` | 364.3 | 364.3 |
-| `tag_index` | 304.4 | 304.3 |
+| `tag_index` | 304.6 | 304.5 |
 | document meta store | 130.8 | 130.8 |
 | `created_at` / `kind` / `expires_at` | 47.3 / 30.8 / 27.7 | 47.3 / 30.8 / 27.7 |
-| all attributes + meta store | 1,154.6 | 1,154.6 |
+| all attributes + meta store | 1,155.5 | 1,155.4 |
 
-Feed rate was the same within noise: 5.3–6.6k docs/s per segment in both runs.
+Feed rate was the same within noise: 5.1–6.9k docs/s per segment across both runs.
 
 **The tempting fix is worse.** Leave out `<configid>` from the override item and
 the config server cannot build the proton config at all. It serves the search
@@ -566,24 +566,26 @@ The rule that grows each component is in Vespa's source (master, read
 
 Measured at 3,000,000 documents (stock, settled; the attribute statistics lag
 their components by seconds, so the IT pauses the feed until two reads agree).
-At that checkpoint the reserve was 146.9 MiB, 12.7% of allocation. Across the
-ten checkpoints it ranged from 12.7% to 23.7%, a sawtooth set by where each
+At that checkpoint the reserve was 151.5 MiB, 13.1% of allocation. Across the
+ten checkpoints it ranged from 9.0% to 24.8%, a sawtooth set by where each
 structure sits in its own growth cycle:
 
 | rule | reserve MiB | share |
 |---|---:|---:|
-| hard-coded: dictionaries (of which `id`'s hash dictionary 43.7: 94.0 allocated, 50.3 used) | 52.0 | 35% |
-| hard-coded: enum-store values | 25.0 | 17% |
-| hard-coded: posting lists (+ change vectors 0.7) | 13.3 | 9% |
-| `multivaluegrowfactor`: multi-value arrays | 24.3 | 17% |
-| `growfactor`: six single-value document vectors 15.9, `author_ref` 10.9, meta store 5.7 | 32.5 | 22% |
+| hard-coded: dictionaries (of which `id`'s hash dictionary 43.7: 94.0 allocated, 50.3 used) | 51.9 | 35% |
+| hard-coded: enum-store values | 25.6 | 17% |
+| hard-coded: posting lists (+ change vectors 0.7) | 13.1 | 9% |
+| `multivaluegrowfactor`: multi-value arrays | 24.6 | 16% |
+| `growfactor`: six single-value document vectors 17.6, `author_ref` 11.0, meta store 6.2 | 34.8 | 23% |
 
 The last row is an upper bound for `growfactor`. `author_ref` and the meta store
-also carry B-tree structures that the state API does not split out.
+also carry B-tree structures that the state API does not split out. The rows sum
+to 150.0 rather than 151.5 because the named parts of the multi-value attributes
+overlap slightly.
 
-So **~61% of the reserve grows by rules no configuration reaches.** Had the
-override worked, 0.05 would have cut the other ~39% by at most three quarters:
-~29% of the reserve, ~4% of attribute memory at this checkpoint. The largest
+So **~60% of the reserve grows by rules no configuration reaches.** Had the
+override worked, 0.05 would have cut the other ~40% by at most three quarters:
+~30% of the reserve, ~4% of attribute memory at this checkpoint. The largest
 single item is the one #206 pointed at, `id`. But its reserve is mostly its hash
 dictionary, which doubles, not the 20% steps the issue assumed.
 
@@ -603,9 +605,9 @@ dictionary, which doubles, not the 20% steps the issue assumed.
   If `id`'s dictionary carries GiBs of slack there, as its 46% here suggests,
   that is the reserve to name in an upstream Vespa request.
 - **How much of the reserve is resident.** At 3M documents attributes are
-  ~40% of proton's `RssAnon`. `RssAnon` swung by ±1 GiB between checkpoints as
-  the memory index filled and flushed (809 → 1,341 → 859 MiB), which buries any
-  growth-step transient. Peak `RssAnon` was 3.06 GiB (stock) and 3.17 GiB
+  ~35% of proton's `RssAnon`. `RssAnon` swung by ±1 GiB between checkpoints as
+  the memory index filled and flushed (811 → 1,345 → 911 MiB), which buries any
+  growth-step transient. Peak `RssAnon` was 3.40 GiB (stock) and 3.42 GiB
   (override, same config in effect). The transient's mechanism is in the source:
   a document vector copies into the new array and holds the old one until
   readers release it (`TypeStableVectorBase::expand`), and a hash shard holds
@@ -635,4 +637,120 @@ dictionary, which doubles, not the 20% steps the issue assumed.
 ./gradlew :benchmark:test -Pintegration -DitGrowDocs=3000000 \
     -DitGrowVariants=stock,0.05 --tests '*AttributeGrowthIT*'
 grep -ho 'tests="[0-9]*" skipped="[0-9]*"' benchmark/build/test-results/test/*AttributeGrowthIT*.xml
+```
+
+## 8. What one event costs, by kind — and what the live corpus is made of
+
+Asked after §7: does it matter WHICH events a deployment imports, in particular
+trust assertions vs search-indexed events vs events with no search columns?
+Measured with `KindCostIT` (`benchmark/`): each event shape is fed into one
+container in turn (100k each; 20k for the two heavy shapes), and its cost is the
+increase it adds, divided by its count. Attribute RAM is `usedBytes`, summed over
+every attribute and the meta store; reading allocated bytes would land the #206
+growth steps on whichever shape crossed one. Disk is read by `du` after a forced
+flush.
+
+```bash
+./gradlew :benchmark:test -Pintegration -DitKindDocs=100000 --tests '*KindCostIT*'
+```
+
+| shape (synthetic) | attribute RAM | document store (disk) | text index (disk) |
+|---|---:|---:|---:|
+| kind 30382 trust assertion | 336 B | 110 B | 13 B |
+| kind 1059 gift wrap | 345 B | 1,647 B | 59 B |
+| kind 6 repost | 359 B | 395 B | — |
+| kind 1 note, ~40 words, 0–3 tags **[search]** | 359 B | 929 B | 910 B |
+| kind 9735 zap receipt | 382 B | 691 B | 38 B |
+| kind 7 reaction (`e`, `p`) | 451 B | 184 B | 10 B |
+| kind 30023 article, ~400 words **[search]** | 665 B | 8,224 B | 8,169 B |
+| kind 0 profile, 15-word bio, nip05, lud16 **[search]** | 900 B | 525 B | 683 B |
+| kind 3 contact list, 150 `p` | 2,522 B | 6,164 B | 144 B |
+
+These are `used` bytes. Add the growth reserve on top (§7, 9–25%), plus each
+node's fixed baseline.
+
+What the rows say:
+
+- **RAM is a per-DOCUMENT cost, not a per-kind one.** Every document pays ~100 B
+  for `id` (a 64-hex value with no repeats, plus its hash dictionary entry),
+  ~44 B of meta store, and a slot in every attribute, whatever it holds. A unique
+  tag value costs ~120–135 B (`tag_index`: enum store, hash dictionary, posting
+  list; a trust assertion's `d:<subject>`, a reaction's `e:<id>`). A tag value
+  shared with other documents costs ~14 B (the 150 `p` tags
+  of a contact list, drawn from a 20k-author pool). Kinds differ by their tags.
+  Text barely moves RAM.
+- **Search indexing costs disk, not RAM.** A searchable note costs no more
+  attribute RAM than a reaction. Its text lives in the document store and the
+  disk index, which are mmap'd and served from the page cache: ~1.8 KB of disk
+  per note and ~16 KB per article, against ~200 B for a reaction. The
+  exceptions are profiles and titled kinds, whose name and title words also go
+  into the near-tier attribute columns (`affil_tokens`, `name_near`,
+  `search_primary_near`). A profile's bio, nip05, lud16 and website feed
+  `affil_tokens`, 382 B of the 900.
+- **A trust assertion is the cheapest event, plus a cost no other kind has.**
+  Fed through the store with its provider enrolled by a 10040, a card also
+  writes a cell into its subject's `reputation` document. That document type is
+  `global`: every content node holds all of it, so adding nodes does not shrink
+  it.
+
+| through the store, per card | event RAM | reputation RAM (on EVERY node) |
+|---|---:|---:|
+| provider 1, 100k new subjects (a new reputation document each) | 355 B | 176 B |
+| provider 2, same subjects (2nd cell each) | 240 B | 13 B |
+| providers 3–50, 20k of those subjects (to 50 cells each) | 254 B | 24 B |
+
+  A card about a subject other cards already name is cheaper as an event
+  (~250 B), because its `d:<subject>` tag value is shared. Its reputation cell
+  stays at ~24 B up to 50 cells per subject. Staging can hold more cells per
+  subject than that (1,550 enrolled services), and that density is not
+  measured.
+
+### 8.1 The live corpus, by kind
+
+COUNTs against the live relay (read-only, `include:spam`), 2026-11-11:
+816.6M events.
+
+| kind | events | share | est. attribute RAM, whole cluster |
+|---|---:|---:|---:|
+| 1 note **[search]** | 264.2M | 32.4% | 88 GiB |
+| **30382 trust assertion** | **291.1M** | **35.6%** | **68 GiB** (at ~250 B) |
+| 0 profile **[search]** | 66.8M | 8.2% | 56 GiB |
+| 5 deletion | 80.7M | 9.9% | 34 GiB (assumed reaction-shaped) |
+| 3 contact list | 8.5M | 1.0% | 20 GiB (assumed 150 `p`) |
+| 6 repost | 32.6M | 4.0% | 11 GiB |
+| 30383 / 10002 / 7 / 9735 | 14.0 / 12.9 / 10.8 / 7.0M | 5.5% | 16 GiB |
+| everything else | 28.0M | 3.4% | ~10 GiB (at ~400 B) |
+| **total** | **816.6M** | | **~303 GiB, ~76 GiB per node at 4 nodes** |
+
+Staging reports 291 GiB of attributes used across its four nodes (#206). The
+model lands within ~4% of that, close enough to rank the categories.
+
+**Trust assertions.** 1,618 kind-10040 lists name 1,550 distinct 30382
+services. **199.3M of the 291.1M cards are signed by one of them**, and each
+becomes a reputation cell: ~199M × 24 B ≈ **4.5 GiB on every node**, plus
+~176 B per distinct subject. That cost does not fall as nodes are added. The
+other **91.8M cards come from services no list names**. They project nothing
+and cost only their event RAM: ~21 GiB cluster-wide at ~250 B, **~5 GiB per
+node at 4 nodes**, about 14M documents of growth headroom per node (§7).
+`sweepOrphanScores()` deletes exactly those. It runs only on request, and it
+refuses when no 10040 is readable. Be careful: a later 10040 naming one of
+those services would find none of its cards stored, so its lens would rank
+from nothing until the cards are fetched again.
+
+**Search-indexed vs not.** Notes and profiles, the search-indexed bulk, are
+~40% of events and ~48% of attribute RAM, profiles being the expensive part.
+Taking a kind out of search would save its disk and page-cache share, not its
+attribute RAM, except for the near-tier columns of profiles and titled kinds.
+
+**Deletions** (kind 5, 80.7M, ~10% of documents) are load-bearing: NIP-09
+enforcement reads them to refuse re-insertion of what they deleted.
+
+Not established: real tag counts per kind (the contact-list and deletion rows
+are assumptions), and reputation cost at staging's cell density. Two read-only
+queries on staging settle both, the per-attribute state API from §7.3 and its
+reputation equivalent:
+
+```bash
+curl -s localhost:19113/state/v1/custom/component/documentdb/reputation/subdb/ready/attribute/influence_scores \
+  | jq '.status.memoryUsage'
 ```
