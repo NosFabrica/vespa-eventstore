@@ -316,6 +316,39 @@ data class EventQuery(
      * false positive — "projected" when it is not — that would matter.
      */
     val sampled: Boolean = false,
+    /**
+     * THIS READ IS SERVED TO A CLIENT AND DERIVES NOTHING, so the part of the
+     * corpus the engine CAN reach is a better answer than none.
+     *
+     * The case it exists for: a content node goes offline. Its documents have
+     * no live searchable replica (redundancy 1, or `searchable-copies` below
+     * redundancy while the survivors index theirs), and every response comes
+     * back below 100% with `non-ideal-state` set until the node returns or
+     * the replicas are ready. Refusing those (the read path's default) turned
+     * a quarter of the corpus going dark into every REQ and NIP-50 search
+     * failing. Production, 2026-11: 75% over 624M documents, one of four
+     * nodes down, and search answering nothing at all.
+     *
+     * What it accepts is the CLUSTER missing documents, and only that:
+     * `non-ideal-state`, or a coverage shortfall with no reason named, over
+     * at least one searched document. Never the engine cutting the match set
+     * on a profile that did not ask for it (`match-phase`), giving up
+     * (`timeout`, `adaptive-timeout`, `anntimeout`), a node that answered
+     * with errors, or a response that searched nothing. Those still refuse,
+     * and the refusal is labelled by what refused it, so a `match-phase` cut
+     * during a node outage still reaches the fallback it takes otherwise.
+     *
+     * ONLY FOR READS WHOSE ANSWER GOES TO A READER AND NOWHERE ELSE. The store
+     * stamps it on the pages it serves (`PageAssembly`'s recall, splices and
+     * rerank) when the consumer installed the store's `AcceptPartial` around
+     * the read, and on nothing else: not dedup, NIP-09/62, the trust
+     * projection or the provider map, which decide by "did the query find it"
+     * and would write a wrong answer down, and not NIP-45, whose answer is a
+     * number a partial corpus gets wrong rather than short. The engine records every
+     * such answer it serves in `DegradedReads` (`served`), so a cluster
+     * running partial stays visible. [complete] outranks it.
+     */
+    val acceptsPartial: Boolean = false,
 ) {
     /**
      * [idPrefix] as every compiler of this query emits it — lowercased, since
@@ -336,6 +369,8 @@ data class VespaQuery(
     val complete: Boolean = false,
     /** [EventQuery.sampled], carried to the response check: accept a match-phase cut, because a subset answers this read. */
     val sampled: Boolean = false,
+    /** [EventQuery.acceptsPartial], carried to the response check: serve what a cluster missing documents could still search. */
+    val acceptsPartial: Boolean = false,
     /**
      * WHICH CLAUSE KINDS this query carried — never their values. The
      * discriminator [DegradedReads] and the cost ledger key a tally by, and the

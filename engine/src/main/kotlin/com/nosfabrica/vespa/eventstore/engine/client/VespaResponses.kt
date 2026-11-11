@@ -277,34 +277,69 @@ internal class SearchCoverage(
      * One exception: [allowMatchPhase], for the match-phase profiles that ASK
      * for the cut and verify or rerun the page themselves. The question asked is
      * Vespa's own `isDegraded()`, not its `full` — see [undegraded].
+     *
+     * And one more, [acceptsPartial], for the reads that serve a client and
+     * write nothing down (`EventQuery.acceptsPartial`): a cluster MISSING
+     * documents (a node offline, replicas not yet ready) is served there,
+     * because the reachable part of the corpus is the best answer that exists
+     * until the node returns.
      */
-    fun requireComplete(allowMatchPhase: Boolean = false) {
-        if (undegraded) return
+    fun requireComplete(
+        allowMatchPhase: Boolean = false,
+        acceptsPartial: Boolean = false,
+    ) {
+        refusal(allowMatchPhase, acceptsPartial)?.let { throw it }
+    }
+
+    /**
+     * [requireComplete]'s verdict without the throw: null when this response
+     * may be served under those allowances, else the [PartialAnswer] it is
+     * refused with. One decision, so what a caller books as refused and what
+     * it actually refuses cannot disagree.
+     */
+    fun refusal(
+        allowMatchPhase: Boolean = false,
+        acceptsPartial: Boolean = false,
+    ): PartialAnswer? {
+        if (undegraded) return null
         // Vespa lists every degradation flag, false ones included — judge by
         // the flags actually SET.
-        val set = degraded?.mapValues { (it.value as? JsonPrimitive)?.content == "true" }.orEmpty()
-        val onlyMatchPhase = set["match-phase"] == true && set.none { (flag, on) -> on && flag != "match-phase" }
-        if (!(allowMatchPhase && onlyMatchPhase)) {
-            // `full` rides along because a refused response that calls itself
-            // full is the confusing one, and naming the contradiction beats
-            // making the next reader rediscover the two denominators.
-            throw PartialAnswer(
-                degradation =
-                    set
-                        .filterValues { it }
-                        .keys
-                        .sorted()
-                        .joinToString("+")
-                        .ifEmpty { "coverage" },
-                message =
-                    "vespa searched only $coverage% of the corpus over $documents document(s) (full: $full, degraded: ${degraded ?: "unspecified"}); " +
-                        "the response is a PARTIAL answer, not a small one, so it is refused rather than returned. " +
-                        "match-phase means the ENGINE cut the match set and will not clear itself; non-ideal-state is a cluster " +
-                        "still settling and will. DegradedReads carries which, per profile and query shape.",
-            )
-        }
+        val set = setFlags
+        val tolerated = HashSet<String>(2)
+        if (allowMatchPhase) tolerated += PartialAnswer.MATCH_PHASE
+        // A cluster missing documents, never one that searched NOTHING: an
+        // answer over zero documents is every node gone, not part of the
+        // corpus, and served it would read as "nothing matched".
+        val missingOnly = acceptsPartial && documents > 0
+        if (missingOnly) tolerated += NON_IDEAL_STATE
+        val unaccepted = set - tolerated
+        // A bare shortfall (no flag named) is the cluster missing documents
+        // too, so it rides on that allowance and only on that one: the
+        // match-phase carve-out has never covered a shortfall it does not name.
+        if (unaccepted.isEmpty() && (set.isNotEmpty() || missingOnly)) return null
+        // `full` rides along because a refused response that calls itself
+        // full is the confusing one, and naming the contradiction beats
+        // making the next reader rediscover the two denominators.
+        return PartialAnswer(
+            // Labelled by what REFUSED it: on a read that accepts a missing
+            // node, a match-phase cut beside `non-ideal-state` is still the
+            // cut, and the callers that rerun a cut key on the label.
+            degradation =
+                (if (missingOnly) unaccepted else set)
+                    .sorted()
+                    .joinToString("+")
+                    .ifEmpty { "coverage" },
+            message =
+                "vespa searched only $coverage% of the corpus over $documents document(s) (full: $full, degraded: ${degraded ?: "unspecified"}); " +
+                    "the response is a PARTIAL answer, not a small one, so it is refused rather than returned. " +
+                    "match-phase means the ENGINE cut the match set and will not clear itself; non-ideal-state is a cluster " +
+                    "still settling and will. DegradedReads carries which, per profile and query shape.",
+        )
     }
 }
+
+/** Vespa's flag for documents the ideal state expects that are not active anywhere: a node down, replicas not yet ready. */
+private const val NON_IDEAL_STATE = "non-ideal-state"
 
 @Serializable
 internal class SearchHit(

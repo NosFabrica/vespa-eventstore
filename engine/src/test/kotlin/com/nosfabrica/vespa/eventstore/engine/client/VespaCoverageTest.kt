@@ -24,9 +24,13 @@ import com.nosfabrica.vespa.eventstore.engine.MockVespaEngine
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
 
@@ -271,4 +275,81 @@ class VespaCoverageTest {
                 "timeout degradation must not slip through the match-phase carve-out",
             )
         }
+
+    /**
+     * A content node OFFLINE: its documents have no live searchable replica,
+     * so every response is `non-ideal-state` below 100% until it returns. A
+     * read that only serves a client ([EventQuery.acceptsPartial]) is answered
+     * from what the cluster could still search, on both funnels and both
+     * shapes (the limit'd feed hydrates its id-first page under the same
+     * allowance), while the same read without the flag still refuses.
+     */
+    @Test
+    fun `a read that accepts a partial answer is served while a node is missing`() =
+        runBlocking {
+            index.put(doc("1".repeat(64)))
+            mock.nonIdealStateCoverage = true
+
+            assertEquals(1, index.search(EventQuery(limit = 10, acceptsPartial = true)).size, "the limit'd feed is served")
+            assertEquals(1, index.search(EventQuery(acceptsPartial = true)).size, "and so is unlimited recall")
+            assertEquals(1, index.rawSearch(EventQuery(limit = 10, acceptsPartial = true)).size, "and the raw path")
+            assertEquals(1, index.count(EventQuery(acceptsPartial = true)), "the grouping funnel honours it too")
+            assertTrue(runCatching { index.search(EventQuery(limit = 10)) }.isFailure, "without the flag it is still refused")
+        }
+
+    /** The allowance is for a cluster MISSING documents; the engine giving up is still a refusal. */
+    @Test
+    fun `accepting a partial answer does not accept a timeout`() =
+        runBlocking {
+            index.put(doc("1".repeat(64)))
+            mock.degradeCoverage = "timeout"
+
+            val refused = runCatching { index.search(EventQuery(acceptsPartial = true)) }.exceptionOrNull()
+            assertEquals("timeout", (refused as? PartialAnswer)?.degradation, "refused, and labelled by the timeout: $refused")
+        }
+
+    /** A content node the container could not reach answers as an EMPTY corpus; no allowance serves that. */
+    @Test
+    fun `accepting a partial answer does not accept a backend error`() =
+        runBlocking {
+            index.put(doc("1".repeat(64)))
+            mock.contentUnreachable = true
+
+            val refused = runCatching { index.search(EventQuery(acceptsPartial = true)) }.exceptionOrNull()
+            assertEquals(PartialAnswer.ERRORS, (refused as? PartialAnswer)?.degradation, "refused on its errors: $refused")
+        }
+
+    /**
+     * The verdict itself, on the shapes the mock cannot compose: a response
+     * that searched NOTHING is every node gone, not part of the corpus; and a
+     * match-phase cut beside `non-ideal-state` on a read that accepts a missing
+     * node is refused AS the cut, so the callers that rerun a cut still do.
+     */
+    @Test
+    fun `the partial allowance covers a missing node and nothing else`() {
+        fun cov(
+            coverage: Int,
+            documents: Long,
+            vararg flags: String,
+        ) = SearchCoverage(
+            full = false,
+            coverage = coverage,
+            nodes = 3,
+            degraded = if (flags.isEmpty()) null else buildJsonObject { flags.forEach { put(it, JsonPrimitive(true)) } },
+            documents = documents,
+        )
+
+        val missing = cov(75, 624_268_162, "non-ideal-state")
+        assertNull(missing.refusal(acceptsPartial = true), "the production shape is served")
+        assertNotNull(missing.refusal(), "and still refused by default")
+        assertNull(cov(97, 10).refusal(acceptsPartial = true), "a bare shortfall is the same missing documents")
+        assertNotNull(cov(97, 10).refusal(allowMatchPhase = true), "but the match-phase carve-out alone never covered it")
+        assertEquals("non-ideal-state", cov(0, 0, "non-ideal-state").refusal(acceptsPartial = true)?.degradation, "searching nothing is not part of the corpus")
+
+        val both = cov(40, 1_000, "match-phase", "non-ideal-state")
+        assertNull(both.refusal(allowMatchPhase = true, acceptsPartial = true), "a recency profile's own cut, on a missing node, is served")
+        val cut = assertNotNull(both.refusal(acceptsPartial = true), "a cut the profile did not ask for is refused")
+        assertTrue(cut.cutByMatchPhase, "labelled as the cut alone, so its rerun fallback runs: ${cut.degradation}")
+        assertEquals("match-phase+non-ideal-state", both.refusal()?.degradation, "a strict read keeps the full label")
+    }
 }
