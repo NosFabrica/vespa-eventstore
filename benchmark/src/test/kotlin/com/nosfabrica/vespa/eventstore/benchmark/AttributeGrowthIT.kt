@@ -33,6 +33,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -46,6 +47,7 @@ import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.wait.strategy.Wait
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.time.Duration
 import java.util.SplittableRandom
 import java.util.concurrent.atomic.AtomicBoolean
@@ -285,6 +287,7 @@ class AttributeGrowthIT {
                 running.set(false)
                 sampler.join()
                 printComponents(label, checkpoints.last())
+                writeReserveRatios(label, checkpoints)
                 Run(label, override, served, checkpoints)
             }
     }
@@ -588,6 +591,70 @@ class AttributeGrowthIT {
         }
     }
 
+    /**
+     * Each STRUCTURE's reserve as a share of what it uses — `(allocated - used) /
+     * used` per `attribute :: component` — averaged over the checkpoints of the
+     * run's last two thirds (the first third is dominated by minimum buffer sizes).
+     * A structure's reserve is a sawtooth: right after a step it holds the whole
+     * step free, just before the next one almost nothing, so one reading says where
+     * the cycle happened to be, and only the average over many says what the rule
+     * costs. The mean is what a kind's used bytes in that structure carry as
+     * reserve; the max is the worst point of the cycle that was observed.
+     * `benchmark/reserve_by_kind.py` joins this with `KindCostIT`'s per-kind use.
+     */
+    private fun writeReserveRatios(
+        label: String,
+        checkpoints: List<Checkpoint>,
+    ) {
+        val window = checkpoints.drop(checkpoints.size / 3)
+        val keys =
+            window
+                .last()
+                .attributes
+                .flatMap { (a, m) -> m.components.keys.map { c -> "$a :: $c" } }
+        val rows =
+            keys.mapNotNull { key ->
+                val (a, c) = key.split(" :: ")
+                val ratios =
+                    window.mapNotNull { cp ->
+                        cp.attributes[a]?.components?.get(c)?.let { (alloc, used) ->
+                            if (used > 0 && alloc >= used) (alloc - used).toDouble() / used else null
+                        }
+                    }
+                val last =
+                    window
+                        .last()
+                        .attributes[a]
+                        ?.components
+                        ?.get(c) ?: return@mapNotNull null
+                if (ratios.isEmpty() || last.second < 1L shl 20) return@mapNotNull null
+                key to listOf(ratios.average(), ratios.min(), ratios.max(), last.first.toDouble(), last.second.toDouble())
+            }
+        println("\n$label — reserve / used per structure over the last ${window.size} checkpoints (structures using >= 1 MiB):")
+        for ((key, v) in rows.sortedByDescending { it.second[4] }) {
+            println(String.format("  %-48s mean %5.1f%%  min %5.1f%%  max %6.1f%%   used %9s", key, 100 * v[0], 100 * v[1], 100 * v[2], mib(v[4].toLong())))
+        }
+        val json =
+            JsonObject(
+                rows.associate { (key, v) ->
+                    key to
+                        JsonObject(
+                            mapOf(
+                                "mean" to JsonPrimitive(v[0]),
+                                "min" to JsonPrimitive(v[1]),
+                                "max" to JsonPrimitive(v[2]),
+                                "allocated" to JsonPrimitive(v[3].toLong()),
+                                "used" to JsonPrimitive(v[4].toLong()),
+                            ),
+                        )
+                },
+            )
+        val out = File("build/measurements/attribute-growth-${label.replace(' ', '-')}.json")
+        out.parentFile.mkdirs()
+        out.writeText(json.toString())
+        println("  written: ${out.absolutePath}")
+    }
+
     private fun compare(runs: List<Run>) {
         if (runs.size < 2) return
         println("\n" + "=".repeat(78) + "\nfinal checkpoint, allocated MiB per attribute, by variant\n" + "=".repeat(78))
@@ -730,7 +797,7 @@ class AttributeGrowthIT {
         const val UNATTRIBUTED = "unattributed (total-parts)"
         const val CHUNK = 2_000
         const val FEEDERS = 4
-        const val CHECKPOINTS = 10
+        const val CHECKPOINTS = 30
         const val SAMPLE_MILLIS = 500L
         const val SETTLE_MILLIS = 3_000L
         const val SETTLE_TRIES = 20

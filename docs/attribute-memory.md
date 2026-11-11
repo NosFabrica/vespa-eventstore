@@ -754,3 +754,95 @@ reputation equivalent:
 curl -s localhost:19113/state/v1/custom/component/documentdb/reputation/subdb/ready/attribute/influence_scores \
   | jq '.status.memoryUsage'
 ```
+
+### 8.2 Which kinds hold the growth reserve, and how much each makes memory grow
+
+The §7 reserve belongs to STRUCTURES, not kinds: each attribute's enum store,
+dictionary, multi-value arrays, posting lists and document vector grows by its
+own rule, and every kind writing into a structure shares that structure's
+reserve. Every step is proportional to the structure's size, so a kind's part
+of the reserve is what it adds to each structure, times that structure's
+reserve ratio. The ratio is (allocated − used) / used, averaged over the
+sawtooth, because one reading only shows where in the cycle the structure
+happened to be. The same number answers the second question: one document of a
+kind makes memory grow by its used bytes plus its reserve.
+
+Three sources feed it:
+
+- **Per-structure ratios:** `AttributeGrowthIT` at 3M documents, averaged over
+  its last 20 of 30 checkpoints. A structure smaller than 8 MiB in that run sits
+  on its minimum buffer, so it takes its class's ratio instead (all enum stores
+  pooled, and so on).
+- **Per-kind use of each structure:** `KindCostIT`.
+- **Kind counts:** the live relay counts of §8.1.
+
+`benchmark/reserve_by_kind.py` joins them.
+
+| class (pooled, weighted by use) | mean reserve / used | worst observed |
+|---|---:|---:|
+| hash dictionaries (`id`, `pubkey`, `owner`, `tag_index`) | 72% | 141% |
+| multi-value arrays | 22% | 34% |
+| document vectors + meta store | 17% | 40% |
+| posting lists | 12% | 24% |
+| enum-store values | 10% | 20% |
+
+The hash dictionaries are the outlier. Their capacity triples when a shard
+fills (§7.2), so a kind's reserve depends mostly on how many NEW unique values
+it adds to `id` (every document) and `tag_index` (a never-seen tag value).
+
+| kind | events | used B/doc | reserve B/doc (worst) | reserve GiB per node | share |
+|---|---:|---:|---:|---:|---:|
+| 1 note [search] | 264.2M | 358 | 60 (123) | 3.69 | 29% |
+| **30382 trust assertion (event)** | **291.1M** | **240** | **40 (83)** | **2.70** | **21%** |
+| 0 profile [search] | 66.8M | 901 | 166 (328) | 2.59 | 20% |
+| 5 deletion (assumed reaction-shaped) | 80.7M | 452 | 77 (156) | 1.44 | 11% |
+| 3 contact list (assumed 150 `p`) | 8.5M | 2,524 | 382 (628) | 0.75 | 6% |
+| 6 repost | 32.6M | 359 | 63 (130) | 0.48 | 4% |
+| **30382 → reputation cells (global, every node)** | **199.3M** | **22** | **2 (4)** | **0.38** | **3%** |
+| 10002 / 30383 / 7 / 9735 | 44.7M | 336–452 | 65–77 | 0.74 | 6% |
+| **these kinds (96.5% of events), 4 nodes** | | | | **12.8 GiB** | |
+
+**Check against staging:** #206 measured 8.0–12.9 GiB of allocated − used on
+its four nodes at one moment (mean 11.5 GiB). The time-averaged 12.8 GiB here
+sits at the top of that range. That is consistent: a single reading lands
+anywhere in the sawtooth, and the average includes the hash dictionaries' long
+stretches just after a step.
+
+What it says:
+
+- **Per byte used, kinds are alike:** every kind carries 15–18% of its use as
+  reserve. Kinds differ in reserve because they differ in USE. The single
+  largest reserve item for most kinds is the same 8 B per document of `id`'s
+  hash dictionary.
+- **Trust assertions are the cheapest event per document (40 B of reserve,
+  280 B of growth all told) but the most numerous**, so they hold 21% of the
+  reserve, 2.7 GiB per node. The 91.8M cards from services no 10040 names
+  (§8.1) hold ~0.85 GiB of it. Their reputation cells add almost nothing to the
+  reserve (2 B per cell), though that small cost sits on every node.
+- **Profiles carry the most reserve per document among the common kinds**
+  (166 B). Their near-tier columns are multi-value arrays (22%), and each
+  profile is a new author, adding new values to `pubkey`'s and `owner`'s
+  dictionaries.
+- **Growth per million new events, cluster-wide:**
+
+  | kind | growth per 1M events |
+  |---|---:|
+  | trust assertions | ~0.26 GiB, plus ~0.02 GiB per node of reputation if enrolled |
+  | notes | ~0.39 GiB |
+  | reactions / deletions | ~0.49 GiB |
+  | profiles | ~1.0 GiB |
+  | contact lists | ~2.7 GiB |
+
+  Split across 4 nodes, except the reputation part.
+
+Not established: the ratios are measured at 3M documents, and a hash shard's
+step is far longer at staging's ~200M per node. Rows marked "assumed" use a
+stand-in shape. The reputation tensors' ratio is the 20% rule, not measured.
+
+```bash
+./gradlew :benchmark:test -Pintegration -DitGrowDocs=3000000 -DitGrowVariants=stock --tests '*AttributeGrowthIT*'
+./gradlew :benchmark:test -Pintegration -DitKindDocs=100000 --tests '*KindCostIT*'
+python3 benchmark/reserve_by_kind.py \
+    --growth benchmark/build/measurements/attribute-growth-stock.json \
+    --kinds benchmark/build/measurements/kind-cost.json --nodes 4
+```

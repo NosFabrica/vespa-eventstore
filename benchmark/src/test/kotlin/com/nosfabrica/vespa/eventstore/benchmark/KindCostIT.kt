@@ -37,7 +37,9 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -49,6 +51,7 @@ import org.junit.jupiter.api.Test
 import org.testcontainers.DockerClientFactory
 import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.wait.strategy.Wait
+import java.io.File
 import java.time.Duration
 import java.util.SplittableRandom
 import kotlin.test.assertTrue
@@ -126,7 +129,8 @@ class KindCostIT {
                     assertTrue(r.stored >= r.fed * 0.99, "${r.shape.label}: fed ${r.fed}, stored ${r.stored} — the generator is minting duplicates")
                 }
 
-                trustPhase(vespa, queryUrl, "http://${vespa.host}:${vespa.getMappedPort(CONFIG_PORT)}", perShape!!)
+                val trust = trustPhase(vespa, queryUrl, "http://${vespa.host}:${vespa.getMappedPort(CONFIG_PORT)}", perShape!!)
+                writeResults(rows, trust)
             }
     }
 
@@ -151,6 +155,8 @@ class KindCostIT {
         val attrUsed: Map<String, Long>,
         val docStoreDisk: Long,
         val indexDisk: Long,
+        /** Used bytes per STRUCTURE (`attribute :: component`), the unit a growth rule applies to. */
+        val structUsed: Map<String, Long> = emptyMap(),
     )
 
     private inner class Row(
@@ -166,6 +172,12 @@ class KindCostIT {
         val ramPerDoc = (after.attrUsed.values.sum() - before.attrUsed.values.sum()).toDouble() / stored
         val docStorePerDoc = (after.docStoreDisk - before.docStoreDisk).toDouble() / stored
         val indexPerDoc = (after.indexDisk - before.indexDisk).toDouble() / stored
+
+        /** Used bytes per document this shape added to each structure. */
+        fun perStructure(): Map<String, Double> =
+            (after.structUsed.keys + before.structUsed.keys).associateWith {
+                ((after.structUsed[it] ?: 0) - (before.structUsed[it] ?: 0)).toDouble() / stored
+            }
 
         fun top(k: Int) =
             after.attrUsed.keys
@@ -207,10 +219,10 @@ class KindCostIT {
             if (inMemory == 0L) return@repeat
             Thread.sleep(1_000)
         }
-        var last = attrUsed(vespa, docType)
+        var last = attrState(vespa, docType)
         repeat(20) {
             Thread.sleep(3_000)
-            val next = attrUsed(vespa, docType)
+            val next = attrState(vespa, docType)
             if (next == last) return read(vespa, docType, next)
             last = next
         }
@@ -220,15 +232,18 @@ class KindCostIT {
     private fun read(
         vespa: GenericContainer<*>,
         docType: String,
-        attrs: Map<String, Long>,
+        state: Map<String, JsonObject>,
     ): Snapshot {
+        val attrs = state.mapNotNull { (n, o) -> used(o)?.let { n to it } }.toMap()
+        val structs = HashMap<String, Long>()
+        for ((n, o) in state) structures(o)?.forEach { (c, u) -> structs["$n :: $c"] = u }
         val ready =
             Json
                 .parseToJsonElement(exec(vespa, "curl -sf $STATE/documentdb/$docType"))
                 .jsonObject["documents"]!!
                 .jsonObject["ready"]!!
                 .jsonPrimitive.long
-        return Snapshot(ready, attrs, du(vespa, docType, "summary"), du(vespa, docType, "index"))
+        return Snapshot(ready, attrs, du(vespa, docType, "summary"), du(vespa, docType, "index"), structs)
     }
 
     private fun du(
@@ -239,10 +254,10 @@ class KindCostIT {
 
     private fun ready(docType: String) = "$STATE/documentdb/$docType/subdb/ready"
 
-    private fun attrUsed(
+    private fun attrState(
         vespa: GenericContainer<*>,
         docType: String,
-    ): Map<String, Long> {
+    ): Map<String, JsonObject> {
         val base = ready(docType)
         val names =
             Json
@@ -255,11 +270,51 @@ class KindCostIT {
                 for (n in names) append(" curl -sf $base/attribute/$n; echo;")
             }
         val lines = exec(vespa, script).lines().filter { it.isNotBlank() }
-        val out = LinkedHashMap<String, Long>()
-        (listOf("(document meta store)") + names).zip(lines).forEach { (n, line) ->
-            used(Json.parseToJsonElement(line).jsonObject)?.let { out[n] = it }
+        val out = LinkedHashMap<String, JsonObject>()
+        (listOf(META_STORE) + names).zip(lines).forEach { (n, line) ->
+            val o = Json.parseToJsonElement(line).jsonObject
+            if (used(o) != null) out[n] = o
         }
         return out
+    }
+
+    /**
+     * Used bytes by component, named as `AttributeGrowthIT` names them so the two
+     * measurements join on the same keys: the enum store's values and dictionary,
+     * the multi-value arrays, the posting store, and what the named parts leave
+     * (the per-document vector on a single-value attribute; the whole lid table on
+     * the meta store). Clamped at zero: on a multi-value attribute the named parts
+     * overlap, and a negative remainder is not a structure.
+     */
+    private fun structures(state: JsonObject): Map<String, Long>? {
+        val total = used(state) ?: return null
+        val parts = LinkedHashMap<String, Long>()
+
+        fun part(
+            name: String,
+            o: JsonObject?,
+        ) {
+            o
+                ?.get("used")
+                ?.jsonPrimitive
+                ?.longOrNull
+                ?.let { parts[name] = it }
+        }
+        val enumStore = state["enumStore"]?.jsonObject
+        part("enum values", enumStore?.get("valuesMemoryUsage")?.jsonObject)
+        part("dictionary", enumStore?.get("dictionaryMemoryUsage")?.jsonObject)
+        part("multi-value", state["multiValue"]?.jsonObject?.get("memoryUsage")?.jsonObject)
+        part(
+            "postings",
+            state["posting_store"]
+                ?.jsonObject
+                ?.get("memory_usage")
+                ?.jsonObject
+                ?.get("total")
+                ?.jsonObject,
+        )
+        parts[UNATTRIBUTED] = (total - parts.values.sum()).coerceAtLeast(0)
+        return parts
     }
 
     private fun used(state: JsonObject): Long? =
@@ -325,7 +380,8 @@ class KindCostIT {
         queryUrl: String,
         configUrl: String,
         n: Int,
-    ) {
+    ): List<TrustPass> {
+        val results = ArrayList<TrustPass>()
         val subjects = SplittableRandom(99).let { r -> List(n) { hex(r, 64) } }
         val dense = SplittableRandom(98).let { r -> List(DENSE_PROVIDERS) { hex(r, 64) } }
         val passes =
@@ -380,6 +436,13 @@ class KindCostIT {
                         val evAfter = snapshot(vespa)
                         val repAfter = snapshot(vespa, "reputation")
                         val cards = (signers.size * about.size).toDouble()
+                        results +=
+                            TrustPass(
+                                label,
+                                cards.toLong(),
+                                perCard(evBefore, evAfter, cards),
+                                perCard(repBefore, repAfter, cards),
+                            )
                         println(
                             String.format(
                                 "  %-48s %8.0f B %10.0f B %14.0f B %10.0f B   (reputation docs %,d -> %,d)",
@@ -395,6 +458,72 @@ class KindCostIT {
                     }
                 }
             }
+        return results
+    }
+
+    private class TrustPass(
+        val label: String,
+        val cards: Long,
+        val event: Map<String, Double>,
+        val reputation: Map<String, Double>,
+    )
+
+    private fun perCard(
+        before: Snapshot,
+        after: Snapshot,
+        cards: Double,
+    ): Map<String, Double> =
+        (after.structUsed.keys + before.structUsed.keys).associateWith {
+            ((after.structUsed[it] ?: 0) - (before.structUsed[it] ?: 0)) / cards
+        }
+
+    /**
+     * The per-structure figures as JSON, for `benchmark/reserve_by_kind.py` to join
+     * with `AttributeGrowthIT`'s per-structure reserve ratios and a corpus's kind
+     * counts. Written under the module's build directory.
+     */
+    private fun writeResults(
+        rows: List<Row>,
+        trust: List<TrustPass>,
+    ) {
+        fun obj(m: Map<String, Double>) = JsonObject(m.filterValues { it != 0.0 }.mapValues { JsonPrimitive(it.value) })
+        val json =
+            JsonObject(
+                mapOf(
+                    "shapes" to
+                        JsonObject(
+                            rows.associate { r ->
+                                r.shape.name to
+                                    JsonObject(
+                                        mapOf(
+                                            "kind" to JsonPrimitive(r.shape.kind),
+                                            "label" to JsonPrimitive(r.shape.label),
+                                            "stored" to JsonPrimitive(r.stored),
+                                            "searchable" to JsonPrimitive(r.searchable),
+                                            "used_per_doc" to obj(r.perStructure()),
+                                        ),
+                                    )
+                            },
+                        ),
+                    "trust" to
+                        JsonArray(
+                            trust.map { t ->
+                                JsonObject(
+                                    mapOf(
+                                        "label" to JsonPrimitive(t.label),
+                                        "cards" to JsonPrimitive(t.cards),
+                                        "event_used_per_card" to obj(t.event),
+                                        "reputation_used_per_card" to obj(t.reputation),
+                                    ),
+                                )
+                            },
+                        ),
+                ),
+            )
+        val out = File("build/measurements/kind-cost.json")
+        out.parentFile.mkdirs()
+        out.writeText(json.toString())
+        println("\nper-structure results: ${out.absolutePath}")
     }
 
     // ---- the shapes -------------------------------------------------------------
@@ -532,6 +661,8 @@ class KindCostIT {
         val AUTHORS: List<String> = SplittableRandom(7).let { r -> List(20_000) { hex(r, 64) } }
         val SERVICES: List<String> = SplittableRandom(8).let { r -> List(20) { hex(r, 64) } }
         val OBSERVER = "c".repeat(64)
+        const val META_STORE = "(document meta store)"
+        const val UNATTRIBUTED = "unattributed (total-parts)"
         const val DENSE_PROVIDERS = 48
         const val DENSE_SUBJECTS = 20_000
 
