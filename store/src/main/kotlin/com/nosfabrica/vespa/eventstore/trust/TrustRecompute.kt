@@ -81,6 +81,12 @@ internal class TrustRecompute(
      */
     suspend fun delegations(): Delegations = providers.delegations()
 
+    /** [providerMap] for a read served partial: survives a degraded cluster with a cold cache (see [ProviderMap.servingTrust]). */
+    suspend fun servingProviderMap(): TrustProviders = providers.servingTrust()
+
+    /** [delegations] for a read served partial, off the same pass as [servingProviderMap]. */
+    suspend fun servingDelegations(): Delegations = providers.servingDelegations()
+
     /**
      * Drop the cached attribution map after ANY 10040 write or removal — the
      * write paths do it inline (even with the walk deferred); [ProjectionLedger.drain]

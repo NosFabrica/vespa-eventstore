@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.eventstore.engine.client
 
 import com.nosfabrica.vespa.eventstore.engine.MockVespaEngine
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
+import com.nosfabrica.vespa.eventstore.engine.metrics.DegradedReads
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonPrimitive
@@ -352,4 +353,32 @@ class VespaCoverageTest {
         assertTrue(cut.cutByMatchPhase, "labelled as the cut alone, so its rerun fallback runs: ${cut.degradation}")
         assertEquals("match-phase+non-ideal-state", both.refusal()?.degradation, "a strict read keeps the full label")
     }
+
+    /** The grouping funnel books what it serves partial (and refuses) the way the page funnel does. */
+    @Test
+    fun `a grouping served partial is booked in DegradedReads`() =
+        runBlocking {
+            index.put(doc("1".repeat(64)))
+            mock.nonIdealStateCoverage = true
+            DegradedReads.reset()
+
+            assertEquals(1, index.count(EventQuery(acceptsPartial = true)))
+            assertTrue(runCatching { index.count(EventQuery()) }.isFailure)
+            val booked = DegradedReads.snapshot().filter { it.flags == "non-ideal-state" }.associate { it.refused to it.count }
+            assertEquals(mapOf(false to 1L, true to 1L), booked, "one served, one refused: ${DegradedReads.line()}")
+        }
+
+    /**
+     * A page past one hydrate chunk reads its documents in concurrent chunks, every one of them
+     * under the recall's allowance: a REQ at the relay's max_limit is three.
+     */
+    @Test
+    fun `a page past one hydrate chunk is served partial too`() =
+        runBlocking {
+            val n = VespaEventIndex.HYDRATE_CHUNK + 50
+            repeat(n) { i -> mock.inner.put(doc(i.toString(16).padStart(64, '0')).copy(createdAt = 1_700_000_000L + i)) }
+            mock.nonIdealStateCoverage = true
+
+            assertEquals(n, index.search(EventQuery(kinds = listOf(1), limit = n, acceptsPartial = true)).size)
+        }
 }

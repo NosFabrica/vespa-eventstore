@@ -50,11 +50,18 @@ import kotlin.coroutines.CoroutineContext
  * timeout, a node answering with errors, or a response that searched nothing
  * still refuse.
  *
- * WHAT IT DOES NOT: the lens and the delegations a read resolves on the way
- * (both cached, so a partial read would outlive the outage), NIP-45 counts (a
- * count over part of the corpus is a wrong number, not a short one),
- * negentropy snapshots, and every write path's own reads, which decide by
- * "did the query find it". Those refuse whatever the context says.
+ * THE LENS: a read with an observer resolves it from the cached provider map.
+ * When that cache is cold (a restart, a 10040 write) and the cluster refuses
+ * the rebuild, the lens comes from the lists it can still search, a pass held
+ * for 30 s and never cached as the real one. An observer whose 10040 is not in
+ * it is refused (`PartialAnswer.LENS`): "no list" and "a list on the node that
+ * is down" read the same, and ranking them as trusting nobody would gate their
+ * page empty.
+ *
+ * WHAT IT DOES NOT: NIP-45 counts (a count over part of the corpus is a wrong
+ * number, not a short one), negentropy snapshots, the live gate, and every
+ * write path's own reads, which decide by "did the query find it". Those
+ * refuse whatever the context says.
  *
  * OPT-IN, and the consumer's call: whether a client gets a partial page or an
  * error is relay policy. A consumer's OWN reads that decide something (does my

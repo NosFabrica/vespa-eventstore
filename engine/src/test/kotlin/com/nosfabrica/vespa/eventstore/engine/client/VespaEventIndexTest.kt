@@ -881,6 +881,37 @@ class VespaEventIndexTest {
         }
 
     /**
+     * A page served off PART of the corpus (a node down, `acceptsPartial`) is thinner than the
+     * shape's real rate, so the memory learns nothing from it: the same narrow shape that is
+     * remembered after one healthy read is still cold after one served partial, and after the
+     * outage too.
+     */
+    @Test
+    fun `speculative learns nothing from a page served partial`() =
+        runBlocking {
+            val now = System.currentTimeMillis() / 1000
+            seedStrategyCorpus(now)
+            VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.SPECULATIVE).use { speculative ->
+                suspend fun sent(q: EventQuery): Int {
+                    val before = mock.searchRequests.size
+                    speculative.search(q)
+                    return mock.searchRequests
+                        .drop(before)
+                        .pageQueries()
+                        .size
+                }
+
+                val narrow = EventQuery(authors = listOf(QUIET), limit = 3, nowSecs = now, acceptsPartial = true)
+                mock.nonIdealStateCoverage = true
+                assertEquals(2, sent(narrow), "cold: one attempt, then the fallback")
+                assertEquals(2, sent(narrow), "a page served partial was not remembered as narrow")
+                mock.nonIdealStateCoverage = false
+                assertEquals(2, sent(narrow), "nor is the shape remembered once the node is back")
+                assertEquals(1, sent(narrow), "a healthy read is remembered as before")
+            }
+        }
+
+    /**
      * PAGE REUSE, widening: a short first window is the newest slice of the
      * answer, so the second attempt asks only for what is strictly older than
      * that window, with only the remaining limit — never re-fetching the 30

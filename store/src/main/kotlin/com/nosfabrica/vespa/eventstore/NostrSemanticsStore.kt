@@ -275,7 +275,10 @@ class NostrSemanticsStore(
      * Map to read and so admits no declaration. Labels are unaffected: NIP-32 is
      * ungated by design, and this gate never applied to them.
      */
-    private suspend fun delegations(): Delegations = (index as? TrustProjection)?.recompute?.delegations() ?: Delegations.NONE
+    private suspend fun delegations(): Delegations {
+        val recompute = (index as? TrustProjection)?.recompute ?: return Delegations.NONE
+        return if (servesPartial()) recompute.servingDelegations() else recompute.delegations()
+    }
 
     /**
      * THE CONNECTION'S OBSERVER, NORMALIZED — lower-cased hex or nothing.
@@ -311,13 +314,22 @@ class NostrSemanticsStore(
         if (queries.none { it.observer != null }) return queries
         val providers = providers() ?: return queries
         return queries.map { q ->
-            val lens = providers.lensOf(q.observer ?: return@map q)
+            val lens = providers.servedLensOf(q.observer ?: return@map q)
             q.copy(rankKey = lens.rank, followersKey = lens.followers)
         }
     }
 
-    /** The projection's cached provider map, or null for a store assembled without it. */
-    private suspend fun providers(): TrustProviders? = (index as? TrustProjection)?.recompute?.providerMap()
+    /**
+     * The projection's cached provider map, or null for a store assembled without it. Under
+     * [AcceptPartial] a cold cache on a degraded cluster resolves from what it can still search.
+     */
+    private suspend fun providers(): TrustProviders? {
+        val recompute = (index as? TrustProjection)?.recompute ?: return null
+        return if (servesPartial()) recompute.servingProviderMap() else recompute.providerMap()
+    }
+
+    /** Whether the caller installed [AcceptPartial] around this read. */
+    private suspend fun servesPartial(): Boolean = coroutineContext[AcceptPartial] != null
 
     /**
      * The live gate's lens lookup, the same `lensOf(observer).rank` [lensed] stamps on a stored read,
@@ -394,7 +406,7 @@ class NostrSemanticsStore(
      * than once per page, because the expansion builds its own queries and
      * this is the one place every one of them passes.
      */
-    private suspend fun served(q: EventQuery): EventQuery = if (!q.acceptsPartial && coroutineContext[AcceptPartial] != null) q.copy(acceptsPartial = true) else q
+    private suspend fun served(q: EventQuery): EventQuery = if (!q.acceptsPartial && servesPartial()) q.copy(acceptsPartial = true) else q
 
     private val bulkRecords = BulkRecordInsert(index, relay, guards)
 
@@ -807,7 +819,7 @@ class NostrSemanticsStore(
             require(limit > 0) { "limit must be positive" }
             val key = observer.lowercase()
             require(Hex.isHexKey(key)) { "observer must be 64-hex" }
-            val lens = providers()?.lensOf(key)
+            val lens = providers()?.servedLensOf(key)
             val service = lens?.rank ?: return@withActivity ScoredSearch(emptyList(), null)
             val cutoff = nowSecs()
             val q =

@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.eventstore.trust
 
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
+import com.nosfabrica.vespa.eventstore.engine.client.PartialAnswer
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ObserverKey
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
@@ -57,6 +58,12 @@ internal data class TrustProviders(
      * this observer.
      */
     val lenses: Map<ObserverKey, Lens> = emptyMap(),
+    /**
+     * Read from PART of the 10040s while a content node is missing
+     * ([ProviderMap.serving]): a lens found here is the observer's own, one
+     * missing may sit on the node that is down. Never cached as a full pass.
+     */
+    val partial: Boolean = false,
 ) {
     /** One observer's resolved providers; null on a dimension their 10040 does not name. */
     data class Lens(
@@ -68,6 +75,22 @@ internal data class TrustProviders(
 
     /** [observer]'s lens, or an empty one for an observer with no stored 10040. */
     fun lensOf(observer: String): Lens = lenses[ObserverKey(observer)] ?: NO_LENS
+
+    /**
+     * [lensOf] for a read about to be served: on a [partial] pass an observer
+     * with no lens is refused, because "no 10040" and "a 10040 on the node that
+     * is down" read the same, and the empty lens would gate their page empty.
+     */
+    fun servedLensOf(observer: String): Lens {
+        lenses[ObserverKey(observer)]?.let { return it }
+        if (partial) {
+            throw PartialAnswer(
+                degradation = PartialAnswer.LENS,
+                message = "the observer's 10040 was not among the trust-provider lists a degraded cluster could still search; refused rather than ranked as trusting nobody",
+            )
+        }
+        return NO_LENS
+    }
 
     companion object {
         val NO_LENS = Lens(null, null)
@@ -126,6 +149,9 @@ internal class ProviderMap(
     )
 
     @Volatile private var cached: Pass? = null
+
+    /** [serving]'s pass read from part of the corpus, and when; never [cached]. */
+    @Volatile private var partialPass: Pass? = null
 
     /** Bumped by every [invalidate]; a pass built under an older generation is not cached. */
     private val generation = AtomicLong()
@@ -195,6 +221,33 @@ internal class ProviderMap(
      * entry's kind means and why a named `3039x:<name>` entry is not admitted.
      */
     suspend fun delegations(): Delegations = pass().delegations
+
+    /**
+     * The pass for a read the consumer serves partial (`AcceptPartial`): the
+     * cached one, else a strict build, else, when the engine refuses that
+     * build as a degraded answer (a content node down), one read from what it
+     * could still search. That last is marked [TrustProviders.partial], held
+     * for [PARTIAL_PASS_SECS] so an outage costs one 10040 query per interval
+     * rather than per read, and never becomes [cached] or the live gate's pass.
+     */
+    private suspend fun serving(): Pass {
+        cached?.let { return it }
+        partialPass?.takeIf { nowSecs() - it.builtAtSecs < PARTIAL_PASS_SECS }?.let { return it }
+        return try {
+            build()
+        } catch (refused: PartialAnswer) {
+            val issuedAt = nowSecs()
+            val docs = inner.search(EventQuery(kinds = listOf(TrustProviderListEvent.KIND), notExpiredAt = issuedAt, acceptsPartial = true))
+            val maps = docs.mapNotNull { it.toEvent() as? TrustProviderListEvent }
+            Pass(providersIn(maps).copy(partial = true), Delegations.delegationsOf(maps), issuedAt, builds.incrementAndGet()).also { partialPass = it }
+        }
+    }
+
+    /** [serving]'s trust half. */
+    suspend fun servingTrust(): TrustProviders = serving().trust
+
+    /** [serving]'s delegations half. */
+    suspend fun servingDelegations(): Delegations = serving().delegations
 
     private suspend fun pass(): Pass = cached ?: build()
 
@@ -408,6 +461,9 @@ internal class ProviderMap(
          * from far fewer distinct providers than this.
          */
         const val SKIPPED_CAP = 50_000
+
+        /** How long a [serving] pass read from part of the corpus is reused before a strict build is tried again. */
+        const val PARTIAL_PASS_SECS = 30L
 
         /** The distinct service keys (either dimension) named across a batch of 10040 lists. */
         fun trustServicesOf(listDocs: List<EventDoc>): List<String> = providersOf(listDocs).services.toList()
