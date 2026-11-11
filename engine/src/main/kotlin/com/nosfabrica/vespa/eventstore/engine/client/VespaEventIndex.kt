@@ -48,8 +48,10 @@ import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import com.vitorpamplona.quartz.utils.Hex
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.future.await
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -810,6 +812,20 @@ class VespaEventIndex(
         limit: Int,
         idOnly: Boolean,
     ): List<VespaSummary> =
+        // A read that may be SERVED partial watches for it ([ServedDegraded]): a page off part of
+        // the corpus is thinner than the shape's real rate, and [learn] must not remember it.
+        if (q.acceptsPartial && windowMemory != null) {
+            withContext(ServedDegraded()) { speculativeAttempts(q, limit, idOnly) }
+        } else {
+            speculativeAttempts(q, limit, idOnly)
+        }
+
+    /** [speculative]'s body. */
+    private suspend fun speculativeAttempts(
+        q: EventQuery,
+        limit: Int,
+        idOnly: Boolean,
+    ): List<VespaSummary> =
         IngestStats.timed(SPECULATIVE_STAGE) {
             // Anchored at the NEWEST END OF THE DATA, not merely of the request: an
             // `until` in the future (clients send far-future sentinels) would put
@@ -873,7 +889,7 @@ class VespaEventIndex(
                 attempts++
                 if (page.size >= remaining) {
                     outcome(if (attempts == 1) "first" else "widened")
-                    windowMemory?.remember(q, anchor, now, RecencyWindowMemory.Recall.Window(window, limit))
+                    learn(q, anchor, now, RecencyWindowMemory.Recall.Window(window, limit))
                     return@timed carried + page
                 }
                 carried = carried + page
@@ -889,7 +905,7 @@ class VespaEventIndex(
             outcome("fallback.$fallback")
             when (fallback) {
                 // Too thin to window: the next read of this shape skips the attempts.
-                "narrow", "attempts", "window" -> windowMemory?.remember(q, anchor, now, RecencyWindowMemory.Recall.Narrow)
+                "narrow", "attempts", "window" -> learn(q, anchor, now, RecencyWindowMemory.Recall.Narrow)
 
                 // An attempt the engine cut says nothing about the shape's rate.
                 "partial" -> windowMemory?.forget(q, anchor, now)
@@ -900,6 +916,21 @@ class VespaEventIndex(
             // The unwindowed read, for what the carried pages do not already hold.
             carried + recallPage(planner.shipped(q.olderThan(boundary, limit - carried.size)), planned = true, idOnly = idOnly)
         }
+
+    /**
+     * What a speculative read of [q] teaches [windowMemory]: [recall], unless an answer it was
+     * served came off part of the corpus ([ServedDegraded]), which says nothing about the shape's
+     * rate and is forgotten like a refused attempt.
+     */
+    private suspend fun learn(
+        q: EventQuery,
+        anchor: Long,
+        now: Long,
+        recall: RecencyWindowMemory.Recall,
+    ) {
+        val memory = windowMemory ?: return
+        if (currentCoroutineContext()[ServedDegraded]?.seen == true) memory.forget(q, anchor, now) else memory.remember(q, anchor, now, recall)
+    }
 
     /**
      * [this] restricted to what is strictly older than [boundary] (null: no
@@ -2308,6 +2339,7 @@ class VespaEventIndex(
             )
         }
         refusal?.let { throw it }
+        if (!root.coverage.undegraded) currentCoroutineContext()[ServedDegraded]?.seen = true
         if (vq.complete) root.requireEverything()
         return root
     }
@@ -2377,8 +2409,30 @@ class VespaEventIndex(
             ?.also { root ->
                 // Before the coverage check, as in [searchRoot]: a node that did not answer is outside what coverage counts.
                 root["errors"]?.let { refuseErrors(VESPA_JSON.decodeFromJsonElement(ListSerializer(SearchError.serializer()), it)) }
-                root["coverage"]?.let { VESPA_JSON.decodeFromJsonElement(SearchCoverage.serializer(), it) }?.requireComplete(acceptsPartial = vq.acceptsPartial)
+                root["coverage"]?.let { VESPA_JSON.decodeFromJsonElement(SearchCoverage.serializer(), it) }?.let { checkGrouping(vq, it) }
             }
+    }
+
+    /**
+     * [queryRoot]'s coverage verdict, booked in [DegradedReads] as [searchRoot] books its own:
+     * a grouping served partial (a count probe, a link read) is as worth seeing as a page.
+     */
+    private suspend fun checkGrouping(
+        vq: VespaQuery,
+        coverage: SearchCoverage,
+    ) {
+        if (coverage.undegraded) return
+        val refusal = coverage.refusal(acceptsPartial = vq.acceptsPartial)
+        DegradedReads.record(
+            profile = vq.ranking,
+            flags = coverage.setFlags,
+            shape = shapeOf(vq),
+            refused = refusal != null,
+            coverage = coverage.coverage,
+            documents = coverage.documents,
+        )
+        refusal?.let { throw it }
+        currentCoroutineContext()[ServedDegraded]?.seen = true
     }
 
     /** [publish] for the grouping/count shape, whose tree is walked generically rather than decoded into [SearchRoot]. */

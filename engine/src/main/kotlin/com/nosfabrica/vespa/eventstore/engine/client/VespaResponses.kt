@@ -31,6 +31,8 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
+import kotlin.coroutines.AbstractCoroutineContextElement
+import kotlin.coroutines.CoroutineContext
 
 /**
  * The wire shapes Vespa's document/search/visit APIs answer with, decoded as
@@ -173,6 +175,9 @@ class PartialAnswer(
 
         /** The label of an answer the engine reported errors beside ([refuseErrors]). */
         const val ERRORS = "errors"
+
+        /** The label of a read refused because its observer's lens could not be resolved from a degraded cluster. */
+        const val LENS = "lens"
     }
 }
 
@@ -340,6 +345,16 @@ internal class SearchCoverage(
 
 /** Vespa's flag for documents the ideal state expects that are not active anywhere: a node down, replicas not yet ready. */
 private const val NON_IDEAL_STATE = "non-ideal-state"
+
+/**
+ * Installed by a caller that must not LEARN from a degraded answer it is served (the speculative
+ * recency window's memory); the two response funnels set [seen] when they serve one.
+ */
+internal class ServedDegraded : AbstractCoroutineContextElement(ServedDegraded) {
+    @Volatile var seen: Boolean = false
+
+    companion object Key : CoroutineContext.Key<ServedDegraded>
+}
 
 @Serializable
 internal class SearchHit(
