@@ -103,7 +103,25 @@ internal class VespaHttp(
             // 78ms p95 -> ~10 / 11 direct. Writes are already frame-batched by
             // okio/h2c, so Nagle has nothing to save us from.
             .socketFactory(NoDelaySocketFactory)
-            .build()
+            // Uncompressed answers. A request without `Accept-Encoding` gets
+            // `gzip` from OkHttp's bridge, and Vespa then gzips every answer on
+            // its container's rendering threads (4 on staging). Measured on
+            // staging 2026-11-13: `Deflater` was the top frame on those threads,
+            // all four were taken in 7 of 8 thread dumps, and rendering was 42%
+            // of the container's CPU while small reads waited behind it. A
+            // 3,000-hit page is 17.8 MB plain against 3.2 MB gzipped, and the
+            // saving only crosses the pod network. An application interceptor
+            // runs before the bridge, which adds gzip only when the header is
+            // absent; [visitHttp] inherits it through newBuilder().
+            .addInterceptor { chain ->
+                chain.proceed(
+                    chain
+                        .request()
+                        .newBuilder()
+                        .header("Accept-Encoding", "identity")
+                        .build(),
+                )
+            }.build()
 
     /**
      * The visit walk's client: HTTP/1.1 on connections of its own, plus a READ
