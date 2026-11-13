@@ -100,14 +100,14 @@ class MockVespaEngine(
     @Volatile var abortBodiesMidStream: Int = 0
 
     /**
-     * Stall the next N response bodies mid-stream: send headers and a gzipped
-     * fragment of JSON, then send nothing more, on a connection that stays up
-     * and keeps answering everything else. Nothing fails, so only a client-side
-     * deadline on the body ends the read. The shape measured on staging
+     * Stall the next N response bodies mid-stream: send headers and a fragment
+     * of JSON, then send nothing more, on a connection that stays up and keeps
+     * answering everything else. Nothing fails, so only a client-side deadline
+     * on the body ends the read. The shape measured on staging
      * (NosFabrica/vespa-relay#289): an OkHttp thread in `onResponse`, inside
-     * `GzipSource`, for 4 h 40 min. Gzipped because Vespa compresses its
-     * answers and OkHttp inflates them transparently, so the deadline has to
-     * reach through `GzipSource` to the stream. Held exchanges end at [stop].
+     * `GzipSource`, for 4 h 40 min. The fragment is gzipped when the request
+     * asked for gzip, as Vespa does, so a client that asks still has its
+     * deadline tested through `GzipSource`. Held exchanges end at [stop].
      */
     @Volatile var stallBodiesMidStream: Int = 0
 
@@ -325,6 +325,13 @@ class MockVespaEngine(
      */
     val protocols: MutableList<Pair<String, String>> = Collections.synchronizedList(ArrayList())
 
+    /**
+     * The `Accept-Encoding` each request carried (`""` when it had none), as path and header, in
+     * arrival order. Whether the client asked for gzip decides whether Vespa spends its rendering
+     * threads compressing the answer, and no response the client decodes can show which it asked.
+     */
+    val acceptEncodings: MutableList<Pair<String, String>> = Collections.synchronizedList(ArrayList())
+
     /** Each update answered through [updateReply], as its path and JSON body, in arrival order. */
     val updates: MutableList<Pair<String, String>> = Collections.synchronizedList(ArrayList())
 
@@ -459,6 +466,8 @@ class MockVespaEngine(
                         callback: Callback,
                     ): Boolean {
                         protocols += request.httpURI.path to request.connectionMetaData.httpVersion.asString()
+                        val acceptEncoding = request.headers.get(HttpHeader.ACCEPT_ENCODING) ?: ""
+                        acceptEncodings += request.httpURI.path to acceptEncoding
                         delayAnswersMs.takeIf { it > 0 }?.let { Thread.sleep(it) }
                         if (abortBodiesMidStream > 0) {
                             abortBodiesMidStream--
@@ -475,14 +484,23 @@ class MockVespaEngine(
                             stallBodiesMidStream--
                             response.status = 200
                             response.headers.put(HttpHeader.CONTENT_TYPE, "application/json")
-                            response.headers.put(HttpHeader.CONTENT_ENCODING, "gzip")
-                            // SYNC_FLUSH puts the fragment on the wire without ending the gzip member.
-                            val gzipped = ByteArrayOutputStream()
-                            GZIPOutputStream(gzipped, true).apply {
-                                write("""{"root":{"children":[""".encodeToByteArray())
-                                flush()
-                            }
-                            response.write(false, ByteBuffer.wrap(gzipped.toByteArray()), Callback.NOOP)
+                            val fragment = """{"root":{"children":[""".encodeToByteArray()
+                            // Gzipped only when asked, as Vespa does (measured on staging 2026-11-13: no
+                            // Content-Encoding without `Accept-Encoding: gzip`).
+                            val bytes =
+                                if ("gzip" in acceptEncoding) {
+                                    response.headers.put(HttpHeader.CONTENT_ENCODING, "gzip")
+                                    // SYNC_FLUSH puts the fragment on the wire without ending the gzip member.
+                                    val gzipped = ByteArrayOutputStream()
+                                    GZIPOutputStream(gzipped, true).apply {
+                                        write(fragment)
+                                        flush()
+                                    }
+                                    gzipped.toByteArray()
+                                } else {
+                                    fragment
+                                }
+                            response.write(false, ByteBuffer.wrap(bytes), Callback.NOOP)
                             stalled += callback
                             return true
                         }
