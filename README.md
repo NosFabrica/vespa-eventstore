@@ -365,8 +365,8 @@ place column. URLs listed below fill the website column a profile's website does
 | **30002 / 39092** | relay set / media starter pack | title, description |
 | **39701** | web bookmark | title, description, the bookmarked URL |
 | **31890** | custom feed definition | title |
-| **9998 / 39998** | decentralized list header (immutable / editable) | names + titles (singular, plural), description + comments, hashtags; every other natural-language tag value (`author`, `subject`, …) as text — one with a space or non-ASCII, or a single Capitalized word (`romance`, `Afro-Americans` and other one-word lowercase or punctuated values read as machine values and stay out) |
-| **9999 / 39999** | decentralized list item (immutable / editable) | name + title, description + comments, hashtags; every other natural-language tag value (`author`, `subject`, …) as text — one with a space or non-ASCII, or a single Capitalized word (`romance`, `Afro-Americans` and other one-word lowercase or punctuated values read as machine values and stay out) |
+| **9998 / 39998** | decentralized list header (immutable / editable) | names + titles (singular, plural), description + comments, hashtags; every value of every tag the list NIP does not define as text, prose first (`author`, `subject`, …), then the keywords (usernames, codes, numbers: `github-username`, `isbn`, `lang`), and NIP-32 `l` labels; URLs as website. Out: single-letter tags but `t` and `l`, NIP-wide metadata (`alt`, `client`, `imeta`, media URLs, …), Nostr references (64-hex ids, addresses, bech32, relay URLs) and values starting with `{` |
+| **9999 / 39999** | decentralized list item (immutable / editable) | name + title, description + comments, hashtags; every value of every tag the list NIP does not define as text, prose first (`author`, `subject`, …), then the keywords (usernames, codes, numbers: `github-username`, `isbn`, `lang`), and NIP-32 `l` labels; URLs as website. Out: single-letter tags but `t` and `l`, NIP-wide metadata (`alt`, `client`, `imeta`, media URLs, …), Nostr references (64-hex ids, addresses, bech32, relay URLs) and values starting with `{` |
 | **30382** | contact card / relationship | petname, summary + topics as hashtags (the encrypted half is never indexed) |
 | **30392 / 30393 / 30394 / 30395** | trusted list of pubkeys / events / addressables / external ids | title |
 | **30296 / 30297** | interactive story prologue / scene | title, summary + option labels, content |
@@ -582,9 +582,11 @@ Make sure to have the following pre-requisites installed:
 
 Kotlin 2.4 / JDK 21. Quartz comes from JitPack
 (`com.github.vitorpamplona.quartz:quartz`), pinned to a commit in `gradle/libs.versions.toml`;
-a project depending on this store needs `maven("https://jitpack.io")` in its repositories. A
-repository filtered to groups needs two: `com.github.vitorpamplona.quartz` and quartz's own JitPack
-dependency, `com.github.vitorpamplona.libschnorr256k1-kotlin`.
+a project depending on this store needs `maven("https://jitpack.io")` in its repositories (a
+repository filtered to groups needs `com.github.vitorpamplona.quartz`). Quartz's crypto-kmp and
+libschnorr256k1-kotlin are released on Nostr + Blossom only, so it also needs the
+[Magpie](https://github.com/vitorpamplona/magpie) settings plugin serving `com.vitorpamplona.crypto`
+and `com.vitorpamplona.schnorr256k1`, as `settings.gradle.kts` does here.
 
 On first build the project installs the repo's git hooks (`.git-hooks` →
 `.git/hooks`) so [Spotless](https://github.com/diffplug/spotless) runs on commit

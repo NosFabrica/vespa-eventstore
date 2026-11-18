@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.eventstore.mapping
 import com.nosfabrica.vespa.eventstore.engine.doc.SearchFields
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.vitorpamplona.quartz.experimental.citations.ExternalCitationEvent
+import com.vitorpamplona.quartz.experimental.decentralizedLists.item.AddressableListItemEvent
 import com.vitorpamplona.quartz.experimental.decentralizedLists.item.ListItemEvent
 import com.vitorpamplona.quartz.experimental.library.BookshelfDirectoryEvent
 import com.vitorpamplona.quartz.experimental.library.LearningResourceEvent
@@ -532,8 +533,8 @@ class SearchExtractorsTest {
      * still indexes its content.
      *
      * A decentralized list's tags beyond its fixed fields (`author`, `subject`, …) are the TEXT
-     * tier when they read as natural language, below the title and description; machine values
-     * (`lang`, an ISBN) and the NIP-31 `alt` restatement stay out.
+     * tier, below the title and description: the prose values first, then (since the 74c6a4a pin)
+     * the keywords (`lang`, an ISBN). The NIP-31 `alt` restatement stays out.
      */
     @Test
     fun `kind 38000 splits by tags and lists index their other tags as text`() {
@@ -570,7 +571,44 @@ class SearchExtractorsTest {
                 "",
                 "",
             )
-        assertEquals(SearchFields(primary = "Waking with Enemies", text = "Christopher Pike\nHorror tales"), SearchExtractors.extract(book))
+        assertEquals(SearchFields(primary = "Waking with Enemies", text = "Christopher Pike\nHorror tales\neng\n9781534445145"), SearchExtractors.extract(book))
+    }
+
+    /**
+     * The 74c6a4a pin (quartz#121): every value of a tag the list NIP does not define is the
+     * author's data. Its keywords (a username, a code) join the body after the prose, its URLs are
+     * the website, and a NIP-32 `l` label is indexed. Nostr's own references, the `p` tag with its
+     * relay hint and petname, the `L` namespace and a JSON object stay out. A reindex of the four
+     * list kinds rolls it out.
+     */
+    @Test
+    fun `a list item indexes its own tags as keywords but not nostr references`() {
+        val pubkey = "b83a28b7e4e5d20bd960c5faeb6625f95529166b8bdb045d42634a2f35919450"
+        val item =
+            EventFactory.create<Event>(
+                "5".repeat(64),
+                alice,
+                1L,
+                AddressableListItemEvent.KIND,
+                arrayOf(
+                    arrayOf("d", "vcavallo-1i6dn0p"),
+                    arrayOf("z", "39998:$pubkey:github-accounts"),
+                    arrayOf("description", "Vinney Cavallo"),
+                    arrayOf("github-username", "vcavallo"),
+                    arrayOf("github-url", "https://github.com/vcavallo"),
+                    arrayOf("L", "ISO-639-1"),
+                    arrayOf("l", "en", "ISO-639-1"),
+                    arrayOf("owner", pubkey),
+                    arrayOf("metadata", "{\"pubkey\": \"$pubkey\"}"),
+                    arrayOf("p", pubkey, "wss://relay.example.com", "Vinney"),
+                ),
+                "",
+                "",
+            )
+        assertEquals(
+            SearchFields(secondary = "Vinney Cavallo", text = "vcavallo\nen", website = "https://github.com/vcavallo"),
+            SearchExtractors.extract(item),
+        )
     }
 
     @Test

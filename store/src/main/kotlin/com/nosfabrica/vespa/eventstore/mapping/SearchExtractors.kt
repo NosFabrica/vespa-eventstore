@@ -78,7 +78,9 @@ object SearchExtractors {
                 val emoji = Emoji(event)
                 val primary = emoji.joinLines(fields.primary)
                 val secondary = emoji.joinLines(fields.secondary + listOfNotNull(emoji.joinSpaced(fields.hashtags)))
-                val text = emoji.clean(fields.text)
+                // Keywords (a list item's usernames, codes, numbers) are matched as body words:
+                // the same field the SQLite reference indexes them in, below every naming tier.
+                val text = if (fields.keywords.isEmpty()) emoji.clean(fields.text) else emoji.joinLines(listOfNotNull(fields.text) + fields.keywords)
                 val location = emoji.joinSpaced(fields.locations)
                 val website = emoji.joinLines(fields.websites)
                 SearchFields(

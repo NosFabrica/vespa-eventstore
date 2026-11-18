@@ -8,7 +8,31 @@ mavenPublish = "0.37.0"
 # FROM JITPACK, so the published POM names com.github.vitorpamplona.quartz:quartz-jvm:<pin> and a
 # consumer of this store needs JitPack in its repositories (Central publishing does not check).
 #
-# ce558d9 = vitorpamplona/quartz main @ 2026-11-10, the quartz#106 merge (ce558d90e7): 288217a (below)
+# 74c6a4a = vitorpamplona/quartz main @ 2026-11-18, the quartz#121 merge (74c6a4ae66), 84 commits over
+# ce558d9 (below), which it descends from (2.17.0, 2.18.0 and 2.19.0 between them); JitPack builds it
+# (quartz-jvm's POM answers 200). A tree diff of quartz/src between them, main sources (69 files),
+# scanned against this store's imports:
+#  - MAGPIE. quartz's crypto-kmp (2.1.0 -> 2.1.1) and libschnorr256k1-kotlin (JitPack 867bb13 ->
+#    1.0.2) are released on Nostr + Blossom only, under com.vitorpamplona.crypto and
+#    com.vitorpamplona.schnorr256k1; neither is on Maven Central. settings.gradle.kts resolves both
+#    groups through the Magpie settings plugin (gradle/magpie.lock pins the release key and files), and
+#    JitPack serves quartz alone. A consumer of this store needs the same two groups through Magpie.
+#  - DECENTRALIZED LISTS (9998 / 9999 / 39998 / 39999, quartz#121). Every value of a tag the list NIP
+#    does not define is indexed, not only prose: prose stays IndexableFields.Tiered.text, URLs go to
+#    websites, and the rest (usernames, codes, numbers) to the new Tiered.keywords, which
+#    mapping/SearchExtractors appends to the body. NIP-32 `l` labels are indexed (not `L`, not the
+#    mark); single-letter tags otherwise, NIP-wide metadata (nip50Search.METADATA_TAG_NAMES), Nostr
+#    references (isNostrReference) and values starting with `{` are not, so a `p` tag's petname
+#    leaves the text. A REINDEX of the four list kinds rolls it out (reindexFullTextSearch).
+#  - NEW SEARCHABLE KIND: 38421 (Routstr node announcements). New parsed, not searchable: 12000
+#    (agent keys), the NIP-FB scheduled task, NIP-FC Maven release/snapshot (3071 / 33071).
+#  - Not reached: NIP-85's TrustNetworkIndex now keys by the whole pubkey (the store reads 30382
+#    rows, not that index); INostrClient's refused kinds; NIP-51 private-tag decryption; Namecoin.
+#  - RUNTIME CLASSPATH (:store): quartz moves; crypto-jvm 2.1.0 -> 2.1.1 and
+#    schnorr256k1-kotlin-jvm 867bb13 (JitPack) -> 1.0.2 (Magpie); the POM's other versions hold.
+#  - The distributed skill (.claude/skills/quartz) is re-copied from this commit.
+#
+# Prev ce558d9 = vitorpamplona/quartz main @ 2026-11-10, the quartz#106 merge (ce558d90e7): 288217a (below)
 # plus one catalog line. quartz's libschnorr256k1-kotlin moves 1d851c2 -> 867bb13 (JitPack, the same
 # group settings.gradle.kts already routes): BIP-340 signing with no aux randomness, field compares
 # on unreduced values and FieldP.add's double carry fixed, plus batch-verify and field speedups.
@@ -329,7 +353,7 @@ mavenPublish = "0.37.0"
 # catch-all; SearchableEvent grows the read-path forEachIndexableField, no reindex).
 # Prev cecc3287b2 (2026-09-01: 17 catch-all kinds split into title/body roles, four
 # affiliation URLs, six doubled `t`-tag scans dropped; a ranking backfill).
-quartz = "ce558d9"
+quartz = "74c6a4a"
 coroutines = "1.11.0"
 serialization = "1.12.0"
 # Matches what Quartz brings transitively; Gradle would resolve to it regardless.
