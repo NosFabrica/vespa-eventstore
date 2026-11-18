@@ -334,7 +334,8 @@ class MockVespaEngine(
 
     /**
      * Each `/search/` answer's YQL with the documents it MATCHED and the hits it SERVED, in arrival
-     * order. Matched is the whole match set the query's predicate admits, before its `limit`: an
+     * order. Matched is the whole match set the query's predicate admits, before its `limit` and
+     * before the observer gate (which real Vespa applies in the rank phase, after matching): an
      * `order by` with a limit makes the engine match and sort all of it to pick the top N, so the
      * ratio of the two is what a query cost against what it returned, and no response the client
      * decodes shows it (this mock's `totalCount` is cut to the limit). Grouped answers are not booked.
@@ -789,8 +790,13 @@ class MockVespaEngine(
         // single-key sort picks boundary-tie MEMBERSHIP arbitrarily, and a cut
         // inside the reference's tiebroken order would hide exactly the bug
         // [scrambleTieOrder] exists to surface.
+        // What the predicate MATCHES, before the gate: real Vespa matches a
+        // below-floor author's documents and drops them in the rank phase, so
+        // they cost the engine the same — [matchCounts] books this, not what
+        // the gate let through.
+        val matched = runBlocking { inner.search(query.copy(limit = null)) }
         val admitted =
-            runBlocking { inner.search(query.copy(limit = null)) }
+            matched
                 .let { docs ->
                     when {
                         !gates -> docs
@@ -868,7 +874,7 @@ class MockVespaEngine(
                     },
                 )
             }
-        if (!grouped) matchCounts += Triple(yql, admitted.size, children.size)
+        if (!grouped) matchCounts += Triple(yql, matched.size, children.size)
         return Reply(200, root.toString())
     }
 

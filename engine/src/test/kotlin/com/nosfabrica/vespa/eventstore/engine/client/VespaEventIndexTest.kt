@@ -24,7 +24,10 @@ import com.nosfabrica.vespa.eventstore.engine.MockVespaEngine
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.SearchFields
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
+import com.nosfabrica.vespa.eventstore.engine.metrics.Activity
+import com.nosfabrica.vespa.eventstore.engine.metrics.CostLedger
 import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
+import com.nosfabrica.vespa.eventstore.engine.metrics.withActivity
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import kotlinx.coroutines.runBlocking
@@ -2441,7 +2444,7 @@ class VespaEventIndexTest {
      * An empty slice must not end the walk — only a short one that reached the window's bottom
      * does — and a run of them must be crossed in a few queries, not one per page width.
      *
-     * Measured here, matched per hit served with slices: bursty 1.96, ties 1.69, empty years
+     * Measured here, matched per hit served with slices: bursty 1.99, ties 1.69, empty years
      * 2.07 (in 50 queries for ~33 pages). Verified to fail with the slices reverted: the first
      * shape, bursty, then matches 8.44 per hit served.
      */
@@ -2484,7 +2487,7 @@ class VespaEventIndexTest {
      * split exactly as the open cursor did, wherever a slice edge lands next to it. A window of a
      * single second is the narrowest a slice can be, and must not loop or step past itself.
      *
-     * Verified to fail with the slices reverted: 5.21 matched per hit served (1.83 with them).
+     * Verified to fail with the slices reverted: 5.21 matched per hit served (1.82 with them).
      */
     @Test
     fun `dense seconds and a one-second window walk exactly through the slices`() =
@@ -2538,6 +2541,11 @@ class VespaEventIndexTest {
                 VespaEventIndex(mock.url, idPageSize = 20).use { idx ->
                     val walk = walked(idx, q)
                     assertEquals(1, cuts, "the cut must have landed on a slice: ${walk.costs}")
+                    // The older half starts on a slice at the density the cut was asked at. Asked
+                    // open, it matched the whole rest of the window again (verified: 900+ here).
+                    val fetch = 20 + VespaEventIndex.TIE_SLACK
+                    val widest = walk.costs.drop(1).maxOf { it.first }
+                    assertTrue(widest <= 2 * fetch, "no query after the first may match the rest of the window; the widest matched $widest: ${walk.costs}")
                     assertEquals(nip01(q), walk.ids.map { it.id }, "every id, in order, across the halves")
                 }
                 val stages = IngestStats.snapshot()
@@ -2627,10 +2635,129 @@ class VespaEventIndexTest {
                         "every page after the first is a slice: ${asked.map { it.getValue("yql").substringAfter(" where ") }}",
                     )
                     assertEquals(setOf(EventYql.RANK_RECENCY_GATED_EXACT), rankings.toSet(), "every slice on the gated exact profile")
+                    // The engine MATCHES the gated-out author too and drops it in the rank phase, so
+                    // the first page's cost is both authors' 600, not the 300 it serves from.
+                    assertEquals(600, walk.costs.first().first, "matched counts what the predicate matched, before the gate")
                 }
             } finally {
                 mock.belowFloorAuthors = emptySet()
             }
+        }
+
+    /**
+     * A WINDOW WITH NO `since` HAS NO BOTTOM, and a cut must not invent one. A cut's halving
+     * needs a number for the window's floor and takes the epoch; the older half then carried that
+     * 0 as its `since`, and every event dated before 1970 — this corpus is dirty enough to hold
+     * them — left the NIP-77 snapshot silently. The older half keeps the window's own `since`.
+     *
+     * Verified to fail with the older half bounded at `floor`: the pre-1970 ids are missing.
+     */
+    @Test
+    fun `a cut on a walk with no since keeps events dated before 1970`() =
+        runBlocking {
+            val old = "d1".repeat(32)
+            val recent = (0 until 100).map { doc(kind = 30382, pubkey = old, at = 1_700_000_000L - it) }
+            val prehistoric = (1..5).map { doc(kind = 30382, pubkey = old, at = -1_000L * it) }
+            seedBulk(recent + prehistoric)
+            var cuts = 0
+            // The first query, open at both ends: cut it once.
+            mock.cutWhere = { yql -> (cuts == 0 && yql.startsWith("select id, created_at") && "created_at" !in yql.substringAfter(" where ").substringBefore(" order by")).also { if (it) cuts++ } }
+            try {
+                VespaEventIndex(mock.url, idPageSize = 20).use { idx ->
+                    val q = EventQuery(kinds = listOf(30382), authors = listOf(old))
+                    val got = walked(idx, q).ids.map { it.id }
+                    assertEquals(1, cuts, "the first page must have been cut")
+                    assertTrue(prehistoric.all { it.id in got }, "the events dated before 1970 must survive the halving")
+                    assertEquals(nip01(q), got, "every id, in order")
+                }
+            } finally {
+                mock.cutWhere = null
+            }
+        }
+
+    /**
+     * A TIED SECOND IS A POINT, NOT A RATE. A page whose older half was one tied second used to
+     * size the next slice at two seconds, and the walk then widened through near-empty slices to
+     * get back to the data's real density — after every dense second of a provider's run. The
+     * estimate now reads the rows above the boundary second.
+     *
+     * Verified to fail with the estimate back on the page's older half: empty slices follow the
+     * dense second.
+     */
+    @Test
+    fun `a dense second does not shrink the slice after it`() =
+        runBlocking {
+            val ty = "d2".repeat(32)
+            // One id every 10 s, so a 20-id page spans ~200 s, and a 100-id second 5 s below the
+            // newest: the first page is that one id and then the second, which fills its older half.
+            val singles = (0 until 300).map { doc(kind = 30382, pubkey = ty, at = 1_700_000_000L - 10 * it) }
+            val dense = (1..100).map { hashedDoc(kind = 30382, pubkey = ty, at = 1_700_000_000L - 5) }
+            seedBulk(singles + dense)
+            val q = EventQuery(kinds = listOf(30382), authors = listOf(ty), since = 1_700_000_000L - 2_990)
+            IngestStats.reset()
+            try {
+                VespaEventIndex(mock.url, idPageSize = 20).use { idx ->
+                    assertEquals(nip01(q), walked(idx, q).ids.map { it.id })
+                }
+                val stages = IngestStats.snapshot()
+                assertNotNull(stages["walk.ties.dense"], "the second must have been dense enough to split")
+                assertNull(stages["walk.slice.empty"], "no slice may come back empty: the data never stops, so an empty one was sized off the tie")
+            } finally {
+                IngestStats.reset()
+            }
+        }
+
+    /**
+     * THE NEXT WALK OF A SHAPE STARTS ON A SLICE. A walk's first page has no density to size a
+     * slice from, so asked open it matched the whole window — after slicing, about half of what a
+     * walk still matched. The mirror walks the same filters over and over, so the width a page
+     * of a shape took last time sizes the next walk's first slice. Switched off with the recency
+     * memory, which is how the cold case is pinned beside it.
+     *
+     * Verified to fail with the recall removed: the second walk's first query matches the window.
+     */
+    @Test
+    fun `a walk of a shape walked before starts on a slice`() =
+        runBlocking {
+            val sam = "d3".repeat(32)
+            seedBulk((0 until 600).map { doc(kind = 30382, pubkey = sam, at = 1_700_000_000L - it) })
+            val q = EventQuery(kinds = listOf(30382), authors = listOf(sam), since = 1_700_000_000L - 599, until = 1_700_000_000L)
+            val fetch = 20 + VespaEventIndex.TIE_SLACK
+            VespaEventIndex(mock.url, idPageSize = 20).use { idx ->
+                val cold = walked(idx, q)
+                assertEquals(600, cold.costs.first().first, "the first walk of a shape asks its first page open")
+                val warm = walked(idx, q)
+                assertEquals(nip01(q), warm.ids.map { it.id }, "the same ids, in order")
+                assertTrue(warm.costs.first().first <= 2 * fetch, "the next walk's first query is a slice: ${warm.costs.first()}")
+                assertTrue(warm.ratio < cold.ratio, "and the walk costs less: ${warm.ratio} against ${cold.ratio}")
+            }
+            VespaEventIndex(mock.url, idPageSize = 20, recencyMemory = false).use { idx ->
+                walked(idx, q)
+                assertEquals(600, walked(idx, q).costs.first().first, "without the memory every walk starts open")
+            }
+        }
+
+    /**
+     * A SLICE IS BOOKED WHERE ITS PAGE WAS. A slice adds a `since` the caller never sent, and
+     * booked as itself it moved a walk's pages from its own `engineByCaller` row (`…,until`)
+     * into `…,since,until` — the row the before/after comparison of #209 reads.
+     *
+     * Verified to fail with the shape override removed: `kinds,authors,since,until` appears.
+     */
+    @Test
+    fun `slices are booked under the shape of the walk's own pages`() =
+        runBlocking {
+            val val0 = "d4".repeat(32)
+            seedBulk((0 until 400).map { doc(kind = 30382, pubkey = val0, at = 1_700_000_000L - it) })
+            val ledger = CostLedger()
+            VespaEventIndex(mock.url, idPageSize = 20, ledger = ledger).use { idx ->
+                withActivity(Activity.Snapshot) {
+                    idx.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(val0), until = 1_700_000_000L)) { true }
+                }
+            }
+            val rows = ledger.snapshot().engineByCaller.filter { it.activity == Activity.Snapshot }
+            assertTrue(rows.sumOf { it.queries } > 3, "a multi-slice walk: $rows")
+            assertEquals(setOf("kinds,authors,until"), rows.map { it.shape }.toSet(), "every page in the walk's own row")
         }
 
     /**

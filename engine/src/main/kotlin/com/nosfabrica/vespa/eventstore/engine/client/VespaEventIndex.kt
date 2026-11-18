@@ -255,6 +255,17 @@ class VespaEventIndex(
 
     private val windowMemory: RecencyWindowMemory? = if (recencyMemory) RecencyWindowMemory() else null
 
+    /**
+     * How wide a page of each walk SHAPE was last time, so the next walk of it
+     * starts on a slice instead of matching its whole window ([visitIdsByCursor]).
+     * The same table [windowMemory] is — a shape is keyed by what sets its event
+     * rate, with an age term, a TTL and an LRU bound — but its OWN instance: a
+     * walk remembers a tight one-page span, and a speculative read handed that
+     * as its first window would come back short about half the time and pay a
+     * widening for it. Switched by the same `VESPA_RECENCY_MEMORY`.
+     */
+    private val walkMemory: RecencyWindowMemory? = if (recencyMemory) RecencyWindowMemory() else null
+
     // ADDRESS-KEYED mode (VESPA_ADDRESS_KEYED=1, the [addressKeyed] parameter):
     // replaceable/addressable events are stored under their NIP-01 address as
     // the document id, so the engine enforces newest-wins with a conditional put
@@ -1430,6 +1441,8 @@ class VespaEventIndex(
         q: EventQuery,
         withDTag: Boolean,
         stage: String,
+        /** The clause shape to book the query under on the cost ledger, when not [q]'s own; see [idTimeHits]. */
+        shape: String? = null,
     ): List<DocRef> {
         var refusal: PartialAnswer? = null
         for (pause in RETRY_PAUSES_MILLIS) {
@@ -1439,7 +1452,7 @@ class VespaEventIndex(
             // process has.
             if (pause > 0) IngestStats.timed("walk.retry.wait") { delay(pause) }
             try {
-                return IngestStats.timed(stage) { idTimeHits(q, withDTag) }
+                return IngestStats.timed(stage) { idTimeHits(q, withDTag, shape) }
             } catch (refused: PartialAnswer) {
                 // Booked BY DEGRADATION: the label is what says whether waiting
                 // is the remedy, and it is the number that tells an operator
@@ -1501,6 +1514,13 @@ class VespaEventIndex(
          * production, 389 cleared after a split and 7 spent the budget.
          */
         narrowings: AtomicInteger = AtomicInteger(MAX_CUT_NARROWINGS),
+        /**
+         * The width, in seconds, of this walk's FIRST slice, or null to size
+         * it from [walkMemory] (and failing that, to ask the first page open).
+         * Set by a cut's older half, which already knows the density it walks
+         * into: asked open, it would match the whole rest of the window again.
+         */
+        startSpan: Long? = null,
         onPage: suspend (List<DocRef>) -> Boolean,
     ) {
         var until: Long? = query.until
@@ -1535,18 +1555,45 @@ class VespaEventIndex(
         // strictly below a group already emitted whole, or below a slice
         // that came back complete.
         //
-        // The FIRST page stays open at the bottom, as every page used to be:
-        // nothing is known about the window's density yet, and a guess that
-        // starts narrow pays a round trip per widening on exactly the small
-        // walks that are one query today. That page still matches the whole
-        // window once, so a walk's cost goes from ~N(N+1)/2 pages to ~2N.
-        var span: Long? = null
+        // The FIRST page is a slice only when [walkMemory] knows how wide a
+        // page of this shape was on its last walk; otherwise it is asked open
+        // at the bottom, as every page used to be — a guess that starts narrow
+        // would pay a round trip per widening on exactly the small walks that
+        // are one query today. An open first page still matches the whole
+        // window once. Measured in MockVespaEngine only, matched per hit
+        // served: 1.69 to 2.07 with an open first page, against 5.21 to 8.44
+        // for the open cursor (VespaEventIndexTest's slice tests). Staging is
+        // not measured yet.
+        //
+        // An EMPTY slice widens the next by [SLICE_GROWTH] and no more, so a
+        // walk with no `since` pays ~9 cheap empty queries below its last id
+        // to reach the epoch. Two ways of shortening that were measured on
+        // the bursty shape in VespaEventIndexTest and rejected, because each
+        // traded round trips for MATCHING, the cost this walk exists to cut:
+        // an open query after three empty slices fired at every gap between
+        // bursts and matched everything below each time (5.60 matched per hit
+        // served, against 1.99), and widening 8x, 64x, 512x across a run
+        // overshot into the bursts below (3.65), while still spending five
+        // empty queries on the uniform shape's tail.
+        //
+        // `now` is the top a slice is measured down from while the window is
+        // still open at the top; the query itself keeps `until` null, so an
+        // event dated past the clock is still inside the first slice.
+        val now = query.nowSecs ?: (System.currentTimeMillis() / 1000)
+        val anchor = query.until ?: now
+        var span: Long? = startSpan ?: recalledSpan(query, anchor, now, pageSize)
         while (true) {
-            val top = until
-            val sliceSince = if (span != null && top != null) sliceFloor(top, span, query.since) else query.since
+            val top = until ?: now
+            val sliceSince = if (span != null) sliceFloor(top, span, query.since) else query.since
+            // The page that reaches the window's bottom: a short answer to it
+            // ends the walk. Every other page is a slice, bounded at a number.
+            val last = sliceSince == query.since
+            // Booked under the shape the open cursor's page had, `since` only
+            // when the caller sent one (see [idTimeHits]).
+            val shape = if (last) null else EventYql.clauseShape(query.copy(until = until))
             val hits =
                 try {
-                    idTimeRetrying(query.copy(since = sliceSince, until = until, limit = fetchLimit), withDTag, "walk.ids.page")
+                    idTimeRetrying(query.copy(since = sliceSince, until = until, limit = fetchLimit), withDTag, "walk.ids.page", shape)
                 } catch (cut: PartialAnswer) {
                     if (!cut.cutByMatchPhase) throw cut
                     // HALVING CLEARS A CUT. That is measured; WHY is not, and
@@ -1600,7 +1647,9 @@ class VespaEventIndex(
                     // makes two leaves and no more — a walk that went on below
                     // its split could scan as well as both of its halves, and
                     // the scans would no longer be bounded by the splits.
-                    val ceiling = until ?: query.nowSecs ?: (System.currentTimeMillis() / 1000)
+                    val ceiling = top
+                    // A number for the arithmetic only, like `ceiling`: the
+                    // older half below keeps the window's own `since`.
                     val floor = sliceSince ?: 0L
                     val spent = narrowings.getAndDecrement() <= 0
                     if (ceiling - floor < 2 || spent) {
@@ -1630,11 +1679,24 @@ class VespaEventIndex(
                     // is unbounded at the top — and this corpus holds events
                     // dated past the clock (staging carries notes stamped 2100).
                     // Copying the ceiling in would silently drop every one.
-                    visitIdsByCursor(query.copy(since = mid + 1, until = until), withDTag, remaining, narrowings, half)
-                    // The window's own `since` below a slice; on the first page
-                    // that is `floor`, as it always was.
-                    val olderSince = if (sliceSince == query.since) floor else query.since
-                    if (!stopped) visitIdsByCursor(query.copy(since = olderSince, until = mid), withDTag, remaining, narrowings, half)
+                    visitIdsByCursor(query.copy(since = mid + 1, until = until), withDTag, remaining, narrowings, onPage = half)
+                    // The WINDOW's own `since`, never `floor`: for a window
+                    // open at the bottom, `floor` is the epoch, and a bound of
+                    // 0 silently dropped every event dated before 1970 from
+                    // the older half — a walk that asked for no `since`.
+                    // A cut SLICE's older half starts on a slice as wide as
+                    // the newer half, the density it was cut at; a cut first
+                    // page knows no density, and its half asks open, as before.
+                    if (!stopped) {
+                        visitIdsByCursor(
+                            query.copy(since = query.since, until = mid),
+                            withDTag,
+                            remaining,
+                            narrowings,
+                            startSpan = if (last) null else maxOf(1L, ceiling - mid),
+                            onPage = half,
+                        )
+                    }
                     return
                 }
 
@@ -1646,10 +1708,13 @@ class VespaEventIndex(
             // not that the window is done.
             if (hits.size < fetchLimit) {
                 if (hits.isNotEmpty() && !onPage(hits)) return
-                if (sliceSince == query.since || sliceSince == null || top == null) return
+                if (last) return
+                // Not the last page, so a slice: `sliceFloor` gave it a number.
+                val lo = checkNotNull(sliceSince)
+                val width = top - lo + 1
                 IngestStats.timed(if (hits.isEmpty()) "walk.slice.empty" else "walk.slice.short") { }
-                span = spanAfterShortSlice(top - sliceSince + 1, hits.size, pageSize)
-                until = sliceSince - 1
+                span = spanFor(width.toDouble(), hits.size, pageSize, previous = width)
+                until = lo - 1
                 continue
             }
 
@@ -1710,7 +1775,7 @@ class VespaEventIndex(
             }
             // Strictly past the group just emitted in full.
             if (boundary <= (query.since ?: Long.MIN_VALUE)) return
-            span = spanOfPage(hits, pageSize, boundary)
+            span = spanOfPage(hits, pageSize, boundary, previous = span).also { walkMemory?.remember(query, anchor, now, RecencyWindowMemory.Recall.Window(it, pageSize)) }
             until = boundary - 1
         }
     }
@@ -1739,38 +1804,60 @@ class VespaEventIndex(
 
     /**
      * The next slice's width after a FULL page: one page at the density of the
-     * page's older half. The older half because that is the data nearest the
-     * next slice, and because the newest rows of a window open at the top can
-     * be dated anywhere — this corpus carries notes stamped 2100, and one of
-     * them at the top of a page would make the whole page look a century wide.
+     * rows ABOVE the boundary second, in their older half.
+     *
+     * Above the boundary second, because that second was just read whole (its
+     * tie group, or a dense second's id-prefix split) and is a point, not a
+     * rate: a page whose older half was one tied second used to size the next
+     * slice at two seconds, and the walk then paid a run of near-empty
+     * widenings to get back to the data's real density. The older half,
+     * because it is nearest the next slice, and because the newest rows of a
+     * window open at the top can be dated anywhere — this corpus carries notes
+     * stamped 2100. A page that is ONE second says nothing about the time
+     * below it, and keeps the width it had.
      */
     private fun spanOfPage(
         hits: List<DocRef>,
         pageSize: Int,
         boundary: Long,
+        previous: Long?,
     ): Long {
-        val half = pageSize / 2
-        // Doubles: two created_at values far enough apart overflow a Long.
-        val seconds = hits[half].createdAt.toDouble() - boundary.toDouble() + 1.0
-        return clampSpan(seconds * pageSize / (pageSize - half))
+        val firstTie = hits.indexOfFirst { it.createdAt == boundary }
+        if (firstTie <= 0) return previous ?: 1L
+        val from = firstTie / 2
+        // Rows [from, firstTie) lie in (boundary, hits[from]]. Doubles: two
+        // created_at values far enough apart overflow a Long.
+        return spanFor(hits[from].createdAt.toDouble() - boundary.toDouble(), firstTie - from, pageSize, previous)
     }
 
     /**
-     * The next slice's width after a slice [width] seconds wide came back
-     * complete with [got] ids: one page at that density, and never more than
-     * [SLICE_GROWTH] times wider, which is also the whole step after an EMPTY
-     * slice — so a run of empty seconds is crossed in a logarithmic number of
-     * queries, while a sparse stretch followed by a dense one cannot be asked
-     * for in a single unbounded jump.
+     * One page's worth of seconds at a density of [rows] in [seconds], and
+     * never more than [SLICE_GROWTH] times [previous] — which is also the
+     * whole step when [rows] is 0 (an EMPTY slice). So a run of empty time is
+     * crossed geometrically, and a sparse stretch cannot launch one slice that
+     * spans far past the data it was measured on. Null [previous] (the first
+     * page) bounds nothing.
      */
-    private fun spanAfterShortSlice(
-        width: Long,
-        got: Int,
+    private fun spanFor(
+        seconds: Double,
+        rows: Int,
         pageSize: Int,
+        previous: Long?,
     ): Long {
-        val grown = width.toDouble() * SLICE_GROWTH
-        if (got == 0) return clampSpan(grown)
-        return clampSpan(minOf(width.toDouble() * pageSize / got, grown))
+        val grown = previous?.let { it.toDouble() * SLICE_GROWTH } ?: Double.MAX_VALUE
+        val estimate = if (rows == 0) grown else seconds * pageSize / rows
+        return clampSpan(minOf(estimate, grown))
+    }
+
+    /** The first slice's width from [walkMemory], scaled to this walk's page, or null to ask the first page open. */
+    private fun recalledSpan(
+        q: EventQuery,
+        anchor: Long,
+        now: Long,
+        pageSize: Int,
+    ): Long? {
+        val window = walkMemory?.recall(q, anchor, now) as? RecencyWindowMemory.Recall.Window ?: return null
+        return clampSpan(window.window.toDouble() * pageSize / window.limit)
     }
 
     private fun clampSpan(seconds: Double): Long = ceil(seconds).coerceIn(1.0, MAX_SLICE_SPAN.toDouble()).toLong()
@@ -2001,8 +2088,16 @@ class VespaEventIndex(
     private suspend fun idTimeHits(
         q: EventQuery,
         withDTag: Boolean,
+        /**
+         * Book the query under this clause shape instead of [q]'s. A cursor
+         * slice adds a `since` the caller never asked for, and booked as itself
+         * it would move the walk's pages into another `engineByCaller` row
+         * (`kinds,until` into `kinds,since,until`) — the row a before/after
+         * comparison of the walk reads.
+         */
+        shape: String? = null,
     ): List<DocRef> {
-        val vq = EventYql.buildIdTime(q, withDTag) ?: return emptyList()
+        val vq = EventYql.buildIdTime(q, withDTag)?.let { if (shape == null) it else it.copy(shape = shape) } ?: return emptyList()
         return searchRoot(vq, hits = q.limit ?: unboundedHits)
             .children
             .mapNotNull { hit ->
