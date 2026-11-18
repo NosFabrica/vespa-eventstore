@@ -1,6 +1,10 @@
 plugins {
     alias(libs.plugins.kotlin.jvm)
     alias(libs.plugins.vanniktech.mavenPublish)
+    // Releases also go to Nostr + Blossom: publishToNostr (create-release.yml). No version: the
+    // Magpie settings plugin (settings.gradle.kts) already put this one on the classpath, and Gradle
+    // refuses a second version request for it.
+    id("com.vitorpamplona.magpie.publish")
 }
 
 dependencies {
