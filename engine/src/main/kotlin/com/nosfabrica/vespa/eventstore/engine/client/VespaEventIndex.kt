@@ -67,6 +67,7 @@ import okio.BufferedSink
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.math.ceil
 
 /**
  * The real [EventIndex]: Vespa over HTTP. Writes go through Vespa's official
@@ -1458,7 +1459,8 @@ class VespaEventIndex(
 
     /**
      * The cursor walk: `created_at desc` a page at a time, resolving the tie
-     * group at each boundary.
+     * group at each boundary, every page after the first bounded below to a
+     * slice of about one page (see the loop).
      *
      * NO PROBE DECIDES THIS ANY MORE. There used to be a sampling query on
      * every id walk whose job was to PREDICT whether the walk's boundary groups
@@ -1513,10 +1515,38 @@ class VespaEventIndex(
         // slack just reads the boundary group by its window more often.
         val fetchLimit = minOf(idPageSize + TIE_SLACK, unboundedHits)
         val pageSize = minOf(idPageSize, fetchLimit - minOf(TIE_SLACK, fetchLimit / 2))
+        // EVERY PAGE AFTER THE FIRST READS A SLICE, NOT THE REST OF THE WINDOW.
+        // A page is `order by created_at desc limit N`, so the engine matches
+        // and sorts everything the query's range admits to return the newest
+        // N. With only the TOP edge moving (`until = boundary - 1`), page k of
+        // an N-page walk matched the N - k + 1 pages still left, and the walk
+        // matched ~N(N+1)/2 pages to serve N. Measured on staging (2026-11-17,
+        // store 5bea99939020, the sync's `/pulse.json` `engineByCaller`, row
+        // `Snapshot / unranked / kinds,since,until`): 1,130.1B documents
+        // matched for 71.47B ids served since boot, 15.8 to 1 (16.8 over the
+        // last 300 s), and 91.5% of the sync's engine + summary time (#209).
+        //
+        // So each page after the first asks for `[sliceSince, until]` only,
+        // `span` seconds wide, sized from the density the previous page
+        // showed so that it holds about one page. The ids, and their order,
+        // are the same: slices are disjoint, consecutive and newest first,
+        // each page is NIP-01-ordered by [idTimeHits], and a slice edge is
+        // only ever crossed where the open walk would have stepped too —
+        // strictly below a group already emitted whole, or below a slice
+        // that came back complete.
+        //
+        // The FIRST page stays open at the bottom, as every page used to be:
+        // nothing is known about the window's density yet, and a guess that
+        // starts narrow pays a round trip per widening on exactly the small
+        // walks that are one query today. That page still matches the whole
+        // window once, so a walk's cost goes from ~N(N+1)/2 pages to ~2N.
+        var span: Long? = null
         while (true) {
+            val top = until
+            val sliceSince = if (span != null && top != null) sliceFloor(top, span, query.since) else query.since
             val hits =
                 try {
-                    idTimeRetrying(query.copy(until = until, limit = fetchLimit), withDTag, "walk.ids.page")
+                    idTimeRetrying(query.copy(since = sliceSince, until = until, limit = fetchLimit), withDTag, "walk.ids.page")
                 } catch (cut: PartialAnswer) {
                     if (!cut.cutByMatchPhase) throw cut
                     // HALVING CLEARS A CUT. That is measured; WHY is not, and
@@ -1562,8 +1592,16 @@ class VespaEventIndex(
                     // whatever it is asked — the id-prefix split, which serves a
                     // DENSE second, would spend its whole budget on cut buckets
                     // before reaching the same scan.
+                    //
+                    // WHAT IS HALVED IS THE RANGE THAT WAS ASKED: the whole
+                    // window on the first page, the slice on a later one. The
+                    // older half then runs from the slice's midpoint to the
+                    // WINDOW's bottom, and this walk returns, so a split still
+                    // makes two leaves and no more — a walk that went on below
+                    // its split could scan as well as both of its halves, and
+                    // the scans would no longer be bounded by the splits.
                     val ceiling = until ?: query.nowSecs ?: (System.currentTimeMillis() / 1000)
-                    val floor = query.since ?: 0L
+                    val floor = sliceSince ?: 0L
                     val spent = narrowings.getAndDecrement() <= 0
                     if (ceiling - floor < 2 || spent) {
                         IngestStats.timed(if (spent) "walk.cut.budget" else "walk.cut.unsplittable") { }
@@ -1593,16 +1631,26 @@ class VespaEventIndex(
                     // dated past the clock (staging carries notes stamped 2100).
                     // Copying the ceiling in would silently drop every one.
                     visitIdsByCursor(query.copy(since = mid + 1, until = until), withDTag, remaining, narrowings, half)
-                    if (!stopped) visitIdsByCursor(query.copy(since = floor, until = mid), withDTag, remaining, narrowings, half)
+                    // The window's own `since` below a slice; on the first page
+                    // that is `floor`, as it always was.
+                    val olderSince = if (sliceSince == query.since) floor else query.since
+                    if (!stopped) visitIdsByCursor(query.copy(since = olderSince, until = mid), withDTag, remaining, narrowings, half)
                     return
                 }
-            if (hits.isEmpty()) return
 
             // Fewer than asked for: the engine ran out, so this range is
-            // complete and there is nothing older to cursor to.
+            // complete. When the range reached the window's bottom there is
+            // nothing older to cursor to — that used to be every short page,
+            // and on a slice it is only the last one: a short or EMPTY slice
+            // above `since` says the data there is sparser than the estimate,
+            // not that the window is done.
             if (hits.size < fetchLimit) {
-                onPage(hits)
-                return
+                if (hits.isNotEmpty() && !onPage(hits)) return
+                if (sliceSince == query.since || sliceSince == null || top == null) return
+                IngestStats.timed(if (hits.isEmpty()) "walk.slice.empty" else "walk.slice.short") { }
+                span = spanAfterShortSlice(top - sliceSince + 1, hits.size, pageSize)
+                until = sliceSince - 1
+                continue
             }
 
             val boundary = hits[pageSize - 1].createdAt
@@ -1662,9 +1710,70 @@ class VespaEventIndex(
             }
             // Strictly past the group just emitted in full.
             if (boundary <= (query.since ?: Long.MIN_VALUE)) return
+            span = spanOfPage(hits, pageSize, boundary)
             until = boundary - 1
         }
     }
+
+    /**
+     * The bottom of a slice `span` seconds wide whose newest second is [top]:
+     * the window's own [since] once the slice would reach it — which is what
+     * makes it the walk's LAST slice — and, for a window open at the bottom,
+     * null (open) once it would reach the epoch, so an event dated before 1970
+     * is still read by the walk that asked for no `since`.
+     */
+    private fun sliceFloor(
+        top: Long,
+        span: Long,
+        since: Long?,
+    ): Long? {
+        // `span` is at most MAX_SLICE_SPAN; only a created_at within that of
+        // Long.MIN_VALUE could take the subtraction past it.
+        val lo = if (top < Long.MIN_VALUE + span) Long.MIN_VALUE else top - span + 1
+        return when {
+            since != null -> maxOf(lo, since)
+            lo <= 0L -> null
+            else -> lo
+        }
+    }
+
+    /**
+     * The next slice's width after a FULL page: one page at the density of the
+     * page's older half. The older half because that is the data nearest the
+     * next slice, and because the newest rows of a window open at the top can
+     * be dated anywhere — this corpus carries notes stamped 2100, and one of
+     * them at the top of a page would make the whole page look a century wide.
+     */
+    private fun spanOfPage(
+        hits: List<DocRef>,
+        pageSize: Int,
+        boundary: Long,
+    ): Long {
+        val half = pageSize / 2
+        // Doubles: two created_at values far enough apart overflow a Long.
+        val seconds = hits[half].createdAt.toDouble() - boundary.toDouble() + 1.0
+        return clampSpan(seconds * pageSize / (pageSize - half))
+    }
+
+    /**
+     * The next slice's width after a slice [width] seconds wide came back
+     * complete with [got] ids: one page at that density, and never more than
+     * [SLICE_GROWTH] times wider, which is also the whole step after an EMPTY
+     * slice — so a run of empty seconds is crossed in a logarithmic number of
+     * queries, while a sparse stretch followed by a dense one cannot be asked
+     * for in a single unbounded jump.
+     */
+    private fun spanAfterShortSlice(
+        width: Long,
+        got: Int,
+        pageSize: Int,
+    ): Long {
+        val grown = width.toDouble() * SLICE_GROWTH
+        if (got == 0) return clampSpan(grown)
+        return clampSpan(minOf(width.toDouble() * pageSize / got, grown))
+    }
+
+    private fun clampSpan(seconds: Double): Long = ceil(seconds).coerceIn(1.0, MAX_SLICE_SPAN.toDouble()).toLong()
 
     /**
      * ONE `created_at` SECOND TOO DENSE FOR THE CURSOR, read whole through the
@@ -2591,11 +2700,17 @@ class VespaEventIndex(
         /**
          * Ids per cursor page of a snapshot walk — see [visitIds].
          *
-         * THE ENGINE CHARGES FOR THE RANGE, NOT THE ROWS, so this constant
-         * divides the cost of every id walk in the process. A page is `order by
+         * THE ENGINE CHARGES FOR THE RANGE, NOT THE ROWS. A page is `order by
          * created_at desc` with a limit: proton matches every document in the
-         * cursor's remaining range, sorts, and returns the top N. The limit
+         * range the page asks for, sorts, and returns the top N. The limit
          * never touches the matching, which is nearly all of the cost.
+         *
+         * When this was chosen the range was the cursor's whole remaining
+         * window, so this constant divided the cost of every id walk in the
+         * process, and the table below is that cursor. Since #209 only a walk's
+         * first page asks for the window; every later one asks for a slice of
+         * about one page ([visitIdsByCursor]), so a wider page now saves round
+         * trips far more than it saves matching.
          *
          * Measured on staging (2026-09-10), one unranked walk shape, kind 1
          * over a week — `totalCount` 2,809,568 and `coverage.full` at every
@@ -2637,6 +2752,30 @@ class VespaEventIndex(
          * serving profile or a Vespa release that brings it back.
          */
         const val MAX_CUT_NARROWINGS = 6
+
+        /**
+         * How much wider a cursor slice may be than the slice before it — the
+         * whole step after an EMPTY slice, and the ceiling on any estimate
+         * after a short one (see [visitIdsByCursor]).
+         *
+         * Not measured as a tuning: it trades two costs against each other. A
+         * run of empty time takes log base [SLICE_GROWTH] of its length in
+         * queries to cross (a year of nothing from a one-second slice: about
+         * nine), and the larger the step, the further a slice sized on sparse
+         * data can reach into whatever lies below it. It bounds the WIDTH, not
+         * the documents: a slice that lands on data denser than it was sized
+         * for matches more than a page — at worst the rest of the window, which
+         * is what every page matched before slices — and the full page it
+         * returns sizes the next slice from the dense data.
+         */
+        const val SLICE_GROWTH = 8
+
+        /**
+         * The widest slice the cursor computes, 2^40 seconds (~35,000 years):
+         * wider than any real window, and small enough that subtracting it
+         * from a created_at cannot overflow.
+         */
+        const val MAX_SLICE_SPAN = 1L shl 40
 
         /**
          * Pause before each rung-1 retry — the ladder's first and, on this

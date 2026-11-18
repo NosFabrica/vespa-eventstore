@@ -332,6 +332,15 @@ class MockVespaEngine(
      */
     val acceptEncodings: MutableList<Pair<String, String>> = Collections.synchronizedList(ArrayList())
 
+    /**
+     * Each `/search/` answer's YQL with the documents it MATCHED and the hits it SERVED, in arrival
+     * order. Matched is the whole match set the query's predicate admits, before its `limit`: an
+     * `order by` with a limit makes the engine match and sort all of it to pick the top N, so the
+     * ratio of the two is what a query cost against what it returned, and no response the client
+     * decodes shows it (this mock's `totalCount` is cut to the limit). Grouped answers are not booked.
+     */
+    val matchCounts: MutableList<Triple<String, Int, Int>> = Collections.synchronizedList(ArrayList())
+
     /** Each update answered through [updateReply], as its path and JSON body, in arrival order. */
     val updates: MutableList<Pair<String, String>> = Collections.synchronizedList(ArrayList())
 
@@ -397,6 +406,14 @@ class MockVespaEngine(
      * keeps the engine it had.
      */
     @Volatile var degradeSortedUnranked: Boolean = false
+
+    /**
+     * Cut — one hit, match-phase degraded, as [degradeSortedUnranked] cuts — every non-grouped
+     * search whose YQL this answers true for: a cut placed on ONE query of a walk, where
+     * [degradeCoverage] cuts every query and [degradeSortedUnranked] none the walk sends. Null
+     * (the default) places none.
+     */
+    @Volatile var cutWhere: ((yql: String) -> Boolean)? = null
 
     /**
      * The relevance a hit is served with, and the order hits come back in
@@ -772,7 +789,7 @@ class MockVespaEngine(
         // single-key sort picks boundary-tie MEMBERSHIP arbitrarily, and a cut
         // inside the reference's tiebroken order would hide exactly the bug
         // [scrambleTieOrder] exists to surface.
-        val matches =
+        val admitted =
             runBlocking { inner.search(query.copy(limit = null)) }
                 .let { docs ->
                     when {
@@ -789,7 +806,8 @@ class MockVespaEngine(
                     } else {
                         sorted
                     }
-                }.let { ordered -> query.limit?.let { ordered.take(it) } ?: ordered }
+                }
+        val matches = query.limit?.let { admitted.take(it) } ?: admitted
         // Simulated match-phase under-delivery: fewer hits than the limit, with
         // ONLY the match-phase degradation flag set (see [matchPhaseUnderdeliver]).
         val underdeliver = matchPhaseUnderdeliver > 0 && !grouped && (params["ranking"] == "recency" || params["ranking"] == "recency_gated")
@@ -801,11 +819,12 @@ class MockVespaEngine(
                 " order by created_at desc" in yql &&
                 params["ranking"] == EventYql.RANK_UNRANKED &&
                 params[EventYql.SORT_DEGRADING] != EventYql.SORT_DEGRADING_OFF
-        val cut = underdeliver || autoCut
+        val placedCut = !grouped && cutWhere?.invoke(yql) == true
+        val cut = underdeliver || autoCut || placedCut
         val served =
             when {
                 underdeliver -> minOf(matchPhaseUnderdeliver, hits)
-                autoCut -> minOf(1, hits)
+                autoCut || placedCut -> minOf(1, hits)
                 else -> hitsCap?.let { minOf(it, hits) } ?: hits
             }
         val children =
@@ -849,6 +868,7 @@ class MockVespaEngine(
                     },
                 )
             }
+        if (!grouped) matchCounts += Triple(yql, admitted.size, children.size)
         return Reply(200, root.toString())
     }
 
