@@ -580,13 +580,12 @@ Make sure to have the following pre-requisites installed:
 1. Java 21+ (JDK 21)
 2. IntelliJ IDEA CE or Android Studio
 
-Kotlin 2.4 / JDK 21. Quartz comes from JitPack
-(`com.github.vitorpamplona.quartz:quartz`), pinned to a commit in `gradle/libs.versions.toml`;
-a project depending on this store needs `maven("https://jitpack.io")` in its repositories (a
-repository filtered to groups needs `com.github.vitorpamplona.quartz`). Quartz's crypto-kmp and
-libschnorr256k1-kotlin are released on Nostr + Blossom only, so it also needs the
-[Magpie](https://github.com/vitorpamplona/magpie) settings plugin serving `com.vitorpamplona.crypto`
-and `com.vitorpamplona.schnorr256k1`, as `settings.gradle.kts` does here.
+Kotlin 2.4 / JDK 21. Quartz (`com.vitorpamplona.quartz:quartz`) and its crypto-kmp,
+libschnorr256k1-kotlin and negentropy-kmp are released on Nostr + Blossom only, pinned to a
+release in `gradle/libs.versions.toml`; a project depending on this store needs the
+[Magpie](https://github.com/vitorpamplona/magpie) settings plugin serving `com.vitorpamplona.quartz`,
+`com.vitorpamplona.crypto`, `com.vitorpamplona.schnorr256k1` and `com.vitorpamplona.negentropy`, as
+`settings.gradle.kts` does here.
 
 On first build the project installs the repo's git hooks (`.git-hooks` →
 `.git/hooks`) so [Spotless](https://github.com/diffplug/spotless) runs on commit
