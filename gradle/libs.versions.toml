@@ -8,7 +8,19 @@ mavenPublish = "0.37.0"
 # FROM MAGPIE, so the published POM names com.vitorpamplona.quartz:quartz-jvm:<pin> and a consumer of
 # this store needs Magpie serving quartz's groups (settings.gradle.kts); it needs no JitPack.
 #
-# 2.20.0 = vitorpamplona/quartz's release 2.20.0 (main @ 2026-11-19, the quartz#126 merge e69dd07a67),
+# 2.20.1 = vitorpamplona/quartz's release 2.20.1 (the v2.20.1 tag e3a43e852 over the quartz#129 merge
+# 2884f8548), 8 commits over 2.20.0 (below), which it descends from.
+#  - LIVE EVENTS AFTER EOSE (quartz#127). LiveEventStore holds the live events it accepts while a
+#    REQ's stored replay runs and forwards them right after EOSE, so everything before EOSE is the
+#    stored answer the filter's `limit` bounds; `maxHeldBeforeEose` (a new third constructor
+#    argument, 1,000 by default, 0 off) caps the hold per REQ. Server-side only: this store
+#    constructs no LiveEventStore, vespa-relay does.
+#  - MAGPIE. The settings plugin 0.2.1 -> 0.2.3, as quartz's (quartz#128; 0.2.3 derives the NIP-46
+#    client key from the bunker secret and the group, so one signer approval covers every release).
+#  - RUNTIME CLASSPATH (:store): quartz-jvm 2.20.0 -> 2.20.1; nothing else.
+#  - The distributed skill (.claude/skills/quartz) is re-copied from this release's commit.
+#
+# Prev 2.20.0 = vitorpamplona/quartz's release 2.20.0 (main @ 2026-11-19, the quartz#126 merge e69dd07a67),
 # 18 commits over 74c6a4a (below), which it descends from. The first quartz this store takes from
 # Nostr + Blossom rather than JitPack: quartz releases only there (and stopped at 2.18.0 on Central),
 # so a release pin needs the Magpie group com.vitorpamplona.quartz beside crypto and schnorr256k1.
@@ -369,7 +381,7 @@ mavenPublish = "0.37.0"
 # catch-all; SearchableEvent grows the read-path forEachIndexableField, no reindex).
 # Prev cecc3287b2 (2026-09-01: 17 catch-all kinds split into title/body roles, four
 # affiliation URLs, six doubled `t`-tag scans dropped; a ranking backfill).
-quartz = "2.20.0"
+quartz = "2.20.1"
 coroutines = "1.11.0"
 serialization = "1.12.0"
 # Matches what Quartz brings transitively; Gradle would resolve to it regardless.
