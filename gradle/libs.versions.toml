@@ -4,11 +4,27 @@ kotlin = "2.4.21"
 app = "1.0.1"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"
-# Quartz from JitPack (com.github.vitorpamplona.quartz:quartz), pinned to a commit.
-# FROM JITPACK, so the published POM names com.github.vitorpamplona.quartz:quartz-jvm:<pin> and a
-# consumer of this store needs JitPack in its repositories (Central publishing does not check).
+# Quartz from Nostr + Blossom through Magpie (com.vitorpamplona.quartz:quartz), pinned to a release.
+# FROM MAGPIE, so the published POM names com.vitorpamplona.quartz:quartz-jvm:<pin> and a consumer of
+# this store needs Magpie serving quartz's groups (settings.gradle.kts); it needs no JitPack.
 #
-# 74c6a4a = vitorpamplona/quartz main @ 2026-11-18, the quartz#121 merge (74c6a4ae66), 84 commits over
+# 2.20.0 = vitorpamplona/quartz's release 2.20.0 (main @ 2026-11-19, the quartz#126 merge e69dd07a67),
+# 18 commits over 74c6a4a (below), which it descends from. The first quartz this store takes from
+# Nostr + Blossom rather than JitPack: quartz releases only there (and stopped at 2.18.0 on Central),
+# so a release pin needs the Magpie group com.vitorpamplona.quartz beside crypto and schnorr256k1.
+#  - MAGPIE. negentropy-kmp moves v1.2.1 (Maven Central) -> v1.2.3 (Nostr + Blossom only, group
+#    com.vitorpamplona.negentropy, which settings.gradle.kts now serves); libschnorr256k1-kotlin
+#    1.0.2 -> 1.0.3; the Magpie settings plugin 0.2.0 -> 0.2.1, as quartz's. gradle/magpie.lock gains
+#    the two new groups under the same release key, and their files.
+#  - RELAY CLIENT (quartz#122, quartz#124): IRelayClient.lastDisconnect (who ended a socket and how,
+#    with the frames it sent) and NegentropySyncException's typed `failure`, `disconnect`, `sent` and
+#    `rounds`. Additive; this store reads neither.
+#  - KINDS: llama.garden's model-torrent kinds (parsed, stored as before; none searchable here).
+#  - RUNTIME CLASSPATH (:store): quartz's group moves to com.vitorpamplona.quartz; kmp-negentropy and
+#    schnorr256k1-kotlin as above; nothing else.
+#  - The distributed skill (.claude/skills/quartz) is re-copied from this release's commit.
+#
+# Prev 74c6a4a = vitorpamplona/quartz main @ 2026-11-18, the quartz#121 merge (74c6a4ae66), 84 commits over
 # ce558d9 (below), which it descends from (2.17.0, 2.18.0 and 2.19.0 between them); JitPack builds it
 # (quartz-jvm's POM answers 200). A tree diff of quartz/src between them, main sources (69 files),
 # scanned against this store's imports:
@@ -353,7 +369,7 @@ mavenPublish = "0.37.0"
 # catch-all; SearchableEvent grows the read-path forEachIndexableField, no reindex).
 # Prev cecc3287b2 (2026-09-01: 17 catch-all kinds split into title/body roles, four
 # affiliation URLs, six doubled `t`-tag scans dropped; a ranking backfill).
-quartz = "74c6a4a"
+quartz = "2.20.0"
 coroutines = "1.11.0"
 serialization = "1.12.0"
 # Matches what Quartz brings transitively; Gradle would resolve to it regardless.
@@ -382,7 +398,7 @@ ktlint = "1.8.0"
 testcontainers = "2.0.5"
 
 [libraries]
-quartz = { module = "com.github.vitorpamplona.quartz:quartz", version.ref = "quartz" }
+quartz = { module = "com.vitorpamplona.quartz:quartz", version.ref = "quartz" }
 kotlinx-coroutines = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
