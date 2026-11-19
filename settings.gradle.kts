@@ -13,7 +13,7 @@ pluginManagement {
 // that key and every resolved version's files, as in quartz itself. A consumer of this store needs
 // the same groups through Magpie.
 plugins {
-    id("com.vitorpamplona.magpie") version "0.2.1"
+    id("com.vitorpamplona.magpie") version "0.2.3"
 }
 
 magpie {
