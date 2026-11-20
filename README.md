@@ -577,10 +577,10 @@ default bodies a decorator would otherwise silently answer with).
 ## Developer Setup
 
 Make sure to have the following pre-requisites installed:
-1. Java 21+ (JDK 21)
+1. Java 25+ (JDK 25)
 2. IntelliJ IDEA CE or Android Studio
 
-Kotlin 2.4 / JDK 21. Quartz (`com.vitorpamplona.quartz:quartz`) and its crypto-kmp,
+Kotlin 2.4 / JDK 25. Quartz (`com.vitorpamplona.quartz:quartz`) and its crypto-kmp,
 libschnorr256k1-kotlin and negentropy-kmp are released on Nostr + Blossom only, pinned to a
 release in `gradle/libs.versions.toml`; a project depending on this store needs the
 [Magpie](https://github.com/vitorpamplona/magpie) settings plugin serving `com.vitorpamplona.quartz`,

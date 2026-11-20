@@ -1,5 +1,5 @@
 jdk:
-  - openjdk21
+  - openjdk25
 before_install:
   - echo 'allprojects { tasks.matching { it.name.toLowerCase().startsWith("sign") }.configureEach { it.enabled = false } }' > nosign.init.gradle
 install:

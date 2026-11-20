@@ -59,6 +59,8 @@ import com.nosfabrica.vespa.eventstore.trust.TrustCells
 import com.nosfabrica.vespa.eventstore.trust.TrustExplain
 import com.nosfabrica.vespa.eventstore.trust.TrustProjection
 import com.nosfabrica.vespa.eventstore.trust.TrustProviders
+import com.vitorpamplona.negentropy.storage.IStorage
+import com.vitorpamplona.negentropy.storage.PrefixSumStorageVector
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.core.HexKey
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
@@ -1134,23 +1136,58 @@ class NostrSemanticsStore(
         onProgress: ((collected: Int) -> Unit)?,
     ): List<IdAndTime> {
         val all = ArrayList<IdAndTime>()
+        val cap = sentinelCap(maxEntries)
+        walkSnapshot(filters, cap, onProgress) { id, createdAt -> all += IdAndTime(createdAt, id) }
+        // A page (or a search, which has no page hook to stop on) can carry
+        // the count past the cap — trim to the sentinel the contract promises.
+        return if (cap != null && all.size > cap) all.subList(0, cap) else all
+    }
+
+    /**
+     * The same walk as [snapshotIdsForNegentropy], inserted straight into a sealed negentropy
+     * storage, so a single-filter walk holds no per-id object (a multi-filter one still dedups by
+     * id); null when the set exceeds [maxEntries].
+     */
+    override suspend fun sealedNegentropyStorage(
+        filters: List<Filter>,
+        maxEntries: Int,
+    ): IStorage? =
+        withActivity(Activity.Snapshot) {
+            val storage = PrefixSumStorageVector()
+            val unique = walkSnapshot(filters, sentinelCap(maxEntries), null) { id, createdAt -> storage.insert(createdAt, id) }
+            if (unique > maxEntries) null else storage.also { it.seal() }
+        }
+
+    /** One past [maxEntries], the overflow sentinel; no cap at all where one past would not fit an Int. */
+    private fun sentinelCap(maxEntries: Int?): Int? = maxEntries?.takeIf { it < Int.MAX_VALUE }?.plus(1)
+
+    /** Hands every unique matching (id, created_at) to [sink]; stops once [cap] are handed. Returns how many were. */
+    private suspend fun walkSnapshot(
+        filters: List<Filter>,
+        cap: Int?,
+        onProgress: ((collected: Int) -> Unit)?,
+        sink: (id: String, createdAt: Long) -> Unit,
+    ): Int {
+        var count = 0
         // Only a multi-filter snapshot can repeat an id — one query never
         // returns a doc twice — so the single-filter walk pays nothing here.
         val seen = if (filters.size > 1) HashSet<String>() else null
-        val cap = maxEntries?.plus(1)
 
         fun collect(
             id: String,
             createdAt: Long,
         ) {
-            if (seen == null || seen.add(id)) all += IdAndTime(createdAt, id)
+            if (seen == null || seen.add(id)) {
+                sink(id, createdAt)
+                count++
+            }
         }
 
         // Exclude already-expired events (NIP-40), exactly as query/count do —
         // otherwise a peer keeps trying to reconcile events we refuse to serve.
         val cutoff = nowSecs()
         // SERIAL, where `query` and `count` fan out at QUERY_FANOUT — and it is
-        // a choice, not an oversight. The fold below is unsynchronized (`all`,
+        // a choice, not an oversight. The fold below is unsynchronized (the sink,
         // `seen`), so a fan-out would have to hand each walk its own list and
         // merge after, which on the one read that materializes a whole corpus
         // slice adds a partial copy per in-flight filter to the peak. What that
@@ -1161,21 +1198,19 @@ class NostrSemanticsStore(
         // services its 10040 names, or the gate reads an empty lens.
         for (q in lensed(filters.mapNotNull { it.toExpiryQuery(cutoff) })) {
             // Already over budget: the filters left can only add to the union.
-            if (cap != null && all.size >= cap) break
+            if (cap != null && count >= cap) break
             if (q.search == null && q.phrases.isEmpty()) {
                 index.visitIds(q) { page ->
                     page.forEach { collect(it.id, it.createdAt) }
-                    onProgress?.invoke(all.size)
-                    cap == null || all.size < cap
+                    onProgress?.invoke(count)
+                    cap == null || count < cap
                 }
             } else {
                 index.search(q).forEach { collect(it.id, it.createdAt) }
-                onProgress?.invoke(all.size)
+                onProgress?.invoke(count)
             }
         }
-        // A page (or a search, which has no page hook to stop on) can carry
-        // the count past the cap — trim to the sentinel the contract promises.
-        return if (cap != null && all.size > cap) all.subList(0, cap) else all
+        return count
     }
 
     // ---- deletes ------------------------------------------------------------

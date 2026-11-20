@@ -11,7 +11,7 @@ dependencies {
 }
 
 java {
-    toolchain { languageVersion.set(JavaLanguageVersion.of(21)) }
+    toolchain { languageVersion.set(JavaLanguageVersion.of(25)) }
 }
 
 // Vespa 8's container runs Java 17.
