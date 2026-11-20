@@ -8,7 +8,18 @@ mavenPublish = "0.37.0"
 # FROM MAGPIE, so the published POM names com.vitorpamplona.quartz:quartz-jvm:<pin> and a consumer of
 # this store needs Magpie serving quartz's groups (settings.gradle.kts); it needs no JitPack.
 #
-# 2.20.1 = vitorpamplona/quartz's release 2.20.1 (the v2.20.1 tag e3a43e852 over the quartz#129 merge
+# 2.21.0 = vitorpamplona/quartz's release 2.21.0 (the v2.21.0 tag bc98eb406 over the quartz#131 merge
+# 0cfd8bdd5), 30 commits over 2.20.1 (below), which it descends from; 2.20.2 between them was never pinned.
+#  - STREAMED NEGENTROPY SNAPSHOTS (quartz#134). IEventStore gains sealedNegentropyStorage(filters,
+#    maxEntries), which LiveEventStore now builds every NEG-OPEN's storage through; NostrSemanticsStore
+#    overrides it to insert each walked page straight into the storage. Its default snapshot also takes
+#    a cap at Int.MAX_VALUE as no cap, where maxEntries + 1 had wrapped and thrown.
+#  - CLIENT FRAMES (2.20.2, quartz#132). The NIP-77 client caps each NEG-MSG at 60,000 raw bytes. Client
+#    side only: this store opens no negentropy session; vespa-relay's mirror does.
+#  - Also in the range, nothing this store calls: Observer params `publish` and `place` (quartz#135), a
+#    NIP-46 nostrconnect name reading `+` as a space (quartz#136), Concord Roles v2 and Buzz / NIP-29.
+#
+# Prev 2.20.1 = vitorpamplona/quartz's release 2.20.1 (the v2.20.1 tag e3a43e852 over the quartz#129 merge
 # 2884f8548), 8 commits over 2.20.0 (below), which it descends from.
 #  - LIVE EVENTS AFTER EOSE (quartz#127). LiveEventStore holds the live events it accepts while a
 #    REQ's stored replay runs and forwards them right after EOSE, so everything before EOSE is the
@@ -381,7 +392,7 @@ mavenPublish = "0.37.0"
 # catch-all; SearchableEvent grows the read-path forEachIndexableField, no reindex).
 # Prev cecc3287b2 (2026-09-01: 17 catch-all kinds split into title/body roles, four
 # affiliation URLs, six doubled `t`-tag scans dropped; a ranking backfill).
-quartz = "2.20.1"
+quartz = "2.21.0"
 coroutines = "1.11.0"
 serialization = "1.12.0"
 # Matches what Quartz brings transitively; Gradle would resolve to it regardless.
