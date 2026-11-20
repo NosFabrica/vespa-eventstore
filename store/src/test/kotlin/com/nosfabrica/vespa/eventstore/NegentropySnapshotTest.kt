@@ -167,4 +167,43 @@ class NegentropySnapshotTest {
         snapshot(Filter(kinds = listOf(1), search = "observer:$observer sort:text"))
         assertTrue(!EventYql.walksGated(walked.single()), "sort:text reads no lens, so its set is ungated")
     }
+
+    private fun storageSet(filters: List<Filter>): Set<Pair<Long, String>>? =
+        runBlocking {
+            store.sealedNegentropyStorage(filters, 1_000)?.let { storage ->
+                (0 until storage.size()).map { i -> storage.getItem(i).let { it.timestamp to it.id.toHexString() } }.toSet()
+            }
+        }
+
+    @Test
+    fun `the sealed storage holds exactly the snapshot's set, through the same walks`() {
+        seed()
+        val filters = listOf(Filter(kinds = listOf(1)), Filter(authors = authors.take(2)), Filter(kinds = listOf(1), search = "observer:$observer filter:rank:gte:50"))
+        walked.clear()
+        val listed = runBlocking { store.snapshotIdsForNegentropy(filters, 1_000, null) }.map { it.createdAt to it.id }
+        val listWalks = walked.toList()
+        walked.clear()
+        val sealed = storageSet(filters)
+        assertEquals(listed.size, listed.toSet().size, "the list is deduplicated across filters")
+        assertEquals(listed.toSet(), sealed)
+        assertEquals(listWalks, walked.toList())
+    }
+
+    @Test
+    fun `the sealed storage is null past the cap, as the list's sentinel says`() {
+        seed()
+        val all = Filter(kinds = listOf(1))
+        val n = snapshot(all).size
+        assertEquals(n, runBlocking { store.sealedNegentropyStorage(listOf(all), n)?.size() })
+        assertNull(runBlocking { store.sealedNegentropyStorage(listOf(all), n - 1) })
+    }
+
+    @Test
+    fun `a cap at Int MAX_VALUE walks the whole set`() {
+        seed()
+        val all = Filter(kinds = listOf(1))
+        val n = snapshot(all).size
+        assertEquals(n, runBlocking { store.snapshotIdsForNegentropy(listOf(all), Int.MAX_VALUE, null) }.size)
+        assertEquals(n, runBlocking { store.sealedNegentropyStorage(listOf(all), Int.MAX_VALUE)?.size() })
+    }
 }

@@ -113,6 +113,7 @@ class TelemetryTest {
             rig.store.rawQuery(listOf(Filter(kinds = listOf(1)))) { }
             rig.store.count(Filter(kinds = listOf(1)))
             rig.store.snapshotIdsForNegentropy(listOf(Filter(kinds = listOf(1))), null, null)
+            rig.store.sealedNegentropyStorage(listOf(Filter(kinds = listOf(1))), 1_000)
             rig.store.distinctTagValues(Filter(kinds = listOf(1)), "p")
             rig.store.deleteExpiredEvents()
             rig.store.refreshGuardOwners()
