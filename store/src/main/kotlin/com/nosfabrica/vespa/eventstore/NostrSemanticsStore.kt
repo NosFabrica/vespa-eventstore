@@ -1145,7 +1145,8 @@ class NostrSemanticsStore(
 
     /**
      * The same walk as [snapshotIdsForNegentropy], inserted straight into a sealed negentropy
-     * storage, so no per-id object is ever held; null when the set exceeds [maxEntries].
+     * storage, so a single-filter walk holds no per-id object (a multi-filter one still dedups by
+     * id); null when the set exceeds [maxEntries].
      */
     override suspend fun sealedNegentropyStorage(
         filters: List<Filter>,
