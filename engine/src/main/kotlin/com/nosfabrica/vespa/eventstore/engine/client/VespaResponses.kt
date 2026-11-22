@@ -488,6 +488,8 @@ internal class VespaSummary(
     /** Only the `idtimetag` summary projects this — see [EventYql.buildIdTime]. */
     @SerialName("tag_index") val tagIndex: List<String>? = null,
     val content: String = "",
+    /** The content when the engine could not store it raw; see [EventDoc.CONTENT_JSON]. */
+    @SerialName(EventDoc.CONTENT_JSON) val contentJson: String? = null,
     val sig: String = "",
     val owner: String? = null,
     val name: String? = null,
@@ -529,7 +531,7 @@ internal class VespaSummary(
             createdAt = createdAt,
             kind = kind,
             tags = Json.parseToJsonElement(tags).jsonArray.map { row -> row.jsonArray.map { it.jsonPrimitive.content } },
-            content = content,
+            content = EventDoc.contentOf(content, contentJson),
             sig = sig,
             owner = owner ?: pubkey,
             // normalized(): the feed writes "" for an absent name/display_name
@@ -545,7 +547,7 @@ internal class VespaSummary(
      */
     fun toRaw(): RawEvent? {
         if (id.isEmpty()) return null
-        return RawEvent(id, pubkey, createdAt, kind, tags, content, sig)
+        return RawEvent(id, pubkey, createdAt, kind, tags, EventDoc.contentOf(content, contentJson), sig)
     }
 
     /** The near arrays this summary carries, keyed as fed. Only meaningful on document-API reads (see [toDoc]). */

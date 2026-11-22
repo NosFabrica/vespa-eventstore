@@ -585,9 +585,10 @@ class EventYqlTest {
 
     /**
      * The tag-value mirror of the erased-word rules above. A value the engine
-     * cannot STORE can never sit in tag_index — the store refuses the whole
-     * event carrying it — so it is unmatchable, not an escaping problem, and
-     * must never reach the YQL literal raw (quote() has no escape for it).
+     * cannot STORE never sits in tag_index — the event carrying it is stored,
+     * but `EventDoc.tagIndex` leaves that value out — so it is unmatchable, not
+     * an escaping problem, and must never reach the YQL literal raw (quote()
+     * has no escape for it, and the engine refuses a noncharacter whole).
      */
     @Test
     fun `an unstorable tag value is unmatchable, never rendered raw`() {
@@ -605,6 +606,11 @@ class EventYqlTest {
         // value sinks the conjunction. Dropping it would WIDEN the query to
         // documents that lack the term entirely.
         assertNull(EventYql.build(EventQuery(tagsAll = mapOf("d" to listOf(bad, "good")))))
+
+        // Noncharacters and lone surrogates are unstorable too, so the same.
+        for (nonchar in listOf("a\uFDD1b", "a\uDBFF\uDFFFb", "a\uD800b")) {
+            assertNull(EventYql.build(EventQuery(tags = mapOf("t" to listOf(nonchar)))), nonchar)
+        }
     }
 
     /**

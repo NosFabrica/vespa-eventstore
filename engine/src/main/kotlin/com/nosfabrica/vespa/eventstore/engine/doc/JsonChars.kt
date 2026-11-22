@@ -20,6 +20,8 @@
  */
 package com.nosfabrica.vespa.eventstore.engine.doc
 
+import com.nosfabrica.vespa.eventstore.engine.text.StorableText
+
 /** Escapes for the chars below [ESCAPES]'s size that need one; null means "as is". */
 private val ESCAPES: Array<String?> =
     arrayOfNulls<String>('\\'.code + 1).apply {
@@ -57,7 +59,11 @@ private val TWICE: Array<String?> =
  * non-ASCII char go through as they are). Byte-identity is the contract, not a nicety —
  * the `tags` string this writes is stored and later spliced verbatim into served events
  * (`toRawEvent`), and `JsonCharsTest` checks every UTF-16 unit against kotlinx so a corpus
- * fed before and after this writer stores the same bytes.
+ * fed before and after this writer stores the same bytes. ONE exception, in the tag writers
+ * only: a value carrying a code point the engine cannot store ([StorableText]: noncharacters,
+ * lone surrogates) writes it as `\uXXXX` instead of raw — kotlinx's raw form is a document the
+ * engine refuses whole, and such events were refused before they could be fed, so no stored
+ * byte changes. A served event carrying the escape parses to the very string that was signed.
  *
  * WHY A CHAR ARRAY, not a `StringBuilder`: a value is copied in with one bulk
  * `getChars` (an intrinsic, widened from Latin-1 in vector strides) and then scanned IN
@@ -122,12 +128,26 @@ internal class JsonChars(
         return raw(']')
     }
 
-    /** The JSON text of a tag array, `[["p","…"],…]`. */
+    /**
+     * [value] as a quoted JSON string the engine can STORE: escaped as [string] escapes it,
+     * and every code point [StorableText] refuses written as `\uXXXX` (each UTF-16 unit of
+     * it), which no JSON parser reads back as anything but the same string. The rare path:
+     * only a value that has such a code point comes here.
+     */
+    fun storableString(value: String): JsonChars = raw('"').storableEscaped(value).raw('"')
+
+    /** The JSON text of a tag array, `[["p","…"],…]`, storable whatever its values carry. */
     fun tags(tags: List<List<String>>): JsonChars {
         raw('[')
         for (i in tags.indices) {
             if (i > 0) raw(',')
-            strings(tags[i])
+            raw('[')
+            val tag = tags[i]
+            for (v in tag.indices) {
+                if (v > 0) raw(',')
+                if (StorableText.isStorable(tag[v])) string(tag[v]) else storableString(tag[v])
+            }
+            raw(']')
         }
         return raw(']')
     }
@@ -145,7 +165,14 @@ internal class JsonChars(
             val tag = tags[t]
             for (v in tag.indices) {
                 if (v > 0) raw(',')
-                raw("\\\"").escaped(tag[v], TWICE).raw("\\\"")
+                val value = tag[v]
+                if (StorableText.isStorable(value)) {
+                    raw("\\\"").escaped(value, TWICE).raw("\\\"")
+                } else {
+                    // [TWICE] is [ESCAPES] applied to [ESCAPES]' output, so the value's
+                    // storable form escaped once more is the same text [tags] stores.
+                    raw("\\\"").escaped(JsonChars(value.length + 16).storableEscaped(value).toString(), ESCAPES).raw("\\\"")
+                }
             }
             raw(']')
         }
@@ -165,6 +192,31 @@ internal class JsonChars(
             .raw(':')
             .escaped(value, ESCAPES)
             .raw('"')
+
+    /** [value] escaped as [string] escapes it, plus `\uXXXX` for each UTF-16 unit of a code point the engine cannot store. */
+    private fun storableEscaped(value: String): JsonChars {
+        var i = 0
+        while (i < value.length) {
+            val cp = value.codePointAt(i)
+            val units = Character.charCount(cp)
+            if (StorableText.isStorable(cp)) {
+                for (k in i until i + units) {
+                    val c = value[k]
+                    val escape = if (c.code < ESCAPES.size) ESCAPES[c.code] else null
+                    if (escape != null) raw(escape) else raw(c)
+                }
+            } else {
+                for (k in i until i + units) {
+                    val c = value[k]
+                    // C0 keeps the escape [string] gives it (`\b`, `\u0001`); the rest has none.
+                    val escape = if (c.code < ESCAPES.size) ESCAPES[c.code] else null
+                    raw(escape ?: ("\\u" + c.code.toString(16).padStart(4, '0')))
+                }
+            }
+            i += units
+        }
+        return this
+    }
 
     /** [value] with each char that needs one replaced by its [table] escape. */
     private fun escaped(

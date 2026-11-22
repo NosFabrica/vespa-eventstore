@@ -19,6 +19,7 @@
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 package com.nosfabrica.vespa.eventstore.engine.doc
+import com.nosfabrica.vespa.eventstore.engine.text.StorableText
 import com.vitorpamplona.quartz.nip01Core.core.Address
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.core.HexKey
@@ -77,14 +78,18 @@ data class EventDoc(
     /**
      * The queryable `"<letter>:<value>"` pairs: one per single-ASCII-letter tag
      * name (what NIP-01 `#x` filters can address) with a value. Everything else
-     * still round-trips through [tags].
+     * still round-trips through [tags]. A value the engine cannot store
+     * ([StorableText]) is left out: `tag_index` is an attribute, matched as the
+     * string it holds, and the query compiler renders such a value unmatchable
+     * (`EventYql`), so the two agree that no `#x` filter finds it. The event
+     * itself is stored and served whole.
      */
     fun tagIndex(): List<String> = ArrayList<String>(tags.size).apply { forEachIndexedTag { name, value -> add("$name:$value") } }
 
     /** Each [tagIndex] entry as its name and value, unjoined: the one place the rule lives. */
     private inline fun forEachIndexedTag(block: (name: String, value: String) -> Unit) {
         for (tag in tags) {
-            if (tag.size > 1 && isIndexableTagName(tag[0])) block(tag[0], tag[1])
+            if (tag.size > 1 && isIndexableTagName(tag[0]) && StorableText.isStorable(tag[1])) block(tag[0], tag[1])
         }
     }
 
@@ -151,7 +156,8 @@ data class EventDoc(
             put("kind", kind)
             put("tags", tagsJson())
             put("tag_index", JsonArray(tagIndex().map(::JsonPrimitive)))
-            put("content", content)
+            val literal = contentLiteral()
+            if (literal == null) put("content", content) else put(CONTENT_JSON, literal)
             put("sig", sig)
             put("owner", owner)
             // The author's ranking state (global reputation parent) — purely
@@ -224,7 +230,8 @@ data class EventDoc(
             out.pair(name, value)
         }
         out.raw(']')
-        out.key("content").string(content)
+        val literal = contentLiteral()
+        if (literal == null) out.key("content").string(content) else out.key(CONTENT_JSON).string(literal)
         out.key("sig").string(sig)
         out.key("owner").string(owner)
         out.key("author_ref").string("id:reputation:reputation::$pubkey")
@@ -247,10 +254,32 @@ data class EventDoc(
      */
     fun toRawEvent(): RawEvent = RawEvent(id, pubkey, createdAt, kind, tagsJson(), content, sig)
 
-    /** [tags] as the JSON text the `tags` field stores: `[["p","…"],…]`, escaped as kotlinx escapes it. */
+    /**
+     * [content] as the JSON string literal [CONTENT_JSON] stores, or null when it is storable
+     * as it is — the common case by far, so the feed writes `content` exactly as before. See
+     * [CONTENT_JSON].
+     */
+    private fun contentLiteral(): String? = if (StorableText.isStorable(content)) null else JsonChars(content.length + content.length / 8 + 16).storableString(content).toString()
+
+    /** [tags] as the JSON text the `tags` field stores: `[["p","…"],…]`, escaped as kotlinx escapes it (see [JsonChars]). */
     fun tagsJson(): String = JsonChars(tags.sumOf { tag -> 2 + tag.sumOf { it.length + 3 } } + 2).tags(tags).toString()
 
     companion object {
+        /**
+         * The field holding [content] when the engine cannot store it raw: the content as a JSON
+         * string literal, every refused code point a `\uXXXX` escape ([JsonChars.storableString]).
+         * `content` is then left out. NIP-01's own `\b` and `\f` decode to two such code points, and
+         * profiles carry others; the content is covered byte for byte by the signature, so it is
+         * escaped, never scrubbed, and read back exact by [contentOf]. Summary-only, like `content`.
+         */
+        const val CONTENT_JSON = "content_json"
+
+        /** The event's content off a stored document's two content fields: [CONTENT_JSON] when it is there. */
+        fun contentOf(
+            content: String?,
+            contentJson: String?,
+        ): String = if (contentJson != null) Json.parseToJsonElement(contentJson).jsonPrimitive.content else content ?: ""
+
         /** The `expires_at` value for an event with no NIP-40 expiration: far enough out to outlive every range check. */
         const val NO_EXPIRATION = Long.MAX_VALUE
 
@@ -296,7 +325,7 @@ data class EventDoc(
                         .parseToJsonElement(fields.getValue("tags").jsonPrimitive.content)
                         .jsonArray
                         .map { tag -> tag.jsonArray.map { it.jsonPrimitive.content } },
-                content = fields["content"]?.jsonPrimitive?.content ?: "",
+                content = contentOf(fields["content"]?.jsonPrimitive?.content, fields[CONTENT_JSON]?.jsonPrimitive?.content),
                 // Vespa OMITS empty-string fields from summaries: an unsigned
                 // rumor (sig == "") arrives with no `sig` key — default to ""
                 // instead of letting getValue throw and silently drop the hit.

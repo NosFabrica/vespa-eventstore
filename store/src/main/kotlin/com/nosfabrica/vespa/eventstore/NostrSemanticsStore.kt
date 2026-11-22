@@ -605,7 +605,7 @@ class NostrSemanticsStore(
 
     /** [batchInsert]'s body; split because `withActivity` cannot express a non-local return. */
     private suspend fun batchInsertUnder(events: List<Event>): List<IEventStore.InsertOutcome> {
-        // A batch decided WITHOUT I/O (all ephemeral, expired or unstorable)
+        // A batch decided WITHOUT I/O (all ephemeral or expired)
         // is answered holding nothing, like the single insert, unless it
         // carries a trust kind (whose commit settles the ledger — see
         // [insertOne]). `all` stops at the first event that needs the store,

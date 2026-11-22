@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore.engine.query
 import com.nosfabrica.vespa.eventstore.engine.text.IndexableChars
+import com.nosfabrica.vespa.eventstore.engine.text.StorableText
 import com.nosfabrica.vespa.eventstore.engine.text.WHITESPACE
 import com.nosfabrica.vespa.eventstore.engine.tuning.ProcessKnobs
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
@@ -321,7 +322,7 @@ object EventYql {
      * bytes on a plain 200-hit note scan, far more on long-form. The omitted
      * fields are index/ranking inputs, never part of the served event.
      */
-    const val SUMMARY_FIELDS = "id, pubkey, created_at, kind, tags, content, sig, owner"
+    const val SUMMARY_FIELDS = "id, pubkey, created_at, kind, tags, content, content_json, sig, owner"
 
     /**
      * The attribute-only document-summary in event.sd serving the existence
@@ -1406,18 +1407,18 @@ object EventYql {
     }
 
     /**
-     * Whether [quote] can render [s] into a YQL literal at all.
-     *
-     * Of the C0 block only tab, LF and CR have an escape in [quote] — and those
-     * are exactly the three the engine will STORE, so a tag value carrying any
-     * other C0 character can never sit in `tag_index` (`VespaText`
-     * .firstIllegalField refuses the whole event first). Unmatchable either way.
+     * Whether [s] can be a `tag_index` term at all: exactly the values the engine
+     * stores ([StorableText]). A value carrying any other code point never sits in
+     * `tag_index` — `EventDoc.tagIndex` leaves it out, though the event is stored —
+     * so it is unmatchable, and it must never reach a YQL literal raw: of the C0
+     * block [quote] has escapes only for tab, LF and CR, the three the engine
+     * stores, and a noncharacter or lone surrogate is refused by the engine whole.
      *
      * DEL and the C1 block are deliberately NOT excluded: Vespa stores them
      * (mojibake'd Latin-1 lands there constantly), documents really do carry
      * them, and they need no escape.
      */
-    private fun isQuotable(s: String): Boolean = s.none { it < ' ' && it != '\t' && it != '\n' && it != '\r' }
+    private fun isQuotable(s: String): Boolean = StorableText.isStorable(s)
 
     /**
      * `field in (…)` over the valid 64-hex entries of [values] (normalized to

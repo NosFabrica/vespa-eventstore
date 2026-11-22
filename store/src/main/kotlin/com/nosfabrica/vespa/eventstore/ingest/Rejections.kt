@@ -22,7 +22,7 @@ package com.nosfabrica.vespa.eventstore.ingest
 
 import com.vitorpamplona.quartz.nip01Core.store.RejectionReason
 
-/** The insert-rejection reasons — Quartz's shared vocabulary plus the one Vespa-specific reason. */
+/** The insert-rejection reasons — Quartz's shared vocabulary. */
 internal object Rejections {
     const val EXPIRED = RejectionReason.EXPIRED
     const val DUPLICATE = RejectionReason.DUPLICATE
@@ -46,12 +46,8 @@ internal object Rejections {
     const val REPLACED = RejectionReason.REPLACED
     const val INSERT_FAILED = RejectionReason.INSERT_FAILED
 
-    // One constant string, not one per field/code point: callers tally
-    // rejections by reason, and a per-event reason fragments that tally.
-    const val UNSTORABLE_TEXT = "blocked: text carries a code point the engine cannot store"
-
     /** Every reason this store can produce — the CLOSED set the outcome tally is keyed by. */
-    val ALL: List<String> = listOf(EXPIRED, DUPLICATE, DELETED, VANISHED, REPLACED, INSERT_FAILED, UNSTORABLE_TEXT)
+    val ALL: List<String> = listOf(EXPIRED, DUPLICATE, DELETED, VANISHED, REPLACED, INSERT_FAILED)
 
     /**
      * The closed-set reason a rejection [message] belongs to.
