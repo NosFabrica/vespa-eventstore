@@ -26,6 +26,7 @@ import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.ingest.Rejections
+import com.nosfabrica.vespa.eventstore.mapping.toDoc
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.normalizeRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
@@ -33,7 +34,9 @@ import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
 import com.vitorpamplona.quartz.nip23LongContent.LongFormContentEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -389,5 +392,49 @@ class BulkRecordInsertTest {
                     "the replaced version must still be stored (bulk=$bulk)",
                 )
             }
+        }
+
+    /**
+     * The locked commit's three reads — the batch's tombstones, its owners'
+     * vanishes and its addresses' stored versions — are independent, so they
+     * run together: the writer lock is held for the slowest, not their sum.
+     * Proven by an index that answers none of them until all three have
+     * arrived; read back to back, the first never returns and the commit times
+     * out. The batch still ends where the per-event path does.
+     */
+    @Test
+    fun `the commit's guard and version reads run together`() =
+        runBlocking {
+            val inner = InMemoryEventIndex()
+            val arrived = HashSet<String>()
+            val all = CompletableDeferred<Unit>()
+            val index =
+                object : EventIndex by inner {
+                    override suspend fun search(query: EventQuery): List<EventDoc> {
+                        val read =
+                            when {
+                                query.kinds == listOf(DeletionRequestEvent.KIND) && query.tags.isNotEmpty() -> "tombstones"
+                                query.kinds == listOf(RequestToVanishEvent.KIND) -> "vanishes"
+                                query.kinds == listOf(0) -> "versions"
+                                else -> null
+                            }
+                        if (read != null) {
+                            synchronized(arrived) { if (arrived.add(read) && arrived.size == 3) all.complete(Unit) }
+                            all.await()
+                        }
+                        return inner.search(query)
+                    }
+
+                    override suspend fun putIfNewer(doc: EventDoc): Boolean = super<EventIndex>.putIfNewer(doc)
+                }
+            // SHARED_STRICT (the default): every owner is flagged, so both guard reads run.
+            val store = NostrSemanticsStore(index, relay = relayUrl)
+            val v1 = Event(id(), alice, next(), 0, emptyArray(), "{\"name\":\"old\"}", "")
+            inner.put(v1.toDoc())
+            val v2 = Event(id(), alice, next(), 0, emptyArray(), "{\"name\":\"new\"}", "")
+            val outcomes = withTimeout(10_000) { store.batchInsert(padding(20) + v2) }
+            assertTrue(outcomes.all { it is IEventStore.InsertOutcome.Accepted }, "$outcomes")
+            assertEquals(setOf("tombstones", "vanishes", "versions"), arrived)
+            assertEquals(listOf(v2.id), inner.search(EventQuery(kinds = listOf(0), authors = listOf(alice))).map { it.id })
         }
 }

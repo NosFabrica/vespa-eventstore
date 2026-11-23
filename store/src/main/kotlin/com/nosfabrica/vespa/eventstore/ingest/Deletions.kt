@@ -33,6 +33,8 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.owner
 import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 
 /**
  * NIP-09 (deletion request) and NIP-62 (request to vanish) enforcement, plus
@@ -81,9 +83,20 @@ internal class Deletions(
                         ranking = EventYql.RANK_UNRANKED,
                     ),
                 ).isNotEmpty()
-        if (deletionExists("e", event.id)) return true
-        val address = event.addressTagOrNull() ?: return false
-        return deletionExists("a", address)
+        val address = event.addressTagOrNull() ?: return deletionExists("e", event.id)
+        // A replaceable or addressable event has TWO independent probes, and
+        // this runs under the writer lock: send them together, so the insert
+        // waits one round trip, not two. Either one answering true blocks it,
+        // the same verdict the sequential pair gave.
+        return coroutineScope {
+            val byAddress = async { deletionExists("a", address) }
+            if (deletionExists("e", event.id)) {
+                byAddress.cancel()
+                true
+            } else {
+                byAddress.await()
+            }
+        }
     }
 
     /** NIP-62: a stored vanish request by this event's OWNER covering [relay] blocks their events up to its time. */
