@@ -103,6 +103,60 @@ order and a kind 5 by id may be pointing at a card. The status line shows the
 effect: `lock.ingest.trust.wait` is booked only by the trust half, and
 `lock.ingest.wait` no longer tracks `lock.gate.hold`.
 
+**The expiry sweep held both locks for the whole backlog.** `deleteExpiredEvents`
+took the gate and `writes` once and ran every `sweepPage` round inside, each
+round re-matching and re-sorting everything left as full documents, so a
+backlog of N expired events stalled every publish for N / 10,000 rounds back
+to back, at O(N² / page) matching. It now WALKS the due set once
+(`Deletions.sweepWalk` over `EventIndex.visitIds`: the `created_at`-sliced
+cursor of #209, the attribute-only `idtime` summary, `sorting.degrading=false`)
+and removes it by id, 1,000 ids per lock hold (`VESPA_EXPIRY_SWEEP_PAGE`), so a
+publish queued behind the sweep gets `writes` between two batches. The trust
+projection reads full documents back only for its own kinds, the one place a
+removal needs them.
+
+Two passes over one cutoff. Cards and provider lists first, under both locks
+per batch, because their removal is a trust reaction. Then everything else
+under `writes` ALONE: the removal of any other kind is no trust reaction
+(`TrustProjection.removeAll` passes other kinds straight through), so it needs
+what a plain insert needs. Each plain batch looks its ids up for the trust
+kinds inside its hold and spares any it finds (a card that landed after the
+first pass walked past it, left for the next sweep); that lookup holds for the
+rest of the hold, because an event is immutable per id and no trust-kind
+document can be stored without `writes`. Neither pass takes the gate after
+`writes`, so the lock order holds, and the plain bulk of a backlog neither
+waits for a drain nor stalls one. The trust pass pays one crash-ledger bracket
+(marker written ahead, then cleared) per 1,000-card batch, where the single-hold
+sweep paid one per 10,000: about 0.2% more reputation writes than the cells it
+removes. One bracket per pass is not available: it would span the lock releases,
+and a commit's buffered cell removal landing after a newer card for the same
+address had put its cell could remove that cell (read from
+`TrustProjection.reacting`, which keeps a commit's removals buffered for a
+winner; not reproduced).
+
+Safe for expiry specifically. The walk reads outside a hold and removes inside
+one — the reindex's shape since #160 — which is sound because an id the walk
+saw still names the same expired event, and one removed meanwhile is a no-op
+remove. What a write between batches can observe is some already-expired
+events still stored, which reads hide and NIP-40 lets a relay drop at any
+time, so no admission rested on it. The cutoff is read once, off the store's
+clock — the clock every admission path now reads too (it read quartz's wall
+clock, so the argument rested on two clocks agreeing) — and every admission
+path rejects an event already expired when offered, so the match set can only
+grow by writes whose expiry check passed before the cutoff (finitely many),
+and each walk is one descent of `created_at`: the sweep terminates and does not
+chase events that expire while it runs. It checks for cancellation before each
+batch, and fails loudly if its first batch's removes did not land. An admin
+`delete(filters)` and a vanish keep `Deletions.sweep` under one hold: a
+filter's match set is not fixed, so a write between pages could add an event a
+later page deletes, and they need the read and the write in one hold.
+`ExpirySweepTest` pins it: the same set as a one-page sweep, one walk and no
+full-document read outside the trust kinds, a publish and a card between
+batches, a trust drain between batches, plain kinds swept while the gate is
+held elsewhere, termination under arrivals, cancellation, a failed batch
+releasing both locks, dropped removes failing the sweep, and `delete(filters)`
+keeping one hold.
+
 ## Why `writes` cannot simply go away
 
 `docs/multi-node-consistency.md` already states the invariant: query-then-write
@@ -136,8 +190,9 @@ reader-writer arrangement for the paths that span owners:
 
 - per-event `insert` takes SHARED on the store plus its owner's stripe;
 - `batchInsert` (both bulk shapes), `transaction`, `delete(filters)`,
-  `deleteExpiredEvents` and the reindex take EXCLUSIVE — they touch arbitrary
-  owners and the bulk commits are designed around one atomic diff;
+  `deleteExpiredEvents` (per page, as it takes `writes` today) and the reindex
+  take EXCLUSIVE — they touch arbitrary owners and the bulk commits are
+  designed around one atomic diff;
 - kotlinx has no RW mutex; `Semaphore(N)` with 1 permit for shared and `N` for
   exclusive is the standard construction and suspends like `Mutex` does.
 

@@ -113,13 +113,24 @@ internal class SearchRoot(
      * a document.
      */
     fun requireEverything() {
-        require(coverage.full) {
-            "vespa answered full: false (${coverage.coverage}% of the corpus, degraded: ${coverage.degraded ?: "unspecified"}) to a read that " +
-                "must see everything — a node still opening its buckets, most likely; refused rather than derived from"
-        }
+        requireFull()
         require(fields.totalCount <= children.size) {
             "vespa served ${children.size} of ${fields.totalCount} matches to a read that must see everything — the deployed hits cap " +
                 "(the query profile's maxHits / VESPA_UNBOUNDED_HITS) is below this match set; refused rather than derived from"
+        }
+    }
+
+    /**
+     * [requireEverything]'s coverage half alone: the engine searched every
+     * document. For a `complete` read that is limited BY DESIGN — a walk's
+     * page — whose `totalCount` is the whole match set (real Vespa: 2,809,568
+     * on a limit-2,000 walk page, staging) and so can never be served in one
+     * answer; the walk itself is what delivers all of it.
+     */
+    fun requireFull() {
+        require(coverage.full) {
+            "vespa answered full: false (${coverage.coverage}% of the corpus, degraded: ${coverage.degraded ?: "unspecified"}) to a read that " +
+                "must see everything — a node still opening its buckets, most likely; refused rather than derived from"
         }
     }
 }

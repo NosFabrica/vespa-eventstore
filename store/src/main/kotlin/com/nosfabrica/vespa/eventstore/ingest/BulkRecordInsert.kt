@@ -44,7 +44,7 @@ import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.owner
 import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
 import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
-import com.vitorpamplona.quartz.nip40Expiration.isExpired
+import com.vitorpamplona.quartz.nip40Expiration.isExpirationBefore
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
@@ -77,6 +77,8 @@ internal class BulkRecordInsert(
     private val index: EventIndex,
     private val relay: NormalizedRelayUrl?,
     private val guards: GuardOwners,
+    /** The store's clock for NIP-40 admission, as [EventAdmission]'s — see its `nowSecs`. */
+    private val nowSecs: () -> Long,
 ) {
     /**
      * What [plan] resolved lock-free (stages A–B). Dedup can race: an event a
@@ -106,13 +108,15 @@ internal class BulkRecordInsert(
         // in-run duplicate ids rejected, unstorable text rejected before it
         // can throw in the feed client.
         val seen = HashSet<String>()
+        // One instant for the whole batch, as the per-event path reads one per event.
+        val now = nowSecs()
         events.forEachIndexed { i, e ->
             when {
                 e.kind.isEphemeral() -> {
                     outcome[i] = IEventStore.InsertOutcome.Accepted
                 }
 
-                e.isExpired() -> {
+                e.isExpirationBefore(now) -> {
                     outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.EXPIRED)
                 }
 

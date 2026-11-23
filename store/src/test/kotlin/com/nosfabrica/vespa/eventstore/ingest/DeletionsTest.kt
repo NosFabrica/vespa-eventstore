@@ -119,4 +119,29 @@ class DeletionsTest {
             val again = Deletions(inner, relay = null, sweepPage = 100)
             assertTrue(again.isDeleted(profile), "an address tombstone still blocks")
         }
+
+    /**
+     * [Deletions.sweepWalk] hands each batch to its remover inside one hold,
+     * and what the remover leaves stays stored — the expiry sweep's plain
+     * pass leaves the trust kinds.
+     */
+    @Test
+    fun `a sweep walk removes what its remover removes, a batch per hold`() =
+        runBlocking {
+            val memory = InMemoryEventIndex()
+            val walker = Deletions(memory, relay = null, sweepPage = 100)
+            val notes = (1..7).map { Event(id(), alice, 1_000L + it, 1, emptyArray(), "n$it", "") }
+            val cards = (1..3).map { Event(id(), alice, 2_000L + it, 30382, arrayOf(arrayOf("d", "%064x".format(it))), "", "") }
+            memory.putAll((notes + cards).map { it.toDoc() })
+            val cardIds = cards.mapTo(HashSet()) { it.id }
+            var holds = 0
+
+            walker.sweepWalk(EventQuery(), page = 3, remove = { ids -> ids.filterNot { it in cardIds }.also { memory.removeAll(it) } }) { batch ->
+                holds++
+                batch()
+            }
+
+            assertEquals(cardIds, memory.search(EventQuery()).mapTo(HashSet()) { it.id }, "only what the remover left")
+            assertEquals(4, holds, "ten ids, three per hold")
+        }
 }

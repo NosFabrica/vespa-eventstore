@@ -29,6 +29,15 @@ dependencies {
     testImplementation(libs.testcontainers)
 }
 
+// LiveGateBench prices the store's shared words memo against the uncached read it replaced, and
+// the uncached gate is built by `NostrSemanticsStore.liveGateWith` — internal, since no consumer
+// should build a gate around anything but the store's own memo. This tool may see :store's
+// internals; nothing published can.
+tasks.named<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>("compileKotlin") {
+    friendPaths.from(project(":store").layout.buildDirectory.dir("classes/kotlin/main"))
+    friendPaths.from(project(":store").tasks.named("jar"))
+}
+
 tasks.test {
     // Pin the Docker Remote API version docker-java negotiates.
     //
@@ -162,6 +171,17 @@ tasks.register<JavaExec>("extractBench") {
     description = "Time SearchExtractors.extract over a captured corpus (--corpus, optional --badges N)"
     classpath = sourceSets["main"].runtimeClasspath
     mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.bench.ExtractBench")
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "3g"
+    workingDir = rootDir
+}
+
+// Price the live gate's shared words memo: N searching gates, walked the way fan-out runs
+// against a walk where every call misses (the per-gate cost it replaced). See LiveGateBench.kt.
+tasks.register<JavaExec>("liveGateBench") {
+    group = "verification"
+    description = "Time LiveGate.admitsNow over N search gates, shared words vs read per gate (optional --corpus, --gates 1,10,100,500)"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.bench.LiveGateBench")
     maxHeapSize = System.getenv("BENCH_HEAP") ?: "3g"
     workingDir = rootDir
 }

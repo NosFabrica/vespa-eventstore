@@ -1763,6 +1763,81 @@ class VespaEventIndexTest {
         }
 
     /**
+     * ADDRESS-KEYED REMOVES RESOLVE THEIR DOCIDS IN ONE QUERY. A replaceable
+     * lives at its address, so removing by event id has to read the document
+     * to learn where it is — and that read was one `id in ("<id>")` search PER
+     * ID, which the expiry sweep paid inside its writer-lock hold (50 expired
+     * notes: 57 searches, 50 of them single-id). One `id in (…)` per chunk
+     * resolves the whole batch, and each docid still comes off its document.
+     */
+    @Test
+    fun `an address-keyed removeAll resolves its docids in one query per chunk`() =
+        runBlocking {
+            val idx = VespaEventIndex(mock.url, addressKeyed = true)
+            try {
+                val notes = (1..50).map { doc(kind = 1, at = 1_700_000_000L + it) }
+                val profile = doc(kind = 0, pubkey = "b2".repeat(32), at = 1_700_000_100L)
+                seedBulk(notes + profile)
+                val before = mock.searchRequests.size
+
+                idx.removeAll((notes + profile).map { it.id })
+
+                assertEquals(1, mock.searchRequests.size - before, "one resolve for 51 ids")
+                assertEquals(emptySet(), idx.existingIds(notes.map { it.id }), "every note removed")
+                assertTrue("0:${"b2".repeat(32)}:" in mock.removedDocIds, "the replaceable removed at its ADDRESS docid: ${mock.removedDocIds.takeLast(3)}")
+            } finally {
+                idx.close()
+            }
+        }
+
+    /**
+     * A `complete` WALK still walks. A walk's page is limited by design, while
+     * real Vespa's `totalCount` is the whole match set (staging: 2,809,568 on
+     * a limit-2,000 page) — so the "every match served" half of `complete`'s
+     * check refused every page of any walk over more than one page, and the
+     * expiry sweep, which asked for it, never drained. On a walk `complete`
+     * means what it can: the engine searched every document (`full`).
+     */
+    @Test
+    fun `a complete walk over many pages delivers every id`() =
+        runBlocking {
+            val ann = "a7".repeat(32)
+            seedBulk((1..300).map { doc(kind = 1, pubkey = ann, at = 1_700_000_000L + it) })
+
+            val idx = VespaEventIndex(mock.url, idPageSize = 10)
+            try {
+                val got = ArrayList<DocRef>()
+                idx.visitIds(EventQuery(authors = listOf(ann), complete = true)) {
+                    got += it
+                    true
+                }
+                assertEquals(300, got.distinctBy { it.id }.size, "every id, across ~30 pages")
+            } finally {
+                idx.close()
+            }
+        }
+
+    /** ...while a `complete` walk over a cluster that searched only part of the corpus is still refused. */
+    @Test
+    fun `a complete walk refuses an answer that is not full`() =
+        runBlocking {
+            val ann = "a8".repeat(32)
+            seedBulk((1..30).map { doc(kind = 1, pubkey = ann, at = 1_700_000_000L + it) })
+            // `full: false` at a percentage that rounds to 100, no reason named:
+            // the read path serves it; a `complete` read must not.
+            mock.roundedCompleteCoverage = true
+
+            val idx = VespaEventIndex(mock.url, idPageSize = 10)
+            try {
+                val refused = runCatching { idx.visitIds(EventQuery(authors = listOf(ann), complete = true)) { true } }.exceptionOrNull()
+                assertTrue(refused is IllegalArgumentException && "full: false" in refused.message.orEmpty(), "refused as not full: $refused")
+            } finally {
+                mock.roundedCompleteCoverage = false
+                idx.close()
+            }
+        }
+
+    /**
      * A REFUSAL THAT DOES NOT CLEAR THROWS — it must not buy the corpus.
      *
      * Falling back to a whole-corpus document-API read was the shape of this
@@ -1806,6 +1881,45 @@ class VespaEventIndexTest {
                     "every ask in the backoff is spent before giving up, and booked by flag: " +
                         "${stages.keys.filter { it.startsWith("walk.") }}",
                 )
+            } finally {
+                mock.degradeCoverage = null
+                idx.close()
+                IngestStats.reset()
+            }
+        }
+
+    /**
+     * THE EXPIRY SWEEP'S WALK, CUT: its scan fallback must be a scan. A
+     * selection could not express `expiresBefore`, so a sweep walk that spent
+     * its cut budget fell to the UNSELECTABLE path — one unlimited search for
+     * every due document, whole, in one list (an OOM on a large backlog, a
+     * refusal under a hits cap). `event.expires_at<N` is a selection clause
+     * like the not-expired guard's, so it streams.
+     */
+    @Test
+    fun `a cut expiry walk falls to a streamed scan, never the unbounded search`() =
+        runBlocking {
+            IngestStats.reset()
+            val kim = "e7".repeat(32)
+            val due = (1..30).map { doc(kind = 1, pubkey = kim, at = 1_700_000_000L + it, tags = listOf(listOf("expiration", "1700000500"))) }
+            val later = (1..10).map { doc(kind = 1, pubkey = kim, at = 1_700_000_100L + it, tags = listOf(listOf("expiration", "1800000000"))) }
+            val never = (1..10).map { doc(kind = 1, pubkey = kim, at = 1_700_000_200L + it) }
+            seedBulk(due + later + never)
+            mock.visitRequests = 0
+            mock.degradeCoverage = PartialAnswer.MATCH_PHASE
+
+            val idx = VespaEventIndex(mock.url, idPageSize = 10)
+            try {
+                val got = ArrayList<DocRef>()
+                idx.visitIds(EventQuery(kinds = listOf(1), expiresBefore = 1_700_000_501L)) {
+                    got += it
+                    true
+                }
+
+                assertEquals(due.map { it.id }.toSet(), got.mapTo(HashSet()) { it.id }, "exactly the due documents")
+                val stages = IngestStats.snapshot()
+                assertEquals(null, stages["walk.scan.unselectable"], "never the unbounded search; stages: ${stages.keys.sorted()}")
+                assertEquals(true, mock.visitRequests > 0, "a streamed document-API scan")
             } finally {
                 mock.degradeCoverage = null
                 idx.close()

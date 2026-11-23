@@ -717,6 +717,41 @@ class TrustProjection(
     }
 
     /**
+     * Remove every id in [ids] that is NOT one of this projection's kinds, and
+     * return the ids removed; the cards and provider lists among [ids] are
+     * left stored and untouched. For a caller holding `writes` but NOT the
+     * trust gate — the expiry sweep's plain pass — which may remove anything
+     * whose removal is no trust reaction, and nothing else.
+     *
+     * ONE trust-kind lookup per [SPARE_CHUNK] ids answers both questions: which
+     * ids to spare, and that nothing removed needs a reaction (other kinds
+     * never do, see [removeAll]). The sweep used to ask it once itself and then
+     * hand the rest to [removeAll], which asked it again in chunks of
+     * [REMOVE_CHUNK]: three lookups per 1,000 ids where one does. The answer
+     * holds for the caller's whole hold, because an event is immutable per id
+     * and nothing stores a trust-kind document without `writes`.
+     */
+    internal suspend fun removeAllButTrust(ids: List<String>): List<String> {
+        if (ids.isEmpty()) return ids
+        val trust = HashSet<String>()
+        // IDS, not documents: a walk of the lookup (the attribute-only id
+        // summary) rather than a search, which on the engine resolves its hits
+        // id-first and then reads each card's document — a second query for
+        // ids this method only needs to leave alone. `complete`, as every read
+        // that decides a removal: a card a short answer missed would be removed
+        // with no reaction.
+        for (chunk in ids.chunked(SPARE_CHUNK)) {
+            inner.visitIds(EventQuery(ids = chunk, kinds = TRUST_KINDS, limit = chunk.size, complete = true)) { refs ->
+                refs.mapTo(trust) { it.id }
+                true
+            }
+        }
+        val plain = if (trust.isEmpty()) ids else ids.filterNot { it in trust }
+        if (plain.isNotEmpty()) inner.removeAll(plain)
+        return plain
+    }
+
+    /**
      * Bulk remove for callers that already HOLD the doomed docs: ZERO reads —
      * the docs themselves say what each removal invalidates.
      */
@@ -955,6 +990,14 @@ class TrustProjection(
 
         /** Ids per removeAll read-back query — round-trip width, not a result cap. */
         const val REMOVE_CHUNK = 500
+
+        /**
+         * Ids per [removeAllButTrust] lookup: one query for a whole expiry-sweep
+         * batch (1,000 by default). Its answer is the trust kinds among the ids —
+         * nearly always none, so no summaries — and the width is the engine's
+         * own id-lookup width (`VespaEventIndex.HYDRATE_CHUNK`).
+         */
+        const val SPARE_CHUNK = 2_000
 
         /**
          * Max subjects persisted per put insurance before coarsening to services

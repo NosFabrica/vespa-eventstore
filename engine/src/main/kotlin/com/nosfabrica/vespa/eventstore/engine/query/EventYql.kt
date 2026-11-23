@@ -389,7 +389,11 @@ object EventYql {
             yql = "select ${if (withDTag) "id, created_at, tag_index" else "id, created_at"} from event where ${whereOf(clauses)} order by created_at desc$limit",
             params = params,
             ranking = if (gated) RANK_RECENCY_GATED_EXACT else RANK_UNRANKED,
-            complete = q.complete,
+            // A WALK'S PAGE, never the whole match set: `complete` here can only
+            // mean "the engine searched every document". The served-every-match
+            // half refused every page of any walk past its first, because real
+            // Vespa's totalCount is the whole match set, not the page.
+            completeCoverage = q.complete,
             sampled = q.sampled,
             shape = clauseShape(q),
         )
