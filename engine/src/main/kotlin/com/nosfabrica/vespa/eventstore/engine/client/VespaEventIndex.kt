@@ -855,7 +855,10 @@ class VespaEventIndex(
             // a NARROW shape skips straight to the unwindowed read — the shipped
             // cost, nothing speculated — and a remembered WINDOW, scaled to this
             // limit, replaces the cold first guess.
-            val recalled = windowMemory?.recall(q, anchor, now)
+            // The shape is keyed ONCE per read: the recall here and the
+            // learn/forget below share it (the digest walks the author list).
+            val shape = windowMemory?.shapeOf(q, anchor, now)
+            val recalled = shape?.let { windowMemory?.recall(it) }
             if (recalled is RecencyWindowMemory.Recall.Narrow) {
                 outcome("recalled.narrow")
                 return@timed recallPage(planner.shipped(q), planned = true, idOnly = idOnly)
@@ -905,7 +908,7 @@ class VespaEventIndex(
                 attempts++
                 if (page.size >= remaining) {
                     outcome(if (attempts == 1) "first" else "widened")
-                    learn(q, anchor, now, RecencyWindowMemory.Recall.Window(window, limit))
+                    learn(shape, RecencyWindowMemory.Recall.Window(window, limit))
                     return@timed carried + page
                 }
                 carried = carried + page
@@ -921,10 +924,10 @@ class VespaEventIndex(
             outcome("fallback.$fallback")
             when (fallback) {
                 // Too thin to window: the next read of this shape skips the attempts.
-                "narrow", "attempts", "window" -> learn(q, anchor, now, RecencyWindowMemory.Recall.Narrow)
+                "narrow", "attempts", "window" -> learn(shape, RecencyWindowMemory.Recall.Narrow)
 
                 // An attempt the engine cut says nothing about the shape's rate.
-                "partial" -> windowMemory?.forget(q, anchor, now)
+                "partial" -> shape?.let { windowMemory?.forget(it) }
 
                 // The caller's own `since` decided it; the shape learned nothing.
                 else -> Unit
@@ -934,18 +937,17 @@ class VespaEventIndex(
         }
 
     /**
-     * What a speculative read of [q] teaches [windowMemory]: [recall], unless an answer it was
+     * What a speculative read of [shape] teaches [windowMemory]: [recall], unless an answer it was
      * served came off part of the corpus ([ServedDegraded]), which says nothing about the shape's
      * rate and is forgotten like a refused attempt.
      */
     private suspend fun learn(
-        q: EventQuery,
-        anchor: Long,
-        now: Long,
+        shape: RecencyWindowMemory.Shape?,
         recall: RecencyWindowMemory.Recall,
     ) {
         val memory = windowMemory ?: return
-        if (currentCoroutineContext()[ServedDegraded]?.seen == true) memory.forget(q, anchor, now) else memory.remember(q, anchor, now, recall)
+        if (shape == null) return
+        if (currentCoroutineContext()[ServedDegraded]?.seen == true) memory.forget(shape) else memory.remember(shape, recall)
     }
 
     /**
@@ -1581,7 +1583,9 @@ class VespaEventIndex(
         // event dated past the clock is still inside the first slice.
         val now = query.nowSecs ?: (System.currentTimeMillis() / 1000)
         val anchor = query.until ?: now
-        var span: Long? = startSpan ?: recalledSpan(query, anchor, now, pageSize)
+        // Keyed once for the walk: every page re-learns the same shape.
+        val walkShape = walkMemory?.shapeOf(query, anchor, now)
+        var span: Long? = startSpan ?: walkShape?.let { recalledSpan(it, pageSize) }
         while (true) {
             val top = until ?: now
             val sliceSince = if (span != null) sliceFloor(top, span, query.since) else query.since
@@ -1775,7 +1779,7 @@ class VespaEventIndex(
             }
             // Strictly past the group just emitted in full.
             if (boundary <= (query.since ?: Long.MIN_VALUE)) return
-            span = spanOfPage(hits, pageSize, boundary, previous = span).also { walkMemory?.remember(query, anchor, now, RecencyWindowMemory.Recall.Window(it, pageSize)) }
+            span = spanOfPage(hits, pageSize, boundary, previous = span).also { walkShape?.let { shape -> walkMemory?.remember(shape, RecencyWindowMemory.Recall.Window(it, pageSize)) } }
             until = boundary - 1
         }
     }
@@ -1851,12 +1855,10 @@ class VespaEventIndex(
 
     /** The first slice's width from [walkMemory], scaled to this walk's page, or null to ask the first page open. */
     private fun recalledSpan(
-        q: EventQuery,
-        anchor: Long,
-        now: Long,
+        shape: RecencyWindowMemory.Shape,
         pageSize: Int,
     ): Long? {
-        val window = walkMemory?.recall(q, anchor, now) as? RecencyWindowMemory.Recall.Window ?: return null
+        val window = walkMemory?.recall(shape) as? RecencyWindowMemory.Recall.Window ?: return null
         return clampSpan(window.window.toDouble() * pageSize / window.limit)
     }
 

@@ -51,6 +51,27 @@ class RecencyWindowMemoryTest {
         assertNull(memory.recall(gated, now, now), "a gated read fills at its trusted rate, not the raw one")
     }
 
+    /**
+     * A gated `sort:recent` search with TERMS is windowable, and its rate is the
+     * term's: a rare word learning Narrow must not make a busy one under the same
+     * observer skip its speculation (the shipped gated read it then pays is the
+     * class KDoc's ~455x slower one), nor a phrase share a slot with plain words.
+     */
+    @Test
+    fun `different search terms or phrases are different shapes`() {
+        fun gated(
+            search: String?,
+            phrases: List<String> = emptyList(),
+        ) = EventQuery(kinds = listOf(1), search = search, phrases = phrases, limit = 50, ranking = EventYql.RANK_RECENCY_GATED, rankKey = bob)
+        memory.remember(gated("zyzzogeton"), now, now, Recall.Narrow)
+        assertNull(memory.recall(gated("bitcoin"), now, now), "a busy term is not the rare term's shape")
+        assertNull(memory.recall(gated("zyzzogeton", phrases = listOf("zyzzogeton facts")), now, now), "a phrase narrows the shape")
+        assertNull(memory.recall(gated(null), now, now), "no terms is the gated feed, another shape")
+        assertEquals(Recall.Narrow, memory.recall(gated("zyzzogeton"), now, now))
+        val shape = memory.shapeOf(gated("zyzzogeton"), now, now)
+        assertEquals(Recall.Narrow, memory.recall(shape), "a shape computed once answers like the query it came from")
+    }
+
     @Test
     fun `a deep anchor is a different shape from the newest page`() {
         val q = EventQuery(kinds = listOf(1), limit = 50)

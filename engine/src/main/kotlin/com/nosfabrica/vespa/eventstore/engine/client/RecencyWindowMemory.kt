@@ -49,11 +49,17 @@ import java.security.MessageDigest
  * whatever the traffic.
  *
  * The KEY is everything that sets a shape's event RATE, and nothing that
- * doesn't: kinds, authors, tags, owners, exclusions and the gate's lens and
- * floor — but not `since`/`until` (windows are anchor-relative) or `limit`
- * (a remembered window scales linearly with it). One coarse term does carry
- * time: how far back the anchor sits, in powers of two of a day, because a
- * page ten months back does not fill at the rate the newest page does.
+ * doesn't: kinds, authors, tags, owners, exclusions, the search terms and
+ * phrases (a gated `sort:recent` search is windowable, and a rare word fills
+ * at its own rate, not the busy one's), and the gate's lens and floor — but
+ * not `since`/`until` (windows are anchor-relative) or `limit` (a remembered
+ * window scales linearly with it). One coarse term does carry time: how far
+ * back the anchor sits, in powers of two of a day, because a page ten months
+ * back does not fill at the rate the newest page does.
+ *
+ * A read computes its [Shape] ONCE ([shapeOf]) and hands it to [recall] and
+ * then [remember]/[forget]: the digest walks the whole author list, which is
+ * tens of kilobytes for a follow feed.
  */
 internal class RecencyWindowMemory(
     private val capacity: Int = 4_096,
@@ -85,15 +91,19 @@ internal class RecencyWindowMemory(
      * is harmless by the class's own argument: it can only hand a read the
      * wrong starting guess, which costs a round trip, never a page.
      */
-    private data class Key(
-        val hi: Long,
-        val lo: Long,
-    )
+    class Shape internal constructor(
+        private val hi: Long,
+        private val lo: Long,
+    ) {
+        override fun equals(other: Any?): Boolean = other is Shape && other.hi == hi && other.lo == lo
+
+        override fun hashCode(): Int = (hi xor lo).toInt()
+    }
 
     // Access-ordered: the eldest entry is the least recently USED shape.
     private val entries =
-        object : LinkedHashMap<Key, Entry>(256, 0.75f, true) {
-            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Key, Entry>?): Boolean = size > capacity
+        object : LinkedHashMap<Shape, Entry>(256, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Shape, Entry>?): Boolean = size > capacity
         }
 
     /** What [q] (anchored at [anchor], with the request clock [now]) should start from, or null to start cold. */
@@ -101,54 +111,65 @@ internal class RecencyWindowMemory(
         q: EventQuery,
         anchor: Long,
         now: Long,
-    ): Recall? {
-        val key = keyOf(q, anchor, now)
-        return synchronized(entries) {
-            val entry = entries[key] ?: return null
+    ): Recall? = recall(shapeOf(q, anchor, now))
+
+    /** What [shape] should start from, or null to start cold. */
+    fun recall(shape: Shape): Recall? =
+        synchronized(entries) {
+            val entry = entries[shape] ?: return null
             if (clock() - entry.atMillis > ttlMillis) {
-                entries.remove(key)
+                entries.remove(shape)
                 null
             } else {
                 entry.recall
             }
         }
-    }
 
     fun remember(
         q: EventQuery,
         anchor: Long,
         now: Long,
         recall: Recall,
+    ) = remember(shapeOf(q, anchor, now), recall)
+
+    fun remember(
+        shape: Shape,
+        recall: Recall,
     ) {
-        val key = keyOf(q, anchor, now)
-        synchronized(entries) { entries[key] = Entry(recall, clock()) }
+        synchronized(entries) { entries[shape] = Entry(recall, clock()) }
     }
 
     fun forget(
         q: EventQuery,
         anchor: Long,
         now: Long,
-    ) {
-        val key = keyOf(q, anchor, now)
-        synchronized(entries) { entries.remove(key) }
+    ) = forget(shapeOf(q, anchor, now))
+
+    fun forget(shape: Shape) {
+        synchronized(entries) { entries.remove(shape) }
     }
 
     /** Shapes currently remembered (expired ones included until touched). */
     val size: Int get() = synchronized(entries) { entries.size }
 
-    private fun keyOf(
+    /** [q]'s shape, anchored at [anchor] under the request clock [now] — compute once per read. */
+    fun shapeOf(
         q: EventQuery,
         anchor: Long,
         now: Long,
-    ): Key {
+    ): Shape {
         val gated = q.usesGatedProfile()
-        val d = ShapeDigest()
+        val d = DIGEST.get().reset()
         d.text("k=").items(q.kinds.sorted())
         d.text("|a=").items(q.authors.map { it.lowercase() }.sorted())
         d.text("|o=").items(q.owners.map { it.lowercase() }.sorted())
         d.text("|t=").tags(q.tags)
         d.text("|T=").tags(q.tagsAll)
         d.text("|n=").items(q.notSearch.sorted())
+        // Raw, not normalized: two spellings of one term are two shapes, which
+        // costs at most a learning read, never a page.
+        d.text("|s=").text(q.search?.trim().orEmpty())
+        d.text("|p=").items(q.phrases.sorted())
         d.text("|g=").text(gated.toString())
         if (gated) {
             d
@@ -164,12 +185,19 @@ internal class RecencyWindowMemory(
     /**
      * SHA-256 over a shape's canonical text, fed a buffer at a time rather than
      * built as one string first: a feed's author list alone runs to tens of
-     * kilobytes, and every recency read keys twice.
+     * kilobytes. One per thread ([DIGEST]), [reset] per shape: [shapeOf] never
+     * suspends, so a coroutine cannot hand it to another thread mid-shape.
      */
     private class ShapeDigest {
         private val sha = MessageDigest.getInstance("SHA-256")
         private val buf = ByteArray(1024)
         private var n = 0
+
+        fun reset(): ShapeDigest {
+            sha.reset()
+            n = 0
+            return this
+        }
 
         /**
          * Each char as UTF-8, a lone surrogate encoded as itself: unambiguous, and one byte for
@@ -215,10 +243,10 @@ internal class RecencyWindowMemory(
             return text("}")
         }
 
-        fun key(): Key {
+        fun key(): Shape {
             flush()
             val digest = ByteBuffer.wrap(sha.digest())
-            return Key(digest.getLong(), digest.getLong())
+            return Shape(digest.getLong(), digest.getLong())
         }
 
         private fun flush() {
@@ -228,6 +256,8 @@ internal class RecencyWindowMemory(
     }
 
     companion object {
+        private val DIGEST: ThreadLocal<ShapeDigest> = ThreadLocal.withInitial(::ShapeDigest)
+
         /**
          * How far back an anchor sits, coarsely: 0 within a day of the clock,
          * then one bucket per doubling (2 days, 4, 8, … ). Deep pagination
