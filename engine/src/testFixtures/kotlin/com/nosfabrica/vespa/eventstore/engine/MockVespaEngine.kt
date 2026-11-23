@@ -375,7 +375,7 @@ class MockVespaEngine(
      */
     @Volatile var rejectDedupSummary: Boolean = false
 
-    /** The same for the attribute-only `idtime` summary the id-first fetch resolves pages with. */
+    /** The same for the attribute-only `idtime` and `idtimetag` summaries: the id-first fetch's pages, and every id walk. */
     @Volatile var rejectIdTimeSummary: Boolean = false
 
     /**
@@ -761,8 +761,9 @@ class MockVespaEngine(
         if (dedupSummary && rejectDedupSummary) {
             return Reply(400, """{"root":{"errors":[{"code":4,"summary":"Invalid query parameter","message":"Summary 'dedup' does not exist"}]}}""")
         }
-        if (params["presentation.summary"] == "idtime" && rejectIdTimeSummary) {
-            return Reply(400, """{"root":{"errors":[{"code":4,"summary":"Invalid query parameter","message":"Summary 'idtime' does not exist"}]}}""")
+        val summaryClass = params["presentation.summary"]
+        if ((summaryClass == "idtime" || summaryClass == "idtimetag") && rejectIdTimeSummary) {
+            return Reply(400, """{"root":{"errors":[{"code":4,"summary":"Invalid query parameter","message":"Summary '$summaryClass' does not exist"}]}}""")
         }
         // A schema predating the near attribute fields: real Vespa rejects the
         // whole query the moment the YQL names an unknown field.

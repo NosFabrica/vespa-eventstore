@@ -20,9 +20,12 @@
  */
 package com.nosfabrica.vespa.eventstore.runtime
 
+import com.nosfabrica.vespa.eventstore.engine.WriterLockHeld
 import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 /**
  * THE WRITE LADDER: the two mutexes every mutating path in this store goes
@@ -134,7 +137,9 @@ internal class WriteLocks {
                 // that is measured in seconds.
                 IngestStats.beginHold(stage.hold, lock = stage.lock)
                 try {
-                    body()
+                    // Marked, so an engine read inside does not wait out a degraded
+                    // cluster while every other writer waits on this one.
+                    if (currentCoroutineContext()[WriterLockHeld.Key] != null) body() else withContext(WriterLockHeld) { body() }
                 } finally {
                     IngestStats.endHold(stage.hold)
                 }

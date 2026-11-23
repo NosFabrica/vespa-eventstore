@@ -20,9 +20,11 @@
  */
 package com.nosfabrica.vespa.eventstore.runtime
 
+import com.nosfabrica.vespa.eventstore.engine.WriterLockHeld
 import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -31,6 +33,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 
 class WriteLocksTest {
     @BeforeTest
@@ -67,5 +70,16 @@ class WriteLocksTest {
             }
             val split = assertNotNull(IngestStats.blockedSplit()[WriteLocks.INGEST_TRUST.wait], "the card's gate wait was attributed")
             assertEquals(setOf(WriteLocks.GATE.hold), split.keys, "one closed key for fifty differently described holds")
+        }
+
+    /** Every locked body runs marked [WriterLockHeld], so an engine read inside it does not wait out a degraded cluster. */
+    @Test
+    fun `a locked body is marked as holding a writer lock`() =
+        runBlocking {
+            val locks = WriteLocks()
+            assertNull(currentCoroutineContext()[WriterLockHeld.Key], "not before")
+            locks.gated(trust = true, WriteLocks.INGEST) { assertNotNull(currentCoroutineContext()[WriterLockHeld.Key], "inside both locks") }
+            locks.underWrites(WriteLocks.INGEST) { assertNotNull(currentCoroutineContext()[WriterLockHeld.Key], "inside writes") }
+            Unit
         }
 }

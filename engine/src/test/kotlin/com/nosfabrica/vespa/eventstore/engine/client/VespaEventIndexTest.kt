@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.eventstore.engine.client
 import com.nosfabrica.vespa.eventstore.engine.DocRef
 import com.nosfabrica.vespa.eventstore.engine.MockVespaEngine
+import com.nosfabrica.vespa.eventstore.engine.WriterLockHeld
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.SearchFields
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
@@ -31,6 +32,7 @@ import com.nosfabrica.vespa.eventstore.engine.metrics.withActivity
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import java.security.MessageDigest
 import kotlin.random.Random
 import kotlin.test.AfterTest
@@ -1763,6 +1765,32 @@ class VespaEventIndexTest {
         }
 
     /**
+     * A SCHEMA WITHOUT THE ATTRIBUTE-ONLY ID SUMMARIES STILL SUPERSEDES. The
+     * read path demotes a missing `idtime` to the full summary, but the id
+     * walk — which the write path now reads its supersession versions through
+     * (the default putIfNewer, the bulk version read) — had no such net: every
+     * replaceable insert against such a schema threw the engine's 400.
+     */
+    @Test
+    fun `supersession and the id walk survive a schema without the id summaries`() =
+        runBlocking {
+            mock.rejectIdTimeSummary = true
+            val pk = "c5".repeat(32)
+            val old = doc(kind = 30023, pubkey = pk, at = 1_700_000_000L, tags = listOf(listOf("d", "post")))
+            index.put(old)
+            val newer = doc(kind = 30023, pubkey = pk, at = 1_700_000_100L, tags = listOf(listOf("d", "post")))
+
+            assertTrue(index.putIfNewer(newer), "the newer version wins")
+
+            val walked = ArrayList<DocRef>()
+            index.visitIds(EventQuery(kinds = listOf(30023), authors = listOf(pk)), withDTag = true) { page ->
+                walked += page
+                true
+            }
+            assertEquals(listOf(DocRef(newer.id, newer.createdAt, "post")), walked, "one version left, its d read off the default summary")
+        }
+
+    /**
      * AN ADDRESS-KEYED FALLBACK SUPERSESSION KEEPS ITS WINNER. A doc whose id
      * cannot go into the engine's test-and-set condition (not 64 hex) takes
      * the port's read-then-supersede instead, and that put the winner at the
@@ -1912,6 +1940,38 @@ class VespaEventIndexTest {
             } finally {
                 mock.degradeCoverage = null
                 idx.close()
+                IngestStats.reset()
+            }
+        }
+
+    /**
+     * UNDER A WRITER LOCK THE WALK ASKS ONCE. The backoff above is the remedy
+     * for a reader; on the write path (supersession reads its versions
+     * through this walk) it held every other writer for ~4.2 s per page and
+     * per tie read, where those commits used to fail in one round trip and
+     * their caller retries anyway.
+     */
+    @Test
+    fun `a refused walk under a writer lock gives up after one ask`() =
+        runBlocking {
+            IngestStats.reset()
+            val ivy = "c9".repeat(32)
+            seedBulk((1..5).map { doc(kind = 30382, pubkey = ivy, at = 1_700_000_000L + it) })
+            mock.degradeCoverage = nonIdealState
+            try {
+                val thrown =
+                    try {
+                        withContext(WriterLockHeld) { index.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(ivy))) { true } }
+                        null
+                    } catch (refused: PartialAnswer) {
+                        refused
+                    }
+                assertNotNull(thrown, "still refused")
+                val stages = IngestStats.snapshot()
+                assertEquals(1L, stages["walk.refused.$nonIdealState"]?.calls, "one ask")
+                assertEquals(null, stages["walk.retry.wait"], "and no wait")
+            } finally {
+                mock.degradeCoverage = null
                 IngestStats.reset()
             }
         }

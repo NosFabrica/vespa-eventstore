@@ -32,6 +32,7 @@ import com.nosfabrica.vespa.eventstore.engine.Linker
 import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.ScoredHit
 import com.nosfabrica.vespa.eventstore.engine.ServedDegraded
+import com.nosfabrica.vespa.eventstore.engine.WriterLockHeld
 import com.nosfabrica.vespa.eventstore.engine.async.QUERY_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
@@ -1500,7 +1501,10 @@ class VespaEventIndex(
         shape: String? = null,
     ): List<DocRef> {
         var refusal: PartialAnswer? = null
-        for (pause in RETRY_PAUSES_MILLIS) {
+        // UNDER A WRITER LOCK, ONE ASK ([WriterLockHeld]): the backoff would hold
+        // every other writer for its 4.2 s, and the write's caller retries anyway.
+        val pauses = if (currentCoroutineContext()[WriterLockHeld.Key] != null) WRITE_PATH_PAUSES_MILLIS else RETRY_PAUSES_MILLIS
+        for (pause in pauses) {
             // TIMED, because an untimed wait is the blindness `walk.scan` was
             // added to end: 4.2 s of a walk sitting still would otherwise look
             // exactly like a walk with nothing to do, on every instrument this
@@ -2153,7 +2157,27 @@ class VespaEventIndex(
         shape: String? = null,
     ): List<DocRef> {
         val vq = EventYql.buildIdTime(q, withDTag)?.let { if (shape == null) it else it.copy(shape = shape) } ?: return emptyList()
-        return searchRoot(vq, hits = q.limit ?: unboundedHits)
+        val hits = q.limit ?: unboundedHits
+        // A SCHEMA WITHOUT THE ATTRIBUTE-ONLY SUMMARIES (`idtime`/`idtimetag`)
+        // answers the same select off the default summary — every field it
+        // projects (id, created_at, tag_index) is a summary field there too —
+        // reading documents where the attribute summary read none, as the read
+        // path does ([recallSummaries]). The write path reads its supersession
+        // versions through this walk, so without the net every replaceable
+        // insert against such a schema threw the engine's 400.
+        val root =
+            if (!fallbacks.idTimeSummaryAvailable) {
+                searchRoot(vq.withoutSummaryClass(), hits = hits)
+            } else {
+                try {
+                    searchRoot(vq, hits = hits)
+                } catch (e: IllegalArgumentException) {
+                    if (!fallbacks.isMissingIdTimeSummary(e)) throw e
+                    fallbacks.markIdTimeSummaryMissing()
+                    searchRoot(vq.withoutSummaryClass(), hits = hits)
+                }
+            }
+        return root
             .children
             .mapNotNull { hit ->
                 val f = hit.fields ?: return@mapNotNull null
@@ -2167,6 +2191,9 @@ class VespaEventIndex(
                 DocRef(f.id, f.createdAt, dTag)
             }.sortedWith(DOCREF_NEWEST_FIRST)
     }
+
+    /** [this] read off the default summary: the same select, no `presentation.summary` class. */
+    private fun VespaQuery.withoutSummaryClass(): VespaQuery = copy(params = params - "presentation.summary")
 
     /**
      * The tags projection via the same sliced visit as [visitIds], fieldSet
@@ -2970,6 +2997,9 @@ class VespaEventIndex(
          * because the label already says waiting cannot help.
          */
         val RETRY_PAUSES_MILLIS = longArrayOf(0, 200, 1_000, 3_000)
+
+        /** [RETRY_PAUSES_MILLIS] for a caller holding a writer lock ([WriterLockHeld]): one ask, no wait. */
+        val WRITE_PATH_PAUSES_MILLIS = longArrayOf(0)
 
         // Pages' worth of one tied second past which the cursor stops carrying
         // the group in one read and splits it by id prefix — see visitIds.
