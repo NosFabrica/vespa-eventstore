@@ -27,7 +27,10 @@ import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
+import com.nosfabrica.vespa.eventstore.mapping.SearchExtractors
 import com.nosfabrica.vespa.eventstore.trust.TrustProjection
+import com.vitorpamplona.quartz.nip01Core.core.Event
+import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.store.StoreQueryContext
@@ -42,6 +45,10 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import java.util.concurrent.Callable
+import java.util.concurrent.CyclicBarrier
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -379,5 +386,109 @@ class LiveGateTest {
             )
         assertTrue(g.admitted(midway), "the waived filter names this author")
         assertFalse(g.admitted(trusted), "90 < 95, and the waived filter does not match")
+    }
+
+    /** Text and non-text, gated and ungated, kind-scoped and not: every shape a gate's rule takes. */
+    private val subscriptions: List<List<Filter>> =
+        listOf(
+            listOf(Filter(kinds = listOf(1), search = "pizza")),
+            listOf(Filter(kinds = listOf(1), search = "\"pizza party\"")),
+            listOf(Filter(kinds = listOf(1), search = "pizza -bitcoin")),
+            listOf(Filter(kinds = listOf(1), search = "observer:$observer pizza")),
+            listOf(Filter(kinds = listOf(1), search = "observer:$observer")),
+            listOf(Filter(kinds = listOf(1), search = "observer:$observer filter:rank:gte:95"), Filter(kinds = listOf(1), authors = listOf(midway), search = "include:spam")),
+            listOf(Filter(kinds = listOf(1), search = "pizza sort:text"), Filter(kinds = listOf(1), search = "observer:$observer")),
+            listOf(Filter(search = "pizza")),
+            listOf(Filter(kinds = listOf(1), search = "⚡ -🔥")),
+        )
+
+    private fun liveEvents(): List<Event> =
+        listOf(trusted, midway, spammer, unranked, stranger).flatMap { a ->
+            listOf("pizza night", "a pizza party tonight", "party pizza", "pizza for bitcoin", "hello", "zap⚡ sent", "zap⚡ 🔥", "pizzas all round").map { note(a, it) } +
+                ReactionEvent(id(), a, 1_700_000_000L, emptyArray(), "+", "") +
+                MetadataEvent(id(), a, 1_000L + seq, emptyArray(), """{"name":"pizza $a"}""", "")
+        }
+
+    /** The gate's text before the words were shared: extracted and tokenized again on every call, by every gate. */
+    private val unshared: (Event) -> List<String> = { e ->
+        LiveGate.Text.words(
+            SearchExtractors
+                .extract(e)
+                .fields()
+                .values
+                .joinToString(" "),
+        )
+    }
+
+    /**
+     * A NOTE IS EXTRACTED AND TOKENIZED ONCE, HOWEVER MANY SEARCH FEEDS IT
+     * REACHES. Each subscription has its own gate, so per-gate words made the
+     * text work per event O(open NIP-50 live subscriptions); the store's
+     * gates now share one memo. Counted on the production wiring
+     * (`store.liveGate`), event by event across every gate, the way fan-out
+     * runs: one extraction per event a text rule's NIP-01 part matched, and
+     * none from a gate with no text at all.
+     */
+    @Test
+    fun `an event's words are read once however many gates it reaches`() {
+        val gates = runBlocking { (1..4).flatMap { subscriptions }.map { assertNotNull(store.liveGate(it)) } }
+        val events = liveEvents()
+        val before = store.liveWords.computed
+        for (e in events) gates.forEach { it.admitsNow(e) }
+        // Every event here meets some text rule's NIP-01 part (the kind-less search takes the reactions and profiles).
+        assertEquals(events.size.toLong(), store.liveWords.computed - before, "${gates.size} gates, ${events.size} events: once per event, not per gate")
+        val plain = runBlocking { assertNotNull(store.liveGate(listOf(Filter(kinds = listOf(1), search = "observer:$observer")))) }
+        val untouched = store.liveWords.computed
+        liveEvents().forEach { plain.admitsNow(it) }
+        assertEquals(untouched, store.liveWords.computed, "a gate with no text never extracts")
+    }
+
+    /**
+     * SHARING THE WORDS CHANGES NO ADMISSION, on one thread or several. Every
+     * gate, built from the same filters, answers every event exactly as the
+     * unshared extraction does — admitsNow cold, admits, admitsNow warm —
+     * and four threads fanning out interleaved events through the shared memo
+     * at once still agree with it.
+     */
+    @Test
+    fun `shared words admit exactly what per-gate words admitted, across threads`() {
+        val shared = runBlocking { subscriptions.map { assertNotNull(store.liveGate(it)) } }
+        val oracle = runBlocking { subscriptions.map { assertNotNull(store.liveGate(it, unshared)) } }
+        val events = liveEvents()
+
+        fun now(gates: List<LiveGate>) = gates.map { g -> events.map { g.admitsNow(it) } }
+
+        fun full(gates: List<LiveGate>) = gates.map { g -> runBlocking { events.map { g.admits(it) } } }
+        assertEquals(now(oracle), now(shared), "admitsNow, cold")
+        val admitted = full(oracle)
+        assertEquals(admitted, full(shared), "admits")
+        val warm = now(oracle)
+        assertEquals(warm, now(shared), "admitsNow, warm")
+        assertTrue(admitted.flatten().any { it } && admitted.flatten().any { !it }, "the battery admits some and refuses some")
+
+        val threads = 4
+        val pool = Executors.newFixedThreadPool(threads)
+        try {
+            val start = CyclicBarrier(threads)
+            val runs =
+                (0 until threads).map { t ->
+                    pool.submit(
+                        Callable {
+                            start.await()
+                            // Each thread walks the events in its own rotation, event-major over every gate.
+                            val order = events.indices.map { (it + t * 7) % events.size }
+                            val seen = HashMap<Pair<Int, Int>, Boolean?>()
+                            repeat(50) { for (i in order) shared.forEachIndexed { g, gate -> seen[g to i] = gate.admitsNow(events[i]) } }
+                            seen
+                        },
+                    )
+                }
+            for (run in runs) {
+                val seen = run.get(60, TimeUnit.SECONDS)
+                for ((key, got) in seen) assertEquals(warm[key.first][key.second], got, "gate ${key.first}, event ${key.second}")
+            }
+        } finally {
+            pool.shutdownNow()
+        }
     }
 }

@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.eventstore.engine.text.IndexableChars
 import com.nosfabrica.vespa.eventstore.trust.TrustCells
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * THE OBSERVER GATE FOR EVENTS THAT ARRIVE AFTER EOSE.
@@ -63,12 +64,19 @@ import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
  * agreeing with it. The lookup reads the newest provider pass (a map read);
  * just after a 10040 write made it stale, [admitsNow] defers, and [admits]
  * waits on the one rebuild every deferred event shares.
+ *
+ * AN EVENT'S WORDS ARE READ ONCE, NOT ONCE PER SUBSCRIPTION. Every gate of a
+ * store shares one [Words], so a note reaching N open searching feeds is
+ * extracted and tokenized once per delivery thread rather than N times. In
+ * process, 500 one-word search gates over 2,000 ~250-character notes cost
+ * 983 µs per event extracting per gate and 50 µs sharing the words (19.6x;
+ * 16x at 100, 6.7x at 10, none at 1) — the text was nearly all of the work.
  */
 class LiveGate internal constructor(
     private val rules: List<Rule>,
     private val trust: TrustCells,
     private val lenses: Lenses,
-    private val textOf: (Event) -> String,
+    private val wordsOf: (Event) -> List<String>,
 ) {
     /** Which service an observer's rank lens reads: [now] off what is cached, [read] building it if it must. */
     internal interface Lenses {
@@ -144,19 +152,57 @@ class LiveGate internal constructor(
         val floor: Double?,
     )
 
-    private fun Rule.matches(
-        event: Event,
-        words: Lazy<List<String>>,
-    ): Boolean = filter.match(event) && (text == null || text.admits(words.value))
+    /**
+     * An event's indexed words ([Text.words] of [textOf]), remembered for the
+     * LAST event each thread asked about — the same trick as the relay's
+     * per-loop shared frame body. Fan-out hands every subscription the same
+     * [Event] instance, one event at a time per delivery thread, so identity
+     * finds it and the slot never has to hold more than one. Thread-confined
+     * rather than one shared slot because fan-out runs on several threads at
+     * once (quartz's `FanoutExecutor`s, one per event loop): a shared slot
+     * would thrash between their events and need a lock or a CAS to publish.
+     * A miss recomputes exactly what the gate computed before the memo, and
+     * [textOf] is a pure function of the event, so a hit answers the same.
+     *
+     * Still LAZY: asked only by a text rule whose NIP-01 part matched, so a
+     * reaction streaming past a `kinds:[1]` search feed is never extracted.
+     * The cost of the slot is one event and its words per thread that ever
+     * asked, held until that thread's next event.
+     */
+    internal class Words(
+        private val textOf: (Event) -> String,
+    ) {
+        private class Last(
+            val event: Event,
+            val words: List<String>,
+        )
 
-    private fun wordsOf(event: Event) = lazy { Text.words(textOf(event)) }
+        private val last = ThreadLocal<Last>()
+        private val computedCount = AtomicLong()
+
+        /** How many times [of] had to extract and tokenize (a miss): the count the sharing exists to keep at one per event per thread. */
+        val computed: Long get() = computedCount.get()
+
+        fun of(event: Event): List<String> {
+            last.get()?.let { if (it.event === event) return it.words }
+            val words = Text.words(textOf(event))
+            last.set(Last(event, words))
+            computedCount.incrementAndGet()
+            return words
+        }
+    }
+
+    // `filter.match` runs here even though quartz's fan-out matched the subscription first: quartz
+    // proves only that SOME filter of the subscription matched, not this rule's (and a filter
+    // `toExpiryQuery` drops has no rule at all), so skipping it would let a rule vouch for a
+    // sibling's event, the hole the per-rule text check (class KDoc) closes for `search`.
+    private fun Rule.matches(event: Event): Boolean = filter.match(event) && (text == null || text.admits(wordsOf(event)))
 
     /** True/false from trust already known; null when an author must be read first. */
     fun admitsNow(event: Event): Boolean? {
-        val words = wordsOf(event)
         var unknown = false
         for (rule in rules) {
-            if (!rule.matches(event, words)) continue
+            if (!rule.matches(event)) continue
             val floor = rule.floor ?: return true
             val service =
                 when (val lens = rule.observer?.let(lenses::now) ?: Resolved.Service(null)) {
@@ -181,9 +227,8 @@ class LiveGate internal constructor(
 
     /** The full answer, reading any trust not yet in hand. */
     suspend fun admits(event: Event): Boolean {
-        val words = wordsOf(event)
         for (rule in rules) {
-            if (!rule.matches(event, words)) continue
+            if (!rule.matches(event)) continue
             val floor = rule.floor ?: return true
             if (trust.read(event.pubKey, rule.observer?.let { lenses.read(it) }) >= floor) return true
         }

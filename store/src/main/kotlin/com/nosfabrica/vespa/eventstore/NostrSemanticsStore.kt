@@ -889,7 +889,13 @@ class NostrSemanticsStore(
      * shares. See [LiveGate]; call it in the subscription's own context, where
      * the connection observer is read from.
      */
-    override suspend fun liveGate(filters: List<Filter>): LiveGate? {
+    override suspend fun liveGate(filters: List<Filter>): LiveGate? = liveGate(filters, liveWords::of)
+
+    /** [liveGate] reading an event's words through [wordsOf] — the store's shared [liveWords] in production, anything a test compares it with. */
+    internal suspend fun liveGate(
+        filters: List<Filter>,
+        wordsOf: (Event) -> List<String>,
+    ): LiveGate? {
         val observer = connectionObserver()
         val cutoff = nowSecs()
         val compiled = filters.mapNotNull { f -> f.toExpiryQuery(cutoff, observer)?.let { f to it } }
@@ -913,14 +919,22 @@ class NostrSemanticsStore(
                 LiveGate.Rule(f, text.takeUnless { it.isEmpty() }, if (floor != null) q.observer else null, floor)
             }
         if (rules.none { it.floor != null || it.text != null }) return null
-        return LiveGate(rules, trustCells, liveLenses) { event ->
+        return LiveGate(rules, trustCells, liveLenses, wordsOf)
+    }
+
+    /**
+     * One words memo for EVERY gate this store builds, which is the point of it: each live
+     * subscription has its own gate, so a memo per gate would still extract and tokenize a note
+     * once per open searching feed. See [LiveGate.Words].
+     */
+    internal val liveWords =
+        LiveGate.Words { event ->
             SearchExtractors
                 .extract(event)
                 .fields()
                 .values
                 .joinToString(" ")
         }
-    }
 
     /**
      * [pubkey]'s trust chain: their stored 10040, the lens it resolves to (the
