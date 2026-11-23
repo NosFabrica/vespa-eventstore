@@ -104,30 +104,37 @@ effect: `lock.ingest.trust.wait` is booked only by the trust half, and
 `lock.ingest.wait` no longer tracks `lock.gate.hold`.
 
 **The expiry sweep held both locks for the whole backlog.** `deleteExpiredEvents`
-took the gate and `writes` once and ran every `sweepPage` round inside, so a
+took the gate and `writes` once and ran every `sweepPage` round inside, each
+round re-matching and re-sorting everything left as full documents, so a
 backlog of N expired events stalled every publish for N / 10,000 rounds back
-to back. It now takes both locks PER ROUND (`Deletions.sweep`'s `round`
-wrapper), and a publish queued behind the sweep gets `writes` between two
-pages. Safe for expiry specifically: each round is the old round verbatim
-(read a page, remove exactly those docs) under one hold, so nothing
-interleaves within a page; what a write between pages can observe is some
-already-expired events still stored, which reads hide and NIP-40 lets a relay
-drop at any time, so no admission rested on it. The cutoff is read once,
-before the first page, off the store's clock — the clock every admission path
-now reads too (it read quartz's wall clock, so the argument rested on two
-clocks agreeing) — and every admission path rejects an event already expired
-when offered, so the match set can only grow by writes whose expiry check
-passed before the cutoff (finitely many): the sweep terminates and does not
-chase events that expire while it runs. It checks for cancellation before
-each page; nothing else in the loop is sure to. An admin `delete(filters)`
-and a vanish keep one hold for the whole sweep: a filter's match set is not
-fixed, so a write between pages could add an event a later page deletes.
-`ExpirySweepTest` pins it: the same set as a one-page sweep, a publish and a
-card between pages, a trust drain between pages, termination under arrivals,
-cancellation, a failed page releasing both locks, and `delete(filters)`
-keeping one hold. The page stays
-`sweepPage` (10,000): every round re-runs the query over what is left, so a
-smaller page shortens each hold but multiplies the sweep's total matching.
+to back, at O(N² / page) matching. It now WALKS the due set once
+(`Deletions.sweepWalk` over `EventIndex.visitIds`: the `created_at`-sliced
+cursor of #209, the attribute-only `idtime` summary, `sorting.degrading=false`)
+and removes it by id, a batch per hold of both locks, so a publish queued
+behind the sweep gets `writes` between two batches. The trust projection reads
+full documents back only for its own kinds, the one place a removal needs them.
+
+Safe for expiry specifically. The walk reads outside a hold and removes inside
+one — the reindex's shape since #160 — which is sound because an id the walk
+saw still names the same expired event, and one removed meanwhile is a no-op
+remove. What a write between batches can observe is some already-expired
+events still stored, which reads hide and NIP-40 lets a relay drop at any
+time, so no admission rested on it. The cutoff is read once, off the store's
+clock — the clock every admission path now reads too (it read quartz's wall
+clock, so the argument rested on two clocks agreeing) — and every admission
+path rejects an event already expired when offered, so the match set can only
+grow by writes whose expiry check passed before the cutoff (finitely many),
+and the walk is one descent of `created_at`: the sweep terminates and does not
+chase events that expire while it runs. It checks for cancellation before each
+batch, and fails loudly if its first batch's removes did not land. An admin
+`delete(filters)` and a vanish keep `Deletions.sweep` under one hold: a
+filter's match set is not fixed, so a write between pages could add an event a
+later page deletes, and they need the read and the write in one hold.
+`ExpirySweepTest` pins it: the same set as a one-page sweep, one walk and no
+full-document read outside the trust kinds, a publish and a card between
+batches, a trust drain between batches, termination under arrivals,
+cancellation, a failed batch releasing both locks, dropped removes failing the
+sweep, and `delete(filters)` keeping one hold.
 
 ## Why `writes` cannot simply go away
 

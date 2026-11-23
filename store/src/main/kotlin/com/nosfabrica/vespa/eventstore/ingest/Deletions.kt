@@ -37,17 +37,6 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 
 /**
- * [Deletions.sweep]'s default round: run it inline, under whatever lock the
- * caller holds. A top-level value rather than a `= { it() }` lambda in the
- * parameter list, which crashes this module's compile on Kotlin 2.4.21
- * (reproduced 2026-11-23 in `:store:compileKotlin`): "Backend Internal error:
- * Exception during IR lowering", an `AssertionError` from
- * `AddContinuationLoweringKt.retargetToSuspendView` (AddContinuationLowering.kt:490)
- * — "FUN LOCAL_FUNCTION_FOR_LAMBDA ... has no continuation".
- */
-private val INLINE_ROUND: suspend (suspend () -> Set<String>?) -> Set<String>? = { it() }
-
-/**
  * NIP-09 (deletion request) and NIP-62 (request to vanish) enforcement, plus
  * the paged [sweep] every bulk erase runs on. Every method must be called
  * under the store's writer lock — query-then-write is only atomic there. For
@@ -177,15 +166,17 @@ internal class Deletions(
      * shrink the match set, so the next round naturally sees the next batch.
      * (Offset paging would be wrong — deleting under an offset skips rows.)
      *
-     * [round] wraps each round — its read AND its removes — and is how a
-     * caller chooses its lock granularity. The default runs the round inline,
-     * for a caller that already holds the writer lock across the whole sweep
-     * (a vanish inside its own admission, an admin delete, a mixed batch's
-     * replay). A caller that may release between rounds passes a wrapper that
-     * takes the lock per round — the expiry sweep, see
-     * `NostrSemanticsStore.deleteExpiredEvents` for why that is safe for it and
-     * not for every sweep. Each round is self-contained either way: it reads
-     * the page and removes exactly what it read inside one [round].
+     * The caller holds the writer lock across the WHOLE sweep (a vanish inside
+     * its own admission, an admin delete, a mixed batch's replay): each round
+     * re-matches what is left, which is only correct while nothing else
+     * writes. The expiry sweep, which releases its locks between pages, walks
+     * instead — [sweepWalk].
+     *
+     * Every round re-matches and re-sorts the whole remaining set, so a sweep
+     * of N costs O(N² / page) matching. [sweepWalk] does not; these callers
+     * keep this loop because their match set is bounded by one owner or one
+     * filter, and because a walk's read happens outside a hold, which only a
+     * sweep that may release between pages can use.
      *
      * Cancellation is checked before every round. Nothing else in the loop is
      * guaranteed to: an uncontended `Mutex.lock` returns without suspending,
@@ -193,10 +184,7 @@ internal class Deletions(
      * never reaches a cancellation point, so a cancelled sweep would run to
      * its end.
      */
-    suspend fun sweep(
-        q: EventQuery,
-        round: suspend (suspend () -> Set<String>?) -> Set<String>? = INLINE_ROUND,
-    ) {
+    suspend fun sweep(q: EventQuery) {
         // The caller's own limit, if any, decides whether one page is the whole
         // job, so page on q.limit rather than sweepPage. Plain sweeps stamp
         // RANK_UNRANKED to opt out of the recency planner's count probes — a
@@ -210,8 +198,7 @@ internal class Deletions(
         var lastPage: Set<String>? = null
         repeat(MAX_SWEEP_ROUNDS) {
             currentCoroutineContext().ensureActive()
-            val previous = lastPage
-            val removed = round { sweepRound(paged, previous) } ?: return
+            val removed = sweepRound(paged, lastPage) ?: return
             // A limit'd delete is satisfied by its first page.
             if (q.limit != null) return
             lastPage = removed
@@ -236,15 +223,67 @@ internal class Deletions(
         // An acked remove is visible to search (the EventIndex contract), so
         // a page identical to the one just removed means the deletes are not
         // landing. Returning silently would report a vanish/delete as
-        // enforced while the events are still served. (A caller that
-        // releases the lock between rounds keeps this check sound: only a
-        // writer RE-STORING every doc of the last page between two rounds
-        // could fake it, and it then fails loudly rather than silently.)
+        // enforced while the events are still served.
         check(ids != previous) { "sweep is not shrinking: ${ids.size} matches for $paged survived their own removal" }
         // The docs are already in hand — removeDocs lets the trust
         // projection react without a get per id.
         index.removeDocs(page)
         return ids
+    }
+
+    /**
+     * Remove every match of [q] by WALKING it once — [EventIndex.visitIds], the
+     * engine's `created_at`-sliced cursor over the attribute-only `idtime`
+     * summary — and removing it [page] ids at a time, each batch inside one
+     * [hold]. The expiry sweep's primitive (`NostrSemanticsStore.deleteExpiredEvents`).
+     *
+     * WHY A WALK, not [sweep]'s re-query: a round of [sweep] matches and sorts
+     * everything still left to return the newest page, so a backlog of N costs
+     * O(N² / page) matching, its `order by` invites the sorting degrader, and
+     * every page is read as FULL documents. The walk reads each slice once
+     * (`VespaEventIndex.visitIdsByCursor`, about one page per slice since #209,
+     * with `sorting.degrading=false`), projects only `id, created_at`, and the
+     * removes go by id: [EventIndex.removeAll], which the trust projection
+     * answers by reading back FULL documents only for its own kinds, the one
+     * place a removal needs them.
+     *
+     * WHY ONLY FOR A FIXED MATCH SET. The walk's reads happen OUTSIDE [hold];
+     * only the removes are inside it. That is sound when the match set cannot
+     * grow behind the cursor in a way the caller must catch — the expiry
+     * sweep's fixed cutoff — and when removing a stale id is harmless: an
+     * event is immutable per id, so an id that matched still matches, and one
+     * removed since by someone else is a no-op remove. A filter delete or a
+     * vanish needs the read and the write in one hold; they use [sweep].
+     *
+     * Cancellation is checked before every batch. The first batch's removes
+     * are checked to have landed (an acked remove is visible, the EventIndex
+     * contract): a broken engine then fails the sweep loudly instead of
+     * reporting it done with every event still stored — one id read per
+     * sweep rather than per page, since a remove that is dropped is dropped
+     * for every page alike.
+     */
+    suspend fun sweepWalk(
+        q: EventQuery,
+        page: Int,
+        hold: suspend (suspend () -> Unit) -> Unit,
+    ) {
+        require(page >= 1) { "sweep page $page is below 1" }
+        var verified = false
+        index.visitIds(q) { refs ->
+            for (batch in refs.chunked(page)) {
+                currentCoroutineContext().ensureActive()
+                val ids = batch.map { it.id }
+                hold {
+                    index.removeAll(ids)
+                    if (!verified) {
+                        val survived = index.existingIds(ids)
+                        check(survived.isEmpty()) { "sweep is not landing: ${survived.size} of ${ids.size} removed ids for $q are still stored" }
+                        verified = true
+                    }
+                }
+            }
+            true
+        }
     }
 
     private companion object {

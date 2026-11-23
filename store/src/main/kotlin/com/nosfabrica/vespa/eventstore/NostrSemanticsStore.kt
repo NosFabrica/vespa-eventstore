@@ -1281,30 +1281,34 @@ class NostrSemanticsStore(
         }
 
     /**
-     * NIP-40: remove every event whose expiration has passed — ONE PAGE PER
-     * LOCK HOLD, so a publish waits for at most one page of the sweep rather
-     * than all of it. A backlog of N expired events used to hold both writer
-     * locks for N / [sweepPage] rounds back to back, and every write in the
-     * process queued behind it.
+     * NIP-40: remove every event whose expiration has passed — WALKED ONCE, and
+     * removed a batch per lock hold, so a publish waits for at most one batch of
+     * the sweep rather than all of it. A backlog of N expired events used to
+     * hold both writer locks for N / [sweepPage] rounds back to back, each
+     * round re-matching and re-sorting everything left (O(N² / page)) and
+     * reading full documents; every write in the process queued behind it.
      *
-     * Both locks per page, for the reason on [delete]: NIP-40 expiry does not
-     * ask what kind it is reaping, so it can reap cards, and each page's
-     * removes are a trust reaction that must not race the drain.
+     * Each batch takes BOTH locks, for the reason on [delete]: NIP-40 expiry
+     * does not ask what kind it is reaping, so it can reap cards, and their
+     * removal is a trust reaction that must not race the drain.
      *
-     * WHY RELEASING BETWEEN PAGES IS SAFE HERE, and is not for every sweep:
+     * WHY RELEASING BETWEEN BATCHES IS SAFE HERE, and is not for every sweep:
      *
-     *  - Each page is the old round verbatim — read a page of matches, remove
-     *    exactly those docs — inside one hold of both locks, so no write
-     *    interleaves WITHIN a page. A write between pages sees a state the
-     *    old sweep never exposed (some expired events gone, some not), but
-     *    every event in it is already expired: reads hide it
-     *    (`notExpiredAt`), and NIP-40 lets a relay drop it at any time, so
-     *    "this expired event is still stored" was never an invariant anything
-     *    could rest on. No other document's admission depends on which
-     *    expired events are left — a supersession, tombstone or vanish check
-     *    against an expired doc already had both answers depending on when
-     *    the periodic sweep last ran.
-     *  - The cutoff is taken ONCE, before the first page, so the match set is
+     *  - Each batch's removes run inside one hold; the walk's READS do not —
+     *    the shape the reindex has used since #160. That is sound because an
+     *    event is immutable per id: an id the walk saw still names an expired
+     *    event, and one removed meanwhile by a supersession or a kind 5 is a
+     *    no-op remove (the trust projection reads its own kinds back inside
+     *    the hold and reacts only to what is still stored).
+     *  - A write between batches sees a state the old sweep never exposed
+     *    (some expired events gone, some not), but every event in it is
+     *    already expired: reads hide it (`notExpiredAt`), and NIP-40 lets a
+     *    relay drop it at any time, so "this expired event is still stored"
+     *    was never an invariant anything could rest on. No other document's
+     *    admission depends on which expired events are left — a supersession,
+     *    tombstone or vanish check against an expired doc already had both
+     *    answers depending on when the periodic sweep last ran.
+     *  - The cutoff is taken ONCE, before the walk, so the match set is
      *    fixed: an event only joins it with an expiration at or before the
      *    sweep's start, and every admission path rejects an event already
      *    expired by THIS STORE'S clock ([nowSecs], the clock the cutoff is
@@ -1312,15 +1316,17 @@ class NostrSemanticsStore(
      *    the per-event path, the mixed replay and a transaction all apply,
      *    and the bulk planner's stage A). The only arrivals that can still
      *    match are writes whose expiry check passed BEFORE the cutoff and
-     *    commit after it — finitely many, so the sweep terminates. Such an
-     *    arrival is swept by this pass only if it lands before the pass's
-     *    final, empty read; one that lands after it is left stored, already
-     *    hidden from reads, for the next pass — which is also what the old
-     *    single-hold sweep did with a write that queued behind it. A cutoff
-     *    re-read per page would instead chase every event that expires while
-     *    the sweep runs. [Deletions.sweep]'s round cap stays the backstop.
+     *    commit after it — finitely many, and the walk is a single descent of
+     *    `created_at`, so the sweep terminates. Such an arrival is swept by
+     *    this pass only if it lands below the walk's cursor before the walk
+     *    reaches it; one that lands above the cursor, or after the walk, is
+     *    left stored, already hidden from reads, for the next pass — which is
+     *    also what the old single-hold sweep did with a write that queued
+     *    behind it.
      *
-     * An admin [delete] and a vanish keep the whole sweep under one hold: a
+     * The batch is [sweepPage], the size every sweep pages at.
+     *
+     * An admin [delete] and a vanish keep [Deletions.sweep] under one hold: a
      * filter's match set is NOT fixed — a write between pages could add an
      * event a later page then deletes, which a single-lock delete never would
      * — and a vanish runs inside its own admission, before the request is
@@ -1330,8 +1336,9 @@ class NostrSemanticsStore(
         checkWritable("deleteExpiredEvents")
         withActivity(Activity.Delete) {
             // expiresBefore is strict (<): +1 makes "expires exactly now" due, per NIP-40.
-            val due = EventQuery(expiresBefore = nowSecs() + 1)
-            deletions.sweep(due) { page -> locks.gated(trust = true, WriteLocks.SWEEP, WriteLocks.SWEEP_TRUST) { page() } }
+            // `complete`, like every read that feeds a write: a short walk is a sweep that reports done.
+            val due = EventQuery(expiresBefore = nowSecs() + 1, complete = true)
+            deletions.sweepWalk(due, sweepPage) { batch -> locks.gated(trust = true, WriteLocks.SWEEP, WriteLocks.SWEEP_TRUST) { batch() } }
         }
     }
 

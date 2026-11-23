@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore
 
+import com.nosfabrica.vespa.eventstore.engine.DocRef
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationDoc
@@ -128,9 +129,9 @@ class ExpirySweepTest {
             val removes = mutableListOf<Int>()
             val counting =
                 object : EventIndex by inner {
-                    override suspend fun removeDocs(docs: List<EventDoc>) {
-                        removes += docs.size
-                        inner.removeDocs(docs)
+                    override suspend fun removeAll(ids: List<String>) {
+                        removes += ids.size
+                        inner.removeAll(ids)
                     }
                 }
             val store = store(counting)
@@ -215,8 +216,9 @@ class ExpirySweepTest {
 
     /**
      * A CARD takes the trust gate before `writes`, and the sweep holds both
-     * per page — so a card publish waits on the GATE, and must still get it
-     * (and then `writes`) between two pages rather than after the sweep.
+     * per page — so a card publish waits on the GATE, and must
+     * still get it (and then `writes`) between two pages rather than after
+     * the sweep.
      */
     @Test
     fun `a card publish takes both locks between two pages of an expiry sweep`() =
@@ -227,7 +229,8 @@ class ExpirySweepTest {
             val store = store(parking)
             val named = list10040()
             store.insert(named)
-            store.batchInsert((1..CORPUS).map { expiringNote(at = 1_000L + it) })
+            // Expired cards too, so the sweep's pages are trust reactions.
+            store.batchInsert((1..CORPUS).map { card(subject = 100 + it, expiresAt = realNow + DUE) } + (1..CORPUS).map { expiringNote(at = 1_000L + it) })
             sweepTime()
             val publish = card(subject = 7, at = 9_000L)
 
@@ -244,9 +247,12 @@ class ExpirySweepTest {
      * not chased. Each page's removes start a publish of an event expiring a
      * second after the clock — its expiry check passes, and it queues on the
      * lock the page holds — then move the clock 100 s on, so by the next page
-     * that event is due. A cutoff re-read per page sweeps every one of them,
-     * a page at a time; the fixed one ends after the seeded backlog and leaves
-     * them for the next pass, which takes them.
+     * that event is due. Each is OLDER than the backlog, so the walk's cursor
+     * (paged here like the engine's, [pagedWalk]) reaches it — and passes it,
+     * since it was not due at the cutoff. The sweep ends after the seeded
+     * backlog and leaves them for the next pass, which takes them. (A cutoff
+     * re-read per page swept every one of them, a page at a time, on the
+     * re-query loop this walk replaced.)
      */
     @Test
     fun `an expiry sweep terminates while new events fall due during it`() =
@@ -260,15 +266,22 @@ class ExpirySweepTest {
             var trickle = true
             val trickling =
                 object : EventIndex by inner {
-                    override suspend fun removeDocs(docs: List<EventDoc>) {
-                        inner.removeDocs(docs)
+                    override suspend fun removeAll(ids: List<String>) {
+                        inner.removeAll(ids)
                         removes++
-                        trickle(docs.size)
+                        trickle(ids.size)
                     }
+
+                    override suspend fun visitIds(
+                        query: EventQuery,
+                        withDTag: Boolean,
+                        onPage: suspend (List<DocRef>) -> Boolean,
+                    ) = pagedWalk(inner, query, onPage)
 
                     private fun trickle(size: Int) {
                         if (!trickle || size == 0 || arrivals.size >= MAX_ARRIVALS) return
-                        val e = expiringNote(at = 9_000L + arrivals.size, expiresAt = clock + 1)
+                        // OLDER than the backlog, so the walk's cursor reaches it.
+                        val e = expiringNote(at = 500L + arrivals.size, expiresAt = clock + 1)
                         arrivals += e
                         // Passes admission's expiry check NOW, then queues on the
                         // writer lock this page holds; it lands once the page ends.
@@ -310,8 +323,8 @@ class ExpirySweepTest {
             lateinit var sweep: Deferred<Unit>
             val cancelling =
                 object : EventIndex by inner {
-                    override suspend fun removeDocs(docs: List<EventDoc>) {
-                        inner.removeDocs(docs)
+                    override suspend fun removeAll(ids: List<String>) {
+                        inner.removeAll(ids)
                         if (removes++ == 0) sweep.cancel()
                     }
                 }
@@ -341,9 +354,9 @@ class ExpirySweepTest {
             var removes = 0
             val failing =
                 object : EventIndex by projected {
-                    override suspend fun removeDocs(docs: List<EventDoc>) {
+                    override suspend fun removeAll(ids: List<String>) {
                         check(removes++ == 0) { "engine refused the second page" }
-                        projected.removeDocs(docs)
+                        projected.removeAll(ids)
                     }
                 }
             val store = store(failing)
@@ -458,6 +471,101 @@ class ExpirySweepTest {
         }
 
     /**
+     * The sweep WALKS its match set once and reads full documents only for the
+     * trust kinds. Two recorders: above the trust projection (what the store
+     * asks) and below it (what the projection reads back to react). Neither
+     * may see the due set re-queried page after page — the old loop matched
+     * and sorted everything left on every round, as full documents — and the
+     * only document reads below the projection are id lookups of its own kinds.
+     */
+    @Test
+    fun `the expiry sweep walks once and reads full documents only for trust kinds`() =
+        runBlocking {
+            val below = Recording(InMemoryEventIndex())
+            val above = Recording(projection(below, InMemoryReputationIndex()))
+            val store = store(above)
+            store.insert(list10040())
+            store.batchInsert((1..CORPUS).map { expiringNote(at = 1_000L + it) } + (1..CORPUS).map { card(subject = it, expiresAt = realNow + DUE) })
+            sweepTime()
+            above.clear()
+            below.clear()
+
+            store.deleteExpiredEvents()
+            val reads = above.searches + below.searches
+            val walks = above.walks.toList()
+
+            assertEquals(1, stored(below).size, "only the provider list is left")
+            assertEquals(1, walks.size, "one walk: $walks")
+            assertEquals(realNow + SWEEP_AT + 1, walks.single().expiresBefore, "on the one cutoff")
+            assertTrue(reads.none { it.expiresBefore != null }, "no page re-queries the due set: $reads")
+            val offenders = reads.filterNot { it.ids.isNotEmpty() && it.kinds == TRUST_KINDS }.map { "ids=${it.ids.size} kinds=${it.kinds} search=${it.search} tags=${it.tags} authors=${it.authors.size} limit=${it.limit}" }
+            assertTrue(offenders.isEmpty(), "every document read is an id lookup of the trust kinds: $offenders")
+        }
+
+    /** An expiry sweep whose removes are acked and dropped FAILS rather than reporting done. */
+    @Test
+    fun `an expiry sweep whose removes do not land fails loudly`() =
+        runBlocking {
+            val inner = InMemoryEventIndex()
+            val dropping =
+                object : EventIndex by inner {
+                    override suspend fun removeAll(ids: List<String>) {} // acked, never applied
+                }
+            val store = store(dropping)
+            store.batchInsert((1..CORPUS).map { expiringNote(at = 1_000L + it) })
+            sweepTime()
+            val refused = assertFailsWith<IllegalStateException> { store.deleteExpiredEvents() }
+            assertTrue("not landing" in refused.message.orEmpty(), "the sweep names the dropped removes: ${refused.message}")
+        }
+
+    /** Records the walks and the document reads that pass through it. */
+    private class Recording(
+        private val inner: EventIndex,
+    ) : EventIndex by inner {
+        val walks = mutableListOf<EventQuery>()
+        val searches = mutableListOf<EventQuery>()
+
+        fun clear() {
+            walks.clear()
+            searches.clear()
+        }
+
+        override suspend fun search(query: EventQuery): List<EventDoc> {
+            searches += query
+            return inner.search(query)
+        }
+
+        override suspend fun visitIds(
+            query: EventQuery,
+            withDTag: Boolean,
+            onPage: suspend (List<DocRef>) -> Boolean,
+        ) {
+            walks += query
+            inner.visitIds(query, withDTag, onPage)
+        }
+    }
+
+    /**
+     * A walk paged like the engine's cursor (`VespaEventIndex.visitIdsByCursor`):
+     * newest first, [PAGE] at a time, each page read when the last one has
+     * been handed over — so writes between pages are seen below the cursor.
+     * The in-memory default hands the whole match set over as one page. Every
+     * `created_at` here is distinct, so the cursor needs no tie handling.
+     */
+    private suspend fun pagedWalk(
+        inner: EventIndex,
+        query: EventQuery,
+        onPage: suspend (List<DocRef>) -> Boolean,
+    ) {
+        var until = query.until
+        while (true) {
+            val page = inner.search(query.copy(until = until, limit = PAGE))
+            if (page.isEmpty() || !onPage(page.map { DocRef(it.id, it.createdAt) })) return
+            until = page.minOf { it.createdAt } - 1
+        }
+    }
+
+    /**
      * Parks the FIRST page's removes until [release], with that page's locks
      * held; records, at every page's removes, whether [watched] was stored.
      */
@@ -472,6 +580,13 @@ class ExpirySweepTest {
         /** Runs at every page's removes, before the park. */
         var onRemove: (suspend () -> Unit)? = null
 
+        /** The expiry sweep's removes. */
+        override suspend fun removeAll(ids: List<String>) {
+            atRemove()
+            inner.removeAll(ids)
+        }
+
+        /** [Deletions.sweep]'s removes — `delete(filters)`. */
         override suspend fun removeDocs(docs: List<EventDoc>) {
             atRemove()
             inner.removeDocs(docs)
@@ -512,6 +627,7 @@ class ExpirySweepTest {
     }
 
     private companion object {
+        val TRUST_KINDS = TrustProjection.TRUST_KINDS
         const val PAGE = 4
         const val CORPUS = 25
 
