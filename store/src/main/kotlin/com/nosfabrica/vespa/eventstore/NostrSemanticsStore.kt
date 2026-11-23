@@ -41,6 +41,7 @@ import com.nosfabrica.vespa.eventstore.mapping.toEvent
 import com.nosfabrica.vespa.eventstore.mapping.toEventQuery
 import com.nosfabrica.vespa.eventstore.runtime.DEFAULT_GUARD_REFRESH_MILLIS
 import com.nosfabrica.vespa.eventstore.runtime.DEFAULT_PROVIDER_REFRESH_MILLIS
+import com.nosfabrica.vespa.eventstore.runtime.StoreKnobs
 import com.nosfabrica.vespa.eventstore.runtime.WriteLocks
 import com.nosfabrica.vespa.eventstore.runtime.WriterTopology
 import com.nosfabrica.vespa.eventstore.runtime.readOnlyRefusal
@@ -209,6 +210,13 @@ class NostrSemanticsStore(
      * so no positional argument shifts.
      */
     guardOwnersDisabled: Boolean? = null,
+    /**
+     * Ids removed per lock hold by [deleteExpiredEvents], or null — the
+     * default — for `VESPA_EXPIRY_SWEEP_PAGE` ([EngineTuning.expirySweepPage]).
+     * Internal — a test seam, like [sweepPage]. LAST, so no positional
+     * argument shifts.
+     */
+    internal val expirySweepPage: Int? = null,
 ) : LensedEventStore {
     init {
         require(!(readOnly && writers == WriterTopology.SINGLE_WRITER)) {
@@ -1324,7 +1332,8 @@ class NostrSemanticsStore(
      *    also what the old single-hold sweep did with a write that queued
      *    behind it.
      *
-     * The batch is [sweepPage], the size every sweep pages at.
+     * The batch is `VESPA_EXPIRY_SWEEP_PAGE` ([EngineTuning.expirySweepPage],
+     * default 1,000 ids per hold — see `StoreKnobs.expirySweepPage` for why).
      *
      * An admin [delete] and a vanish keep [Deletions.sweep] under one hold: a
      * filter's match set is NOT fixed — a write between pages could add an
@@ -1338,7 +1347,8 @@ class NostrSemanticsStore(
             // expiresBefore is strict (<): +1 makes "expires exactly now" due, per NIP-40.
             // `complete`, like every read that feeds a write: a short walk is a sweep that reports done.
             val due = EventQuery(expiresBefore = nowSecs() + 1, complete = true)
-            deletions.sweepWalk(due, sweepPage) { batch -> locks.gated(trust = true, WriteLocks.SWEEP, WriteLocks.SWEEP_TRUST) { batch() } }
+            val page = expirySweepPage ?: StoreKnobs.expirySweepPage.value
+            deletions.sweepWalk(due, page) { batch -> locks.gated(trust = true, WriteLocks.SWEEP, WriteLocks.SWEEP_TRUST) { batch() } }
         }
     }
 

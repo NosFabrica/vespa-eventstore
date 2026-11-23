@@ -110,8 +110,10 @@ backlog of N expired events stalled every publish for N / 10,000 rounds back
 to back, at O(N² / page) matching. It now WALKS the due set once
 (`Deletions.sweepWalk` over `EventIndex.visitIds`: the `created_at`-sliced
 cursor of #209, the attribute-only `idtime` summary, `sorting.degrading=false`)
-and removes it by id, a batch per hold of both locks, so a publish queued
-behind the sweep gets `writes` between two batches. The trust projection reads
+and removes it by id, 1,000 ids per hold of both locks (`VESPA_EXPIRY_SWEEP_PAGE`;
+a hold no longer reads its batch, so a smaller one no longer multiplies the
+sweep's matching), so a publish queued behind the sweep gets `writes` between
+two batches. The trust projection reads
 full documents back only for its own kinds, the one place a removal needs them.
 
 Safe for expiry specifically. The walk reads outside a hold and removes inside

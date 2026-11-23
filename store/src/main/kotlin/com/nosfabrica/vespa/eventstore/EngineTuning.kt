@@ -54,8 +54,8 @@ import com.nosfabrica.vespa.eventstore.runtime.DEFAULT_DEDUP_CHUNK as STORE_DEFA
  *
  *  - PER STORE: the engine client's feed, visit and recency settings and the
  *    guard-owner switch — applied to the store this tuning opens.
- *  - PER PROCESS: fan-out widths, the match-phase depth, the dedup chunk and
- *    the trust walk's page and slice. The code reads these as constants from
+ *  - PER PROCESS: fan-out widths, the match-phase depth, the dedup chunk,
+ *    the trust walk's page and slice, and the expiry sweep's page. The code reads these as constants from
  *    places no store instance reaches, so `open()` PINS them for the process
  *    ([com.nosfabrica.vespa.eventstore.engine.tuning.ProcessKnob]); a second
  *    `open()` asking for a different value fails rather than silently
@@ -117,6 +117,9 @@ class EngineTuning(
     // ---- per deploy ---------------------------------------------------------
     /** `VESPA_ACCESS_LOG` — `default` or `disabled`: the container's HTTP access log in the package `open()` deploys (`VespaApp`). */
     val accessLog: String? = null,
+    // ---- per process, added later: LAST so no positional argument shifts ----
+    /** `VESPA_EXPIRY_SWEEP_PAGE` — ids the NIP-40 expiry sweep removes per writer-lock hold, at least 1. Default 1000 (`NostrSemanticsStore.deleteExpiredEvents`). */
+    val expirySweepPage: Int? = null,
 ) {
     init {
         feedBatch?.let { require(it in 0..MAX_FEED_BATCH) { "feedBatch $it is outside 0..$MAX_FEED_BATCH" } }
@@ -138,6 +141,7 @@ class EngineTuning(
             "dedupChunk" to dedupChunk,
             "trustWalkPage" to trustWalkPage,
             "trustGateSlice" to trustGateSlice,
+            "expirySweepPage" to expirySweepPage,
         )
 
     /** The engine client's share, for `VespaEventIndex` and `VespaReputationIndex`. */
@@ -173,6 +177,7 @@ class EngineTuning(
                 dedupChunk?.let { { StoreKnobs.dedupChunk.pin(it) } },
                 trustWalkPage?.let { { StoreKnobs.trustWalkPage.pin(it) } },
                 trustGateSlice?.let { { StoreKnobs.trustGateSlice.pin(it) } },
+                expirySweepPage?.let { { StoreKnobs.expirySweepPage.pin(it) } },
             )
         synchronized(PIN_LOCK) { pins.forEach { it() } }
     }
@@ -205,6 +210,7 @@ class EngineTuning(
             "dedupChunk" to dedupChunk,
             "trustWalkPage" to trustWalkPage,
             "trustGateSlice" to trustGateSlice,
+            "expirySweepPage" to expirySweepPage,
             "accessLog" to accessLog,
         ).filter { it.second != null }
             .joinToString(", ", prefix = "EngineTuning(", postfix = ")") { (k, v) -> "$k=$v" }
@@ -247,6 +253,7 @@ class EngineTuning(
                 StoreKnobs.dedupChunk.env,
                 StoreKnobs.trustWalkPage.env,
                 StoreKnobs.trustGateSlice.env,
+                StoreKnobs.expirySweepPage.env,
                 VespaApp.ACCESS_LOG_ENV,
             )
 
@@ -322,6 +329,7 @@ class EngineTuning(
                     trustGateSlice = int(StoreKnobs.trustGateSlice.env, atLeastOne),
                     accessLog =
                         choice(VespaApp.ACCESS_LOG_ENV, { v -> v.lowercase().takeIf { it in VespaApp.ACCESS_LOG_VALUES } }, VespaApp.ACCESS_LOG_VALUES.sorted().joinToString()),
+                    expirySweepPage = int(StoreKnobs.expirySweepPage.env, atLeastOne),
                 )
             require(problems.isEmpty()) { "the store's environment has ${problems.size} bad setting(s): ${problems.joinToString("; ")}" }
             return tuning

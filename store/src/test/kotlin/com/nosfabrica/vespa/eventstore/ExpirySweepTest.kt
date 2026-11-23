@@ -113,7 +113,7 @@ class ExpirySweepTest {
     private fun store(
         index: EventIndex,
         page: Int = PAGE,
-    ) = NostrSemanticsStore(index, nowSecs = { clock }, sweepPage = page)
+    ) = NostrSemanticsStore(index, nowSecs = { clock }, sweepPage = page, expirySweepPage = page)
 
     private fun projection(
         inner: EventIndex,
@@ -143,6 +143,33 @@ class ExpirySweepTest {
 
             assertEquals(emptySet(), stored(inner), "the whole expired backlog is gone")
             assertTrue(removes.size > 1 && removes.all { it <= PAGE }, "a page at a time: $removes")
+        }
+
+    /**
+     * A hold removes `VESPA_EXPIRY_SWEEP_PAGE` ids, 1,000 by default — not the
+     * 10,000 `sweepPage` the re-query sweeps keep, whose size was set by the
+     * matching each of their rounds repeats. A store built without the seam.
+     */
+    @Test
+    fun `the expiry sweep removes a thousand ids per hold by default`() =
+        runBlocking {
+            val inner = InMemoryEventIndex()
+            val batches = mutableListOf<Int>()
+            val counting =
+                object : EventIndex by inner {
+                    override suspend fun removeAll(ids: List<String>) {
+                        batches += ids.size
+                        inner.removeAll(ids)
+                    }
+                }
+            val store = NostrSemanticsStore(counting, nowSecs = { clock })
+            store.batchInsert((1..2_500).map { expiringNote(at = 1_000L + it) })
+            sweepTime()
+
+            store.deleteExpiredEvents()
+
+            assertEquals(listOf(1_000, 1_000, 500), batches)
+            assertEquals(emptySet(), stored(inner))
         }
 
     /**
