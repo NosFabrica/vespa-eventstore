@@ -125,7 +125,14 @@ first pass walked past it, left for the next sweep); that lookup holds for the
 rest of the hold, because an event is immutable per id and no trust-kind
 document can be stored without `writes`. Neither pass takes the gate after
 `writes`, so the lock order holds, and the plain bulk of a backlog neither
-waits for a drain nor stalls one.
+waits for a drain nor stalls one. The trust pass pays one crash-ledger bracket
+(marker written ahead, then cleared) per 1,000-card batch, where the single-hold
+sweep paid one per 10,000: about 0.2% more reputation writes than the cells it
+removes. One bracket per pass is not available: it would span the lock releases,
+and a commit's buffered cell removal landing after a newer card for the same
+address had put its cell could remove that cell (read from
+`TrustProjection.reacting`, which keeps a commit's removals buffered for a
+winner; not reproduced).
 
 Safe for expiry specifically. The walk reads outside a hold and removes inside
 one — the reindex's shape since #160 — which is sound because an id the walk
