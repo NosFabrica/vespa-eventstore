@@ -48,7 +48,7 @@ internal val VESPA_JSON = Json { ignoreUnknownKeys = true }
 internal val SUMMARY_NEWEST_FIRST = compareByDescending(VespaSummary::createdAt).thenBy(VespaSummary::id)
 
 /** NIP-01 order for walked ids, the same rule [SUMMARY_NEWEST_FIRST] applies to hits. */
-internal val DOCREF_NEWEST_FIRST = compareByDescending(DocRef::createdAt).thenBy(DocRef::id)
+internal val DOCREF_NEWEST_FIRST: Comparator<DocRef> = DocRef.NEWEST_FIRST
 
 /** `/search/` response: the hit children plus [SearchCoverage]; grouping/meta are ignored. */
 @Serializable

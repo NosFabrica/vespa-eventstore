@@ -382,12 +382,16 @@ interface EventIndex : AutoCloseable {
      * same-or-newer version already holds the address. Non-replaceable docs
      * store unconditionally.
      *
-     * The default searches-compares-supersedes; the real client OVERRIDES it
-     * with an address-keyed conditional put (engine-atomic, no read). A REACTING
-     * decorator (trust projection) must RIDE this default rather than forward to
-     * inner: it supersedes through the decorator's own [put]/[remove], firing
-     * reactions for old AND new versions, which the engine's atomic put exposes
-     * for neither (hence [supersedesViaPut] stays false there).
+     * The default reads-compares-supersedes; the real client OVERRIDES it
+     * with an address-keyed conditional put (engine-atomic, no read) when
+     * address-keyed. The read is the attribute-only [visitIds] — (id,
+     * created_at, d) is all the decision needs, and a stored kind 3 is 50-500 KB
+     * of tags a document read would fetch under the store's writer lock to
+     * throw away. So the replaced versions reach [removeDocs] as STUBS: id,
+     * author, kind, created_at and (addressable) the d tag, nothing else. A
+     * REACTING decorator that needs the whole replaced documents — the trust
+     * projection, for 30382/10040 — overrides this and supersedes against its
+     * inner index itself.
      */
     suspend fun putIfNewer(doc: EventDoc): Boolean {
         val address =
@@ -406,12 +410,22 @@ interface EventIndex : AutoCloseable {
             } else {
                 EventQuery(kinds = listOf(doc.kind), authors = listOf(doc.pubkey))
             }
-        val existing = search(q).filter { it.addressOrNull() == address }
+        val addressable = doc.kind.isAddressable()
+        val versions = ArrayList<DocRef>()
+        visitIds(q, withDTag = addressable) { page ->
+            versions += page
+            true
+        }
+        // The exact address match: a d-keyed recall also finds a doc that
+        // carries this d in a LATER d tag, and the broad one every d. The
+        // walk's d is the FIRST d tag's value, which is what the address uses
+        // (missing == empty).
+        val existing = if (addressable) versions.filter { it.dTag.orEmpty() == dTag } else versions
         // The NIP-01 winner is the MINIMUM of the serving order (newest first,
-        // ties to the lowest id) — see [EventDoc.NEWEST_FIRST].
-        val incumbent = existing.minWithOrNull(EventDoc.NEWEST_FIRST)
+        // ties to the lowest id) — see [DocRef.NEWEST_FIRST].
+        val incumbent = existing.minWithOrNull(DocRef.NEWEST_FIRST)
         // Incumbent wins or is identical -> reject the incoming (stale) version.
-        if (incumbent != null && EventDoc.NEWEST_FIRST.compare(doc, incumbent) >= 0) return false
+        if (incumbent != null && DocRef.NEWEST_FIRST.compare(DocRef(doc.id, doc.createdAt), incumbent) >= 0) return false
         // The winner FIRST, then the sweep: a put that fails after the remove
         // landed would leave the address holding NEITHER version, permanently
         // (nobody re-offers the old one). This order's failure leaves an extra
@@ -425,7 +439,7 @@ interface EventIndex : AutoCloseable {
         // decorator's remove(id) pays to learn what it is removing (the trust
         // projection reads the doc to know what the removal invalidates), and
         // pipelines the removes of a drift-repair address with N stale versions.
-        if (existing.isNotEmpty()) removeDocs(existing)
+        if (existing.isNotEmpty()) removeDocs(existing.map { doc.versionStub(it) })
         return true
     }
 }
@@ -451,4 +465,28 @@ data class DocRef(
     val id: String,
     val createdAt: Long,
     val dTag: String? = null,
-)
+) {
+    companion object {
+        /** NIP-01's serving order, newest first and ties to the LOWEST id — [EventDoc.NEWEST_FIRST] on the projection. */
+        val NEWEST_FIRST: Comparator<DocRef> = compareByDescending(DocRef::createdAt).thenBy(DocRef::id)
+    }
+}
+
+/**
+ * Another stored version of [this]'s address, as a STUB built from its
+ * [ref]: id and created_at from the walk, author and kind from [this] (an
+ * address fixes both), the d tag for an addressable kind — and no other tag,
+ * no content, no signature. Enough for a remove, which is all it is for
+ * ([EventIndex.putIfNewer]); never stored, served or reacted to as an event.
+ */
+fun EventDoc.versionStub(ref: DocRef): EventDoc =
+    EventDoc(
+        id = ref.id,
+        pubkey = pubkey,
+        createdAt = ref.createdAt,
+        kind = kind,
+        tags = if (kind.isAddressable()) listOf(listOf("d", ref.dTag.orEmpty())) else emptyList(),
+        content = "",
+        sig = "",
+        owner = pubkey,
+    )

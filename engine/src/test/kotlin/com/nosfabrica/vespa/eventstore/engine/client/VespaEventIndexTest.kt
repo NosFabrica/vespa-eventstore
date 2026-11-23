@@ -1449,6 +1449,36 @@ class VespaEventIndexTest {
             }
         }
 
+    /**
+     * A SUPERSESSION READS NO DOCUMENT. The decision needs the replaced versions' id,
+     * created_at and d alone, and the default read them as full documents — a stored kind 3
+     * is 50-500 KB of tags, read under the store's writer lock to be thrown away. It walks
+     * the attribute-only summaries now (`idtime`; `idtimetag` for an addressable's d), and
+     * still sweeps every older version, the d-matched one only.
+     */
+    @Test
+    fun `a supersession reads its address off the attribute-only summaries`() =
+        runBlocking {
+            val follows = (1..300).map { listOf("p", it.toString(16).padStart(64, 'f')) }
+            val v1 = doc(kind = 3, at = 1_000, tags = follows)
+            val stale = doc(kind = 3, at = 900, tags = follows)
+            seed(v1, stale)
+            val post = doc(kind = 30_023, at = 1_000, tags = listOf(listOf("d", "a-post")))
+            val other = doc(kind = 30_023, at = 1_000, tags = listOf(listOf("d", "other")))
+            seed(post, other)
+            val before = mock.searchRequests.size
+            val v2 = doc(kind = 3, at = 2_000, tags = follows)
+            val post2 = doc(kind = 30_023, at = 2_000, tags = listOf(listOf("d", "a-post")))
+            assertTrue(index.putIfNewer(v2))
+            assertTrue(index.putIfNewer(post2))
+            assertFalse(index.putIfNewer(doc(kind = 3, at = 1_500, tags = follows)), "an older version still loses")
+            val reads = mock.searchRequests.drop(before)
+            assertTrue(reads.isNotEmpty(), "the versions were read")
+            assertTrue(reads.all { it["presentation.summary"] in setOf("idtime", "idtimetag") }, "no read fetched a document: ${reads.map { it["presentation.summary"] to it["yql"] }}")
+            assertEquals(listOf(v2.id), index.search(EventQuery(kinds = listOf(3))).map { it.id }, "every older version swept, the stale one too")
+            assertEquals(setOf(post2.id, other.id), index.search(EventQuery(kinds = listOf(30_023))).map { it.id }.toSet(), "only the d-matched address superseded")
+        }
+
     /** Deep-past until anchors (old-history pagination) skip the recency profile — the planner windows them instead. */
     @Test
     fun `deep-past until skips the recency profile`() {

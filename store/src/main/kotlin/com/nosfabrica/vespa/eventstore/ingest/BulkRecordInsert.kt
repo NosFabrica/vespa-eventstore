@@ -27,6 +27,7 @@ import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
+import com.nosfabrica.vespa.eventstore.engine.versionStub
 import com.nosfabrica.vespa.eventstore.ingest.Rejections
 import com.nosfabrica.vespa.eventstore.mapping.VespaText
 import com.nosfabrica.vespa.eventstore.mapping.toDoc
@@ -45,6 +46,8 @@ import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
 import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
 import com.vitorpamplona.quartz.nip40Expiration.isExpired
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
+import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
+import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -380,18 +383,35 @@ internal class BulkRecordInsert(
 
     /**
      * The stored versions of every address in [keys], bucketed by key, chunked.
-     * Replaceables are fetched by (kind, authors…). Addressables are fetched by
-     * (kind, author, d-tags…) via tag_index recall, then bucketed doc-side (the
-     * d filter is exact there). Unbounded: each read feeds a write decision.
+     * Replaceables are read by (kind, authors…). Addressables by (kind,
+     * author, d-tags…) via tag_index recall, then bucketed by their FIRST d tag
+     * (the address's; the d filter is exact there). Unbounded and exact: each
+     * read feeds a write decision.
+     *
+     * WITHOUT THE DOCUMENTS, except where a reaction needs them. Supersession
+     * needs a version's id, created_at and d alone, and a full-document read of
+     * a stored kind 3 is 50-500 KB of tags, read under the writer lock to be
+     * thrown away. So a plain replaceable kind is answered by two attribute-only
+     * groupings side by side — [EventIndex.newestVersions] and
+     * [EventIndex.countByAuthor] — and an addressable one by the attribute-only
+     * id walk ([EventIndex.visitIds] with its d tag); their versions come back as
+     * STUBS ([versionStub]: id, author, kind, created_at, d), which stage D only
+     * compares and hands to `removeDocs`. An author the groupings show holding
+     * MORE than one version (a sweep that failed, see stage E) is read in full,
+     * so the drift repair still sweeps every one. [WHOLE_DOC_KINDS] — the trust
+     * projection's, whose removal reaction reads the replaced card or list —
+     * keep the full read.
      */
     private suspend fun readVersions(keys: Collection<Triple<Int, String, String?>>): Map<Triple<Int, String, String?>, List<EventDoc>> {
         val addressable = keys.filter { it.third != null }
         val replaceable = keys.filter { it.third == null }
-        val versionQueries =
-            buildList {
+        // One read per entry: the docs it answers.
+        val reads =
+            buildList<suspend () -> List<EventDoc>> {
                 for ((kind, ks) in replaceable.groupBy { it.first }) {
                     ks.map { it.second }.distinct().chunked(CHECK_CHUNK).forEach { authors ->
-                        add(EventQuery(kinds = listOf(kind), authors = authors))
+                        val q = EventQuery(kinds = listOf(kind), authors = authors)
+                        add(if (kind in WHOLE_DOC_KINDS) ({ index.search(q) }) else ({ replaceableVersions(kind, authors) }))
                     }
                 }
                 // Addressables recall PER (kind, author), never across authors:
@@ -402,25 +422,80 @@ internal class BulkRecordInsert(
                 for ((ka, ks) in addressable.groupBy { it.first to it.second }) {
                     val (kind, author) = ka
                     val ds = ks.mapNotNull { it.third }.filter { it.isNotEmpty() }.distinct()
-                    ds.chunked(CHECK_CHUNK).forEach { chunk ->
-                        add(EventQuery(kinds = listOf(kind), authors = listOf(author), tags = mapOf("d" to chunk)))
-                    }
-                    // Empty d: a stored version with NO d tag carries no "d:"
-                    // pair in tag_index, so the d-keyed query above can never
-                    // recall it. Go broad by (kind, author) — same fallback as
-                    // putIfNewer and the mixed preload; bounded to one author.
-                    if (ks.any { it.third.isNullOrEmpty() }) add(EventQuery(kinds = listOf(kind), authors = listOf(author)))
+                    val queries =
+                        ds.chunked(CHECK_CHUNK).map { chunk -> EventQuery(kinds = listOf(kind), authors = listOf(author), tags = mapOf("d" to chunk)) } +
+                            // Empty d: a stored version with NO d tag carries no "d:"
+                            // pair in tag_index, so the d-keyed query above can never
+                            // recall it. Go broad by (kind, author) — same fallback as
+                            // putIfNewer and the mixed preload; bounded to one author.
+                            listOfNotNull(EventQuery(kinds = listOf(kind), authors = listOf(author)).takeIf { ks.any { it.third.isNullOrEmpty() } })
+                    for (q in queries) add(if (kind in WHOLE_DOC_KINDS) ({ index.search(q) }) else ({ addressableVersions(q, kind, author) }))
                 }
             }
         val existing = HashMap<Triple<Int, String, String?>, MutableList<EventDoc>>()
-        versionQueries.mapBounded(QUERY_FANOUT) { q -> index.search(q) }.forEach { docs ->
+        // A doc two reads both recall (the broad empty-d read and a d-keyed one) is one version.
+        val seen = HashSet<String>()
+        reads.mapBounded(QUERY_FANOUT) { it() }.forEach { docs ->
             docs.forEach { doc ->
+                if (!seen.add(doc.id)) return@forEach
                 val d = if (doc.kind.isAddressable()) doc.dTagOrEmpty() else null
                 existing.getOrPut(Triple(doc.kind, doc.pubkey, d)) { mutableListOf() } += doc
             }
         }
         return existing
     }
+
+    /**
+     * Every stored version of [kind] for [authors], plain replaceable: the
+     * winner per author off one grouping, how many versions each holds off
+     * another, run together. An author holding exactly one is answered by its
+     * winner's stub; any other answer — drift (two or more), or two groupings
+     * that disagree (another process wrote between them) — reads that author's
+     * versions in full, as before.
+     */
+    private suspend fun replaceableVersions(
+        kind: Int,
+        authors: List<String>,
+    ): List<EventDoc> =
+        coroutineScope {
+            val counts = async { index.countByAuthor(EventQuery(kinds = listOf(kind), authors = authors)) }
+            val newest = index.newestVersions(kind, authors)
+            val held = counts.await()
+            val out = ArrayList<EventDoc>()
+            val unsure = ArrayList<String>()
+            for (author in authors) {
+                val n = held[author] ?: 0
+                val winner = newest[author]
+                when {
+                    n == 0 && winner == null -> Unit
+                    n == 1 && winner != null -> out += stub(kind, author).versionStub(winner)
+                    else -> unsure += author
+                }
+            }
+            if (unsure.isNotEmpty()) out += index.search(EventQuery(kinds = listOf(kind), authors = unsure))
+            out
+        }
+
+    /** Every stored version [q] recalls for one (kind, author), addressable: the id walk with each version's FIRST d tag, as stubs. */
+    private suspend fun addressableVersions(
+        q: EventQuery,
+        kind: Int,
+        author: String,
+    ): List<EventDoc> {
+        val template = stub(kind, author)
+        val out = ArrayList<EventDoc>()
+        index.visitIds(q, withDTag = true) { page ->
+            page.mapTo(out) { template.versionStub(it) }
+            true
+        }
+        return out
+    }
+
+    /** The (kind, author) a [versionStub] is built against: no id, no time, no tags of its own. */
+    private fun stub(
+        kind: Int,
+        author: String,
+    ) = EventDoc(id = "", pubkey = author, createdAt = 0, kind = kind, tags = emptyList(), content = "", sig = "")
 
     /**
      * Every guard event of [kind] for [owners], bucketed by author. One query
@@ -459,7 +534,15 @@ internal class BulkRecordInsert(
             .distinctBy { it.id }
             .groupBy { it.pubkey }
 
-    private companion object {
+    internal companion object {
+        /**
+         * The kinds whose replaced versions are read WHOLE in stage D: the trust
+         * projection's ([com.nosfabrica.vespa.eventstore.trust.TrustProjection]'s
+         * `TRUST_KINDS`, which a test holds this to), whose removal reaction reads
+         * the card's subject and the list's services off the document itself.
+         */
+        val WHOLE_DOC_KINDS = setOf(UserAssertionEvent.KIND, TrustProviderListEvent.KIND)
+
         // Ids/authors/d-tags per check query. Not a result cap — no query here
         // carries a limit — just how wide one round trip is built.
         const val CHECK_CHUNK = DEFAULT_DEDUP_CHUNK
