@@ -545,10 +545,19 @@ class VespaEventIndex(
     /** All removes in flight together over HTTP/2, like [putAll]. */
     override suspend fun removeAll(ids: List<String>) {
         // Address-keyed replaceables live at an address docid, not their event
-        // id, so a raw removeOp(id) would silently miss them: resolve each the
-        // way remove() does, bounded-concurrent.
+        // id, so a raw removeOp(id) would silently miss them: each docid has to
+        // come off its document. ONE `id in (…)` per [HYDRATE_CHUNK] ids reads
+        // them — the id attribute finds address-keyed and id-keyed documents
+        // alike — where this used to resolve each id the way remove() does,
+        // one search per id (the expiry sweep paid 50 for 50 expired notes,
+        // inside its writer-lock hold). Full summaries: no attribute-only
+        // summary carries kind, pubkey and the d tag, which an address needs.
+        // An id that is no longer stored resolves to nothing, as remove()'s
+        // removeOp of a missing docid did nothing.
         if (addressKeyed) {
-            ids.mapBounded(ID_GET_FANOUT) { remove(it) }
+            val chunks = ids.distinct().chunked(HYDRATE_CHUNK)
+            val docs = chunks.mapBounded(QUERY_FANOUT) { hydrateChunk(it, acceptsPartial = false) }.flatten().mapNotNull { it.toDoc() }
+            if (docs.isNotEmpty()) removeDocs(docs)
             return
         }
         ids.chunked(FEED_CHUNK).forEach { chunk -> feed.enqueueAll(chunk, ::removeOp).forEach { it.await() } }

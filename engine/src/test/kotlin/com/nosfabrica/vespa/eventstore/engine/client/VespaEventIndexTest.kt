@@ -1647,6 +1647,34 @@ class VespaEventIndexTest {
         }
 
     /**
+     * ADDRESS-KEYED REMOVES RESOLVE THEIR DOCIDS IN ONE QUERY. A replaceable
+     * lives at its address, so removing by event id has to read the document
+     * to learn where it is — and that read was one `id in ("<id>")` search PER
+     * ID, which the expiry sweep paid inside its writer-lock hold (50 expired
+     * notes: 57 searches, 50 of them single-id). One `id in (…)` per chunk
+     * resolves the whole batch, and each docid still comes off its document.
+     */
+    @Test
+    fun `an address-keyed removeAll resolves its docids in one query per chunk`() =
+        runBlocking {
+            val idx = VespaEventIndex(mock.url, addressKeyed = true)
+            try {
+                val notes = (1..50).map { doc(kind = 1, at = 1_700_000_000L + it) }
+                val profile = doc(kind = 0, pubkey = "b2".repeat(32), at = 1_700_000_100L)
+                seedBulk(notes + profile)
+                val before = mock.searchRequests.size
+
+                idx.removeAll((notes + profile).map { it.id })
+
+                assertEquals(1, mock.searchRequests.size - before, "one resolve for 51 ids")
+                assertEquals(emptySet(), idx.existingIds(notes.map { it.id }), "every note removed")
+                assertTrue("0:${"b2".repeat(32)}:" in mock.removedDocIds, "the replaceable removed at its ADDRESS docid: ${mock.removedDocIds.takeLast(3)}")
+            } finally {
+                idx.close()
+            }
+        }
+
+    /**
      * A `complete` WALK still walks. A walk's page is limited by design, while
      * real Vespa's `totalCount` is the whole match set (staging: 2,809,568 on
      * a limit-2,000 page) — so the "every match served" half of `complete`'s

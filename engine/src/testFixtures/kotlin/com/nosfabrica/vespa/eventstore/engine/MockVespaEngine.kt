@@ -150,6 +150,9 @@ class MockVespaEngine(
     val documentRemoves: Int get() = documentRemovesCount.get()
     private val documentRemovesCount = AtomicInteger()
 
+    /** The docid (URL-decoded) of every document-API remove, in arrival order — the address, under address-keying. */
+    val removedDocIds: MutableList<String> = java.util.concurrent.CopyOnWriteArrayList()
+
     /**
      * Hold every `id in (…)` lookup — the id-first hydration's document read —
      * this long while it counts as in flight, so [idLookupsInFlightPeak] can say
@@ -658,6 +661,7 @@ class MockVespaEngine(
 
             method == "DELETE" && path.startsWith(docPrefix) -> {
                 documentRemovesCount.incrementAndGet()
+                removedDocIds += java.net.URLDecoder.decode(path.removePrefix(docPrefix), Charsets.UTF_8)
                 runBlocking { inner.remove(path.removePrefix(docPrefix)) }
                 Reply(200, """{"id":"$path"}""")
             }
