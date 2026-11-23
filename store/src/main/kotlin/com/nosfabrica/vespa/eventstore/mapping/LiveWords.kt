@@ -71,25 +71,45 @@ internal class LiveWords(
     /** [event]'s words, from this thread's memo when it last asked about this same instance. */
     fun of(event: Event): List<String> {
         last.get()?.let { if (it.event === event) return it.words }
-        val words = tokens(textOf(event))
+        val text = textOf(event)
+        val words = tokens(text)
         misses.increment()
         // Past the cap the words are not kept: the slot outlives the fan-out (until this thread's
         // next event), so it must not pin a long-form article and every word of it per thread.
-        if (event.content.length <= MAX_MEMO_CONTENT) last.set(Last(event, words))
+        if (retainedChars(event, text) <= MAX_MEMO_CHARS) last.set(Last(event, words))
         return words
     }
 
     companion object {
         /**
-         * The longest content (in chars) whose words are memoized; a longer event is read on
-         * every call, as before the memo. Each delivery thread keeps one entry alive until its
-         * next event: at the relay's 128 KiB `maxContentLength` that is a 128 Ki-char string
-         * plus ~25k word strings, estimated (not measured) at ~1.5 MB per thread. 16 Ki chars
-         * bounds it near 200 KB per thread, while a note — the kind a live search feed streams —
-         * sits far below it: the 10,961-event staging slice in benchmark/README.md has a median
-         * of 501 content chars.
+         * The most chars a memo entry may pin: the event's content and tags, which the slot keeps
+         * alive by holding the event, plus the text its words were read from — every indexed field
+         * ([text]), tags included, which the words' strings roughly add up to. A larger event is
+         * read on every call, as before the memo. Each delivery thread keeps one entry alive until
+         * its next event: at the relay's 128 KiB `maxContentLength` a note's would be ~256 Ki
+         * chars, estimated (not measured) at ~1.5 MB per thread with its word objects. 32 Ki
+         * chars keeps it near 200 KB per thread, while a note — the kind a live search feed
+         * streams — sits far below it: the 10,961-event staging slice in benchmark/README.md has a
+         * median of 501 content chars, which counts about twice (content, then its words).
+         *
+         * It measured `content.length` alone until a review found what that missed: a short note
+         * may carry thousands of tags, all pinned with the event, and an article's words may come
+         * from a long title or summary tag, none of it content.
          */
-        const val MAX_MEMO_CONTENT = 16 * 1024
+        const val MAX_MEMO_CHARS = 32 * 1024
+
+        /** What a memo entry for [event] pins, in chars: see [MAX_MEMO_CHARS]. Stops counting once past it. */
+        internal fun retainedChars(
+            event: Event,
+            text: String,
+        ): Int {
+            var total = event.content.length + text.length
+            for (tag in event.tags) {
+                for (value in tag) total += value.length
+                if (total > MAX_MEMO_CHARS) return total
+            }
+            return total
+        }
 
         /** The text the live check reads: every indexed field of [event] ([SearchExtractors]), joined. */
         fun text(event: Event): String =

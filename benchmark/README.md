@@ -723,9 +723,10 @@ rounds after a warm-up, on a 4-core cloud container. Two runs:
 What is left (~0.1 µs per gate) is each rule's own `Filter.match` and its terms
 scanned against the words, per gate by nature. Not measured: a real note corpus
 (no kind-1 capture ships here; `--corpus` takes one), or the relay under
-`live-feeds.mjs`. The memo holds nothing past 16 Ki content chars
-(`LiveWords.MAX_MEMO_CONTENT`): a long-form article streamed live is still read
-per gate, as before.
+`live-feeds.mjs`. The memo holds nothing that would pin past 32 Ki chars —
+the event's content and tags plus the text its words came from
+(`LiveWords.MAX_MEMO_CHARS`): a long-form article, or a short note carrying
+thousands of tags, streamed live is still read per gate, as before.
 
 ### `VespaText.firstIllegalCodePoint`: reading a char before a code point (2026-09-01)
 
