@@ -83,26 +83,27 @@ class DeletionsTest {
         }
 
     /**
-     * [Deletions.sweepWalk]'s `sparing`: every batch looks its ids up for the
-     * spared kinds and removes only the rest — the expiry sweep's plain pass,
-     * which may not remove a card without the trust gate.
+     * [Deletions.sweepWalk] hands each batch to its remover inside one hold,
+     * and what the remover leaves stays stored — the expiry sweep's plain
+     * pass leaves the trust kinds.
      */
     @Test
-    fun `a sweep walk leaves the kinds it spares`() =
+    fun `a sweep walk removes what its remover removes, a batch per hold`() =
         runBlocking {
             val memory = InMemoryEventIndex()
             val walker = Deletions(memory, relay = null, sweepPage = 100)
             val notes = (1..7).map { Event(id(), alice, 1_000L + it, 1, emptyArray(), "n$it", "") }
             val cards = (1..3).map { Event(id(), alice, 2_000L + it, 30382, arrayOf(arrayOf("d", "%064x".format(it))), "", "") }
             memory.putAll((notes + cards).map { it.toDoc() })
-            val holds = mutableListOf<Int>()
+            val cardIds = cards.mapTo(HashSet()) { it.id }
+            var holds = 0
 
-            walker.sweepWalk(EventQuery(), page = 3, sparing = listOf(30382)) { batch ->
-                holds += holds.size
+            walker.sweepWalk(EventQuery(), page = 3, remove = { ids -> ids.filterNot { it in cardIds }.also { memory.removeAll(it) } }) { batch ->
+                holds++
                 batch()
             }
 
-            assertEquals(cards.map { it.id }.toSet(), memory.search(EventQuery()).mapTo(HashSet()) { it.id }, "only the spared kind is left")
-            assertEquals(4, holds.size, "ten ids, three per hold")
+            assertEquals(cardIds, memory.search(EventQuery()).mapTo(HashSet()) { it.id }, "only what the remover left")
+            assertEquals(4, holds, "ten ids, three per hold")
         }
 }

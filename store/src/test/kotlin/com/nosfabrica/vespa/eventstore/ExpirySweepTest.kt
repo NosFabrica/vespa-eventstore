@@ -532,6 +532,32 @@ class ExpirySweepTest {
         }
 
     /**
+     * ONE trust-kind lookup per plain batch. The plain pass must know a batch
+     * holds no card before it removes it under `writes` alone — and the trust
+     * projection, asked to remove ids, reads its kinds back for the same ids
+     * again. Two lookups of one question per batch (three per 1,000 ids, the
+     * projection's own in chunks of 500); the projection now answers both at
+     * once (`TrustProjection.removeAllButTrust`).
+     */
+    @Test
+    fun `the plain pass looks each batch up for trust kinds once`() =
+        runBlocking {
+            val below = Recording(InMemoryEventIndex())
+            val store = store(projection(below, InMemoryReputationIndex()))
+            store.batchInsert((1..30).map { expiringNote(at = 1_000L + it) })
+            sweepTime()
+            below.clear()
+
+            store.deleteExpiredEvents()
+            // A lookup is any read of named ids: a search, or a walk of them.
+            val reads = below.searches + below.walks.filter { it.ids.isNotEmpty() }
+
+            assertEquals(emptySet(), stored(below), "every note swept")
+            assertEquals(30 / PAGE + 1, reads.size, "one lookup per batch of $PAGE: ${reads.map { "ids=${it.ids.size} kinds=${it.kinds}" }}")
+            assertTrue(reads.all { it.kinds == TRUST_KINDS && it.ids.isNotEmpty() }, "each a trust-kind id lookup")
+        }
+
+    /**
      * A plain-kind backlog is swept under `writes` ALONE: with the trust gate
      * held elsewhere (a drain, a reconcile), the sweep of notes still
      * finishes. A card in the backlog is the one thing that waits for it.

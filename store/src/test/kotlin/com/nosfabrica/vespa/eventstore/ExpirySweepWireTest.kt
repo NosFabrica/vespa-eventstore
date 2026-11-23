@@ -90,4 +90,29 @@ class ExpirySweepWireTest {
             assertEquals((kept + list).mapTo(HashSet()) { it.id }, engine.search(EventQuery()).mapTo(HashSet()) { it.id }, "every due event gone, nothing else")
             assertTrue(reputations.docs.values.none { it.influenceScores.isNotEmpty() }, "and every swept card's cell with it")
         }
+
+    /**
+     * The plain pass's remover over the wire: one trust-kind lookup for the
+     * whole batch, every other id removed, the cards left stored and their
+     * cells untouched — a card that landed after the trust pass walked past it.
+     */
+    @Test
+    fun `the plain pass spares the trust kinds in one lookup`() =
+        runBlocking {
+            val reputations = InMemoryReputationIndex()
+            val projection = TrustProjection(engine, reputations, nowSecs = { clock })
+            val store = NostrSemanticsStore(projection, nowSecs = { clock })
+            store.insert(TrustProviderListEvent(id(), observer, 5_000L, arrayOf(arrayOf("30382:rank", service, "wss://scores.example.com/")), "", ""))
+            val notes = (1..30).map { note(at = 1_000L + it, expiresAt = null) }
+            val cards = (1..5).map { card(subject = it, expiresAt = realNow + 10_000) }
+            store.batchInsert(notes + cards)
+            val before = mock.searchRequests.size
+
+            val removed = projection.removeAllButTrust((notes + cards).map { it.id })
+
+            assertEquals(1, mock.searchRequests.size - before, "one lookup for 35 ids")
+            assertEquals(notes.map { it.id }.toSet(), removed.toSet(), "every note removed, no card")
+            assertEquals(cards.map { it.id }.toSet(), engine.existingIds((notes + cards).map { it.id }), "the cards still stored")
+            assertEquals(5, reputations.docs.values.count { it.influenceScores.isNotEmpty() }, "and their cells untouched")
+        }
 }

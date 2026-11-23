@@ -1314,7 +1314,8 @@ class NostrSemanticsStore(
      *     other kind is no trust reaction at all (`TrustProjection.removeAll`
      *     hands ids of other kinds straight to the index), so it needs what a
      *     plain insert needs and no more. Each batch first looks its ids up
-     *     for the trust kinds, inside its hold, and spares any it finds — a
+     *     for the trust kinds, inside its hold, and spares any it finds (one
+     *     lookup, [removeAllButTrust]) — a
      *     card that landed after pass 1 walked past it, left for the next
      *     sweep. That lookup is sound for the rest of the hold: an event is
      *     immutable per id, and nothing can store a trust-kind document
@@ -1377,11 +1378,31 @@ class NostrSemanticsStore(
             // keep it.
             val due = EventQuery(expiresBefore = nowSecs() + 1)
             val page = expirySweepPage ?: StoreKnobs.expirySweepPage.value
-            deletions.sweepWalk(due.copy(kinds = TrustProjection.TRUST_KINDS), page) { batch ->
+            deletions.sweepWalk(due.copy(kinds = TrustProjection.TRUST_KINDS), page, remove = { ids -> ids.also { index.removeAll(it) } }) { batch ->
                 locks.gated(trust = true, WriteLocks.SWEEP, WriteLocks.SWEEP_TRUST) { batch() }
             }
-            deletions.sweepWalk(due, page, sparing = TrustProjection.TRUST_KINDS) { batch -> locks.underWrites(WriteLocks.SWEEP) { batch() } }
+            deletions.sweepWalk(due, page, remove = { ids -> removeAllButTrust(ids) }) { batch -> locks.underWrites(WriteLocks.SWEEP) { batch() } }
         }
+    }
+
+    /**
+     * The expiry sweep's plain-pass remover, called holding `writes` and NOT
+     * the trust gate: remove [ids] except the trust kinds, and return what was
+     * removed. The projection answers it with one lookup
+     * ([TrustProjection.removeAllButTrust]). Any other index looks the trust
+     * kinds up here and removes the rest: an index that is not the projection
+     * may still be a decorator around one, whose removeAll would react to a
+     * card with no gate held.
+     */
+    private suspend fun removeAllButTrust(ids: List<String>): List<String> {
+        (index as? TrustProjection)?.let { return it.removeAllButTrust(ids) }
+        val spared =
+            index
+                .search(EventQuery(ids = ids, kinds = TrustProjection.TRUST_KINDS, limit = ids.size, complete = true, ranking = EventYql.RANK_UNRANKED))
+                .mapTo(HashSet()) { it.id }
+        val doomed = if (spared.isEmpty()) ids else ids.filterNot { it in spared }
+        if (doomed.isNotEmpty()) index.removeAll(doomed)
+        return doomed
     }
 
     // ---- full-text reindex --------------------------------------------------
