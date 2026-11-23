@@ -66,27 +66,27 @@ internal class Deletions(
         if (event is DeletionRequestEvent || event is RequestToVanishEvent) return false
         val owner = event.owner()
 
-        // An EXISTENCE probe on the insert hot path, stamped unranked to opt out
-        // of recency planning (the sweeps' convention): a time window can only
-        // add a round trip to a question with an answer of zero or one tiny
-        // match set. Under the speculative strategy a backfilled event (older
-        // than the first window) otherwise paid an empty windowed attempt plus
-        // the real probe — two queries instead of one, twice per insert.
+        // An EXISTENCE probe on the insert hot path, answered by the engine's
+        // COUNT rather than a page: a `limit 1` search read the matching kind 5
+        // as a whole document — its summary off the document store — to learn
+        // only that one exists. The count is a grouping over the same match set
+        // (unranked: no rank phase, no recency planning, no summary at all),
+        // exact, and schema-independent, which an attribute-only summary is
+        // not. Still stamped unranked (the sweeps' convention), so a profile
+        // that would plan a window never takes it.
         suspend fun deletionExists(
             tagKey: String,
             value: String,
         ): Boolean =
-            index
-                .search(
-                    EventQuery(
-                        kinds = listOf(DeletionRequestEvent.KIND),
-                        authors = listOf(owner),
-                        tags = mapOf(tagKey to listOf(value)),
-                        since = event.createdAt,
-                        limit = 1,
-                        ranking = EventYql.RANK_UNRANKED,
-                    ),
-                ).isNotEmpty()
+            index.count(
+                EventQuery(
+                    kinds = listOf(DeletionRequestEvent.KIND),
+                    authors = listOf(owner),
+                    tags = mapOf(tagKey to listOf(value)),
+                    since = event.createdAt,
+                    ranking = EventYql.RANK_UNRANKED,
+                ),
+            ) > 0
         val address = event.addressTagOrNull() ?: return deletionExists("e", event.id)
         // A replaceable or addressable event has TWO independent probes, and
         // this runs under the writer lock: send them together, so the insert

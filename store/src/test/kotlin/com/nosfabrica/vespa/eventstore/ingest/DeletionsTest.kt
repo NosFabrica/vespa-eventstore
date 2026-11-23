@@ -74,9 +74,13 @@ class DeletionsTest {
             val old = Event(id(), alice, now - 30 * 86_400L, 1, emptyArray(), "a month old", "")
             val before = mock.searchRequests.size
             assertFalse(deletions.isDeleted(old))
-            val sent = mock.searchRequests.drop(before).map { it.getValue("yql") }
+            val requests = mock.searchRequests.drop(before)
+            val sent = requests.map { it.getValue("yql") }
             assertEquals(1, sent.size, "one probe, never a window first: $sent")
             assertTrue(sent.none { it.contains("created_at >= ${now - 3_600}") }, "no speculative window: $sent")
+            // An existence question reads no document: a count, zero hits.
+            assertTrue(sent.single().contains("all(output(count()))"), "the probe is a count: $sent")
+            assertEquals("0", requests.single()["hits"], "and asks for no hit: ${requests.single()}")
         }
 
     @Test
@@ -103,12 +107,12 @@ class DeletionsTest {
             val inner = InMemoryEventIndex()
             val rendezvous =
                 object : EventIndex by inner {
-                    override suspend fun search(query: EventQuery): List<EventDoc> {
+                    override suspend fun count(query: EventQuery): Int {
                         if (query.kinds == listOf(DeletionRequestEvent.KIND)) {
                             synchronized(this) { if (++asked == 2) bothAsked.complete(Unit) }
                             bothAsked.await()
                         }
-                        return inner.search(query)
+                        return inner.count(query)
                     }
                 }
             val guard = Deletions(rendezvous, relay = null, sweepPage = 100)
