@@ -33,11 +33,15 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.owner
 import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 
 /**
  * NIP-09 (deletion request) and NIP-62 (request to vanish) enforcement, plus
  * the paged [sweep] every bulk erase runs on. Every method must be called
- * under the store's writer lock — query-then-write is only atomic there.
+ * under the store's writer lock — query-then-write is only atomic there. For
+ * [sweep] that means each ROUND: a caller may hold the lock across the whole
+ * sweep, or hand in a `round` wrapper that takes it per round.
  */
 internal class Deletions(
     private val index: EventIndex,
@@ -161,6 +165,24 @@ internal class Deletions(
      * empty. No offset: each round re-runs the SAME query, and the removes
      * shrink the match set, so the next round naturally sees the next batch.
      * (Offset paging would be wrong — deleting under an offset skips rows.)
+     *
+     * The caller holds the writer lock across the WHOLE sweep (a vanish inside
+     * its own admission, an admin delete, a mixed batch's replay): each round
+     * re-matches what is left, which is only correct while nothing else
+     * writes. The expiry sweep, which releases its locks between pages, walks
+     * instead — [sweepWalk].
+     *
+     * Every round re-matches and re-sorts the whole remaining set, so a sweep
+     * of N costs O(N² / page) matching. [sweepWalk] does not; these callers
+     * keep this loop because their match set is bounded by one owner or one
+     * filter, and because a walk's read happens outside a hold, which only a
+     * sweep that may release between pages can use.
+     *
+     * Cancellation is checked before every round. Nothing else in the loop is
+     * guaranteed to: an uncontended `Mutex.lock` returns without suspending,
+     * and an index that answers without suspending (the in-memory reference)
+     * never reaches a cancellation point, so a cancelled sweep would run to
+     * its end.
      */
     suspend fun sweep(q: EventQuery) {
         // The caller's own limit, if any, decides whether one page is the whole
@@ -173,27 +195,103 @@ internal class Deletions(
             } else {
                 q.copy(limit = q.limit ?: sweepPage)
             }
-        var rounds = 0
         var lastPage: Set<String>? = null
-        while (rounds++ < MAX_SWEEP_ROUNDS) {
-            val page = index.search(paged)
-            if (page.isEmpty()) return
-            val ids = page.mapTo(HashSet()) { it.id }
-            // An acked remove is visible to search (the EventIndex contract), so
-            // a page identical to the one just removed means the deletes are not
-            // landing. Returning silently would report a vanish/delete as
-            // enforced while the events are still served.
-            check(ids != lastPage) { "sweep is not shrinking: ${ids.size} matches for $q survived their own removal" }
-            // The docs are already in hand — removeDocs lets the trust
-            // projection react without a get per id.
-            index.removeDocs(page)
+        repeat(MAX_SWEEP_ROUNDS) {
+            currentCoroutineContext().ensureActive()
+            val removed = sweepRound(paged, lastPage) ?: return
             // A limit'd delete is satisfied by its first page.
             if (q.limit != null) return
-            lastPage = ids
+            lastPage = removed
         }
         // Loud, not silent: the caller (a vanish, an expiry pass, an admin
         // delete) must not believe the sweep completed.
         error("sweep did not drain after $MAX_SWEEP_ROUNDS rounds of ${paged.limit} for $q")
+    }
+
+    /**
+     * ONE ROUND of [sweep]: read a page of [paged], remove exactly it, and
+     * return its ids — or null when the page came back empty and the sweep is
+     * done. [previous] is the page the last round removed.
+     */
+    private suspend fun sweepRound(
+        paged: EventQuery,
+        previous: Set<String>?,
+    ): Set<String>? {
+        val page = index.search(paged)
+        if (page.isEmpty()) return null
+        val ids = page.mapTo(HashSet()) { it.id }
+        // An acked remove is visible to search (the EventIndex contract), so
+        // a page identical to the one just removed means the deletes are not
+        // landing. Returning silently would report a vanish/delete as
+        // enforced while the events are still served.
+        check(ids != previous) { "sweep is not shrinking: ${ids.size} matches for $paged survived their own removal" }
+        // The docs are already in hand — removeDocs lets the trust
+        // projection react without a get per id.
+        index.removeDocs(page)
+        return ids
+    }
+
+    /**
+     * Remove every match of [q] by WALKING it once — [EventIndex.visitIds], the
+     * engine's `created_at`-sliced cursor over the attribute-only `idtime`
+     * summary — and removing it [page] ids at a time, each batch inside one
+     * [hold]. The expiry sweep's primitive (`NostrSemanticsStore.deleteExpiredEvents`).
+     *
+     * WHY A WALK, not [sweep]'s re-query: a round of [sweep] matches and sorts
+     * everything still left to return the newest page, so a backlog of N costs
+     * O(N² / page) matching, its `order by` invites the sorting degrader, and
+     * every page is read as FULL documents. The walk reads each slice once
+     * (`VespaEventIndex.visitIdsByCursor`, about one page per slice since #209,
+     * with `sorting.degrading=false`), projects only `id, created_at`, and the
+     * removes go by id: [EventIndex.removeAll], which the trust projection
+     * answers by reading back FULL documents only for its own kinds, the one
+     * place a removal needs them.
+     *
+     * WHY ONLY FOR A FIXED MATCH SET. The walk's reads happen OUTSIDE [hold];
+     * only the removes are inside it. That is sound when the match set cannot
+     * grow behind the cursor in a way the caller must catch — the expiry
+     * sweep's fixed cutoff — and when removing a stale id is harmless: an
+     * event is immutable per id, so an id that matched still matches, and one
+     * removed since by someone else is a no-op remove. A filter delete or a
+     * vanish needs the read and the write in one hold; they use [sweep].
+     *
+     * [remove] removes one batch, inside its hold, and returns the ids it
+     * removed: [EventIndex.removeAll] for the trust pass; for the plain pass,
+     * a remover that leaves the trust kinds stored, which it may not remove
+     * without the trust gate (`NostrSemanticsStore.removeAllButTrust`).
+     *
+     * Cancellation is checked before every batch. The first batch's removes
+     * are checked to have landed (an acked remove is visible, the EventIndex
+     * contract): a broken engine then fails the sweep loudly instead of
+     * reporting it done with every event still stored — one id read per
+     * sweep rather than per page, since a remove that is dropped is dropped
+     * for every page alike.
+     */
+    suspend fun sweepWalk(
+        q: EventQuery,
+        page: Int,
+        remove: suspend (List<String>) -> List<String>,
+        hold: suspend (suspend () -> Unit) -> Unit,
+    ) {
+        require(page >= 1) { "sweep page $page is below 1" }
+        var verified = false
+        index.visitIds(q) { refs ->
+            for (batch in refs.chunked(page)) {
+                currentCoroutineContext().ensureActive()
+                val ids = batch.map { it.id }
+                hold {
+                    val doomed = remove(ids)
+                    if (doomed.isNotEmpty()) {
+                        if (!verified) {
+                            val survived = index.existingIds(doomed)
+                            check(survived.isEmpty()) { "sweep is not landing: ${survived.size} of ${doomed.size} removed ids for $q are still stored" }
+                            verified = true
+                        }
+                    }
+                }
+            }
+            true
+        }
     }
 
     private companion object {

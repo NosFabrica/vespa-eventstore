@@ -26,14 +26,14 @@ import com.vitorpamplona.quartz.utils.Hex
  * Builds a Vespa *document selection* from an [EventQuery] — the expression
  * the document-API visit scans with (streaming, no result cap, no ranking).
  * Only attribute-shaped constraints translate: kinds, authors, owners,
- * since/until, and the not-yet-expired guard.
+ * since/until, the not-yet-expired guard and the expiry sweep's bound.
  *
  * Returns null when [q] carries anything a selection can't express — ids, an
  * id prefix (its one caller filters a scan's pages by prefix itself), the
  * weighted key sets ([EventQuery.idWeights] / [EventQuery.authorWeights]),
  * tags, any search constraint (including `notSearch`: a silently dropped
- * exclusion would stream exactly the docs the query subtracted), a limit, the
- * expiry-sweep bound, an observer GATE ([EventYql.gateFloor]), or a non-64-hex
+ * exclusion would stream exactly the docs the query subtracted), a limit, an
+ * observer GATE ([EventYql.gateFloor]), or a non-64-hex
  * key — and the caller falls back to the ranked `/search/` path. Keys are
  * validated to 64-hex BEFORE they are quoted into the expression (same
  * injection rule as [EventYql]).
@@ -49,7 +49,7 @@ object EventSelection {
         // looking like it asked for a few hundred keys, which is precisely the
         // silent-superset failure this builder returns null to avoid.
         if (q.idWeights.isNotEmpty() || q.authorWeights.isNotEmpty()) return null
-        if (!q.search.isNullOrBlank() || q.phrases.isNotEmpty() || q.notSearch.isNotEmpty() || q.limit != null || q.expiresBefore != null) return null
+        if (!q.search.isNullOrBlank() || q.phrases.isNotEmpty() || q.notSearch.isNotEmpty() || q.limit != null) return null
         // THE OBSERVER GATE, for the same reason again: it is a RECALL
         // constraint (the gated profiles' `user_score >= min_rank` drop-limit)
         // that lives in a rank profile, and a visit has none. Omitting it
@@ -68,6 +68,11 @@ object EventSelection {
         q.since?.let { clauses += "event.created_at>=$it" }
         q.until?.let { clauses += "event.created_at<=$it" }
         q.notExpiredAt?.let { clauses += "event.expires_at>$it" }
+        // The expiry sweep's bound, as the YQL writes it (`expires_at < N`): an
+        // event with no expiration carries a far-future sentinel, never below
+        // a cutoff. Unselectable, the sweep's walk fell — once its cut budget
+        // was spent — to an unlimited search of every due document, whole.
+        q.expiresBefore?.let { clauses += "event.expires_at<$it" }
         return if (clauses.isEmpty()) "true" else clauses.joinToString(" and ")
     }
 

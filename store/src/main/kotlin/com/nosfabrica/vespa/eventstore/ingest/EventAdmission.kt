@@ -31,7 +31,7 @@ import com.vitorpamplona.quartz.nip01Core.core.isReplaceable
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.owner
 import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
-import com.vitorpamplona.quartz.nip40Expiration.isExpired
+import com.vitorpamplona.quartz.nip40Expiration.isExpirationBefore
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -58,6 +58,14 @@ internal class EventAdmission(
     private val deletions: Deletions,
     /** Whether this owner can have a stored tombstone/vanish at all — see [GuardOwners]. */
     private val guards: GuardOwners,
+    /**
+     * The STORE's clock, which NIP-40 admission reads — never quartz's
+     * `TimeUtils.now()`. The expiry sweep's cutoff is read off the same clock,
+     * and its termination argument ("nothing already due at the cutoff can be
+     * admitted after it") holds only if admission and the sweep agree on what
+     * "now" is (`NostrSemanticsStore.deleteExpiredEvents`).
+     */
+    private val nowSecs: () -> Long,
 ) {
     /**
      * The rules, applied to one event. NO lock and NO lock accounting: the
@@ -81,7 +89,7 @@ internal class EventAdmission(
         when {
             event.kind.isEphemeral() -> IEventStore.InsertOutcome.Accepted
 
-            event.isExpired() -> IEventStore.InsertOutcome.Rejected(Rejections.EXPIRED)
+            event.isExpirationBefore(nowSecs()) -> IEventStore.InsertOutcome.Rejected(Rejections.EXPIRED)
 
             // Text the engine refuses is a property of the event, so it is
             // settled with the other no-I/O checks rather than surfacing as a

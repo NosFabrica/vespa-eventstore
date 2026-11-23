@@ -51,12 +51,15 @@ class EventSelectionTest {
             ),
         )
         assertEquals("(event.owner==\"$bob\")", EventSelection.build(EventQuery(owners = listOf(bob))))
+        // The expiry sweep's bound, as the YQL's `expires_at < N`.
+        assertEquals("(event.kind==30382) and event.expires_at<100", EventSelection.build(EventQuery(kinds = listOf(30382), expiresBefore = 100)))
     }
 
     @Test
     fun `round-trips through the mock parser`() {
         roundTrips(EventQuery())
         roundTrips(EventQuery(kinds = listOf(30382)))
+        roundTrips(EventQuery(kinds = listOf(1), expiresBefore = 1_000))
         roundTrips(EventQuery(kinds = listOf(0, 1, 30382), authors = listOf(alice, bob)))
         roundTrips(EventQuery(owners = listOf(alice), since = 5, until = 9, notExpiredAt = 7))
     }
@@ -80,7 +83,6 @@ class EventSelectionTest {
         assertNull(EventSelection.build(EventQuery(idWeights = mapOf("f".repeat(64) to 80))))
         assertNull(EventSelection.build(EventQuery(authorWeights = mapOf("a1".repeat(32) to 80))))
         assertNull(EventSelection.build(EventQuery(limit = 10)))
-        assertNull(EventSelection.build(EventQuery(expiresBefore = 100)))
         // Injection rule: a non-64-hex key never reaches the expression.
         assertNull(EventSelection.build(EventQuery(authors = listOf("not-hex"))))
         assertNull(EventSelection.build(EventQuery(owners = listOf("\" or true"))))

@@ -150,6 +150,9 @@ class MockVespaEngine(
     val documentRemoves: Int get() = documentRemovesCount.get()
     private val documentRemovesCount = AtomicInteger()
 
+    /** The docid (URL-decoded) of every document-API remove, in arrival order — the address, under address-keying. */
+    val removedDocIds: MutableList<String> = java.util.concurrent.CopyOnWriteArrayList()
+
     /**
      * Hold every `id in (…)` lookup — the id-first hydration's document read —
      * this long while it counts as in flight, so [idLookupsInFlightPeak] can say
@@ -338,7 +341,7 @@ class MockVespaEngine(
      * before the observer gate (which real Vespa applies in the rank phase, after matching): an
      * `order by` with a limit makes the engine match and sort all of it to pick the top N, so the
      * ratio of the two is what a query cost against what it returned, and no response the client
-     * decodes shows it (this mock's `totalCount` is cut to the limit). Grouped answers are not booked.
+     * decodes shows it whole (`totalCount` is the whole match set, after the gate). Grouped answers are not booked.
      */
     val matchCounts: MutableList<Triple<String, Int, Int>> = Collections.synchronizedList(ArrayList())
 
@@ -658,6 +661,7 @@ class MockVespaEngine(
 
             method == "DELETE" && path.startsWith(docPrefix) -> {
                 documentRemovesCount.incrementAndGet()
+                removedDocIds += java.net.URLDecoder.decode(path.removePrefix(docPrefix), Charsets.UTF_8)
                 runBlocking { inner.remove(path.removePrefix(docPrefix)) }
                 Reply(200, """{"id":"$path"}""")
             }
@@ -865,7 +869,11 @@ class MockVespaEngine(
                 put(
                     "root",
                     buildJsonObject {
-                        put("fields", buildJsonObject { put("totalCount", JsonPrimitive(matches.size)) })
+                        // The WHOLE match set the query admits, as real Vespa reports
+                        // it — not the page: a limit-2,000 walk page on staging said
+                        // 2,809,568. A mock that cut it to the limit hid a read that
+                        // refused every page of a walk over more than one page.
+                        put("fields", buildJsonObject { put("totalCount", JsonPrimitive(if (grouped) matches.size else admitted.size)) })
                         // `documents` is what the engine SEARCHED, not what matched:
                         // real Vespa reports the active corpus it covered (624M on
                         // production while a node was down, over a handful of hits).
@@ -1255,6 +1263,10 @@ object MockSelection {
 
                 clause.startsWith("event.expires_at>") -> {
                     q = q.copy(notExpiredAt = clause.removePrefix("event.expires_at>").toLong())
+                }
+
+                clause.startsWith("event.expires_at<") -> {
+                    q = q.copy(expiresBefore = clause.removePrefix("event.expires_at<").toLong())
                 }
 
                 else -> {

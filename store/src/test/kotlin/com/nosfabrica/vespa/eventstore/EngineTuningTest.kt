@@ -70,6 +70,7 @@ class EngineTuningTest {
                     "VESPA_DEDUP_CHUNK" to "2000",
                     "VESPA_TRUST_WALK_PAGE" to "100",
                     "VESPA_TRUST_GATE_SLICE" to "50",
+                    "VESPA_EXPIRY_SWEEP_PAGE" to "300",
                     "VESPA_ACCESS_LOG" to "Disabled",
                 ),
             )
@@ -95,6 +96,7 @@ class EngineTuningTest {
         assertEquals(2_000, t.dedupChunk)
         assertEquals(100, t.trustWalkPage)
         assertEquals(50, t.trustGateSlice)
+        assertEquals(300, t.expirySweepPage)
         assertEquals("disabled", t.accessLog)
     }
 
@@ -137,6 +139,7 @@ class EngineTuningTest {
     fun `the ranges hold for values built in code too`() {
         assertFailsWith<IllegalArgumentException> { EngineTuning(feedBatch = -1) }
         assertFailsWith<IllegalArgumentException> { EngineTuning(dedupChunk = 0) }
+        assertFailsWith<IllegalArgumentException> { EngineTuning(expirySweepPage = 0) }
         assertFailsWith<IllegalArgumentException> { EngineTuning(accessLog = "json") }
     }
 
@@ -146,7 +149,7 @@ class EngineTuningTest {
         assertEquals(4_096, EngineTuning.MAX_FEED_BATCH)
         assertEquals(500, EngineTuning.DEFAULT_DEDUP_CHUNK)
         assertEquals(EngineTuning.VARIABLES.size, EngineTuning.VARIABLES.toSet().size, "each variable once")
-        assertEquals(23, EngineTuning.VARIABLES.size)
+        assertEquals(24, EngineTuning.VARIABLES.size)
     }
 
     /** A per-store setting reaches the store it opens: feedBatch 0 leaves the batch path unbuilt. */

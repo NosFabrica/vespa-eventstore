@@ -20,7 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore
 
-import com.nosfabrica.vespa.eventstore.engine.text.IndexableChars
+import com.nosfabrica.vespa.eventstore.mapping.LiveWords
 import com.nosfabrica.vespa.eventstore.trust.TrustCells
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -63,12 +63,18 @@ import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
  * agreeing with it. The lookup reads the newest provider pass (a map read);
  * just after a 10040 write made it stale, [admitsNow] defers, and [admits]
  * waits on the one rebuild every deferred event shares.
+ *
+ * AN EVENT'S WORDS ARE READ ONCE, NOT ONCE PER SUBSCRIPTION. Every gate of a
+ * store reads them through one [LiveWords], so a note reaching N open
+ * searching feeds is extracted and tokenized once per delivery thread rather
+ * than N times. `./gradlew :benchmark:liveGateBench` measures it (numbers in
+ * benchmark/README.md, "Live-gate words").
  */
 class LiveGate internal constructor(
     private val rules: List<Rule>,
     private val trust: TrustCells,
     private val lenses: Lenses,
-    private val textOf: (Event) -> String,
+    private val wordsOf: (Event) -> List<String>,
 ) {
     /** Which service an observer's rank lens reads: [now] off what is cached, [read] building it if it must. */
     internal interface Lenses {
@@ -126,8 +132,8 @@ class LiveGate internal constructor(
                 return false
             }
 
-            /** The engine's tokens ([IndexableChars.tokens]): letter/digit runs, and each emoji a word of its own. */
-            fun words(text: String?): List<String> = text?.lowercase()?.let(IndexableChars::tokens).orEmpty()
+            /** The engine's tokens of [text], exactly as an event's words are read ([LiveWords.tokens]). */
+            fun words(text: String?): List<String> = LiveWords.tokens(text)
         }
     }
 
@@ -144,19 +150,24 @@ class LiveGate internal constructor(
         val floor: Double?,
     )
 
-    private fun Rule.matches(
+    // `filter.match` runs here even though quartz's fan-out matched the subscription first: quartz
+    // proves only that SOME filter of the subscription matched, not this rule's (and a filter
+    // `toExpiryQuery` drops has no rule at all), so skipping it would let a rule vouch for a
+    // sibling's event, the hole the per-rule text check (class KDoc) closes for `search`.
+    // [words] is asked only when this rule has text and its NIP-01 part matched.
+    private inline fun Rule.matches(
         event: Event,
-        words: Lazy<List<String>>,
-    ): Boolean = filter.match(event) && (text == null || text.admits(words.value))
-
-    private fun wordsOf(event: Event) = lazy { Text.words(textOf(event)) }
+        words: () -> List<String>,
+    ): Boolean = filter.match(event) && (text == null || text.admits(words()))
 
     /** True/false from trust already known; null when an author must be read first. */
     fun admitsNow(event: Event): Boolean? {
-        val words = wordsOf(event)
         var unknown = false
+        // Held for the call, like [admits]: this thread's [LiveWords] slot would answer a second
+        // text rule too, but not for an event past its size cap, which it does not keep.
+        var words: List<String>? = null
         for (rule in rules) {
-            if (!rule.matches(event, words)) continue
+            if (!rule.matches(event) { words ?: wordsOf(event).also { words = it } }) continue
             val floor = rule.floor ?: return true
             val service =
                 when (val lens = rule.observer?.let(lenses::now) ?: Resolved.Service(null)) {
@@ -181,9 +192,12 @@ class LiveGate internal constructor(
 
     /** The full answer, reading any trust not yet in hand. */
     suspend fun admits(event: Event): Boolean {
-        val words = wordsOf(event)
+        // Held for the whole call: the lens and trust reads below can suspend between two text
+        // rules and resume on another thread, or after another cold check took this thread's
+        // [LiveWords] slot, and the second rule must not read the words again.
+        var words: List<String>? = null
         for (rule in rules) {
-            if (!rule.matches(event, words)) continue
+            if (!rule.matches(event) { words ?: wordsOf(event).also { words = it } }) continue
             val floor = rule.floor ?: return true
             if (trust.read(event.pubKey, rule.observer?.let { lenses.read(it) }) >= floor) return true
         }
