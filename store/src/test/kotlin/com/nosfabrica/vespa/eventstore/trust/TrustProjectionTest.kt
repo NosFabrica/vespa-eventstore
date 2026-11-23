@@ -34,6 +34,7 @@ import com.nosfabrica.vespa.eventstore.engine.doc.serviceCells
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
+import com.nosfabrica.vespa.eventstore.mapping.toDoc
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -1453,6 +1454,55 @@ class TrustProjectionTest {
                 assertTrue(left == null || left.influenceScores.isEmpty(), "its marker cell is cleared, got $left")
                 Outcome(Unit, ProjectionWork.NONE)
             }
+        }
+
+    /**
+     * A STALE VERSION'S REMOVAL LEAVES THE NEWEST VERSION'S CELL. An address
+     * holding {C2 newest, C1 stale} (a sweep that failed, see OwedSweeps):
+     * a trust batch offering an older C0 keeps C2 and sweeps C1 — and the
+     * removal of C1, which no winner of the commit explained, was recorded as
+     * the address's retraction, so C2 stayed stored with its cell gone until
+     * the reconciler ran. Same for a kind 5 naming the stale version by id.
+     */
+    @Test
+    fun `removing a stale card version keeps the cell of the newest one`() =
+        runBlocking {
+            val inner = InMemoryEventIndex()
+            val reps = InMemoryReputationIndex()
+            val st = NostrSemanticsStore(TrustProjection(inner, reps), relay = RelayUrlNormalizer.normalize("ws://localhost:7779"))
+            st.insert(list10040())
+            val newest = card(rank = 87, at = 200)
+            st.insert(newest)
+            val stale = card(rank = 10, at = 100)
+            // Drift the store cannot produce on its own: a second, older version beside the newest.
+            inner.put(stale.toDoc())
+
+            val outcomes = st.batchInsert(listOf(card(rank = 5, at = 50), card(about = "cd".repeat(32), rank = 40)))
+            assertTrue(outcomes[0] is IEventStore.InsertOutcome.Rejected, "the older card loses: $outcomes")
+            assertEquals(listOf(newest.id), inner.search(EventQuery(kinds = listOf(UserAssertionEvent.KIND), authors = listOf(service), tags = mapOf("d" to listOf(subject)))).map { it.id })
+            assertEquals(serviceCells(service to 87), reps.get(subject)?.influenceScores, "the drift repair keeps the newest card's cell")
+
+            inner.put(stale.toDoc())
+            st.insert(DeletionRequestEvent(id(), service, next(), arrayOf(arrayOf("e", stale.id)), "", ""))
+            assertNull(inner.get(stale.id), "the stale version is deleted")
+            assertEquals(serviceCells(service to 87), reps.get(subject)?.influenceScores, "a kind 5 of the stale version keeps the newest card's cell")
+        }
+
+    /** The NEWEST version removed with an older one left behind: the subject re-derives to the one still stored. */
+    @Test
+    fun `removing the newest card version over a stale one re-derives to the stale one`() =
+        runBlocking {
+            val inner = InMemoryEventIndex()
+            val reps = InMemoryReputationIndex()
+            val st = NostrSemanticsStore(TrustProjection(inner, reps), relay = RelayUrlNormalizer.normalize("ws://localhost:7780"))
+            st.insert(list10040())
+            val newest = card(rank = 87, at = 200)
+            st.insert(newest)
+            inner.put(card(rank = 10, at = 100).toDoc())
+
+            st.insert(DeletionRequestEvent(id(), service, next(), arrayOf(arrayOf("e", newest.id)), "", ""))
+
+            assertEquals(serviceCells(service to 10), reps.get(subject)?.influenceScores, "the cell follows the version still stored")
         }
 }
 
