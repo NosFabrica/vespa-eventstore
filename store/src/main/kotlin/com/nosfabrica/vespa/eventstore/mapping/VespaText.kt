@@ -37,6 +37,17 @@ import com.vitorpamplona.quartz.nip01Core.core.Event
  * own signature check, worse than not storing it — so those reject.
  *
  * Both halves are needed; neither implies the other (see [firstIllegalField]).
+ *
+ * THE REFUSAL IS A POLICY, NOT A GAP. Storing such events exactly was built and
+ * withdrawn (NosFabrica/vespa-eventstore#215): a second content field, escaped
+ * tag JSON, and a list of cases it still had to refuse. Measured against the
+ * cost, the events are vanishingly rare — 0 of 36,000+ sampled on the live
+ * relay (notes and profiles, 2023-2026) and 0 of 10,961 in the staging corpus —
+ * and NIP-01 lets a relay answer any event `OK false` with its reason. What
+ * this gives up is relay-tester's "Accepts NIP-01 JSON escape sequences" and
+ * "Accepts UTF-8 non-characters", whose payloads (`\b`, `\f`, U+FDD1) are
+ * exactly these code points. Revisit only with evidence that real clients send
+ * them, e.g. the `UNSTORABLE_TEXT` count in the store's rejection tally.
  */
 internal object VespaText {
     /**
