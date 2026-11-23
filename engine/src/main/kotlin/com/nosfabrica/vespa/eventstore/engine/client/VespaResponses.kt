@@ -45,10 +45,15 @@ internal const val EVENT_DOCTYPE = "event"
 internal val VESPA_JSON = Json { ignoreUnknownKeys = true }
 
 /** Newest first (`created_at` desc, id asc tiebreak) over raw summaries — the client applies the id tiebreak, not the engine. */
-internal val SUMMARY_NEWEST_FIRST = compareByDescending(VespaSummary::createdAt).thenBy(VespaSummary::id)
+internal val SUMMARY_NEWEST_FIRST: Comparator<VespaSummary> =
+    // Primitive compares: `compareByDescending(VespaSummary::createdAt)` boxes a Long per side per compare.
+    Comparator { a, b ->
+        val byTime = b.createdAt.compareTo(a.createdAt)
+        if (byTime != 0) byTime else a.id.compareTo(b.id)
+    }
 
 /** NIP-01 order for walked ids, the same rule [SUMMARY_NEWEST_FIRST] applies to hits. */
-internal val DOCREF_NEWEST_FIRST = compareByDescending(DocRef::createdAt).thenBy(DocRef::id)
+internal val DOCREF_NEWEST_FIRST: Comparator<DocRef> = DocRef.NEWEST_FIRST
 
 /** `/search/` response: the hit children plus [SearchCoverage]; grouping/meta are ignored. */
 @Serializable

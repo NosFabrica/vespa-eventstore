@@ -218,7 +218,7 @@ class SweepPagingTest {
         const val PAGE = 4
         const val CORPUS = 25
 
-        /** Mirrors NostrSemanticsStore's private BULK_MIN — the batch size that takes the bulk path. */
+        /** At least NostrSemanticsStore's private BULK_MIN (2): a batch this wide takes the bulk path. */
         const val BULK = 16
     }
 }

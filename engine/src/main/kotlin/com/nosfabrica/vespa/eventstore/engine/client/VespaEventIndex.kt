@@ -61,6 +61,8 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody
 import okio.BufferedSink
@@ -225,7 +227,18 @@ class VespaEventIndex(
     /** The endpoint for one document-API request (get, visit, batch feed) — round-robin across [feedEndpoints]. */
     private fun documentEndpoint(): String = documentApi.next()
 
-    /** The endpoint for one `/search/` request — round-robin across [queryEndpoints]. */
+    /**
+     * Each query endpoint's `/search/` url, PARSED ONCE. Built as a string and
+     * parsed by OkHttp on every query, the url cost a host normalization
+     * (`idnToAscii`) per call: 1.8% of a relay's CPU in a JFR profile. Lazy, so
+     * a bad url still fails at the first query, as it did.
+     */
+    private val searchUrls: List<HttpUrl> by lazy { searchApi.urls.map { "$it/search/".toHttpUrl() } }
+
+    /** The `/search/` url for one query — round-robin across [queryEndpoints]. */
+    private fun searchUrl(): HttpUrl = searchUrls[searchApi.nextIndex()]
+
+    /** The endpoint for one other query-container request (the headroom probe) — the same rotation. */
     private fun queryEndpoint(): String = searchApi.next()
 
     private val feed = VespaFeed(documentApi.urls, eager = eagerFeed, tuning = tuning)
@@ -265,6 +278,13 @@ class VespaEventIndex(
      * widening for it. Switched by the same `VESPA_RECENCY_MEMORY`.
      */
     private val walkMemory: RecencyWindowMemory? = if (recencyMemory) RecencyWindowMemory() else null
+
+    /**
+     * The tie slack each windowable read shape needs, learned from its last pages
+     * ([TieSlackMemory]); null (every read at the flat [TIE_SLACK]) under the same
+     * `VESPA_RECENCY_MEMORY=0`.
+     */
+    private val slackMemory: TieSlackMemory? = if (recencyMemory) TieSlackMemory() else null
 
     // ADDRESS-KEYED mode (VESPA_ADDRESS_KEYED=1, the [addressKeyed] parameter):
     // replaceable/addressable events are stored under their NIP-01 address as
@@ -638,11 +658,13 @@ class VespaEventIndex(
      * With a single-key sort, every doc STRICTLY newer than the boundary
      * timestamp T (the limit-th hit's created_at) is guaranteed present; only
      * membership among the docs AT T is engine-arbitrary. So the query
-     * overfetches [TIE_SLACK] extra hits — if anything older than T arrived, or
-     * the engine ran out of matches, the whole T tie group is in hand and an
-     * in-memory sort resolves the boundary. Only a wider tie group pays one
-     * extra `[T,T]` window query — as does a limit within [TIE_SLACK] of a
-     * deployed hits cap, where the slack is clamped to the cap ([recallPage]).
+     * overfetches a tie slack — [TIE_SLACK] for a shape seen first, then what
+     * the shape's own pages showed it needs ([TieSlackMemory]) — and if anything
+     * older than T arrived, or the engine ran out of matches, the whole T tie
+     * group is in hand and an in-memory sort resolves the boundary. Only a wider
+     * tie group pays one extra `[T,T]` window query — as does a limit within its
+     * slack of a deployed hits cap, where the slack is clamped to the cap
+     * ([recallPage]).
      *
      * Ranked queries keep the engine's score order untouched. The gated profiles
      * are recency-ordered too (score IS created_at), so they take this path.
@@ -670,7 +692,7 @@ class VespaEventIndex(
      * [HYDRATE_CHUNK] ids.
      *
      * Why a page is resolved from ids first. A recency read asks the engine for
-     * `limit + TIE_SLACK` hits so the boundary tie resolves client-side, and a
+     * `limit` plus a tie slack of hits so the boundary tie resolves client-side, and a
      * speculative read may try several windows — and every one of those hits
      * used to arrive as a FULL document read off the document store. On a
      * corpus larger than memory those reads are cold and scattered: measured on
@@ -738,6 +760,9 @@ class VespaEventIndex(
         // be planned a second time.
         planned: Boolean,
         idOnly: Boolean,
+        // The read's shape when its caller already keyed it (a speculative
+        // read's attempts share one); otherwise keyed here, for the tie slack.
+        shape: RecencyWindowMemory.Shape? = null,
     ): List<VespaSummary> {
         if (!q.isRecencyOrdered()) return rankedHits(q).mapNotNull { it.fields }
         val limit = q.limit
@@ -766,7 +791,13 @@ class VespaEventIndex(
         // client's choice, not the caller's — asked for whole, a REQ the cap
         // admits was refused for it. A limit past the cap itself still fails
         // at the engine, which is the operator's cap working ([hitsFor]).
-        val fetchLimit = minOf(limit + TIE_SLACK, maxOf(limit, unboundedHits))
+        // The slack is the SHAPE's ([TieSlackMemory]): only a windowable read —
+        // a client's feed, its speculative attempts and fallbacks — is keyed;
+        // internal probes (RANK_UNRANKED), id lookups and complete reads keep
+        // the flat [TIE_SLACK] and never take a slot in the table.
+        val slackShape = if (slackMemory == null) null else shape ?: q.takeIf { it.isWindowable() }?.let(::shapeOfRead)
+        val slack = slackShape?.let { slackMemory?.slackFor(it) } ?: TIE_SLACK
+        val fetchLimit = minOf(plusSaturated(limit, slack), maxOf(limit, unboundedHits))
         val fetch = q.copy(limit = fetchLimit).keepingProfileOf(q)
         var hits =
             recallRoot(fetch, idOnly)?.children?.mapNotNull { it.fields }?.filter { it.id.isNotEmpty() }
@@ -780,6 +811,13 @@ class VespaEventIndex(
             // strictly older than T — which a slack-less full answer, ending AT
             // T, never has, so it reads the group by its window.
             val complete = hits.size < fetchLimit || hits.last().createdAt < t
+            // What the page teaches its shape: the boundary members past the
+            // last slot (exact here — the group is whole), or that the slack cut
+            // it. A short page (the `if` above) says nothing about ties.
+            if (slackShape != null) {
+                val over = if (complete) hits.count { it.createdAt >= t } - limit else 0
+                slackMemory?.learn(slackShape, slack, over, cut = !complete)
+            }
             if (!complete) {
                 // A gated query's tie window must stay gated (the exact variant
                 // — a [t,t] window is tiny) or the rerun would resurrect
@@ -795,6 +833,12 @@ class VespaEventIndex(
             }
         }
         return hits.sortedWith(SUMMARY_NEWEST_FIRST).take(limit)
+    }
+
+    /** [q]'s [RecencyWindowMemory.Shape], anchored as [speculativeAttempts] anchors it. */
+    private fun shapeOfRead(q: EventQuery): RecencyWindowMemory.Shape {
+        val now = q.nowSecs ?: (System.currentTimeMillis() / 1000)
+        return RecencyWindowMemory.shapeOf(q, q.until?.let { minOf(it, now) } ?: now, now)
     }
 
     /**
@@ -864,10 +908,13 @@ class VespaEventIndex(
             // a NARROW shape skips straight to the unwindowed read — the shipped
             // cost, nothing speculated — and a remembered WINDOW, scaled to this
             // limit, replaces the cold first guess.
-            val recalled = windowMemory?.recall(q, anchor, now)
+            // The shape is keyed ONCE per read: the recall here and the
+            // learn/forget below share it (the digest walks the author list).
+            val shape = if (windowMemory != null || slackMemory != null) RecencyWindowMemory.shapeOf(q, anchor, now) else null
+            val recalled = shape?.let { windowMemory?.recall(it) }
             if (recalled is RecencyWindowMemory.Recall.Narrow) {
                 outcome("recalled.narrow")
-                return@timed recallPage(planner.shipped(q), planned = true, idOnly = idOnly)
+                return@timed recallPage(planner.shipped(q), planned = true, idOnly = idOnly, shape = shape)
             }
             var window =
                 (recalled as? RecencyWindowMemory.Recall.Window)
@@ -906,7 +953,7 @@ class VespaEventIndex(
                 val remaining = limit - carried.size
                 val page =
                     try {
-                        IngestStats.timed("$SPECULATIVE_STAGE.attempt") { recallPage(q.olderThan(boundary, remaining).copy(since = since), planned = true, idOnly = idOnly) }
+                        IngestStats.timed("$SPECULATIVE_STAGE.attempt") { recallPage(q.olderThan(boundary, remaining).copy(since = since), planned = true, idOnly = idOnly, shape = shape) }
                     } catch (_: PartialAnswer) {
                         fallback = "partial"
                         break
@@ -914,7 +961,7 @@ class VespaEventIndex(
                 attempts++
                 if (page.size >= remaining) {
                     outcome(if (attempts == 1) "first" else "widened")
-                    learn(q, anchor, now, RecencyWindowMemory.Recall.Window(window, limit))
+                    learn(shape, RecencyWindowMemory.Recall.Window(window, limit))
                     return@timed carried + page
                 }
                 carried = carried + page
@@ -930,31 +977,30 @@ class VespaEventIndex(
             outcome("fallback.$fallback")
             when (fallback) {
                 // Too thin to window: the next read of this shape skips the attempts.
-                "narrow", "attempts", "window" -> learn(q, anchor, now, RecencyWindowMemory.Recall.Narrow)
+                "narrow", "attempts", "window" -> learn(shape, RecencyWindowMemory.Recall.Narrow)
 
                 // An attempt the engine cut says nothing about the shape's rate.
-                "partial" -> windowMemory?.forget(q, anchor, now)
+                "partial" -> shape?.let { windowMemory?.forget(it) }
 
                 // The caller's own `since` decided it; the shape learned nothing.
                 else -> Unit
             }
             // The unwindowed read, for what the carried pages do not already hold.
-            carried + recallPage(planner.shipped(q.olderThan(boundary, limit - carried.size)), planned = true, idOnly = idOnly)
+            carried + recallPage(planner.shipped(q.olderThan(boundary, limit - carried.size)), planned = true, idOnly = idOnly, shape = shape)
         }
 
     /**
-     * What a speculative read of [q] teaches [windowMemory]: [recall], unless an answer it was
+     * What a speculative read of [shape] teaches [windowMemory]: [recall], unless an answer it was
      * served came off part of the corpus ([ServedDegraded]), which says nothing about the shape's
      * rate and is forgotten like a refused attempt.
      */
     private suspend fun learn(
-        q: EventQuery,
-        anchor: Long,
-        now: Long,
+        shape: RecencyWindowMemory.Shape?,
         recall: RecencyWindowMemory.Recall,
     ) {
         val memory = windowMemory ?: return
-        if (currentCoroutineContext()[ServedDegraded]?.seen == true) memory.forget(q, anchor, now) else memory.remember(q, anchor, now, recall)
+        if (shape == null) return
+        if (currentCoroutineContext()[ServedDegraded]?.seen == true) memory.forget(shape) else memory.remember(shape, recall)
     }
 
     /**
@@ -1542,7 +1588,7 @@ class VespaEventIndex(
         // slack (halved when the cap is too small to spare a whole one). The
         // boundary logic below needs only `pageSize <= fetchLimit`: a short
         // slack just reads the boundary group by its window more often.
-        val fetchLimit = minOf(idPageSize + TIE_SLACK, unboundedHits)
+        val fetchLimit = minOf(plusSaturated(idPageSize, TIE_SLACK), unboundedHits)
         val pageSize = minOf(idPageSize, fetchLimit - minOf(TIE_SLACK, fetchLimit / 2))
         // EVERY PAGE AFTER THE FIRST READS A SLICE, NOT THE REST OF THE WINDOW.
         // A page is `order by created_at desc limit N`, so the engine matches
@@ -1590,7 +1636,9 @@ class VespaEventIndex(
         // event dated past the clock is still inside the first slice.
         val now = query.nowSecs ?: (System.currentTimeMillis() / 1000)
         val anchor = query.until ?: now
-        var span: Long? = startSpan ?: recalledSpan(query, anchor, now, pageSize)
+        // Keyed once for the walk: every page re-learns the same shape.
+        val walkShape = walkMemory?.let { RecencyWindowMemory.shapeOf(query, anchor, now) }
+        var span: Long? = startSpan ?: walkShape?.let { recalledSpan(it, pageSize) }
         while (true) {
             val top = until ?: now
             val sliceSince = if (span != null) sliceFloor(top, span, query.since) else query.since
@@ -1757,7 +1805,7 @@ class VespaEventIndex(
                 // like any walk: the split hands the second out lowest ids first,
                 // so a budget that stops inside it keeps NIP-01's members — where
                 // it used to keep whichever the engine's single-key sort reached.
-                val cap = minOf(idPageSize * TIE_DENSE_FACTOR + 1, unboundedHits)
+                val cap = minOf(denseCap(idPageSize), unboundedHits)
                 val group = idTimeRetrying(query.copy(since = boundary, until = boundary, limit = cap), withDTag, "walk.ids.tiegroup")
                 if (group.size >= cap) {
                     // TOO WIDE TO RESOLVE ON THE CURSOR — a service that
@@ -1784,7 +1832,7 @@ class VespaEventIndex(
             }
             // Strictly past the group just emitted in full.
             if (boundary <= (query.since ?: Long.MIN_VALUE)) return
-            span = spanOfPage(hits, pageSize, boundary, previous = span).also { walkMemory?.remember(query, anchor, now, RecencyWindowMemory.Recall.Window(it, pageSize)) }
+            span = spanOfPage(hits, pageSize, boundary, previous = span).also { walkShape?.let { shape -> walkMemory?.remember(shape, RecencyWindowMemory.Recall.Window(it, pageSize)) } }
             until = boundary - 1
         }
     }
@@ -1860,12 +1908,10 @@ class VespaEventIndex(
 
     /** The first slice's width from [walkMemory], scaled to this walk's page, or null to ask the first page open. */
     private fun recalledSpan(
-        q: EventQuery,
-        anchor: Long,
-        now: Long,
+        shape: RecencyWindowMemory.Shape,
         pageSize: Int,
     ): Long? {
-        val window = walkMemory?.recall(q, anchor, now) as? RecencyWindowMemory.Recall.Window ?: return null
+        val window = walkMemory?.recall(shape) as? RecencyWindowMemory.Recall.Window ?: return null
         return clampSpan(window.window.toDouble() * pageSize / window.limit)
     }
 
@@ -1986,7 +2032,7 @@ class VespaEventIndex(
         // caller routes only a limit inside the cap here ([visitIds]). A fetch
         // with no slack left is still exact: a full answer then ends AT t, never
         // past it, so the check below reads the group by its window.
-        val fetch = minOf(limit + TIE_SLACK, maxOf(limit, unboundedHits))
+        val fetch = minOf(plusSaturated(limit, TIE_SLACK), maxOf(limit, unboundedHits))
         val hits = idTimeRetrying(query.copy(limit = fetch), withDTag, "walk.limited.onepage")
         // Fewer than asked for: the engine ran out, so every tie is in hand.
         if (hits.size < fetch) return hits.sortedWith(DOCREF_NEWEST_FIRST).take(limit)
@@ -1995,7 +2041,7 @@ class VespaEventIndex(
         val complete = hits.last().createdAt < t
         if (complete) return hits.sortedWith(DOCREF_NEWEST_FIRST).take(limit)
         val newer = hits.filter { it.createdAt > t }
-        val cap = minOf(idPageSize * TIE_DENSE_FACTOR + 1, unboundedHits)
+        val cap = minOf(denseCap(idPageSize), unboundedHits)
         val second = query.copy(since = t, until = t, limit = null)
         var group = idTimeRetrying(second.copy(limit = cap), withDTag, "walk.limited.tiegroup")
         if (group.size >= cap) {
@@ -2119,7 +2165,7 @@ class VespaEventIndex(
                         null
                     }
                 DocRef(f.id, f.createdAt, dTag)
-            }.sortedWith(compareByDescending<DocRef> { it.createdAt }.thenBy { it.id })
+            }.sortedWith(DOCREF_NEWEST_FIRST)
     }
 
     /**
@@ -2490,7 +2536,7 @@ class VespaEventIndex(
         // A busy engine sheds load transiently (504 under heavy concurrent
         // summary fills); one failed page must not kill a multi-hour sync, so
         // 5xx gets brief retries inside VespaHttp.
-        val resp = http.post("${queryEndpoint()}/search/", body)
+        val resp = http.post(searchUrl(), body)
         require(resp.statusCode() < 400) { "vespa search ${resp.statusCode()}: ${resp.body().take(300)}" }
         return resp
     }
@@ -2793,11 +2839,34 @@ class VespaEventIndex(
         const val SLOW_DETAIL_CHARS = 400
 
         /**
-         * Extra hits a limit'd recency recall asks for beyond its limit, so
-         * the boundary timestamp's tie group usually arrives complete and the
-         * id tiebreak resolves in memory (see [recallSummaries]).
+         * The WIDEST tie slack: extra hits a limit'd recency recall asks for beyond its limit, so
+         * the boundary second's tie group usually arrives complete and the id tiebreak resolves in
+         * memory (see [recallSummaries]). What every walk ([visitIdsByCursor], [newestExact]) and
+         * every read the slack memory does not key overfetches, what a windowable shape seen for
+         * the first time starts at, and where a shape whose boundary group the slack cut goes
+         * back to ([TieSlackMemory]).
          */
         const val TIE_SLACK = 64
+
+        /**
+         * The NARROWEST slack a shape learns ([TieSlackMemory]): a page that showed no boundary
+         * ties still keeps this much, as headroom for the next one's.
+         */
+        const val MIN_TIE_SLACK = 8
+
+        /**
+         * `a + b` for a non-negative [b], stopping at [Int.MAX_VALUE] instead of wrapping. Every
+         * overfetch is a caller's limit plus this client's slack, and a client may send any limit:
+         * `2147483647 + 64` wrapped negative, and a non-positive limit matches nothing, so the
+         * whole page came back empty (and a speculative read learned its shape Narrow).
+         */
+        internal fun plusSaturated(
+            a: Int,
+            b: Int,
+        ): Int = (a.toLong() + b).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+
+        /** The dense tie-group threshold for a page of [pageSize]: `pageSize * TIE_DENSE_FACTOR + 1`, saturated like [plusSaturated]. */
+        internal fun denseCap(pageSize: Int): Int = (pageSize.toLong() * TIE_DENSE_FACTOR + 1).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
 
         /** Ids per hydration query (see [hydrate]): one query up to the match-phase band's width. */
         const val HYDRATE_CHUNK = 2_000

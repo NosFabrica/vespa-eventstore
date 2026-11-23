@@ -30,6 +30,7 @@ import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.ConnectionPool
 import okhttp3.Dispatcher
+import okhttp3.HttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
@@ -110,18 +111,12 @@ internal class VespaHttp(
             // all four were taken in 7 of 8 thread dumps, and rendering was 42%
             // of the container's CPU while small reads waited behind it. A
             // 3,000-hit page is 17.8 MB plain against 3.2 MB gzipped, and the
-            // saving only crosses the pod network. An application interceptor
-            // runs before the bridge, which adds gzip only when the header is
-            // absent; [visitHttp] inherits it through newBuilder().
-            .addInterceptor { chain ->
-                chain.proceed(
-                    chain
-                        .request()
-                        .newBuilder()
-                        .header("Accept-Encoding", "identity")
-                        .build(),
-                )
-            }.build()
+            // saving only crosses the pod network. OkHttp's bridge adds gzip
+            // only when the header is absent, so every request this client
+            // builds carries `identity` from the start ([request]) — on
+            // [visitHttp] too. (An application interceptor did this before,
+            // rebuilding every Request a second time to add one header.)
+            .build()
 
     /**
      * The visit walk's client: HTTP/1.1 on connections of its own, plus a READ
@@ -158,6 +153,13 @@ internal class VespaHttp(
     private val jsonMedia = "application/json; charset=utf-8".toMediaType()
 
     /**
+     * A request builder already asking for an UNCOMPRESSED answer (see the
+     * client builder's comment): every request to Vespa starts here, the
+     * streamed visit's included ([newVisitCall]'s caller).
+     */
+    fun request(): Request.Builder = Request.Builder().header("Accept-Encoding", "identity")
+
+    /**
      * Releases this client's own threads and sockets: its [Dispatcher]'s executor (whose threads
      * are not daemons, and idle a minute before exiting) and its connection pool (every idle
      * HTTP/2 connection, each with its reader on OkHttp's task runner, kept five minutes and
@@ -178,8 +180,7 @@ internal class VespaHttp(
     /** GET [url], retrying transient overload — the document-API get path. */
     suspend fun get(url: String): HttpResp =
         send(
-            Request
-                .Builder()
+            request()
                 .url(url)
                 .get()
                 .build(),
@@ -188,8 +189,7 @@ internal class VespaHttp(
     /** [get] on the visit client — visit page requests carry a read deadline (see [visitHttp]). */
     suspend fun getVisit(url: String): HttpResp =
         send(
-            Request
-                .Builder()
+            request()
                 .url(url)
                 .get()
                 .build(),
@@ -200,6 +200,7 @@ internal class VespaHttp(
      * A raw call on the visit client, for the streamed JSON-Lines walk: the
      * caller runs the blocking read loop and owns the call's lifecycle
      * (cancel on coroutine cancellation). Same read deadline as [getVisit].
+     * [req] is built from [request], so it asks for an uncompressed answer.
      */
     fun newVisitCall(req: Request): Call = visitHttp.newCall(req)
 
@@ -209,8 +210,7 @@ internal class VespaHttp(
         body: String,
     ): HttpResp =
         send(
-            Request
-                .Builder()
+            request()
                 .url(url)
                 .post(body.toRequestBody(jsonMedia))
                 .build(),
@@ -222,8 +222,19 @@ internal class VespaHttp(
         body: RequestBody,
     ): HttpResp =
         send(
-            Request
-                .Builder()
+            request()
+                .url(url)
+                .post(body)
+                .build(),
+        )
+
+    /** [post] to a url parsed once by the caller — the `/search/` path, which would otherwise parse its url per query. */
+    suspend fun post(
+        url: HttpUrl,
+        body: RequestBody,
+    ): HttpResp =
+        send(
+            request()
                 .url(url)
                 .post(body)
                 .build(),
@@ -260,8 +271,8 @@ internal class VespaHttp(
 
     /**
      * A response held as okio segments, never as one array: a 500-hit page is a megabyte, which
-     * G1 allocates humongous and answers with a concurrent cycle. [decode] streams off the
-     * segments; [body] is the text, for error messages and the paths that still need it.
+     * G1 allocates humongous and answers with a concurrent cycle. [decode] streams a large one off
+     * the segments; [body] is the text, for error messages and the paths that still need it.
      */
     internal class HttpResp(
         private val code: Int,
@@ -273,11 +284,23 @@ internal class VespaHttp(
 
         private val text by lazy(LazyThreadSafetyMode.NONE) { payload.clone().readUtf8() }
 
+        /**
+         * The payload decoded by [deserializer]. A SMALL one — most answers: a feed page, a
+         * hydrate, an existence check — goes through the string lexer: the stream path's
+         * Reader and buffered lexer were 15-20% of a relay's CPU in a JFR profile, far more
+         * than the one String they avoid. Past [STRING_DECODE_MAX_BYTES] the stream path
+         * stays, for the reason above: that String would be allocated humongous.
+         */
         @OptIn(ExperimentalSerializationApi::class)
         fun <T> decode(
             json: Json,
             deserializer: DeserializationStrategy<T>,
-        ): T = json.decodeFromStream(deserializer, payload.clone().inputStream())
+        ): T =
+            if (payload.size <= STRING_DECODE_MAX_BYTES) {
+                json.decodeFromString(deserializer, payload.clone().readUtf8())
+            } else {
+                json.decodeFromStream(deserializer, payload.clone().inputStream())
+            }
     }
 
     /**
@@ -355,6 +378,15 @@ internal class VespaHttp(
     }
 
     internal companion object {
+        /**
+         * The largest payload [HttpResp.decode] reads as one String. 192 KB, a little under
+         * the ~256 KB the profile suggested: the String is UTF-16 as soon as one character is
+         * outside Latin-1 (an emoji in a note), so it may hold TWICE the payload's bytes, and
+         * twice this stays under the 512 KB that G1 allocates humongous on its smallest (1 MB)
+         * regions.
+         */
+        const val STRING_DECODE_MAX_BYTES = 192L * 1024
+
         /** Concurrent engine requests, total and per host: equal, so the total binds however many endpoints there are. */
         const val MAX_CONCURRENT_REQUESTS = 1024
 

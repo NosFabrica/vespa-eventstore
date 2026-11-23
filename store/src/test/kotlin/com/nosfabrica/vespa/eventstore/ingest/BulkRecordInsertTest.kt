@@ -21,11 +21,14 @@
 package com.nosfabrica.vespa.eventstore.ingest
 
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
+import com.nosfabrica.vespa.eventstore.engine.DocRef
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.ingest.Rejections
+import com.nosfabrica.vespa.eventstore.mapping.toDoc
+import com.nosfabrica.vespa.eventstore.trust.TrustProjection
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.normalizeRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
@@ -33,9 +36,13 @@ import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
 import com.vitorpamplona.quartz.nip23LongContent.LongFormContentEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /**
@@ -74,6 +81,11 @@ class BulkRecordInsertTest {
         at: Long = next(),
         author: String = alice,
     ) = DeletionRequestEvent(id(), author, at, arrayOf(arrayOf("e", targetId)), "", "")
+
+    private fun article(
+        d: String,
+        at: Long = next(),
+    ) = LongFormContentEvent(id(), alice, at, arrayOf(arrayOf("d", d)), "body", "")
 
     /** Padding so every batch crosses the BULK_MIN threshold. */
     private fun padding(n: Int) = (1..n).map { note(content = "pad $it") }
@@ -341,4 +353,169 @@ class BulkRecordInsertTest {
 
     @Test
     fun `the putIfNewer branch reports a raced replaceable duplicate as a duplicate`() = racedReplaceableDuplicate(supersedesViaPut = true)
+
+    /** Refuses every put of [kind] while [failing]: an engine 5xx, a cancelled feed, after the reads have answered. */
+    private class PutFailingIndex(
+        private val inner: InMemoryEventIndex,
+        private val kind: Int,
+    ) : EventIndex by inner {
+        var failing = false
+
+        override suspend fun put(doc: EventDoc) {
+            check(!(failing && doc.kind == kind)) { "put refused" }
+            inner.put(doc)
+        }
+
+        override suspend fun putAll(docs: List<EventDoc>) = docs.forEach { put(it) }
+
+        override suspend fun putIfNewer(doc: EventDoc): Boolean = super<EventIndex>.putIfNewer(doc)
+    }
+
+    /**
+     * A supersession writes its winner BEFORE it removes what the winner
+     * replaces. The bulk path removed the stored version first and put the
+     * batch after, so a put that failed (or a commit cancelled between the
+     * two) left the address holding NEITHER version: a kind 0 or 3 gone until
+     * its author happened to publish again, and the retry could not bring it
+     * back — the old version is nobody's to re-offer. Both the bulk path and
+     * the per-event one are held to it.
+     */
+    @Test
+    fun `a failed put never loses the version it was replacing`() =
+        runBlocking {
+            for (bulk in listOf(true, false)) {
+                val inner = InMemoryEventIndex()
+                val index = PutFailingIndex(inner, kind = 0)
+                val store = NostrSemanticsStore(index, relay = relayUrl)
+                val v1 = Event(id(), alice, next(), 0, emptyArray(), "{\"name\":\"old\"}", "")
+                store.insert(v1)
+                val v2 = Event(id(), alice, next(), 0, emptyArray(), "{\"name\":\"new\"}", "")
+                index.failing = true
+                assertFailsWith<IllegalStateException> {
+                    if (bulk) store.batchInsert(padding(20) + v2) else store.insert(v2)
+                }
+                assertEquals(
+                    listOf(v1.id),
+                    inner.search(EventQuery(kinds = listOf(0), authors = listOf(alice))).map { it.id },
+                    "the replaced version must still be stored (bulk=$bulk)",
+                )
+            }
+        }
+
+    /**
+     * The locked commit's three reads — the batch's tombstones, its owners'
+     * vanishes and its addresses' stored versions — are independent, so they
+     * run together: the writer lock is held for the slowest, not their sum.
+     * Proven by an index that answers none of them until all three have
+     * arrived; read back to back, the first never returns and the commit times
+     * out. The batch still ends where the per-event path does.
+     */
+    @Test
+    fun `the commit's guard and version reads run together`() =
+        runBlocking {
+            val inner = InMemoryEventIndex()
+            val arrived = HashSet<String>()
+            val all = CompletableDeferred<Unit>()
+            val index =
+                object : EventIndex by inner {
+                    suspend fun rendezvous(read: String) {
+                        synchronized(arrived) { if (arrived.add(read) && arrived.size == 3) all.complete(Unit) }
+                        all.await()
+                    }
+
+                    override suspend fun search(query: EventQuery): List<EventDoc> {
+                        when {
+                            query.kinds == listOf(DeletionRequestEvent.KIND) && query.tags.isNotEmpty() -> rendezvous("tombstones")
+                            query.kinds == listOf(RequestToVanishEvent.KIND) -> rendezvous("vanishes")
+                        }
+                        return inner.search(query)
+                    }
+
+                    // A plain replaceable's versions are read off this grouping (and its count) since they stopped being a document search.
+                    override suspend fun newestVersions(
+                        kind: Int,
+                        authors: List<String>,
+                    ): Map<String, DocRef> {
+                        rendezvous("versions")
+                        return inner.newestVersions(kind, authors)
+                    }
+
+                    override suspend fun putIfNewer(doc: EventDoc): Boolean = super<EventIndex>.putIfNewer(doc)
+                }
+            // SHARED_STRICT (the default): every owner is flagged, so both guard reads run.
+            val store = NostrSemanticsStore(index, relay = relayUrl)
+            val v1 = Event(id(), alice, next(), 0, emptyArray(), "{\"name\":\"old\"}", "")
+            inner.put(v1.toDoc())
+            val v2 = Event(id(), alice, next(), 0, emptyArray(), "{\"name\":\"new\"}", "")
+            val outcomes = withTimeout(10_000) { store.batchInsert(padding(20) + v2) }
+            assertTrue(outcomes.all { it is IEventStore.InsertOutcome.Accepted }, "$outcomes")
+            assertEquals(setOf("tombstones", "vanishes", "versions"), arrived)
+            assertEquals(listOf(v2.id), inner.search(EventQuery(kinds = listOf(0), authors = listOf(alice))).map { it.id })
+        }
+
+    /**
+     * STAGE D READS NO DOCUMENT FOR A KIND NO REACTION NEEDS WHOLE. A plain
+     * replaceable's versions come off two attribute-only groupings, an
+     * addressable's off the id walk — the full-document search pulled a stored
+     * kind 3 (50-500 KB of tags) under the writer lock to read three fields.
+     * An author holding two versions (a sweep that failed) is still read in
+     * full and swept clean; the trust kinds keep the whole read their removal
+     * reaction needs.
+     */
+    @Test
+    fun `the bulk version read fetches no document for a plain or addressable kind`() =
+        runBlocking {
+            val inner = InMemoryEventIndex()
+            val searched = CopyOnWriteArrayList<EventQuery>()
+            val index =
+                object : EventIndex by inner {
+                    override suspend fun search(query: EventQuery): List<EventDoc> {
+                        searched += query
+                        return inner.search(query)
+                    }
+
+                    override suspend fun putIfNewer(doc: EventDoc): Boolean = super<EventIndex>.putIfNewer(doc)
+                }
+            val store = NostrSemanticsStore(index, relay = relayUrl)
+            val bob = "b2".repeat(32)
+            val follows = Event(id(), alice, next(), 3, arrayOf(arrayOf("p", bob)), "", "")
+            val post = LongFormContentEvent(id(), alice, next(), arrayOf(arrayOf("d", "post")), "body", "")
+            store.insert(follows)
+            store.insert(post)
+            // Drift: bob holds two kind 0s, as a failed sweep would leave them.
+            val bobOld = Event(id(), bob, next(), 0, emptyArray(), "{}", "")
+            val bobStale = Event(id(), bob, next(), 0, emptyArray(), "{}", "")
+            inner.put(bobOld.toDoc())
+            inner.put(bobStale.toDoc())
+            searched.clear()
+
+            val follows2 = Event(id(), alice, next(), 3, arrayOf(arrayOf("p", bob), arrayOf("p", alice)), "", "")
+            val post2 = LongFormContentEvent(id(), alice, next(), arrayOf(arrayOf("d", "post")), "edited", "")
+            val bobNew = Event(id(), bob, next(), 0, emptyArray(), "{\"name\":\"bob\"}", "")
+            val outcomes = store.batchInsert(padding(20) + listOf(follows2, post2, bobNew))
+            assertTrue(outcomes.all { it is IEventStore.InsertOutcome.Accepted }, "$outcomes")
+
+            val documentReads = searched.filter { it.kinds == listOf(3) || it.kinds == listOf(LongFormContentEvent.KIND) }
+            assertEquals(emptyList(), documentReads, "a kind 3 or 30023 version is never read as a document")
+            assertEquals(listOf(listOf(bob)), searched.filter { it.kinds == listOf(0) }.map { it.authors }, "only the drifted author is read in full")
+            assertEquals(listOf(follows2.id), inner.search(EventQuery(kinds = listOf(3), authors = listOf(alice))).map { it.id })
+            assertEquals(listOf(post2.id), inner.search(EventQuery(kinds = listOf(LongFormContentEvent.KIND), authors = listOf(alice))).map { it.id })
+            assertEquals(listOf(bobNew.id), inner.search(EventQuery(kinds = listOf(0), authors = listOf(bob))).map { it.id }, "both drifted versions swept")
+        }
+
+    /** The kinds stage D reads whole are exactly the ones the trust projection reacts to. */
+    @Test
+    fun `the whole-document kinds are the trust projection's`() {
+        assertEquals(TrustProjection.TRUST_KINDS.toSet(), BulkRecordInsert.WHOLE_DOC_KINDS)
+    }
+
+    /** The bulk path still matches the per-event one with a drifted address and addressables in the batch. */
+    @Test
+    fun `stubbed version reads end where the per-event path does`() {
+        val v1 = article(d = "x", at = 100)
+        assertBulkMatchesSequential(
+            prelude = listOf(v1, article(d = "y", at = 100), Event(id(), alice, 100, 0, emptyArray(), "{}", "")),
+            batch = padding(14) + listOf(article(d = "x", at = 200), article(d = "x", at = 150), Event(id(), alice, 50, 0, emptyArray(), "{}", ""), Event(id(), alice, 300, 0, emptyArray(), "{}", "")),
+        )
+    }
 }

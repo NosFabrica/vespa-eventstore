@@ -183,7 +183,7 @@ class TrustProjection(
      *
      * The reaction used to be per CALL, and calls are not shaped by trust: the
      * bulk path's address-keyed supersession is one `putIfNewer` per event,
-     * its read-then-supersede one `removeDocs` then one `putAll`. Measured on
+     * its read-then-supersede one `putAll` then one `removeDocs`. Measured on
      * one GrapeRank assistant run (20,000 cards by one service, batch 1000,
      * address-keyed), every card paid its own bracket and cell write — 1,000
      * `proj.write` calls and 3,000 marker round trips per batch, the marker
@@ -253,9 +253,11 @@ class TrustProjection(
         // page) thereby holds one page of insurance at a time instead of all of
         // it. Puts never trigger this: a put cannot be undone by a later call
         // in a way that costs a write, while a removal can be refilled by the
-        // winner the NEXT call stores — the read-then-supersede path's
-        // removeDocs-then-putAll — and settling between the two is exactly the
-        // retract-then-rewrite the commit exists to avoid.
+        // winner the NEXT call stores (a kind 5 then a newer card in one mixed
+        // batch), and settling between the two is exactly the
+        // retract-then-rewrite the commit exists to avoid. A supersession puts
+        // its winner FIRST and sweeps the replaced version after, which writes
+        // nothing here: see [removed].
         if (removals.isNotEmpty()) settle(scope)
         rememberNamedBeforeRemoval(scope, removals)
         // A commit insured by SERVICE (a planned batch past DIRT_SUBJECT_CAP)
@@ -329,8 +331,9 @@ class TrustProjection(
         val existing = inner.search(q).filter { it.addressOrNull() == address }
         val incumbent = existing.minWithOrNull(EventDoc.NEWEST_FIRST)
         if (incumbent != null && EventDoc.NEWEST_FIRST.compare(doc, incumbent) >= 0) return false
-        if (existing.isNotEmpty()) inner.removeDocs(existing)
+        // Winner first, as the port's default: a failed put must leave the old version, not neither.
         inner.put(doc)
+        if (existing.isNotEmpty()) inner.removeDocs(existing)
         return true
     }
 
@@ -455,13 +458,28 @@ class TrustProjection(
      * service, so they are dead weight for the orphan sweep — and its services
      * stay named for the rest of the commit's freshness judgement, so the
      * newer version a supersession writes next owes no walk ([freshServicesOf]).
+     *
+     * A SUPERSEDED card's removal retracts nothing. Every supersession stores
+     * its winner before it sweeps the versions the winner replaced (a failed
+     * put must leave the old version, never neither), so by the time the old
+     * card is removed this commit has already stored a DIFFERENT card at its
+     * address — and the cell, a function of the newest version at that address
+     * alone, is the winner's. Recording the removal would make it the
+     * address's last op and retract the cell the winner just wrote. One case
+     * keeps the retraction the old remove-then-put order made (a refill, see
+     * [flush]): a winner whose signer no 10040 maps writes no cell, so the
+     * predecessor's — left by a service that went unnamed since — is retracted.
      */
-    private fun removed(
+    private suspend fun removed(
         scope: CommitScope,
         docs: List<EventDoc>,
     ) {
         if (docs.any { it.kind == TrustProviderListEvent.KIND }) recompute.invalidateProviders()
-        scope.record(docs.filter { it.kind == UserAssertionEvent.KIND }, stored = false)
+        val cards = docs.filter { it.kind == UserAssertionEvent.KIND }
+        val superseded = scope.supersededByStored(cards)
+        if (superseded.isEmpty()) return scope.record(cards, stored = false)
+        val map = recompute.providerMap()
+        scope.record(cards.filter { it.id !in superseded || !map.maps(it.pubkey) }, stored = false)
     }
 
     /**
@@ -584,12 +602,14 @@ class TrustProjection(
      * The services [lists] name that the CURRENT map does not — the ones whose stored cards have no
      * cells yet. Read before the lists are written.
      *
-     * Nor one a list REMOVED earlier in this commit named ([rememberNamedBeforeRemoval]): the bulk
-     * paths supersede a 10040 as `removeDocs(old)` then `putAll(new)`, and the removal drops the map,
-     * so the map read here is rebuilt from an index holding NEITHER version. A re-signed list then
-     * judged every service only it named fresh, and the walk [owingWalks] found owed re-applied the
-     * whole service — ~200k cards for a personalized key — for cells that were all there. The
-     * single-event path never had it: [putIfNewer] judges before its own supersession removes.
+     * Nor one a list REMOVED earlier in this commit named ([rememberNamedBeforeRemoval]): a removal
+     * drops the map, so a list written after one in the same commit (a kind 5 of the old list, then
+     * a new one, in a mixed batch) reads a map rebuilt from an index holding NEITHER version. The
+     * bulk paths superseded a 10040 that way too (`removeDocs(old)` then `putAll(new)`), and a
+     * re-signed list then judged every service only it named fresh, and the walk [owingWalks] found
+     * owed re-applied the whole service — ~200k cards for a personalized key — for cells that were
+     * all there. Every supersession now writes its winner first, so it is judged against the map
+     * that still holds the old list; the memory stays for the removal-first orders.
      */
     private suspend fun freshServicesOf(lists: List<EventDoc>): Set<String> {
         val named = ProviderMap.trustServicesOf(lists)
@@ -870,6 +890,25 @@ class TrustProjection(
         /** Services a 10040 this commit removed named while the map still did — see [freshServicesOf]. */
         private val namedBeforeRemoval = HashSet<String>()
 
+        /**
+         * Per card address, the id this commit last STORED there and has not
+         * removed since. Kept across flushes (a flush drains [ops], and the
+         * removal that follows a winner settles first), and bounded by the
+         * commit's own cards — see [removed].
+         */
+        private val storedIds = HashMap<String, String>()
+
+        /** The ids of [cards] whose address this commit stored a DIFFERENT card at: superseded versions. */
+        fun supersededByStored(cards: List<EventDoc>): Set<String> {
+            if (cards.isEmpty()) return emptySet()
+            return synchronized(lock) {
+                cards.mapNotNullTo(HashSet()) { doc ->
+                    val winner = doc.addressOrNull()?.let(storedIds::get)
+                    doc.id.takeIf { winner != null && winner != doc.id }
+                }
+            }
+        }
+
         fun rememberNamed(services: Set<String>) {
             if (services.isNotEmpty()) synchronized(lock) { namedBeforeRemoval += services }
         }
@@ -890,6 +929,11 @@ class TrustProjection(
             synchronized(lock) {
                 for (doc in cards) {
                     val address = doc.addressOrNull() ?: continue
+                    if (stored) {
+                        storedIds[address] = doc.id
+                    } else if (storedIds[address] == doc.id) {
+                        storedIds.remove(address)
+                    }
                     val prior = ops[address]
                     if (prior?.stored == true) storedCount--
                     if (stored) storedCount++

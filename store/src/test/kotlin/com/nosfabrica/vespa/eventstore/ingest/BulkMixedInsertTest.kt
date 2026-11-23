@@ -37,8 +37,10 @@ import com.vitorpamplona.quartz.nip59Giftwrap.wraps.GiftWrapEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import kotlinx.coroutines.runBlocking
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /**
@@ -263,4 +265,41 @@ class BulkMixedInsertTest {
             assertMixedMatchesSequential(prelude = stored, batch = batch, writers = writers, sweepPage = 4)
         }
     }
+
+    /**
+     * The mixed path's write order: the batch's surviving RECORDS land before
+     * the versions they supersede are removed, so a failed put leaves the old
+     * version stored instead of neither. Its tombstones and vanish requests
+     * still land last, after the erase they stand for (see [BulkMixedInsert.run]).
+     */
+    @Test
+    fun `a failed put in a mixed batch never loses the version it was replacing`() =
+        runBlocking {
+            val inner = InMemoryEventIndex()
+            val failing = AtomicBoolean(false)
+            val index =
+                object : EventIndex by inner {
+                    override suspend fun put(doc: EventDoc) {
+                        check(!(failing.get() && doc.kind == LongFormContentEvent.KIND)) { "put refused" }
+                        inner.put(doc)
+                    }
+
+                    override suspend fun putAll(docs: List<EventDoc>) = docs.forEach { put(it) }
+
+                    override suspend fun putIfNewer(doc: EventDoc): Boolean = super<EventIndex>.putIfNewer(doc)
+                }
+            val store = NostrSemanticsStore(index, relay = relayUrl)
+            val v1 = article(alice, "post")
+            store.insert(v1)
+            val v2 = article(alice, "post")
+            failing.set(true)
+            assertFailsWith<IllegalStateException> {
+                store.batchInsert((1..16).map { note(bob) } + listOf(v2, deletion(bob, ids = listOf("dd".repeat(32)))))
+            }
+            assertEquals(
+                listOf(v1.id),
+                inner.search(EventQuery(kinds = listOf(LongFormContentEvent.KIND), authors = listOf(alice))).map { it.id },
+                "the replaced version must still be stored",
+            )
+        }
 }

@@ -41,5 +41,8 @@ internal class EndpointRotation(
     private val cursor = AtomicInteger()
 
     /** The endpoint for the next request. */
-    fun next(): String = urls[Math.floorMod(cursor.getAndIncrement(), urls.size)]
+    fun next(): String = urls[nextIndex()]
+
+    /** The position in [urls] of the endpoint for the next request, for a caller holding something per endpoint (a parsed url). */
+    fun nextIndex(): Int = Math.floorMod(cursor.getAndIncrement(), urls.size)
 }

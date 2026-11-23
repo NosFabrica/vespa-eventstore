@@ -20,15 +20,19 @@
  */
 package com.nosfabrica.vespa.eventstore.ingest
 
+import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.MockVespaEngine
 import com.nosfabrica.vespa.eventstore.engine.client.RecencyStrategy
 import com.nosfabrica.vespa.eventstore.engine.client.VespaEventIndex
+import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.mapping.toDoc
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -80,6 +84,40 @@ class DeletionsTest {
             val tombstone = DeletionRequestEvent(id(), alice, now - 29 * 86_400L, arrayOf(arrayOf("e", old.id)), "", "")
             index.put(tombstone.toDoc())
             assertTrue(deletions.isDeleted(old), "a same-owner kind 5 newer than the event blocks it")
+        }
+
+    /**
+     * A replaceable or addressable event's guard is TWO probes, by id and by
+     * address, and they are independent: they run together, so the insert path
+     * under the writer lock waits for one round trip, not two. Proven by an index
+     * that answers neither until both have arrived — a sequential guard never
+     * sends the second, and times out.
+     */
+    @Test
+    fun `the id and address probes of a guard run together`() =
+        runBlocking {
+            val bothAsked = CompletableDeferred<Unit>()
+            var asked = 0
+            val inner = InMemoryEventIndex()
+            val rendezvous =
+                object : EventIndex by inner {
+                    override suspend fun search(query: EventQuery): List<EventDoc> {
+                        if (query.kinds == listOf(DeletionRequestEvent.KIND)) {
+                            synchronized(this) { if (++asked == 2) bothAsked.complete(Unit) }
+                            bothAsked.await()
+                        }
+                        return inner.search(query)
+                    }
+                }
+            val guard = Deletions(rendezvous, relay = null, sweepPage = 100)
+            val profile = Event(id(), alice, now, 0, emptyArray(), "{}", "")
+            withTimeout(10_000) { assertFalse(guard.isDeleted(profile)) }
+            assertEquals(2, asked)
+            val tombstone = DeletionRequestEvent(id(), alice, now + 1, arrayOf(arrayOf("a", "0:$alice:")), "", "")
+            inner.put(tombstone.toDoc())
+            asked = 0
+            val again = Deletions(inner, relay = null, sweepPage = 100)
+            assertTrue(again.isDeleted(profile), "an address tombstone still blocks")
         }
 
     /**

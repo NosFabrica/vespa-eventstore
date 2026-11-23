@@ -132,7 +132,8 @@ class VespaCoverageTest {
     @Test
     fun `match-phase degradation is accepted for the limit'd recency shape`() =
         runBlocking {
-            // The client overfetches limit + TIE_SLACK (65 here), so "full
+            // The client overfetches limit + its tie slack (a cold shape's
+            // TIE_SLACK: 65 hits for this limit of 1), so "full
             // degraded page" means the OVERFETCHED page: seed past it, with
             // unique timestamps so no boundary tie demotes the acceptance.
             repeat(70) { i ->

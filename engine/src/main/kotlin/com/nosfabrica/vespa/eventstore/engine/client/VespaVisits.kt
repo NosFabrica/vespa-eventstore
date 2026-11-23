@@ -35,7 +35,6 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.decodeFromString
-import okhttp3.Request
 import java.io.IOException
 import java.net.URLEncoder
 
@@ -259,8 +258,8 @@ internal class VespaVisits(
         withContext(Dispatchers.IO) {
             val call =
                 http.newVisitCall(
-                    Request
-                        .Builder()
+                    http
+                        .request()
                         .url(url)
                         .header("Accept", "application/jsonl")
                         .get()

@@ -118,10 +118,10 @@ class LocalVerdictLockTest {
         whileLockHeld { store, inner ->
             val accepted = IEventStore.InsertOutcome.Accepted
             val expiredOut = IEventStore.InsertOutcome.Rejected(Rejections.EXPIRED)
-            // Below BULK_MIN: the per-event loop.
+            // One event per batch, under BULK_MIN: the per-event loop.
             val small = listOf(ephemeral(), expired(), ephemeral())
-            assertEquals(listOf(accepted, expiredOut, accepted), store.batchInsert(small))
-            // At BULK_MIN: the bulk records path, every event settled in its plan.
+            assertEquals(listOf(accepted, expiredOut, accepted), small.map { store.batchInsert(listOf(it)).single() })
+            // Past BULK_MIN: the bulk records path, every event settled in its plan.
             val bulk = (1..16).map { if (it % 2 == 0) ephemeral() else expired() }
             assertEquals(bulk.map { if (it.kind == 1) expiredOut else accepted }, store.batchInsert(bulk))
             (small + bulk).forEach { assertNull(inner.get(it.id), "nothing in these batches is stored") }

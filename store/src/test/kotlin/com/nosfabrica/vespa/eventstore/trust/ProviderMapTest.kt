@@ -98,6 +98,26 @@ class ProviderMapTest {
         assertEquals(TrustProviders.NO_LENS, p.lensOf(observer))
     }
 
+    /**
+     * A stale extra version of an observer's list — what a supersession whose
+     * sweep failed leaves behind, since the winner is written first — neither
+     * names its services nor decides the lens: the pass reads the newest list.
+     */
+    @Test
+    fun `a stale extra version of a list is ignored by the pass`() =
+        runBlocking {
+            val old = list(observer, "30382:rank" to service2)
+            val new = list(observer, "30382:rank" to service)
+            // Stored in both orders, so the engine's listing order cannot decide it.
+            for (docs in listOf(listOf(old, new), listOf(new, old))) {
+                val idx = InMemoryEventIndex()
+                docs.forEach { idx.put(it) }
+                val p = ProviderMap(idx) { 1_700_000_000L }.get()
+                assertEquals(service, p.lensOf(observer).rank)
+                assertEquals(setOf(service), p.rankServices, "the replaced list names nothing")
+            }
+        }
+
     /** Counts the pass's 10040 queries, and can hold them open so callers pile up behind the first. */
     private class CountingLists(
         private val inner: InMemoryEventIndex = InMemoryEventIndex(),

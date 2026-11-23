@@ -1383,6 +1383,123 @@ query counts for the busy and narrow cases; a ranked count asks for one hit),
 `RecencyStrategyIT`, which checks every strategy against the page computed from
 the corpus itself on a real Vespa, gate and tie group included.
 
+### The tie slack is learned per shape (2026-11-22, revised 2026-11-23)
+
+A recency page overfetched a flat `TIE_SLACK` of 64, sized for wide pages: a
+10-event REQ asked the engine for **74** hits, every one matched, summarized,
+rendered and parsed for a boundary tie a sparse feed rarely holds. The first cut
+(10fbce5) made the slack the page's own width, clamped to 8–64, so that REQ
+asked for 20. That is exact at any width — a boundary second wider than the
+slack is read whole by the `[T,T]` query — but not cheaper at any rate: the
+`[T,T]` query costs ~800 µs of container CPU and a hit ~4.4 µs (below), so one
+avoided query buys ~180 hits of slack, and a busy feed's boundary second is
+wide. On a global kind-1 or kind-7 feed of an aggregating relay (10–50 events/s)
+a page-width slack made the extra query the COMMON case.
+
+So the slack is now learned per read SHAPE (`TieSlackMemory`, keyed like
+`RecencyWindowMemory`): a shape seen first gets the old flat 64; a page whose
+boundary group the slack cut (it paid the `[T,T]` query) puts the shape back at
+64; a page whose boundary second spilled `over` events past its last slot raises
+the slack at once to `2·over + 8`, or narrows it by a quarter of the gap when it
+asked for less, never below 8. Only windowable reads are keyed (a client's feed,
+its speculative attempts and fallbacks); internal probes, walks and id lookups
+keep 64. `VESPA_RECENCY_MEMORY=0` turns it off with the windows (every read 64).
+Exactness is untouched: the slack only decides whether the boundary group comes
+in the first query or by its `[T,T]` read (`VespaEventIndexTest`, "a sparse
+shape narrows its tie slack and a dense boundary widens it back").
+
+**The busy-feed trade, simulated, not measured** (`tie_slack_sim.py`: Poisson
+feeds, one newest-first REQ per second at a random point of the current second,
+cost = 800 µs per extra query + 4.4 µs per hit asked for). Extra-query share and
+µs per REQ:
+
+| ev/s | limit | flat 64 | page width (10fbce5) | learned (hits asked) |
+|---|---|---|---|---|
+| 0.1 | 10 | 0.0% · 326 | 0.0% · 88 | 0.0% · 80 (18) |
+| 1 | 20 | 0.0% · 370 | 0.0% · 176 | 0.0% · 131 (30) |
+| 5 | 10 | 0.0% · 326 | 0.5% · 92 | 0.0% · 116 (26) |
+| 20 | 10 | 0.0% · 326 | 49.6% · 485 | 0.4% · 210 (47) |
+| 20 | 20 | 0.0% · 370 | 8.9% · 247 | 0.3% · 255 (57) |
+| 50 | 10 | 0.1% · 327 | 80.4% · 731 | 2.9% · 322 (68) |
+| 50 | 20 | 0.1% · 371 | 60.1% · 657 | 3.0% · 366 (78) |
+
+Read it as: sparse shapes keep most of the page-width rule's saving (a little
+less — the narrowing takes ~10 reads of a shape within the memory's TTL, and
+stops at 8 rather than at the page width); a 20 ev/s feed costs ~35% less than
+the flat slack; at 50 ev/s the learned slack sits near 64 and costs what the
+flat one did, while still paying the extra query on ~3% of REQs (a quiet second
+narrows it, the next busy one cuts it). The page-width rule lost badly there. An
+independent simulation, anchoring the REQ differently, put the page-width
+rule's extra-query share higher still (54% / 12% at 20 ev/s for limits 10 / 20,
+100% / 94% at 50 ev/s), so the busy-feed loss above is not overstated. None of
+this is a live measurement: real feeds are burstier than Poisson, which favours
+the wider slack, and the table below measured only the sparse case.
+
+Measured through vespa-relay for the PAGE-WIDTH rule (10fbce5), on a 4-core
+sandbox, everything on one box over a ~82k-note corpus that fits in memory
+(Vespa 8.763.13, 8 GB): nostr-bench `req -c 200 --limit 10`, every REQ
+`{"#t":[one of 1,000 tags],"limit":10}` — a SPARSE shape, the case that gains —
+CPU from `/proc` over a 20 s window, variants alternated twice. Microseconds of
+CPU per REQ:
+
+| store | `VESPA_ID_FIRST` | REQ/s | relay | query container | proton |
+|---|---|---|---|---|---|
+| slack 64 | 1 (default) | 1,002 · 972 | 975–1,004 | 1,796–1,812 | 778–807 |
+| slack 64 | 0 | 998 · 1,001 | 978 | 1,559–1,564 | 914–919 |
+| page width | 1 (default) | 1,137 · 1,171 | 826–843 | 1,566–1,595 | 650–669 |
+| page width | 0 | **1,554 · 1,734** | **586–638** | **973–1,073** | **460–509** |
+
+The learned rule, re-run through that bench on 2026-11-23 (the same seed, the
+store at this branch with vespa-relay and quartz at their audit-fix branches,
+against vespa-relay main with the pinned store, alternated twice): **884 · 909
+REQ/s before, 1,050 · 1,056 after**, the query container's CPU per REQ 1,931–2,023
+µs before and 1,648–1,705 after. That is the page-width row's gain, as expected
+for a sparse shape, which narrows within its first reads; the busy-feed half of
+the trade is still the simulation above.
+
+- **The query container dominated.** Replaying the captured queries straight at
+  Vespa (no relay): ~800 µs of container CPU per query whatever its size (the
+  id query at 18 hits 794, the 10-id hydrate 803), plus ~4.4 µs per hit (74
+  hits: 1,040). Two queries per REQ was 1.6 ms of it. `presentation.timing`,
+  CBOR rendering, the profile's timeout and 1 vs 4 h2c sessions moved none of
+  it. Per-query CPU also FALLS with concurrency (1,459 µs at 1 in flight, 786 at
+  32): part of it is thread hand-off, so read it as capacity (~2,700 small
+  queries/s on this container), not as a cost per query.
+- **The page-width slack alone was +15–18%** on that sparse bench, and the
+  answers did not change: 65 REQs, including a 30-note boundary tie under limits
+  3, 10 and 40, returned the same pages on both builds.
+- **ID-first off only pays with the slack narrow**: off at slack 64 reads 74
+  full documents and gains nothing; at the page-width slack the page is one 20-hit
+  query and REQ/s rose 60–75%. That is a corpus held in memory. Id-first exists
+  for the opposite case (the 44M-doc corpus above, where documents were cold
+  reads), and with the slack narrow the trade is now 20 cold reads in one query
+  against 10 plus a round trip. Decide it on a production-sized store with
+  `VESPA_ID_FIRST=0`; nothing here changes its default.
+
+### Small batches take the bulk path (2026-11-23)
+
+`NostrSemanticsStore.batchInsert` sent batches under `BULK_MIN` (16) through the
+per-event loop, on the guess that a small batch was not worth the bulk setup.
+Under the writer lock that loop pays each event's own round trips back to back
+(2 for a note: guards, then the put; ~5 for a replaceable), where the bulk path
+pays ~4 for the whole batch. A relay whose publishers each wait for their OK
+forms exactly those batches: a few events per pass. `BULK_MIN` is now 2, so only
+a single event takes the loop.
+
+Through vespa-relay on the same 4-core sandbox and seeded store as above,
+nostr-bench `event` (each client publishes, waits for its OK, publishes again),
+one publish worker, alternated twice; events per second:
+
+| store | 20 publishers | 100 publishers |
+|---|---|---|
+| main (`BULK_MIN` 16) | 330 · 312 | 2,675 · 2,766 |
+| audit fixes, `BULK_MIN` 16 | 313 · 413 | 2,818 · 3,084 |
+| audit fixes, `BULK_MIN` 2 | **1,169 · 1,186** (16–17 ms mean, 53–123 ms max) | 2,872 · 2,670 |
+
+At 20 publishers the mean OK went from ~60 ms to 16–17 ms. At 100 the batches
+already passed 16, so nothing changed there. `BulkSupersessionIT` covers both
+paths against a real Vespa (a batch of many, and single inserts).
+
 ## Trusted links per search hit — can a page afford them? (`links_probe.py`, 2026-10-22)
 
 The question: search ranks a hit by text × the AUTHOR's trust (`search`'s
