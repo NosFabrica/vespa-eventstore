@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.eventstore.ingest
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.DocRef
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
+import com.nosfabrica.vespa.eventstore.engine.VersionCensus
 import com.nosfabrica.vespa.eventstore.engine.async.QUERY_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
@@ -435,13 +436,13 @@ class BulkRecordInsertTest {
                         return inner.search(query)
                     }
 
-                    // A plain replaceable's versions are read off this grouping (and its count) since they stopped being a document search.
-                    override suspend fun newestVersions(
+                    // A plain replaceable's versions are read off this grouping (winner and count) since they stopped being a document search.
+                    override suspend fun versionCensus(
                         kind: Int,
                         authors: List<String>,
-                    ): Map<String, DocRef> {
+                    ): Map<String, VersionCensus> {
                         rendezvous("versions")
-                        return inner.newestVersions(kind, authors)
+                        return inner.versionCensus(kind, authors)
                     }
 
                     override suspend fun putIfNewer(doc: EventDoc): Boolean = super<EventIndex>.putIfNewer(doc)
@@ -459,7 +460,7 @@ class BulkRecordInsertTest {
 
     /**
      * STAGE D READS NO DOCUMENT FOR A KIND NO REACTION NEEDS WHOLE. A plain
-     * replaceable's versions come off two attribute-only groupings, an
+     * replaceable's versions come off one attribute-only grouping, an
      * addressable's off the id walk — the full-document search pulled a stored
      * kind 3 (50-500 KB of tags) under the writer lock to read three fields.
      * An author holding two versions (a sweep that failed) is still read in
@@ -577,5 +578,49 @@ class BulkRecordInsertTest {
             bulk.commit(plan)
 
             assertTrue(peak.get() <= QUERY_FANOUT, "at most QUERY_FANOUT ($QUERY_FANOUT) engine reads in flight per commit, saw ${peak.get()}")
+        }
+
+    /**
+     * A plain replaceable's stored versions are read off ONE grouping per author chunk (the
+     * version census: winner and count), not a newest-version grouping beside a count grouping
+     * — two queries, two snapshots a write could land between. An author holding a drifted
+     * second version is still read whole and swept.
+     */
+    @Test
+    fun `a replaceable's versions are read off one census grouping`() =
+        runBlocking {
+            val inner = InMemoryEventIndex()
+            val census = AtomicInteger()
+            val pairs = AtomicInteger()
+            val index =
+                object : EventIndex by inner {
+                    override suspend fun versionCensus(
+                        kind: Int,
+                        authors: List<String>,
+                    ) = inner.versionCensus(kind, authors).also { census.incrementAndGet() }
+
+                    override suspend fun countByAuthor(query: EventQuery) = inner.countByAuthor(query).also { pairs.incrementAndGet() }
+
+                    override suspend fun newestVersions(
+                        kind: Int,
+                        authors: List<String>,
+                    ) = inner.newestVersions(kind, authors).also { pairs.incrementAndGet() }
+
+                    override suspend fun putIfNewer(doc: EventDoc): Boolean = super<EventIndex>.putIfNewer(doc)
+                }
+            val store = NostrSemanticsStore(index, relay = relayUrl)
+            val authors = (1..5).map { it.toString(16).padStart(64, 'd') }
+            store.batchInsert(authors.map { Event(id(), it, 100, 0, emptyArray(), "{}", "") })
+            // Drift: a second stored version beside the first author's.
+            inner.put(Event(id(), authors[0], 90, 0, emptyArray(), "{}", "").toDoc())
+            census.set(0)
+            pairs.set(0)
+            val newer = authors.map { Event(id(), it, 200, 0, emptyArray(), "{}", "") }
+
+            assertTrue(store.batchInsert(newer).all { it == IEventStore.InsertOutcome.Accepted })
+
+            assertEquals(1, census.get(), "one census grouping for the chunk")
+            assertEquals(0, pairs.get(), "and no grouping pair")
+            assertEquals(newer.map { it.id }.toSet(), inner.search(EventQuery(kinds = listOf(0), authors = authors)).map { it.id }.toSet(), "every version older than a winner swept, the drifted one included")
         }
 }

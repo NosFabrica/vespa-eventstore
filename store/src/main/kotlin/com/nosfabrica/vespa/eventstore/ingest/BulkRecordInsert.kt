@@ -430,12 +430,12 @@ internal class BulkRecordInsert(
      * WITHOUT THE DOCUMENTS, except where a reaction needs them. Supersession
      * needs a version's id, created_at and d alone, and a full-document read of
      * a stored kind 3 is 50-500 KB of tags, read under the writer lock to be
-     * thrown away. So a plain replaceable kind is answered by two attribute-only
-     * groupings side by side — [EventIndex.newestVersions] and
-     * [EventIndex.countByAuthor] — and an addressable one by the attribute-only
+     * thrown away. So a plain replaceable kind is answered by ONE attribute-only
+     * grouping — [EventIndex.versionCensus], each author's winner and version
+     * count — and an addressable one by the attribute-only
      * id walk ([EventIndex.visitIds] with its d tag); their versions come back as
      * STUBS ([versionStub]: id, author, kind, created_at, d), which stage D only
-     * compares and hands to `removeDocs`. An author the groupings show holding
+     * compares and hands to `removeDocs`. An author the census shows holding
      * MORE than one version (a sweep that failed, see stage E) is read in full,
      * so the drift repair still sweeps every one. [WHOLE_DOC_KINDS] — the trust
      * projection's, whose removal reaction reads the replaced card or list —

@@ -789,7 +789,10 @@ class MockVespaEngine(
         // Both scan the FULL match set, so ignore the hit-limiting `limit 0`.
         val isCount = yql.contains("all(output(count()))")
         val isAuthorHistogram = yql.contains("group(pubkey)") && yql.contains("each(output(count()))")
-        val grouped = isCount || isAuthorHistogram
+        // The newest-version groupings (EventYql.buildNewestVersions / buildVersionCensus):
+        // author -> its newest second -> every id at it, each author with its version count.
+        val isNewestVersions = yql.contains("group(pubkey)") && yql.contains("group(created_at) max(1)")
+        val grouped = isCount || isAuthorHistogram || isNewestVersions
         val query = MockYql.parse(yql.substringBefore("|").trim(), params).let { if (grouped) it.copy(limit = null) else it }
         val gates = belowFloorAuthors.isNotEmpty() && params["ranking"] in GATING_PROFILES && "ranking.features.query(min_rank)" in params
         // The limit cut must be applied AFTER any tie scrambling: real Vespa's
@@ -841,6 +844,10 @@ class MockVespaEngine(
             }
         val children =
             when {
+                isNewestVersions -> {
+                    newestVersionChildren(matches)
+                }
+
                 isAuthorHistogram -> {
                     histogramChildren("pubkey", matches.groupingBy { it.pubkey }.eachCount().map { (k, v) -> JsonPrimitive(k) to v })
                 }
@@ -957,6 +964,70 @@ class MockVespaEngine(
                 },
             ),
         )
+
+    /** The nested answer real Vespa gives the newest-version groupings, built from [matches]. */
+    private fun newestVersionChildren(matches: List<EventDoc>): JsonArray {
+        fun grouplist(
+            label: String,
+            groups: List<JsonObject>,
+        ) = buildJsonObject {
+            put("id", JsonPrimitive("grouplist:$label"))
+            put("label", JsonPrimitive(label))
+            put("children", JsonArray(groups))
+        }
+        val authors =
+            matches.groupBy { it.pubkey }.map { (author, versions) ->
+                val newest = versions.maxOf { it.createdAt }
+                val ids = versions.filter { it.createdAt == newest }.map { it.id }
+                buildJsonObject {
+                    put("id", JsonPrimitive("group:string:$author"))
+                    put("value", JsonPrimitive(author))
+                    put("fields", buildJsonObject { put("count()", JsonPrimitive(versions.size)) })
+                    put(
+                        "children",
+                        JsonArray(
+                            listOf(
+                                grouplist(
+                                    "created_at",
+                                    listOf(
+                                        buildJsonObject {
+                                            put("id", JsonPrimitive("group:long:$newest"))
+                                            put("value", JsonPrimitive(newest.toString()))
+                                            put("fields", buildJsonObject { put("max(created_at)", JsonPrimitive(newest)) })
+                                            put(
+                                                "children",
+                                                JsonArray(
+                                                    listOf(
+                                                        grouplist(
+                                                            "id",
+                                                            ids.map { id ->
+                                                                buildJsonObject {
+                                                                    put("id", JsonPrimitive("group:string:$id"))
+                                                                    put("value", JsonPrimitive(id))
+                                                                    put("fields", buildJsonObject { put("count()", JsonPrimitive(1)) })
+                                                                }
+                                                            },
+                                                        ),
+                                                    ),
+                                                ),
+                                            )
+                                        },
+                                    ),
+                                ),
+                            ),
+                        ),
+                    )
+                }
+            }
+        return JsonArray(
+            listOf(
+                buildJsonObject {
+                    put("id", JsonPrimitive("group:root:0"))
+                    put("children", JsonArray(listOf(grouplist("pubkey", authors))))
+                },
+            ),
+        )
+    }
 
     /**
      * `all(group([field]) each(output(count())))`: the group:root wraps a

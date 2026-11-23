@@ -1841,6 +1841,37 @@ class VespaEventIndexTest {
         }
 
     /**
+     * THE VERSION CENSUS IS ONE GROUPING: each author's winner (newest second, lowest id) and
+     * how many versions it holds, as the in-memory reference reduces them — one version, a
+     * drifted pair, a tie at the newest second, and an author with nothing stored.
+     */
+    @Test
+    fun `the version census answers winner and count in one grouping`() =
+        runBlocking {
+            val one = "e1".repeat(32)
+            val drifted = "e2".repeat(32)
+            val tied = "e3".repeat(32)
+            val none = "e4".repeat(32)
+            seed(
+                doc(kind = 0, pubkey = one, at = 100),
+                doc(kind = 0, pubkey = drifted, at = 100),
+                doc(kind = 0, pubkey = drifted, at = 200),
+                doc(kind = 0, pubkey = tied, at = 300),
+                doc(kind = 0, pubkey = tied, at = 300),
+                doc(kind = 0, pubkey = tied, at = 50),
+            )
+            val authors = listOf(one, drifted, tied, none)
+            val before = mock.searchRequests.size
+
+            val census = index.versionCensus(0, authors)
+
+            assertEquals(1, mock.searchRequests.size - before, "one grouping for the chunk")
+            assertEquals(reference.versionCensus(0, authors), census)
+            assertEquals(listOf(1, 2, 3), listOf(one, drifted, tied).map { census.getValue(it).versions })
+            assertEquals(reference.newestVersions(0, authors), index.newestVersions(0, authors), "and the newest-version grouping agrees with it")
+        }
+
+    /**
      * AN ADDRESS-KEYED FALLBACK SUPERSESSION KEEPS ITS WINNER. A doc whose id
      * cannot go into the engine's test-and-set condition (not 64 hex) takes
      * the port's read-then-supersede instead, and that put the winner at the

@@ -32,6 +32,7 @@ import com.nosfabrica.vespa.eventstore.engine.Linker
 import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.ScoredHit
 import com.nosfabrica.vespa.eventstore.engine.ServedDegraded
+import com.nosfabrica.vespa.eventstore.engine.VersionCensus
 import com.nosfabrica.vespa.eventstore.engine.WriterLockHeld
 import com.nosfabrica.vespa.eventstore.engine.async.QUERY_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
@@ -2416,6 +2417,25 @@ class VespaEventIndex(
         for (chunk in authors.distinct().chunked(VERSION_AUTHOR_CHUNK)) {
             val vq = EventYql.buildNewestVersions(kind, chunk) ?: continue
             queryRoot(vq, hits = 0)?.let { out.putAll(GroupingResults.newestPerAuthor(it)) }
+        }
+        return out
+    }
+
+    /**
+     * [EventIndex.versionCensus] as one attribute-only grouping per
+     * [VERSION_AUTHOR_CHUNK] authors ([EventYql.buildVersionCensus]): the
+     * [newestVersions] grouping with each author's count beside it.
+     * Coverage-checked like every grouping ([queryRoot]).
+     */
+    override suspend fun versionCensus(
+        kind: Int,
+        authors: List<String>,
+    ): Map<String, VersionCensus> {
+        requirePlainReplaceable(kind)
+        val out = HashMap<String, VersionCensus>()
+        for (chunk in authors.distinct().chunked(VERSION_AUTHOR_CHUNK)) {
+            val vq = EventYql.buildVersionCensus(kind, chunk) ?: continue
+            queryRoot(vq, hits = 0)?.let { out.putAll(GroupingResults.versionCensus(it)) }
         }
         return out
     }

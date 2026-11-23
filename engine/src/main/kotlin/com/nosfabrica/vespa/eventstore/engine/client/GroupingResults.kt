@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.eventstore.engine.client
 
 import com.nosfabrica.vespa.eventstore.engine.DocRef
+import com.nosfabrica.vespa.eventstore.engine.VersionCensus
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -105,17 +106,43 @@ internal object GroupingResults {
         val out = LinkedHashMap<String, DocRef>()
         for (authorGroup in groupsUnder(root, "pubkey")) {
             val author = (authorGroup["value"] as? JsonPrimitive)?.content ?: continue
-            val newest =
-                groupsUnder(authorGroup, "created_at")
-                    .mapNotNull { g -> (g["value"] as? JsonPrimitive)?.content?.toLongOrNull()?.let { it to g } }
-                    .maxByOrNull { it.first } ?: continue
-            val id =
-                groupsUnder(newest.second, "id")
-                    .mapNotNull { (it["value"] as? JsonPrimitive)?.content }
-                    .minOrNull() ?: continue
-            out[author] = DocRef(id, newest.first)
+            out[author] = newestIn(authorGroup) ?: continue
         }
         return out
+    }
+
+    /**
+     * [EventYql.buildVersionCensus]' shape: [newestPerAuthor]'s, with each
+     * author group's `count()` — author -> (its winner, how many versions it
+     * holds). An author whose count or winner is unreadable is absent, and the
+     * caller reads that author in full.
+     */
+    fun versionCensus(root: JsonObject): Map<String, VersionCensus> {
+        val out = LinkedHashMap<String, VersionCensus>()
+        for (authorGroup in groupsUnder(root, "pubkey")) {
+            val author = (authorGroup["value"] as? JsonPrimitive)?.content ?: continue
+            val count =
+                authorGroup["fields"]
+                    ?.jsonObject
+                    ?.get("count()")
+                    ?.jsonPrimitive
+                    ?.intOrNull ?: continue
+            out[author] = VersionCensus(newestIn(authorGroup) ?: continue, count)
+        }
+        return out
+    }
+
+    /** The winning (id, created_at) under one author group: the newest second, its lowest id. */
+    private fun newestIn(authorGroup: JsonObject): DocRef? {
+        val newest =
+            groupsUnder(authorGroup, "created_at")
+                .mapNotNull { g -> (g["value"] as? JsonPrimitive)?.content?.toLongOrNull()?.let { it to g } }
+                .maxByOrNull { it.first } ?: return null
+        val id =
+            groupsUnder(newest.second, "id")
+                .mapNotNull { (it["value"] as? JsonPrimitive)?.content }
+                .minOrNull() ?: return null
+        return DocRef(id, newest.first)
     }
 
     /** The groups of the first grouplist labelled [label] at or below [node]'s children. */

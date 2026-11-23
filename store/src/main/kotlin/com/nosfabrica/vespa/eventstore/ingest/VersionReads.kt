@@ -24,8 +24,6 @@ import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.versionStub
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 
@@ -45,37 +43,31 @@ internal class VersionReads(
     private val index: EventIndex,
 ) {
     /**
-     * Every stored version of [kind] for [authors], plain replaceable: the
-     * winner per author off one grouping, how many versions each holds off
-     * another, run together. An author holding exactly one is answered by its
-     * winner's stub; any other answer — drift (two or more), or two groupings
-     * that disagree (another process wrote between them) — reads that author's
-     * versions in full, as before.
+     * Every stored version of [kind] for [authors], plain replaceable, off ONE
+     * grouping ([EventIndex.versionCensus]): per author, its winner and how
+     * many versions it holds. An author holding exactly one is answered by its
+     * winner's stub; one holding more (drift: a sweep that failed) is read in
+     * full, so the drift repair still sweeps
+     * every version. It used to be two groupings side by side (newest versions,
+     * count by author): two queries per chunk, two snapshots a write could land
+     * between.
      */
     suspend fun replaceable(
         kind: Int,
         authors: List<String>,
         /** The caller's engine-query bound, one permit per query; see [mapGated]. */
         gate: Semaphore? = null,
-    ): List<EventDoc> =
-        coroutineScope {
-            val counts = async { gated(gate) { index.countByAuthor(EventQuery(kinds = listOf(kind), authors = authors)) } }
-            val newest = gated(gate) { index.newestVersions(kind, authors) }
-            val held = counts.await()
-            val out = ArrayList<EventDoc>()
-            val unsure = ArrayList<String>()
-            for (author in authors) {
-                val n = held[author] ?: 0
-                val winner = newest[author]
-                when {
-                    n == 0 && winner == null -> Unit
-                    n == 1 && winner != null -> out += stub(kind, author).versionStub(winner)
-                    else -> unsure += author
-                }
-            }
-            if (unsure.isNotEmpty()) out += gated(gate) { index.search(EventQuery(kinds = listOf(kind), authors = unsure)) }
-            out
+    ): List<EventDoc> {
+        val census = gated(gate) { index.versionCensus(kind, authors) }
+        val out = ArrayList<EventDoc>()
+        val unsure = ArrayList<String>()
+        for (author in authors) {
+            val held = census[author] ?: continue
+            if (held.versions == 1) out += stub(kind, author).versionStub(held.newest) else unsure += author
         }
+        if (unsure.isNotEmpty()) out += gated(gate) { index.search(EventQuery(kinds = listOf(kind), authors = unsure)) }
+        return out
+    }
 
     /** Every stored version [q] recalls for one (kind, author), addressable: the id walk with each version's FIRST d tag, as stubs. */
     suspend fun addressable(

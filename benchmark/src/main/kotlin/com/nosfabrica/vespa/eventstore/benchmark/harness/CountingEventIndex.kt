@@ -27,6 +27,7 @@ import com.nosfabrica.vespa.eventstore.engine.LinkScore
 import com.nosfabrica.vespa.eventstore.engine.LinkTarget
 import com.nosfabrica.vespa.eventstore.engine.LinkWeights
 import com.nosfabrica.vespa.eventstore.engine.Ranked
+import com.nosfabrica.vespa.eventstore.engine.VersionCensus
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
@@ -98,6 +99,14 @@ class CountingEventIndex(
     ): Map<String, DocRef> {
         searches.incrementAndGet()
         return inner.newestVersions(kind, authors)
+    }
+
+    override suspend fun versionCensus(
+        kind: Int,
+        authors: List<String>,
+    ): Map<String, VersionCensus> {
+        searches.incrementAndGet()
+        return inner.versionCensus(kind, authors)
     }
 
     override suspend fun visitDocsPage(

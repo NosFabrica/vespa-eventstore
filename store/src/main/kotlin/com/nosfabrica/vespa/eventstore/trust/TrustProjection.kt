@@ -28,6 +28,7 @@ import com.nosfabrica.vespa.eventstore.engine.LinkTarget
 import com.nosfabrica.vespa.eventstore.engine.LinkWeights
 import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
+import com.nosfabrica.vespa.eventstore.engine.VersionCensus
 import com.nosfabrica.vespa.eventstore.engine.async.QUERY_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.async.retryingSweep
@@ -162,6 +163,12 @@ class TrustProjection(
         kind: Int,
         authors: List<String>,
     ): Map<String, DocRef> = inner.newestVersions(kind, authors)
+
+    // A read, as [newestVersions]: forwarded, or the default answers with full documents.
+    override suspend fun versionCensus(
+        kind: Int,
+        authors: List<String>,
+    ): Map<String, VersionCensus> = inner.versionCensus(kind, authors)
 
     override fun close() {
         inner.close()

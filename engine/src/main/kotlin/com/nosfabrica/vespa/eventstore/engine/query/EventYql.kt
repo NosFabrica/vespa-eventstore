@@ -745,6 +745,25 @@ object EventYql {
     }
 
     /**
+     * [buildNewestVersions] and each author's version COUNT in the same
+     * grouping — `EventIndex.versionCensus`: one round trip, and one snapshot,
+     * where the newest-version and count-by-author groupings were two queries
+     * that a write landing between them could set at odds. `output(count())`
+     * on the author group counts every version that author holds; the nested
+     * groups are [buildNewestVersions]' own.
+     */
+    fun buildVersionCensus(
+        kind: Int,
+        authors: List<String>,
+    ): VespaQuery? {
+        if (authors.isEmpty()) return null
+        return grouping(
+            EventQuery(kinds = listOf(kind), authors = authors),
+            "all(group(pubkey) each(output(count()) all(group(created_at) max(1) order(-max(created_at)) each(all(group(id) each(output(count())))))))",
+        )
+    }
+
+    /**
      * The PEOPLE half of [EventIndex.scoreLinks]: the documents [linkers] would
      * serve that carry any of [keys] in `tag_index`, grouped key -> author ->
      * kind, each kind group carrying its count and `sum(relevance())` — under the
