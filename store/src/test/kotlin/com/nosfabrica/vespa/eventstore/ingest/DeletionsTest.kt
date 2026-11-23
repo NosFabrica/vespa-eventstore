@@ -31,11 +31,13 @@ import com.nosfabrica.vespa.eventstore.mapping.toDoc
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -118,6 +120,42 @@ class DeletionsTest {
             asked = 0
             val again = Deletions(inner, relay = null, sweepPage = 100)
             assertTrue(again.isDeleted(profile), "an address tombstone still blocks")
+        }
+
+    /**
+     * The id probe's TRUE is the verdict whatever the address probe does: a
+     * failing address probe used to cancel the id probe's scope and fail the
+     * insert with it. When the id probe says false, the address probe decides,
+     * and its failure is the insert's.
+     */
+    @Test
+    fun `a failed address probe does not undo the id probe's verdict`() =
+        runBlocking {
+            val inner = InMemoryEventIndex()
+            val failingAddressProbe =
+                object : EventIndex by inner {
+                    override suspend fun search(query: EventQuery): List<EventDoc> {
+                        check(!(query.kinds == listOf(DeletionRequestEvent.KIND) && "a" in query.tags)) { "address probe refused" }
+                        // The id probe answers after the address probe has failed.
+                        if (query.kinds == listOf(DeletionRequestEvent.KIND)) delay(50)
+                        return inner.search(query)
+                    }
+
+                    override suspend fun count(query: EventQuery): Int {
+                        check(!(query.kinds == listOf(DeletionRequestEvent.KIND) && "a" in query.tags)) { "address probe refused" }
+                        if (query.kinds == listOf(DeletionRequestEvent.KIND)) delay(50)
+                        return inner.count(query)
+                    }
+                }
+            val profile = Event(id(), alice, now, 0, emptyArray(), "{}", "")
+            inner.put(DeletionRequestEvent(id(), alice, now + 1, arrayOf(arrayOf("e", profile.id)), "", "").toDoc())
+            val guard = Deletions(failingAddressProbe, relay = null, sweepPage = 100)
+
+            assertTrue(guard.isDeleted(profile), "the id tombstone blocks it")
+
+            val other = Event(id(), alice, now, 0, emptyArray(), "{\"v\":2}", "")
+            assertFailsWith<IllegalStateException> { guard.isDeleted(other) }
+            Unit
         }
 
     /**

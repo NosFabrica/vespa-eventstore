@@ -92,13 +92,19 @@ internal class Deletions(
         // this runs under the writer lock: send them together, so the insert
         // waits one round trip, not two. Either one answering true blocks it,
         // the same verdict the sequential pair gave.
+        //
+        // The address probe's FAILURE is held as a value, not thrown into the
+        // scope: thrown, it cancelled the id probe and failed the insert even
+        // when the id probe had already answered true — a verdict that needs no
+        // second answer. It is rethrown only when the id probe says false and
+        // the address probe is the one that decides.
         return coroutineScope {
-            val byAddress = async { deletionExists("a", address) }
+            val byAddress = async { runCatching { deletionExists("a", address) } }
             if (deletionExists("e", event.id)) {
                 byAddress.cancel()
                 true
             } else {
-                byAddress.await()
+                byAddress.await().getOrThrow()
             }
         }
     }
