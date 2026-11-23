@@ -468,7 +468,12 @@ data class DocRef(
 ) {
     companion object {
         /** NIP-01's serving order, newest first and ties to the LOWEST id — [EventDoc.NEWEST_FIRST] on the projection. */
-        val NEWEST_FIRST: Comparator<DocRef> = compareByDescending(DocRef::createdAt).thenBy(DocRef::id)
+        val NEWEST_FIRST: Comparator<DocRef> =
+            // Primitive compares: a selector comparator boxes a Long per side per compare.
+            Comparator { a, b ->
+                val byTime = b.createdAt.compareTo(a.createdAt)
+                if (byTime != 0) byTime else a.id.compareTo(b.id)
+            }
     }
 }
 

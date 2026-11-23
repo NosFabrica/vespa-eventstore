@@ -61,6 +61,8 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody
 import okio.BufferedSink
@@ -225,7 +227,18 @@ class VespaEventIndex(
     /** The endpoint for one document-API request (get, visit, batch feed) — round-robin across [feedEndpoints]. */
     private fun documentEndpoint(): String = documentApi.next()
 
-    /** The endpoint for one `/search/` request — round-robin across [queryEndpoints]. */
+    /**
+     * Each query endpoint's `/search/` url, PARSED ONCE. Built as a string and
+     * parsed by OkHttp on every query, the url cost a host normalization
+     * (`idnToAscii`) per call: 1.8% of a relay's CPU in a JFR profile. Lazy, so
+     * a bad url still fails at the first query, as it did.
+     */
+    private val searchUrls: List<HttpUrl> by lazy { searchApi.urls.map { "$it/search/".toHttpUrl() } }
+
+    /** The `/search/` url for one query — round-robin across [queryEndpoints]. */
+    private fun searchUrl(): HttpUrl = searchUrls[searchApi.nextIndex()]
+
+    /** The endpoint for one other query-container request (the headroom probe) — the same rotation. */
     private fun queryEndpoint(): String = searchApi.next()
 
     private val feed = VespaFeed(documentApi.urls, eager = eagerFeed, tuning = tuning)
@@ -2143,7 +2156,7 @@ class VespaEventIndex(
                         null
                     }
                 DocRef(f.id, f.createdAt, dTag)
-            }.sortedWith(compareByDescending<DocRef> { it.createdAt }.thenBy { it.id })
+            }.sortedWith(DOCREF_NEWEST_FIRST)
     }
 
     /**
@@ -2514,7 +2527,7 @@ class VespaEventIndex(
         // A busy engine sheds load transiently (504 under heavy concurrent
         // summary fills); one failed page must not kill a multi-hour sync, so
         // 5xx gets brief retries inside VespaHttp.
-        val resp = http.post("${queryEndpoint()}/search/", body)
+        val resp = http.post(searchUrl(), body)
         require(resp.statusCode() < 400) { "vespa search ${resp.statusCode()}: ${resp.body().take(300)}" }
         return resp
     }

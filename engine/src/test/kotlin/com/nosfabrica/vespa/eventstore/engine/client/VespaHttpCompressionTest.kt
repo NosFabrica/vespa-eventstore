@@ -22,9 +22,15 @@ package com.nosfabrica.vespa.eventstore.engine.client
 
 import com.nosfabrica.vespa.eventstore.engine.MockVespaEngine
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.RequestBody.Companion.toRequestBody
+import okio.Buffer
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 /**
  * Every read asks Vespa for an UNCOMPRESSED answer.
@@ -61,4 +67,41 @@ class VespaHttpCompressionTest {
 
             assertEquals(listOf("identity", "identity"), mock.acceptEncodings.map { it.second })
         }
+
+    /**
+     * The header is set where each request is BUILT, no longer by an interceptor that rebuilt
+     * every request: the search url parsed once, and the streamed visit, whose request its
+     * caller builds, ask for `identity` all the same.
+     */
+    @Test
+    fun `a pre-parsed search url and a streamed visit ask for an uncompressed answer`(): Unit =
+        runBlocking {
+            http.post("${mock.url}/search/".toHttpUrl(), """{"yql":"select * from event where true","hits":1}""".toRequestBody())
+            http
+                .newVisitCall(
+                    http
+                        .request()
+                        .url("${mock.url}/document/v1/event/event/docid?wantedDocumentCount=1")
+                        .get()
+                        .build(),
+                ).execute()
+                .close()
+
+            assertEquals(listOf("identity", "identity"), mock.acceptEncodings.map { it.second })
+        }
+
+    /** Both decode paths — the string lexer under the threshold, the stream above it — read the same answer. */
+    @Test
+    fun `a small and a large answer decode alike`() {
+        val json = Json { ignoreUnknownKeys = true }
+
+        fun answer(hits: Int) = """{"root":{"children":[${(1..hits).joinToString(",") { """{"fields":{"id":"$it","note":"caf\u00e9 \ud83d\ude00 ${"x".repeat(200)}"}}""" }}]}}"""
+        for (hits in listOf(3, 3_000)) {
+            val text = answer(hits)
+            val resp = VespaHttp.HttpResp(200, Buffer().writeUtf8(text))
+            assertTrue((text.length > VespaHttp.STRING_DECODE_MAX_BYTES) == (hits > 3), "the two sizes straddle the threshold")
+            assertEquals(json.parseToJsonElement(text), resp.decode(json, JsonElement.serializer()), "$hits hits")
+            assertEquals(text, resp.body(), "the text stays readable after a decode")
+        }
+    }
 }
