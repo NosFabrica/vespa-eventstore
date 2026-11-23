@@ -102,8 +102,21 @@ internal class BulkMixedInsert(
         // remembered per address, as on the record path ([OwedSweeps]): the
         // re-offered winners come back duplicates and would never sweep.
         val touched = (records + removed).mapNotNullTo(LinkedHashSet()) { OwedSweeps.addressOf(it) }
+        // Newest ADMITTED vanish per owner — see the erase below.
+        val vanishes =
+            outcomes
+                .zip(events)
+                .mapNotNull { (outcome, e) -> (e as? RequestToVanishEvent)?.takeIf { outcome is IEventStore.InsertOutcome.Accepted && it.shouldVanishFrom(relay) } }
+                .groupBy { it.pubKey }
+                .values
+                .map { owned -> owned.maxBy { it.createdAt } }
+        // NOTHING TO ERASE BETWEEN THEM — no removal, no vanish (a kind 5 naming
+        // nothing stored, the common outbox case): the guards' "after the erase"
+        // has nothing to come after, so records and guards go in ONE pipelined
+        // write instead of two round trips.
+        val together = removed.isEmpty() && vanishes.isEmpty()
         try {
-            writeRecords(records, removed)
+            writeRecords(if (together) records + guardsAdded else records, removed)
         } catch (t: Throwable) {
             owed.owe(touched)
             throw t
@@ -127,12 +140,8 @@ internal class BulkMixedInsert(
         // unlimited hits cannot cut it short: the preload query this replaced
         // came back truncated there, and the vanish was reported Accepted over
         // the rest.
-        outcomes
-            .zip(events)
-            .mapNotNull { (outcome, e) -> (e as? RequestToVanishEvent)?.takeIf { outcome is IEventStore.InsertOutcome.Accepted && it.shouldVanishFrom(relay) } }
-            .groupBy { it.pubKey }
-            .forEach { (_, vanishes) -> erase.applyVanish(vanishes.maxBy { it.createdAt }) }
-        if (guardsAdded.isNotEmpty()) index.putAll(guardsAdded)
+        vanishes.forEach { erase.applyVanish(it) }
+        if (guardsAdded.isNotEmpty() && !together) index.putAll(guardsAdded)
         guardsAdded.forEach {
             when (it.kind) {
                 DeletionRequestEvent.KIND -> guards.noteDeletionStored(it.pubkey)

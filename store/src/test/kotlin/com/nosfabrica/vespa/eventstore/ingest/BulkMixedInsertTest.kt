@@ -362,4 +362,38 @@ class BulkMixedInsertTest {
             assertEquals(emptyList(), documentReads, "a stored version is read as a stub (id, created_at, d), never as a document")
         }
     }
+
+    /**
+     * A mixed batch whose kind 5 removes nothing and carries no vanish writes
+     * its records and its tombstone in ONE putAll: the guards land after the
+     * erase they stand for, and with no erase there is nothing to wait for.
+     * With one, they still land apart, after it.
+     */
+    @Test
+    fun `a mixed batch with nothing to erase writes records and guards together`() =
+        runBlocking {
+            val inner = InMemoryEventIndex()
+            val puts = CopyOnWriteArrayList<List<String>>()
+            val index =
+                object : EventIndex by inner {
+                    override suspend fun putAll(docs: List<EventDoc>) {
+                        puts += docs.map { it.id }
+                        inner.putAll(docs)
+                    }
+
+                    override suspend fun putIfNewer(doc: EventDoc): Boolean = super<EventIndex>.putIfNewer(doc)
+                }
+            val store = NostrSemanticsStore(index, relay = relayUrl)
+            val target = note(bob)
+            store.insert(target)
+            puts.clear()
+
+            store.batchInsert((1..5).map { note(bob) } + deletion(bob, ids = listOf("dd".repeat(32))))
+            assertEquals(1, puts.size, "one write for records and tombstone: $puts")
+
+            puts.clear()
+            store.batchInsert((1..5).map { note(bob) } + deletion(bob, ids = listOf(target.id)))
+            assertEquals(2, puts.size, "a tombstone that erases lands after the erase: $puts")
+            assertEquals(null, inner.get(target.id))
+        }
 }
