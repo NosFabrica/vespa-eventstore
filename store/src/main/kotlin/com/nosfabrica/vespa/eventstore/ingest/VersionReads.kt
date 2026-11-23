@@ -26,6 +26,8 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.versionStub
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
 /**
  * THE STORED VERSIONS OF AN ADDRESS, WITHOUT THEIR DOCUMENTS. Supersession
@@ -53,10 +55,12 @@ internal class VersionReads(
     suspend fun replaceable(
         kind: Int,
         authors: List<String>,
+        /** The caller's engine-query bound, one permit per query; see [mapGated]. */
+        gate: Semaphore? = null,
     ): List<EventDoc> =
         coroutineScope {
-            val counts = async { index.countByAuthor(EventQuery(kinds = listOf(kind), authors = authors)) }
-            val newest = index.newestVersions(kind, authors)
+            val counts = async { gated(gate) { index.countByAuthor(EventQuery(kinds = listOf(kind), authors = authors)) } }
+            val newest = gated(gate) { index.newestVersions(kind, authors) }
             val held = counts.await()
             val out = ArrayList<EventDoc>()
             val unsure = ArrayList<String>()
@@ -69,7 +73,7 @@ internal class VersionReads(
                     else -> unsure += author
                 }
             }
-            if (unsure.isNotEmpty()) out += index.search(EventQuery(kinds = listOf(kind), authors = unsure))
+            if (unsure.isNotEmpty()) out += gated(gate) { index.search(EventQuery(kinds = listOf(kind), authors = unsure)) }
             out
         }
 
@@ -78,15 +82,24 @@ internal class VersionReads(
         q: EventQuery,
         kind: Int,
         author: String,
+        /** The caller's engine-query bound: one permit for the walk, whose pages run one after another. */
+        gate: Semaphore? = null,
     ): List<EventDoc> {
         val template = stub(kind, author)
         val out = ArrayList<EventDoc>()
-        index.visitIds(q, withDTag = true) { page ->
-            page.mapTo(out) { template.versionStub(it) }
-            true
+        gated(gate) {
+            index.visitIds(q, withDTag = true) { page ->
+                page.mapTo(out) { template.versionStub(it) }
+                true
+            }
         }
         return out
     }
+
+    private suspend inline fun <T> gated(
+        gate: Semaphore?,
+        crossinline body: suspend () -> T,
+    ): T = if (gate == null) body() else gate.withPermit { body() }
 
     /** The (kind, author) a [versionStub] is built against: no id, no time, no tags of its own. */
     private fun stub(

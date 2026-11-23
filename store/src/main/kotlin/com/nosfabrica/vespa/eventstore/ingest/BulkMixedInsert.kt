@@ -22,7 +22,6 @@ package com.nosfabrica.vespa.eventstore.ingest
 
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.async.QUERY_FANOUT
-import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.async.retryingSweep
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
@@ -38,6 +37,11 @@ import com.vitorpamplona.quartz.nip01Core.store.owner
 import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
 import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
 /**
  * The bulk path for a batch that CONTAINS deletions/vanishes (pure-record
@@ -208,6 +212,9 @@ internal class BulkMixedInsert(
         // such a batch used to take reads stubs.
         val versionReads = VersionReads(index)
         val reads = ArrayList<suspend () -> List<EventDoc>>()
+        // One bound for every preload read, a grouping pair's two queries
+        // included: each takes its own permit (see BulkRecordInsert.commit).
+        val gate = Semaphore(QUERY_FANOUT)
 
         fun versions(
             q: EventQuery,
@@ -219,16 +226,16 @@ internal class BulkMixedInsert(
                 reads += block
             }
             when {
-                kind in BulkRecordInsert.WHOLE_DOC_KINDS -> read { index.search(q) }
+                kind in BulkRecordInsert.WHOLE_DOC_KINDS -> read { gate.withPermit { index.search(q) } }
 
-                kind.isAddressable() && author != null -> read { versionReads.addressable(q, kind, author) }
+                kind.isAddressable() && author != null -> read { versionReads.addressable(q, kind, author, gate) }
 
                 // Plain replaceables by author chunk: the groupings take no
                 // `until`, so a deletion target's read is its whole address — a
                 // superset, which the replay's own `until` narrows.
-                !kind.isAddressable() && q.tags.isEmpty() -> read { versionReads.replaceable(kind, q.authors) }
+                !kind.isAddressable() && q.tags.isEmpty() -> read { versionReads.replaceable(kind, q.authors, gate) }
 
-                else -> read { index.search(q) }
+                else -> read { gate.withPermit { index.search(q) } }
             }
         }
 
@@ -315,9 +322,9 @@ internal class BulkMixedInsert(
             // A version read may hand back a STUB of a document the id read
             // above also returned in full; either is the same version to the replay.
             val all = ArrayList<suspend () -> List<EventDoc>>()
-            queries.forEach { q -> all += suspend { index.search(q) } }
+            queries.forEach { q -> all += suspend { gate.withPermit { index.search(q) } } }
             all += reads
-            all.mapBounded(QUERY_FANOUT) { it() }.forEach { page -> page.forEach { snapshot.put(it) } }
+            coroutineScope { all.map { async { it() } }.awaitAll() }.forEach { page -> page.forEach { snapshot.put(it) } }
         }
     }
 

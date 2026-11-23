@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.eventstore.ingest
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.DocRef
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
+import com.nosfabrica.vespa.eventstore.engine.async.QUERY_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
@@ -37,9 +38,12 @@ import com.vitorpamplona.quartz.nip23LongContent.LongFormContentEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -518,4 +522,60 @@ class BulkRecordInsertTest {
             batch = padding(14) + listOf(article(d = "x", at = 200), article(d = "x", at = 150), Event(id(), alice, 50, 0, emptyArray(), "{}", ""), Event(id(), alice, 300, 0, emptyArray(), "{}", "")),
         )
     }
+
+    /**
+     * ONE BOUND FOR A COMMIT'S READS. The version read, the tombstone guards,
+     * the vanish guards and each grouping pair ran together, each with its own
+     * `mapBounded(QUERY_FANOUT)`, so a commit put several times the fan-out in
+     * flight — the ceiling VESPA_QUERY_FANOUT exists to hold (proton's summary
+     * stage times out past it). Every guard is probed here (SHARED_STRICT
+     * flags every owner) and twenty addressable authors give twenty version reads.
+     */
+    @Test
+    fun `a commit's concurrent read stages share one query bound`() =
+        runBlocking {
+            val inner = InMemoryEventIndex()
+            val inFlight = AtomicInteger()
+            val peak = AtomicInteger()
+            val counting = AtomicBoolean(false)
+
+            suspend fun <T> read(body: suspend () -> T): T {
+                if (!counting.get()) return body()
+                peak.accumulateAndGet(inFlight.incrementAndGet(), ::maxOf)
+                try {
+                    delay(20)
+                    return body()
+                } finally {
+                    inFlight.decrementAndGet()
+                }
+            }
+            val index =
+                object : EventIndex by inner {
+                    override suspend fun search(query: EventQuery) = read { inner.search(query) }
+
+                    override suspend fun countByAuthor(query: EventQuery) = read { inner.countByAuthor(query) }
+
+                    override suspend fun newestVersions(
+                        kind: Int,
+                        authors: List<String>,
+                    ) = read { inner.newestVersions(kind, authors) }
+
+                    override suspend fun visitIds(
+                        query: EventQuery,
+                        withDTag: Boolean,
+                        onPage: suspend (List<DocRef>) -> Boolean,
+                    ) = read { inner.visitIds(query, withDTag, onPage) }
+
+                    override suspend fun putIfNewer(doc: EventDoc): Boolean = super<EventIndex>.putIfNewer(doc)
+                }
+            val bulk = BulkRecordInsert(index, relayUrl, GuardOwners(index), nowSecs = { 2_000_000L })
+            val authors = (1..20).map { it.toString(16).padStart(64, 'e') }
+            val batch = authors.map { LongFormContentEvent(id(), it, next(), arrayOf(arrayOf("d", "post")), "body", "") } + authors.map { Event(id(), it, next(), 0, emptyArray(), "{}", "") }
+            val plan = bulk.plan(batch)
+            counting.set(true)
+
+            bulk.commit(plan)
+
+            assertTrue(peak.get() <= QUERY_FANOUT, "at most QUERY_FANOUT ($QUERY_FANOUT) engine reads in flight per commit, saw ${peak.get()}")
+        }
 }

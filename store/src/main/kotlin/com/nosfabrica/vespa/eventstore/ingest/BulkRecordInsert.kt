@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.async.PUT_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.async.QUERY_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
+import com.nosfabrica.vespa.eventstore.engine.async.mapGated
 import com.nosfabrica.vespa.eventstore.engine.async.retryingSweep
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
@@ -51,7 +52,10 @@ import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEve
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
 /**
  * The bulk insert fast path for one run of plain events (no kind 5/62 — those
@@ -177,9 +181,16 @@ internal class BulkRecordInsert(
             } else {
                 events.indices.filter { plan.outcome[it] == null }.mapNotNullTo(LinkedHashSet()) { addressKey(events[it]) }
             }
+        // ONE BOUND FOR THE COMMIT'S READS. The version read, the tombstone and
+        // vanish guards and each version read's grouping pair run at once, and
+        // each used to spend its own QUERY_FANOUT: up to ~4x the operator's
+        // ceiling in flight, the very thing the knob exists to stop (proton's
+        // summary stage times out past it). Every engine read below takes a
+        // permit of this one gate.
+        val reads = Semaphore(QUERY_FANOUT)
         return coroutineScope {
-            val versions = if (candidates.isEmpty()) null else async { IngestStats.timed("versions") { readVersions(candidates) } }
-            commitWith(plan, versions)
+            val versions = if (candidates.isEmpty()) null else async { IngestStats.timed("versions") { readVersions(candidates, reads) } }
+            commitWith(plan, versions, reads)
         }
     }
 
@@ -187,6 +198,8 @@ internal class BulkRecordInsert(
     private suspend fun commitWith(
         plan: Plan,
         versions: Deferred<Map<Triple<Int, String, String?>, List<EventDoc>>>?,
+        /** The commit's one engine-read bound — see [commit]. */
+        reads: Semaphore,
     ): List<IEventStore.InsertOutcome> {
         val events = plan.events
         val outcome = plan.outcome
@@ -212,9 +225,9 @@ internal class BulkRecordInsert(
                         if (flaggedDeleters.isEmpty()) {
                             null
                         } else {
-                            async { tombstoneDocs(owners.filterKeys { it in flaggedDeleters }, events) }
+                            async { tombstoneDocs(owners.filterKeys { it in flaggedDeleters }, events, reads) }
                         }
-                    val vanishes = if (flaggedVanishers.isEmpty()) emptyMap() else guardDocs(flaggedVanishers, RequestToVanishEvent.KIND)
+                    val vanishes = if (flaggedVanishers.isEmpty()) emptyMap() else guardDocs(flaggedVanishers, RequestToVanishEvent.KIND, reads)
                     val tombstones = tombs?.await().orEmpty()
                     owners.keys.associateWith { (tombstones[it].orEmpty() to vanishes[it].orEmpty()) }
                 }
@@ -428,7 +441,10 @@ internal class BulkRecordInsert(
      * projection's, whose removal reaction reads the replaced card or list —
      * keep the full read.
      */
-    private suspend fun readVersions(keys: Collection<Triple<Int, String, String?>>): Map<Triple<Int, String, String?>, List<EventDoc>> {
+    private suspend fun readVersions(
+        keys: Collection<Triple<Int, String, String?>>,
+        gate: Semaphore,
+    ): Map<Triple<Int, String, String?>, List<EventDoc>> {
         val addressable = keys.filter { it.third != null }
         val replaceable = keys.filter { it.third == null }
         // One read per entry: the docs it answers.
@@ -437,7 +453,7 @@ internal class BulkRecordInsert(
                 for ((kind, ks) in replaceable.groupBy { it.first }) {
                     ks.map { it.second }.distinct().chunked(CHECK_CHUNK).forEach { authors ->
                         val q = EventQuery(kinds = listOf(kind), authors = authors)
-                        add(if (kind in WHOLE_DOC_KINDS) ({ index.search(q) }) else ({ versionReads.replaceable(kind, authors) }))
+                        add(if (kind in WHOLE_DOC_KINDS) ({ gate.withPermit { index.search(q) } }) else ({ versionReads.replaceable(kind, authors, gate) }))
                     }
                 }
                 // Addressables recall PER (kind, author), never across authors:
@@ -455,13 +471,15 @@ internal class BulkRecordInsert(
                             // recall it. Go broad by (kind, author) — same fallback as
                             // putIfNewer and the mixed preload; bounded to one author.
                             listOfNotNull(EventQuery(kinds = listOf(kind), authors = listOf(author)).takeIf { ks.any { it.third.isNullOrEmpty() } })
-                    for (q in queries) add(if (kind in WHOLE_DOC_KINDS) ({ index.search(q) }) else ({ versionReads.addressable(q, kind, author) }))
+                    for (q in queries) add(if (kind in WHOLE_DOC_KINDS) ({ gate.withPermit { index.search(q) } }) else ({ versionReads.addressable(q, kind, author, gate) }))
                 }
             }
         val existing = HashMap<Triple<Int, String, String?>, MutableList<EventDoc>>()
         // A doc two reads both recall (the broad empty-d read and a d-keyed one) is one version.
         val seen = HashSet<String>()
-        reads.mapBounded(QUERY_FANOUT) { it() }.forEach { docs ->
+        // Each read takes its own permits of [gate] (a grouping pair takes two),
+        // so the reads themselves are started together and the gate bounds them.
+        coroutineScope { reads.map { async { it() } }.awaitAll() }.forEach { docs ->
             docs.forEach { doc ->
                 if (!seen.add(doc.id)) return@forEach
                 val d = if (doc.kind.isAddressable()) doc.dTagOrEmpty() else null
@@ -479,11 +497,12 @@ internal class BulkRecordInsert(
     private suspend fun guardDocs(
         owners: Collection<String>,
         kind: Int,
+        gate: Semaphore,
     ): Map<String, List<EventDoc>> =
         owners
             .toList()
             .chunked(CHECK_CHUNK)
-            .mapBounded(QUERY_FANOUT) { chunk ->
+            .mapGated(gate) { chunk ->
                 index.search(EventQuery(kinds = listOf(kind), authors = chunk))
             }.flatten()
             .groupBy { it.pubkey }
@@ -501,9 +520,10 @@ internal class BulkRecordInsert(
     private suspend fun tombstoneDocs(
         flagged: Map<String, List<Int>>,
         events: List<Event>,
+        gate: Semaphore,
     ): Map<String, List<EventDoc>> =
         tombstoneQueries(flagged.mapValues { (_, rows) -> rows.map { events[it] } }, CHECK_CHUNK)
-            .mapBounded(QUERY_FANOUT) { index.search(it) }
+            .mapGated(gate) { index.search(it) }
             .flatten()
             .distinctBy { it.id }
             .groupBy { it.pubkey }
