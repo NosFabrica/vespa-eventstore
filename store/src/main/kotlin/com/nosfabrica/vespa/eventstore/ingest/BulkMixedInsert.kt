@@ -76,7 +76,7 @@ internal class BulkMixedInsert(
         // snapshot's own (default SHARED_STRICT: no cache, probe every time),
         // which is what a replay wants — the real store's cache answers for
         // the real index.
-        val replay = EventAdmission(snapshot, Deletions(snapshot, relay, sweepPage), GuardOwners(snapshot))
+        val replay = EventAdmission(snapshot, Deletions(snapshot, relay, sweepPage), GuardOwners(snapshot), nowSecs)
         val outcomes = events.map { replay.tryAdmit(it) }
         val after = snapshot.search(EventQuery())
         val afterIds = after.mapTo(HashSet()) { it.id }

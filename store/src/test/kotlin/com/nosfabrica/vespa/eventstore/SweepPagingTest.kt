@@ -102,24 +102,6 @@ class SweepPagingTest {
             )
         }
 
-    @Test
-    fun `expiry sweep also pages and clears the whole backlog`() =
-        runBlocking {
-            // Every event expires at t=500; the store's clock is well past it.
-            val expiring =
-                (1..CORPUS).map {
-                    Event((++seq).toString(16).padStart(64, '0'), alice, 1_000L + it, 1, arrayOf(arrayOf("expiration", "500")), "e$it", "")
-                }
-            store.batchInsert(expiring)
-
-            index.searchLimits.clear()
-            store.deleteExpiredEvents()
-            val sweepReads = index.searchLimits.toList()
-
-            assertEquals(0, stored(), "the whole expired backlog is gone")
-            assertTrue(sweepReads.all { it != null && it <= PAGE }, "expiry reads are paged too: $sweepReads")
-        }
-
     /** An explicit limit still means "delete at most N", satisfied by one page. */
     @Test
     fun `a limited delete stops after its first page`() =

@@ -23,6 +23,8 @@ package com.nosfabrica.vespa.eventstore.ingest
 import com.nosfabrica.vespa.eventstore.engine.MockVespaEngine
 import com.nosfabrica.vespa.eventstore.engine.client.RecencyStrategy
 import com.nosfabrica.vespa.eventstore.engine.client.VespaEventIndex
+import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
+import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.mapping.toDoc
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
@@ -78,5 +80,29 @@ class DeletionsTest {
             val tombstone = DeletionRequestEvent(id(), alice, now - 29 * 86_400L, arrayOf(arrayOf("e", old.id)), "", "")
             index.put(tombstone.toDoc())
             assertTrue(deletions.isDeleted(old), "a same-owner kind 5 newer than the event blocks it")
+        }
+
+    /**
+     * [Deletions.sweepWalk]'s `sparing`: every batch looks its ids up for the
+     * spared kinds and removes only the rest — the expiry sweep's plain pass,
+     * which may not remove a card without the trust gate.
+     */
+    @Test
+    fun `a sweep walk leaves the kinds it spares`() =
+        runBlocking {
+            val memory = InMemoryEventIndex()
+            val walker = Deletions(memory, relay = null, sweepPage = 100)
+            val notes = (1..7).map { Event(id(), alice, 1_000L + it, 1, emptyArray(), "n$it", "") }
+            val cards = (1..3).map { Event(id(), alice, 2_000L + it, 30382, arrayOf(arrayOf("d", "%064x".format(it))), "", "") }
+            memory.putAll((notes + cards).map { it.toDoc() })
+            val holds = mutableListOf<Int>()
+
+            walker.sweepWalk(EventQuery(), page = 3, sparing = listOf(30382)) { batch ->
+                holds += holds.size
+                batch()
+            }
+
+            assertEquals(cards.map { it.id }.toSet(), memory.search(EventQuery()).mapTo(HashSet()) { it.id }, "only the spared kind is left")
+            assertEquals(4, holds.size, "ten ids, three per hold")
         }
 }

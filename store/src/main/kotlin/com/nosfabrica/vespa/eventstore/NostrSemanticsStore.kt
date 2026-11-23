@@ -42,6 +42,7 @@ import com.nosfabrica.vespa.eventstore.mapping.toEvent
 import com.nosfabrica.vespa.eventstore.mapping.toEventQuery
 import com.nosfabrica.vespa.eventstore.runtime.DEFAULT_GUARD_REFRESH_MILLIS
 import com.nosfabrica.vespa.eventstore.runtime.DEFAULT_PROVIDER_REFRESH_MILLIS
+import com.nosfabrica.vespa.eventstore.runtime.StoreKnobs
 import com.nosfabrica.vespa.eventstore.runtime.WriteLocks
 import com.nosfabrica.vespa.eventstore.runtime.WriterTopology
 import com.nosfabrica.vespa.eventstore.runtime.readOnlyRefusal
@@ -210,6 +211,13 @@ class NostrSemanticsStore(
      * so no positional argument shifts.
      */
     guardOwnersDisabled: Boolean? = null,
+    /**
+     * Ids removed per lock hold by [deleteExpiredEvents], or null — the
+     * default — for `VESPA_EXPIRY_SWEEP_PAGE` ([EngineTuning.expirySweepPage]).
+     * Internal — a test seam, like [sweepPage]. LAST, so no positional
+     * argument shifts.
+     */
+    internal val expirySweepPage: Int? = null,
 ) : LensedEventStore {
     init {
         require(!(readOnly && writers == WriterTopology.SINGLE_WRITER)) {
@@ -261,7 +269,7 @@ class NostrSemanticsStore(
     private val deletions = Deletions(index, relay, sweepPage)
 
     /** The per-event write rules — shared verbatim with [BulkMixedInsert]'s replay. */
-    private val admission = EventAdmission(index, deletions, guards)
+    private val admission = EventAdmission(index, deletions, guards, nowSecs)
 
     /**
      * WHO THIS READER ASKED TO COMPUTE WHAT — the gate the search expansion
@@ -428,7 +436,7 @@ class NostrSemanticsStore(
      */
     private suspend fun served(q: EventQuery): EventQuery = if (!q.acceptsPartial && servesPartial()) q.copy(acceptsPartial = true) else q
 
-    private val bulkRecords = BulkRecordInsert(index, relay, guards)
+    private val bulkRecords = BulkRecordInsert(index, relay, guards, nowSecs)
 
     private val bulkMixed = BulkMixedInsert(index, relay, nowSecs, guards, sweepPage)
 
@@ -1288,13 +1296,85 @@ class NostrSemanticsStore(
             missing.toList()
         }
 
+    /**
+     * NIP-40: remove every event whose expiration has passed — WALKED ONCE, and
+     * removed a batch per lock hold, so a publish waits for at most one batch of
+     * the sweep rather than all of it. A backlog of N expired events used to
+     * hold both writer locks for N / [sweepPage] rounds back to back, each
+     * round re-matching and re-sorting everything left (O(N² / page)) and
+     * reading full documents; every write in the process queued behind it.
+     *
+     * TWO PASSES over one fixed cutoff ([Deletions.sweepWalk] each):
+     *
+     *  1. The TRUST kinds (cards, provider lists) under BOTH locks per batch,
+     *     for the reason on [delete]: their removal is a trust reaction — cells
+     *     removed, the crash marker written ahead — that must not race the
+     *     drain or a card's own projection.
+     *  2. Everything else under `writes` ALONE per batch. The removal of any
+     *     other kind is no trust reaction at all (`TrustProjection.removeAll`
+     *     hands ids of other kinds straight to the index), so it needs what a
+     *     plain insert needs and no more. Each batch first looks its ids up
+     *     for the trust kinds, inside its hold, and spares any it finds — a
+     *     card that landed after pass 1 walked past it, left for the next
+     *     sweep. That lookup is sound for the rest of the hold: an event is
+     *     immutable per id, and nothing can store a trust-kind document
+     *     without `writes`, which this batch holds. The gate is never taken
+     *     after `writes` (pass 1 goes through [WriteLocks.gated], pass 2 takes
+     *     no gate), so the lock order holds. What this buys: the plain bulk of
+     *     a backlog neither waits for a trust drain nor stalls one.
+     *
+     * WHY RELEASING BETWEEN BATCHES IS SAFE HERE, and is not for every sweep:
+     *
+     *  - Each batch's removes run inside one hold; the walk's READS do not —
+     *    the shape the reindex has used since #160. That is sound because an
+     *    event is immutable per id: an id the walk saw still names an expired
+     *    event, and one removed meanwhile by a supersession or a kind 5 is a
+     *    no-op remove (the trust projection reads its own kinds back inside
+     *    the hold and reacts only to what is still stored).
+     *  - A write between batches sees a state the old sweep never exposed
+     *    (some expired events gone, some not), but every event in it is
+     *    already expired: reads hide it (`notExpiredAt`), and NIP-40 lets a
+     *    relay drop it at any time, so "this expired event is still stored"
+     *    was never an invariant anything could rest on. No other document's
+     *    admission depends on which expired events are left — a supersession,
+     *    tombstone or vanish check against an expired doc already had both
+     *    answers depending on when the periodic sweep last ran.
+     *  - The cutoff is taken ONCE, before either pass, so the match set is
+     *    fixed: an event only joins it with an expiration at or before the
+     *    sweep's start, and every admission path rejects an event already
+     *    expired by THIS STORE'S clock ([nowSecs], the clock the cutoff is
+     *    read from) when it is offered (`EventAdmission.localOutcome`, which
+     *    the per-event path, the mixed replay and a transaction all apply,
+     *    and the bulk planner's stage A). The only arrivals that can still
+     *    match are writes whose expiry check passed BEFORE the cutoff and
+     *    commit after it — finitely many, and each walk is a single descent of
+     *    `created_at`, so the sweep terminates. Such an arrival is swept by
+     *    this pass only if it lands below the walk's cursor before the walk
+     *    reaches it; one that lands above the cursor, or after the walk, is
+     *    left stored, already hidden from reads, for the next pass — which is
+     *    also what the old single-hold sweep did with a write that queued
+     *    behind it.
+     *
+     * The batch is `VESPA_EXPIRY_SWEEP_PAGE` ([EngineTuning.expirySweepPage],
+     * default 1,000 ids per hold — see `StoreKnobs.expirySweepPage` for why).
+     *
+     * An admin [delete] and a vanish keep [Deletions.sweep] under one hold: a
+     * filter's match set is NOT fixed — a write between pages could add an
+     * event a later page then deletes, which a single-lock delete never would
+     * — and a vanish runs inside its own admission, before the request is
+     * stored.
+     */
     override suspend fun deleteExpiredEvents() {
         checkWritable("deleteExpiredEvents")
         withActivity(Activity.Delete) {
             // expiresBefore is strict (<): +1 makes "expires exactly now" due, per NIP-40.
-            // Both locks, for the reason on [delete]: NIP-40 expiry does not ask
-            // what kind it is reaping, so it can reap cards.
-            locks.gated(trust = true, WriteLocks.SWEEP, WriteLocks.SWEEP_TRUST) { deletions.sweep(EventQuery(expiresBefore = nowSecs() + 1)) }
+            // `complete`, like every read that feeds a write: a short walk is a sweep that reports done.
+            val due = EventQuery(expiresBefore = nowSecs() + 1, complete = true)
+            val page = expirySweepPage ?: StoreKnobs.expirySweepPage.value
+            deletions.sweepWalk(due.copy(kinds = TrustProjection.TRUST_KINDS), page) { batch ->
+                locks.gated(trust = true, WriteLocks.SWEEP, WriteLocks.SWEEP_TRUST) { batch() }
+            }
+            deletions.sweepWalk(due, page, sparing = TrustProjection.TRUST_KINDS) { batch -> locks.underWrites(WriteLocks.SWEEP) { batch() } }
         }
     }
 
