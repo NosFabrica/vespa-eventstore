@@ -21,8 +21,11 @@
 package com.nosfabrica.vespa.eventstore.mapping
 
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
+import com.nosfabrica.vespa.eventstore.RejectedException
+import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.text.StorableText
+import com.nosfabrica.vespa.eventstore.ingest.Rejections
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -33,6 +36,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertSame
+import kotlin.test.assertTrue
 
 /**
  * Vespa refuses the whole document when any `type string` field carries a code
@@ -148,6 +152,67 @@ class VespaTextTest {
                 // The unstorable tag value is not matchable; the event still is, by its other values.
                 assertEquals(listOf(e.id), store.query<Event>(Filter(tags = mapOf("t" to listOf("plain")))).filter { it.id == e.id }.map { it.id })
             }
+            store.close()
+        }
+
+    // ---- what the store still refuses --------------------------------------
+
+    /** A kind-30023 article at [d], one version per [at]. */
+    private fun article(
+        d: String,
+        at: Long,
+    ) = Event(id(), alice, at, 30023, arrayOf(arrayOf("d", d)), "version $at", "")
+
+    @Test
+    fun `an addressable whose d tag the engine cannot store is refused, not stored twice`() =
+        runBlocking {
+            val store = store()
+            // Its versions are found by #d, which tag_index cannot hold for this value: stored, a
+            // newer version would never find the older one and both would be served.
+            val bad = "a${SOH}b"
+            val thrown = runCatching { store.insert(article(bad, 1_000L)) }.exceptionOrNull()
+            assertTrue(thrown is RejectedException, "expected a semantic rejection, got $thrown")
+            assertEquals(Rejections.UNSTORABLE_TEXT, thrown.message)
+
+            // The bulk planner (16 or more) refuses it the same way and stores the rest.
+            val batch = (1..16).map { note("ok$it") } + article(bad, 2_000L)
+            val outcomes = store.batchInsert(batch)
+            assertEquals(16, outcomes.count { it is IEventStore.InsertOutcome.Accepted }, "$outcomes")
+            assertEquals(IEventStore.InsertOutcome.Rejected(Rejections.UNSTORABLE_TEXT), outcomes.last())
+            assertEquals(emptyList(), store.query<Event>(Filter(kinds = listOf(30023))))
+            store.close()
+        }
+
+    @Test
+    fun `an addressable with a storable d still supersedes, and other tags may hold anything`() =
+        runBlocking {
+            val store = store()
+            val old = Event(id(), alice, 1_000L, 30023, arrayOf(arrayOf("d", "slug"), arrayOf("t", "x${SOH}y")), "old", "")
+            val new = Event(id(), alice, 2_000L, 30023, arrayOf(arrayOf("d", "slug"), arrayOf("t", "x${SOH}y")), "new", "")
+            store.insert(old)
+            store.insert(new)
+            assertEquals(listOf(new.id), store.query<Event>(Filter(kinds = listOf(30023))).map { it.id })
+            store.close()
+        }
+
+    /** An index over a schema predating `content_json`: it stores only content a string field takes as is. */
+    private class OldSchemaIndex(
+        inner: InMemoryEventIndex,
+    ) : EventIndex by inner {
+        override fun storesContent(content: String): Boolean = StorableText.isStorable(content)
+    }
+
+    @Test
+    fun `on a schema without content_json, unstorable content is refused and the batch still lands`() =
+        runBlocking {
+            val store = NostrSemanticsStore(OldSchemaIndex(InMemoryEventIndex()), relay = relayUrl)
+            val bad = note("backspace\bhere")
+            val good = (1..16).map { note("ok$it") }
+            val outcomes = store.batchInsert(good + bad)
+            assertEquals(16, outcomes.count { it is IEventStore.InsertOutcome.Accepted }, "$outcomes")
+            assertEquals(IEventStore.InsertOutcome.Rejected(Rejections.UNSTORABLE_TEXT), outcomes.last())
+            val thrown = runCatching { store.insert(note("form${'\u000c'}feed")) }.exceptionOrNull()
+            assertTrue(thrown is RejectedException, "the per-event path refuses it too, got $thrown")
             store.close()
         }
 

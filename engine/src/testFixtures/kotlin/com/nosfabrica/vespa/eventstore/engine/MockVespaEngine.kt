@@ -284,6 +284,9 @@ class MockVespaEngine(
     /** A schema predating the stemmed body columns ([StemText.FIELDS]): refuses documents and queries naming one. */
     @Volatile var rejectStemFields: Boolean = false
 
+    /** A schema predating `content_json` (EventDoc.CONTENT_JSON): refuses documents carrying it. */
+    @Volatile var rejectContentJson: Boolean = false
+
     /** Answer the batch handler's path with 404, as an application package that predates it does. */
     @Volatile var batchHandlerAbsent: Boolean = false
 
@@ -718,6 +721,9 @@ class MockVespaEngine(
         val stemField = fields.keys.firstOrNull { it in StemText.FIELDS }
         if (rejectStemFields && stemField != null) {
             return Reply(400, """{"message":"Field '$stemField' is not defined in document type 'event'"}""")
+        }
+        if (rejectContentJson && EventDoc.CONTENT_JSON in fields) {
+            return Reply(400, """{"message":"Field '${EventDoc.CONTENT_JSON}' is not defined in document type 'event'"}""")
         }
         return null
     }

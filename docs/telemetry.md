@@ -527,7 +527,7 @@ path changes.
 So the store books its own outcomes where the decision is made. The key space is
 already closed, which is what makes this safe under §4 — Quartz's
 `RejectionReason` (`EXPIRED`, `DUPLICATE`, `DELETED`, `VANISHED`, `REPLACED`,
-`INSERT_FAILED`), and `admitted`. Counted
+`INSERT_FAILED`) plus this store's `UNSTORABLE_TEXT`, and `admitted`. Counted
 per `Activity`, so a mirror's duplicate rate and a live relay's are separable.
 
 This altitude is worth more than the page that prompted it. "81 % of what this

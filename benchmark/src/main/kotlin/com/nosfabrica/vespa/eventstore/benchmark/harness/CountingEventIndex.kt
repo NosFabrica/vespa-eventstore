@@ -76,6 +76,8 @@ class CountingEventIndex(
     // reports for a draft-churn corpus was measuring the port, not the engine.
     override suspend fun putIfNewer(doc: EventDoc): Boolean = inner.putIfNewer(doc)
 
+    override fun storesContent(content: String): Boolean = inner.storesContent(content)
+
     // The same trap: the default is `existingIds` + `putAll` through THIS object,
     // two calls where the client makes one round of test-and-set puts.
     override suspend fun putAllIfStored(docs: List<EventDoc>): Set<String> {

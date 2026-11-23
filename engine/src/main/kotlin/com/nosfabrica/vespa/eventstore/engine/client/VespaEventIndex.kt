@@ -45,6 +45,7 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventSelection
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.nosfabrica.vespa.eventstore.engine.query.VespaQuery
 import com.nosfabrica.vespa.eventstore.engine.requirePlainReplaceable
+import com.nosfabrica.vespa.eventstore.engine.text.StorableText
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import com.vitorpamplona.quartz.utils.Hex
 import kotlinx.coroutines.async
@@ -277,6 +278,9 @@ class VespaEventIndex(
     // Under address-keying the engine enforces newest-wins (conditional put), so
     // the bulk path skips its version-read stage and calls putIfNewer instead.
     override val supersedesViaPut: Boolean get() = addressKeyed
+
+    /** Storable content always; any other only while the schema has `content_json` (see [SchemaFallbacks.contentJsonAvailable]). */
+    override fun storesContent(content: String): Boolean = fallbacks.contentJsonAvailable || StorableText.isStorable(content)
 
     /** The document id for [doc]: its address when address-keyed and replaceable, else its event id. */
     private fun docIdOf(doc: EventDoc): String = if (addressKeyed) doc.addressOrNull() ?: doc.id else doc.id

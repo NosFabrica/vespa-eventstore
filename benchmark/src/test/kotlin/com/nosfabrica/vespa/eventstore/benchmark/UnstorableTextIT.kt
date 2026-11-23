@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore.benchmark
 
+import com.nosfabrica.vespa.eventstore.RejectedException
 import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.eventstore.engine.app.SchemaDeployer
 import com.vitorpamplona.quartz.nip01Core.core.Event
@@ -99,6 +100,12 @@ class UnstorableTextIT {
                         val byTag = front.query<Event>(Filter(tags = mapOf("t" to listOf("plain")), limit = 500)).map { it.id }.toSet()
                         assertEquals(all.map { it.id }.toSet(), byTag)
                         assertEquals(emptyList(), front.query<Event>(Filter(tags = mapOf("t" to listOf(TEXTS[1])), limit = 500)))
+
+                        // An addressable whose `d` the engine cannot hold is still refused: its
+                        // versions are found by #d, which tag_index cannot hold for that value.
+                        val article = Event("%064x".format(999), AUTHOR, 1_700_000_999L, 30023, arrayOf(arrayOf("d", "a\u0001b")), "x", "")
+                        val refused = runCatching { front.insert(article) }.exceptionOrNull()
+                        assertTrue(refused is RejectedException, "expected a semantic rejection, got $refused")
                     }
                 }
             }

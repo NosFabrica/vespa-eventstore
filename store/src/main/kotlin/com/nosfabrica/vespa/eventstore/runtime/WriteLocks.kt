@@ -55,7 +55,7 @@ internal class WriteLocks {
      * storing anything, took 35-41 SECONDS to answer OK while the trust drain
      * held the lock re-deriving reputation documents. (An ephemeral insert
      * now takes neither lock: the verdicts that need no I/O — ephemeral,
-     * expired — are answered before them, in
+     * expired, unstorable text — are answered before them, in
      * `NostrSemanticsStore.insertOne`.)
      *
      * What a plain insert genuinely needs exclusion for is the DELETION race —

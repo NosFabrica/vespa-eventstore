@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.eventstore.ingest
 
 import com.nosfabrica.vespa.eventstore.RejectedException
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
+import com.nosfabrica.vespa.eventstore.mapping.VespaText
 import com.nosfabrica.vespa.eventstore.mapping.toDoc
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.core.isAddressable
@@ -79,7 +80,14 @@ internal class EventAdmission(
     fun localOutcome(event: Event): IEventStore.InsertOutcome? =
         when {
             event.kind.isEphemeral() -> IEventStore.InsertOutcome.Accepted
+
             event.isExpired() -> IEventStore.InsertOutcome.Rejected(Rejections.EXPIRED)
+
+            // Text the engine cannot hold is a property of the event (and of the deployed
+            // schema), so it is settled with the other no-I/O checks rather than surfacing as a
+            // feed exception that costs the batch. See [VespaText.refuses].
+            VespaText.refuses(event, index) -> IEventStore.InsertOutcome.Rejected(Rejections.UNSTORABLE_TEXT)
+
             else -> null
         }
 

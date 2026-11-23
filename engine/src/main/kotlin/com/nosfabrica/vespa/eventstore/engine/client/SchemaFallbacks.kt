@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore.engine.client
 
+import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.nosfabrica.vespa.eventstore.engine.query.FuzzyWordGroup
@@ -81,6 +82,15 @@ internal class SchemaFallbacks {
 
     /** Whether the serving schema has the stemmed body columns ([StemText.FIELDS]) — both directions. */
     @Volatile var stemFieldsAvailable = true
+
+    /**
+     * Whether the serving schema has `content_json` (`EventDoc.CONTENT_JSON`), the field that
+     * holds content a string field refuses. Unlike the columns above it has no fallback form:
+     * the content cannot be fed raw (the engine refuses those code points) and may not be
+     * scrubbed (the signature covers it). So a schema without it flips this for good, and the
+     * store refuses such events up front ([com.nosfabrica.vespa.eventstore.engine.EventIndex.storesContent]).
+     */
+    @Volatile var contentJsonAvailable = true
         private set
 
     @Volatile var dedupSummaryAvailable = true
@@ -133,6 +143,13 @@ internal class SchemaFallbacks {
      * but not the edge column must keep the near tier, and so on.
      */
     fun isMissingFedColumn(message: String?): Boolean {
+        // Not retryable, so never `true`: the batch that met it fails once, as it would have
+        // without this net, and every later event with such content is refused before it is
+        // fed. Same exact-phrase rule as the columns below.
+        if (message != null && message.contains("400") && message.contains(NOT_IN_DOCUMENT_TYPE) && message.contains("'${EventDoc.CONTENT_JSON}'")) {
+            contentJsonAvailable = false
+            return false
+        }
         if (isMissingNearField(message)) {
             markNearFieldsMissing()
             return true

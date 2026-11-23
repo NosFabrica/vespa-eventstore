@@ -173,6 +173,8 @@ class TrustProjection(
     // replaced. Forwarding lets the bulk path skip its version-read stage.
     override val supersedesViaPut: Boolean get() = inner.supersedesViaPut
 
+    override fun storesContent(content: String): Boolean = inner.storesContent(content)
+
     /**
      * ONE STORE COMMIT, ONE REACTION. Run [body] — a commit under the trust
      * gate, which may make any number of port calls on this decorator, from
