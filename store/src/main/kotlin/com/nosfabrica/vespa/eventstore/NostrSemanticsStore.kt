@@ -260,7 +260,7 @@ class NostrSemanticsStore(
     private val deletions = Deletions(index, relay, sweepPage)
 
     /** The per-event write rules — shared verbatim with [BulkMixedInsert]'s replay. */
-    private val admission = EventAdmission(index, deletions, guards)
+    private val admission = EventAdmission(index, deletions, guards, nowSecs)
 
     /**
      * WHO THIS READER ASKED TO COMPUTE WHAT — the gate the search expansion
@@ -427,7 +427,7 @@ class NostrSemanticsStore(
      */
     private suspend fun served(q: EventQuery): EventQuery = if (!q.acceptsPartial && servesPartial()) q.copy(acceptsPartial = true) else q
 
-    private val bulkRecords = BulkRecordInsert(index, relay, guards)
+    private val bulkRecords = BulkRecordInsert(index, relay, guards, nowSecs)
 
     private val bulkMixed = BulkMixedInsert(index, relay, nowSecs, guards, sweepPage)
 
@@ -1307,16 +1307,18 @@ class NostrSemanticsStore(
      *  - The cutoff is taken ONCE, before the first page, so the match set is
      *    fixed: an event only joins it with an expiration at or before the
      *    sweep's start, and every admission path rejects an event already
-     *    expired by the wall clock when it is offered
-     *    (`EventAdmission.localOutcome`, which the per-event path, the mixed
-     *    replay and a transaction all apply, and the bulk planner's stage A).
-     *    The only arrivals that can still match are writes whose expiry check
-     *    passed BEFORE the cutoff and commit after it — finitely many, so the sweep
-     *    terminates; one that lands is swept in a later page, which is what
-     *    it would have been had it committed before the sweep began. A
-     *    cutoff re-read per page would instead chase every event that
-     *    expires while the sweep runs. [Deletions.sweep]'s round cap stays
-     *    the backstop.
+     *    expired by THIS STORE'S clock ([nowSecs], the clock the cutoff is
+     *    read from) when it is offered (`EventAdmission.localOutcome`, which
+     *    the per-event path, the mixed replay and a transaction all apply,
+     *    and the bulk planner's stage A). The only arrivals that can still
+     *    match are writes whose expiry check passed BEFORE the cutoff and
+     *    commit after it — finitely many, so the sweep terminates. Such an
+     *    arrival is swept by this pass only if it lands before the pass's
+     *    final, empty read; one that lands after it is left stored, already
+     *    hidden from reads, for the next pass — which is also what the old
+     *    single-hold sweep did with a write that queued behind it. A cutoff
+     *    re-read per page would instead chase every event that expires while
+     *    the sweep runs. [Deletions.sweep]'s round cap stays the backstop.
      *
      * An admin [delete] and a vanish keep the whole sweep under one hold: a
      * filter's match set is NOT fixed — a write between pages could add an
