@@ -19,9 +19,7 @@
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 package com.nosfabrica.vespa.eventstore.engine.doc
-import com.nosfabrica.vespa.eventstore.engine.text.StorableText
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -52,62 +50,6 @@ class EventDocTest {
             content = "line one\n\"quoted\" \\backslash\\ emoji 🫥 tab\there",
             sig = "e".repeat(128),
         )
-
-    /**
-     * What relay-tester sends (NIP-01's `\b` and `\f`, and U+FDD1), plus an astral
-     * noncharacter and a lone surrogate: code points a Vespa string field refuses.
-     * Written as escapes, never raw: a raw control character in source is invisible.
-     */
-    private val unstorable = "backspace\bformfeed\u000c soh\u0001 nonchar\uFDD1 astral\uDBFF\uDFFF lone\uD800 emoji \uD83D\uDE00 end"
-
-    private val hostileDoc =
-        doc.copy(
-            kind = 1,
-            tags = listOf(listOf("t", "tag$unstorable"), listOf("t", "plain"), listOf("alt", unstorable)),
-            content = unstorable,
-        )
-
-    private fun feedFields(d: EventDoc): JsonObject =
-        Json
-            .parseToJsonElement(d.feedJson())
-            .jsonObject
-            .getValue("fields")
-            .jsonObject
-
-    @Test
-    fun `content the engine cannot store goes to content_json, never raw`() {
-        val fields = feedFields(hostileDoc)
-        assertFalse("content" in fields, "the raw content would make the engine refuse the whole document")
-        val literal = fields.getValue(EventDoc.CONTENT_JSON).jsonPrimitive.content
-        assertEquals(null, StorableText.firstUnstorableCodePoint(literal))
-        assertEquals(unstorable, EventDoc.contentOf(null, literal))
-        // Every string the feed hands the engine is one it stores.
-        for ((name, value) in fields) {
-            val texts = (value as? JsonArray)?.map { it.jsonPrimitive.content } ?: listOf(value.jsonPrimitive.content)
-            texts.forEach { assertEquals(null, StorableText.firstUnstorableCodePoint(it), "field $name") }
-        }
-    }
-
-    @Test
-    fun `storable content is fed as before, with no content_json`() {
-        val fields = feedFields(doc)
-        assertEquals(doc.content, fields.getValue("content").jsonPrimitive.content)
-        assertFalse(EventDoc.CONTENT_JSON in fields)
-    }
-
-    @Test
-    fun `an event with unstorable text round-trips exactly through both writers`() {
-        assertEquals(hostileDoc, EventDoc.fromSummary(hostileDoc.indexFields()))
-        assertEquals(hostileDoc, EventDoc.fromSummary(feedFields(hostileDoc)))
-        assertEquals(hostileDoc.toEventJson(), EventDoc.fromSummary(feedFields(hostileDoc)).toEventJson())
-    }
-
-    @Test
-    fun `an unstorable tag value is stored in tags but left out of tag_index`() {
-        assertEquals(listOf("t:plain"), hostileDoc.tagIndex())
-        val stored = feedFields(hostileDoc).getValue("tags").jsonPrimitive.content
-        assertEquals(hostileDoc.tags, Json.parseToJsonElement(stored).jsonArray.map { row -> row.jsonArray.map { it.jsonPrimitive.content } })
-    }
 
     @Test
     fun `tagIndex keeps only single-letter tags with a value`() {

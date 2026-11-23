@@ -45,16 +45,6 @@ interface EventIndex : AutoCloseable {
      */
     val supersedesViaPut: Boolean get() = false
 
-    /**
-     * Whether a document whose content is [content] can be stored at all. Content holding a
-     * code point a Vespa string field refuses is stored escaped in `content_json`
-     * (`EventDoc.CONTENT_JSON`); a deployed schema predating that field cannot hold it, so
-     * the store refuses such an event, one counted rejection, instead of feeding it and
-     * failing every event in the batch beside it. Default true: an index that stores
-     * whatever it is given.
-     */
-    fun storesContent(content: String): Boolean = true
-
     suspend fun get(id: String): EventDoc?
 
     suspend fun put(doc: EventDoc)

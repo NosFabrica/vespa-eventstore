@@ -20,14 +20,10 @@
  */
 package com.nosfabrica.vespa.eventstore.engine.doc
 
-import com.nosfabrica.vespa.eventstore.engine.text.StorableText
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlin.random.Random
 import kotlin.test.Test
@@ -35,10 +31,7 @@ import kotlin.test.assertEquals
 
 /**
  * [JsonChars] and [EventDoc.feedJson] write the bytes kotlinx would: a feed body
- * or a stored `tags` string that differed would change what is served back. The
- * one difference is a tag value carrying a code point the engine cannot store,
- * which kotlinx writes raw and the engine refuses: there it is a `\uXXXX`
- * escape, and the JSON still parses back to the same value.
+ * or a stored `tags` string that differed would change what is served back.
  */
 class JsonCharsTest {
     private fun kotlinx(value: String) = JsonPrimitive(value).toString()
@@ -78,25 +71,7 @@ class JsonCharsTest {
             sig = "e".repeat(128),
         )
 
-    /**
-     * kotlinx's text for [tags], with each code point the engine cannot store escaped
-     * per UTF-16 unit: kotlinx already escapes C0, so what is left raw is exactly the
-     * noncharacters and lone surrogates. Built apart from [JsonChars] so it can catch it.
-     */
-    private fun kotlinxTags(tags: List<List<String>>): String {
-        val raw = JsonArray(tags.map { tag -> JsonArray(tag.map(::JsonPrimitive)) }).toString()
-        val out = StringBuilder(raw.length)
-        var i = 0
-        while (i < raw.length) {
-            val cp = raw.codePointAt(i)
-            val units = Character.charCount(cp)
-            for (k in i until i + units) {
-                if (StorableText.isStorable(cp)) out.append(raw[k]) else out.append("\\u").append(raw[k].code.toString(16).padStart(4, '0'))
-            }
-            i += units
-        }
-        return out.toString()
-    }
+    private fun kotlinxTags(tags: List<List<String>>) = JsonArray(tags.map { tag -> JsonArray(tag.map(::JsonPrimitive)) }).toString()
 
     /**
      * The old tree, with its `tags` string built by kotlinx too: indexFields() now takes it from
@@ -146,22 +121,8 @@ class JsonCharsTest {
 
     @Test
     fun `the stored tags string is kotlinx's`() {
-        assertEquals(JsonArray(kind3.tags.map { tag -> JsonArray(tag.map(::JsonPrimitive)) }).toString(), kind3.tagsJson())
+        assertEquals(kotlinxTags(kind3.tags), kind3.tagsJson())
         assertEquals(kotlinxTags(everyUnit.tags), everyUnit.tagsJson())
-    }
-
-    @Test
-    fun `every UTF-16 unit in a tag value is stored storable and parses back to itself`() {
-        val stored = everyUnit.tagsJson()
-        assertEquals(null, StorableText.firstUnstorableCodePoint(stored), "the tags field must be text the engine stores")
-        val parsed = Json.parseToJsonElement(stored).jsonArray.map { row -> row.jsonArray.map { it.jsonPrimitive.content } }
-        assertEquals(everyUnit.tags, parsed)
-    }
-
-    @Test
-    fun `an astral noncharacter is escaped as its surrogate pair and only that`() {
-        val doc = kind3.copy(tags = listOf(listOf("t", "a" + String(Character.toChars(0x10FFFF)) + "\uD83D\uDE00\uFDD1b")))
-        assertEquals("[[\"t\",\"a\\udbff\\udfff\uD83D\uDE00\\ufdd1b\"]]", doc.tagsJson())
     }
 
     @Test

@@ -95,8 +95,8 @@ internal class BulkRecordInsert(
         fun alive() = events.indices.filter { outcome[it] == null }
 
         // Stage A — no I/O: ephemeral accepted-not-stored, expired rejected,
-        // in-run duplicate ids rejected, text the engine cannot hold rejected
-        // before it can throw in the feed client.
+        // in-run duplicate ids rejected, unstorable text rejected before it
+        // can throw in the feed client.
         val seen = HashSet<String>()
         events.forEachIndexed { i, e ->
             when {
@@ -112,9 +112,10 @@ internal class BulkRecordInsert(
                     outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.DUPLICATE)
                 }
 
-                // Still far cheaper than the feed client throwing mid-batch and
-                // taking every event beside it down. See [VespaText.refuses].
-                VespaText.refuses(e, index::storesContent) -> {
+                // Last of the free checks (it walks the content) — still far
+                // cheaper than the feed client throwing mid-batch and taking
+                // every event beside it down. See [VespaText].
+                VespaText.firstIllegalField(e) != null -> {
                     outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.UNSTORABLE_TEXT)
                 }
             }

@@ -36,7 +36,6 @@ import kotlin.random.Random
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFails
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -1455,34 +1454,6 @@ class VespaEventIndexTest {
                 // migration walk in docs/attribute-memory.md.
             } finally {
                 mock.rejectNearFields = false
-                fresh.close()
-            }
-        }
-
-    /**
-     * A schema predating `content_json` cannot hold content a string field refuses, and the
-     * content may be neither fed raw (the engine refuses those code points) nor scrubbed (the
-     * signature covers it). So the first refusal naming the field fails that write, as it would
-     * have without a net, and flips [VespaEventIndex.storesContent] for good: the store then
-     * refuses such events up front instead of failing every batch they ride in. Storable
-     * content keeps flowing.
-     */
-    @Test
-    fun `a schema without content_json stops accepting unstorable content after the first refusal`() =
-        runBlocking {
-            mock.rejectContentJson = true
-            val fresh = VespaEventIndex(mock.url)
-            try {
-                val unstorable = "backspace\bhere"
-                assertTrue(fresh.storesContent(unstorable), "unknown until the engine says so")
-                assertFails { fresh.put(doc(content = unstorable)) }
-                assertFalse(fresh.storesContent(unstorable), "the refusal flipped it")
-                assertTrue(fresh.storesContent("plain text"), "storable content is unaffected")
-                val plain = doc(content = "plain text")
-                fresh.put(plain)
-                assertEquals(plain.id, fresh.get(plain.id)?.id, "storable documents still land")
-            } finally {
-                mock.rejectContentJson = false
                 fresh.close()
             }
         }

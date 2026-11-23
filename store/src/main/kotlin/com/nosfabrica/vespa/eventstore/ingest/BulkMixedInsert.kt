@@ -76,9 +76,7 @@ internal class BulkMixedInsert(
         // snapshot's own (default SHARED_STRICT: no cache, probe every time),
         // which is what a replay wants — the real store's cache answers for
         // the real index.
-        // The content check asks the REAL index: the snapshot stores anything, and a schema
-        // predating content_json must still refuse what it cannot hold (VespaText.refuses).
-        val replay = EventAdmission(snapshot, Deletions(snapshot, relay, sweepPage), GuardOwners(snapshot), storesContent = index::storesContent)
+        val replay = EventAdmission(snapshot, Deletions(snapshot, relay, sweepPage), GuardOwners(snapshot))
         val outcomes = events.map { replay.tryAdmit(it) }
         val after = snapshot.search(EventQuery())
         val afterIds = after.mapTo(HashSet()) { it.id }

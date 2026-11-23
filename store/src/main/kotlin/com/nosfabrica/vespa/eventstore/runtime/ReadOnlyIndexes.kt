@@ -58,8 +58,6 @@ internal class ReadOnlyEventIndex(
 ) : EventIndex {
     override val supersedesViaPut: Boolean get() = inner.supersedesViaPut
 
-    override fun storesContent(content: String): Boolean = inner.storesContent(content)
-
     override suspend fun get(id: String): EventDoc? = inner.get(id)
 
     override suspend fun search(query: EventQuery): List<EventDoc> = inner.search(query)

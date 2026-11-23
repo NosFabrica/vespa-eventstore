@@ -129,15 +129,6 @@ schema event {
             indexing: summary
         }
 
-        # The content as a JSON string literal, set INSTEAD of `content` when the
-        # content holds a code point a string field refuses (C0 controls such as
-        # NIP-01's \b and \f, noncharacters, lone surrogates): each one a \uXXXX
-        # escape, so the signed bytes come back exact (EventDoc.CONTENT_JSON).
-        # Summary-only, absent on every other document: adding it re-indexes nothing.
-        field content_json type string {
-            indexing: summary
-        }
-
         field sig type string {
             indexing: summary
         }

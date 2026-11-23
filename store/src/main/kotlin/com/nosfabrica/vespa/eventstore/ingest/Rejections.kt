@@ -20,7 +20,6 @@
  */
 package com.nosfabrica.vespa.eventstore.ingest
 
-import com.nosfabrica.vespa.eventstore.mapping.VespaText
 import com.vitorpamplona.quartz.nip01Core.store.RejectionReason
 
 /** The insert-rejection reasons — Quartz's shared vocabulary plus the one Vespa-specific reason. */
@@ -47,13 +46,8 @@ internal object Rejections {
     const val REPLACED = RejectionReason.REPLACED
     const val INSERT_FAILED = RejectionReason.INSERT_FAILED
 
-    /**
-     * The events this store cannot hold ([VespaText.refuses]): an addressable whose `d` holds a
-     * code point the engine refuses, an owner it refuses, an unpaired surrogate anywhere, and
-     * such content while the deployed schema predates `content_json`. One constant string, not
-     * one per field/code point: callers tally rejections by reason, and a per-event reason
-     * fragments that tally.
-     */
+    // One constant string, not one per field/code point: callers tally
+    // rejections by reason, and a per-event reason fragments that tally.
     const val UNSTORABLE_TEXT = "blocked: text carries a code point the engine cannot store"
 
     /** Every reason this store can produce — the CLOSED set the outcome tally is keyed by. */

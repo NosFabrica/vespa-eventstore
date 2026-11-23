@@ -67,8 +67,6 @@ class MeteredEventIndex(
 ) : EventIndex {
     override val supersedesViaPut: Boolean get() = inner.supersedesViaPut
 
-    override fun storesContent(content: String): Boolean = inner.storesContent(content)
-
     /** Time [body], booking it to [call] under whatever [Activity] is ambient. */
     private suspend inline fun <T> meter(
         call: PortCall,
