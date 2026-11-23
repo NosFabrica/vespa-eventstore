@@ -8,7 +8,19 @@ mavenPublish = "0.37.0"
 # FROM MAGPIE, so the published POM names com.vitorpamplona.quartz:quartz-jvm:<pin> and a consumer of
 # this store needs Magpie serving quartz's groups (settings.gradle.kts); it needs no JitPack.
 #
-# 2.21.0 = vitorpamplona/quartz's release 2.21.0 (the v2.21.0 tag bc98eb406 over the quartz#131 merge
+# 2.22.1 = vitorpamplona/quartz's release 2.22.1 (the v2.22.1 tag 273155b3d over the quartz#141 merge
+# d0effdd1a), 18 commits over 2.21.0 (below), which it descends from; 2.21.1 and 2.22.0 between them were
+# never pinned. Nothing this store calls moves:
+#  - UNPARSABLE AUTH / EVENT (quartz#139). RelaySession answers a frame it cannot parse but whose id it can
+#    read with OK false instead of a NOTICE (NIP-42, NIP-01). Server side: this store constructs no
+#    RelaySession; vespa-relay does.
+#  - PUBLISH THROUGH AUTH (2.22.0, quartz#138). publishAwaitingOkThroughAuth and warmUpAuth, and the pool
+#    waiting for the OK of a copy still being applied. Client side: this store opens no relay connection.
+#  - Also in the range, nothing this store calls: Concord channel/role fields, Buzz pinned messages
+#    (40010, 40011, 30623: not SearchableEvent, and nip50Search has no diff, so no reindex), the build on
+#    JDK 25 for JVM 21, and the two racy relay-client tests (quartz#141).
+#
+# Prev 2.21.0 = vitorpamplona/quartz's release 2.21.0 (the v2.21.0 tag bc98eb406 over the quartz#131 merge
 # 0cfd8bdd5), 30 commits over 2.20.1 (below), which it descends from; 2.20.2 between them was never pinned.
 #  - STREAMED NEGENTROPY SNAPSHOTS (quartz#134). IEventStore gains sealedNegentropyStorage(filters,
 #    maxEntries), which LiveEventStore now builds every NEG-OPEN's storage through; NostrSemanticsStore
@@ -392,7 +404,7 @@ mavenPublish = "0.37.0"
 # catch-all; SearchableEvent grows the read-path forEachIndexableField, no reindex).
 # Prev cecc3287b2 (2026-09-01: 17 catch-all kinds split into title/body roles, four
 # affiliation URLs, six doubled `t`-tag scans dropped; a ranking backfill).
-quartz = "2.21.0"
+quartz = "2.22.1"
 coroutines = "1.11.0"
 serialization = "1.12.0"
 # Matches what Quartz brings transitively; Gradle would resolve to it regardless.
