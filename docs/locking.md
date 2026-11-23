@@ -103,6 +103,27 @@ order and a kind 5 by id may be pointing at a card. The status line shows the
 effect: `lock.ingest.trust.wait` is booked only by the trust half, and
 `lock.ingest.wait` no longer tracks `lock.gate.hold`.
 
+**The expiry sweep held both locks for the whole backlog.** `deleteExpiredEvents`
+took the gate and `writes` once and ran every `sweepPage` round inside, so a
+backlog of N expired events stalled every publish for N / 10,000 rounds back
+to back. It now takes both locks PER ROUND (`Deletions.sweep`'s `round`
+wrapper), and a publish queued behind the sweep gets `writes` between two
+pages. Safe for expiry specifically: each round is the old round verbatim
+(read a page, remove exactly those docs) under one hold, so nothing
+interleaves within a page; what a write between pages can observe is some
+already-expired events still stored, which reads hide and NIP-40 lets a relay
+drop at any time, so no admission rested on it. The cutoff is read once,
+before the first page, and every admission path rejects an event already
+expired when offered, so the match set can only grow by writes whose expiry
+check passed before the cutoff (finitely many): the sweep terminates and
+does not chase events that expire while it runs. An admin `delete(filters)`
+and a vanish keep one hold for the whole sweep: a filter's match set is not
+fixed, so a write between pages could add an event a later page deletes.
+`SweepPagingTest` pins all three properties (same set as a one-page sweep, a
+publish between pages, termination under arrivals). The page stays
+`sweepPage` (10,000): every round re-runs the query over what is left, so a
+smaller page shortens each hold but multiplies the sweep's total matching.
+
 ## Why `writes` cannot simply go away
 
 `docs/multi-node-consistency.md` already states the invariant: query-then-write
@@ -136,8 +157,9 @@ reader-writer arrangement for the paths that span owners:
 
 - per-event `insert` takes SHARED on the store plus its owner's stripe;
 - `batchInsert` (both bulk shapes), `transaction`, `delete(filters)`,
-  `deleteExpiredEvents` and the reindex take EXCLUSIVE — they touch arbitrary
-  owners and the bulk commits are designed around one atomic diff;
+  `deleteExpiredEvents` (per page, as it takes `writes` today) and the reindex
+  take EXCLUSIVE — they touch arbitrary owners and the bulk commits are
+  designed around one atomic diff;
 - kotlinx has no RW mutex; `Semaphore(N)` with 1 permit for shared and `N` for
   exclusive is the standard construction and suspends like `Mutex` does.
 

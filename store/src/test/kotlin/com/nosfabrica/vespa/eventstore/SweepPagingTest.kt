@@ -23,15 +23,28 @@ package com.nosfabrica.vespa.eventstore
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
+import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
+import com.nosfabrica.vespa.eventstore.trust.TrustProjection
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
+import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
+import com.vitorpamplona.quartz.nip40Expiration.expiration
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
+import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -75,6 +88,13 @@ class SweepPagingTest {
 
     private fun note(at: Long) = Event(id(), alice, at, 1, emptyArray(), "n$seq", "")
 
+    private val realNow = System.currentTimeMillis() / 1000
+
+    private fun expiringNote(
+        at: Long,
+        expiresAt: Long,
+    ) = Event(id(), alice, at, 1, arrayOf(arrayOf("expiration", "$expiresAt")), "e$seq", "")
+
     private fun article(
         at: Long,
         slug: String,
@@ -105,20 +125,197 @@ class SweepPagingTest {
     @Test
     fun `expiry sweep also pages and clears the whole backlog`() =
         runBlocking {
-            // Every event expires at t=500; the store's clock is well past it.
-            val expiring =
-                (1..CORPUS).map {
-                    Event((++seq).toString(16).padStart(64, '0'), alice, 1_000L + it, 1, arrayOf(arrayOf("expiration", "500")), "e$it", "")
-                }
+            // Admitted because it has not expired by the WALL clock (ingress
+            // rejects an already-expired event, so a backlog seeded with an
+            // expiration in the past would be stored as nothing at all — this
+            // test used to, and passed with the sweep doing no work); the
+            // sweeping store's clock is past it.
+            val expiring = (1..CORPUS).map { expiringNote(at = 1_000L + it, expiresAt = realNow + 50_000) }
             store.batchInsert(expiring)
+            assertEquals(CORPUS, stored(), "seeded")
+            val late = NostrSemanticsStore(index, nowSecs = { realNow + 100_000 }, sweepPage = PAGE)
 
             index.searchLimits.clear()
-            store.deleteExpiredEvents()
+            late.deleteExpiredEvents()
             val sweepReads = index.searchLimits.toList()
 
             assertEquals(0, stored(), "the whole expired backlog is gone")
+            assertTrue(sweepReads.size > CORPUS / PAGE, "the sweep took multiple rounds: $sweepReads")
             assertTrue(sweepReads.all { it != null && it <= PAGE }, "expiry reads are paged too: $sweepReads")
         }
+
+    /**
+     * (a) Releasing the locks between pages must not change WHAT is swept: a
+     * sweep over many pages leaves exactly the event documents AND the
+     * reputation documents a one-page sweep leaves. Cards are in the mix
+     * because each page's removes are a trust reaction of their own now,
+     * rather than part of one long hold.
+     */
+    @Test
+    fun `a paged expiry sweep removes exactly what a single-page sweep removes`() =
+        runBlocking {
+            fun corpus(): List<Event> {
+                seq = 0
+                return (1..CORPUS).flatMap { i ->
+                    listOf(
+                        expiringNote(at = 1_000L + i, expiresAt = realNow + 50_000),
+                        expiringNote(at = 1_000L + i, expiresAt = realNow + 200_000), // not yet due
+                        note(at = 1_000L + i), // never expires
+                        UserAssertionEvent(
+                            id(),
+                            alice,
+                            1_000L + i,
+                            arrayOf(arrayOf("d", "%064x".format(i)), arrayOf("rank", "50"), arrayOf("expiration", "${if (i % 2 == 0) realNow + 50_000 else realNow + 200_000}")),
+                            "",
+                            "",
+                        ),
+                    )
+                }
+            }
+
+            suspend fun sweptWith(page: Int): Triple<Set<String>, Map<String, *>, Int> {
+                val inner = InMemoryEventIndex()
+                val reputations = InMemoryReputationIndex()
+                val recording = RecordingIndex(TrustProjection(inner, reputations))
+                val seeding = NostrSemanticsStore(recording, sweepPage = page)
+                seeding.batchInsert(corpus()).forEach { assertEquals(IEventStore.InsertOutcome.Accepted, it) }
+                val late = NostrSemanticsStore(recording, nowSecs = { realNow + 100_000 }, sweepPage = page)
+                recording.searchLimits.clear()
+                late.deleteExpiredEvents()
+                val rounds = recording.searchLimits.size
+                return Triple(inner.search(EventQuery()).mapTo(HashSet()) { it.id }, reputations.docs.toMap(), rounds)
+            }
+
+            val (pagedDocs, pagedReputations, pagedRounds) = sweptWith(PAGE)
+            val (wholeDocs, wholeReputations, wholeRounds) = sweptWith(10_000)
+
+            val expected = corpus().filter { (it.expiration() ?: Long.MAX_VALUE) > realNow + 100_000 }.mapTo(HashSet()) { it.id }
+            assertEquals(CORPUS * 4 - CORPUS - CORPUS / 2, expected.size, "fixture: a note and every other card are due")
+            assertEquals(expected, pagedDocs, "the paged sweep removed exactly the due events")
+            assertEquals(wholeDocs, pagedDocs, "and the same set as one page")
+            assertTrue(wholeReputations.isNotEmpty(), "fixture: the cards projected reputation documents")
+            assertEquals(wholeReputations, pagedReputations, "and left the same reputation documents")
+            assertTrue(pagedRounds > (CORPUS + CORPUS / 2) / PAGE, "the paged sweep really took many pages: $pagedRounds")
+            assertEquals(2, wholeRounds, "the reference sweep is one page plus the empty one that ends it")
+        }
+
+    /**
+     * (b) THE POINT OF PAGING: a publish waiting for the writer lock gets it
+     * between two pages of an expiry sweep, instead of after the last one. The
+     * sweep is parked inside its first page's removes (both locks held), the
+     * publish is started and queued on the lock, then the sweep is let go —
+     * and the publish's note must already be stored when the second page's
+     * removes run. Under one hold for the whole sweep it was stored after the
+     * last page. Deterministic, not a latency budget: kotlinx `Mutex` hands
+     * the lock to its first waiter on unlock, and the publish is started
+     * UNDISPATCHED, so it is that waiter before the sweep can re-take it.
+     */
+    @Test
+    fun `a publish takes the writer lock between two pages of an expiry sweep`() =
+        runBlocking {
+            val parking = ParkingSweepIndex()
+            val store = NostrSemanticsStore(parking, nowSecs = { realNow + 100_000 }, sweepPage = PAGE)
+            store.batchInsert((1..CORPUS).map { expiringNote(at = 1_000L + it, expiresAt = realNow + 50_000) })
+            val publish = note(at = 9_000L)
+            parking.watched = publish.id
+
+            coroutineScope {
+                val sweep = async { store.deleteExpiredEvents() }
+                parking.parked.await()
+                val published = async(start = CoroutineStart.UNDISPATCHED) { store.insert(publish) }
+                assertFalse(published.isCompleted, "the publish is queued behind the sweep's first page")
+                parking.release.complete(Unit)
+                withTimeout(5_000) {
+                    sweep.await()
+                    published.await()
+                }
+            }
+
+            val seen = parking.watchedStoredAtRemove.toList()
+            assertTrue(seen.size >= 3, "the sweep spans several pages: $seen")
+            assertEquals(false, seen.first(), "the publish was still queued during page one")
+            assertTrue(seen.drop(1).all { it }, "the publish landed between page one and page two, not after the sweep: $seen")
+            assertTrue(parking.inner.get(publish.id) != null, "and it is stored")
+            assertEquals(1, parking.inner.search(EventQuery()).size, "while every expired event is gone")
+        }
+
+    /**
+     * (c) The sweep's cutoff is taken ONCE: events that expire WHILE it runs
+     * are not chased, so a steady trickle of short-lived events published
+     * between pages cannot keep it going. Each page's removes publish one
+     * event expiring a second after the store's clock and then move the
+     * clock 100 s on, so by the next page that event is due. A cutoff re-read
+     * per page sweeps every one of them, a page at a time; the fixed one ends
+     * after the seeded backlog and leaves them for the next pass, which takes
+     * them.
+     */
+    @Test
+    fun `an expiry sweep terminates while new events expire during it`() =
+        runBlocking {
+            var clock = realNow + 100_000
+            val inner = InMemoryEventIndex()
+            val arrivals = mutableListOf<Event>()
+            val inFlight = mutableListOf<Deferred<Unit>>()
+            val publishers = this
+            lateinit var store: NostrSemanticsStore
+            var removes = 0
+            var trickle = true
+            val trickling =
+                object : EventIndex by inner {
+                    override suspend fun removeDocs(docs: List<EventDoc>) {
+                        inner.removeDocs(docs)
+                        removes++
+                        if (trickle && arrivals.size < MAX_ARRIVALS) {
+                            val e = expiringNote(at = 9_000L + arrivals.size, expiresAt = clock + 1)
+                            arrivals += e
+                            clock += 100
+                            // Queued on the writer lock the sweep holds right now;
+                            // it lands as soon as this page releases it.
+                            inFlight += publishers.async(start = CoroutineStart.UNDISPATCHED) { store.insert(e) }
+                        }
+                    }
+                }
+            store = NostrSemanticsStore(trickling, nowSecs = { clock }, sweepPage = PAGE)
+            val backlog = (1..CORPUS).map { expiringNote(at = 1_000L + it, expiresAt = realNow + 50_000) }
+            store.batchInsert(backlog)
+
+            withTimeout(5_000) { store.deleteExpiredEvents() }
+            inFlight.awaitAll()
+
+            val pages = (CORPUS + PAGE - 1) / PAGE
+            assertEquals(pages, removes, "the sweep removed the seeded backlog's pages and stopped")
+            assertTrue(backlog.none { inner.get(it.id) != null }, "the backlog is gone")
+            assertEquals(pages, arrivals.size, "one arrival per page")
+            assertTrue(arrivals.all { inner.get(it.id) != null }, "events that expired during the sweep are left for the next one")
+
+            trickle = false
+            store.deleteExpiredEvents()
+            assertTrue(arrivals.none { inner.get(it.id) != null }, "and the next sweep reaps them")
+        }
+
+    /**
+     * Parks the expiry sweep's FIRST removes until [release], with both writer
+     * locks held, and records for every removes call whether [watched] was
+     * already stored.
+     */
+    private class ParkingSweepIndex(
+        val inner: InMemoryEventIndex = InMemoryEventIndex(),
+    ) : EventIndex by inner {
+        val parked = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        var watched: String? = null
+        val watchedStoredAtRemove = mutableListOf<Boolean>()
+
+        override suspend fun removeDocs(docs: List<EventDoc>) {
+            val id = watched ?: return inner.removeDocs(docs)
+            watchedStoredAtRemove += inner.get(id) != null
+            if (!parked.isCompleted) {
+                parked.complete(Unit)
+                release.await()
+            }
+            inner.removeDocs(docs)
+        }
+    }
 
     /** An explicit limit still means "delete at most N", satisfied by one page. */
     @Test
@@ -238,5 +435,8 @@ class SweepPagingTest {
 
         /** Mirrors NostrSemanticsStore's private BULK_MIN — the batch size that takes the bulk path. */
         const val BULK = 16
+
+        /** A backstop for a regressed sweep that chases its arrivals: it then sweeps them all, and the count says so. */
+        const val MAX_ARRIVALS = 50
     }
 }

@@ -37,7 +37,9 @@ import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 /**
  * NIP-09 (deletion request) and NIP-62 (request to vanish) enforcement, plus
  * the paged [sweep] every bulk erase runs on. Every method must be called
- * under the store's writer lock — query-then-write is only atomic there.
+ * under the store's writer lock — query-then-write is only atomic there. For
+ * [sweep] that means each ROUND: a caller may hold the lock across the whole
+ * sweep, or hand in a `round` wrapper that takes it per round.
  */
 internal class Deletions(
     private val index: EventIndex,
@@ -161,8 +163,21 @@ internal class Deletions(
      * empty. No offset: each round re-runs the SAME query, and the removes
      * shrink the match set, so the next round naturally sees the next batch.
      * (Offset paging would be wrong — deleting under an offset skips rows.)
+     *
+     * [round] wraps each round — its read AND its removes — and is how a
+     * caller chooses its lock granularity. Null (the default) runs the round inline,
+     * for a caller that already holds the writer lock across the whole sweep
+     * (a vanish inside its own admission, an admin delete, a mixed batch's
+     * replay). A caller that may release between rounds passes a wrapper that
+     * takes the lock per round — the expiry sweep, see
+     * `NostrSemanticsStore.deleteExpiredEvents` for why that is safe for it and
+     * not for every sweep. Each round is self-contained either way: it reads
+     * the page and removes exactly what it read inside one [round].
      */
-    suspend fun sweep(q: EventQuery) {
+    suspend fun sweep(
+        q: EventQuery,
+        round: (suspend (suspend () -> Unit) -> Unit)? = null,
+    ) {
         // The caller's own limit, if any, decides whether one page is the whole
         // job, so page on q.limit rather than sweepPage. Plain sweeps stamp
         // RANK_UNRANKED to opt out of the recency planner's count probes — a
@@ -175,21 +190,34 @@ internal class Deletions(
             }
         var rounds = 0
         var lastPage: Set<String>? = null
-        while (rounds++ < MAX_SWEEP_ROUNDS) {
+        var drained = false
+        // A local suspend lambda rather than a `{ it() }` default for [round]:
+        // that default crashed the Kotlin 2.4.21 JVM IR backend ("has no continuation").
+        val oneRound: suspend () -> Unit = oneRound@{
             val page = index.search(paged)
-            if (page.isEmpty()) return
+            if (page.isEmpty()) {
+                drained = true
+                return@oneRound
+            }
             val ids = page.mapTo(HashSet()) { it.id }
             // An acked remove is visible to search (the EventIndex contract), so
             // a page identical to the one just removed means the deletes are not
             // landing. Returning silently would report a vanish/delete as
-            // enforced while the events are still served.
+            // enforced while the events are still served. (A caller that
+            // releases the lock between rounds keeps this check sound: only a
+            // writer RE-STORING every doc of the last page between two rounds
+            // could fake it, and it then fails loudly rather than silently.)
             check(ids != lastPage) { "sweep is not shrinking: ${ids.size} matches for $q survived their own removal" }
             // The docs are already in hand — removeDocs lets the trust
             // projection react without a get per id.
             index.removeDocs(page)
             // A limit'd delete is satisfied by its first page.
-            if (q.limit != null) return
+            if (q.limit != null) drained = true
             lastPage = ids
+        }
+        while (rounds++ < MAX_SWEEP_ROUNDS) {
+            if (round == null) oneRound() else round(oneRound)
+            if (drained) return
         }
         // Loud, not silent: the caller (a vanish, an expiry pass, an admin
         // delete) must not believe the sweep completed.

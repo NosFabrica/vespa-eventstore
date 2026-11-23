@@ -1280,13 +1280,56 @@ class NostrSemanticsStore(
             missing.toList()
         }
 
+    /**
+     * NIP-40: remove every event whose expiration has passed — ONE PAGE PER
+     * LOCK HOLD, so a publish waits for at most one page of the sweep rather
+     * than all of it. A backlog of N expired events used to hold both writer
+     * locks for N / [sweepPage] rounds back to back, and every write in the
+     * process queued behind it.
+     *
+     * Both locks per page, for the reason on [delete]: NIP-40 expiry does not
+     * ask what kind it is reaping, so it can reap cards, and each page's
+     * removes are a trust reaction that must not race the drain.
+     *
+     * WHY RELEASING BETWEEN PAGES IS SAFE HERE, and is not for every sweep:
+     *
+     *  - Each page is the old round verbatim — read a page of matches, remove
+     *    exactly those docs — inside one hold of both locks, so no write
+     *    interleaves WITHIN a page. A write between pages sees a state the
+     *    old sweep never exposed (some expired events gone, some not), but
+     *    every event in it is already expired: reads hide it
+     *    (`notExpiredAt`), and NIP-40 lets a relay drop it at any time, so
+     *    "this expired event is still stored" was never an invariant anything
+     *    could rest on. No other document's admission depends on which
+     *    expired events are left — a supersession, tombstone or vanish check
+     *    against an expired doc already had both answers depending on when
+     *    the periodic sweep last ran.
+     *  - The cutoff is taken ONCE, before the first page, so the match set is
+     *    fixed: an event only joins it with an expiration at or before the
+     *    sweep's start, and every admission path rejects an event already
+     *    expired by the wall clock when it is offered
+     *    (`EventAdmission.localOutcome`, which the per-event path, the mixed
+     *    replay and a transaction all apply, and the bulk planner's stage A).
+     *    The only arrivals that can still match are writes whose expiry check
+     *    passed BEFORE the cutoff and commit after it — finitely many, so the sweep
+     *    terminates; one that lands is swept in a later page, which is what
+     *    it would have been had it committed before the sweep began. A
+     *    cutoff re-read per page would instead chase every event that
+     *    expires while the sweep runs. [Deletions.sweep]'s round cap stays
+     *    the backstop.
+     *
+     * An admin [delete] and a vanish keep the whole sweep under one hold: a
+     * filter's match set is NOT fixed — a write between pages could add an
+     * event a later page then deletes, which a single-lock delete never would
+     * — and a vanish runs inside its own admission, before the request is
+     * stored.
+     */
     override suspend fun deleteExpiredEvents() {
         checkWritable("deleteExpiredEvents")
         withActivity(Activity.Delete) {
             // expiresBefore is strict (<): +1 makes "expires exactly now" due, per NIP-40.
-            // Both locks, for the reason on [delete]: NIP-40 expiry does not ask
-            // what kind it is reaping, so it can reap cards.
-            locks.gated(trust = true, WriteLocks.SWEEP, WriteLocks.SWEEP_TRUST) { deletions.sweep(EventQuery(expiresBefore = nowSecs() + 1)) }
+            val due = EventQuery(expiresBefore = nowSecs() + 1)
+            deletions.sweep(due) { page -> locks.gated(trust = true, WriteLocks.SWEEP, WriteLocks.SWEEP_TRUST) { page() } }
         }
     }
 
