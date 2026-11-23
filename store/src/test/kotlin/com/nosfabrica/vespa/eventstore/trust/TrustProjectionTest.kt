@@ -1341,11 +1341,66 @@ class TrustProjectionTest {
         }
 
     /**
-     * The commit, not the call, is the unit of reaction — so a small batch of
-     * cards is still one cell write, whichever path admits it.
+     * What a removal remembers as named is forgotten once a card of that service is SKIPPED: a
+     * commit that removes the list, settles a card of its service under the map that no longer
+     * names it (a later removal flushes), and only then stores a list naming it again holds a
+     * card with no cell, which only the walk can reach. A batch takes the mixed planner now (see
+     * above), but `transaction {}` still admits its events one by one inside ONE trust commit,
+     * which is exactly that order.
      */
     @Test
-    fun `a small batch admitted event by event still writes its cells once`() =
+    fun `a service unnamed mid-commit long enough to skip a card is walked when re-named`() =
+        runBlocking {
+            val proj = TrustProjection(InMemoryEventIndex(), InMemoryReputationIndex())
+            proj.backlog.drainInBackground { }
+            val st = NostrSemanticsStore(proj, relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+            val old = list10040(serviceKey = service, at = 100)
+            st.insert(old)
+            val doomed = card(signer = service2)
+            st.insert(doomed)
+            val later = "cd".repeat(32)
+            // One commit admitted event by event: the list goes, a card of its service lands, a
+            // second removal flushes that card under a map naming nobody, and a newer list names
+            // the service again.
+            val events =
+                listOf(
+                    DeletionRequestEvent(id(), observer, next(), arrayOf(arrayOf("e", old.id)), "", ""),
+                    card(signer = service, about = later, rank = 33),
+                    DeletionRequestEvent(id(), service2, next(), arrayOf(arrayOf("e", doomed.id)), "", ""),
+                    list10040(serviceKey = service, at = 300),
+                )
+            st.transaction { events.forEach { insert(it) } }
+            assertEquals(setOf(service), proj.backlog.queuedRewalks(), "the skipped card is owed its walk")
+            proj.backlog.drain { it() }
+            assertEquals(serviceCells(service to 33), proj.reputations.get(later)?.influenceScores)
+        }
+
+    /**
+     * The commit, not the call, is the unit of reaction — so several cards
+     * admitted ONE BY ONE inside one commit (`transaction {}`, each through
+     * putIfNewer) are still one cell write, which no batch-shaped port member
+     * could have reached.
+     */
+    @Test
+    fun `a multi-card commit admitted event by event writes its cells once`() =
+        runBlocking {
+            val counting = MarkerCountingReputationIndex(InMemoryReputationIndex())
+            val st = NostrSemanticsStore(TrustProjection(InMemoryEventIndex(), counting), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+            st.insert(list10040())
+            val before = counting.subjectCellCalls
+            val subjects = (1..10).map { it.toString(16).padStart(64, 'e') }
+            val cards = subjects.mapIndexed { i, s -> card(about = s, rank = 40 + i) }
+            st.transaction { cards.forEach { insert(it) } }
+            assertEquals(before + 1, counting.subjectCellCalls, "ten admissions, one commit, one cell write")
+            subjects.forEachIndexed { i, s -> assertEquals(40 + i, counting.get(s)?.influenceScores?.get(ServiceKey(service))) }
+        }
+
+    /**
+     * The commit, not the call, is the unit of reaction — so a small batch of
+     * cards (the bulk path since BULK_MIN is 2) is still one cell write.
+     */
+    @Test
+    fun `a small batch of cards writes its cells once`() =
         runBlocking {
             val counting = MarkerCountingReputationIndex(InMemoryReputationIndex())
             val st = NostrSemanticsStore(TrustProjection(InMemoryEventIndex(), counting), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
