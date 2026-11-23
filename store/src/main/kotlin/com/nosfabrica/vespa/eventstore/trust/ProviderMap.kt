@@ -238,7 +238,7 @@ internal class ProviderMap(
         } catch (refused: PartialAnswer) {
             val issuedAt = nowSecs()
             val docs = inner.search(EventQuery(kinds = listOf(TrustProviderListEvent.KIND), notExpiredAt = issuedAt, acceptsPartial = true))
-            val maps = docs.mapNotNull { it.toEvent() as? TrustProviderListEvent }
+            val maps = newestPerObserver(docs).mapNotNull { it.toEvent() as? TrustProviderListEvent }
             Pass(providersIn(maps).copy(partial = true), Delegations.delegationsOf(maps), issuedAt, builds.incrementAndGet()).also { partialPass = it }
         }
     }
@@ -392,7 +392,7 @@ internal class ProviderMap(
         // `EventFactory` dispatch, and this rebuilds on every 10040 write, so
         // handing each side the documents to decode itself would double the
         // cost of the pass the KDoc above promises is shared.
-        val maps = docs.mapNotNull { it.toEvent() as? TrustProviderListEvent }
+        val maps = newestPerObserver(docs).mapNotNull { it.toEvent() as? TrustProviderListEvent }
         val fresh = Pass(providersIn(maps), Delegations.delegationsOf(maps), issuedAt, seq)
         synchronized(swapLock) {
             val prior = newest
@@ -429,6 +429,22 @@ internal class ProviderMap(
     }
 
     companion object {
+        /**
+         * One 10040 per observer, the NIP-01 winner ([EventDoc.NEWEST_FIRST]).
+         * The store holds one version per address, except between a
+         * supersession's put and its sweep of the old version, or after a sweep
+         * that failed (the winner is written first, so a failure leaves an
+         * extra version rather than none, until the observer's next list). A
+         * pass built over both would name the old list's services too and take
+         * the observer's lens from whichever version the engine listed first.
+         */
+        internal fun newestPerObserver(docs: List<EventDoc>): List<EventDoc> {
+            if (docs.size < 2) return docs
+            val newest = LinkedHashMap<String, EventDoc>()
+            for (doc in docs) newest.merge(doc.pubkey, doc) { a, b -> if (EventDoc.NEWEST_FIRST.compare(a, b) <= 0) a else b }
+            return if (newest.size == docs.size) docs else newest.values.toList()
+        }
+
         /** The named services per dimension, and every lens, from [listDocs]' typed entries. */
         fun providersOf(listDocs: List<EventDoc>): TrustProviders = providersIn(listDocs.mapNotNull { it.toEvent() as? TrustProviderListEvent })
 

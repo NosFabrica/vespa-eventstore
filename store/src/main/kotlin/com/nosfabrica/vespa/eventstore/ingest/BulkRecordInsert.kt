@@ -60,7 +60,9 @@ import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
  *     the common no-flagged-owners batch;
  *  D. per-address supersession resolved IN RUN ORDER, ending exactly where
  *     sequential inserts would;
- *  E. one pipelined [EventIndex.putAll] of the survivors.
+ *  E. one pipelined [EventIndex.putAll] of the survivors, THEN the removal of
+ *     the versions they superseded (winner first, so a failure never leaves an
+ *     address empty).
  *
  * Every stage read is unbounded — batched I/O may not trade exactness for
  * speed; a short page here would be a wrong write, not a small answer.
@@ -352,15 +354,22 @@ internal class BulkRecordInsert(
                 versions.forEach { doc -> if (doc.id != bestDoc?.id && doc.id !in removeIds) scheduleRemove(doc) }
             }
         }
+        // Stage E — one pipelined write for everything that survived, BEFORE
+        // the versions it supersedes are removed. The other order left every
+        // superseded address holding neither version from the remove's ack to
+        // the put's, and for good when the put failed or the commit was
+        // cancelled between them: nobody re-offers the old version. A failure
+        // after the put leaves a stale extra version instead, which the next
+        // write to the address sweeps (the drift repair above) and which a read
+        // may serve beside the winner until then. (Timing is booked by the
+        // layers below: the projection decorator splits it into write /
+        // proj.fetch / proj.write.)
+        if (toPut.isNotEmpty()) index.putAll(toPut.values.map { it.toDoc() })
         // Skip the round trip when nothing supersedes — the common case for a
         // fresh corpus (first-seen addresses remove nothing). The docs are in
-        // hand, so removeDocs lets the projection react without a get per id.
+        // hand, so removeDocs lets the projection react without a get per id;
+        // it records nothing for a superseded card (TrustProjection.removed).
         if (removeFromStore.isNotEmpty()) index.removeDocs(removeFromStore)
-
-        // Stage E — one pipelined write for everything that survived. (Timing
-        // is booked by the layers below: the projection decorator splits it
-        // into write / proj.fetch / proj.write.)
-        if (toPut.isNotEmpty()) index.putAll(toPut.values.map { it.toDoc() })
         alive().forEach { i -> outcome[i] = IEventStore.InsertOutcome.Accepted }
         // A row this run never decided is the STORE's fault, not the event's:
         // Failed tells the caller to re-offer it, where Rejected would say

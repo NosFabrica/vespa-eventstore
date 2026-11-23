@@ -26,6 +26,7 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -135,5 +136,50 @@ class PutIfNewerTest {
             assertTrue(idx.putIfNewer(n1))
             assertTrue(idx.putIfNewer(n2))
             assertEquals(2, idx.search(EventQuery(kinds = listOf(1), authors = listOf(alice))).size, "regular events must both remain")
+        }
+
+    /**
+     * The winner is durable BEFORE the versions it replaces are removed. The
+     * default removed first, so a put that failed (an engine 5xx, a cancelled
+     * coroutine) after the remove had landed left the address holding NEITHER
+     * version — a profile or follow list lost for good, since nothing re-offers
+     * the stale one. Put first, the same failure leaves the old version served.
+     */
+    @Test
+    fun aFailedPutLeavesTheReplacedVersionStored() =
+        runBlocking {
+            val inner = InMemoryEventIndex()
+            val v1 = doc("d1", kind = 0, at = 100)
+            assertTrue(inner.putIfNewer(v1))
+            val failing =
+                object : EventIndex by inner {
+                    override suspend fun put(doc: EventDoc) = error("put refused")
+
+                    override suspend fun putIfNewer(doc: EventDoc): Boolean = super<EventIndex>.putIfNewer(doc)
+                }
+            assertFailsWith<IllegalStateException> { failing.putIfNewer(doc("d2", kind = 0, at = 200)) }
+            assertEquals(listOf(v1.id), inner.search(EventQuery(kinds = listOf(0), authors = listOf(alice))).map { it.id }, "the old version must survive a failed put")
+        }
+
+    /** The other half: once the winner is stored, a failed sweep of the old version leaves an extra version, never none, and the next write repairs it. */
+    @Test
+    fun aFailedRemoveLeavesAStaleVersionTheNextWriteSweeps() =
+        runBlocking {
+            val inner = InMemoryEventIndex()
+            val v1 = doc("e1", kind = 0, at = 100)
+            assertTrue(inner.putIfNewer(v1))
+            val failing =
+                object : EventIndex by inner {
+                    override suspend fun removeDocs(docs: List<EventDoc>) = error("remove refused")
+
+                    override suspend fun putIfNewer(doc: EventDoc): Boolean = super<EventIndex>.putIfNewer(doc)
+                }
+            val v2 = doc("e2", kind = 0, at = 200)
+            assertFailsWith<IllegalStateException> { failing.putIfNewer(v2) }
+            val after = inner.search(EventQuery(kinds = listOf(0), authors = listOf(alice))).map { it.id }.toSet()
+            assertEquals(setOf(v1.id, v2.id), after, "the winner is stored, the stale version is merely not yet swept")
+            val v3 = doc("e3", kind = 0, at = 300)
+            assertTrue(inner.putIfNewer(v3))
+            assertEquals(listOf(v3.id), inner.search(EventQuery(kinds = listOf(0), authors = listOf(alice))).map { it.id }, "drift repair sweeps every older version")
         }
 }

@@ -1230,12 +1230,39 @@ class TrustProjectionTest {
         }
 
     /**
-     * A RE-SIGN THROUGH THE BULK PATH OWES NO WALK. Both bulk planners supersede a
-     * 10040 as `removeDocs(old)` then `putAll(new)`, and the removal drops the
-     * provider map, so the new list's services used to be judged against an index
-     * holding NEITHER version: every service only this observer named read as
-     * fresh, and its whole card corpus was walked again for cells that were all
-     * there. Only a service the list names for the first time is owed one.
+     * Every supersession writes its winner BEFORE it sweeps the version it
+     * replaced (a failed put must leave the old version, never neither), so the
+     * sweep's removal of the old card arrives after the winner's cell — and must
+     * not retract it. One retraction survives from the old remove-then-put
+     * order: a winner whose signer no 10040 maps any more writes no cell, so the
+     * predecessor's cell, left from when it was named, goes, as it went then.
+     */
+    @Test
+    fun `a superseded card swept after its unmapped winner still retracts the stale cell`() =
+        runBlocking {
+            val rep = InMemoryReputationIndex()
+            val st = NostrSemanticsStore(TrustProjection(InMemoryEventIndex(), rep), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+            st.insert(list10040(serviceKey = service))
+            val subjects = (1..20).map { it.toString(16).padStart(64, 'e') }
+            st.batchInsert(subjects.map { s -> card(about = s, rank = 10, at = 2_000_000) })
+            subjects.forEach { s -> assertEquals(serviceCells(service to 10), rep.get(s)?.influenceScores, "named: the cell is written") }
+            st.insert(list10040(serviceKey = service2)) // the observer re-points: service is named by nobody now
+            st.batchInsert(subjects.map { s -> card(about = s, rank = 30, at = 2_000_300) })
+            assertEquals(20, st.count(Filter(kinds = listOf(UserAssertionEvent.KIND))), "one version per address")
+            subjects.forEach { s ->
+                val left = rep.get(s)
+                assertTrue(left == null || left.isEmpty(), "an unnamed winner's predecessor cell goes, got $left")
+            }
+        }
+
+    /**
+     * A RE-SIGN THROUGH THE BULK PATH OWES NO WALK. Both bulk planners used to
+     * supersede a 10040 as `removeDocs(old)` then `putAll(new)` (they write the
+     * winner first now), and the removal dropped the provider map, so the new
+     * list's services were judged against an index holding NEITHER version: every
+     * service only this observer named read as fresh, and its whole card corpus
+     * was walked again for cells that were all there. Only a service the list
+     * names for the first time is owed one.
      */
     private fun assertBulkResignWalksOnlyTheNewService(mixed: Boolean) =
         runBlocking {

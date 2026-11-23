@@ -84,27 +84,39 @@ internal class BulkMixedInsert(
         // removeDocs lets the projection react without re-reading each one.
         val removed = beforeDocs.filter { it.id !in afterIds }
         val added = after.filter { it.id !in before }
+        // The surviving RECORDS land first, before the versions they supersede
+        // are removed: removing first left a superseded address holding
+        // neither version until the put, and for good when the put failed —
+        // nobody re-offers the old one. A failure after them leaves a stale
+        // extra version, which the next write to the address sweeps. The
+        // GUARDS (kind 5 / 62) are the opposite case and still land last,
+        // after the erase they stand for: a tombstone stored over a removal
+        // that then failed would be a deletion recorded and never enforced, and
+        // its re-offer would come back a duplicate.
+        val (guardsAdded, records) = added.partition { it.kind == DeletionRequestEvent.KIND || it.kind == RequestToVanishEvent.KIND }
+        if (records.isNotEmpty()) index.putAll(records)
         if (removed.isNotEmpty()) index.removeDocs(removed)
         // The vanishes' erase of what the snapshot never held. Per owner, the
         // newest ADMITTED vanish covering this relay decides it: each one
         // erases the owner's stored history up to its own created_at, so for
         // documents stored BEFORE this batch the union is the newest one's
         // window, whatever the batch order. Applied after the removes and
-        // BEFORE the puts, which is what makes it exact: the index then holds
-        // no event of this batch, and the replay already decided every one of
-        // them (an owner's event inside a window was erased or VANISHED there;
-        // the surviving request itself, which its own window covers, is put
-        // after). Paged by [sweepPage], so neither the read nor the remove is
-        // ever the whole history, and a deployment that caps unlimited hits
-        // cannot cut it short: the preload query this replaced came back
-        // truncated there, and the vanish was reported Accepted over the rest.
+        // BEFORE the requests are put, which is what makes it exact: the
+        // replay already decided every event of this batch (an owner's event
+        // inside a window was erased or VANISHED there, so no record put above
+        // is inside one; the surviving request itself, which its own window
+        // covers, is put after). Paged by [sweepPage], so neither the read nor
+        // the remove is ever the whole history, and a deployment that caps
+        // unlimited hits cannot cut it short: the preload query this replaced
+        // came back truncated there, and the vanish was reported Accepted over
+        // the rest.
         outcomes
             .zip(events)
             .mapNotNull { (outcome, e) -> (e as? RequestToVanishEvent)?.takeIf { outcome is IEventStore.InsertOutcome.Accepted && it.shouldVanishFrom(relay) } }
             .groupBy { it.pubKey }
             .forEach { (_, vanishes) -> erase.applyVanish(vanishes.maxBy { it.createdAt }) }
-        if (added.isNotEmpty()) index.putAll(added)
-        added.forEach {
+        if (guardsAdded.isNotEmpty()) index.putAll(guardsAdded)
+        guardsAdded.forEach {
             when (it.kind) {
                 DeletionRequestEvent.KIND -> guards.noteDeletionStored(it.pubkey)
                 RequestToVanishEvent.KIND -> guards.noteVanishStored(it.pubkey)

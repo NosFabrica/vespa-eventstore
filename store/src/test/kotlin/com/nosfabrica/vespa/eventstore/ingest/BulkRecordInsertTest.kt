@@ -36,6 +36,7 @@ import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /**
@@ -341,4 +342,52 @@ class BulkRecordInsertTest {
 
     @Test
     fun `the putIfNewer branch reports a raced replaceable duplicate as a duplicate`() = racedReplaceableDuplicate(supersedesViaPut = true)
+
+    /** Refuses every put of [kind] while [failing]: an engine 5xx, a cancelled feed, after the reads have answered. */
+    private class PutFailingIndex(
+        private val inner: InMemoryEventIndex,
+        private val kind: Int,
+    ) : EventIndex by inner {
+        var failing = false
+
+        override suspend fun put(doc: EventDoc) {
+            check(!(failing && doc.kind == kind)) { "put refused" }
+            inner.put(doc)
+        }
+
+        override suspend fun putAll(docs: List<EventDoc>) = docs.forEach { put(it) }
+
+        override suspend fun putIfNewer(doc: EventDoc): Boolean = super<EventIndex>.putIfNewer(doc)
+    }
+
+    /**
+     * A supersession writes its winner BEFORE it removes what the winner
+     * replaces. The bulk path removed the stored version first and put the
+     * batch after, so a put that failed (or a commit cancelled between the
+     * two) left the address holding NEITHER version: a kind 0 or 3 gone until
+     * its author happened to publish again, and the retry could not bring it
+     * back — the old version is nobody's to re-offer. Both the bulk path and
+     * the per-event one are held to it.
+     */
+    @Test
+    fun `a failed put never loses the version it was replacing`() =
+        runBlocking {
+            for (bulk in listOf(true, false)) {
+                val inner = InMemoryEventIndex()
+                val index = PutFailingIndex(inner, kind = 0)
+                val store = NostrSemanticsStore(index, relay = relayUrl)
+                val v1 = Event(id(), alice, next(), 0, emptyArray(), "{\"name\":\"old\"}", "")
+                store.insert(v1)
+                val v2 = Event(id(), alice, next(), 0, emptyArray(), "{\"name\":\"new\"}", "")
+                index.failing = true
+                assertFailsWith<IllegalStateException> {
+                    if (bulk) store.batchInsert(padding(20) + v2) else store.insert(v2)
+                }
+                assertEquals(
+                    listOf(v1.id),
+                    inner.search(EventQuery(kinds = listOf(0), authors = listOf(alice))).map { it.id },
+                    "the replaced version must still be stored (bulk=$bulk)",
+                )
+            }
+        }
 }

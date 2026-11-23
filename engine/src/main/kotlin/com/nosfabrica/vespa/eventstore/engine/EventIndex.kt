@@ -412,12 +412,20 @@ interface EventIndex : AutoCloseable {
         val incumbent = existing.minWithOrNull(EventDoc.NEWEST_FIRST)
         // Incumbent wins or is identical -> reject the incoming (stale) version.
         if (incumbent != null && EventDoc.NEWEST_FIRST.compare(doc, incumbent) >= 0) return false
+        // The winner FIRST, then the sweep: a put that fails after the remove
+        // landed would leave the address holding NEITHER version, permanently
+        // (nobody re-offers the old one). This order's failure leaves an extra
+        // stale version instead, which the next write to the address removes
+        // (every version older than the winner is in [existing]), and which a
+        // read may serve beside the winner meanwhile — no read collapses an
+        // address to its newest version. [existing] never holds [doc]'s own id:
+        // a stored copy of it is the incumbent, refused above.
+        put(doc)
         // The doomed docs are in hand: removeDocs skips the get-per-id a
         // decorator's remove(id) pays to learn what it is removing (the trust
         // projection reads the doc to know what the removal invalidates), and
         // pipelines the removes of a drift-repair address with N stale versions.
         if (existing.isNotEmpty()) removeDocs(existing)
-        put(doc)
         return true
     }
 }
