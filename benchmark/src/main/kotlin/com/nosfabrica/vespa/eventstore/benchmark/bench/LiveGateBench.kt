@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.eventstore.benchmark.bench
 import com.nosfabrica.vespa.eventstore.LiveGate
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
+import com.nosfabrica.vespa.eventstore.mapping.LiveWords
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip10Notes.TextNoteEvent
@@ -39,13 +40,17 @@ import kotlin.system.measureNanoTime
  * Every live subscription has its own `LiveGate`, and a searching one checks
  * each matching event's words. The store's gates share one words memo
  * (`mapping/LiveWords`: one read per event per thread), which this bench
- * prices against the cost it replaced by walking the SAME gates two ways:
+ * prices against the cost it replaced by walking two sets of the same gates
+ * the same way — each event through every gate, as fan-out walks them:
  *
- *  - EVENT-MAJOR, the way fan-out runs (each event through every gate): the
- *    first gate reads the words, every other gate is a memo hit.
- *  - GATE-MAJOR (each gate through every event): consecutive calls never see
- *    the same event, so every call is a miss — exactly what each gate paid
- *    on every call before the memo, when the words were read per gate.
+ *  - SHARED: the store's own gates. The first gate reads the words, every
+ *    other gate is a memo hit.
+ *  - PER GATE: the same filters built around the plain, uncached read
+ *    (`LiveWords.read`, through the store's internal `liveGateWith`), which is
+ *    exactly what each gate paid on every call before the memo. NOT the memo
+ *    missing on every call: a miss also pays the ThreadLocal store, the entry
+ *    allocation and the miss counter, which an earlier version of this bench
+ *    charged to the baseline and so overstated the speed-up.
  *
  * Both walks must give the same answers for every (gate, event), or the run
  * fails: the timing is also the proof that sharing changes no admission.
@@ -80,27 +85,28 @@ object LiveGateBench {
         val store = NostrSemanticsStore(InMemoryEventIndex(), relay = null)
         // One whole warm-up at a mid size first: without it the FIRST size timed (1 gate) paid the
         // JIT's compilation, and read 2.5x where both walks do identical work.
-        runBlocking { (0 until 100).map { checkNotNull(store.liveGate(listOf(Filter(kinds = listOf(1), search = WORDS[it % WORDS.size])))) } }.let { warm ->
+        runBlocking { (0 until 100).map { checkNotNull(store.liveGate(filtersOf(it))) to checkNotNull(store.liveGateWith(filtersOf(it), LiveWords::read)) } }.let { warm ->
             repeat(3) {
-                eventMajor(warm, events)
-                gateMajor(warm, events)
+                walk(warm.map { it.first }, events)
+                walk(warm.map { it.second }, events)
             }
         }
         for (n in sizes) {
-            val gates = runBlocking { (0 until n).map { checkNotNull(store.liveGate(listOf(Filter(kinds = listOf(1), search = WORDS[it % WORDS.size])))) } }
-            val shared = eventMajor(gates, events)
-            check(shared == gateMajor(gates, events)) { "$n gates: the two walks disagree on an admission" }
+            val gates = runBlocking { (0 until n).map { checkNotNull(store.liveGate(filtersOf(it))) } }
+            val uncached = runBlocking { (0 until n).map { checkNotNull(store.liveGateWith(filtersOf(it), LiveWords::read)) } }
+            val shared = walk(gates, events)
+            check(shared == walk(uncached, events)) { "$n gates: the two walks disagree on an admission" }
             check(shared.any { row -> row.any { it == true } }) { "$n gates: nothing admitted, so nothing was measured" }
             repeat(2) {
-                eventMajor(gates, events)
-                gateMajor(gates, events)
+                walk(gates, events)
+                walk(uncached, events)
             }
             // Interleaved round by round, so neither walk is the one timed while the JIT is still compiling.
             val perGateRounds = ArrayList<Long>()
             val sharedRounds = ArrayList<Long>()
             repeat(rounds) {
-                perGateRounds += measureNanoTime { gateMajor(gates, events) }
-                sharedRounds += measureNanoTime { eventMajor(gates, events) }
+                perGateRounds += measureNanoTime { walk(uncached, events) }
+                sharedRounds += measureNanoTime { walk(gates, events) }
             }
             val perGate = median(perGateRounds) / events.size
             val sharedNs = median(sharedRounds) / events.size
@@ -115,20 +121,14 @@ object LiveGateBench {
         }
     }
 
+    /** One anonymous one-word `kinds:[1]` search, the words cycled across gates. */
+    private fun filtersOf(i: Int) = listOf(Filter(kinds = listOf(1), search = WORDS[i % WORDS.size]))
+
     /** Each event through every gate, as fan-out walks them: answers[event][gate]. */
-    private fun eventMajor(
+    private fun walk(
         gates: List<LiveGate>,
         events: List<Event>,
     ): List<List<Boolean?>> = events.map { e -> gates.map { it.admitsNow(e) } }
-
-    /** Each gate through every event — a miss on every call — transposed to answers[event][gate]. */
-    private fun gateMajor(
-        gates: List<LiveGate>,
-        events: List<Event>,
-    ): List<List<Boolean?>> {
-        val byGate = gates.map { g -> events.map { g.admitsNow(it) } }
-        return events.indices.map { e -> byGate.map { it[e] } }
-    }
 
     private fun median(times: List<Long>): Double = times.sorted()[times.size / 2].toDouble()
 

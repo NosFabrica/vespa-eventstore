@@ -705,20 +705,29 @@ share one `mapping/LiveWords`: the words of the last event each thread asked
 about, found by identity (quartz's `LiveEventStore` hands every subscription
 the same `Event`; `LiveGateTest` pins that through its real fan-out).
 
-`liveGateBench` walks the SAME gates two ways: event-major, the way fan-out runs
-(one read per event, every other gate a hit), and gate-major, where no two
-consecutive calls see the same event, so every call reads the words, which is what
-each gate paid per call before. Both walks must give every (gate, event) the same
-answer or the run fails. 2,000 synthetic notes (mean 216 content chars),
-anonymous one-word `kinds:[1]` searches, `admitsNow`, medians of 7 interleaved
-rounds after a warm-up, on a 4-core cloud container. Two runs:
+`liveGateBench` walks two sets of the same gates the same way, each event through
+every gate as fan-out walks them: the store's own gates, sharing the memo (the
+first gate reads the words, every other gate is a hit), and the same filters built
+around the plain uncached read (`LiveWords.read`, through the store's internal
+`liveGateWith`), which is what each gate paid per call before. Both sets must give
+every (gate, event) the same answer or the run fails. 2,000 synthetic notes (mean
+216 content chars), anonymous one-word `kinds:[1]` searches, `admitsNow`, medians
+of 7 interleaved rounds after a warm-up, on a 4-core cloud container, two runs
+(2026-11-23; another build was running on the machine, so absolute times are
+noisier than the ratios):
 
 | gates | words per gate | shared | |
 |---:|---:|---:|---:|
-| 1 | 1.5-1.6 µs/event | 1.4-1.5 µs/event | 1.1x |
-| 10 | 16.8-17.8 | 2.6-2.7 | 6.5-6.7x |
-| 100 | 189-195 | 11.9-12.0 | 15.8-16.5x |
-| 500 | 913-957 | 51.6-54.1 | 16.9-18.6x |
+| 1 | 1.6-2.5 µs/event | 1.6-2.6 µs/event | 1.0x |
+| 10 | 20.4-20.5 | 3.2 | 6.5x |
+| 100 | 194-205 | 14.7-14.9 | 13.0-13.9x |
+| 500 | 1,016-1,108 | 66.8-74.2 | 13.7-16.6x |
+
+An earlier version of this table read 15.8-16.5x at 100 gates and 16.9-18.6x at
+500: its baseline walked the same memoized gates gate-major, so every call was a
+memo MISS — the uncached read plus the ThreadLocal store, the entry allocation and
+the miss counter — which charged the memo's own bookkeeping to the cost it
+replaced and overstated the speed-up.
 
 What is left (~0.1 µs per gate) is each rule's own `Filter.match` and its terms
 scanned against the words, per gate by nature. Not measured: a real note corpus

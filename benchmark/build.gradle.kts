@@ -29,6 +29,15 @@ dependencies {
     testImplementation(libs.testcontainers)
 }
 
+// LiveGateBench prices the store's shared words memo against the uncached read it replaced, and
+// the uncached gate is built by `NostrSemanticsStore.liveGateWith` — internal, since no consumer
+// should build a gate around anything but the store's own memo. This tool may see :store's
+// internals; nothing published can.
+tasks.named<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>("compileKotlin") {
+    friendPaths.from(project(":store").layout.buildDirectory.dir("classes/kotlin/main"))
+    friendPaths.from(project(":store").tasks.named("jar"))
+}
+
 tasks.test {
     // Pin the Docker Remote API version docker-java negotiates.
     //
