@@ -764,6 +764,10 @@ class VespaEventIndex(
         // The read's shape when its caller already keyed it (a speculative
         // read's attempts share one); otherwise keyed here, for the tie slack.
         shape: RecencyWindowMemory.Shape? = null,
+        // The slack to start a shape with nothing learned from, when the caller
+        // has evidence ([TieSlackMemory.measuredSlack], a recalled narrow shape);
+        // else [TieSlackMemory.coldSlack] decides by the shape's selectivity.
+        coldSlack: Int? = null,
     ): List<VespaSummary> {
         if (!q.isRecencyOrdered()) return rankedHits(q).mapNotNull { it.fields }
         val limit = q.limit
@@ -797,7 +801,8 @@ class VespaEventIndex(
         // internal probes (RANK_UNRANKED), id lookups and complete reads keep
         // the flat [TIE_SLACK] and never take a slot in the table.
         val slackShape = if (slackMemory == null) null else shape ?: q.takeIf { it.isWindowable() }?.let(::shapeOfRead)
-        val slack = slackShape?.let { slackMemory?.slackFor(it) } ?: TIE_SLACK
+        val lease = slackShape?.let { slackMemory?.slackFor(it, coldSlack ?: TieSlackMemory.coldSlack(q, limit)) }
+        val slack = lease?.value ?: TIE_SLACK
         val fetchLimit = minOf(plusSaturated(limit, slack), maxOf(limit, unboundedHits))
         val fetch = q.copy(limit = fetchLimit).keepingProfileOf(q)
         var hits =
@@ -813,12 +818,16 @@ class VespaEventIndex(
             // T, never has, so it reads the group by its window.
             val complete = hits.size < fetchLimit || hits.last().createdAt < t
             // What the page teaches its shape: the boundary members past the
-            // last slot (exact here — the group is whole), or that the slack cut
-            // it. A short page (the `if` above) says nothing about ties.
-            if (slackShape != null) {
-                val over = if (complete) hits.count { it.createdAt >= t } - limit else 0
-                slackMemory?.learn(slackShape, slack, over, cut = !complete)
-            }
+            // last slot — exact here, the group is whole; on a cut, exact once
+            // the `[T,T]` read below has counted it. A short page (the `if`
+            // above) says nothing about ties, and neither does a page served
+            // off part of the corpus ([ServedDegraded]), whose boundary second
+            // is thinner than the shape's — the window memory skips those too.
+            // A read that may be served partial with no tracker to say so (a
+            // speculative read installs its own) cannot tell, and learns nothing.
+            val tracker = currentCoroutineContext()[ServedDegraded]
+            val teaches = lease != null && slackShape != null && (if (q.acceptsPartial) tracker != null && !tracker.seen else tracker?.seen != true)
+            if (complete && teaches) slackMemory?.learn(slackShape!!, lease!!, hits.count { it.createdAt >= t } - limit, cut = false)
             if (!complete) {
                 // A gated query's tie window must stay gated (the exact variant
                 // — a [t,t] window is tiny) or the rerun would resurrect
@@ -831,6 +840,7 @@ class VespaEventIndex(
                         ?.filter { it.id.isNotEmpty() }
                         ?: emptyList()
                 hits = hits.filter { it.createdAt > t } + ties
+                if (teaches && tracker?.seen != true) slackMemory?.learn(slackShape!!, lease!!, hits.size - limit, cut = true)
             }
         }
         return hits.sortedWith(SUMMARY_NEWEST_FIRST).take(limit)
@@ -915,7 +925,9 @@ class VespaEventIndex(
             val recalled = shape?.let { windowMemory?.recall(it) }
             if (recalled is RecencyWindowMemory.Recall.Narrow) {
                 outcome("recalled.narrow")
-                return@timed recallPage(planner.shipped(q), planned = true, idOnly = idOnly, shape = shape)
+                // Too thin to window is too thin for a wide tie slack: the
+                // shape starts from the least, and a cut widens it at once.
+                return@timed recallPage(planner.shipped(q), planned = true, idOnly = idOnly, shape = shape, coldSlack = MIN_TIE_SLACK)
             }
             var window =
                 (recalled as? RecencyWindowMemory.Recall.Window)
@@ -941,6 +953,9 @@ class VespaEventIndex(
             // Why the loop stopped without a proven page — booked as a counter
             // below, so an operator can tell a narrow corpus from a mistuned rule.
             var fallback = "window"
+            // The window the last attempt actually read: with [carried], the
+            // shape's measured rate, which seeds the fallback's tie slack.
+            var measuredWindow = 0L
             while (window <= RecencyPlanner.MAX_WINDOW) {
                 if (attempts >= RecencyPlanner.MAX_ATTEMPTS) {
                     fallback = "attempts"
@@ -960,6 +975,7 @@ class VespaEventIndex(
                         break
                     }
                 attempts++
+                measuredWindow = window
                 if (page.size >= remaining) {
                     outcome(if (attempts == 1) "first" else "widened")
                     learn(shape, RecencyWindowMemory.Recall.Window(window, limit))
@@ -987,7 +1003,10 @@ class VespaEventIndex(
                 else -> Unit
             }
             // The unwindowed read, for what the carried pages do not already hold.
-            carried + recallPage(planner.shipped(q.olderThan(boundary, limit - carried.size)), planned = true, idOnly = idOnly, shape = shape)
+            // A shape that came back short has MEASURED its rate: the fallback
+            // starts its tie slack there, not at the wide default.
+            val measured = if (attempts > 0) TieSlackMemory.measuredSlack(carried.size, measuredWindow) else null
+            carried + recallPage(planner.shipped(q.olderThan(boundary, limit - carried.size)), planned = true, idOnly = idOnly, shape = shape, coldSlack = measured)
         }
 
     /**

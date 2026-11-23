@@ -1415,9 +1415,11 @@ class VespaEventIndexTest {
                     assertEquals(reference.search(q).map { it.id }, index.search(q).map { it.id })
                     lastFetch(before)
                 }
-            assertEquals(10 + VespaEventIndex.TIE_SLACK, fetches.first(), "a shape seen first overfetches the flat slack: $fetches")
-            assertTrue(fetches.zipWithNext().all { (a, b) -> b <= a }, "and narrows, never widens, while no tie shows: $fetches")
-            assertEquals(10 + VespaEventIndex.MIN_TIE_SLACK, fetches.last(), "down to the least slack: $fetches")
+            // Its first read's short attempt measured the shape thin, so even the first fallback
+            // starts at the least slack instead of the wide one (TieSlackMemory.measuredSlack).
+            assertEquals(10 + VespaEventIndex.MIN_TIE_SLACK, fetches.first(), "a shape measured thin starts narrow: $fetches")
+            assertTrue(fetches.zipWithNext().all { (a, b) -> b <= a }, "and never widens while no tie shows: $fetches")
+            assertEquals(10 + VespaEventIndex.MIN_TIE_SLACK, fetches.last(), "at the least slack: $fetches")
 
             val dense = 6_000L
             seed(*(1..30).map { doc(kind = 1, pubkey = author, at = dense) }.toTypedArray())
@@ -1432,6 +1434,54 @@ class VespaEventIndexTest {
                 assertEquals(emptyList(), tieQueries(nextAt, dense), "so its second read holds the group in one query")
             } finally {
                 mock.scrambleTieOrder = false
+            }
+        }
+
+    /**
+     * A CUT LEARNS THE GROUP IT CUT. The `[T,T]` read counts the boundary group exactly, so a
+     * shape whose boundary second holds more than the wide slack learns that width (with the
+     * usual headroom, up to [TieSlackMemory.MAX_LEARNED_SLACK]) instead of going back to 64 and
+     * paying the extra query on every read.
+     */
+    @Test
+    fun `a cut boundary group wider than the wide slack is learned, not paid again`() =
+        runBlocking {
+            val author = "d9".repeat(32)
+            seed(*(1..150).map { doc(kind = 1, pubkey = author, at = 9_000L) }.toTypedArray())
+            val q = EventQuery(kinds = listOf(1), authors = listOf(author), limit = 10)
+            mock.scrambleTieOrder = true
+            try {
+                assertEquals(reference.search(q).map { it.id }, index.search(q).map { it.id })
+                val nextAt = mock.searchRequests.size
+                assertEquals(reference.search(q).map { it.id }, index.search(q).map { it.id })
+                assertEquals(10 + TieSlackMemory.MAX_LEARNED_SLACK, lastFetch(nextAt), "140 past the page: the learned cap")
+                assertEquals(emptyList(), tieQueries(nextAt, 9_000L), "so the next read holds the group in one query")
+            } finally {
+                mock.scrambleTieOrder = false
+            }
+        }
+
+    /**
+     * A page served off PART of the corpus teaches the tie slack nothing, as it teaches the
+     * window memory nothing: its boundary second is not the shape's.
+     */
+    @Test
+    fun `a degraded page teaches its shape no tie slack`() =
+        runBlocking {
+            val author = "da".repeat(32)
+            seed(*(1..30).map { doc(kind = 1, pubkey = author, at = 9_500L) }.toTypedArray())
+            val q = EventQuery(kinds = listOf(1), authors = listOf(author), limit = 10, acceptsPartial = true)
+            mock.scrambleTieOrder = true
+            mock.nonIdealStateCoverage = true
+            try {
+                index.search(q)
+                mock.nonIdealStateCoverage = false
+                val at = mock.searchRequests.size
+                assertEquals(reference.search(q).map { it.id }, index.search(q).map { it.id })
+                assertEquals(10 + VespaEventIndex.MIN_TIE_SLACK, lastFetch(at), "the cut a degraded page saw was not learned")
+            } finally {
+                mock.scrambleTieOrder = false
+                mock.nonIdealStateCoverage = false
             }
         }
 
