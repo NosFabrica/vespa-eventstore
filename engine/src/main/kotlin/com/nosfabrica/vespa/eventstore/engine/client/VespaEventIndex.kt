@@ -629,7 +629,7 @@ class VespaEventIndex(
      * With a single-key sort, every doc STRICTLY newer than the boundary
      * timestamp T (the limit-th hit's created_at) is guaranteed present; only
      * membership among the docs AT T is engine-arbitrary. So the query
-     * overfetches [TIE_SLACK] extra hits — if anything older than T arrived, or
+     * overfetches [tieSlackFor] extra hits (the page's own width, 8 to 64) — if anything older than T arrived, or
      * the engine ran out of matches, the whole T tie group is in hand and an
      * in-memory sort resolves the boundary. Only a wider tie group pays one
      * extra `[T,T]` window query — as does a limit within [TIE_SLACK] of a
@@ -661,7 +661,7 @@ class VespaEventIndex(
      * [HYDRATE_CHUNK] ids.
      *
      * Why a page is resolved from ids first. A recency read asks the engine for
-     * `limit + TIE_SLACK` hits so the boundary tie resolves client-side, and a
+     * `limit + tieSlackFor(limit)` hits so the boundary tie resolves client-side, and a
      * speculative read may try several windows — and every one of those hits
      * used to arrive as a FULL document read off the document store. On a
      * corpus larger than memory those reads are cold and scattered: measured on
@@ -757,7 +757,7 @@ class VespaEventIndex(
         // client's choice, not the caller's — asked for whole, a REQ the cap
         // admits was refused for it. A limit past the cap itself still fails
         // at the engine, which is the operator's cap working ([hitsFor]).
-        val fetchLimit = minOf(limit + TIE_SLACK, maxOf(limit, unboundedHits))
+        val fetchLimit = minOf(limit + tieSlackFor(limit), maxOf(limit, unboundedHits))
         val fetch = q.copy(limit = fetchLimit).keepingProfileOf(q)
         var hits =
             recallRoot(fetch, idOnly)?.children?.mapNotNull { it.fields }?.filter { it.id.isNotEmpty() }
@@ -2785,6 +2785,18 @@ class VespaEventIndex(
          * id tiebreak resolves in memory (see [recallSummaries]).
          */
         const val TIE_SLACK = 64
+
+        /** The least slack a small page asks for: a boundary second with more ties than this pays the `[T,T]` read. */
+        const val MIN_TIE_SLACK = 8
+
+        /**
+         * The slack a recency page of [limit] overfetches: as wide as the page, between
+         * [MIN_TIE_SLACK] and [TIE_SLACK]. Every hit past the page is one the engine matches,
+         * summarizes and renders and this client parses for a tie it rarely holds, so a 10-event
+         * REQ asking 74 paid 7.4x its page. Exact at any width: a group the slack cuts is read
+         * whole by its `[T,T]` window.
+         */
+        fun tieSlackFor(limit: Int): Int = limit.coerceIn(MIN_TIE_SLACK, TIE_SLACK)
 
         /** Ids per hydration query (see [hydrate]): one query up to the match-phase band's width. */
         const val HYDRATE_CHUNK = 2_000

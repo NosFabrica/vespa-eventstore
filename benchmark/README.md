@@ -1341,6 +1341,48 @@ query counts for the busy and narrow cases; a ranked count asks for one hit),
 `RecencyStrategyIT`, which checks every strategy against the page computed from
 the corpus itself on a real Vespa, gate and tie group included.
 
+### The tie slack scales with the page (2026-11-22)
+
+A recency page overfetched a flat `TIE_SLACK` of 64, sized for wide pages: a
+10-event REQ asked the engine for **74** hits, every one matched, summarized,
+rendered and parsed for a boundary tie it rarely holds. The slack is now the
+page's own width, clamped to 8–64 (`VespaEventIndex.tieSlackFor`), so that REQ
+asks for 20. Exact at any width: a boundary second wider than the slack is read
+whole by the existing `[T,T]` query (`VespaEventIndexTest`, "a small page whose
+boundary tie outgrows its slack is still the exact page").
+
+Measured through vespa-relay on a 4-core sandbox, everything on one box over a
+~82k-note corpus that fits in memory (Vespa 8.763.13, 8 GB): nostr-bench
+`req -c 200 --limit 10`, every REQ `{"#t":[one of 1,000 tags],"limit":10}`, CPU
+from `/proc` over a 20 s window, variants alternated twice. Microseconds of CPU
+per REQ:
+
+| store | `VESPA_ID_FIRST` | REQ/s | relay | query container | proton |
+|---|---|---|---|---|---|
+| slack 64 | 1 (default) | 1,002 · 972 | 975–1,004 | 1,796–1,812 | 778–807 |
+| slack 64 | 0 | 998 · 1,001 | 978 | 1,559–1,564 | 914–919 |
+| scaled | 1 (default) | 1,137 · 1,171 | 826–843 | 1,566–1,595 | 650–669 |
+| scaled | 0 | **1,554 · 1,734** | **586–638** | **973–1,073** | **460–509** |
+
+- **The query container dominated.** Replaying the captured queries straight at
+  Vespa (no relay): ~800 µs of container CPU per query whatever its size (the
+  id query at 18 hits 794, the 10-id hydrate 803), plus ~4.4 µs per hit (74
+  hits: 1,040). Two queries per REQ was 1.6 ms of it. `presentation.timing`,
+  CBOR rendering, the profile's timeout and 1 vs 4 h2c sessions moved none of
+  it. Per-query CPU also FALLS with concurrency (1,459 µs at 1 in flight, 786 at
+  32): part of it is thread hand-off, so read it as capacity (~2,700 small
+  queries/s on this container), not as a cost per query.
+- **The slack alone is +15–18%**, and the answers did not change: 65 REQs,
+  including a 30-note boundary tie under limits 3, 10 and 40, returned the same
+  pages on both builds.
+- **ID-first off only pays with the slack scaled**: off at slack 64 reads 74
+  full documents and gains nothing; at the scaled slack the page is one 20-hit
+  query and REQ/s rose 60–75%. That is a corpus held in memory. Id-first exists
+  for the opposite case (the 44M-doc corpus above, where documents were cold
+  reads), and with the slack scaled the trade is now 20 cold reads in one query
+  against 10 plus a round trip. Decide it on a production-sized store with
+  `VESPA_ID_FIRST=0`; nothing here changes its default.
+
 ## Trusted links per search hit — can a page afford them? (`links_probe.py`, 2026-10-22)
 
 The question: search ranks a hit by text × the AUTHOR's trust (`search`'s

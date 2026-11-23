@@ -938,7 +938,7 @@ class VespaEventIndexTest {
                 assertEquals(2, yqls.size, "a short window, then one widened attempt: $yqls")
                 val boundary = now - RecencyPlanner.FIRST_WINDOW
                 assertTrue(yqls[1].contains("created_at <= ${boundary - 1}"), "the widened attempt stops below the first window: ${yqls[1]}")
-                assertTrue(yqls[1].contains("limit ${1 + VespaEventIndex.TIE_SLACK}"), "and asks for the ONE missing note (plus tie slack): ${yqls[1]}")
+                assertTrue(yqls[1].contains("limit ${1 + VespaEventIndex.tieSlackFor(1)}"), "and asks for the ONE missing note (plus its tie slack): ${yqls[1]}")
                 assertEquals((1..30).map { now - it } + (now - 8 * 3_600L), page.map { it.createdAt })
                 VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.FULL_SCAN).use { full ->
                     assertEquals(full.search(q).map { it.id }, page.map { it.id }, "the same page the full scan serves")
@@ -970,7 +970,7 @@ class VespaEventIndexTest {
                 assertEquals(2, yqls.size, "one windowed attempt, then the fallback: $yqls")
                 val boundary = now - RecencyPlanner.FIRST_WINDOW
                 assertTrue(yqls[1].contains("created_at <= ${boundary - 1}") && !yqls[1].contains("created_at >= "), "the fallback is unwindowed below the boundary: ${yqls[1]}")
-                assertTrue(yqls[1].contains("limit ${2 + VespaEventIndex.TIE_SLACK}"), "for the two notes still missing: ${yqls[1]}")
+                assertTrue(yqls[1].contains("limit ${2 + VespaEventIndex.tieSlackFor(2)}"), "for the two notes still missing: ${yqls[1]}")
                 assertEquals(listOf(now - 10, 1_005L, 1_004L), page.map { it.createdAt })
             }
         }
@@ -1358,6 +1358,46 @@ class VespaEventIndexTest {
                     index.search(q).map { it.id },
                     "beyond-slack ties must be fetched via the [t,t] window and tiebroken exactly",
                 )
+            } finally {
+                mock.scrambleTieOrder = false
+            }
+        }
+
+    /**
+     * A small page overfetches its own width, not [VespaEventIndex.TIE_SLACK]: a 10-event REQ
+     * asked the engine for 74 hits, every one matched, summarized, rendered and parsed for a tie
+     * it rarely holds. The slack is bounded on both sides, so a page of one still covers a tie.
+     */
+    @Test
+    fun `the tie slack scales with the page`() {
+        assertEquals(VespaEventIndex.MIN_TIE_SLACK, VespaEventIndex.tieSlackFor(1))
+        assertEquals(10, VespaEventIndex.tieSlackFor(10))
+        assertEquals(VespaEventIndex.TIE_SLACK, VespaEventIndex.tieSlackFor(64))
+        assertEquals(VespaEventIndex.TIE_SLACK, VespaEventIndex.tieSlackFor(5_000))
+    }
+
+    /**
+     * The scaled slack makes a cut boundary group the COMMON case for small pages, so the
+     * `[t,t]` follow-up has to stay exact there: a 10-event page whose boundary second holds 30
+     * notes (three times its slack), on an engine that returns ties in any order.
+     */
+    @Test
+    fun `a small page whose boundary tie outgrows its slack is still the exact page`() =
+        runBlocking {
+            seed(*(1..30).map { doc(kind = 1, at = 7_000) }.toTypedArray())
+            seed(*(1..4).map { doc(kind = 1, at = 9_000L + it) }.toTypedArray())
+            mock.scrambleTieOrder = true
+            try {
+                val q = EventQuery(kinds = listOf(1), limit = 10)
+                val before = mock.searchRequests.size
+                val page = index.search(q).map { it.id }
+                val yqls =
+                    mock.searchRequests
+                        .drop(before)
+                        .pageQueries()
+                        .map { it.getValue("yql") }
+                assertTrue(yqls.any { it.contains("limit ${10 + VespaEventIndex.tieSlackFor(10)}") }, "the page asks for its own width of slack: $yqls")
+                assertEquals(reference.search(q).map { it.id }, page, "the 6 tied survivors are the LOWEST ids, in asc order")
             } finally {
                 mock.scrambleTieOrder = false
             }
