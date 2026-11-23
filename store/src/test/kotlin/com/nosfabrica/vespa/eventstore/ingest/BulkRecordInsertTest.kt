@@ -267,7 +267,7 @@ class BulkRecordInsertTest {
         runBlocking {
             val index = InMemoryEventIndex()
             val store = NostrSemanticsStore(index, relay = relayUrl)
-            val bulk = BulkRecordInsert(index, relayUrl, GuardOwners(index)) { System.currentTimeMillis() / 1000 }
+            val bulk = BulkRecordInsert(index, relayUrl, GuardOwners(index), nowSecs = { System.currentTimeMillis() / 1000 })
 
             val target = note(at = 1_000_000_000)
             val batch = padding(20) + target

@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.async.PUT_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.async.QUERY_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
+import com.nosfabrica.vespa.eventstore.engine.async.retryingSweep
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
@@ -79,6 +80,8 @@ internal class BulkRecordInsert(
     private val guards: GuardOwners,
     /** The store's clock for NIP-40 admission, as [EventAdmission]'s — see its `nowSecs`. */
     private val nowSecs: () -> Long,
+    /** Addresses whose sweep a failed write left owing — see [OwedSweeps]. */
+    private val owed: OwedSweeps = OwedSweeps(),
 ) {
     /**
      * What [plan] resolved lock-free (stages A–B). Dedup can race: an event a
@@ -355,16 +358,32 @@ internal class BulkRecordInsert(
         // the put's, and for good when the put failed or the commit was
         // cancelled between them: nobody re-offers the old version. A failure
         // after the put leaves a stale extra version instead, which the next
-        // write to the address sweeps (the drift repair above) and which a read
-        // may serve beside the winner until then. (Timing is booked by the
+        // write to the address sweeps (the drift repair above), or the re-offer
+        // of its winner ([OwedSweeps], below), and which a read may serve
+        // beside the winner until then. (Timing is booked by the
         // layers below: the projection decorator splits it into write /
         // proj.fetch / proj.write.)
-        if (toPut.isNotEmpty()) index.putAll(toPut.values.map { it.toDoc() })
-        // Skip the round trip when nothing supersedes — the common case for a
-        // fresh corpus (first-seen addresses remove nothing). The docs are in
-        // hand, so removeDocs lets the projection react without a get per id;
-        // it records nothing for a superseded card (TrustProjection.removed).
-        if (removeFromStore.isNotEmpty()) index.removeDocs(removeFromStore)
+        //
+        // A failure from here on is remembered per address ([OwedSweeps]):
+        // the caller re-offers the batch, its winners come back DUPLICATES,
+        // and without the memory nothing would look at those addresses again.
+        // The sweep itself is retried in place first ([retryingSweep]).
+        try {
+            if (toPut.isNotEmpty()) index.putAll(toPut.values.map { it.toDoc() })
+            // Skip the round trip when nothing supersedes — the common case for a
+            // fresh corpus (first-seen addresses remove nothing). The docs are in
+            // hand, so removeDocs lets the projection react without a get per id;
+            // it records nothing for a superseded card (TrustProjection.removed).
+            if (removeFromStore.isNotEmpty()) retryingSweep { index.removeDocs(removeFromStore) }
+        } catch (t: Throwable) {
+            owed.owe(groups.keys)
+            throw t
+        }
+        // Stage D read EVERY stored version of these addresses and swept all
+        // but the winner: whatever they owed is paid. The re-offered DUPLICATES
+        // of an owed address never reached stage D, and are settled here.
+        owed.clear(groups.keys)
+        owed.settle(index, events)
         alive().forEach { i -> outcome[i] = IEventStore.InsertOutcome.Accepted }
         // A row this run never decided is the STORE's fault, not the event's:
         // Failed tells the caller to re-offer it, where Rejected would say

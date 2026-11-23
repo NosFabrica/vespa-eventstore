@@ -34,6 +34,7 @@ import com.nosfabrica.vespa.eventstore.ingest.BulkRecordInsert
 import com.nosfabrica.vespa.eventstore.ingest.Deletions
 import com.nosfabrica.vespa.eventstore.ingest.EventAdmission
 import com.nosfabrica.vespa.eventstore.ingest.GuardOwners
+import com.nosfabrica.vespa.eventstore.ingest.OwedSweeps
 import com.nosfabrica.vespa.eventstore.ingest.Rejections
 import com.nosfabrica.vespa.eventstore.mapping.DEFAULT_MIN_RANK
 import com.nosfabrica.vespa.eventstore.mapping.LiveWords
@@ -268,8 +269,11 @@ class NostrSemanticsStore(
 
     private val deletions = Deletions(index, relay, sweepPage)
 
+    /** Addresses a failed write left owing the sweep of the versions its winner replaced — every write path's. */
+    private val owedSweeps = OwedSweeps()
+
     /** The per-event write rules — shared verbatim with [BulkMixedInsert]'s replay. */
-    private val admission = EventAdmission(index, deletions, guards, nowSecs)
+    private val admission = EventAdmission(index, deletions, guards, nowSecs, owedSweeps)
 
     /**
      * WHO THIS READER ASKED TO COMPUTE WHAT — the gate the search expansion
@@ -436,9 +440,9 @@ class NostrSemanticsStore(
      */
     private suspend fun served(q: EventQuery): EventQuery = if (!q.acceptsPartial && servesPartial()) q.copy(acceptsPartial = true) else q
 
-    private val bulkRecords = BulkRecordInsert(index, relay, guards, nowSecs)
+    private val bulkRecords = BulkRecordInsert(index, relay, guards, nowSecs, owedSweeps)
 
-    private val bulkMixed = BulkMixedInsert(index, relay, nowSecs, guards, sweepPage)
+    private val bulkMixed = BulkMixedInsert(index, relay, nowSecs, guards, sweepPage, owedSweeps)
 
     /**
      * Trust-relevant writes take BOTH gates; everything else takes only
@@ -664,7 +668,9 @@ class NostrSemanticsStore(
         // A TRUST run commits anyway: an empty trust commit still settles the
         // projection's ledger, and an all-duplicates re-offer of a batch whose
         // cells failed is exactly the write that heals it (TrustProjectionTest).
-        if (!trust && plan.outcome.all { it != null }) return plan.outcome.map { it!! }
+        // Unless one of them names an address a failed write left owing a
+        // sweep: that re-offer is the write that finishes it ([OwedSweeps]).
+        if (!trust && plan.outcome.all { it != null } && !owedSweeps.owesAny(events)) return plan.outcome.map { it!! }
         return locks.gated(trust, WriteLocks.INGEST) { committing(trust, planned) { bulkRecords.commit(plan) } }
     }
 

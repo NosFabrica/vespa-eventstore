@@ -66,6 +66,12 @@ internal class EventAdmission(
      * "now" is (`NostrSemanticsStore.deleteExpiredEvents`).
      */
     private val nowSecs: () -> Long,
+    /**
+     * Addresses a failed write left owing a sweep ([OwedSweeps]) — the real
+     * store's, shared with its bulk paths. Null for [BulkMixedInsert]'s replay,
+     * whose snapshot is thrown away.
+     */
+    private val owed: OwedSweeps? = null,
 ) {
     /**
      * The rules, applied to one event. NO lock and NO lock accounting: the
@@ -128,13 +134,13 @@ internal class EventAdmission(
         if (!probeDeleted && !probeVanished) {
             // The common case reads just the dup get — skip the fan-out
             // machinery, which allocates per call.
-            if (index.get(event.id) != null) throw RejectedException(Rejections.DUPLICATE)
+            if (index.get(event.id) != null) duplicate(event)
         } else {
             coroutineScope {
                 val existing = async { index.get(event.id) }
                 val deleted = if (probeDeleted) async { deletions.isDeleted(event) } else null
                 val vanished = if (probeVanished) async { deletions.isVanished(event) } else null
-                if (existing.await() != null) throw RejectedException(Rejections.DUPLICATE)
+                if (existing.await() != null) duplicate(event)
                 if (deleted?.await() == true) throw RejectedException(Rejections.DELETED)
                 if (vanished?.await() == true) throw RejectedException(Rejections.VANISHED)
             }
@@ -155,14 +161,41 @@ internal class EventAdmission(
             // Replaceable/addressable newest-wins in ONE call: false == a
             // same-or-newer version holds the address, so this insert is
             // REPLACED (see EventIndex.putIfNewer, and Rejections.REPLACED for the OK false).
+            //
+            // A failure is remembered against the address ([OwedSweeps]): the
+            // winner may have landed without its sweep, and its re-offer is a
+            // duplicate. A win swept every version it read, so the address owes
+            // nothing after it; a loss is a write to the address too, and pays.
             event.kind.isReplaceable() || event.kind.isAddressable() -> {
-                if (!index.putIfNewer(event.toDoc())) throw RejectedException(Rejections.REPLACED)
+                val address = listOfNotNull(OwedSweeps.addressOf(event))
+                val stored =
+                    try {
+                        index.putIfNewer(event.toDoc())
+                    } catch (t: Throwable) {
+                        owed?.owe(address)
+                        throw t
+                    }
+                if (!stored) {
+                    owed?.settle(index, listOf(event))
+                    throw RejectedException(Rejections.REPLACED)
+                }
+                owed?.clear(address)
             }
 
             else -> {
                 index.put(event.toDoc())
             }
         }
+    }
+
+    /**
+     * The duplicate verdict — after finishing a sweep the event's address owes
+     * ([OwedSweeps]): a re-offer of a winner whose sweep failed is exactly a
+     * duplicate, and the one write that will ever name that address again.
+     */
+    private suspend fun duplicate(event: Event): Nothing {
+        owed?.settle(index, listOf(event))
+        throw RejectedException(Rejections.DUPLICATE)
     }
 
     /** [admit], with a SEMANTIC rejection reported as an outcome rather than thrown. */

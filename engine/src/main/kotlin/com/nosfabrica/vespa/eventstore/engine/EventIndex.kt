@@ -19,6 +19,7 @@
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 package com.nosfabrica.vespa.eventstore.engine
+import com.nosfabrica.vespa.eventstore.engine.async.retryingSweep
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.vitorpamplona.quartz.nip01Core.core.isAddressable
@@ -451,7 +452,9 @@ interface EventIndex : AutoCloseable {
         // doc its conditional put cannot express): the put above replaced the
         // address's one document in place, and removing a version by address
         // would remove the winner ([supersedesViaPut]).
-        if (existing.isNotEmpty() && !supersedesViaPut) removeDocs(existing.map { doc.versionStub(it) })
+        // Retried in place ([retryingSweep]): a sweep that fails leaves a stale
+        // version that a re-offer of the winner, now a duplicate, never revisits.
+        if (existing.isNotEmpty() && !supersedesViaPut) retryingSweep { removeDocs(existing.map { doc.versionStub(it) }) }
         return true
     }
 }

@@ -23,6 +23,8 @@ package com.nosfabrica.vespa.eventstore.ingest
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.async.QUERY_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
+import com.nosfabrica.vespa.eventstore.engine.async.retryingSweep
+import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
@@ -61,6 +63,8 @@ internal class BulkMixedInsert(
     private val guards: GuardOwners,
     /** The store's own sweep page size: a vanish in the batch sweeps the snapshot, and then the index, through it. */
     private val sweepPage: Int,
+    /** Addresses whose sweep a failed write left owing — see [OwedSweeps]. */
+    private val owed: OwedSweeps = OwedSweeps(),
 ) {
     /** The vanish erase against the REAL index — the per-event path's paged [Deletions.sweep]. */
     private val erase = Deletions(index, relay, sweepPage)
@@ -88,28 +92,27 @@ internal class BulkMixedInsert(
         // are removed: removing first left a superseded address holding
         // neither version until the put, and for good when the put failed —
         // nobody re-offers the old one. A failure after them leaves a stale
-        // extra version, which the next write to the address sweeps. The
+        // extra version, which the address then owes a sweep ([OwedSweeps]). The
         // GUARDS (kind 5 / 62) are the opposite case and still land last,
         // after the erase they stand for: a tombstone stored over a removal
         // that then failed would be a deletion recorded and never enforced, and
         // its re-offer would come back a duplicate.
         val (guardsAdded, records) = added.partition { it.kind == DeletionRequestEvent.KIND || it.kind == RequestToVanishEvent.KIND }
-        if (records.isNotEmpty()) index.putAll(records)
-        // On an ADDRESS-KEYED index a record put above already replaced its
-        // address's stored version in place, and removing that version — by
-        // its address, the only docid it has — removed the WINNER: the
-        // address ended empty while the event was answered Accepted (a kind 5
-        // and a newer version of a stored address in one batch). So a version
-        // whose address a record was just put at is not removed; every other
-        // removal (an erased address, a deleted id) still is.
-        val sweep =
-            if (index.supersedesViaPut && records.isNotEmpty()) {
-                val putAt = records.mapNotNullTo(HashSet()) { it.addressOrNull() }
-                removed.filter { it.addressOrNull() !in putAt }
-            } else {
-                removed
-            }
-        if (sweep.isNotEmpty()) index.removeDocs(sweep)
+        // A failure from the first record write to the last removal is
+        // remembered per address, as on the record path ([OwedSweeps]): the
+        // re-offered winners come back duplicates and would never sweep.
+        val touched = (records + removed).mapNotNullTo(LinkedHashSet()) { OwedSweeps.addressOf(it) }
+        try {
+            writeRecords(records, removed)
+        } catch (t: Throwable) {
+            owed.owe(touched)
+            throw t
+        }
+        // The replay read every version of the records' addresses and its
+        // putIfNewer swept all but the winner, so those owe nothing now; an
+        // owed address re-offered as a duplicate is settled here.
+        owed.clear(records.mapNotNull { OwedSweeps.addressOf(it) })
+        owed.settle(index, events.filter { it !is DeletionRequestEvent && it !is RequestToVanishEvent })
         // The vanishes' erase of what the snapshot never held. Per owner, the
         // newest ADMITTED vanish covering this relay decides it: each one
         // erases the owner's stored history up to its own created_at, so for
@@ -137,6 +140,29 @@ internal class BulkMixedInsert(
             }
         }
         return outcomes
+    }
+
+    /** The surviving records, then the removals the replay decided — retried in place ([retryingSweep]). */
+    private suspend fun writeRecords(
+        records: List<EventDoc>,
+        removed: List<EventDoc>,
+    ) {
+        if (records.isNotEmpty()) index.putAll(records)
+        // On an ADDRESS-KEYED index a record put above already replaced its
+        // address's stored version in place, and removing that version — by
+        // its address, the only docid it has — removed the WINNER: the
+        // address ended empty while the event was answered Accepted (a kind 5
+        // and a newer version of a stored address in one batch). So a version
+        // whose address a record was just put at is not removed; every other
+        // removal (an erased address, a deleted id) still is.
+        val sweep =
+            if (index.supersedesViaPut && records.isNotEmpty()) {
+                val putAt = records.mapNotNullTo(HashSet()) { it.addressOrNull() }
+                removed.filter { it.addressOrNull() !in putAt }
+            } else {
+                removed
+            }
+        if (sweep.isNotEmpty()) retryingSweep { index.removeDocs(sweep) }
     }
 
     /**

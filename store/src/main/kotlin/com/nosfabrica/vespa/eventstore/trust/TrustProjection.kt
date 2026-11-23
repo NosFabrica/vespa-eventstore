@@ -30,6 +30,7 @@ import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.async.QUERY_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
+import com.nosfabrica.vespa.eventstore.engine.async.retryingSweep
 import com.nosfabrica.vespa.eventstore.engine.doc.CellRemoval
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
@@ -333,7 +334,7 @@ class TrustProjection(
         if (incumbent != null && EventDoc.NEWEST_FIRST.compare(doc, incumbent) >= 0) return false
         // Winner first, as the port's default: a failed put must leave the old version, not neither.
         inner.put(doc)
-        if (existing.isNotEmpty()) inner.removeDocs(existing)
+        if (existing.isNotEmpty()) retryingSweep { inner.removeDocs(existing) }
         return true
     }
 
