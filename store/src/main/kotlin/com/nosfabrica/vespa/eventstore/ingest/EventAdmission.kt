@@ -132,6 +132,7 @@ internal class EventAdmission(
         val probeDeleted = guards.mightBeDeleted(owner)
         val probeVanished = guards.mightHaveVanished(owner)
         if (!probeDeleted && !probeVanished) {
+            if (supersedesBesideDupRead(event)) return
             // The common case reads just the dup get — skip the fan-out
             // machinery, which allocates per call.
             if (index.get(event.id) != null) duplicate(event)
@@ -167,25 +168,78 @@ internal class EventAdmission(
             // duplicate. A win swept every version it read, so the address owes
             // nothing after it; a loss is a write to the address too, and pays.
             event.kind.isReplaceable() || event.kind.isAddressable() -> {
-                val address = listOfNotNull(OwedSweeps.addressOf(event))
-                val stored =
-                    try {
-                        index.putIfNewer(event.toDoc())
-                    } catch (t: Throwable) {
-                        owed?.owe(address)
-                        throw t
-                    }
-                if (!stored) {
-                    owed?.settle(index, listOf(event))
-                    throw RejectedException(Rejections.REPLACED)
-                }
-                owed?.clear(address)
+                replacedUnless(supersede(event), event)
             }
 
             else -> {
                 index.put(event.toDoc())
             }
         }
+    }
+
+    /**
+     * A plain replaceable/addressable event with no guard to probe: its dup GET
+     * and its supersession ([supersede], whose version read is the round trip
+     * that matters) run TOGETHER, so the insert waits for one round trip under
+     * the writer lock instead of two. True when the event was decided here.
+     *
+     * The outcome is the sequential one's. A stored event can never win its own
+     * address — it IS the incumbent, or an older version beside a newer one —
+     * so a supersession that WROTE proves the event was not stored, and the
+     * GET's answer (which may have read that very write) is moot; one that
+     * wrote nothing leaves the GET to decide duplicate against `replaced:`, as
+     * it would have decided first. Only where no guard is probed: a
+     * guard's verdict must be in before anything is written. Not for the trust
+     * kinds either, whose supersession opens crash insurance (a marker write)
+     * that a duplicate card would pay for nothing.
+     *
+     * The price is the supersession's read (or the address-keyed conditional
+     * put, refused) for an event that turns out to be a duplicate — which a
+     * batch's dedup, not this path, is for.
+     */
+    private suspend fun supersedesBesideDupRead(event: Event): Boolean {
+        if (!(event.kind.isReplaceable() || event.kind.isAddressable()) || event.kind in BulkRecordInsert.WHOLE_DOC_KINDS) return false
+        val stored =
+            coroutineScope {
+                val existing = async { index.get(event.id) != null }
+                val written = runCatching { supersede(event) }
+                if (written.getOrNull() == true) {
+                    existing.cancel()
+                    return@coroutineScope true
+                }
+                if (existing.await()) duplicate(event)
+                written.getOrThrow()
+            }
+        replacedUnless(stored, event)
+        return true
+    }
+
+    /**
+     * NIP-01 newest-wins in ONE call ([EventIndex.putIfNewer]); a failure is
+     * remembered against the address ([OwedSweeps]), and a win swept every
+     * version it read, so the address owes nothing after it.
+     */
+    private suspend fun supersede(event: Event): Boolean {
+        val address = listOfNotNull(OwedSweeps.addressOf(event))
+        val stored =
+            try {
+                index.putIfNewer(event.toDoc())
+            } catch (t: Throwable) {
+                owed?.owe(address)
+                throw t
+            }
+        if (stored) owed?.clear(address)
+        return stored
+    }
+
+    /** `replaced:` unless [stored] — a loss is a write to the address too, and pays what it owes ([OwedSweeps]). */
+    private suspend fun replacedUnless(
+        stored: Boolean,
+        event: Event,
+    ) {
+        if (stored) return
+        owed?.settle(index, listOf(event))
+        throw RejectedException(Rejections.REPLACED)
     }
 
     /**
