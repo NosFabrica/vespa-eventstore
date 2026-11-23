@@ -92,6 +92,33 @@ class CallStageTest {
                 }
         }
 
+    /**
+     * ONE CALL, TWO STAGES AT ONCE — a write commit times its version read
+     * beside its guard reads. With one value restored on the way out, the
+     * slot was blanked while a stage still ran, and once both were done it
+     * named the stage that had finished first.
+     */
+    @Test
+    fun `concurrent stages of one call never leave it labelled with a finished one`() =
+        runBlocking {
+            val slot = IngestStats.CallStage()
+            kotlinx.coroutines.withContext(slot) {
+                kotlinx.coroutines.coroutineScope {
+                    val versionsDone = kotlinx.coroutines.CompletableDeferred<Unit>()
+                    val guardsDone = kotlinx.coroutines.CompletableDeferred<Unit>()
+                    val versions = async { IngestStats.timed("versions") { versionsDone.await() } }
+                    val guards = async { IngestStats.timed("guards") { guardsDone.await() } }
+                    delay(20)
+                    versionsDone.complete(Unit)
+                    versions.await()
+                    assertEquals("guards", slot.current()?.first, "the stage still running, not nothing")
+                    guardsDone.complete(Unit)
+                    guards.await()
+                }
+            }
+            assertNull(slot.current(), "and nothing once both are done, never the one that finished first")
+        }
+
     @Test
     fun `an absent slot costs nothing and changes nothing`() =
         runBlocking {
