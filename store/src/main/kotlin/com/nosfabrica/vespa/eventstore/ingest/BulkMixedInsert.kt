@@ -189,6 +189,40 @@ internal class BulkMixedInsert(
         val flaggedDeleters = guards.filterFlaggedDeleters(owners)
         val flaggedVanishers = guards.filterFlaggedVanishers(owners)
 
+        // One read per entry. A plain query reads full documents; a VERSION
+        // read of a kind no decorator reacts to by reading the document reads
+        // STUBS instead ([VersionReads]: id, created_at, d — all the replay's
+        // supersession, deletion and vanish rules read of a stored version, and
+        // all `removeDocs` needs of one it removes). The whole documents were a
+        // stored kind 3's 50-500 KB of tags, read under both locks for every
+        // batch of two or more carrying a kind 5 (BULK_MIN): the per-event path
+        // such a batch used to take reads stubs.
+        val versionReads = VersionReads(index)
+        val reads = ArrayList<suspend () -> List<EventDoc>>()
+
+        fun versions(
+            q: EventQuery,
+            kind: Int,
+        ) {
+            val author = q.authors.singleOrNull()
+
+            fun read(block: suspend () -> List<EventDoc>) {
+                reads += block
+            }
+            when {
+                kind in BulkRecordInsert.WHOLE_DOC_KINDS -> read { index.search(q) }
+
+                kind.isAddressable() && author != null -> read { versionReads.addressable(q, kind, author) }
+
+                // Plain replaceables by author chunk: the groupings take no
+                // `until`, so a deletion target's read is its whole address — a
+                // superset, which the replay's own `until` narrows.
+                !kind.isAddressable() && q.tags.isEmpty() -> read { versionReads.replaceable(kind, q.authors) }
+
+                else -> read { index.search(q) }
+            }
+        }
+
         val queries =
             buildList {
                 // Existing docs by id: batch ids + every deletion's e-tag targets.
@@ -215,12 +249,12 @@ internal class BulkMixedInsert(
                         .map { it.pubKey }
                         .distinct()
                         .chunked(PRELOAD_CHUNK)
-                        .forEach { add(EventQuery(kinds = listOf(kind), authors = it)) }
+                        .forEach { versions(EventQuery(kinds = listOf(kind), authors = it), kind) }
                 }
                 for ((ka, evs) in records.filter { it.kind.isAddressable() }.groupBy { it.kind to it.pubKey }) {
                     val ds = evs.mapNotNull { it.tags.dTag() }.distinct()
-                    ds.chunked(PRELOAD_CHUNK).forEach { add(EventQuery(kinds = listOf(ka.first), authors = listOf(ka.second), tags = mapOf("d" to it))) }
-                    if (evs.any { it.tags.dTag().isNullOrEmpty() }) add(EventQuery(kinds = listOf(ka.first), authors = listOf(ka.second)))
+                    ds.chunked(PRELOAD_CHUNK).forEach { versions(EventQuery(kinds = listOf(ka.first), authors = listOf(ka.second), tags = mapOf("d" to it)), ka.first) }
+                    if (evs.any { it.tags.dTag().isNullOrEmpty() }) versions(EventQuery(kinds = listOf(ka.first), authors = listOf(ka.second)), ka.first)
                 }
 
                 // Deletion a-tag targets, exactly the set the replay can touch
@@ -251,7 +285,7 @@ internal class BulkMixedInsert(
                     .groupBy({ it.key.first }, { it.key.second to it.value.max() })
                     .forEach { (kind, authorsAt) ->
                         authorsAt.chunked(PRELOAD_CHUNK).forEach { chunk ->
-                            add(EventQuery(kinds = listOf(kind), authors = chunk.map { it.first }, until = chunk.maxOf { it.second }))
+                            versions(EventQuery(kinds = listOf(kind), authors = chunk.map { it.first }, until = chunk.maxOf { it.second }), kind)
                         }
                     }
                 // Addressable with a d: by (kind, author, d-tags).
@@ -261,7 +295,7 @@ internal class BulkMixedInsert(
                     .forEach { (ka, dsAt) ->
                         val until = dsAt.maxOf { it.second }
                         dsAt.map { it.first }.distinct().chunked(PRELOAD_CHUNK).forEach { ds ->
-                            add(EventQuery(kinds = listOf(ka.first), authors = listOf(ka.second), tags = mapOf("d" to ds), until = until))
+                            versions(EventQuery(kinds = listOf(ka.first), authors = listOf(ka.second), tags = mapOf("d" to ds), until = until), ka.first)
                         }
                     }
             }
@@ -269,7 +303,12 @@ internal class BulkMixedInsert(
         IngestStats.timed("preload") {
             // Every preload query feeds a WRITE decision (dedup, guards, supersession,
             // vanish scope), so none of them carries a limit.
-            queries.mapBounded(QUERY_FANOUT) { index.search(it) }.forEach { page -> page.forEach { snapshot.put(it) } }
+            // A version read may hand back a STUB of a document the id read
+            // above also returned in full; either is the same version to the replay.
+            val all = ArrayList<suspend () -> List<EventDoc>>()
+            queries.forEach { q -> all += suspend { index.search(q) } }
+            all += reads
+            all.mapBounded(QUERY_FANOUT) { it() }.forEach { page -> page.forEach { snapshot.put(it) } }
         }
     }
 

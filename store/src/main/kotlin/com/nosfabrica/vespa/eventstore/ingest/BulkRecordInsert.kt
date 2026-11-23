@@ -83,6 +83,9 @@ internal class BulkRecordInsert(
     /** Addresses whose sweep a failed write left owing — see [OwedSweeps]. */
     private val owed: OwedSweeps = OwedSweeps(),
 ) {
+    /** Stage D's attribute-only version reads, shared with [BulkMixedInsert]'s preload. */
+    private val versionReads = VersionReads(index)
+
     /**
      * What [plan] resolved lock-free (stages A–B). Dedup can race: an event a
      * neighbouring batch commits between this plan and its commit slips
@@ -434,7 +437,7 @@ internal class BulkRecordInsert(
                 for ((kind, ks) in replaceable.groupBy { it.first }) {
                     ks.map { it.second }.distinct().chunked(CHECK_CHUNK).forEach { authors ->
                         val q = EventQuery(kinds = listOf(kind), authors = authors)
-                        add(if (kind in WHOLE_DOC_KINDS) ({ index.search(q) }) else ({ replaceableVersions(kind, authors) }))
+                        add(if (kind in WHOLE_DOC_KINDS) ({ index.search(q) }) else ({ versionReads.replaceable(kind, authors) }))
                     }
                 }
                 // Addressables recall PER (kind, author), never across authors:
@@ -452,7 +455,7 @@ internal class BulkRecordInsert(
                             // recall it. Go broad by (kind, author) — same fallback as
                             // putIfNewer and the mixed preload; bounded to one author.
                             listOfNotNull(EventQuery(kinds = listOf(kind), authors = listOf(author)).takeIf { ks.any { it.third.isNullOrEmpty() } })
-                    for (q in queries) add(if (kind in WHOLE_DOC_KINDS) ({ index.search(q) }) else ({ addressableVersions(q, kind, author) }))
+                    for (q in queries) add(if (kind in WHOLE_DOC_KINDS) ({ index.search(q) }) else ({ versionReads.addressable(q, kind, author) }))
                 }
             }
         val existing = HashMap<Triple<Int, String, String?>, MutableList<EventDoc>>()
@@ -467,58 +470,6 @@ internal class BulkRecordInsert(
         }
         return existing
     }
-
-    /**
-     * Every stored version of [kind] for [authors], plain replaceable: the
-     * winner per author off one grouping, how many versions each holds off
-     * another, run together. An author holding exactly one is answered by its
-     * winner's stub; any other answer — drift (two or more), or two groupings
-     * that disagree (another process wrote between them) — reads that author's
-     * versions in full, as before.
-     */
-    private suspend fun replaceableVersions(
-        kind: Int,
-        authors: List<String>,
-    ): List<EventDoc> =
-        coroutineScope {
-            val counts = async { index.countByAuthor(EventQuery(kinds = listOf(kind), authors = authors)) }
-            val newest = index.newestVersions(kind, authors)
-            val held = counts.await()
-            val out = ArrayList<EventDoc>()
-            val unsure = ArrayList<String>()
-            for (author in authors) {
-                val n = held[author] ?: 0
-                val winner = newest[author]
-                when {
-                    n == 0 && winner == null -> Unit
-                    n == 1 && winner != null -> out += stub(kind, author).versionStub(winner)
-                    else -> unsure += author
-                }
-            }
-            if (unsure.isNotEmpty()) out += index.search(EventQuery(kinds = listOf(kind), authors = unsure))
-            out
-        }
-
-    /** Every stored version [q] recalls for one (kind, author), addressable: the id walk with each version's FIRST d tag, as stubs. */
-    private suspend fun addressableVersions(
-        q: EventQuery,
-        kind: Int,
-        author: String,
-    ): List<EventDoc> {
-        val template = stub(kind, author)
-        val out = ArrayList<EventDoc>()
-        index.visitIds(q, withDTag = true) { page ->
-            page.mapTo(out) { template.versionStub(it) }
-            true
-        }
-        return out
-    }
-
-    /** The (kind, author) a [versionStub] is built against: no id, no time, no tags of its own. */
-    private fun stub(
-        kind: Int,
-        author: String,
-    ) = EventDoc(id = "", pubkey = author, createdAt = 0, kind = kind, tags = emptyList(), content = "", sig = "")
 
     /**
      * Every guard event of [kind] for [owners], bucketed by author. One query

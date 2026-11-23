@@ -336,4 +336,30 @@ class BulkMixedInsertTest {
             }
         }
     }
+
+    /**
+     * The preload reads a stored replaceable's VERSIONS as stubs, not as
+     * documents: a kind 3 is 50-500 KB of tags, and with BULK_MIN at 2 every
+     * batch carrying a kind 5 takes this path, which read each one whole under
+     * both locks (the per-event path such a batch used to take reads stubs).
+     * The outcome is the per-event path's.
+     */
+    @Test
+    fun `the mixed preload reads stored replaceable versions without their documents`() {
+        val followsOld = Event(id(), alice, 100, 3, Array(50) { arrayOf("p", it.toString(16).padStart(64, '0')) }, "", "")
+        val followsNew = Event(id(), alice, 200, 3, arrayOf(arrayOf("p", bob)), "", "")
+        val postOld = article(alice, "post", at = 100)
+        val postNew = article(alice, "post", at = 200)
+        val batch = (1..13).map { note(bob) } + listOf(followsNew, postNew, deletion(alice, addresses = listOf("3:$alice:")))
+        assertMixedMatchesSequential(prelude = listOf(followsOld, postOld), batch = batch, writers = WriterTopology.SINGLE_WRITER)
+        runBlocking {
+            val index = RecordingIndex(InMemoryEventIndex())
+            val store = NostrSemanticsStore(index, relay = relayUrl, writers = WriterTopology.SINGLE_WRITER)
+            listOf(followsOld, postOld).forEach { store.insert(it) }
+            index.queries.clear()
+            store.batchInsert(batch)
+            val documentReads = index.queries.filter { q -> q.ids.isEmpty() && q.kinds.any { it == 3 || it == LongFormContentEvent.KIND } }
+            assertEquals(emptyList(), documentReads, "a stored version is read as a stub (id, created_at, d), never as a document")
+        }
+    }
 }
