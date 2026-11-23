@@ -1407,10 +1407,13 @@ CPU per REQ:
 | page width | 1 (default) | 1,137 · 1,171 | 826–843 | 1,566–1,595 | 650–669 |
 | page width | 0 | **1,554 · 1,734** | **586–638** | **973–1,073** | **460–509** |
 
-The learned rule was not re-run through that bench: each tag there is asked
-about once a second, so a shape narrows within its first ~10 reads and the
-steady state should sit near the page-width row (8 of slack instead of 10), but
-that is an expectation, not a number.
+The learned rule, re-run through that bench on 2026-11-23 (the same seed, the
+store at this branch with vespa-relay and quartz at their audit-fix branches,
+against vespa-relay main with the pinned store, alternated twice): **884 · 909
+REQ/s before, 1,050 · 1,056 after**, the query container's CPU per REQ 1,931–2,023
+µs before and 1,648–1,705 after. That is the page-width row's gain, as expected
+for a sparse shape, which narrows within its first reads; the busy-feed half of
+the trade is still the simulation above.
 
 - **The query container dominated.** Replaying the captured queries straight at
   Vespa (no relay): ~800 µs of container CPU per query whatever its size (the
@@ -1430,6 +1433,30 @@ that is an expectation, not a number.
   reads), and with the slack narrow the trade is now 20 cold reads in one query
   against 10 plus a round trip. Decide it on a production-sized store with
   `VESPA_ID_FIRST=0`; nothing here changes its default.
+
+### Small batches take the bulk path (2026-11-23)
+
+`NostrSemanticsStore.batchInsert` sent batches under `BULK_MIN` (16) through the
+per-event loop, on the guess that a small batch was not worth the bulk setup.
+Under the writer lock that loop pays each event's own round trips back to back
+(2 for a note: guards, then the put; ~5 for a replaceable), where the bulk path
+pays ~4 for the whole batch. A relay whose publishers each wait for their OK
+forms exactly those batches: a few events per pass. `BULK_MIN` is now 2, so only
+a single event takes the loop.
+
+Through vespa-relay on the same 4-core sandbox and seeded store as above,
+nostr-bench `event` (each client publishes, waits for its OK, publishes again),
+one publish worker, alternated twice; events per second:
+
+| store | 20 publishers | 100 publishers |
+|---|---|---|
+| main (`BULK_MIN` 16) | 330 · 312 | 2,675 · 2,766 |
+| audit fixes, `BULK_MIN` 16 | 313 · 413 | 2,818 · 3,084 |
+| audit fixes, `BULK_MIN` 2 | **1,169 · 1,186** (16–17 ms mean, 53–123 ms max) | 2,872 · 2,670 |
+
+At 20 publishers the mean OK went from ~60 ms to 16–17 ms. At 100 the batches
+already passed 16, so nothing changed there. `BulkSupersessionIT` covers both
+paths against a real Vespa (a batch of many, and single inserts).
 
 ## Trusted links per search hit — can a page afford them? (`links_probe.py`, 2026-10-22)
 

@@ -1304,13 +1304,15 @@ class TrustProjectionTest {
     fun `a 10040 re-signed through the mixed bulk path walks only the service it newly names`() = assertBulkResignWalksOnlyTheNewService(mixed = true)
 
     /**
-     * What a removal remembers as named is forgotten once a card of that service is SKIPPED: a
-     * commit that removes the list, settles a card of its service under the map that no longer
-     * names it (a later removal flushes), and only then stores a list naming it again holds a
-     * card with no cell, which only the walk can reach.
+     * A commit that removes a provider list, lands a card of its service, flushes a second removal
+     * and stores a list naming the service again. Admitted event by event (the loop batches under
+     * BULK_MIN took until it was 16), the card was SKIPPED under the map that named nobody and was
+     * owed a walk. A batch of four now takes the mixed bulk planner, which settles the card under
+     * the batch's final map: its cell is written in the commit and no walk is owed. Either way the
+     * card's score must end up served.
      */
     @Test
-    fun `a service unnamed mid-commit long enough to skip a card is walked when re-named`() =
+    fun `a service unnamed and re-named in one batch ends with its card's cell`() =
         runBlocking {
             val proj = TrustProjection(InMemoryEventIndex(), InMemoryReputationIndex())
             proj.backlog.drainInBackground { }
@@ -1320,9 +1322,8 @@ class TrustProjectionTest {
             val doomed = card(signer = service2)
             st.insert(doomed)
             val later = "cd".repeat(32)
-            // One small batch, so one commit admitted event by event: the list goes, a card of its
-            // service lands, a second removal flushes that card under a map naming nobody, and a
-            // newer list names the service again.
+            // One batch: the list goes, a card of its service lands, a second removal, and a newer
+            // list names the service again.
             val out =
                 st.batchInsert(
                     listOf(
@@ -1333,16 +1334,14 @@ class TrustProjectionTest {
                     ),
                 )
             assertTrue(out.all { it is IEventStore.InsertOutcome.Accepted }, "$out")
-            assertEquals(setOf(service), proj.backlog.queuedRewalks(), "the skipped card is owed its walk")
+            assertEquals(emptySet(), proj.backlog.queuedRewalks(), "the mixed planner settled the card under the final map")
             proj.backlog.drain { it() }
             assertEquals(serviceCells(service to 33), proj.reputations.get(later)?.influenceScores)
         }
 
     /**
-     * The commit, not the call, is the unit of reaction — so a batch too small
-     * for the bulk path (under BULK_MIN, admitted one event at a time through
-     * putIfNewer) is still one cell write, which no batch-shaped port member
-     * could have reached.
+     * The commit, not the call, is the unit of reaction — so a small batch of
+     * cards is still one cell write, whichever path admits it.
      */
     @Test
     fun `a small batch admitted event by event still writes its cells once`() =
@@ -1458,7 +1457,7 @@ class TrustProjectionTest {
 }
 
 /** Mirrors NostrSemanticsStore's private BULK_MIN — the batch size that takes the bulk path. */
-private const val BULK_MIN = 16
+private const val BULK_MIN = 2
 
 /** Counts marker-doc traffic, separating pipelined cell adds from whole-doc puts. */
 private class MarkerCountingReputationIndex(

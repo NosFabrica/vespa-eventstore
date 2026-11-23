@@ -576,7 +576,7 @@ class NostrSemanticsStore(
      *    replays the per-event rules in memory, order preserved, then writes
      *    the diff.
      *
-     * Sub-[BULK_MIN] batches aren't worth the setup and just loop [EventAdmission.admit].
+     * A single event (a batch under [BULK_MIN]) loops [EventAdmission.admit].
      *
      * A PURE-RECORD BATCH IS SPLIT BY TRUST. The events that touch reputation
      * (cards, provider lists — see [touchesTrust]) commit under the trust gate;
@@ -1518,8 +1518,17 @@ class NostrSemanticsStore(
         /** The outcome key for an insert that failed on the ENGINE rather than on a rule. */
         const val OUTCOME_FAILED = "failed"
 
-        /** Batches this size or larger take the bulk path; smaller ones aren't worth its setup. */
-        const val BULK_MIN = 16
+        /**
+         * Batches this size or larger take the bulk path. A single event keeps the per-event loop;
+         * anything wider is cheaper in bulk. It was 16, on the guess that small batches were not worth
+         * the bulk setup, and that was wrong: under the writer lock the loop pays each event's own
+         * round trips one after another (2 for a note, ~5 for a replaceable), the bulk path ~4 for
+         * the whole batch. Measured through vespa-relay on 2026-11-23 (benchmark/README.md, "Small
+         * batches take the bulk path"): 20 publishers, each awaiting its OK, so batches of a few
+         * events, ran at 312-413 ev/s with 16 and 1,169-1,186 with 2; 100 publishers, whose batches
+         * already passed 16, unchanged.
+         */
+        const val BULK_MIN = 2
 
         /** [EventDoc.NEWEST_FIRST] for the raw read path — the same order over [RawEvent]s. */
         val RAW_NEWEST_FIRST = compareByDescending(RawEvent::createdAt).thenBy(RawEvent::id)
