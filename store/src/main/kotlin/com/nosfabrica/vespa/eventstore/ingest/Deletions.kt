@@ -33,6 +33,19 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.owner
 import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+
+/**
+ * [Deletions.sweep]'s default round: run it inline, under whatever lock the
+ * caller holds. A top-level value rather than a `= { it() }` lambda in the
+ * parameter list, which crashes this module's compile on Kotlin 2.4.21
+ * (reproduced 2026-11-23 in `:store:compileKotlin`): "Backend Internal error:
+ * Exception during IR lowering", an `AssertionError` from
+ * `AddContinuationLoweringKt.retargetToSuspendView` (AddContinuationLowering.kt:490)
+ * — "FUN LOCAL_FUNCTION_FOR_LAMBDA ... has no continuation".
+ */
+private val INLINE_ROUND: suspend (suspend () -> Set<String>?) -> Set<String>? = { it() }
 
 /**
  * NIP-09 (deletion request) and NIP-62 (request to vanish) enforcement, plus
@@ -165,7 +178,7 @@ internal class Deletions(
      * (Offset paging would be wrong — deleting under an offset skips rows.)
      *
      * [round] wraps each round — its read AND its removes — and is how a
-     * caller chooses its lock granularity. Null (the default) runs the round inline,
+     * caller chooses its lock granularity. The default runs the round inline,
      * for a caller that already holds the writer lock across the whole sweep
      * (a vanish inside its own admission, an admin delete, a mixed batch's
      * replay). A caller that may release between rounds passes a wrapper that
@@ -173,10 +186,16 @@ internal class Deletions(
      * `NostrSemanticsStore.deleteExpiredEvents` for why that is safe for it and
      * not for every sweep. Each round is self-contained either way: it reads
      * the page and removes exactly what it read inside one [round].
+     *
+     * Cancellation is checked before every round. Nothing else in the loop is
+     * guaranteed to: an uncontended `Mutex.lock` returns without suspending,
+     * and an index that answers without suspending (the in-memory reference)
+     * never reaches a cancellation point, so a cancelled sweep would run to
+     * its end.
      */
     suspend fun sweep(
         q: EventQuery,
-        round: (suspend (suspend () -> Unit) -> Unit)? = null,
+        round: suspend (suspend () -> Set<String>?) -> Set<String>? = INLINE_ROUND,
     ) {
         // The caller's own limit, if any, decides whether one page is the whole
         // job, so page on q.limit rather than sweepPage. Plain sweeps stamp
@@ -188,40 +207,44 @@ internal class Deletions(
             } else {
                 q.copy(limit = q.limit ?: sweepPage)
             }
-        var rounds = 0
         var lastPage: Set<String>? = null
-        var drained = false
-        // A local suspend lambda rather than a `{ it() }` default for [round]:
-        // that default crashed the Kotlin 2.4.21 JVM IR backend ("has no continuation").
-        val oneRound: suspend () -> Unit = oneRound@{
-            val page = index.search(paged)
-            if (page.isEmpty()) {
-                drained = true
-                return@oneRound
-            }
-            val ids = page.mapTo(HashSet()) { it.id }
-            // An acked remove is visible to search (the EventIndex contract), so
-            // a page identical to the one just removed means the deletes are not
-            // landing. Returning silently would report a vanish/delete as
-            // enforced while the events are still served. (A caller that
-            // releases the lock between rounds keeps this check sound: only a
-            // writer RE-STORING every doc of the last page between two rounds
-            // could fake it, and it then fails loudly rather than silently.)
-            check(ids != lastPage) { "sweep is not shrinking: ${ids.size} matches for $q survived their own removal" }
-            // The docs are already in hand — removeDocs lets the trust
-            // projection react without a get per id.
-            index.removeDocs(page)
+        repeat(MAX_SWEEP_ROUNDS) {
+            currentCoroutineContext().ensureActive()
+            val previous = lastPage
+            val removed = round { sweepRound(paged, previous) } ?: return
             // A limit'd delete is satisfied by its first page.
-            if (q.limit != null) drained = true
-            lastPage = ids
-        }
-        while (rounds++ < MAX_SWEEP_ROUNDS) {
-            if (round == null) oneRound() else round(oneRound)
-            if (drained) return
+            if (q.limit != null) return
+            lastPage = removed
         }
         // Loud, not silent: the caller (a vanish, an expiry pass, an admin
         // delete) must not believe the sweep completed.
         error("sweep did not drain after $MAX_SWEEP_ROUNDS rounds of ${paged.limit} for $q")
+    }
+
+    /**
+     * ONE ROUND of [sweep]: read a page of [paged], remove exactly it, and
+     * return its ids — or null when the page came back empty and the sweep is
+     * done. [previous] is the page the last round removed.
+     */
+    private suspend fun sweepRound(
+        paged: EventQuery,
+        previous: Set<String>?,
+    ): Set<String>? {
+        val page = index.search(paged)
+        if (page.isEmpty()) return null
+        val ids = page.mapTo(HashSet()) { it.id }
+        // An acked remove is visible to search (the EventIndex contract), so
+        // a page identical to the one just removed means the deletes are not
+        // landing. Returning silently would report a vanish/delete as
+        // enforced while the events are still served. (A caller that
+        // releases the lock between rounds keeps this check sound: only a
+        // writer RE-STORING every doc of the last page between two rounds
+        // could fake it, and it then fails loudly rather than silently.)
+        check(ids != previous) { "sweep is not shrinking: ${ids.size} matches for $paged survived their own removal" }
+        // The docs are already in hand — removeDocs lets the trust
+        // projection react without a get per id.
+        index.removeDocs(page)
+        return ids
     }
 
     private companion object {

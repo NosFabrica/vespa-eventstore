@@ -113,14 +113,19 @@ pages. Safe for expiry specifically: each round is the old round verbatim
 interleaves within a page; what a write between pages can observe is some
 already-expired events still stored, which reads hide and NIP-40 lets a relay
 drop at any time, so no admission rested on it. The cutoff is read once,
-before the first page, and every admission path rejects an event already
-expired when offered, so the match set can only grow by writes whose expiry
-check passed before the cutoff (finitely many): the sweep terminates and
-does not chase events that expire while it runs. An admin `delete(filters)`
+before the first page, off the store's clock — the clock every admission path
+now reads too (it read quartz's wall clock, so the argument rested on two
+clocks agreeing) — and every admission path rejects an event already expired
+when offered, so the match set can only grow by writes whose expiry check
+passed before the cutoff (finitely many): the sweep terminates and does not
+chase events that expire while it runs. It checks for cancellation before
+each page; nothing else in the loop is sure to. An admin `delete(filters)`
 and a vanish keep one hold for the whole sweep: a filter's match set is not
 fixed, so a write between pages could add an event a later page deletes.
-`SweepPagingTest` pins all three properties (same set as a one-page sweep, a
-publish between pages, termination under arrivals). The page stays
+`ExpirySweepTest` pins it: the same set as a one-page sweep, a publish and a
+card between pages, a trust drain between pages, termination under arrivals,
+cancellation, a failed page releasing both locks, and `delete(filters)`
+keeping one hold. The page stays
 `sweepPage` (10,000): every round re-runs the query over what is left, so a
 smaller page shortens each hold but multiplies the sweep's total matching.
 
