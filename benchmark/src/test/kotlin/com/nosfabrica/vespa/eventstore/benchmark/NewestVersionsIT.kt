@@ -80,6 +80,8 @@ class NewestVersionsIT {
                         for (kind in listOf(3, 0)) {
                             val expected = reference.newestVersions(kind, asked)
                             assertEquals(expected, index.newestVersions(kind, asked), "kind $kind")
+                            // The census grouping (winner AND version count, one query) agrees too.
+                            assertEquals(reference.versionCensus(kind, asked), index.versionCensus(kind, asked), "census, kind $kind")
                         }
                         assertEquals(260, index.newestVersions(3, asked).size, "every asked author with a version, across the chunk")
                     }

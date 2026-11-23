@@ -32,6 +32,8 @@ import com.nosfabrica.vespa.eventstore.engine.Linker
 import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.ScoredHit
 import com.nosfabrica.vespa.eventstore.engine.ServedDegraded
+import com.nosfabrica.vespa.eventstore.engine.VersionCensus
+import com.nosfabrica.vespa.eventstore.engine.WriterLockHeld
 import com.nosfabrica.vespa.eventstore.engine.async.QUERY_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
@@ -284,7 +286,7 @@ class VespaEventIndex(
      * ([TieSlackMemory]); null (every read at the flat [TIE_SLACK]) under the same
      * `VESPA_RECENCY_MEMORY=0`.
      */
-    private val slackMemory: TieSlackMemory? = if (recencyMemory) TieSlackMemory() else null
+    private val slackMemory: TieSlackMemory? = windowMemory?.let(::TieSlackMemory)
 
     // ADDRESS-KEYED mode (VESPA_ADDRESS_KEYED=1, the [addressKeyed] parameter):
     // replaceable/addressable events are stored under their NIP-01 address as
@@ -763,6 +765,13 @@ class VespaEventIndex(
         // The read's shape when its caller already keyed it (a speculative
         // read's attempts share one); otherwise keyed here, for the tie slack.
         shape: RecencyWindowMemory.Shape? = null,
+        // The slack to start a shape with nothing learned from, when the caller
+        // has evidence ([TieSlackMemory.measuredSlack], a recalled narrow shape);
+        // else [TieSlackMemory.coldSlack] decides by the shape's selectivity.
+        coldSlack: Int? = null,
+        // The slack already leased for this page, when its caller read it with
+        // the window ([RecencyWindowMemory.recallWith], one lock for both).
+        leased: TieSlackMemory.Lease? = null,
     ): List<VespaSummary> {
         if (!q.isRecencyOrdered()) return rankedHits(q).mapNotNull { it.fields }
         val limit = q.limit
@@ -796,7 +805,8 @@ class VespaEventIndex(
         // internal probes (RANK_UNRANKED), id lookups and complete reads keep
         // the flat [TIE_SLACK] and never take a slot in the table.
         val slackShape = if (slackMemory == null) null else shape ?: q.takeIf { it.isWindowable() }?.let(::shapeOfRead)
-        val slack = slackShape?.let { slackMemory?.slackFor(it) } ?: TIE_SLACK
+        val lease = slackShape?.let { leased ?: slackMemory?.slackFor(it, coldSlack ?: TieSlackMemory.coldSlack(q, limit)) }
+        val slack = lease?.value ?: TIE_SLACK
         val fetchLimit = minOf(plusSaturated(limit, slack), maxOf(limit, unboundedHits))
         val fetch = q.copy(limit = fetchLimit).keepingProfileOf(q)
         var hits =
@@ -812,12 +822,16 @@ class VespaEventIndex(
             // T, never has, so it reads the group by its window.
             val complete = hits.size < fetchLimit || hits.last().createdAt < t
             // What the page teaches its shape: the boundary members past the
-            // last slot (exact here — the group is whole), or that the slack cut
-            // it. A short page (the `if` above) says nothing about ties.
-            if (slackShape != null) {
-                val over = if (complete) hits.count { it.createdAt >= t } - limit else 0
-                slackMemory?.learn(slackShape, slack, over, cut = !complete)
-            }
+            // last slot — exact here, the group is whole; on a cut, exact once
+            // the `[T,T]` read below has counted it. A short page (the `if`
+            // above) says nothing about ties, and neither does a page served
+            // off part of the corpus ([ServedDegraded]), whose boundary second
+            // is thinner than the shape's — the window memory skips those too.
+            // A read that may be served partial with no tracker to say so (a
+            // speculative read installs its own) cannot tell, and learns nothing.
+            val tracker = currentCoroutineContext()[ServedDegraded]
+            val teaches = lease != null && slackShape != null && (if (q.acceptsPartial) tracker != null && !tracker.seen else tracker?.seen != true)
+            if (complete && teaches) slackMemory?.learn(slackShape!!, lease!!, hits.count { it.createdAt >= t } - limit, cut = false)
             if (!complete) {
                 // A gated query's tie window must stay gated (the exact variant
                 // — a [t,t] window is tiny) or the rerun would resurrect
@@ -830,6 +844,7 @@ class VespaEventIndex(
                         ?.filter { it.id.isNotEmpty() }
                         ?: emptyList()
                 hits = hits.filter { it.createdAt > t } + ties
+                if (teaches && tracker?.seen != true) slackMemory?.learn(slackShape!!, lease!!, hits.size - limit, cut = true)
             }
         }
         return hits.sortedWith(SUMMARY_NEWEST_FIRST).take(limit)
@@ -911,10 +926,14 @@ class VespaEventIndex(
             // The shape is keyed ONCE per read: the recall here and the
             // learn/forget below share it (the digest walks the author list).
             val shape = if (windowMemory != null || slackMemory != null) RecencyWindowMemory.shapeOf(q, anchor, now) else null
-            val recalled = shape?.let { windowMemory?.recall(it) }
+            // The window and the first page's tie slack, under one lock.
+            val (recalled, firstLease) = shape?.let { windowMemory?.recallWith(it, TieSlackMemory.coldSlack(q, limit)) } ?: (null to null)
             if (recalled is RecencyWindowMemory.Recall.Narrow) {
                 outcome("recalled.narrow")
-                return@timed recallPage(planner.shipped(q), planned = true, idOnly = idOnly, shape = shape)
+                // Too thin to window is too thin for a wide tie slack: a shape
+                // with no slack learned starts from the least, and a cut widens it at once.
+                val narrowLease = firstLease?.let { if (it.epoch == 0L) TieSlackMemory.Lease(MIN_TIE_SLACK, 0) else it }
+                return@timed recallPage(planner.shipped(q), planned = true, idOnly = idOnly, shape = shape, coldSlack = MIN_TIE_SLACK, leased = narrowLease)
             }
             var window =
                 (recalled as? RecencyWindowMemory.Recall.Window)
@@ -940,6 +959,9 @@ class VespaEventIndex(
             // Why the loop stopped without a proven page — booked as a counter
             // below, so an operator can tell a narrow corpus from a mistuned rule.
             var fallback = "window"
+            // The window the last attempt actually read: with [carried], the
+            // shape's measured rate, which seeds the fallback's tie slack.
+            var measuredWindow = 0L
             while (window <= RecencyPlanner.MAX_WINDOW) {
                 if (attempts >= RecencyPlanner.MAX_ATTEMPTS) {
                     fallback = "attempts"
@@ -953,12 +975,15 @@ class VespaEventIndex(
                 val remaining = limit - carried.size
                 val page =
                     try {
-                        IngestStats.timed("$SPECULATIVE_STAGE.attempt") { recallPage(q.olderThan(boundary, remaining).copy(since = since), planned = true, idOnly = idOnly, shape = shape) }
+                        IngestStats.timed("$SPECULATIVE_STAGE.attempt") {
+                            recallPage(q.olderThan(boundary, remaining).copy(since = since), planned = true, idOnly = idOnly, shape = shape, leased = firstLease.takeIf { attempts == 0 })
+                        }
                     } catch (_: PartialAnswer) {
                         fallback = "partial"
                         break
                     }
                 attempts++
+                measuredWindow = window
                 if (page.size >= remaining) {
                     outcome(if (attempts == 1) "first" else "widened")
                     learn(shape, RecencyWindowMemory.Recall.Window(window, limit))
@@ -986,7 +1011,10 @@ class VespaEventIndex(
                 else -> Unit
             }
             // The unwindowed read, for what the carried pages do not already hold.
-            carried + recallPage(planner.shipped(q.olderThan(boundary, limit - carried.size)), planned = true, idOnly = idOnly, shape = shape)
+            // A shape that came back short has MEASURED its rate: the fallback
+            // starts its tie slack there, not at the wide default.
+            val measured = if (attempts > 0) TieSlackMemory.measuredSlack(carried.size, measuredWindow) else null
+            carried + recallPage(planner.shipped(q.olderThan(boundary, limit - carried.size)), planned = true, idOnly = idOnly, shape = shape, coldSlack = measured)
         }
 
     /**
@@ -1500,7 +1528,10 @@ class VespaEventIndex(
         shape: String? = null,
     ): List<DocRef> {
         var refusal: PartialAnswer? = null
-        for (pause in RETRY_PAUSES_MILLIS) {
+        // UNDER A WRITER LOCK, ONE ASK ([WriterLockHeld]): the backoff would hold
+        // every other writer for its 4.2 s, and the write's caller retries anyway.
+        val pauses = if (currentCoroutineContext()[WriterLockHeld.Key] != null) WRITE_PATH_PAUSES_MILLIS else RETRY_PAUSES_MILLIS
+        for (pause in pauses) {
             // TIMED, because an untimed wait is the blindness `walk.scan` was
             // added to end: 4.2 s of a walk sitting still would otherwise look
             // exactly like a walk with nothing to do, on every instrument this
@@ -2153,7 +2184,27 @@ class VespaEventIndex(
         shape: String? = null,
     ): List<DocRef> {
         val vq = EventYql.buildIdTime(q, withDTag)?.let { if (shape == null) it else it.copy(shape = shape) } ?: return emptyList()
-        return searchRoot(vq, hits = q.limit ?: unboundedHits)
+        val hits = q.limit ?: unboundedHits
+        // A SCHEMA WITHOUT THE ATTRIBUTE-ONLY SUMMARIES (`idtime`/`idtimetag`)
+        // answers the same select off the default summary — every field it
+        // projects (id, created_at, tag_index) is a summary field there too —
+        // reading documents where the attribute summary read none, as the read
+        // path does ([recallSummaries]). The write path reads its supersession
+        // versions through this walk, so without the net every replaceable
+        // insert against such a schema threw the engine's 400.
+        val root =
+            if (!fallbacks.idTimeSummaryAvailable) {
+                searchRoot(vq.withoutSummaryClass(), hits = hits)
+            } else {
+                try {
+                    searchRoot(vq, hits = hits)
+                } catch (e: IllegalArgumentException) {
+                    if (!fallbacks.isMissingIdTimeSummary(e)) throw e
+                    fallbacks.markIdTimeSummaryMissing()
+                    searchRoot(vq.withoutSummaryClass(), hits = hits)
+                }
+            }
+        return root
             .children
             .mapNotNull { hit ->
                 val f = hit.fields ?: return@mapNotNull null
@@ -2167,6 +2218,9 @@ class VespaEventIndex(
                 DocRef(f.id, f.createdAt, dTag)
             }.sortedWith(DOCREF_NEWEST_FIRST)
     }
+
+    /** [this] read off the default summary: the same select, no `presentation.summary` class. */
+    private fun VespaQuery.withoutSummaryClass(): VespaQuery = copy(params = params - "presentation.summary")
 
     /**
      * The tags projection via the same sliced visit as [visitIds], fieldSet
@@ -2363,6 +2417,25 @@ class VespaEventIndex(
         for (chunk in authors.distinct().chunked(VERSION_AUTHOR_CHUNK)) {
             val vq = EventYql.buildNewestVersions(kind, chunk) ?: continue
             queryRoot(vq, hits = 0)?.let { out.putAll(GroupingResults.newestPerAuthor(it)) }
+        }
+        return out
+    }
+
+    /**
+     * [EventIndex.versionCensus] as one attribute-only grouping per
+     * [VERSION_AUTHOR_CHUNK] authors ([EventYql.buildVersionCensus]): the
+     * [newestVersions] grouping with each author's count beside it.
+     * Coverage-checked like every grouping ([queryRoot]).
+     */
+    override suspend fun versionCensus(
+        kind: Int,
+        authors: List<String>,
+    ): Map<String, VersionCensus> {
+        requirePlainReplaceable(kind)
+        val out = HashMap<String, VersionCensus>()
+        for (chunk in authors.distinct().chunked(VERSION_AUTHOR_CHUNK)) {
+            val vq = EventYql.buildVersionCensus(kind, chunk) ?: continue
+            queryRoot(vq, hits = 0)?.let { out.putAll(GroupingResults.versionCensus(it)) }
         }
         return out
     }
@@ -2970,6 +3043,9 @@ class VespaEventIndex(
          * because the label already says waiting cannot help.
          */
         val RETRY_PAUSES_MILLIS = longArrayOf(0, 200, 1_000, 3_000)
+
+        /** [RETRY_PAUSES_MILLIS] for a caller holding a writer lock ([WriterLockHeld]): one ask, no wait. */
+        val WRITE_PATH_PAUSES_MILLIS = longArrayOf(0)
 
         // Pages' worth of one tied second past which the cursor stops carrying
         // the group in one read and splits it by id prefix — see visitIds.

@@ -27,6 +27,7 @@ import com.nosfabrica.vespa.eventstore.engine.LinkScore
 import com.nosfabrica.vespa.eventstore.engine.LinkTarget
 import com.nosfabrica.vespa.eventstore.engine.LinkWeights
 import com.nosfabrica.vespa.eventstore.engine.Ranked
+import com.nosfabrica.vespa.eventstore.engine.VersionCensus
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.text.WHITESPACE
@@ -238,6 +239,12 @@ class MeteredEventIndex(
         kind: Int,
         authors: List<String>,
     ): Map<String, DocRef> = meterResult(PortCall.Group, { inner.newestVersions(kind, authors) }, { it.size.toLong() })
+
+    /** A grouping, booked as one, like [newestVersions]. */
+    override suspend fun versionCensus(
+        kind: Int,
+        authors: List<String>,
+    ): Map<String, VersionCensus> = meterResult(PortCall.Group, { inner.versionCensus(kind, authors) }, { it.size.toLong() })
 
     /**
      * Booked as ONE call however many pages it walks, with the documents it

@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.eventstore.engine.client
 import com.nosfabrica.vespa.eventstore.engine.DocRef
 import com.nosfabrica.vespa.eventstore.engine.MockVespaEngine
+import com.nosfabrica.vespa.eventstore.engine.WriterLockHeld
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.SearchFields
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
@@ -31,6 +32,7 @@ import com.nosfabrica.vespa.eventstore.engine.metrics.withActivity
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import java.security.MessageDigest
 import kotlin.random.Random
 import kotlin.test.AfterTest
@@ -1413,9 +1415,11 @@ class VespaEventIndexTest {
                     assertEquals(reference.search(q).map { it.id }, index.search(q).map { it.id })
                     lastFetch(before)
                 }
-            assertEquals(10 + VespaEventIndex.TIE_SLACK, fetches.first(), "a shape seen first overfetches the flat slack: $fetches")
-            assertTrue(fetches.zipWithNext().all { (a, b) -> b <= a }, "and narrows, never widens, while no tie shows: $fetches")
-            assertEquals(10 + VespaEventIndex.MIN_TIE_SLACK, fetches.last(), "down to the least slack: $fetches")
+            // Its first read's short attempt measured the shape thin, so even the first fallback
+            // starts at the least slack instead of the wide one (TieSlackMemory.measuredSlack).
+            assertEquals(10 + VespaEventIndex.MIN_TIE_SLACK, fetches.first(), "a shape measured thin starts narrow: $fetches")
+            assertTrue(fetches.zipWithNext().all { (a, b) -> b <= a }, "and never widens while no tie shows: $fetches")
+            assertEquals(10 + VespaEventIndex.MIN_TIE_SLACK, fetches.last(), "at the least slack: $fetches")
 
             val dense = 6_000L
             seed(*(1..30).map { doc(kind = 1, pubkey = author, at = dense) }.toTypedArray())
@@ -1430,6 +1434,54 @@ class VespaEventIndexTest {
                 assertEquals(emptyList(), tieQueries(nextAt, dense), "so its second read holds the group in one query")
             } finally {
                 mock.scrambleTieOrder = false
+            }
+        }
+
+    /**
+     * A CUT LEARNS THE GROUP IT CUT. The `[T,T]` read counts the boundary group exactly, so a
+     * shape whose boundary second holds more than the wide slack learns that width (with the
+     * usual headroom, up to [TieSlackMemory.MAX_LEARNED_SLACK]) instead of going back to 64 and
+     * paying the extra query on every read.
+     */
+    @Test
+    fun `a cut boundary group wider than the wide slack is learned, not paid again`() =
+        runBlocking {
+            val author = "d9".repeat(32)
+            seed(*(1..150).map { doc(kind = 1, pubkey = author, at = 9_000L) }.toTypedArray())
+            val q = EventQuery(kinds = listOf(1), authors = listOf(author), limit = 10)
+            mock.scrambleTieOrder = true
+            try {
+                assertEquals(reference.search(q).map { it.id }, index.search(q).map { it.id })
+                val nextAt = mock.searchRequests.size
+                assertEquals(reference.search(q).map { it.id }, index.search(q).map { it.id })
+                assertEquals(10 + TieSlackMemory.MAX_LEARNED_SLACK, lastFetch(nextAt), "140 past the page: the learned cap")
+                assertEquals(emptyList(), tieQueries(nextAt, 9_000L), "so the next read holds the group in one query")
+            } finally {
+                mock.scrambleTieOrder = false
+            }
+        }
+
+    /**
+     * A page served off PART of the corpus teaches the tie slack nothing, as it teaches the
+     * window memory nothing: its boundary second is not the shape's.
+     */
+    @Test
+    fun `a degraded page teaches its shape no tie slack`() =
+        runBlocking {
+            val author = "da".repeat(32)
+            seed(*(1..30).map { doc(kind = 1, pubkey = author, at = 9_500L) }.toTypedArray())
+            val q = EventQuery(kinds = listOf(1), authors = listOf(author), limit = 10, acceptsPartial = true)
+            mock.scrambleTieOrder = true
+            mock.nonIdealStateCoverage = true
+            try {
+                index.search(q)
+                mock.nonIdealStateCoverage = false
+                val at = mock.searchRequests.size
+                assertEquals(reference.search(q).map { it.id }, index.search(q).map { it.id })
+                assertEquals(10 + VespaEventIndex.MIN_TIE_SLACK, lastFetch(at), "the cut a degraded page saw was not learned")
+            } finally {
+                mock.scrambleTieOrder = false
+                mock.nonIdealStateCoverage = false
             }
         }
 
@@ -1763,6 +1815,91 @@ class VespaEventIndexTest {
         }
 
     /**
+     * A SCHEMA WITHOUT THE ATTRIBUTE-ONLY ID SUMMARIES STILL SUPERSEDES. The
+     * read path demotes a missing `idtime` to the full summary, but the id
+     * walk — which the write path now reads its supersession versions through
+     * (the default putIfNewer, the bulk version read) — had no such net: every
+     * replaceable insert against such a schema threw the engine's 400.
+     */
+    @Test
+    fun `supersession and the id walk survive a schema without the id summaries`() =
+        runBlocking {
+            mock.rejectIdTimeSummary = true
+            val pk = "c5".repeat(32)
+            val old = doc(kind = 30023, pubkey = pk, at = 1_700_000_000L, tags = listOf(listOf("d", "post")))
+            index.put(old)
+            val newer = doc(kind = 30023, pubkey = pk, at = 1_700_000_100L, tags = listOf(listOf("d", "post")))
+
+            assertTrue(index.putIfNewer(newer), "the newer version wins")
+
+            val walked = ArrayList<DocRef>()
+            index.visitIds(EventQuery(kinds = listOf(30023), authors = listOf(pk)), withDTag = true) { page ->
+                walked += page
+                true
+            }
+            assertEquals(listOf(DocRef(newer.id, newer.createdAt, "post")), walked, "one version left, its d read off the default summary")
+        }
+
+    /**
+     * THE VERSION CENSUS IS ONE GROUPING: each author's winner (newest second, lowest id) and
+     * how many versions it holds, as the in-memory reference reduces them — one version, a
+     * drifted pair, a tie at the newest second, and an author with nothing stored.
+     */
+    @Test
+    fun `the version census answers winner and count in one grouping`() =
+        runBlocking {
+            val one = "e1".repeat(32)
+            val drifted = "e2".repeat(32)
+            val tied = "e3".repeat(32)
+            val none = "e4".repeat(32)
+            seed(
+                doc(kind = 0, pubkey = one, at = 100),
+                doc(kind = 0, pubkey = drifted, at = 100),
+                doc(kind = 0, pubkey = drifted, at = 200),
+                doc(kind = 0, pubkey = tied, at = 300),
+                doc(kind = 0, pubkey = tied, at = 300),
+                doc(kind = 0, pubkey = tied, at = 50),
+            )
+            val authors = listOf(one, drifted, tied, none)
+            val before = mock.searchRequests.size
+
+            val census = index.versionCensus(0, authors)
+
+            assertEquals(1, mock.searchRequests.size - before, "one grouping for the chunk")
+            assertEquals(reference.versionCensus(0, authors), census)
+            assertEquals(listOf(1, 2, 3), listOf(one, drifted, tied).map { census.getValue(it).versions })
+            assertEquals(reference.newestVersions(0, authors), index.newestVersions(0, authors), "and the newest-version grouping agrees with it")
+        }
+
+    /**
+     * AN ADDRESS-KEYED FALLBACK SUPERSESSION KEEPS ITS WINNER. A doc whose id
+     * cannot go into the engine's test-and-set condition (not 64 hex) takes
+     * the port's read-then-supersede instead, and that put the winner at the
+     * address's docid and then removed the replaced version BY its docid —
+     * the same address — deleting the winner it had just written.
+     */
+    @Test
+    fun `an address-keyed putIfNewer that falls back to reading keeps its winner`() =
+        runBlocking {
+            // An engine that stores a replaceable AT its address, as Vespa does under address keying.
+            val keyed = MockVespaEngine(InMemoryEventIndex(supersedesViaPut = true))
+            val idx = VespaEventIndex(keyed.url, addressKeyed = true)
+            try {
+                val pk = "c4".repeat(32)
+                val old = doc(kind = 0, pubkey = pk, at = 1_700_000_000L)
+                idx.put(old)
+                val winner = old.copy(id = "not-hex-${old.id}", createdAt = 1_700_000_100L)
+
+                assertTrue(idx.putIfNewer(winner), "the newer version wins")
+
+                assertEquals(listOf(winner.id), idx.search(EventQuery(kinds = listOf(0), authors = listOf(pk))).map { it.id }, "the address holds the winner")
+            } finally {
+                idx.close()
+                keyed.stop()
+            }
+        }
+
+    /**
      * ADDRESS-KEYED REMOVES RESOLVE THEIR DOCIDS IN ONE QUERY. A replaceable
      * lives at its address, so removing by event id has to read the document
      * to learn where it is — and that read was one `id in ("<id>")` search PER
@@ -1884,6 +2021,38 @@ class VespaEventIndexTest {
             } finally {
                 mock.degradeCoverage = null
                 idx.close()
+                IngestStats.reset()
+            }
+        }
+
+    /**
+     * UNDER A WRITER LOCK THE WALK ASKS ONCE. The backoff above is the remedy
+     * for a reader; on the write path (supersession reads its versions
+     * through this walk) it held every other writer for ~4.2 s per page and
+     * per tie read, where those commits used to fail in one round trip and
+     * their caller retries anyway.
+     */
+    @Test
+    fun `a refused walk under a writer lock gives up after one ask`() =
+        runBlocking {
+            IngestStats.reset()
+            val ivy = "c9".repeat(32)
+            seedBulk((1..5).map { doc(kind = 30382, pubkey = ivy, at = 1_700_000_000L + it) })
+            mock.degradeCoverage = nonIdealState
+            try {
+                val thrown =
+                    try {
+                        withContext(WriterLockHeld) { index.visitIds(EventQuery(kinds = listOf(30382), authors = listOf(ivy))) { true } }
+                        null
+                    } catch (refused: PartialAnswer) {
+                        refused
+                    }
+                assertNotNull(thrown, "still refused")
+                val stages = IngestStats.snapshot()
+                assertEquals(1L, stages["walk.refused.$nonIdealState"]?.calls, "one ask")
+                assertEquals(null, stages["walk.retry.wait"], "and no wait")
+            } finally {
+                mock.degradeCoverage = null
                 IngestStats.reset()
             }
         }

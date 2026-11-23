@@ -28,6 +28,7 @@ import com.nosfabrica.vespa.eventstore.engine.LinkTarget
 import com.nosfabrica.vespa.eventstore.engine.LinkWeights
 import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
+import com.nosfabrica.vespa.eventstore.engine.VersionCensus
 import com.nosfabrica.vespa.eventstore.engine.doc.CellRemoval
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationCells
@@ -108,6 +109,11 @@ internal class ReadOnlyEventIndex(
         kind: Int,
         authors: List<String>,
     ): Map<String, DocRef> = inner.newestVersions(kind, authors)
+
+    override suspend fun versionCensus(
+        kind: Int,
+        authors: List<String>,
+    ): Map<String, VersionCensus> = inner.versionCensus(kind, authors)
 
     override suspend fun put(doc: EventDoc) = readOnlyRefusal("put")
 

@@ -19,6 +19,7 @@
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 package com.nosfabrica.vespa.eventstore.engine
+import com.nosfabrica.vespa.eventstore.engine.async.retryingSweep
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.vitorpamplona.quartz.nip01Core.core.isAddressable
@@ -40,8 +41,16 @@ interface EventIndex : AutoCloseable {
      * True when the engine enforces replaceable/addressable supersession via
      * [putIfNewer]'s address-keyed conditional put (the bulk path then skips
      * its version-read stage). Default false: read-then-supersede. A decorator
-     * that REACTS to writes (the trust projection) intentionally keeps this
-     * false so its hooks see both old and new versions; see [putIfNewer].
+     * forwards its inner index's answer.
+     *
+     * True also says WHERE a version lives: at its NIP-01 address, one
+     * document per address. So a [put] of a new version replaces the old one
+     * IN PLACE, and a removal of ANY version of that address ([removeDocs],
+     * which resolves each doc to its address) removes what the address holds
+     * NOW — the version just put, if one was. A caller that writes a winner
+     * and then sweeps the versions it replaced must not sweep, on such an
+     * index, an address it has just put: that deleted the winner, and the
+     * address ended empty under an Accepted outcome.
      */
     val supersedesViaPut: Boolean get() = false
 
@@ -349,6 +358,32 @@ interface EventIndex : AutoCloseable {
     }
 
     /**
+     * [newestVersions] with each author's version COUNT, from ONE snapshot:
+     * the stored winner of each plain-replaceable address among [authors] and
+     * how many versions that address holds (1 normally; more where a sweep
+     * failed — see the bulk path's drift repair). An author with nothing stored
+     * is absent. RAW, PLAIN REPLACEABLES ONLY, for the reasons [newestVersions]
+     * gives.
+     *
+     * One question where a caller used to ask two (a newest-version grouping
+     * and a count-by-author grouping, side by side): two queries, two snapshots
+     * a write could land between. The default reads the versions and reduces
+     * them — the in-memory reference's answer; the real client answers with
+     * one attribute-only grouping per chunk of authors. A decorator MUST
+     * delegate to its inner index.
+     */
+    suspend fun versionCensus(
+        kind: Int,
+        authors: List<String>,
+    ): Map<String, VersionCensus> {
+        requirePlainReplaceable(kind)
+        if (authors.isEmpty()) return emptyMap()
+        return search(EventQuery(kinds = listOf(kind), authors = authors))
+            .groupBy { it.pubkey }
+            .mapValues { (_, versions) -> VersionCensus(versions.minWith(EventDoc.NEWEST_FIRST).let { DocRef(it.id, it.createdAt) }, versions.size) }
+    }
+
+    /**
      * Re-put [docs] only where each is STILL stored as that same event, and
      * return the ids written. A doc removed since the caller read it (a
      * supersession, a NIP-09 delete, a vanish, an expiry sweep) is dropped, not
@@ -439,7 +474,13 @@ interface EventIndex : AutoCloseable {
         // decorator's remove(id) pays to learn what it is removing (the trust
         // projection reads the doc to know what the removal invalidates), and
         // pipelines the removes of a drift-repair address with N stale versions.
-        if (existing.isNotEmpty()) removeDocs(existing.map { doc.versionStub(it) })
+        // NOT on an address-keyed index (an engine that falls back here for a
+        // doc its conditional put cannot express): the put above replaced the
+        // address's one document in place, and removing a version by address
+        // would remove the winner ([supersedesViaPut]).
+        // Retried in place ([retryingSweep]): a sweep that fails leaves a stale
+        // version that a re-offer of the winner, now a duplicate, never revisits.
+        if (existing.isNotEmpty() && !supersedesViaPut) retryingSweep { removeDocs(existing.map { doc.versionStub(it) }) }
         return true
     }
 }
@@ -453,6 +494,12 @@ fun requirePlainReplaceable(kind: Int) =
         "newestVersions($kind): only plain replaceable kinds (0, 3, 10000-19999) have one address per author" +
             if (kind.isAddressable()) "; an addressable's address also carries its d tag" else ""
     }
+
+/** One plain-replaceable address's census ([EventIndex.versionCensus]): its NIP-01 winner, and how many versions it holds. */
+data class VersionCensus(
+    val newest: DocRef,
+    val versions: Int,
+)
 
 /** One page of [EventIndex.visitDocsPage]: the docs plus the continuation for the next call (null = the walk is complete). */
 data class DocsPage(

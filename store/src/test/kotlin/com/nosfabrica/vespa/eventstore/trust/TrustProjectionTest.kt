@@ -34,6 +34,7 @@ import com.nosfabrica.vespa.eventstore.engine.doc.serviceCells
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
+import com.nosfabrica.vespa.eventstore.mapping.toDoc
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -1340,11 +1341,66 @@ class TrustProjectionTest {
         }
 
     /**
-     * The commit, not the call, is the unit of reaction — so a small batch of
-     * cards is still one cell write, whichever path admits it.
+     * What a removal remembers as named is forgotten once a card of that service is SKIPPED: a
+     * commit that removes the list, settles a card of its service under the map that no longer
+     * names it (a later removal flushes), and only then stores a list naming it again holds a
+     * card with no cell, which only the walk can reach. A batch takes the mixed planner now (see
+     * above), but `transaction {}` still admits its events one by one inside ONE trust commit,
+     * which is exactly that order.
      */
     @Test
-    fun `a small batch admitted event by event still writes its cells once`() =
+    fun `a service unnamed mid-commit long enough to skip a card is walked when re-named`() =
+        runBlocking {
+            val proj = TrustProjection(InMemoryEventIndex(), InMemoryReputationIndex())
+            proj.backlog.drainInBackground { }
+            val st = NostrSemanticsStore(proj, relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+            val old = list10040(serviceKey = service, at = 100)
+            st.insert(old)
+            val doomed = card(signer = service2)
+            st.insert(doomed)
+            val later = "cd".repeat(32)
+            // One commit admitted event by event: the list goes, a card of its service lands, a
+            // second removal flushes that card under a map naming nobody, and a newer list names
+            // the service again.
+            val events =
+                listOf(
+                    DeletionRequestEvent(id(), observer, next(), arrayOf(arrayOf("e", old.id)), "", ""),
+                    card(signer = service, about = later, rank = 33),
+                    DeletionRequestEvent(id(), service2, next(), arrayOf(arrayOf("e", doomed.id)), "", ""),
+                    list10040(serviceKey = service, at = 300),
+                )
+            st.transaction { events.forEach { insert(it) } }
+            assertEquals(setOf(service), proj.backlog.queuedRewalks(), "the skipped card is owed its walk")
+            proj.backlog.drain { it() }
+            assertEquals(serviceCells(service to 33), proj.reputations.get(later)?.influenceScores)
+        }
+
+    /**
+     * The commit, not the call, is the unit of reaction — so several cards
+     * admitted ONE BY ONE inside one commit (`transaction {}`, each through
+     * putIfNewer) are still one cell write, which no batch-shaped port member
+     * could have reached.
+     */
+    @Test
+    fun `a multi-card commit admitted event by event writes its cells once`() =
+        runBlocking {
+            val counting = MarkerCountingReputationIndex(InMemoryReputationIndex())
+            val st = NostrSemanticsStore(TrustProjection(InMemoryEventIndex(), counting), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+            st.insert(list10040())
+            val before = counting.subjectCellCalls
+            val subjects = (1..10).map { it.toString(16).padStart(64, 'e') }
+            val cards = subjects.mapIndexed { i, s -> card(about = s, rank = 40 + i) }
+            st.transaction { cards.forEach { insert(it) } }
+            assertEquals(before + 1, counting.subjectCellCalls, "ten admissions, one commit, one cell write")
+            subjects.forEachIndexed { i, s -> assertEquals(40 + i, counting.get(s)?.influenceScores?.get(ServiceKey(service))) }
+        }
+
+    /**
+     * The commit, not the call, is the unit of reaction — so a small batch of
+     * cards (the bulk path since BULK_MIN is 2) is still one cell write.
+     */
+    @Test
+    fun `a small batch of cards writes its cells once`() =
         runBlocking {
             val counting = MarkerCountingReputationIndex(InMemoryReputationIndex())
             val st = NostrSemanticsStore(TrustProjection(InMemoryEventIndex(), counting), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
@@ -1453,6 +1509,78 @@ class TrustProjectionTest {
                 assertTrue(left == null || left.influenceScores.isEmpty(), "its marker cell is cleared, got $left")
                 Outcome(Unit, ProjectionWork.NONE)
             }
+        }
+
+    /**
+     * A STALE VERSION'S REMOVAL LEAVES THE NEWEST VERSION'S CELL. An address
+     * holding {C2 newest, C1 stale} (a sweep that failed, see OwedSweeps):
+     * a trust batch offering an older C0 keeps C2 and sweeps C1 — and the
+     * removal of C1, which no winner of the commit explained, was recorded as
+     * the address's retraction, so C2 stayed stored with its cell gone until
+     * the reconciler ran. Same for a kind 5 naming the stale version by id.
+     */
+    @Test
+    fun `removing a stale card version keeps the cell of the newest one`() =
+        runBlocking {
+            val inner = InMemoryEventIndex()
+            val reps = InMemoryReputationIndex()
+            val st = NostrSemanticsStore(TrustProjection(inner, reps), relay = RelayUrlNormalizer.normalize("ws://localhost:7779"))
+            st.insert(list10040())
+            val newest = card(rank = 87, at = 200)
+            st.insert(newest)
+            val stale = card(rank = 10, at = 100)
+            // Drift the store cannot produce on its own: a second, older version beside the newest.
+            inner.put(stale.toDoc())
+
+            val outcomes = st.batchInsert(listOf(card(rank = 5, at = 50), card(about = "cd".repeat(32), rank = 40)))
+            assertTrue(outcomes[0] is IEventStore.InsertOutcome.Rejected, "the older card loses: $outcomes")
+            assertEquals(listOf(newest.id), inner.search(EventQuery(kinds = listOf(UserAssertionEvent.KIND), authors = listOf(service), tags = mapOf("d" to listOf(subject)))).map { it.id })
+            assertEquals(serviceCells(service to 87), reps.get(subject)?.influenceScores, "the drift repair keeps the newest card's cell")
+
+            inner.put(stale.toDoc())
+            st.insert(DeletionRequestEvent(id(), service, next(), arrayOf(arrayOf("e", stale.id)), "", ""))
+            assertNull(inner.get(stale.id), "the stale version is deleted")
+            assertEquals(serviceCells(service to 87), reps.get(subject)?.influenceScores, "a kind 5 of the stale version keeps the newest card's cell")
+        }
+
+    /**
+     * A SERVICE WALK LANDS THE NEWEST VERSION'S CELL. The walk lists a
+     * service's cards newest first and applies them a page at a time, in that
+     * order; a stale version beside its winner (a failed sweep's) listed a
+     * page later was applied AFTER the winner, and its cell stood.
+     */
+    @Test
+    fun `a service walk never lands a stale card's cell over its winner's`() =
+        runBlocking {
+            val inner = InMemoryEventIndex()
+            val reps = InMemoryReputationIndex()
+            val proj = TrustProjection(inner, reps)
+            inner.put(list10040().toDoc())
+            inner.put(card(rank = 87, at = 10_000).toDoc())
+            // More than a walk page between the two versions, so they land in different batches.
+            (1..300).forEach { n -> inner.put(card(about = n.toString(16).padStart(64, 'c'), rank = 50, at = 5_000L + n).toDoc()) }
+            inner.put(card(rank = 10, at = 1).toDoc())
+
+            proj.recompute.projectServices(listOf(service))
+
+            assertEquals(serviceCells(service to 87), reps.get(subject)?.influenceScores, "the newest card's cell, not the stale one's")
+        }
+
+    /** The NEWEST version removed with an older one left behind: the subject re-derives to the one still stored. */
+    @Test
+    fun `removing the newest card version over a stale one re-derives to the stale one`() =
+        runBlocking {
+            val inner = InMemoryEventIndex()
+            val reps = InMemoryReputationIndex()
+            val st = NostrSemanticsStore(TrustProjection(inner, reps), relay = RelayUrlNormalizer.normalize("ws://localhost:7780"))
+            st.insert(list10040())
+            val newest = card(rank = 87, at = 200)
+            st.insert(newest)
+            inner.put(card(rank = 10, at = 100).toDoc())
+
+            st.insert(DeletionRequestEvent(id(), service, next(), arrayOf(arrayOf("e", newest.id)), "", ""))
+
+            assertEquals(serviceCells(service to 10), reps.get(subject)?.influenceScores, "the cell follows the version still stored")
         }
 }
 

@@ -375,7 +375,7 @@ class MockVespaEngine(
      */
     @Volatile var rejectDedupSummary: Boolean = false
 
-    /** The same for the attribute-only `idtime` summary the id-first fetch resolves pages with. */
+    /** The same for the attribute-only `idtime` and `idtimetag` summaries: the id-first fetch's pages, and every id walk. */
     @Volatile var rejectIdTimeSummary: Boolean = false
 
     /**
@@ -661,8 +661,9 @@ class MockVespaEngine(
 
             method == "DELETE" && path.startsWith(docPrefix) -> {
                 documentRemovesCount.incrementAndGet()
-                removedDocIds += java.net.URLDecoder.decode(path.removePrefix(docPrefix), Charsets.UTF_8)
-                runBlocking { inner.remove(path.removePrefix(docPrefix)) }
+                val docId = URLDecoder.decode(path.removePrefix(docPrefix), Charsets.UTF_8)
+                removedDocIds += docId
+                runBlocking { removeAt(docId) }
                 Reply(200, """{"id":"$path"}""")
             }
 
@@ -760,8 +761,9 @@ class MockVespaEngine(
         if (dedupSummary && rejectDedupSummary) {
             return Reply(400, """{"root":{"errors":[{"code":4,"summary":"Invalid query parameter","message":"Summary 'dedup' does not exist"}]}}""")
         }
-        if (params["presentation.summary"] == "idtime" && rejectIdTimeSummary) {
-            return Reply(400, """{"root":{"errors":[{"code":4,"summary":"Invalid query parameter","message":"Summary 'idtime' does not exist"}]}}""")
+        val summaryClass = params["presentation.summary"]
+        if ((summaryClass == "idtime" || summaryClass == "idtimetag") && rejectIdTimeSummary) {
+            return Reply(400, """{"root":{"errors":[{"code":4,"summary":"Invalid query parameter","message":"Summary '$summaryClass' does not exist"}]}}""")
         }
         // A schema predating the near attribute fields: real Vespa rejects the
         // whole query the moment the YQL names an unknown field.
@@ -787,7 +789,10 @@ class MockVespaEngine(
         // Both scan the FULL match set, so ignore the hit-limiting `limit 0`.
         val isCount = yql.contains("all(output(count()))")
         val isAuthorHistogram = yql.contains("group(pubkey)") && yql.contains("each(output(count()))")
-        val grouped = isCount || isAuthorHistogram
+        // The newest-version groupings (EventYql.buildNewestVersions / buildVersionCensus):
+        // author -> its newest second -> every id at it, each author with its version count.
+        val isNewestVersions = yql.contains("group(pubkey)") && yql.contains("group(created_at) max(1)")
+        val grouped = isCount || isAuthorHistogram || isNewestVersions
         val query = MockYql.parse(yql.substringBefore("|").trim(), params).let { if (grouped) it.copy(limit = null) else it }
         val gates = belowFloorAuthors.isNotEmpty() && params["ranking"] in GATING_PROFILES && "ranking.features.query(min_rank)" in params
         // The limit cut must be applied AFTER any tie scrambling: real Vespa's
@@ -839,6 +844,10 @@ class MockVespaEngine(
             }
         val children =
             when {
+                isNewestVersions -> {
+                    newestVersionChildren(matches)
+                }
+
                 isAuthorHistogram -> {
                     histogramChildren("pubkey", matches.groupingBy { it.pubkey }.eachCount().map { (k, v) -> JsonPrimitive(k) to v })
                 }
@@ -955,6 +964,70 @@ class MockVespaEngine(
                 },
             ),
         )
+
+    /** The nested answer real Vespa gives the newest-version groupings, built from [matches]. */
+    private fun newestVersionChildren(matches: List<EventDoc>): JsonArray {
+        fun grouplist(
+            label: String,
+            groups: List<JsonObject>,
+        ) = buildJsonObject {
+            put("id", JsonPrimitive("grouplist:$label"))
+            put("label", JsonPrimitive(label))
+            put("children", JsonArray(groups))
+        }
+        val authors =
+            matches.groupBy { it.pubkey }.map { (author, versions) ->
+                val newest = versions.maxOf { it.createdAt }
+                val ids = versions.filter { it.createdAt == newest }.map { it.id }
+                buildJsonObject {
+                    put("id", JsonPrimitive("group:string:$author"))
+                    put("value", JsonPrimitive(author))
+                    put("fields", buildJsonObject { put("count()", JsonPrimitive(versions.size)) })
+                    put(
+                        "children",
+                        JsonArray(
+                            listOf(
+                                grouplist(
+                                    "created_at",
+                                    listOf(
+                                        buildJsonObject {
+                                            put("id", JsonPrimitive("group:long:$newest"))
+                                            put("value", JsonPrimitive(newest.toString()))
+                                            put("fields", buildJsonObject { put("max(created_at)", JsonPrimitive(newest)) })
+                                            put(
+                                                "children",
+                                                JsonArray(
+                                                    listOf(
+                                                        grouplist(
+                                                            "id",
+                                                            ids.map { id ->
+                                                                buildJsonObject {
+                                                                    put("id", JsonPrimitive("group:string:$id"))
+                                                                    put("value", JsonPrimitive(id))
+                                                                    put("fields", buildJsonObject { put("count()", JsonPrimitive(1)) })
+                                                                }
+                                                            },
+                                                        ),
+                                                    ),
+                                                ),
+                                            )
+                                        },
+                                    ),
+                                ),
+                            ),
+                        ),
+                    )
+                }
+            }
+        return JsonArray(
+            listOf(
+                buildJsonObject {
+                    put("id", JsonPrimitive("group:root:0"))
+                    put("children", JsonArray(listOf(grouplist("pubkey", authors))))
+                },
+            ),
+        )
+    }
 
     /**
      * `all(group([field]) each(output(count())))`: the group:root wraps a
@@ -1127,6 +1200,22 @@ class MockVespaEngine(
 
     /** The stored `tags` field exactly as a feed wrote it (EventDoc.indexFields serializes the tag array to one JSON string). */
     private fun tagsJson(doc: EventDoc): String = JsonArray(doc.tags.map { tag -> JsonArray(tag.map(::JsonPrimitive)) }).toString()
+
+    /**
+     * The engine's `remove(docid)`. Over an ADDRESS-KEYED [inner] (a reference
+     * built with `supersedesViaPut = true`, which stores a replaceable at its
+     * address as the engine does) an address docid removes whatever version
+     * the address holds NOW — not an event id, which is all the reference's
+     * own `remove` resolves.
+     */
+    private suspend fun removeAt(docId: String) {
+        val parts = docId.split(":")
+        if (!inner.supersedesViaPut || parts.size < 2) return inner.remove(docId)
+        inner
+            .search(EventQuery(authors = listOf(parts[1])))
+            .firstOrNull { it.addressOrNull() == docId }
+            ?.let { inner.remove(it.id) }
+    }
 
     /** Serialises [conditionalPut]'s check-and-write, the atomicity a content node gives a test-and-set put. */
     private val conditionalPuts = Any()

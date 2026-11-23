@@ -66,6 +66,12 @@ internal class EventAdmission(
      * "now" is (`NostrSemanticsStore.deleteExpiredEvents`).
      */
     private val nowSecs: () -> Long,
+    /**
+     * Addresses a failed write left owing a sweep ([OwedSweeps]) — the real
+     * store's, shared with its bulk paths. Null for [BulkMixedInsert]'s replay,
+     * whose snapshot is thrown away.
+     */
+    private val owed: OwedSweeps? = null,
 ) {
     /**
      * The rules, applied to one event. NO lock and NO lock accounting: the
@@ -126,15 +132,16 @@ internal class EventAdmission(
         val probeDeleted = guards.mightBeDeleted(owner)
         val probeVanished = guards.mightHaveVanished(owner)
         if (!probeDeleted && !probeVanished) {
+            if (supersedesBesideDupRead(event)) return
             // The common case reads just the dup get — skip the fan-out
             // machinery, which allocates per call.
-            if (index.get(event.id) != null) throw RejectedException(Rejections.DUPLICATE)
+            if (index.get(event.id) != null) duplicate(event)
         } else {
             coroutineScope {
                 val existing = async { index.get(event.id) }
                 val deleted = if (probeDeleted) async { deletions.isDeleted(event) } else null
                 val vanished = if (probeVanished) async { deletions.isVanished(event) } else null
-                if (existing.await() != null) throw RejectedException(Rejections.DUPLICATE)
+                if (existing.await() != null) duplicate(event)
                 if (deleted?.await() == true) throw RejectedException(Rejections.DELETED)
                 if (vanished?.await() == true) throw RejectedException(Rejections.VANISHED)
             }
@@ -155,14 +162,94 @@ internal class EventAdmission(
             // Replaceable/addressable newest-wins in ONE call: false == a
             // same-or-newer version holds the address, so this insert is
             // REPLACED (see EventIndex.putIfNewer, and Rejections.REPLACED for the OK false).
+            //
+            // A failure is remembered against the address ([OwedSweeps]): the
+            // winner may have landed without its sweep, and its re-offer is a
+            // duplicate. A win swept every version it read, so the address owes
+            // nothing after it; a loss is a write to the address too, and pays.
             event.kind.isReplaceable() || event.kind.isAddressable() -> {
-                if (!index.putIfNewer(event.toDoc())) throw RejectedException(Rejections.REPLACED)
+                replacedUnless(supersede(event), event)
             }
 
             else -> {
                 index.put(event.toDoc())
             }
         }
+    }
+
+    /**
+     * A plain replaceable/addressable event with no guard to probe: its dup GET
+     * and its supersession ([supersede], whose version read is the round trip
+     * that matters) run TOGETHER, so the insert waits for one round trip under
+     * the writer lock instead of two. True when the event was decided here.
+     *
+     * The outcome is the sequential one's. A stored event can never win its own
+     * address — it IS the incumbent, or an older version beside a newer one —
+     * so a supersession that WROTE proves the event was not stored, and the
+     * GET's answer (which may have read that very write) is moot; one that
+     * wrote nothing leaves the GET to decide duplicate against `replaced:`, as
+     * it would have decided first. Only where no guard is probed: a
+     * guard's verdict must be in before anything is written. Not for the trust
+     * kinds either, whose supersession opens crash insurance (a marker write)
+     * that a duplicate card would pay for nothing.
+     *
+     * The price is the supersession's read (or the address-keyed conditional
+     * put, refused) for an event that turns out to be a duplicate — which a
+     * batch's dedup, not this path, is for.
+     */
+    private suspend fun supersedesBesideDupRead(event: Event): Boolean {
+        if (!(event.kind.isReplaceable() || event.kind.isAddressable()) || event.kind in BulkRecordInsert.WHOLE_DOC_KINDS) return false
+        val stored =
+            coroutineScope {
+                val existing = async { index.get(event.id) != null }
+                val written = runCatching { supersede(event) }
+                if (written.getOrNull() == true) {
+                    existing.cancel()
+                    return@coroutineScope true
+                }
+                if (existing.await()) duplicate(event)
+                written.getOrThrow()
+            }
+        replacedUnless(stored, event)
+        return true
+    }
+
+    /**
+     * NIP-01 newest-wins in ONE call ([EventIndex.putIfNewer]); a failure is
+     * remembered against the address ([OwedSweeps]), and a win swept every
+     * version it read, so the address owes nothing after it.
+     */
+    private suspend fun supersede(event: Event): Boolean {
+        val address = listOfNotNull(OwedSweeps.addressOf(event))
+        val stored =
+            try {
+                index.putIfNewer(event.toDoc())
+            } catch (t: Throwable) {
+                owed?.owe(address)
+                throw t
+            }
+        if (stored) owed?.clear(address)
+        return stored
+    }
+
+    /** `replaced:` unless [stored] — a loss is a write to the address too, and pays what it owes ([OwedSweeps]). */
+    private suspend fun replacedUnless(
+        stored: Boolean,
+        event: Event,
+    ) {
+        if (stored) return
+        owed?.settle(index, listOf(event))
+        throw RejectedException(Rejections.REPLACED)
+    }
+
+    /**
+     * The duplicate verdict — after finishing a sweep the event's address owes
+     * ([OwedSweeps]): a re-offer of a winner whose sweep failed is exactly a
+     * duplicate, and the one write that will ever name that address again.
+     */
+    private suspend fun duplicate(event: Event): Nothing {
+        owed?.settle(index, listOf(event))
+        throw RejectedException(Rejections.DUPLICATE)
     }
 
     /** [admit], with a SEMANTIC rejection reported as an outcome rather than thrown. */

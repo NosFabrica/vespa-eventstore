@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore.engine.client
 
+import com.sun.management.HotSpotDiagnosticMXBean
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.DeserializationStrategy
@@ -40,6 +41,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okio.Buffer
 import java.io.IOException
+import java.lang.management.ManagementFactory
 import java.net.InetAddress
 import java.net.Proxy
 import java.net.Socket
@@ -379,13 +381,36 @@ internal class VespaHttp(
 
     internal companion object {
         /**
-         * The largest payload [HttpResp.decode] reads as one String. 192 KB, a little under
-         * the ~256 KB the profile suggested: the String is UTF-16 as soon as one character is
-         * outside Latin-1 (an emoji in a note), so it may hold TWICE the payload's bytes, and
-         * twice this stays under the 512 KB that G1 allocates humongous on its smallest (1 MB)
-         * regions.
+         * The largest payload [HttpResp.decode] reads as one String: [stringDecodeMax] of this
+         * JVM's G1 region size. 192 KB on the smallest (1 MB) regions, a little under the
+         * ~256 KB the profile suggested; a larger heap's larger regions take proportionally
+         * larger payloads down the faster string path.
          */
-        const val STRING_DECODE_MAX_BYTES = 192L * 1024
+        val STRING_DECODE_MAX_BYTES: Long = stringDecodeMax(g1RegionBytes())
+
+        /** The 1 MB-region answer, and what any JVM that cannot say its region size gets. */
+        const val DEFAULT_STRING_DECODE_MAX_BYTES = 192L * 1024
+
+        /**
+         * The string-decode ceiling for G1 regions of [regionBytes]: three sixteenths of a
+         * region. G1 allocates an object humongous from HALF a region, and the String is UTF-16
+         * as soon as one character is outside Latin-1 (an emoji in a note), so it may hold
+         * TWICE the payload's bytes — a quarter of a region, less a margin for the array header
+         * and the lexer's own buffers, is three sixteenths. 192 KB on 1 MB regions, 768 KB on 4
+         * MB. [DEFAULT_STRING_DECODE_MAX_BYTES] when the size is unknown (not G1, or not
+         * HotSpot).
+         */
+        fun stringDecodeMax(regionBytes: Long?): Long = if (regionBytes == null || regionBytes <= 0) DEFAULT_STRING_DECODE_MAX_BYTES else regionBytes * 3 / 16
+
+        /** This JVM's G1 heap region size, or null when it is not running G1 or will not say. */
+        private fun g1RegionBytes(): Long? =
+            try {
+                val hotspot = ManagementFactory.getPlatformMXBean(HotSpotDiagnosticMXBean::class.java)
+                if (hotspot.getVMOption("UseG1GC").value != "true") null else hotspot.getVMOption("G1HeapRegionSize").value.toLongOrNull()
+            } catch (t: Throwable) {
+                // Not HotSpot, no jdk.management, an option renamed: the 1 MB answer.
+                null
+            }
 
         /** Concurrent engine requests, total and per host: equal, so the total binds however many endpoints there are. */
         const val MAX_CONCURRENT_REQUESTS = 1024

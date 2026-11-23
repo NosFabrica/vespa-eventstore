@@ -63,6 +63,21 @@ suspend fun <T, R> List<T>.mapBounded(
     }
 
 /**
+ * [mapBounded] against a [gate] the CALLER owns, so several fan-outs running at
+ * once share one bound instead of each spending its own: a commit's
+ * concurrent read stages each ran `mapBounded(QUERY_FANOUT)`, which put up to
+ * four times the fan-out in flight — past the ceiling [QUERY_FANOUT] documents
+ * for proton's summary stage. [f] must not take a permit of [gate] itself.
+ */
+suspend fun <T, R> List<T>.mapGated(
+    gate: Semaphore,
+    f: suspend (T) -> R,
+): List<R> =
+    coroutineScope {
+        map { item -> async { gate.withPermit { f(item) } } }.awaitAll()
+    }
+
+/**
  * Like [mapBounded], but folds each result into [consume] as it arrives and
  * keeps none: collecting a fan-out that recalls tens of docs per item holds
  * `items × docs` alive — the product that runs a heap out — where consuming

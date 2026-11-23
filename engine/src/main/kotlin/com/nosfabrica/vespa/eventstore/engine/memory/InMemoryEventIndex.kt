@@ -41,9 +41,20 @@ import java.util.concurrent.ConcurrentHashMap
  * recall UNGATED here, so gate tests belong against real Vespa.
  */
 class InMemoryEventIndex(
-    // Test hook: exercise the bulk path's putIfNewer branch (the address-keyed
-    // engine's supersession) against the reference, which still resolves it via
-    // the read-based default — so outcomes must match the read-then-supersede path.
+    /**
+     * ADDRESS-KEYED, as the real engine is under `VESPA_ADDRESS_KEYED`: a
+     * replaceable or addressable doc is stored AT its NIP-01 address, so
+     *  - a [put] of any version REPLACES whatever version held the address,
+     *  - a removal by document ([removeDocs]) removes what the address holds
+     *    NOW, whichever version that is — the engine's `remove(docid)`,
+     *  - [putIfNewer] is the engine's conditional put, decided against the
+     *    one document at the address, with no read and no removal.
+     * Regular events stay keyed by id. It used to be a flag the bulk path read
+     * and nothing else (the reference still resolved supersession by reading
+     * and kept every version under its own id), which is how a removal that
+     * the real engine applies to the WINNER's document went untested: see
+     * [EventIndex.supersedesViaPut].
+     */
     override val supersedesViaPut: Boolean = false,
 ) : EventIndex {
     // A ConcurrentHashMap, no monitor: the store deliberately runs its
@@ -53,32 +64,110 @@ class InMemoryEventIndex(
     // reader behind every other (this is also the bulk mixed path's replay
     // snapshot, not only a test double). Nothing here depends on iteration
     // order: every recall sorts by [EventDoc.NEWEST_FIRST], a total order.
+    // Keyed by DOCUMENT id: the event id, or the address when [supersedesViaPut].
     private val docs = ConcurrentHashMap<String, EventDoc>()
 
+    /** Event id -> document id, for the address-keyed mode only (else they are the same string). */
+    private val docIds = ConcurrentHashMap<String, String>()
+
     /**
-     * Ids by pubkey, so a recall naming its authors reads their docs instead of scanning every
+     * Document ids by pubkey, so a recall naming its authors reads their docs instead of scanning every
      * one: the bulk mixed path's replay asks per event, by author, over its whole snapshot.
      * Mutated with [docs] inside the author's own `compute`, so a bucket never loses a live id.
      */
     private val byAuthor = ConcurrentHashMap<String, MutableSet<String>>()
 
-    override suspend fun get(id: String): EventDoc? = docs[id]
+    /** Where [doc] is stored: its address when address-keyed and it has one, else its id — `VespaEventIndex.docIdOf`. */
+    private fun docIdOf(doc: EventDoc): String = if (supersedesViaPut) doc.addressOrNull() ?: doc.id else doc.id
+
+    /** The document id holding event [id], or null when it is not stored. */
+    private fun docIdOfEvent(id: String): String? = if (supersedesViaPut) docIds[id] else id
+
+    override suspend fun get(id: String): EventDoc? = docIdOfEvent(id)?.let { docs[it] }?.takeIf { it.id == id }
 
     override suspend fun put(doc: EventDoc) {
-        val previous = docs[doc.id]
-        if (previous != null && previous.pubkey != doc.pubkey) remove(doc.id)
-        byAuthor.compute(doc.pubkey) { _, ids ->
-            docs[doc.id] = doc
-            (ids ?: ConcurrentHashMap.newKeySet()).apply { add(doc.id) }
+        val key = docIdOf(doc)
+        val previous = docs[key]
+        if (previous != null && previous.pubkey != doc.pubkey) removeDocument(key)
+        byAuthor.compute(doc.pubkey) { _, ids -> store(key, doc, ids) }
+    }
+
+    /** Write [doc] at [key], replacing what was there; called inside its author's `compute`, returning the author's new bucket. */
+    private fun store(
+        key: String,
+        doc: EventDoc,
+        ids: MutableSet<String>?,
+    ): MutableSet<String> {
+        val replaced = docs.put(key, doc)
+        if (supersedesViaPut) {
+            if (replaced != null && replaced.id != doc.id) docIds.remove(replaced.id, key)
+            docIds[doc.id] = key
         }
+        return (ids ?: ConcurrentHashMap.newKeySet()).apply { add(key) }
     }
 
     override suspend fun remove(id: String) {
-        val doc = docs[id] ?: return
+        val key = docIdOfEvent(id) ?: return
+        removeDocument(key, onlyIf = id)
+    }
+
+    /**
+     * Remove the document at [key] — when [onlyIf] is set, only while it still
+     * holds that event (a [remove] by event id, which resolves its document
+     * first, as the engine's does).
+     */
+    private fun removeDocument(
+        key: String,
+        onlyIf: String? = null,
+    ) {
+        val doc = docs[key] ?: return
+        if (onlyIf != null && doc.id != onlyIf) return
         byAuthor.compute(doc.pubkey) { _, ids ->
-            docs.remove(id)
-            ids?.apply { remove(id) }?.ifEmpty { null }
+            // Re-checked under the author's monitor: a put may have replaced it since.
+            val current = docs[key]
+            if (current == null || current.pubkey != doc.pubkey || (onlyIf != null && current.id != onlyIf)) return@compute ids
+            docs.remove(key)
+            if (supersedesViaPut) docIds.remove(current.id, key)
+            ids?.apply { remove(key) }?.ifEmpty { null }
         }
+    }
+
+    /**
+     * The engine's `remove(docid)` per doc: address-keyed, that removes
+     * whatever version the address holds NOW, not necessarily [docs]' own —
+     * the real engine's semantics, held here so a caller that removes a
+     * version it just replaced in place is caught by a unit test.
+     */
+    override suspend fun removeDocs(docs: List<EventDoc>) {
+        if (!supersedesViaPut) return super.removeDocs(docs)
+        docs.forEach { removeDocument(docIdOf(it)) }
+    }
+
+    /**
+     * Address-keyed, the engine's conditional put: create the address, or
+     * overwrite it only when [doc] beats the one version stored there (NIP-01:
+     * newer, or as new with a lower id) — decided and written inside the
+     * author's own `compute`, the atomicity a content node gives a
+     * test-and-set put. Id-keyed, the port's read-then-supersede.
+     */
+    override suspend fun putIfNewer(doc: EventDoc): Boolean {
+        if (!supersedesViaPut) return super.putIfNewer(doc)
+        val address =
+            doc.addressOrNull() ?: run {
+                put(doc)
+                return true
+            }
+        var stored = false
+        byAuthor.compute(doc.pubkey) { _, ids ->
+            val incumbent = docs[address]
+            if (incumbent != null && EventDoc.NEWEST_FIRST.compare(doc, incumbent) >= 0) {
+                ids
+            } else {
+                stored = true
+                store(address, doc, ids)
+            }
+        }
+        return stored
     }
 
     /**
@@ -90,9 +179,10 @@ class InMemoryEventIndex(
     override suspend fun putAllIfStored(docs: List<EventDoc>): Set<String> {
         val written = HashSet<String>()
         for (doc in docs) {
+            val key = docIdOf(doc)
             byAuthor.compute(doc.pubkey) { _, ids ->
-                if (this.docs[doc.id]?.pubkey == doc.pubkey) {
-                    this.docs[doc.id] = doc
+                if (this.docs[key]?.let { it.id == doc.id && it.pubkey == doc.pubkey } == true) {
+                    this.docs[key] = doc
                     written += doc.id
                 }
                 ids
@@ -106,10 +196,10 @@ class InMemoryEventIndex(
         when {
             c.unsatisfiable -> emptyList()
 
-            c.ids.isNotEmpty() -> c.ids.mapNotNull { docs[it] }
+            c.ids.isNotEmpty() -> c.ids.mapNotNull { id -> docIdOfEvent(id)?.let { docs[it] }?.takeIf { it.id == id } }
 
             // A bucket left behind by a racing re-put under another pubkey names a doc that is not its author's.
-            c.authors.isNotEmpty() -> c.authors.flatMap { author -> byAuthor[author].orEmpty().mapNotNull { id -> docs[id]?.takeIf { it.pubkey == author } } }
+            c.authors.isNotEmpty() -> c.authors.flatMap { author -> byAuthor[author].orEmpty().mapNotNull { key -> docs[key]?.takeIf { it.pubkey == author } } }
 
             else -> docs.values
         }

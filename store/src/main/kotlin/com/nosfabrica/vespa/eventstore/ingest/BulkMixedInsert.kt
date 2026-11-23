@@ -22,7 +22,8 @@ package com.nosfabrica.vespa.eventstore.ingest
 
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.async.QUERY_FANOUT
-import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
+import com.nosfabrica.vespa.eventstore.engine.async.retryingSweep
+import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
@@ -36,6 +37,11 @@ import com.vitorpamplona.quartz.nip01Core.store.owner
 import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
 import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
 /**
  * The bulk path for a batch that CONTAINS deletions/vanishes (pure-record
@@ -61,6 +67,8 @@ internal class BulkMixedInsert(
     private val guards: GuardOwners,
     /** The store's own sweep page size: a vanish in the batch sweeps the snapshot, and then the index, through it. */
     private val sweepPage: Int,
+    /** Addresses whose sweep a failed write left owing — see [OwedSweeps]. */
+    private val owed: OwedSweeps = OwedSweeps(),
 ) {
     /** The vanish erase against the REAL index — the per-event path's paged [Deletions.sweep]. */
     private val erase = Deletions(index, relay, sweepPage)
@@ -88,14 +96,40 @@ internal class BulkMixedInsert(
         // are removed: removing first left a superseded address holding
         // neither version until the put, and for good when the put failed —
         // nobody re-offers the old one. A failure after them leaves a stale
-        // extra version, which the next write to the address sweeps. The
+        // extra version, which the address then owes a sweep ([OwedSweeps]). The
         // GUARDS (kind 5 / 62) are the opposite case and still land last,
         // after the erase they stand for: a tombstone stored over a removal
         // that then failed would be a deletion recorded and never enforced, and
         // its re-offer would come back a duplicate.
         val (guardsAdded, records) = added.partition { it.kind == DeletionRequestEvent.KIND || it.kind == RequestToVanishEvent.KIND }
-        if (records.isNotEmpty()) index.putAll(records)
-        if (removed.isNotEmpty()) index.removeDocs(removed)
+        // A failure from the first record write to the last removal is
+        // remembered per address, as on the record path ([OwedSweeps]): the
+        // re-offered winners come back duplicates and would never sweep.
+        val touched = (records + removed).mapNotNullTo(LinkedHashSet()) { OwedSweeps.addressOf(it) }
+        // Newest ADMITTED vanish per owner — see the erase below.
+        val vanishes =
+            outcomes
+                .zip(events)
+                .mapNotNull { (outcome, e) -> (e as? RequestToVanishEvent)?.takeIf { outcome is IEventStore.InsertOutcome.Accepted && it.shouldVanishFrom(relay) } }
+                .groupBy { it.pubKey }
+                .values
+                .map { owned -> owned.maxBy { it.createdAt } }
+        // NOTHING TO ERASE BETWEEN THEM — no removal, no vanish (a kind 5 naming
+        // nothing stored, the common outbox case): the guards' "after the erase"
+        // has nothing to come after, so records and guards go in ONE pipelined
+        // write instead of two round trips.
+        val together = removed.isEmpty() && vanishes.isEmpty()
+        try {
+            writeRecords(if (together) records + guardsAdded else records, removed)
+        } catch (t: Throwable) {
+            owed.owe(touched)
+            throw t
+        }
+        // The replay read every version of the records' addresses and its
+        // putIfNewer swept all but the winner, so those owe nothing now; an
+        // owed address re-offered as a duplicate is settled here.
+        owed.clear(records.mapNotNull { OwedSweeps.addressOf(it) })
+        owed.settle(index, events.filter { it !is DeletionRequestEvent && it !is RequestToVanishEvent })
         // The vanishes' erase of what the snapshot never held. Per owner, the
         // newest ADMITTED vanish covering this relay decides it: each one
         // erases the owner's stored history up to its own created_at, so for
@@ -110,12 +144,8 @@ internal class BulkMixedInsert(
         // unlimited hits cannot cut it short: the preload query this replaced
         // came back truncated there, and the vanish was reported Accepted over
         // the rest.
-        outcomes
-            .zip(events)
-            .mapNotNull { (outcome, e) -> (e as? RequestToVanishEvent)?.takeIf { outcome is IEventStore.InsertOutcome.Accepted && it.shouldVanishFrom(relay) } }
-            .groupBy { it.pubKey }
-            .forEach { (_, vanishes) -> erase.applyVanish(vanishes.maxBy { it.createdAt }) }
-        if (guardsAdded.isNotEmpty()) index.putAll(guardsAdded)
+        vanishes.forEach { erase.applyVanish(it) }
+        if (guardsAdded.isNotEmpty() && !together) index.putAll(guardsAdded)
         guardsAdded.forEach {
             when (it.kind) {
                 DeletionRequestEvent.KIND -> guards.noteDeletionStored(it.pubkey)
@@ -123,6 +153,29 @@ internal class BulkMixedInsert(
             }
         }
         return outcomes
+    }
+
+    /** The surviving records, then the removals the replay decided — retried in place ([retryingSweep]). */
+    private suspend fun writeRecords(
+        records: List<EventDoc>,
+        removed: List<EventDoc>,
+    ) {
+        if (records.isNotEmpty()) index.putAll(records)
+        // On an ADDRESS-KEYED index a record put above already replaced its
+        // address's stored version in place, and removing that version — by
+        // its address, the only docid it has — removed the WINNER: the
+        // address ended empty while the event was answered Accepted (a kind 5
+        // and a newer version of a stored address in one batch). So a version
+        // whose address a record was just put at is not removed; every other
+        // removal (an erased address, a deleted id) still is.
+        val sweep =
+            if (index.supersedesViaPut && records.isNotEmpty()) {
+                val putAt = records.mapNotNullTo(HashSet()) { it.addressOrNull() }
+                removed.filter { it.addressOrNull() !in putAt }
+            } else {
+                removed
+            }
+        if (sweep.isNotEmpty()) retryingSweep { index.removeDocs(sweep) }
     }
 
     /**
@@ -148,6 +201,43 @@ internal class BulkMixedInsert(
         // guard kind, same as the per-event path and BulkRecordInsert.
         val flaggedDeleters = guards.filterFlaggedDeleters(owners)
         val flaggedVanishers = guards.filterFlaggedVanishers(owners)
+
+        // One read per entry. A plain query reads full documents; a VERSION
+        // read of a kind no decorator reacts to by reading the document reads
+        // STUBS instead ([VersionReads]: id, created_at, d — all the replay's
+        // supersession, deletion and vanish rules read of a stored version, and
+        // all `removeDocs` needs of one it removes). The whole documents were a
+        // stored kind 3's 50-500 KB of tags, read under both locks for every
+        // batch of two or more carrying a kind 5 (BULK_MIN): the per-event path
+        // such a batch used to take reads stubs.
+        val versionReads = VersionReads(index)
+        val reads = ArrayList<suspend () -> List<EventDoc>>()
+        // One bound for every preload read, a grouping pair's two queries
+        // included: each takes its own permit (see BulkRecordInsert.commit).
+        val gate = Semaphore(QUERY_FANOUT)
+
+        fun versions(
+            q: EventQuery,
+            kind: Int,
+        ) {
+            val author = q.authors.singleOrNull()
+
+            fun read(block: suspend () -> List<EventDoc>) {
+                reads += block
+            }
+            when {
+                kind in BulkRecordInsert.WHOLE_DOC_KINDS -> read { gate.withPermit { index.search(q) } }
+
+                kind.isAddressable() && author != null -> read { versionReads.addressable(q, kind, author, gate) }
+
+                // Plain replaceables by author chunk: the groupings take no
+                // `until`, so a deletion target's read is its whole address — a
+                // superset, which the replay's own `until` narrows.
+                !kind.isAddressable() && q.tags.isEmpty() -> read { versionReads.replaceable(kind, q.authors, gate) }
+
+                else -> read { gate.withPermit { index.search(q) } }
+            }
+        }
 
         val queries =
             buildList {
@@ -175,12 +265,12 @@ internal class BulkMixedInsert(
                         .map { it.pubKey }
                         .distinct()
                         .chunked(PRELOAD_CHUNK)
-                        .forEach { add(EventQuery(kinds = listOf(kind), authors = it)) }
+                        .forEach { versions(EventQuery(kinds = listOf(kind), authors = it), kind) }
                 }
                 for ((ka, evs) in records.filter { it.kind.isAddressable() }.groupBy { it.kind to it.pubKey }) {
                     val ds = evs.mapNotNull { it.tags.dTag() }.distinct()
-                    ds.chunked(PRELOAD_CHUNK).forEach { add(EventQuery(kinds = listOf(ka.first), authors = listOf(ka.second), tags = mapOf("d" to it))) }
-                    if (evs.any { it.tags.dTag().isNullOrEmpty() }) add(EventQuery(kinds = listOf(ka.first), authors = listOf(ka.second)))
+                    ds.chunked(PRELOAD_CHUNK).forEach { versions(EventQuery(kinds = listOf(ka.first), authors = listOf(ka.second), tags = mapOf("d" to it)), ka.first) }
+                    if (evs.any { it.tags.dTag().isNullOrEmpty() }) versions(EventQuery(kinds = listOf(ka.first), authors = listOf(ka.second)), ka.first)
                 }
 
                 // Deletion a-tag targets, exactly the set the replay can touch
@@ -211,7 +301,7 @@ internal class BulkMixedInsert(
                     .groupBy({ it.key.first }, { it.key.second to it.value.max() })
                     .forEach { (kind, authorsAt) ->
                         authorsAt.chunked(PRELOAD_CHUNK).forEach { chunk ->
-                            add(EventQuery(kinds = listOf(kind), authors = chunk.map { it.first }, until = chunk.maxOf { it.second }))
+                            versions(EventQuery(kinds = listOf(kind), authors = chunk.map { it.first }, until = chunk.maxOf { it.second }), kind)
                         }
                     }
                 // Addressable with a d: by (kind, author, d-tags).
@@ -221,7 +311,7 @@ internal class BulkMixedInsert(
                     .forEach { (ka, dsAt) ->
                         val until = dsAt.maxOf { it.second }
                         dsAt.map { it.first }.distinct().chunked(PRELOAD_CHUNK).forEach { ds ->
-                            add(EventQuery(kinds = listOf(ka.first), authors = listOf(ka.second), tags = mapOf("d" to ds), until = until))
+                            versions(EventQuery(kinds = listOf(ka.first), authors = listOf(ka.second), tags = mapOf("d" to ds), until = until), ka.first)
                         }
                     }
             }
@@ -229,7 +319,12 @@ internal class BulkMixedInsert(
         IngestStats.timed("preload") {
             // Every preload query feeds a WRITE decision (dedup, guards, supersession,
             // vanish scope), so none of them carries a limit.
-            queries.mapBounded(QUERY_FANOUT) { index.search(it) }.forEach { page -> page.forEach { snapshot.put(it) } }
+            // A version read may hand back a STUB of a document the id read
+            // above also returned in full; either is the same version to the replay.
+            val all = ArrayList<suspend () -> List<EventDoc>>()
+            queries.forEach { q -> all += suspend { gate.withPermit { index.search(q) } } }
+            all += reads
+            coroutineScope { all.map { async { it() } }.awaitAll() }.forEach { page -> page.forEach { snapshot.put(it) } }
         }
     }
 

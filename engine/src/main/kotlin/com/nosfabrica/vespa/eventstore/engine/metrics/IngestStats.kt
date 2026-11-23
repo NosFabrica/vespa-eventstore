@@ -85,30 +85,46 @@ object IngestStats {
      * reports "1081s, in walk.scan" instead of "1081s, somewhere". Absent from
      * the context, this costs a map lookup and changes nothing.
      *
-     * Restores the previous value on the way out, so nesting reads as the
-     * innermost stage rather than the last one entered.
+     * ONE ENTRY PER OPEN STAGE, not one value: a call's stages may run
+     * CONCURRENTLY (a write commit times its version read and its guard reads
+     * side by side), and a single value restored on the way out interleaved —
+     * the guards entered over the versions, the versions left and blanked the
+     * slot while the guards ran, the guards left and restored `versions`, a
+     * stage that had finished. Each [enter] now hands back its own entry and
+     * [leave] removes exactly that one, so the call reads as the most recently
+     * entered stage STILL OPEN: the innermost one when nested, and never one
+     * that has finished. Its time is that stage's own.
      */
     class CallStage : AbstractCoroutineContextElement(CallStage) {
-        @Volatile
-        private var stage: String? = null
+        /** An open stage: its name and when it was entered. */
+        class Entry internal constructor(
+            val name: String,
+            val sinceNanos: Long,
+        )
 
-        @Volatile
-        private var sinceNanos: Long = 0
+        /** Open stages, oldest first; guarded by itself. Rarely more than two. */
+        private val open = ArrayList<Entry>(2)
 
-        fun enter(name: String): String? {
-            val previous = stage
-            stage = name
-            sinceNanos = System.nanoTime()
-            return previous
+        fun enter(name: String): Entry {
+            val entry = Entry(name, System.nanoTime())
+            synchronized(open) { open += entry }
+            return entry
         }
 
-        fun leave(previous: String?) {
-            stage = previous
-            sinceNanos = System.nanoTime()
+        fun leave(entry: Entry) {
+            synchronized(open) {
+                // By identity, from the newest end: the common case is the last one.
+                for (i in open.indices.reversed()) {
+                    if (open[i] === entry) {
+                        open.removeAt(i)
+                        break
+                    }
+                }
+            }
         }
 
-        /** The stage this call is in, and for how long — null before it enters one. */
-        fun current(): Pair<String, Long>? = stage?.let { it to (System.nanoTime() - sinceNanos) / 1_000_000 }
+        /** The stage this call is in, and for how long — the newest stage still open, or null when none is. */
+        fun current(): Pair<String, Long>? = synchronized(open) { open.lastOrNull() }?.let { it.name to (System.nanoTime() - it.sinceNanos) / 1_000_000 }
 
         companion object Key : CoroutineContext.Key<CallStage>
     }
@@ -120,11 +136,11 @@ object IngestStats {
     ): T {
         val t0 = System.nanoTime()
         val slot = currentCoroutineContext()[CallStage]
-        val previous = slot?.enter(stage)
+        val entry = slot?.enter(stage)
         try {
             return body()
         } finally {
-            slot?.leave(previous)
+            if (entry != null) slot.leave(entry)
             val took = System.nanoTime() - t0
             add(stage, took)
             // Booked only by [timed]: `add` is also called with a duration

@@ -28,8 +28,10 @@ import com.nosfabrica.vespa.eventstore.engine.LinkTarget
 import com.nosfabrica.vespa.eventstore.engine.LinkWeights
 import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
+import com.nosfabrica.vespa.eventstore.engine.VersionCensus
 import com.nosfabrica.vespa.eventstore.engine.async.QUERY_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
+import com.nosfabrica.vespa.eventstore.engine.async.retryingSweep
 import com.nosfabrica.vespa.eventstore.engine.doc.CellRemoval
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
@@ -161,6 +163,12 @@ class TrustProjection(
         kind: Int,
         authors: List<String>,
     ): Map<String, DocRef> = inner.newestVersions(kind, authors)
+
+    // A read, as [newestVersions]: forwarded, or the default answers with full documents.
+    override suspend fun versionCensus(
+        kind: Int,
+        authors: List<String>,
+    ): Map<String, VersionCensus> = inner.versionCensus(kind, authors)
 
     override fun close() {
         inner.close()
@@ -333,7 +341,7 @@ class TrustProjection(
         if (incumbent != null && EventDoc.NEWEST_FIRST.compare(doc, incumbent) >= 0) return false
         // Winner first, as the port's default: a failed put must leave the old version, not neither.
         inner.put(doc)
-        if (existing.isNotEmpty()) inner.removeDocs(existing)
+        if (existing.isNotEmpty()) retryingSweep { inner.removeDocs(existing) }
         return true
     }
 
@@ -477,9 +485,55 @@ class TrustProjection(
         if (docs.any { it.kind == TrustProviderListEvent.KIND }) recompute.invalidateProviders()
         val cards = docs.filter { it.kind == UserAssertionEvent.KIND }
         val superseded = scope.supersededByStored(cards)
-        if (superseded.isEmpty()) return scope.record(cards, stored = false)
-        val map = recompute.providerMap()
-        scope.record(cards.filter { it.id !in superseded || !map.maps(it.pubkey) }, stored = false)
+        val map = if (superseded.isEmpty()) null else recompute.providerMap()
+        val (outranked, orphaned) = survivingVersions(cards.filter { it.id !in superseded })
+        if (orphaned.isNotEmpty()) scope.rederive(orphaned)
+        scope.record(cards.filter { it.id !in outranked && (it.id !in superseded || map?.maps(it.pubkey) == false) }, stored = false)
+    }
+
+    /**
+     * A REMOVED CARD WITH A VERSION STILL STORED AT ITS ADDRESS — a stale
+     * version a drift repair sweeps, a kind 5 by id of one, its expiry — is
+     * not the card the cell came from, or not the only one. A removal no
+     * winner of this commit explains used to be recorded as the address's
+     * retraction whatever was left stored: a trust batch offering an OLDER card
+     * C0 for an address holding {C2 newest, C1 stale} kept C2, swept C1, and
+     * the flush removed the cell C2 backs — C2 stored, its subject unranked
+     * by that service until the reconciler ran.
+     *
+     * So, after the removal, the address is read (attribute-only, one walk per
+     * [WALK_CHECK_CHUNK] subjects of a service): a card a NEWER version still
+     * outranks is [Pair.first] — its removal retracts nothing — and one that
+     * WAS the newest but left an older version behind is [Pair.second], whose
+     * subject is re-derived from what is stored after its retraction. Most
+     * card removals (a kind 5 of a card, a vanish page, an address-keyed
+     * index) find nothing and change nothing; they pay the one walk.
+     */
+    private suspend fun survivingVersions(cards: List<EventDoc>): Pair<Set<String>, Set<String>> {
+        if (cards.isEmpty() || inner.supersedesViaPut) return emptySet<String>() to emptySet()
+        val left = HashMap<Pair<String, String>, DocRef>()
+        for ((service, ofService) in cards.groupBy { it.pubkey }) {
+            for (chunk in ofService.mapNotNull { subjectOf(it) }.distinct().chunked(WALK_CHECK_CHUNK)) {
+                val q = EventQuery(kinds = listOf(UserAssertionEvent.KIND), authors = listOf(service), tags = mapOf("d" to chunk), complete = true)
+                inner.visitIds(q, withDTag = true) { page ->
+                    for (ref in page) {
+                        val key = service to (ref.dTag ?: continue)
+                        val prior = left[key]
+                        if (prior == null || DocRef.NEWEST_FIRST.compare(ref, prior) < 0) left[key] = ref
+                    }
+                    true
+                }
+            }
+        }
+        if (left.isEmpty()) return emptySet<String>() to emptySet()
+        val outranked = HashSet<String>()
+        val orphaned = HashSet<String>()
+        for (card in cards) {
+            val subject = subjectOf(card) ?: continue
+            val survivor = left[card.pubkey to subject] ?: continue
+            if (DocRef.NEWEST_FIRST.compare(survivor, DocRef(card.id, card.createdAt)) < 0) outranked += card.id else orphaned += subject
+        }
+        return outranked to orphaned
     }
 
     /**

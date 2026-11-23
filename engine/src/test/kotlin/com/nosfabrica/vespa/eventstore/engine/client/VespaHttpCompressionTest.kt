@@ -96,12 +96,22 @@ class VespaHttpCompressionTest {
         val json = Json { ignoreUnknownKeys = true }
 
         fun answer(hits: Int) = """{"root":{"children":[${(1..hits).joinToString(",") { """{"fields":{"id":"$it","note":"caf\u00e9 \ud83d\ude00 ${"x".repeat(200)}"}}""" }}]}}"""
-        for (hits in listOf(3, 3_000)) {
+        // The large one sized past this JVM's ceiling, which follows its heap region size.
+        for (hits in listOf(3, (VespaHttp.STRING_DECODE_MAX_BYTES / 200).toInt() + 100)) {
             val text = answer(hits)
             val resp = VespaHttp.HttpResp(200, Buffer().writeUtf8(text))
             assertTrue((text.length > VespaHttp.STRING_DECODE_MAX_BYTES) == (hits > 3), "the two sizes straddle the threshold")
             assertEquals(json.parseToJsonElement(text), resp.decode(json, JsonElement.serializer()), "$hits hits")
             assertEquals(text, resp.body(), "the text stays readable after a decode")
         }
+    }
+
+    /** The string path's ceiling follows the G1 region: humongous starts at half a region, and a String may be twice its bytes. */
+    @Test
+    fun `the string-decode ceiling follows the heap region size`() {
+        assertEquals(192L * 1024, VespaHttp.stringDecodeMax(1L shl 20), "1 MB regions: the measured 192 KB")
+        assertEquals(768L * 1024, VespaHttp.stringDecodeMax(4L shl 20))
+        assertEquals(VespaHttp.DEFAULT_STRING_DECODE_MAX_BYTES, VespaHttp.stringDecodeMax(null), "a JVM that will not say keeps the 1 MB answer")
+        assertTrue(VespaHttp.STRING_DECODE_MAX_BYTES >= VespaHttp.DEFAULT_STRING_DECODE_MAX_BYTES, "and this JVM's is derived, never below it")
     }
 }
