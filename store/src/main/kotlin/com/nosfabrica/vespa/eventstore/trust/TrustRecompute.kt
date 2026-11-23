@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore.trust
 
+import com.nosfabrica.vespa.eventstore.engine.DocRef
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.ReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.async.QUERY_FANOUT
@@ -500,13 +501,31 @@ internal class TrustRecompute(
                     }
 
                 val pending = ArrayList<String>(PROJECT_PAGE)
+                // ONE VERSION PER ADDRESS, the newest listed so far. The store
+                // keeps one version per (service, subject), except where a sweep
+                // failed and left a stale one beside it (OwedSweeps) — and the
+                // writer applies batches IN LISTING ORDER, which for the cursor
+                // walk is newest first. So a stale version listed in a later
+                // batch than its winner landed its cell AFTER the winner's:
+                // [applyCards] orders a pair oldest-first only inside one batch.
+                // A version older than one already listed is skipped; a newer
+                // one listed later (the walk's order is the engine's) is queued
+                // and, landing later, wins. One entry per subject of this
+                // service, held for its walk only, beside the ids queued anyway.
+                val listed = HashMap<String, DocRef>()
                 try {
                     // Timed so the split this fix was reasoned from stays visible:
                     // if the listing turns out to be the wall clock after all, this
                     // is the number that says so.
                     IngestStats.timed("proj.visit.ids") {
-                        inner.visitIds(EventQuery(kinds = listOf(UserAssertionEvent.KIND), authors = listOf(service)), withDTag = false) { page ->
-                            pending += page.map { it.id }
+                        inner.visitIds(EventQuery(kinds = listOf(UserAssertionEvent.KIND), authors = listOf(service)), withDTag = true) { page ->
+                            for (ref in page) {
+                                val d = ref.dTag.orEmpty()
+                                val prior = listed[d]
+                                if (prior != null && DocRef.NEWEST_FIRST.compare(ref, prior) >= 0) continue
+                                listed[d] = ref
+                                pending += ref.id
+                            }
                             while (pending.size >= PROJECT_PAGE) {
                                 batches.send(pending.take(PROJECT_PAGE))
                                 pending.subList(0, PROJECT_PAGE).clear()

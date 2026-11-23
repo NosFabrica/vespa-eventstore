@@ -1488,6 +1488,29 @@ class TrustProjectionTest {
             assertEquals(serviceCells(service to 87), reps.get(subject)?.influenceScores, "a kind 5 of the stale version keeps the newest card's cell")
         }
 
+    /**
+     * A SERVICE WALK LANDS THE NEWEST VERSION'S CELL. The walk lists a
+     * service's cards newest first and applies them a page at a time, in that
+     * order; a stale version beside its winner (a failed sweep's) listed a
+     * page later was applied AFTER the winner, and its cell stood.
+     */
+    @Test
+    fun `a service walk never lands a stale card's cell over its winner's`() =
+        runBlocking {
+            val inner = InMemoryEventIndex()
+            val reps = InMemoryReputationIndex()
+            val proj = TrustProjection(inner, reps)
+            inner.put(list10040().toDoc())
+            inner.put(card(rank = 87, at = 10_000).toDoc())
+            // More than a walk page between the two versions, so they land in different batches.
+            (1..300).forEach { n -> inner.put(card(about = n.toString(16).padStart(64, 'c'), rank = 50, at = 5_000L + n).toDoc()) }
+            inner.put(card(rank = 10, at = 1).toDoc())
+
+            proj.recompute.projectServices(listOf(service))
+
+            assertEquals(serviceCells(service to 87), reps.get(subject)?.influenceScores, "the newest card's cell, not the stale one's")
+        }
+
     /** The NEWEST version removed with an older one left behind: the subject re-derives to the one still stored. */
     @Test
     fun `removing the newest card version over a stale one re-derives to the stale one`() =
