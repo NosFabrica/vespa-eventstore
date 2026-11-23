@@ -1647,6 +1647,53 @@ class VespaEventIndexTest {
         }
 
     /**
+     * A `complete` WALK still walks. A walk's page is limited by design, while
+     * real Vespa's `totalCount` is the whole match set (staging: 2,809,568 on
+     * a limit-2,000 page) — so the "every match served" half of `complete`'s
+     * check refused every page of any walk over more than one page, and the
+     * expiry sweep, which asked for it, never drained. On a walk `complete`
+     * means what it can: the engine searched every document (`full`).
+     */
+    @Test
+    fun `a complete walk over many pages delivers every id`() =
+        runBlocking {
+            val ann = "a7".repeat(32)
+            seedBulk((1..300).map { doc(kind = 1, pubkey = ann, at = 1_700_000_000L + it) })
+
+            val idx = VespaEventIndex(mock.url, idPageSize = 10)
+            try {
+                val got = ArrayList<DocRef>()
+                idx.visitIds(EventQuery(authors = listOf(ann), complete = true)) {
+                    got += it
+                    true
+                }
+                assertEquals(300, got.distinctBy { it.id }.size, "every id, across ~30 pages")
+            } finally {
+                idx.close()
+            }
+        }
+
+    /** ...while a `complete` walk over a cluster that searched only part of the corpus is still refused. */
+    @Test
+    fun `a complete walk refuses an answer that is not full`() =
+        runBlocking {
+            val ann = "a8".repeat(32)
+            seedBulk((1..30).map { doc(kind = 1, pubkey = ann, at = 1_700_000_000L + it) })
+            // `full: false` at a percentage that rounds to 100, no reason named:
+            // the read path serves it; a `complete` read must not.
+            mock.roundedCompleteCoverage = true
+
+            val idx = VespaEventIndex(mock.url, idPageSize = 10)
+            try {
+                val refused = runCatching { idx.visitIds(EventQuery(authors = listOf(ann), complete = true)) { true } }.exceptionOrNull()
+                assertTrue(refused is IllegalArgumentException && "full: false" in refused.message.orEmpty(), "refused as not full: $refused")
+            } finally {
+                mock.roundedCompleteCoverage = false
+                idx.close()
+            }
+        }
+
+    /**
      * A REFUSAL THAT DOES NOT CLEAR THROWS — it must not buy the corpus.
      *
      * Falling back to a whole-corpus document-API read was the shape of this

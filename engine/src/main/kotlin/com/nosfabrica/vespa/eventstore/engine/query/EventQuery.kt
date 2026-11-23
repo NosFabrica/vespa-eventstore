@@ -389,6 +389,13 @@ data class VespaQuery(
      * `contains`. The builder knows which clauses it wrote; it says so here.
      */
     val shape: String = SHAPE_PLAIN,
+    /**
+     * [EventQuery.complete] on a read that is a PAGE by design (a walk's
+     * cursor page): refuse an answer that did not search every document, but
+     * not one that served fewer hits than matched — that is what a page is.
+     * LAST, so no positional argument or componentN shifts.
+     */
+    val completeCoverage: Boolean = false,
 )
 
 /** The shape of a query carrying no clause worth naming. */

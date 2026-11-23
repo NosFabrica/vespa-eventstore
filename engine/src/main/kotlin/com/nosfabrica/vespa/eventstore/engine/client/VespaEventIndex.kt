@@ -2548,7 +2548,11 @@ class VespaEventIndex(
         }
         refusal?.let { throw it }
         if (root.coverage.missingDocuments) ServedDegraded.markCurrent()
-        if (vq.complete) root.requireEverything()
+        if (vq.complete) {
+            root.requireEverything()
+        } else if (vq.completeCoverage) {
+            root.requireFull()
+        }
         return root
     }
 

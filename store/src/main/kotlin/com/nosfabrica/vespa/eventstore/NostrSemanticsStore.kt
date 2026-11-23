@@ -1368,8 +1368,14 @@ class NostrSemanticsStore(
         checkWritable("deleteExpiredEvents")
         withActivity(Activity.Delete) {
             // expiresBefore is strict (<): +1 makes "expires exactly now" due, per NIP-40.
-            // `complete`, like every read that feeds a write: a short walk is a sweep that reports done.
-            val due = EventQuery(expiresBefore = nowSecs() + 1, complete = true)
+            // NOT `complete`. The walk refuses a degraded page anyway (the cursor's
+            // PartialAnswer), and an expired event a short page missed is only
+            // left for the next sweep, already hidden from reads. `complete` on
+            // the walk used to refuse every page past the first on real Vespa
+            // (its totalCount is the whole due set), so a backlog bigger than
+            // one walk page never drained. The id lookups that decide a removal
+            // keep it.
+            val due = EventQuery(expiresBefore = nowSecs() + 1)
             val page = expirySweepPage ?: StoreKnobs.expirySweepPage.value
             deletions.sweepWalk(due.copy(kinds = TrustProjection.TRUST_KINDS), page) { batch ->
                 locks.gated(trust = true, WriteLocks.SWEEP, WriteLocks.SWEEP_TRUST) { batch() }
