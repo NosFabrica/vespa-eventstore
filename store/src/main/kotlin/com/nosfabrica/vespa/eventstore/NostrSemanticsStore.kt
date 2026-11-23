@@ -36,6 +36,7 @@ import com.nosfabrica.vespa.eventstore.ingest.EventAdmission
 import com.nosfabrica.vespa.eventstore.ingest.GuardOwners
 import com.nosfabrica.vespa.eventstore.ingest.Rejections
 import com.nosfabrica.vespa.eventstore.mapping.DEFAULT_MIN_RANK
+import com.nosfabrica.vespa.eventstore.mapping.LiveWords
 import com.nosfabrica.vespa.eventstore.mapping.SearchExtractors
 import com.nosfabrica.vespa.eventstore.mapping.toEvent
 import com.nosfabrica.vespa.eventstore.mapping.toEventQuery
@@ -889,10 +890,10 @@ class NostrSemanticsStore(
      * shares. See [LiveGate]; call it in the subscription's own context, where
      * the connection observer is read from.
      */
-    override suspend fun liveGate(filters: List<Filter>): LiveGate? = liveGate(filters, liveWords::of)
+    override suspend fun liveGate(filters: List<Filter>): LiveGate? = liveGateWith(filters, liveWords::of)
 
     /** [liveGate] reading an event's words through [wordsOf] — the store's shared [liveWords] in production, anything a test compares it with. */
-    internal suspend fun liveGate(
+    internal suspend fun liveGateWith(
         filters: List<Filter>,
         wordsOf: (Event) -> List<String>,
     ): LiveGate? {
@@ -925,16 +926,9 @@ class NostrSemanticsStore(
     /**
      * One words memo for EVERY gate this store builds, which is the point of it: each live
      * subscription has its own gate, so a memo per gate would still extract and tokenize a note
-     * once per open searching feed. See [LiveGate.Words].
+     * once per open searching feed. See [LiveWords].
      */
-    internal val liveWords =
-        LiveGate.Words { event ->
-            SearchExtractors
-                .extract(event)
-                .fields()
-                .values
-                .joinToString(" ")
-        }
+    internal val liveWords = LiveWords()
 
     /**
      * [pubkey]'s trust chain: their stored 10040, the lens it resolves to (the
