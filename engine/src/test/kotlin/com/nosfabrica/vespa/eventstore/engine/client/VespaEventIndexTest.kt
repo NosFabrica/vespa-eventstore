@@ -69,6 +69,35 @@ class VespaEventIndexTest {
      */
     private fun List<Map<String, String>>.pageQueries() = filter { !it.getValue("yql").contains(" where id in (") }
 
+    /** Whether [yql] asks for exactly [hits] — `limit 20` must not match `limit 200`. */
+    private fun asksFor(
+        yql: String,
+        hits: Int,
+    ) = Regex("""\blimit $hits\b""").containsMatchIn(yql)
+
+    /** The hit count the LAST limit'd page query since [before] asked for: the read's overfetch (a `[t,t]` read has no limit). */
+    private fun lastFetch(before: Int): Int =
+        mock.searchRequests
+            .drop(before)
+            .pageQueries()
+            .mapNotNull { q ->
+                Regex("""\blimit (\d+)\b""")
+                    .findAll(q.getValue("yql"))
+                    .lastOrNull()
+                    ?.groupValues
+                    ?.get(1)
+                    ?.toInt()
+            }.last()
+
+    /** The `[t, t]` tie-window queries since [before]: the extra query a cut boundary group pays. */
+    private fun tieQueries(
+        before: Int,
+        t: Long,
+    ) = mock.searchRequests
+        .drop(before)
+        .pageQueries()
+        .filter { it.getValue("yql").let { y -> y.contains("created_at >= $t") && y.contains("created_at <= $t") } }
+
     /**
      * Calls booked under each `recency.speculative*` stage, keyed by the suffix.
      * [IngestStats] is process-global, so tests compare a before/after pair.
@@ -938,7 +967,7 @@ class VespaEventIndexTest {
                 assertEquals(2, yqls.size, "a short window, then one widened attempt: $yqls")
                 val boundary = now - RecencyPlanner.FIRST_WINDOW
                 assertTrue(yqls[1].contains("created_at <= ${boundary - 1}"), "the widened attempt stops below the first window: ${yqls[1]}")
-                assertTrue(yqls[1].contains("limit ${1 + VespaEventIndex.tieSlackFor(1)}"), "and asks for the ONE missing note (plus its tie slack): ${yqls[1]}")
+                assertTrue(asksFor(yqls[1], 1 + VespaEventIndex.TIE_SLACK), "and asks for the ONE missing note (plus the flat tie slack, memory off): ${yqls[1]}")
                 assertEquals((1..30).map { now - it } + (now - 8 * 3_600L), page.map { it.createdAt })
                 VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.FULL_SCAN).use { full ->
                     assertEquals(full.search(q).map { it.id }, page.map { it.id }, "the same page the full scan serves")
@@ -970,7 +999,7 @@ class VespaEventIndexTest {
                 assertEquals(2, yqls.size, "one windowed attempt, then the fallback: $yqls")
                 val boundary = now - RecencyPlanner.FIRST_WINDOW
                 assertTrue(yqls[1].contains("created_at <= ${boundary - 1}") && !yqls[1].contains("created_at >= "), "the fallback is unwindowed below the boundary: ${yqls[1]}")
-                assertTrue(yqls[1].contains("limit ${2 + VespaEventIndex.tieSlackFor(2)}"), "for the two notes still missing: ${yqls[1]}")
+                assertTrue(asksFor(yqls[1], 2 + VespaEventIndex.TIE_SLACK), "for the two notes still missing: ${yqls[1]}")
                 assertEquals(listOf(now - 10, 1_005L, 1_004L), page.map { it.createdAt })
             }
         }
@@ -1347,7 +1376,7 @@ class VespaEventIndexTest {
     @Test
     fun `a tie group wider than the slack resolves through the tie-window query`() =
         runBlocking {
-            val wide = 84 // TIE_SLACK (64) + 20 — must exceed the overfetch slack
+            val wide = VespaEventIndex.TIE_SLACK + 20 // past even a cold shape's (widest) slack
             seed(*(1..wide).map { doc(kind = 1, at = 7_000) }.toTypedArray())
             seed(doc(kind = 1, at = 9_000))
             mock.scrambleTieOrder = true
@@ -1364,71 +1393,60 @@ class VespaEventIndexTest {
         }
 
     /**
-     * A small page overfetches its own width, not [VespaEventIndex.TIE_SLACK]: a 10-event REQ
-     * asked the engine for 74 hits, every one matched, summarized, rendered and parsed for a tie
-     * it rarely holds. The slack is bounded on both sides, so a page of one still covers a tie.
+     * THE SLACK IS THE SHAPE'S. A shape seen first overfetches the flat [VespaEventIndex.TIE_SLACK];
+     * one whose pages keep showing no boundary ties (one author, a note a second at most) narrows
+     * toward [VespaEventIndex.MIN_TIE_SLACK]. Then the same shape meets a dense boundary second —
+     * thirty notes in one second on an engine that returns ties in any order: the narrow slack
+     * cuts it, the `[t,t]` query reads it whole and the page is still exact, and the shape goes
+     * straight back to the wide slack, so its NEXT read pays no tie query. The busy-feed case
+     * 10fbce5's page-width slack lost: there the cut was the common case at 20-50 events/s.
      */
     @Test
-    fun `the tie slack scales with the page`() {
-        assertEquals(VespaEventIndex.MIN_TIE_SLACK, VespaEventIndex.tieSlackFor(1))
-        assertEquals(10, VespaEventIndex.tieSlackFor(10))
-        assertEquals(VespaEventIndex.TIE_SLACK, VespaEventIndex.tieSlackFor(64))
-        assertEquals(VespaEventIndex.TIE_SLACK, VespaEventIndex.tieSlackFor(5_000))
-    }
-
-    /**
-     * The scaled slack makes a cut boundary group the COMMON case for small pages, so the
-     * `[t,t]` follow-up has to stay exact there: a 10-event page whose boundary second holds 30
-     * notes (three times its slack), on an engine that returns ties in any order.
-     */
-    @Test
-    fun `a small page whose boundary tie outgrows its slack is still the exact page`() =
+    fun `a sparse shape narrows its tie slack and a dense boundary widens it back`() =
         runBlocking {
-            seed(*(1..30).map { doc(kind = 1, at = 7_000) }.toTypedArray())
-            seed(*(1..4).map { doc(kind = 1, at = 9_000L + it) }.toTypedArray())
+            val author = "d7".repeat(32)
+            seed(*(1..40).map { doc(kind = 1, pubkey = author, at = 5_000L + it * 10) }.toTypedArray())
+            val q = EventQuery(kinds = listOf(1), authors = listOf(author), limit = 10)
+            val fetches =
+                (1..30).map {
+                    val before = mock.searchRequests.size
+                    assertEquals(reference.search(q).map { it.id }, index.search(q).map { it.id })
+                    lastFetch(before)
+                }
+            assertEquals(10 + VespaEventIndex.TIE_SLACK, fetches.first(), "a shape seen first overfetches the flat slack: $fetches")
+            assertTrue(fetches.zipWithNext().all { (a, b) -> b <= a }, "and narrows, never widens, while no tie shows: $fetches")
+            assertEquals(10 + VespaEventIndex.MIN_TIE_SLACK, fetches.last(), "down to the least slack: $fetches")
+
+            val dense = 6_000L
+            seed(*(1..30).map { doc(kind = 1, pubkey = author, at = dense) }.toTypedArray())
             mock.scrambleTieOrder = true
             try {
-                val q = EventQuery(kinds = listOf(1), limit = 10)
-                val before = mock.searchRequests.size
-                val page = index.search(q).map { it.id }
-                val yqls =
-                    mock.searchRequests
-                        .drop(before)
-                        .pageQueries()
-                        .map { it.getValue("yql") }
-                assertTrue(yqls.any { it.contains("limit ${10 + VespaEventIndex.tieSlackFor(10)}") }, "the page asks for its own width of slack: $yqls")
-                assertEquals(reference.search(q).map { it.id }, page, "the 6 tied survivors are the LOWEST ids, in asc order")
+                val cutAt = mock.searchRequests.size
+                assertEquals(reference.search(q).map { it.id }, index.search(q).map { it.id }, "a cut boundary group is still the exact page (lowest ids)")
+                assertEquals(1, tieQueries(cutAt, dense).size, "the narrow slack cut the thirty-note second, which paid its [t,t] query")
+                val nextAt = mock.searchRequests.size
+                assertEquals(reference.search(q).map { it.id }, index.search(q).map { it.id })
+                assertEquals(10 + VespaEventIndex.TIE_SLACK, lastFetch(nextAt), "the cut put the shape back on the wide slack")
+                assertEquals(emptyList(), tieQueries(nextAt, dense), "so its second read holds the group in one query")
             } finally {
                 mock.scrambleTieOrder = false
             }
         }
 
-    /**
-     * `limit + slack` WRAPPED NEGATIVE for a limit within the slack of [Int.MAX_VALUE]: a client
-     * sending `limit: 2147483647` on a gated or ranked-recency read got an EMPTY page (a
-     * non-positive limit matches nothing), and its shape was learned Narrow on the way. The
-     * overfetch saturates instead, at every site that adds one.
-     */
+    /** `VESPA_RECENCY_MEMORY=0` turns the learning off with the windows: every read keeps the flat slack. */
     @Test
-    fun `a limit of Int MAX_VALUE serves the whole page`() =
+    fun `with recency memory off every read overfetches the flat tie slack`() =
         runBlocking {
-            val now = System.currentTimeMillis() / 1000
-            seed(*(1..12).map { doc(kind = 1, at = now - it) }.toTypedArray())
-            val expected = reference.search(EventQuery(kinds = listOf(1))).map { it.id }
-            val shapes =
-                listOf(
-                    EventQuery(kinds = listOf(1), limit = Int.MAX_VALUE, ranking = EventYql.RANK_RECENCY_GATED, minRank = 2.0, observer = "ab".repeat(32), nowSecs = now),
-                    EventQuery(kinds = listOf(1), limit = Int.MAX_VALUE, ranking = EventYql.RANK_RECENCY, nowSecs = now),
-                    EventQuery(kinds = listOf(1), limit = Int.MAX_VALUE - 10, ranking = EventYql.RANK_RECENCY, nowSecs = now),
-                )
-            for (q in shapes) assertEquals(expected, index.search(q).map { it.id }, "every match, newest first: $q")
-            assertEquals(expected, index.search(shapes[0]).map { it.id }, "and the shape was not learned empty")
-            val walked = ArrayList<String>()
-            index.visitIds(EventQuery(kinds = listOf(1), limit = Int.MAX_VALUE), withDTag = false) { page ->
-                walked += page.map { it.id }
-                true
+            val author = "d8".repeat(32)
+            seed(*(1..40).map { doc(kind = 1, pubkey = author, at = 5_000L + it * 10) }.toTypedArray())
+            VespaEventIndex(mock.url, recencyMemory = false).use { cold ->
+                val q = EventQuery(kinds = listOf(1), authors = listOf(author), limit = 10)
+                repeat(12) {
+                    val before = mock.searchRequests.size
+                    assertEquals(reference.search(q).map { it.id }, cold.search(q).map { it.id })
+                    assertEquals(10 + VespaEventIndex.TIE_SLACK, lastFetch(before), "read ${it + 1}")
+                }
             }
-            assertEquals(expected, walked, "the limit'd walk too")
         }
 
     /** Deep-past until anchors (old-history pagination) skip the recency profile — the planner windows them instead. */

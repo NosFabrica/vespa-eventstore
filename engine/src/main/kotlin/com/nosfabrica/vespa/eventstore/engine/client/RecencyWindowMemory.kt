@@ -152,36 +152,6 @@ internal class RecencyWindowMemory(
     /** Shapes currently remembered (expired ones included until touched). */
     val size: Int get() = synchronized(entries) { entries.size }
 
-    /** [q]'s shape, anchored at [anchor] under the request clock [now] — compute once per read. */
-    fun shapeOf(
-        q: EventQuery,
-        anchor: Long,
-        now: Long,
-    ): Shape {
-        val gated = q.usesGatedProfile()
-        val d = DIGEST.get().reset()
-        d.text("k=").items(q.kinds.sorted())
-        d.text("|a=").items(q.authors.map { it.lowercase() }.sorted())
-        d.text("|o=").items(q.owners.map { it.lowercase() }.sorted())
-        d.text("|t=").tags(q.tags)
-        d.text("|T=").tags(q.tagsAll)
-        d.text("|n=").items(q.notSearch.sorted())
-        // Raw, not normalized: two spellings of one term are two shapes, which
-        // costs at most a learning read, never a page.
-        d.text("|s=").text(q.search?.trim().orEmpty())
-        d.text("|p=").items(q.phrases.sorted())
-        d.text("|g=").text(gated.toString())
-        if (gated) {
-            d
-                .text("|r=")
-                .text(q.rankKey.toString())
-                .text("|m=")
-                .text(q.minRank.toString())
-        }
-        d.text("|age=").text(ageBucket(now - anchor).toString())
-        return d.key()
-    }
-
     /**
      * SHA-256 over a shape's canonical text, fed a buffer at a time rather than
      * built as one string first: a feed's author list alone runs to tens of
@@ -257,6 +227,36 @@ internal class RecencyWindowMemory(
 
     companion object {
         private val DIGEST: ThreadLocal<ShapeDigest> = ThreadLocal.withInitial(::ShapeDigest)
+
+        /** [q]'s shape, anchored at [anchor] under the request clock [now] — compute once per read. */
+        fun shapeOf(
+            q: EventQuery,
+            anchor: Long,
+            now: Long,
+        ): Shape {
+            val gated = q.usesGatedProfile()
+            val d = DIGEST.get().reset()
+            d.text("k=").items(q.kinds.sorted())
+            d.text("|a=").items(q.authors.map { it.lowercase() }.sorted())
+            d.text("|o=").items(q.owners.map { it.lowercase() }.sorted())
+            d.text("|t=").tags(q.tags)
+            d.text("|T=").tags(q.tagsAll)
+            d.text("|n=").items(q.notSearch.sorted())
+            // Raw, not normalized: two spellings of one term are two shapes, which
+            // costs at most a learning read, never a page.
+            d.text("|s=").text(q.search?.trim().orEmpty())
+            d.text("|p=").items(q.phrases.sorted())
+            d.text("|g=").text(gated.toString())
+            if (gated) {
+                d
+                    .text("|r=")
+                    .text(q.rankKey.toString())
+                    .text("|m=")
+                    .text(q.minRank.toString())
+            }
+            d.text("|age=").text(ageBucket(now - anchor).toString())
+            return d.key()
+        }
 
         /**
          * How far back an anchor sits, coarsely: 0 within a day of the clock,

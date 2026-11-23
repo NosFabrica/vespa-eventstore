@@ -68,7 +68,7 @@ class RecencyWindowMemoryTest {
         assertNull(memory.recall(gated("zyzzogeton", phrases = listOf("zyzzogeton facts")), now, now), "a phrase narrows the shape")
         assertNull(memory.recall(gated(null), now, now), "no terms is the gated feed, another shape")
         assertEquals(Recall.Narrow, memory.recall(gated("zyzzogeton"), now, now))
-        val shape = memory.shapeOf(gated("zyzzogeton"), now, now)
+        val shape = RecencyWindowMemory.shapeOf(gated("zyzzogeton"), now, now)
         assertEquals(Recall.Narrow, memory.recall(shape), "a shape computed once answers like the query it came from")
     }
 

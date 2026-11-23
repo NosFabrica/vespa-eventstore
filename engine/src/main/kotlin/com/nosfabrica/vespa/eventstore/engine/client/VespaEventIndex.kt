@@ -266,6 +266,13 @@ class VespaEventIndex(
      */
     private val walkMemory: RecencyWindowMemory? = if (recencyMemory) RecencyWindowMemory() else null
 
+    /**
+     * The tie slack each windowable read shape needs, learned from its last pages
+     * ([TieSlackMemory]); null (every read at the flat [TIE_SLACK]) under the same
+     * `VESPA_RECENCY_MEMORY=0`.
+     */
+    private val slackMemory: TieSlackMemory? = if (recencyMemory) TieSlackMemory() else null
+
     // ADDRESS-KEYED mode (VESPA_ADDRESS_KEYED=1, the [addressKeyed] parameter):
     // replaceable/addressable events are stored under their NIP-01 address as
     // the document id, so the engine enforces newest-wins with a conditional put
@@ -629,11 +636,13 @@ class VespaEventIndex(
      * With a single-key sort, every doc STRICTLY newer than the boundary
      * timestamp T (the limit-th hit's created_at) is guaranteed present; only
      * membership among the docs AT T is engine-arbitrary. So the query
-     * overfetches [tieSlackFor] extra hits (the page's own width, 8 to 64) — if anything older than T arrived, or
-     * the engine ran out of matches, the whole T tie group is in hand and an
-     * in-memory sort resolves the boundary. Only a wider tie group pays one
-     * extra `[T,T]` window query — as does a limit within [TIE_SLACK] of a
-     * deployed hits cap, where the slack is clamped to the cap ([recallPage]).
+     * overfetches a tie slack — [TIE_SLACK] for a shape seen first, then what
+     * the shape's own pages showed it needs ([TieSlackMemory]) — and if anything
+     * older than T arrived, or the engine ran out of matches, the whole T tie
+     * group is in hand and an in-memory sort resolves the boundary. Only a wider
+     * tie group pays one extra `[T,T]` window query — as does a limit within its
+     * slack of a deployed hits cap, where the slack is clamped to the cap
+     * ([recallPage]).
      *
      * Ranked queries keep the engine's score order untouched. The gated profiles
      * are recency-ordered too (score IS created_at), so they take this path.
@@ -661,7 +670,7 @@ class VespaEventIndex(
      * [HYDRATE_CHUNK] ids.
      *
      * Why a page is resolved from ids first. A recency read asks the engine for
-     * `limit + tieSlackFor(limit)` hits so the boundary tie resolves client-side, and a
+     * `limit` plus a tie slack of hits so the boundary tie resolves client-side, and a
      * speculative read may try several windows — and every one of those hits
      * used to arrive as a FULL document read off the document store. On a
      * corpus larger than memory those reads are cold and scattered: measured on
@@ -729,6 +738,9 @@ class VespaEventIndex(
         // be planned a second time.
         planned: Boolean,
         idOnly: Boolean,
+        // The read's shape when its caller already keyed it (a speculative
+        // read's attempts share one); otherwise keyed here, for the tie slack.
+        shape: RecencyWindowMemory.Shape? = null,
     ): List<VespaSummary> {
         if (!q.isRecencyOrdered()) return rankedHits(q).mapNotNull { it.fields }
         val limit = q.limit
@@ -757,7 +769,13 @@ class VespaEventIndex(
         // client's choice, not the caller's — asked for whole, a REQ the cap
         // admits was refused for it. A limit past the cap itself still fails
         // at the engine, which is the operator's cap working ([hitsFor]).
-        val fetchLimit = minOf(plusSaturated(limit, tieSlackFor(limit)), maxOf(limit, unboundedHits))
+        // The slack is the SHAPE's ([TieSlackMemory]): only a windowable read —
+        // a client's feed, its speculative attempts and fallbacks — is keyed;
+        // internal probes (RANK_UNRANKED), id lookups and complete reads keep
+        // the flat [TIE_SLACK] and never take a slot in the table.
+        val slackShape = if (slackMemory == null) null else shape ?: q.takeIf { it.isWindowable() }?.let(::shapeOfRead)
+        val slack = slackShape?.let { slackMemory?.slackFor(it) } ?: TIE_SLACK
+        val fetchLimit = minOf(plusSaturated(limit, slack), maxOf(limit, unboundedHits))
         val fetch = q.copy(limit = fetchLimit).keepingProfileOf(q)
         var hits =
             recallRoot(fetch, idOnly)?.children?.mapNotNull { it.fields }?.filter { it.id.isNotEmpty() }
@@ -771,6 +789,13 @@ class VespaEventIndex(
             // strictly older than T — which a slack-less full answer, ending AT
             // T, never has, so it reads the group by its window.
             val complete = hits.size < fetchLimit || hits.last().createdAt < t
+            // What the page teaches its shape: the boundary members past the
+            // last slot (exact here — the group is whole), or that the slack cut
+            // it. A short page (the `if` above) says nothing about ties.
+            if (slackShape != null) {
+                val over = if (complete) hits.count { it.createdAt >= t } - limit else 0
+                slackMemory?.learn(slackShape, slack, over, cut = !complete)
+            }
             if (!complete) {
                 // A gated query's tie window must stay gated (the exact variant
                 // — a [t,t] window is tiny) or the rerun would resurrect
@@ -786,6 +811,12 @@ class VespaEventIndex(
             }
         }
         return hits.sortedWith(SUMMARY_NEWEST_FIRST).take(limit)
+    }
+
+    /** [q]'s [RecencyWindowMemory.Shape], anchored as [speculativeAttempts] anchors it. */
+    private fun shapeOfRead(q: EventQuery): RecencyWindowMemory.Shape {
+        val now = q.nowSecs ?: (System.currentTimeMillis() / 1000)
+        return RecencyWindowMemory.shapeOf(q, q.until?.let { minOf(it, now) } ?: now, now)
     }
 
     /**
@@ -857,11 +888,11 @@ class VespaEventIndex(
             // limit, replaces the cold first guess.
             // The shape is keyed ONCE per read: the recall here and the
             // learn/forget below share it (the digest walks the author list).
-            val shape = windowMemory?.shapeOf(q, anchor, now)
+            val shape = if (windowMemory != null || slackMemory != null) RecencyWindowMemory.shapeOf(q, anchor, now) else null
             val recalled = shape?.let { windowMemory?.recall(it) }
             if (recalled is RecencyWindowMemory.Recall.Narrow) {
                 outcome("recalled.narrow")
-                return@timed recallPage(planner.shipped(q), planned = true, idOnly = idOnly)
+                return@timed recallPage(planner.shipped(q), planned = true, idOnly = idOnly, shape = shape)
             }
             var window =
                 (recalled as? RecencyWindowMemory.Recall.Window)
@@ -900,7 +931,7 @@ class VespaEventIndex(
                 val remaining = limit - carried.size
                 val page =
                     try {
-                        IngestStats.timed("$SPECULATIVE_STAGE.attempt") { recallPage(q.olderThan(boundary, remaining).copy(since = since), planned = true, idOnly = idOnly) }
+                        IngestStats.timed("$SPECULATIVE_STAGE.attempt") { recallPage(q.olderThan(boundary, remaining).copy(since = since), planned = true, idOnly = idOnly, shape = shape) }
                     } catch (_: PartialAnswer) {
                         fallback = "partial"
                         break
@@ -933,7 +964,7 @@ class VespaEventIndex(
                 else -> Unit
             }
             // The unwindowed read, for what the carried pages do not already hold.
-            carried + recallPage(planner.shipped(q.olderThan(boundary, limit - carried.size)), planned = true, idOnly = idOnly)
+            carried + recallPage(planner.shipped(q.olderThan(boundary, limit - carried.size)), planned = true, idOnly = idOnly, shape = shape)
         }
 
     /**
@@ -1584,7 +1615,7 @@ class VespaEventIndex(
         val now = query.nowSecs ?: (System.currentTimeMillis() / 1000)
         val anchor = query.until ?: now
         // Keyed once for the walk: every page re-learns the same shape.
-        val walkShape = walkMemory?.shapeOf(query, anchor, now)
+        val walkShape = walkMemory?.let { RecencyWindowMemory.shapeOf(query, anchor, now) }
         var span: Long? = startSpan ?: walkShape?.let { recalledSpan(it, pageSize) }
         while (true) {
             val top = until ?: now
@@ -2782,23 +2813,20 @@ class VespaEventIndex(
         const val SLOW_DETAIL_CHARS = 400
 
         /**
-         * Extra hits a limit'd recency recall asks for beyond its limit, so
-         * the boundary timestamp's tie group usually arrives complete and the
-         * id tiebreak resolves in memory (see [recallSummaries]).
+         * The WIDEST tie slack: extra hits a limit'd recency recall asks for beyond its limit, so
+         * the boundary second's tie group usually arrives complete and the id tiebreak resolves in
+         * memory (see [recallSummaries]). What every walk ([visitIdsByCursor], [newestExact]) and
+         * every read the slack memory does not key overfetches, what a windowable shape seen for
+         * the first time starts at, and where a shape whose boundary group the slack cut goes
+         * back to ([TieSlackMemory]).
          */
         const val TIE_SLACK = 64
 
-        /** The least slack a small page asks for: a boundary second with more ties than this pays the `[T,T]` read. */
-        const val MIN_TIE_SLACK = 8
-
         /**
-         * The slack a recency page of [limit] overfetches: as wide as the page, between
-         * [MIN_TIE_SLACK] and [TIE_SLACK]. Every hit past the page is one the engine matches,
-         * summarizes and renders and this client parses for a tie it rarely holds, so a 10-event
-         * REQ asking 74 paid 7.4x its page. Exact at any width: a group the slack cuts is read
-         * whole by its `[T,T]` window.
+         * The NARROWEST slack a shape learns ([TieSlackMemory]): a page that showed no boundary
+         * ties still keeps this much, as headroom for the next one's.
          */
-        fun tieSlackFor(limit: Int): Int = limit.coerceIn(MIN_TIE_SLACK, TIE_SLACK)
+        const val MIN_TIE_SLACK = 8
 
         /**
          * `a + b` for a non-negative [b], stopping at [Int.MAX_VALUE] instead of wrapping. Every
