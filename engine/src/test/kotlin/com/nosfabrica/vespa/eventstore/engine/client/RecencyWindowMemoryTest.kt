@@ -128,4 +128,37 @@ class RecencyWindowMemoryTest {
             shape(EventQuery(kinds = listOf(1), tags = mapOf("t" to listOf("a], u=[b")))),
         )
     }
+
+    /** The key no longer sorts or copies its lists, and is still blind to their order and to hex case. */
+    @Test
+    fun `a shape is the same whatever the order of its lists and the case of its keys`() {
+        val now = 1_800_000_000L
+        val authors = (1..1_000).map { it.toString(16).padStart(64, 'a') }
+
+        fun shape(q: EventQuery) = RecencyWindowMemory.shapeOf(q, now, now)
+        assertEquals(
+            shape(EventQuery(kinds = listOf(1, 6), authors = authors, tags = mapOf("t" to listOf("x", "y"), "p" to listOf("z")))),
+            shape(EventQuery(kinds = listOf(6, 1), authors = authors.reversed().map { it.uppercase() }, tags = mapOf("p" to listOf("z"), "t" to listOf("y", "x")))),
+        )
+        assertNotEquals(shape(EventQuery(kinds = listOf(1), authors = authors)), shape(EventQuery(kinds = listOf(1), authors = authors.drop(1))))
+        assertNotEquals(shape(EventQuery(kinds = listOf(1), tags = mapOf("t" to listOf("x")))), shape(EventQuery(kinds = listOf(1), tagsAll = mapOf("t" to listOf("x")))))
+    }
+
+    /** The tie slack lives in the window table: one LRU bound, and forgetting a window keeps the slack. */
+    @Test
+    fun `the tie slack shares the window table and outlives a forgotten window`() {
+        val now = 1_800_000_000L
+        val table = RecencyWindowMemory(capacity = 8, ttlMillis = 60_000)
+        val slack = TieSlackMemory(table)
+        val shape = RecencyWindowMemory.shapeOf(EventQuery(kinds = listOf(1), limit = 10), now, now)
+        table.remember(shape, Recall.Window(3_600, 10))
+        slack.learn(shape, slack.slackFor(shape), over = 0, cut = false)
+        assertEquals(1, table.size, "one entry for both")
+        val (window, lease) = table.recallWith(shape, VespaEventIndex.TIE_SLACK)
+        assertEquals(Recall.Window(3_600, 10), window)
+        assertEquals(50, lease.value)
+        table.forget(shape)
+        assertNull(table.recall(shape))
+        assertEquals(50, slack.slackFor(shape).value, "the slack the shape learned is not the window's to drop")
+    }
 }

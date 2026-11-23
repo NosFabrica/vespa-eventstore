@@ -70,10 +70,19 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
  * leaves every read at the flat slack.
  */
 internal class TieSlackMemory(
-    private val capacity: Int = 4_096,
-    private val ttlMillis: Long = 600_000L,
-    private val clock: () -> Long = System::currentTimeMillis,
+    /**
+     * Where the entries live: the reads' [RecencyWindowMemory], so one lock and
+     * one LRU bound cover a shape's window and its slack. A standalone memory
+     * (the tests') gets a table of its own.
+     */
+    private val table: RecencyWindowMemory,
 ) {
+    constructor(
+        capacity: Int = 4_096,
+        ttlMillis: Long = 600_000L,
+        clock: () -> Long = System::currentTimeMillis,
+    ) : this(RecencyWindowMemory(capacity, ttlMillis, clock))
+
     /**
      * The slack a page should overfetch, as [slackFor] handed it out: its
      * [value], and the [epoch] of the entry it came from, which [learn] needs
@@ -84,21 +93,6 @@ internal class TieSlackMemory(
         internal val epoch: Long,
     )
 
-    private class Entry(
-        val slack: Int,
-        val atMillis: Long,
-        val epoch: Long,
-    )
-
-    /** Bumped by every write, so an entry's epoch names that write. 0 is "no entry". */
-    private var epochs = 0L
-
-    // Access-ordered: the eldest entry is the least recently USED shape.
-    private val entries =
-        object : LinkedHashMap<RecencyWindowMemory.Shape, Entry>(256, 0.75f, true) {
-            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<RecencyWindowMemory.Shape, Entry>?): Boolean = size > capacity
-        }
-
     /**
      * The slack a page of [shape] should overfetch: what it learned, or [cold]
      * for a shape with nothing live — [VespaEventIndex.TIE_SLACK] unless the
@@ -107,11 +101,7 @@ internal class TieSlackMemory(
     fun slackFor(
         shape: RecencyWindowMemory.Shape,
         cold: Int = VespaEventIndex.TIE_SLACK,
-    ): Lease =
-        synchronized(entries) {
-            val entry = live(shape) ?: return Lease(cold, 0)
-            Lease(entry.slack, entry.epoch)
-        }
+    ): Lease = table.slackLease(shape, cold)
 
     /**
      * What a full page of [shape] showed: it overfetched [lease], [over] members
@@ -134,29 +124,18 @@ internal class TieSlackMemory(
         cut: Boolean,
     ) {
         val proposed = next(lease.value, over, cut)
-        synchronized(entries) {
-            val stored = live(shape)
-            val value =
-                when {
-                    stored == null -> proposed
-                    proposed >= lease.value -> maxOf(proposed, stored.slack)
-                    stored.epoch == lease.epoch -> proposed
-                    else -> return
-                }
-            entries[shape] = Entry(value, clock(), ++epochs)
+        table.learnSlack(shape) { stored, epoch ->
+            when {
+                stored == 0 -> proposed
+                proposed >= lease.value -> maxOf(proposed, stored)
+                epoch == lease.epoch -> proposed
+                else -> null
+            }
         }
     }
 
-    /** [shape]'s entry, or null when absent or expired (and then dropped). Call holding the lock. */
-    private fun live(shape: RecencyWindowMemory.Shape): Entry? {
-        val entry = entries[shape] ?: return null
-        if (clock() - entry.atMillis <= ttlMillis) return entry
-        entries.remove(shape)
-        return null
-    }
-
     /** Shapes currently remembered (expired ones included until touched). */
-    val size: Int get() = synchronized(entries) { entries.size }
+    val size: Int get() = table.size
 
     companion object {
         /**

@@ -285,7 +285,7 @@ class VespaEventIndex(
      * ([TieSlackMemory]); null (every read at the flat [TIE_SLACK]) under the same
      * `VESPA_RECENCY_MEMORY=0`.
      */
-    private val slackMemory: TieSlackMemory? = if (recencyMemory) TieSlackMemory() else null
+    private val slackMemory: TieSlackMemory? = windowMemory?.let(::TieSlackMemory)
 
     // ADDRESS-KEYED mode (VESPA_ADDRESS_KEYED=1, the [addressKeyed] parameter):
     // replaceable/addressable events are stored under their NIP-01 address as
@@ -768,6 +768,9 @@ class VespaEventIndex(
         // has evidence ([TieSlackMemory.measuredSlack], a recalled narrow shape);
         // else [TieSlackMemory.coldSlack] decides by the shape's selectivity.
         coldSlack: Int? = null,
+        // The slack already leased for this page, when its caller read it with
+        // the window ([RecencyWindowMemory.recallWith], one lock for both).
+        leased: TieSlackMemory.Lease? = null,
     ): List<VespaSummary> {
         if (!q.isRecencyOrdered()) return rankedHits(q).mapNotNull { it.fields }
         val limit = q.limit
@@ -801,7 +804,7 @@ class VespaEventIndex(
         // internal probes (RANK_UNRANKED), id lookups and complete reads keep
         // the flat [TIE_SLACK] and never take a slot in the table.
         val slackShape = if (slackMemory == null) null else shape ?: q.takeIf { it.isWindowable() }?.let(::shapeOfRead)
-        val lease = slackShape?.let { slackMemory?.slackFor(it, coldSlack ?: TieSlackMemory.coldSlack(q, limit)) }
+        val lease = slackShape?.let { leased ?: slackMemory?.slackFor(it, coldSlack ?: TieSlackMemory.coldSlack(q, limit)) }
         val slack = lease?.value ?: TIE_SLACK
         val fetchLimit = minOf(plusSaturated(limit, slack), maxOf(limit, unboundedHits))
         val fetch = q.copy(limit = fetchLimit).keepingProfileOf(q)
@@ -922,12 +925,14 @@ class VespaEventIndex(
             // The shape is keyed ONCE per read: the recall here and the
             // learn/forget below share it (the digest walks the author list).
             val shape = if (windowMemory != null || slackMemory != null) RecencyWindowMemory.shapeOf(q, anchor, now) else null
-            val recalled = shape?.let { windowMemory?.recall(it) }
+            // The window and the first page's tie slack, under one lock.
+            val (recalled, firstLease) = shape?.let { windowMemory?.recallWith(it, TieSlackMemory.coldSlack(q, limit)) } ?: (null to null)
             if (recalled is RecencyWindowMemory.Recall.Narrow) {
                 outcome("recalled.narrow")
-                // Too thin to window is too thin for a wide tie slack: the
-                // shape starts from the least, and a cut widens it at once.
-                return@timed recallPage(planner.shipped(q), planned = true, idOnly = idOnly, shape = shape, coldSlack = MIN_TIE_SLACK)
+                // Too thin to window is too thin for a wide tie slack: a shape
+                // with no slack learned starts from the least, and a cut widens it at once.
+                val narrowLease = firstLease?.let { if (it.epoch == 0L) TieSlackMemory.Lease(MIN_TIE_SLACK, 0) else it }
+                return@timed recallPage(planner.shipped(q), planned = true, idOnly = idOnly, shape = shape, coldSlack = MIN_TIE_SLACK, leased = narrowLease)
             }
             var window =
                 (recalled as? RecencyWindowMemory.Recall.Window)
@@ -969,7 +974,9 @@ class VespaEventIndex(
                 val remaining = limit - carried.size
                 val page =
                     try {
-                        IngestStats.timed("$SPECULATIVE_STAGE.attempt") { recallPage(q.olderThan(boundary, remaining).copy(since = since), planned = true, idOnly = idOnly, shape = shape) }
+                        IngestStats.timed("$SPECULATIVE_STAGE.attempt") {
+                            recallPage(q.olderThan(boundary, remaining).copy(since = since), planned = true, idOnly = idOnly, shape = shape, leased = firstLease.takeIf { attempts == 0 })
+                        }
                     } catch (_: PartialAnswer) {
                         fallback = "partial"
                         break

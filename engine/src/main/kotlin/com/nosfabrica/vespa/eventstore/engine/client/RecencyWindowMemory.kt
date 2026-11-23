@@ -21,8 +21,6 @@
 package com.nosfabrica.vespa.eventstore.engine.client
 
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
-import java.nio.ByteBuffer
-import java.security.MessageDigest
 
 /**
  * WHERE THE LAST READ OF THIS SHAPE FOUND ITS PAGE, so the next one starts
@@ -58,8 +56,13 @@ import java.security.MessageDigest
  * back does not fill at the rate the newest page does.
  *
  * A read computes its [Shape] ONCE ([shapeOf]) and hands it to [recall] and
- * then [remember]/[forget]: the digest walks the whole author list, which is
+ * then [remember]/[forget]: the key walks the whole author list, which is
  * tens of kilobytes for a follow feed.
+ *
+ * ONE TABLE FOR WHAT A SHAPE TAUGHT: the window above and, for the reads' own
+ * table, the tie slack ([TieSlackMemory] keeps its entries HERE, not in a map
+ * of its own), so a read finds both under one lock acquisition ([recallWith])
+ * and the two share one LRU bound.
  */
 internal class RecencyWindowMemory(
     private val capacity: Int = 4_096,
@@ -78,18 +81,30 @@ internal class RecencyWindowMemory(
         data object Narrow : Recall
     }
 
-    private class Entry(
-        val recall: Recall,
-        val atMillis: Long,
-    )
+    /**
+     * Everything one shape taught, each part with its own age: a window (or
+     * none), and a tie slack (0 = none) with the epoch of the write that set
+     * it ([TieSlackMemory.learn]). Mutated only under the table's lock.
+     */
+    private class Slot {
+        var recall: Recall? = null
+        var recallAt = 0L
+        var slack = 0
+        var slackAt = 0L
+        var slackEpoch = 0L
+
+        fun isEmpty() = recall == null && slack == 0
+    }
 
     /**
-     * A shape, as a FIXED-SIZE digest: 128 bits of SHA-256 over the canonical
-     * shape. Holding the shape itself would hold its author list — a
-     * 1,000-author follow feed is ~100 KB of strings per entry, ~400 MB at
-     * [capacity] — for a table whose whole value is being cheap. A collision
-     * is harmless by the class's own argument: it can only hand a read the
-     * wrong starting guess, which costs a round trip, never a page.
+     * A shape, as a FIXED-SIZE key: 128 bits hashed from the canonical shape.
+     * Holding the shape itself would hold its author list — a 1,000-author
+     * follow feed is ~100 KB of strings per entry, ~400 MB at [capacity] — for
+     * a table whose whole value is being cheap. A collision is harmless by the
+     * class's own argument: it can only hand a read the wrong starting guess
+     * (a window, a tie slack), which costs a round trip, never a page — so the
+     * key is a performance hint, and its hash only has to be good, not
+     * adversary-proof ([shapeOf]).
      */
     class Shape internal constructor(
         private val hi: Long,
@@ -100,10 +115,13 @@ internal class RecencyWindowMemory(
         override fun hashCode(): Int = (hi xor lo).toInt()
     }
 
+    /** Bumped by every slack write, so an entry's epoch names that write. 0 is "none". */
+    private var epochs = 0L
+
     // Access-ordered: the eldest entry is the least recently USED shape.
     private val entries =
-        object : LinkedHashMap<Shape, Entry>(256, 0.75f, true) {
-            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Shape, Entry>?): Boolean = size > capacity
+        object : LinkedHashMap<Shape, Slot>(256, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Shape, Slot>?): Boolean = size > capacity
         }
 
     /** What [q] (anchored at [anchor], with the request clock [now]) should start from, or null to start cold. */
@@ -114,16 +132,16 @@ internal class RecencyWindowMemory(
     ): Recall? = recall(shapeOf(q, anchor, now))
 
     /** What [shape] should start from, or null to start cold. */
-    fun recall(shape: Shape): Recall? =
-        synchronized(entries) {
-            val entry = entries[shape] ?: return null
-            if (clock() - entry.atMillis > ttlMillis) {
-                entries.remove(shape)
-                null
-            } else {
-                entry.recall
-            }
-        }
+    fun recall(shape: Shape): Recall? = synchronized(entries) { liveRecall(shape) }
+
+    /**
+     * [recall] and the tie slack ([TieSlackMemory.slackFor]) of [shape] under
+     * ONE lock acquisition — what a speculative read asks first.
+     */
+    fun recallWith(
+        shape: Shape,
+        coldSlack: Int,
+    ): Pair<Recall?, TieSlackMemory.Lease> = synchronized(entries) { liveRecall(shape) to lease(shape, coldSlack) }
 
     fun remember(
         q: EventQuery,
@@ -136,7 +154,11 @@ internal class RecencyWindowMemory(
         shape: Shape,
         recall: Recall,
     ) {
-        synchronized(entries) { entries[shape] = Entry(recall, clock()) }
+        synchronized(entries) {
+            val slot = entries.getOrPut(shape) { Slot() }
+            slot.recall = recall
+            slot.recallAt = clock()
+        }
     }
 
     fun forget(
@@ -145,94 +167,68 @@ internal class RecencyWindowMemory(
         now: Long,
     ) = forget(shapeOf(q, anchor, now))
 
+    /** Forget [shape]'s WINDOW; a tie slack it learned stays. */
     fun forget(shape: Shape) {
-        synchronized(entries) { entries.remove(shape) }
+        synchronized(entries) {
+            val slot = entries[shape] ?: return
+            slot.recall = null
+            if (slot.isEmpty()) entries.remove(shape)
+        }
     }
 
     /** Shapes currently remembered (expired ones included until touched). */
     val size: Int get() = synchronized(entries) { entries.size }
 
+    /** [shape]'s window, or null when absent or expired. Call holding the lock. */
+    private fun liveRecall(shape: Shape): Recall? {
+        val slot = entries[shape] ?: return null
+        if (slot.recall != null && clock() - slot.recallAt > ttlMillis) {
+            slot.recall = null
+            if (slot.isEmpty()) entries.remove(shape)
+        }
+        return slot.recall
+    }
+
+    /** [TieSlackMemory.slackFor]'s answer, from this table. Call holding the lock. */
+    private fun lease(
+        shape: Shape,
+        cold: Int,
+    ): TieSlackMemory.Lease {
+        val slot = entries[shape] ?: return TieSlackMemory.Lease(cold, 0)
+        if (slot.slack != 0 && clock() - slot.slackAt > ttlMillis) {
+            slot.slack = 0
+            slot.slackEpoch = 0
+            if (slot.isEmpty()) entries.remove(shape)
+        }
+        return if (slot.slack == 0) TieSlackMemory.Lease(cold, 0) else TieSlackMemory.Lease(slot.slack, slot.slackEpoch)
+    }
+
+    /** [TieSlackMemory.slackFor]: the slack [shape] learned, or [cold]. */
+    internal fun slackLease(
+        shape: Shape,
+        cold: Int,
+    ): TieSlackMemory.Lease = synchronized(entries) { lease(shape, cold) }
+
     /**
-     * SHA-256 over a shape's canonical text, fed a buffer at a time rather than
-     * built as one string first: a feed's author list alone runs to tens of
-     * kilobytes. One per thread ([DIGEST]), [reset] per shape: [shapeOf] never
-     * suspends, so a coroutine cannot hand it to another thread mid-shape.
+     * [TieSlackMemory.learn]'s write, decided against what is stored now:
+     * [decide] gets the live slack and its epoch (0, 0 when none) and answers
+     * the slack to store, or null to leave it.
      */
-    private class ShapeDigest {
-        private val sha = MessageDigest.getInstance("SHA-256")
-        private val buf = ByteArray(1024)
-        private var n = 0
-
-        fun reset(): ShapeDigest {
-            sha.reset()
-            n = 0
-            return this
-        }
-
-        /**
-         * Each char as UTF-8, a lone surrogate encoded as itself: unambiguous, and one byte for
-         * the hex that is most of a key. The key is process-local, so only determinism matters.
-         */
-        fun text(s: String): ShapeDigest {
-            for (c in s) {
-                if (n + 3 > buf.size) flush()
-                val code = c.code
-                when {
-                    code < 0x80 -> {
-                        buf[n++] = code.toByte()
-                    }
-
-                    code < 0x800 -> {
-                        buf[n++] = (0xC0 or (code shr 6)).toByte()
-                        buf[n++] = (0x80 or (code and 0x3F)).toByte()
-                    }
-
-                    else -> {
-                        buf[n++] = (0xE0 or (code shr 12)).toByte()
-                        buf[n++] = (0x80 or ((code shr 6) and 0x3F)).toByte()
-                        buf[n++] = (0x80 or (code and 0x3F)).toByte()
-                    }
-                }
-            }
-            return this
-        }
-
-        /**
-         * [s] LENGTH-PREFIXED: a value is free text (a tag value, a search
-         * term), so no separator can frame it — joined with ", ", the one-tag
-         * filter `#t:["bitcoin, nostr"]` keyed exactly like the two-tag
-         * `#t:["bitcoin","nostr"]`, and a cheap REQ matching nothing could teach
-         * a busy shape Narrow (on a gated lens, the ~455x slower shipped read).
-         */
-        fun framed(s: String): ShapeDigest = text(s.length.toString()).text(":").text(s)
-
-        fun items(values: List<Any>): ShapeDigest {
-            text(values.size.toString()).text("[")
-            values.forEach { framed(it.toString()) }
-            return text("]")
-        }
-
-        fun tags(tags: Map<String, List<String>>): ShapeDigest {
-            text(tags.size.toString()).text("{")
-            tags.toSortedMap().forEach { (name, values) -> framed(name).items(values.sorted()) }
-            return text("}")
-        }
-
-        fun key(): Shape {
-            flush()
-            val digest = ByteBuffer.wrap(sha.digest())
-            return Shape(digest.getLong(), digest.getLong())
-        }
-
-        private fun flush() {
-            sha.update(buf, 0, n)
-            n = 0
+    internal fun learnSlack(
+        shape: Shape,
+        decide: (stored: Int, epoch: Long) -> Int?,
+    ) {
+        synchronized(entries) {
+            val live = lease(shape, 0)
+            val value = decide(live.value, live.epoch) ?: return
+            val slot = entries.getOrPut(shape) { Slot() }
+            slot.slack = value
+            slot.slackAt = clock()
+            slot.slackEpoch = ++epochs
         }
     }
 
     companion object {
-        private val DIGEST: ThreadLocal<ShapeDigest> = ThreadLocal.withInitial(::ShapeDigest)
-
         /** [q]'s shape, anchored at [anchor] under the request clock [now] — compute once per read. */
         fun shapeOf(
             q: EventQuery,
@@ -240,27 +236,24 @@ internal class RecencyWindowMemory(
             now: Long,
         ): Shape {
             val gated = q.usesGatedProfile()
-            val d = DIGEST.get().reset()
-            d.text("k=").items(q.kinds.sorted())
-            d.text("|a=").items(q.authors.map { it.lowercase() }.sorted())
-            d.text("|o=").items(q.owners.map { it.lowercase() }.sorted())
-            d.text("|t=").tags(q.tags)
-            d.text("|T=").tags(q.tagsAll)
-            d.text("|n=").items(q.notSearch.sorted())
+            val k = ShapeKey()
+            k.field(1).ints(q.kinds)
+            k.field(2).set(q.authors, lowerAscii = true)
+            k.field(3).set(q.owners, lowerAscii = true)
+            k.field(4).tags(q.tags)
+            k.field(5).tags(q.tagsAll)
+            k.field(6).set(q.notSearch, lowerAscii = false)
             // Raw, not normalized: two spellings of one term are two shapes, which
             // costs at most a learning read, never a page.
-            d.text("|s=").framed(q.search?.trim().orEmpty())
-            d.text("|p=").items(q.phrases.sorted())
-            d.text("|g=").text(gated.toString())
+            k.field(7).text(q.search?.trim().orEmpty())
+            k.field(8).set(q.phrases, lowerAscii = false)
+            k.field(9).long(if (gated) 1 else 0)
             if (gated) {
-                d
-                    .text("|r=")
-                    .text(q.rankKey.toString())
-                    .text("|m=")
-                    .text(q.minRank.toString())
+                k.field(10).text(q.rankKey.toString())
+                k.field(11).text(q.minRank.toString())
             }
-            d.text("|age=").text(ageBucket(now - anchor).toString())
-            return d.key()
+            k.field(12).long(ageBucket(now - anchor).toLong())
+            return k.key()
         }
 
         /**
@@ -272,6 +265,131 @@ internal class RecencyWindowMemory(
         fun ageBucket(ageSecs: Long): Int {
             val days = ageSecs / 86_400L
             return if (days <= 0) 0 else 64 - java.lang.Long.numberOfLeadingZeros(days)
+        }
+    }
+}
+
+/**
+ * A shape's 128-bit key, built WITHOUT copying, sorting or digesting its lists.
+ *
+ * It used to lowercase, copy and sort the author list and SHA-256 the joined
+ * text, on every windowable read: ~50-200 µs for a 1,000-author feed. A LIST
+ * is now an ORDER-INDEPENDENT combination — the sum, in each of two 64-bit
+ * lanes, of its items' hashes, plus its size — so no sort is needed, and each
+ * item hashes its characters in place (lowercasing ASCII as it goes, which is
+ * all a hex key needs). Every item is FRAMED (its length is hashed first) and
+ * every field is tagged with its number, so values cannot join into another
+ * shape's (see the framing fix this keeps). The lanes are seeded apart and
+ * finished with a full avalanche (MurmurHash3's fmix64), so the key is as good
+ * as a performance hint needs: a collision only costs a read its warm start.
+ */
+private class ShapeKey {
+    private var hi = SEED_HI
+    private var lo = SEED_LO
+
+    fun field(n: Int): ShapeKey {
+        mix(n.toLong())
+        return this
+    }
+
+    fun long(v: Long) {
+        mix(v)
+    }
+
+    fun ints(values: List<Int>) {
+        var sh = 0L
+        var sl = 0L
+        for (v in values) {
+            sh += fmix(v.toLong() xor SEED_HI)
+            sl += fmix(v.toLong() xor SEED_LO)
+        }
+        combine(values.size, sh, sl)
+    }
+
+    fun text(s: String) {
+        mix2(hashOf(s, SEED_HI, false), hashOf(s, SEED_LO, false))
+    }
+
+    fun set(
+        values: List<String>,
+        lowerAscii: Boolean,
+    ) {
+        var sh = 0L
+        var sl = 0L
+        for (v in values) {
+            sh += hashOf(v, SEED_HI, lowerAscii)
+            sl += hashOf(v, SEED_LO, lowerAscii)
+        }
+        combine(values.size, sh, sl)
+    }
+
+    fun tags(tags: Map<String, List<String>>) {
+        // Each (name, values) pair hashed whole, the pairs combined order-independently.
+        var sh = 0L
+        var sl = 0L
+        for ((name, values) in tags) {
+            var vh = 0L
+            var vl = 0L
+            for (v in values) {
+                vh += hashOf(v, SEED_HI, false)
+                vl += hashOf(v, SEED_LO, false)
+            }
+            sh += fmix(hashOf(name, SEED_HI, false) * K1 + vh * K2 + values.size)
+            sl += fmix(hashOf(name, SEED_LO, false) * K2 + vl * K1 + values.size)
+        }
+        combine(tags.size, sh, sl)
+    }
+
+    fun key(): RecencyWindowMemory.Shape = RecencyWindowMemory.Shape(fmix(hi), fmix(lo))
+
+    private fun combine(
+        size: Int,
+        sh: Long,
+        sl: Long,
+    ) {
+        mix(size.toLong())
+        mix2(sh, sl)
+    }
+
+    private fun mix(v: Long) = mix2(v, v)
+
+    private fun mix2(
+        h: Long,
+        l: Long,
+    ) {
+        hi = fmix(hi * K1 + h)
+        lo = fmix(lo * K2 + l)
+    }
+
+    private companion object {
+        const val SEED_HI = -0x61c8864680b583ebL
+        const val SEED_LO = 0x2545f4914f6cdd1dL
+        const val K1 = -0x40a7b892e31b1a47L
+        const val K2 = -0x6b2fb644ecceee15L
+
+        /** [s] framed (its length first) and hashed char by char; ASCII lowercased when [lowerAscii]. */
+        fun hashOf(
+            s: String,
+            seed: Long,
+            lowerAscii: Boolean,
+        ): Long {
+            var h = seed xor (s.length.toLong() * K1)
+            for (i in s.indices) {
+                var c = s[i].code
+                if (lowerAscii && c in 'A'.code..'Z'.code) c += 32
+                h = (h xor c.toLong()) * K2
+            }
+            return fmix(h)
+        }
+
+        /** MurmurHash3's 64-bit finalizer: every input bit reaches every output bit. */
+        fun fmix(k0: Long): Long {
+            var k = k0
+            k = k xor (k ushr 33)
+            k *= -0xae502812aa7333L
+            k = k xor (k ushr 33)
+            k *= -0x3b314601e57a13adL
+            return k xor (k ushr 33)
         }
     }
 }
