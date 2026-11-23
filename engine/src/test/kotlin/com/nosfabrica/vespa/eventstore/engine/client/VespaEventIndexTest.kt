@@ -1403,6 +1403,34 @@ class VespaEventIndexTest {
             }
         }
 
+    /**
+     * `limit + slack` WRAPPED NEGATIVE for a limit within the slack of [Int.MAX_VALUE]: a client
+     * sending `limit: 2147483647` on a gated or ranked-recency read got an EMPTY page (a
+     * non-positive limit matches nothing), and its shape was learned Narrow on the way. The
+     * overfetch saturates instead, at every site that adds one.
+     */
+    @Test
+    fun `a limit of Int MAX_VALUE serves the whole page`() =
+        runBlocking {
+            val now = System.currentTimeMillis() / 1000
+            seed(*(1..12).map { doc(kind = 1, at = now - it) }.toTypedArray())
+            val expected = reference.search(EventQuery(kinds = listOf(1))).map { it.id }
+            val shapes =
+                listOf(
+                    EventQuery(kinds = listOf(1), limit = Int.MAX_VALUE, ranking = EventYql.RANK_RECENCY_GATED, minRank = 2.0, observer = "ab".repeat(32), nowSecs = now),
+                    EventQuery(kinds = listOf(1), limit = Int.MAX_VALUE, ranking = EventYql.RANK_RECENCY, nowSecs = now),
+                    EventQuery(kinds = listOf(1), limit = Int.MAX_VALUE - 10, ranking = EventYql.RANK_RECENCY, nowSecs = now),
+                )
+            for (q in shapes) assertEquals(expected, index.search(q).map { it.id }, "every match, newest first: $q")
+            assertEquals(expected, index.search(shapes[0]).map { it.id }, "and the shape was not learned empty")
+            val walked = ArrayList<String>()
+            index.visitIds(EventQuery(kinds = listOf(1), limit = Int.MAX_VALUE), withDTag = false) { page ->
+                walked += page.map { it.id }
+                true
+            }
+            assertEquals(expected, walked, "the limit'd walk too")
+        }
+
     /** Deep-past until anchors (old-history pagination) skip the recency profile — the planner windows them instead. */
     @Test
     fun `deep-past until skips the recency profile`() {

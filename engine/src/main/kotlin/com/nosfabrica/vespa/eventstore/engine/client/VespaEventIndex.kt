@@ -757,7 +757,7 @@ class VespaEventIndex(
         // client's choice, not the caller's — asked for whole, a REQ the cap
         // admits was refused for it. A limit past the cap itself still fails
         // at the engine, which is the operator's cap working ([hitsFor]).
-        val fetchLimit = minOf(limit + tieSlackFor(limit), maxOf(limit, unboundedHits))
+        val fetchLimit = minOf(plusSaturated(limit, tieSlackFor(limit)), maxOf(limit, unboundedHits))
         val fetch = q.copy(limit = fetchLimit).keepingProfileOf(q)
         var hits =
             recallRoot(fetch, idOnly)?.children?.mapNotNull { it.fields }?.filter { it.id.isNotEmpty() }
@@ -1535,7 +1535,7 @@ class VespaEventIndex(
         // slack (halved when the cap is too small to spare a whole one). The
         // boundary logic below needs only `pageSize <= fetchLimit`: a short
         // slack just reads the boundary group by its window more often.
-        val fetchLimit = minOf(idPageSize + TIE_SLACK, unboundedHits)
+        val fetchLimit = minOf(plusSaturated(idPageSize, TIE_SLACK), unboundedHits)
         val pageSize = minOf(idPageSize, fetchLimit - minOf(TIE_SLACK, fetchLimit / 2))
         // EVERY PAGE AFTER THE FIRST READS A SLICE, NOT THE REST OF THE WINDOW.
         // A page is `order by created_at desc limit N`, so the engine matches
@@ -1752,7 +1752,7 @@ class VespaEventIndex(
                 // like any walk: the split hands the second out lowest ids first,
                 // so a budget that stops inside it keeps NIP-01's members — where
                 // it used to keep whichever the engine's single-key sort reached.
-                val cap = minOf(idPageSize * TIE_DENSE_FACTOR + 1, unboundedHits)
+                val cap = minOf(denseCap(idPageSize), unboundedHits)
                 val group = idTimeRetrying(query.copy(since = boundary, until = boundary, limit = cap), withDTag, "walk.ids.tiegroup")
                 if (group.size >= cap) {
                     // TOO WIDE TO RESOLVE ON THE CURSOR — a service that
@@ -1979,7 +1979,7 @@ class VespaEventIndex(
         // caller routes only a limit inside the cap here ([visitIds]). A fetch
         // with no slack left is still exact: a full answer then ends AT t, never
         // past it, so the check below reads the group by its window.
-        val fetch = minOf(limit + TIE_SLACK, maxOf(limit, unboundedHits))
+        val fetch = minOf(plusSaturated(limit, TIE_SLACK), maxOf(limit, unboundedHits))
         val hits = idTimeRetrying(query.copy(limit = fetch), withDTag, "walk.limited.onepage")
         // Fewer than asked for: the engine ran out, so every tie is in hand.
         if (hits.size < fetch) return hits.sortedWith(DOCREF_NEWEST_FIRST).take(limit)
@@ -1988,7 +1988,7 @@ class VespaEventIndex(
         val complete = hits.last().createdAt < t
         if (complete) return hits.sortedWith(DOCREF_NEWEST_FIRST).take(limit)
         val newer = hits.filter { it.createdAt > t }
-        val cap = minOf(idPageSize * TIE_DENSE_FACTOR + 1, unboundedHits)
+        val cap = minOf(denseCap(idPageSize), unboundedHits)
         val second = query.copy(since = t, until = t, limit = null)
         var group = idTimeRetrying(second.copy(limit = cap), withDTag, "walk.limited.tiegroup")
         if (group.size >= cap) {
@@ -2799,6 +2799,20 @@ class VespaEventIndex(
          * whole by its `[T,T]` window.
          */
         fun tieSlackFor(limit: Int): Int = limit.coerceIn(MIN_TIE_SLACK, TIE_SLACK)
+
+        /**
+         * `a + b` for a non-negative [b], stopping at [Int.MAX_VALUE] instead of wrapping. Every
+         * overfetch is a caller's limit plus this client's slack, and a client may send any limit:
+         * `2147483647 + 64` wrapped negative, and a non-positive limit matches nothing, so the
+         * whole page came back empty (and a speculative read learned its shape Narrow).
+         */
+        internal fun plusSaturated(
+            a: Int,
+            b: Int,
+        ): Int = (a.toLong() + b).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+
+        /** The dense tie-group threshold for a page of [pageSize]: `pageSize * TIE_DENSE_FACTOR + 1`, saturated like [plusSaturated]. */
+        internal fun denseCap(pageSize: Int): Int = (pageSize.toLong() * TIE_DENSE_FACTOR + 1).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
 
         /** Ids per hydration query (see [hydrate]): one query up to the match-phase band's width. */
         const val HYDRATE_CHUNK = 2_000
