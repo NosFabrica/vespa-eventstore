@@ -1265,6 +1265,10 @@ object MockSelection {
                     q = q.copy(notExpiredAt = clause.removePrefix("event.expires_at>").toLong())
                 }
 
+                clause.startsWith("event.expires_at<") -> {
+                    q = q.copy(expiresBefore = clause.removePrefix("event.expires_at<").toLong())
+                }
+
                 else -> {
                     error("unparseable selection clause: $clause")
                 }

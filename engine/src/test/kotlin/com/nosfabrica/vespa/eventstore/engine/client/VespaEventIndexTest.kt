@@ -1773,6 +1773,45 @@ class VespaEventIndexTest {
         }
 
     /**
+     * THE EXPIRY SWEEP'S WALK, CUT: its scan fallback must be a scan. A
+     * selection could not express `expiresBefore`, so a sweep walk that spent
+     * its cut budget fell to the UNSELECTABLE path — one unlimited search for
+     * every due document, whole, in one list (an OOM on a large backlog, a
+     * refusal under a hits cap). `event.expires_at<N` is a selection clause
+     * like the not-expired guard's, so it streams.
+     */
+    @Test
+    fun `a cut expiry walk falls to a streamed scan, never the unbounded search`() =
+        runBlocking {
+            IngestStats.reset()
+            val kim = "e7".repeat(32)
+            val due = (1..30).map { doc(kind = 1, pubkey = kim, at = 1_700_000_000L + it, tags = listOf(listOf("expiration", "1700000500"))) }
+            val later = (1..10).map { doc(kind = 1, pubkey = kim, at = 1_700_000_100L + it, tags = listOf(listOf("expiration", "1800000000"))) }
+            val never = (1..10).map { doc(kind = 1, pubkey = kim, at = 1_700_000_200L + it) }
+            seedBulk(due + later + never)
+            mock.visitRequests = 0
+            mock.degradeCoverage = PartialAnswer.MATCH_PHASE
+
+            val idx = VespaEventIndex(mock.url, idPageSize = 10)
+            try {
+                val got = ArrayList<DocRef>()
+                idx.visitIds(EventQuery(kinds = listOf(1), expiresBefore = 1_700_000_501L)) {
+                    got += it
+                    true
+                }
+
+                assertEquals(due.map { it.id }.toSet(), got.mapTo(HashSet()) { it.id }, "exactly the due documents")
+                val stages = IngestStats.snapshot()
+                assertEquals(null, stages["walk.scan.unselectable"], "never the unbounded search; stages: ${stages.keys.sorted()}")
+                assertEquals(true, mock.visitRequests > 0, "a streamed document-API scan")
+            } finally {
+                mock.degradeCoverage = null
+                idx.close()
+                IngestStats.reset()
+            }
+        }
+
+    /**
      * THE OTHER HALF OF THAT CONTRACT, and the one staging proved was missing.
      *
      * `match-phase` is not a cluster having a moment — it is the ENGINE saying
