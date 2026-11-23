@@ -58,6 +58,12 @@ internal class EventAdmission(
     private val deletions: Deletions,
     /** Whether this owner can have a stored tombstone/vanish at all — see [GuardOwners]. */
     private val guards: GuardOwners,
+    /**
+     * Whether the store's REAL index can hold a content ([EventIndex.storesContent]). [index]'s
+     * own by default; [BulkMixedInsert] replays over an in-memory snapshot that holds anything,
+     * so it passes the real index's, or an old schema's refusal would be skipped there.
+     */
+    private val storesContent: (String) -> Boolean = index::storesContent,
 ) {
     /**
      * The rules, applied to one event. NO lock and NO lock accounting: the
@@ -86,7 +92,7 @@ internal class EventAdmission(
             // Text the engine cannot hold is a property of the event (and of the deployed
             // schema), so it is settled with the other no-I/O checks rather than surfacing as a
             // feed exception that costs the batch. See [VespaText.refuses].
-            VespaText.refuses(event, index) -> IEventStore.InsertOutcome.Rejected(Rejections.UNSTORABLE_TEXT)
+            VespaText.refuses(event, storesContent) -> IEventStore.InsertOutcome.Rejected(Rejections.UNSTORABLE_TEXT)
 
             else -> null
         }

@@ -82,6 +82,7 @@ internal class SchemaFallbacks {
 
     /** Whether the serving schema has the stemmed body columns ([StemText.FIELDS]) — both directions. */
     @Volatile var stemFieldsAvailable = true
+        private set
 
     /**
      * Whether the serving schema has `content_json` (`EventDoc.CONTENT_JSON`), the field that

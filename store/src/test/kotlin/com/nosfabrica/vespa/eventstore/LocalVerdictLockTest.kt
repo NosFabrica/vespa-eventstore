@@ -62,6 +62,9 @@ class LocalVerdictLockTest {
 
     private fun expired() = Event(id(), alice, 100, 1, arrayOf(arrayOf("expiration", "200")), "old", "")
 
+    /** An addressable whose `d` the engine cannot store: refused without I/O (VespaText.refuses). */
+    private fun unstorable() = Event(id(), alice, 1_000_000_000L, 30023, arrayOf(arrayOf("d", "bad\u0016d")), "x", "")
+
     /** Parks the dup GET for [parkedId] until [release] completes: the insert asking it holds the writer lock meanwhile. */
     private class ParkingIndex(
         private val inner: InMemoryEventIndex,
@@ -102,12 +105,13 @@ class LocalVerdictLockTest {
     }
 
     @Test
-    fun `an ephemeral and an expired insert are answered while the writer lock is held`() =
+    fun `an ephemeral, an expired and an unstorable insert are answered while the writer lock is held`() =
         whileLockHeld { store, inner ->
             val ephemeral = ephemeral()
             store.insert(ephemeral)
             assertNull(inner.get(ephemeral.id), "an ephemeral event is accepted, never stored")
             assertEquals(Rejections.EXPIRED, assertFailsWith<RejectedException> { store.insert(expired()) }.message)
+            assertEquals(Rejections.UNSTORABLE_TEXT, assertFailsWith<RejectedException> { store.insert(unstorable()) }.message)
         }
 
     @Test

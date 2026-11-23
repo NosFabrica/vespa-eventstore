@@ -31,6 +31,7 @@ import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.normalizeRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
+import com.vitorpamplona.quartz.utils.EventFactory
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -213,6 +214,49 @@ class VespaTextTest {
             assertEquals(IEventStore.InsertOutcome.Rejected(Rejections.UNSTORABLE_TEXT), outcomes.last())
             val thrown = runCatching { store.insert(note("form${'\u000c'}feed")) }.exceptionOrNull()
             assertTrue(thrown is RejectedException, "the per-event path refuses it too, got $thrown")
+            store.close()
+        }
+
+    @Test
+    fun `the mixed bulk path asks the real index, not its snapshot, about content`() =
+        runBlocking {
+            // A kind 5 sends the batch through BulkMixedInsert, which replays admission over an
+            // in-memory snapshot that holds anything: it must still refuse what the real index cannot.
+            val store = NostrSemanticsStore(OldSchemaIndex(InMemoryEventIndex()), relay = relayUrl)
+            // Typed, as ingest hands it over: the mixed path is chosen by `is DeletionRequestEvent`.
+            val deletion = EventFactory.create<Event>(id(), alice, 1_000_001L, 5, arrayOf(arrayOf("e", "ff".repeat(32))), "", "")
+            val bad = note("backspace\bhere")
+            val outcomes = store.batchInsert((1..15).map { note("ok$it") } + deletion + bad)
+            assertEquals(IEventStore.InsertOutcome.Rejected(Rejections.UNSTORABLE_TEXT), outcomes.last(), "$outcomes")
+            assertEquals(16, outcomes.count { it is IEventStore.InsertOutcome.Accepted }, "$outcomes")
+            store.close()
+        }
+
+    @Test
+    fun `a gift wrap whose recipient the engine cannot store is refused`() =
+        runBlocking {
+            // A gift wrap's owner is its first p tag, fed raw into the owner attribute.
+            val store = store()
+            // Typed, as every ingest path hands it over: owner() reads the p tag of a GiftWrapEvent.
+            val wrap = EventFactory.create<Event>(id(), alice, 1_000_000L, 1059, arrayOf(arrayOf("p", "ab${SOH}cd")), "sealed", "")
+            val thrown = runCatching { store.insert(wrap) }.exceptionOrNull()
+            assertTrue(thrown is RejectedException, "expected a semantic rejection, got $thrown")
+            assertEquals(Rejections.UNSTORABLE_TEXT, thrown.message)
+            store.close()
+        }
+
+    @Test
+    fun `an unpaired surrogate is refused in content and in tags, a paired one is not`() =
+        runBlocking {
+            // Storable escaped, but no serializer can hand an unpaired half back as signed bytes.
+            val store = store()
+            for (e in listOf(note("lone\uD800here"), Event(id(), alice, 1_000_000L, 1, arrayOf(arrayOf("t", "x\uDC00")), "ok", ""))) {
+                val thrown = runCatching { store.insert(e) }.exceptionOrNull()
+                assertTrue(thrown is RejectedException, "expected a semantic rejection, got $thrown")
+            }
+            val paired = note("emoji \uD83D\uDE00 fine")
+            store.insert(paired)
+            assertEquals(paired.content, store.query<Event>(Filter(ids = listOf(paired.id))).single().content)
             store.close()
         }
 

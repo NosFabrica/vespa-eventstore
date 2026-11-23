@@ -48,10 +48,11 @@ internal object Rejections {
     const val INSERT_FAILED = RejectionReason.INSERT_FAILED
 
     /**
-     * The two events this store cannot hold ([VespaText.refuses]): an addressable whose `d` tag
-     * holds a code point the engine refuses, and content holding one while the deployed schema
-     * predates `content_json`. One constant string, not one per field/code point: callers tally
-     * rejections by reason, and a per-event reason fragments that tally.
+     * The events this store cannot hold ([VespaText.refuses]): an addressable whose `d` holds a
+     * code point the engine refuses, an owner it refuses, an unpaired surrogate anywhere, and
+     * such content while the deployed schema predates `content_json`. One constant string, not
+     * one per field/code point: callers tally rejections by reason, and a per-event reason
+     * fragments that tally.
      */
     const val UNSTORABLE_TEXT = "blocked: text carries a code point the engine cannot store"
 

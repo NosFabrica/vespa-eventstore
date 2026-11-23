@@ -136,8 +136,15 @@ internal class JsonChars(
      */
     fun storableString(value: String): JsonChars = raw('"').storableEscaped(value).raw('"')
 
-    /** The JSON text of a tag array, `[["p","…"],…]`, storable whatever its values carry. */
-    fun tags(tags: List<List<String>>): JsonChars {
+    /**
+     * The JSON text of a tag array, `[["p","…"],…]`, storable whatever its values carry.
+     * [allStorable] is the caller's verdict that no value needs [storableString]
+     * (`EventDoc.allTagValuesStorable`), which spares the per-value check.
+     */
+    fun tags(
+        tags: List<List<String>>,
+        allStorable: Boolean = false,
+    ): JsonChars {
         raw('[')
         for (i in tags.indices) {
             if (i > 0) raw(',')
@@ -145,7 +152,7 @@ internal class JsonChars(
             val tag = tags[i]
             for (v in tag.indices) {
                 if (v > 0) raw(',')
-                if (StorableText.isStorable(tag[v])) string(tag[v]) else storableString(tag[v])
+                if (allStorable || StorableText.isStorable(tag[v])) string(tag[v]) else storableString(tag[v])
             }
             raw(']')
         }
@@ -157,7 +164,10 @@ internal class JsonChars(
      * `"[[\"p\",\"…\"]]"`, the same text `string(tagsJson)` writes, in one pass over the
      * values instead of two.
      */
-    fun tagsString(tags: List<List<String>>): JsonChars {
+    fun tagsString(
+        tags: List<List<String>>,
+        allStorable: Boolean = false,
+    ): JsonChars {
         raw("\"[")
         for (t in tags.indices) {
             if (t > 0) raw(',')
@@ -166,7 +176,7 @@ internal class JsonChars(
             for (v in tag.indices) {
                 if (v > 0) raw(',')
                 val value = tag[v]
-                if (StorableText.isStorable(value)) {
+                if (allStorable || StorableText.isStorable(value)) {
                     raw("\\\"").escaped(value, TWICE).raw("\\\"")
                 } else {
                     // [TWICE] is [ESCAPES] applied to [ESCAPES]' output, so the value's

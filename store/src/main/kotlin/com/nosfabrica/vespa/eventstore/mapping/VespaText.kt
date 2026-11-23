@@ -20,10 +20,10 @@
  */
 package com.nosfabrica.vespa.eventstore.mapping
 
-import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.text.StorableText
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.core.isAddressable
+import com.vitorpamplona.quartz.nip01Core.store.owner
 
 /**
  * The store's scrub for DERIVED search fields, on the engine's storability rule
@@ -50,21 +50,30 @@ internal object VespaText {
      *    cannot hold that value, so a newer version would never find and replace the older one;
      *    in address-keyed mode the address is the document id. Read the way the address is
      *    computed (`EventDoc.dTagOrEmpty`): the first `d` tag with a value.
-     *  - content holding such a code point while [index] cannot store it
-     *    ([EventIndex.storesContent]: a deployed schema predating `content_json`).
+     *  - an OWNER the engine cannot store. The owner is fed raw into the `owner` attribute, and a
+     *    gift wrap's is its first `p` tag (`owner()`), which nothing else validates.
+     *  - an unpaired surrogate in the content or any tag value ([StorableText.hasLoneSurrogate]):
+     *    storable escaped, but not servable as the bytes that were signed.
+     *  - content holding a refused code point when [storesContent] says the index cannot hold it
+     *    (`EventIndex.storesContent`: a deployed schema predating `content_json`). A predicate,
+     *    not the index, so a replay over a snapshot (`BulkMixedInsert`) asks the real one.
      *
-     * Both cases cost nothing on the common path: the `d` scan runs for addressables only, and
-     * a current schema answers [EventIndex.storesContent] without reading the content.
+     * The common path pays one fast scan: the `d` check runs for addressables only, the owner is
+     * 64 hex chars, the surrogate scan skips everything below U+D800, and a current schema
+     * answers [storesContent] without reading the content.
      */
     fun refuses(
         event: Event,
-        index: EventIndex,
+        storesContent: (String) -> Boolean,
     ): Boolean {
         if (event.kind.isAddressable()) {
             val d = event.tags.firstOrNull { it.size > 1 && it[0] == "d" }?.get(1)
             if (d != null && !StorableText.isStorable(d)) return true
         }
-        return !index.storesContent(event.content)
+        if (!StorableText.isStorable(event.owner())) return true
+        if (StorableText.hasLoneSurrogate(event.content)) return true
+        if (event.tags.any { tag -> tag.any(StorableText::hasLoneSurrogate) }) return true
+        return !storesContent(event.content)
     }
 
     /**

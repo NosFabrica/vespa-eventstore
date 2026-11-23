@@ -72,6 +72,27 @@ data class EventDoc(
      */
     var storedNearFields: Map<String, List<String>>? = null
 
+    /**
+     * Whether every tag value is one the engine stores as is — the common case by far, so the
+     * tag writers ([JsonChars.tags], [JsonChars.tagsString]) and [tagIndex] skip their per-value
+     * check. Scanned ONCE per doc, not once per writer and per feed attempt: [feedJson] runs again
+     * on every fed-column fallback retry and every re-put of a reindex, and this scan is the hot
+     * loop of the write path ([StorableText.firstUnstorableCodePoint]). Outside equals/copy, like
+     * [storedNearFields]: derived from the doc, never part of it.
+     */
+    private val allTagValuesStorable: Boolean by lazy(LazyThreadSafetyMode.PUBLICATION) {
+        tags.all { tag -> tag.all(StorableText::isStorable) }
+    }
+
+    /**
+     * [content] as the JSON string literal [CONTENT_JSON] stores, or null when it is storable
+     * as it is — the common case by far, so the feed writes `content` exactly as before. Scanned
+     * once per doc, for the same reason as [allTagValuesStorable].
+     */
+    private val contentLiteral: String? by lazy(LazyThreadSafetyMode.PUBLICATION) {
+        if (StorableText.isStorable(content)) null else JsonChars(content.length + content.length / 8 + 16).storableString(content).toString()
+    }
+
     /** [tags] as Quartz's `String[][]` shape, for its tag-array helpers and event reconstruction. */
     private fun tagsArray(): Array<Array<String>> = Array(tags.size) { tags[it].toTypedArray() }
 
@@ -89,7 +110,7 @@ data class EventDoc(
     /** Each [tagIndex] entry as its name and value, unjoined: the one place the rule lives. */
     private inline fun forEachIndexedTag(block: (name: String, value: String) -> Unit) {
         for (tag in tags) {
-            if (tag.size > 1 && isIndexableTagName(tag[0]) && StorableText.isStorable(tag[1])) block(tag[0], tag[1])
+            if (tag.size > 1 && isIndexableTagName(tag[0]) && (allTagValuesStorable || StorableText.isStorable(tag[1]))) block(tag[0], tag[1])
         }
     }
 
@@ -156,7 +177,7 @@ data class EventDoc(
             put("kind", kind)
             put("tags", tagsJson())
             put("tag_index", JsonArray(tagIndex().map(::JsonPrimitive)))
-            val literal = contentLiteral()
+            val literal = contentLiteral
             if (literal == null) put("content", content) else put(CONTENT_JSON, literal)
             put("sig", sig)
             put("owner", owner)
@@ -221,7 +242,7 @@ data class EventDoc(
         out.key("pubkey").string(pubkey)
         out.key("created_at").raw(createdAt)
         out.key("kind").raw(kind.toLong())
-        out.key("tags").tagsString(tags)
+        out.key("tags").tagsString(tags, allTagValuesStorable)
         out.key("tag_index").raw('[')
         var firstIndexed = true
         forEachIndexedTag { name, value ->
@@ -230,7 +251,7 @@ data class EventDoc(
             out.pair(name, value)
         }
         out.raw(']')
-        val literal = contentLiteral()
+        val literal = contentLiteral
         if (literal == null) out.key("content").string(content) else out.key(CONTENT_JSON).string(literal)
         out.key("sig").string(sig)
         out.key("owner").string(owner)
@@ -254,15 +275,8 @@ data class EventDoc(
      */
     fun toRawEvent(): RawEvent = RawEvent(id, pubkey, createdAt, kind, tagsJson(), content, sig)
 
-    /**
-     * [content] as the JSON string literal [CONTENT_JSON] stores, or null when it is storable
-     * as it is — the common case by far, so the feed writes `content` exactly as before. See
-     * [CONTENT_JSON].
-     */
-    private fun contentLiteral(): String? = if (StorableText.isStorable(content)) null else JsonChars(content.length + content.length / 8 + 16).storableString(content).toString()
-
     /** [tags] as the JSON text the `tags` field stores: `[["p","…"],…]`, escaped as kotlinx escapes it (see [JsonChars]). */
-    fun tagsJson(): String = JsonChars(tags.sumOf { tag -> 2 + tag.sumOf { it.length + 3 } } + 2).tags(tags).toString()
+    fun tagsJson(): String = JsonChars(tags.sumOf { tag -> 2 + tag.sumOf { it.length + 3 } } + 2).tags(tags, allTagValuesStorable).toString()
 
     companion object {
         /**

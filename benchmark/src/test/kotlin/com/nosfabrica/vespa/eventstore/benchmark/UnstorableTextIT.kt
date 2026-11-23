@@ -125,9 +125,9 @@ class UnstorableTextIT {
         private val TEXTS =
             listOf(
                 "linebreak\ndoublequote\"backslash\\carraigereturn\rtab\tbackspace\bformfeed\u000cend",
-                "﷑􏿲",
+                "\uFDD1\uDBFF\uDFF2",
                 "\u0000\u0001\u0002\u0003\u0004\u0005\u0006\u0007 \u000b \u000e \u000f \u0010\u0011\u0012\u0013\u0014\u0015\u0016 /",
-                "astral noncharacter 􏿿 and an emoji 😀",
+                "astral noncharacter \uDBFF\uDFFF and an emoji \uD83D\uDE00",
             )
 
         private fun dockerAvailable(): Boolean = runCatching { DockerClientFactory.instance().isDockerAvailable }.getOrDefault(false)

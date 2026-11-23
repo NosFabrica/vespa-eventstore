@@ -695,14 +695,18 @@ untouched field as itself, uncopied. Neither is visible on the real corpus —
 this is insurance against a corpus that changes shape, bought at no cost to the
 one we have.
 
-### `VespaText.firstIllegalCodePoint`: reading a char before a code point (2026-09-01)
+### `StorableText.firstUnstorableCodePoint`: reading a char before a code point (2026-09-01)
 
-The loop above is the hottest on the write path: every stored event runs it over
-its whole `content` and every tag value (`firstIllegalField`, the admission
-check) and again over each derived search field (`sanitize`), so a kind 1 pays
-it at least twice over the same text. On this corpus NOTHING is ever rejected —
-0 of 10 961 events carry an illegal code point — so the scan always runs to
-completion and no early exit ever helps.
+Measured as `VespaText.firstIllegalCodePoint`, which held the loop until
+NosFabrica/vespa-eventstore#215 moved it to `engine/text/StorableText`. Then it
+ran at admission over the whole `content` and every tag value
+(`firstIllegalField`, which refused such an event) and again over each derived
+search field (`sanitize`). Since #215 the document writer runs it once per
+document over the content and the tag values (`EventDoc`, which stores such an
+event escaped), the store's derived-field scrub still runs it per derived field,
+and admission runs it only on an addressable's `d` and the owner. On this corpus
+NOTHING is ever rejected — 0 of 10 961 events carry an illegal code point — so
+the scan always runs to completion and no early exit ever helps.
 
 Measured over **64.5M characters of that corpus's real content** (47 % pure
 ASCII, 13 % carrying astral emoji), one variant per JVM to keep C2's profile

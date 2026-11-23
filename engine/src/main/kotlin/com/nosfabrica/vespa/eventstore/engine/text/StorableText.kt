@@ -76,6 +76,27 @@ object StorableText {
     fun isStorable(s: String): Boolean = firstUnstorableCodePoint(s) == null
 
     /**
+     * Whether [s] holds an unpaired surrogate: a UTF-16 half with no UTF-8 encoding, so no
+     * serializer can hand it back as the bytes that were signed (one that writes non-ASCII raw
+     * turns it into '?'). The document writer could store it escaped, but it could not be
+     * served exactly, so the store refuses such an event rather than serve it altered. Same
+     * fast band as [firstUnstorableCodePoint]: below U+D800 a char is never a surrogate.
+     */
+    fun hasLoneSurrogate(s: String): Boolean {
+        var i = 0
+        while (i < s.length) {
+            val c = s[i]
+            if (c < '\uD800' || c > '\uDFFF') {
+                i++
+                continue
+            }
+            if (c > '\uDBFF' || i + 1 >= s.length || s[i + 1] !in '\uDC00'..'\uDFFF') return true
+            i += 2
+        }
+        return false
+    }
+
+    /**
      * Mirrors Vespa's `com.yahoo.text.Text.isTextCharacter` (not on our
      * classpath), checked against a live engine code point by code point — the
      * XML 1.0 spec gets two cases wrong in the direction that drops storable

@@ -114,7 +114,7 @@ internal class BulkRecordInsert(
 
                 // Still far cheaper than the feed client throwing mid-batch and
                 // taking every event beside it down. See [VespaText.refuses].
-                VespaText.refuses(e, index) -> {
+                VespaText.refuses(e, index::storesContent) -> {
                     outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.UNSTORABLE_TEXT)
                 }
             }
