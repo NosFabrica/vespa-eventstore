@@ -1296,9 +1296,24 @@ class NostrSemanticsStore(
      * round re-matching and re-sorting everything left (O(N² / page)) and
      * reading full documents; every write in the process queued behind it.
      *
-     * Each batch takes BOTH locks, for the reason on [delete]: NIP-40 expiry
-     * does not ask what kind it is reaping, so it can reap cards, and their
-     * removal is a trust reaction that must not race the drain.
+     * TWO PASSES over one fixed cutoff ([Deletions.sweepWalk] each):
+     *
+     *  1. The TRUST kinds (cards, provider lists) under BOTH locks per batch,
+     *     for the reason on [delete]: their removal is a trust reaction — cells
+     *     removed, the crash marker written ahead — that must not race the
+     *     drain or a card's own projection.
+     *  2. Everything else under `writes` ALONE per batch. The removal of any
+     *     other kind is no trust reaction at all (`TrustProjection.removeAll`
+     *     hands ids of other kinds straight to the index), so it needs what a
+     *     plain insert needs and no more. Each batch first looks its ids up
+     *     for the trust kinds, inside its hold, and spares any it finds — a
+     *     card that landed after pass 1 walked past it, left for the next
+     *     sweep. That lookup is sound for the rest of the hold: an event is
+     *     immutable per id, and nothing can store a trust-kind document
+     *     without `writes`, which this batch holds. The gate is never taken
+     *     after `writes` (pass 1 goes through [WriteLocks.gated], pass 2 takes
+     *     no gate), so the lock order holds. What this buys: the plain bulk of
+     *     a backlog neither waits for a trust drain nor stalls one.
      *
      * WHY RELEASING BETWEEN BATCHES IS SAFE HERE, and is not for every sweep:
      *
@@ -1316,7 +1331,7 @@ class NostrSemanticsStore(
      *    admission depends on which expired events are left — a supersession,
      *    tombstone or vanish check against an expired doc already had both
      *    answers depending on when the periodic sweep last ran.
-     *  - The cutoff is taken ONCE, before the walk, so the match set is
+     *  - The cutoff is taken ONCE, before either pass, so the match set is
      *    fixed: an event only joins it with an expiration at or before the
      *    sweep's start, and every admission path rejects an event already
      *    expired by THIS STORE'S clock ([nowSecs], the clock the cutoff is
@@ -1324,7 +1339,7 @@ class NostrSemanticsStore(
      *    the per-event path, the mixed replay and a transaction all apply,
      *    and the bulk planner's stage A). The only arrivals that can still
      *    match are writes whose expiry check passed BEFORE the cutoff and
-     *    commit after it — finitely many, and the walk is a single descent of
+     *    commit after it — finitely many, and each walk is a single descent of
      *    `created_at`, so the sweep terminates. Such an arrival is swept by
      *    this pass only if it lands below the walk's cursor before the walk
      *    reaches it; one that lands above the cursor, or after the walk, is
@@ -1348,7 +1363,10 @@ class NostrSemanticsStore(
             // `complete`, like every read that feeds a write: a short walk is a sweep that reports done.
             val due = EventQuery(expiresBefore = nowSecs() + 1, complete = true)
             val page = expirySweepPage ?: StoreKnobs.expirySweepPage.value
-            deletions.sweepWalk(due, page) { batch -> locks.gated(trust = true, WriteLocks.SWEEP, WriteLocks.SWEEP_TRUST) { batch() } }
+            deletions.sweepWalk(due.copy(kinds = TrustProjection.TRUST_KINDS), page) { batch ->
+                locks.gated(trust = true, WriteLocks.SWEEP, WriteLocks.SWEEP_TRUST) { batch() }
+            }
+            deletions.sweepWalk(due, page, sparing = TrustProjection.TRUST_KINDS) { batch -> locks.underWrites(WriteLocks.SWEEP) { batch() } }
         }
     }
 

@@ -255,6 +255,11 @@ internal class Deletions(
      * removed since by someone else is a no-op remove. A filter delete or a
      * vanish needs the read and the write in one hold; they use [sweep].
      *
+     * [sparing] names kinds this walk must leave stored: each batch first
+     * looks its ids up for them, inside the hold, and removes only the rest.
+     * The expiry sweep's plain pass spares the trust kinds, which it may not
+     * remove without the trust gate.
+     *
      * Cancellation is checked before every batch. The first batch's removes
      * are checked to have landed (an acked remove is visible, the EventIndex
      * contract): a broken engine then fails the sweep loudly instead of
@@ -265,6 +270,7 @@ internal class Deletions(
     suspend fun sweepWalk(
         q: EventQuery,
         page: Int,
+        sparing: List<Int> = emptyList(),
         hold: suspend (suspend () -> Unit) -> Unit,
     ) {
         require(page >= 1) { "sweep page $page is below 1" }
@@ -274,11 +280,22 @@ internal class Deletions(
                 currentCoroutineContext().ensureActive()
                 val ids = batch.map { it.id }
                 hold {
-                    index.removeAll(ids)
-                    if (!verified) {
-                        val survived = index.existingIds(ids)
-                        check(survived.isEmpty()) { "sweep is not landing: ${survived.size} of ${ids.size} removed ids for $q are still stored" }
-                        verified = true
+                    val spared =
+                        if (sparing.isEmpty()) {
+                            emptySet()
+                        } else {
+                            index
+                                .search(EventQuery(ids = ids, kinds = sparing, limit = ids.size, complete = true, ranking = EventYql.RANK_UNRANKED))
+                                .mapTo(HashSet()) { it.id }
+                        }
+                    val doomed = if (spared.isEmpty()) ids else ids.filterNot { it in spared }
+                    if (doomed.isNotEmpty()) {
+                        index.removeAll(doomed)
+                        if (!verified) {
+                            val survived = index.existingIds(doomed)
+                            check(survived.isEmpty()) { "sweep is not landing: ${survived.size} of ${doomed.size} removed ids for $q are still stored" }
+                            verified = true
+                        }
                     }
                 }
             }

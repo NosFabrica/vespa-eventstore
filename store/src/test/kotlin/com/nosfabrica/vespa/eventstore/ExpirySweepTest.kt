@@ -44,6 +44,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -242,8 +243,8 @@ class ExpirySweepTest {
         }
 
     /**
-     * A CARD takes the trust gate before `writes`, and the sweep holds both
-     * per page — so a card publish waits on the GATE, and must
+     * A CARD takes the trust gate before `writes`, and the sweep's trust pass
+     * holds both per page — so a card publish waits on the GATE, and must
      * still get it (and then `writes`) between two pages rather than after
      * the sweep.
      */
@@ -256,7 +257,7 @@ class ExpirySweepTest {
             val store = store(parking)
             val named = list10040()
             store.insert(named)
-            // Expired cards too, so the sweep's pages are trust reactions.
+            // Expired CARDS, so the parked page is the trust pass's, holding the gate.
             store.batchInsert((1..CORPUS).map { card(subject = 100 + it, expiresAt = realNow + DUE) } + (1..CORPUS).map { expiringNote(at = 1_000L + it) })
             sweepTime()
             val publish = card(subject = 7, at = 9_000L)
@@ -522,11 +523,64 @@ class ExpirySweepTest {
             val walks = above.walks.toList()
 
             assertEquals(1, stored(below).size, "only the provider list is left")
-            assertEquals(1, walks.size, "one walk: $walks")
-            assertEquals(realNow + SWEEP_AT + 1, walks.single().expiresBefore, "on the one cutoff")
+            assertEquals(2, walks.size, "one walk per pass: $walks")
+            assertEquals(TRUST_KINDS, walks.first().kinds, "the trust kinds first")
+            assertTrue(walks.all { it.expiresBefore == realNow + SWEEP_AT + 1 }, "both on the one cutoff: $walks")
             assertTrue(reads.none { it.expiresBefore != null }, "no page re-queries the due set: $reads")
             val offenders = reads.filterNot { it.ids.isNotEmpty() && it.kinds == TRUST_KINDS }.map { "ids=${it.ids.size} kinds=${it.kinds} search=${it.search} tags=${it.tags} authors=${it.authors.size} limit=${it.limit}" }
             assertTrue(offenders.isEmpty(), "every document read is an id lookup of the trust kinds: $offenders")
+        }
+
+    /**
+     * A plain-kind backlog is swept under `writes` ALONE: with the trust gate
+     * held elsewhere (a drain, a reconcile), the sweep of notes still
+     * finishes. A card in the backlog is the one thing that waits for it.
+     */
+    @Test
+    fun `plain kinds are swept while the trust gate is held elsewhere`() =
+        runBlocking {
+            val inner = InMemoryEventIndex()
+            val store = store(projection(inner, InMemoryReputationIndex()))
+            store.batchInsert((1..CORPUS).map { expiringNote(at = 1_000L + it) })
+            sweepTime()
+
+            coroutineScope {
+                val gateHeld = CompletableDeferred<Unit>()
+                val release = CompletableDeferred<Unit>()
+                val holder =
+                    async {
+                        store.withWriteLock {
+                            gateHeld.complete(Unit)
+                            release.await()
+                        }
+                    }
+                gateHeld.await()
+                withTimeout(5_000) { store.deleteExpiredEvents() }
+                assertEquals(emptySet(), stored(inner), "every note swept while the gate was held")
+
+                val dueCard = card(subject = 1, expiresAt = clock + 1)
+                release.complete(Unit)
+                holder.await()
+                store.insert(dueCard)
+                clock += 10
+                val gateAgain = CompletableDeferred<Unit>()
+                val releaseAgain = CompletableDeferred<Unit>()
+                val holderAgain =
+                    async {
+                        store.withWriteLock {
+                            gateAgain.complete(Unit)
+                            releaseAgain.await()
+                        }
+                    }
+                gateAgain.await()
+                val sweep = async { store.deleteExpiredEvents() }
+                repeat(10) { yield() }
+                assertFalse(sweep.isCompleted, "a due card waits for the gate")
+                releaseAgain.complete(Unit)
+                holderAgain.await()
+                withTimeout(5_000) { sweep.await() }
+                assertEquals(emptySet(), stored(inner), "and is swept once it is free")
+            }
         }
 
     /** An expiry sweep whose removes are acked and dropped FAILS rather than reporting done. */
