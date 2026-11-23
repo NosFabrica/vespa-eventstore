@@ -95,7 +95,21 @@ internal class BulkMixedInsert(
         // its re-offer would come back a duplicate.
         val (guardsAdded, records) = added.partition { it.kind == DeletionRequestEvent.KIND || it.kind == RequestToVanishEvent.KIND }
         if (records.isNotEmpty()) index.putAll(records)
-        if (removed.isNotEmpty()) index.removeDocs(removed)
+        // On an ADDRESS-KEYED index a record put above already replaced its
+        // address's stored version in place, and removing that version — by
+        // its address, the only docid it has — removed the WINNER: the
+        // address ended empty while the event was answered Accepted (a kind 5
+        // and a newer version of a stored address in one batch). So a version
+        // whose address a record was just put at is not removed; every other
+        // removal (an erased address, a deleted id) still is.
+        val sweep =
+            if (index.supersedesViaPut && records.isNotEmpty()) {
+                val putAt = records.mapNotNullTo(HashSet()) { it.addressOrNull() }
+                removed.filter { it.addressOrNull() !in putAt }
+            } else {
+                removed
+            }
+        if (sweep.isNotEmpty()) index.removeDocs(sweep)
         // The vanishes' erase of what the snapshot never held. Per owner, the
         // newest ADMITTED vanish covering this relay decides it: each one
         // erases the owner's stored history up to its own created_at, so for

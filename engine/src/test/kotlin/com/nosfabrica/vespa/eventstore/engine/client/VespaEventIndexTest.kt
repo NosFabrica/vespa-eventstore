@@ -1763,6 +1763,34 @@ class VespaEventIndexTest {
         }
 
     /**
+     * AN ADDRESS-KEYED FALLBACK SUPERSESSION KEEPS ITS WINNER. A doc whose id
+     * cannot go into the engine's test-and-set condition (not 64 hex) takes
+     * the port's read-then-supersede instead, and that put the winner at the
+     * address's docid and then removed the replaced version BY its docid —
+     * the same address — deleting the winner it had just written.
+     */
+    @Test
+    fun `an address-keyed putIfNewer that falls back to reading keeps its winner`() =
+        runBlocking {
+            // An engine that stores a replaceable AT its address, as Vespa does under address keying.
+            val keyed = MockVespaEngine(InMemoryEventIndex(supersedesViaPut = true))
+            val idx = VespaEventIndex(keyed.url, addressKeyed = true)
+            try {
+                val pk = "c4".repeat(32)
+                val old = doc(kind = 0, pubkey = pk, at = 1_700_000_000L)
+                idx.put(old)
+                val winner = old.copy(id = "not-hex-${old.id}", createdAt = 1_700_000_100L)
+
+                assertTrue(idx.putIfNewer(winner), "the newer version wins")
+
+                assertEquals(listOf(winner.id), idx.search(EventQuery(kinds = listOf(0), authors = listOf(pk))).map { it.id }, "the address holds the winner")
+            } finally {
+                idx.close()
+                keyed.stop()
+            }
+        }
+
+    /**
      * ADDRESS-KEYED REMOVES RESOLVE THEIR DOCIDS IN ONE QUERY. A replaceable
      * lives at its address, so removing by event id has to read the document
      * to learn where it is — and that read was one `id in ("<id>")` search PER

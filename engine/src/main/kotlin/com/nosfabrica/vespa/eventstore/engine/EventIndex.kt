@@ -40,8 +40,16 @@ interface EventIndex : AutoCloseable {
      * True when the engine enforces replaceable/addressable supersession via
      * [putIfNewer]'s address-keyed conditional put (the bulk path then skips
      * its version-read stage). Default false: read-then-supersede. A decorator
-     * that REACTS to writes (the trust projection) intentionally keeps this
-     * false so its hooks see both old and new versions; see [putIfNewer].
+     * forwards its inner index's answer.
+     *
+     * True also says WHERE a version lives: at its NIP-01 address, one
+     * document per address. So a [put] of a new version replaces the old one
+     * IN PLACE, and a removal of ANY version of that address ([removeDocs],
+     * which resolves each doc to its address) removes what the address holds
+     * NOW — the version just put, if one was. A caller that writes a winner
+     * and then sweeps the versions it replaced must not sweep, on such an
+     * index, an address it has just put: that deleted the winner, and the
+     * address ended empty under an Accepted outcome.
      */
     val supersedesViaPut: Boolean get() = false
 
@@ -439,7 +447,11 @@ interface EventIndex : AutoCloseable {
         // decorator's remove(id) pays to learn what it is removing (the trust
         // projection reads the doc to know what the removal invalidates), and
         // pipelines the removes of a drift-repair address with N stale versions.
-        if (existing.isNotEmpty()) removeDocs(existing.map { doc.versionStub(it) })
+        // NOT on an address-keyed index (an engine that falls back here for a
+        // doc its conditional put cannot express): the put above replaced the
+        // address's one document in place, and removing a version by address
+        // would remove the winner ([supersedesViaPut]).
+        if (existing.isNotEmpty() && !supersedesViaPut) removeDocs(existing.map { doc.versionStub(it) })
         return true
     }
 }

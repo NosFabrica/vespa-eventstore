@@ -661,8 +661,9 @@ class MockVespaEngine(
 
             method == "DELETE" && path.startsWith(docPrefix) -> {
                 documentRemovesCount.incrementAndGet()
-                removedDocIds += java.net.URLDecoder.decode(path.removePrefix(docPrefix), Charsets.UTF_8)
-                runBlocking { inner.remove(path.removePrefix(docPrefix)) }
+                val docId = URLDecoder.decode(path.removePrefix(docPrefix), Charsets.UTF_8)
+                removedDocIds += docId
+                runBlocking { removeAt(docId) }
                 Reply(200, """{"id":"$path"}""")
             }
 
@@ -1127,6 +1128,22 @@ class MockVespaEngine(
 
     /** The stored `tags` field exactly as a feed wrote it (EventDoc.indexFields serializes the tag array to one JSON string). */
     private fun tagsJson(doc: EventDoc): String = JsonArray(doc.tags.map { tag -> JsonArray(tag.map(::JsonPrimitive)) }).toString()
+
+    /**
+     * The engine's `remove(docid)`. Over an ADDRESS-KEYED [inner] (a reference
+     * built with `supersedesViaPut = true`, which stores a replaceable at its
+     * address as the engine does) an address docid removes whatever version
+     * the address holds NOW — not an event id, which is all the reference's
+     * own `remove` resolves.
+     */
+    private suspend fun removeAt(docId: String) {
+        val parts = docId.split(":")
+        if (!inner.supersedesViaPut || parts.size < 2) return inner.remove(docId)
+        inner
+            .search(EventQuery(authors = listOf(parts[1])))
+            .firstOrNull { it.addressOrNull() == docId }
+            ?.let { inner.remove(it.id) }
+    }
 
     /** Serialises [conditionalPut]'s check-and-write, the atomicity a content node gives a test-and-set put. */
     private val conditionalPuts = Any()

@@ -125,15 +125,16 @@ class BulkMixedInsertTest {
         batch: List<Event>,
         writers: WriterTopology,
         sweepPage: Int = 10_000,
+        addressKeyed: Boolean = false,
     ): List<IEventStore.InsertOutcome> =
         runBlocking {
             assertTrue(batch.size >= 16 && batch.any { it is DeletionRequestEvent || it is RequestToVanishEvent }, "the batch must take the bulk mixed path")
-            val bulkIndex = InMemoryEventIndex()
+            val bulkIndex = InMemoryEventIndex(supersedesViaPut = addressKeyed)
             val bulkStore = NostrSemanticsStore(bulkIndex, relay = relayUrl, writers = writers, sweepPage = sweepPage)
             prelude.forEach { bulkStore.insert(it) }
             val bulk = bulkStore.batchInsert(batch)
 
-            val seqIndex = InMemoryEventIndex()
+            val seqIndex = InMemoryEventIndex(supersedesViaPut = addressKeyed)
             val seqStore = NostrSemanticsStore(seqIndex, relay = relayUrl, writers = writers, sweepPage = sweepPage)
             prelude.forEach { seqStore.insert(it) }
             val sequential =
@@ -302,4 +303,37 @@ class BulkMixedInsertTest {
                 "the replaced version must still be stored",
             )
         }
+
+    /**
+     * ADDRESS-KEYED, a mixed batch that supersedes a stored address keeps its
+     * winner. The engine stores a replaceable at its address, so the winner's
+     * put replaced the old version in place, and the sweep that followed —
+     * removing the old version by its docid, which is that same address —
+     * deleted the winner: the address ended EMPTY while the batch answered
+     * Accepted. The reference keyed everything by id whatever its flag said,
+     * so no unit test could see it; it keys by address now.
+     */
+    @Test
+    fun `an address-keyed mixed batch keeps the winner of every address it supersedes`() {
+        for (addressKeyed in listOf(false, true)) {
+            val oldPost = article(alice, "post", at = 100)
+            val oldProfile = Event(id(), alice, 110, 0, emptyArray(), "{}", "")
+            val newPost = article(alice, "post", at = 200)
+            val newProfile = Event(id(), alice, 210, 0, emptyArray(), "{\"name\":\"new\"}", "")
+            val batch = (1..14).map { note(bob) } + listOf(newPost, newProfile, deletion(bob, ids = listOf("dd".repeat(32))))
+            val outcomes = assertMixedMatchesSequential(prelude = listOf(oldPost, oldProfile), batch = batch, writers = WriterTopology.SINGLE_WRITER, addressKeyed = addressKeyed)
+            assertEquals(IEventStore.InsertOutcome.Accepted, outcomes[batch.indexOf(newPost)], "addressKeyed=$addressKeyed")
+            runBlocking {
+                val index = InMemoryEventIndex(supersedesViaPut = addressKeyed)
+                val store = NostrSemanticsStore(index, relay = relayUrl, writers = WriterTopology.SINGLE_WRITER)
+                listOf(oldPost, oldProfile).forEach { store.insert(it) }
+                store.batchInsert(batch)
+                assertEquals(
+                    setOf(newPost.id, newProfile.id),
+                    index.search(EventQuery(kinds = listOf(0, LongFormContentEvent.KIND), authors = listOf(alice))).map { it.id }.toSet(),
+                    "addressKeyed=$addressKeyed: each superseded address holds its winner",
+                )
+            }
+        }
+    }
 }
