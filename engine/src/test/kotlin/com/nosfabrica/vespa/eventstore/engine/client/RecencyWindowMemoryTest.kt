@@ -25,6 +25,7 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 
 /** What [RecencyWindowMemory] keys a shape by, how long it remembers, and how much. */
@@ -106,5 +107,25 @@ class RecencyWindowMemoryTest {
         assertEquals(1, RecencyWindowMemory.ageBucket(86_400))
         assertEquals(2, RecencyWindowMemory.ageBucket(3 * 86_400L))
         assertEquals(8, RecencyWindowMemory.ageBucket(180 * 86_400L))
+    }
+
+    /**
+     * The key FRAMES every value: a tag value, a tag name or a search term is free text, and
+     * joined with ", " a one-value filter could key exactly like a two-value one — a cheap REQ
+     * matching nothing then taught a busy shape Narrow.
+     */
+    @Test
+    fun `values that join alike are different shapes`() {
+        val now = 1_800_000_000L
+
+        fun shape(q: EventQuery) = RecencyWindowMemory.shapeOf(q, now, now)
+        assertNotEquals(
+            shape(EventQuery(kinds = listOf(1), tags = mapOf("t" to listOf("bitcoin, nostr")))),
+            shape(EventQuery(kinds = listOf(1), tags = mapOf("t" to listOf("bitcoin", "nostr")))),
+        )
+        assertNotEquals(
+            shape(EventQuery(kinds = listOf(1), tags = mapOf("t" to listOf("a"), "u" to listOf("b")))),
+            shape(EventQuery(kinds = listOf(1), tags = mapOf("t" to listOf("a], u=[b")))),
+        )
     }
 }

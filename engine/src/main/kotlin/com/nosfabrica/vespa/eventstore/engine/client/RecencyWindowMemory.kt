@@ -197,19 +197,24 @@ internal class RecencyWindowMemory(
             return this
         }
 
+        /**
+         * [s] LENGTH-PREFIXED: a value is free text (a tag value, a search
+         * term), so no separator can frame it — joined with ", ", the one-tag
+         * filter `#t:["bitcoin, nostr"]` keyed exactly like the two-tag
+         * `#t:["bitcoin","nostr"]`, and a cheap REQ matching nothing could teach
+         * a busy shape Narrow (on a gated lens, the ~455x slower shipped read).
+         */
+        fun framed(s: String): ShapeDigest = text(s.length.toString()).text(":").text(s)
+
         fun items(values: List<Any>): ShapeDigest {
-            text("[")
-            values.forEachIndexed { i, v -> (if (i > 0) text(", ") else this).text(v.toString()) }
+            text(values.size.toString()).text("[")
+            values.forEach { framed(it.toString()) }
             return text("]")
         }
 
         fun tags(tags: Map<String, List<String>>): ShapeDigest {
-            text("{")
-            var first = true
-            tags.toSortedMap().forEach { (name, values) ->
-                (if (first) this else text(", ")).text(name).text("=").items(values.sorted())
-                first = false
-            }
+            text(tags.size.toString()).text("{")
+            tags.toSortedMap().forEach { (name, values) -> framed(name).items(values.sorted()) }
             return text("}")
         }
 
@@ -244,7 +249,7 @@ internal class RecencyWindowMemory(
             d.text("|n=").items(q.notSearch.sorted())
             // Raw, not normalized: two spellings of one term are two shapes, which
             // costs at most a learning read, never a page.
-            d.text("|s=").text(q.search?.trim().orEmpty())
+            d.text("|s=").framed(q.search?.trim().orEmpty())
             d.text("|p=").items(q.phrases.sorted())
             d.text("|g=").text(gated.toString())
             if (gated) {
