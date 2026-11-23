@@ -166,6 +166,17 @@ tasks.register<JavaExec>("extractBench") {
     workingDir = rootDir
 }
 
+// Price the live gate's shared words memo: N searching gates, walked the way fan-out runs
+// against a walk where every call misses (the per-gate cost it replaced). See LiveGateBench.kt.
+tasks.register<JavaExec>("liveGateBench") {
+    group = "verification"
+    description = "Time LiveGate.admitsNow over N search gates, shared words vs read per gate (optional --corpus, --gates 1,10,100,500)"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.bench.LiveGateBench")
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "3g"
+    workingDir = rootDir
+}
+
 tasks.register<JavaExec>("corpusLoad") {
     group = "verification"
     description = "Load the deterministic NostrCorpus into a live store (setup for the workload benches)"

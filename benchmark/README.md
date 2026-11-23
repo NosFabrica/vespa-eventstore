@@ -695,6 +695,38 @@ untouched field as itself, uncopied. Neither is visible on the real corpus —
 this is insurance against a corpus that changes shape, bought at no cost to the
 one we have.
 
+### Live-gate words: read once per event, not once per subscription (2026-11-23)
+
+Every live subscription has its own `LiveGate`, and each searching one checks a
+matching event's words. Before, every gate read them on every call — the
+extraction, the join, the lower-casing and the tokenization — so a note reaching
+N open NIP-50 feeds paid that N times on the fan-out path. The store's gates now
+share one `mapping/LiveWords`: the words of the last event each thread asked
+about, found by identity (quartz's `LiveEventStore` hands every subscription
+the same `Event`; `LiveGateTest` pins that through its real fan-out).
+
+`liveGateBench` walks the SAME gates two ways: event-major, the way fan-out runs
+(one read per event, every other gate a hit), and gate-major, where no two
+consecutive calls see the same event, so every call reads the words, which is what
+each gate paid per call before. Both walks must give every (gate, event) the same
+answer or the run fails. 2,000 synthetic notes (mean 216 content chars),
+anonymous one-word `kinds:[1]` searches, `admitsNow`, medians of 7 interleaved
+rounds after a warm-up, on a 4-core cloud container. Two runs:
+
+| gates | words per gate | shared | |
+|---:|---:|---:|---:|
+| 1 | 1.5-1.6 µs/event | 1.4-1.5 µs/event | 1.1x |
+| 10 | 16.8-17.8 | 2.6-2.7 | 6.5-6.7x |
+| 100 | 189-195 | 11.9-12.0 | 15.8-16.5x |
+| 500 | 913-957 | 51.6-54.1 | 16.9-18.6x |
+
+What is left (~0.1 µs per gate) is each rule's own `Filter.match` and its terms
+scanned against the words, per gate by nature. Not measured: a real note corpus
+(no kind-1 capture ships here; `--corpus` takes one), or the relay under
+`live-feeds.mjs`. The memo holds nothing past 16 Ki content chars
+(`LiveWords.MAX_MEMO_CONTENT`): a long-form article streamed live is still read
+per gate, as before.
+
 ### `VespaText.firstIllegalCodePoint`: reading a char before a code point (2026-09-01)
 
 The loop above is the hottest on the write path: every stored event runs it over
@@ -1980,7 +2012,7 @@ per batch next to the total.
 
 Beyond the head-to-head suite (`:benchmark:run`), these tasks each own one
 performance surface, expect `VESPA_URL` (default `http://localhost:8080`) —
-`extractBench` is the exception, it needs no engine at all — and
+`extractBench` and `liveGateBench` are the exceptions, they need no engine at all — and
 carry their own CORRECTNESS gates — a wrong result set fails the run, so every
 timing is also a proof:
 
@@ -1993,6 +2025,7 @@ timing is also a proof:
 | `corpusLoad` | setup: loads the deterministic `NostrCorpus` a workload bench samples its filters from | 30k mixed events (`BENCH_SIZE`) | — |
 | `dedupProbe` | the bulk-dedup existence check: full-summary vs summary-free variants at mirror hit rates, chunk × fan-out curves, REQ latency under dedup load | reuses a `corpusLoad` corpus (ids sampled off the live store) | every variant must return the identical member set |
 | `extractBench` | the write path's own derivation (`SearchExtractors`), decomposed by stage, with `--badges N` for the every-event-wears-one corpus | any captured JSON export (`--corpus`), no Vespa | — |
+| `liveGateBench` | `LiveGate.admitsNow` over N searching gates: the shared words memo against a walk where every call reads the words (the per-gate cost it replaced) | synthetic notes, or any captured JSON export (`--corpus`), no Vespa | both walks must admit identically |
 | `searchTrace` | one NIP-50 term, split per clause family and per rank profile (ablations + Vespa's blueprint cost) | any loaded store — capture one with `exportLoad` | every row prints `totalCount`, so a variant that got fast by matching less shows it |
 | `relayE2EProbe` | what a client sees: REQ → EOSE over a relay WebSocket beside the engine client on the same filters, and `NostrSemanticsStore.rawQuery` in-process against the engine under it | any loaded store and (for `wire`) a relay pointed at it; read-only | the relay's page and the store's page must equal the engine's |
 | `recencyLoadProbe` | the recency strategies under load: closed-loop throughput at rising concurrency on a relay-shaped mix, and the same reads while a writer lands events on a live clock (engine CPU from `docker stats`, Vespa's match/summary split per REQ) | any loaded store; its writes are TEMPORARY — every id logged before its put, all removed at the end, `BENCH_CLEANUP_ONLY=1` to finish an interrupted run | sampled pages identical across variants with the writes in place; zero probe events left by id |
