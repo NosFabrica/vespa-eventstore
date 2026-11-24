@@ -274,6 +274,10 @@ exists for.
   byte spreads them (min/mean/max), how many reputation documents score a subject with no
   stored event, and a bucket map that splits the EVENTS evenly for each cluster count in
   `BENCH_SPLITS`. On production the event walk takes hours: run it off-peak.
+- A bucket cannot be split below one author. One very prolific author, a bot say, makes a hot
+  bucket that no map can balance. On the synthetic corpus the report read bucket `ff` at 8.6×
+  the mean, because the most prolific Zipf author's key falls there. Read the report's
+  min/mean/max before trusting an even split of authors to be an even split of load.
 
 ## The trust copy's size (measured 2026-11-24)
 

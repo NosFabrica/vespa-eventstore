@@ -37,7 +37,6 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
@@ -130,10 +129,15 @@ class AuthorShardsMoveIT {
 
                         val seq = AtomicInteger(10_000)
                         val writes = AtomicInteger()
+                        // Stopped by this flag, never by cancel(): a cancellation can land after a write
+                        // reached Vespa and before the oracle line under it, leaving the two apart.
+                        val writing =
+                            java.util.concurrent.atomic
+                                .AtomicBoolean(true)
                         val load =
                             kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
                                 val rnd = Random(9)
-                                while (isActive) {
+                                while (writing.get()) {
                                     val author = if (rnd.nextBoolean()) moving[rnd.nextInt(moving.size)] else AUTHORS[rnd.nextInt(AUTHORS.size)]
                                     when (rnd.nextInt(10)) {
                                         in 0..5 -> {
@@ -185,7 +189,7 @@ class AuthorShardsMoveIT {
                             val removed = mv.cleanup()
                             println("move: cleanup removed $removed from the old owner")
 
-                            load.cancel()
+                            writing.set(false)
                             load.join()
                             println("move: ${writes.get()} writes ran during the move")
                             awaitSettled(after, oracle)
