@@ -367,3 +367,20 @@ tasks.register<JavaExec>("bucketReport") {
     mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.load.BucketReport")
     maxHeapSize = System.getenv("BENCH_HEAP") ?: "3g"
 }
+
+// What the trust copy costs per cell, and how its disk grows under churn. See TrustFootprintProbe.kt.
+tasks.register<JavaExec>("trustFootprintProbe") {
+    group = "verification"
+    description = "Reputation memory per cell (float vs bfloat16 follower counts) and disk growth under cell churn, against a fresh Vespa"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.probe.TrustFootprintProbe")
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "3g"
+}
+
+tasks.register<JavaExec>("oneClusterAbProbe") {
+    group = "verification"
+    description = "One-cluster read mix for an A/B between two versions (temporary)"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.probe.OneClusterAbProbe")
+    maxHeapSize = "3g"
+}
