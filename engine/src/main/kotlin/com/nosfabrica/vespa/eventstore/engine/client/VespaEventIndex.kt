@@ -2278,6 +2278,16 @@ class VespaEventIndex(
         return authors
     }
 
+    /**
+     * Every stored event's author, page by page, from a visit projecting only `pubkey`: the corpus
+     * as the author shards' buckets see it (`bucketReport`). Read-only, and a full walk — on a
+     * production corpus, hours of background visiting, so an operator's tool and never a serving
+     * path. A false return from [onPage] stops the walk.
+     */
+    suspend fun visitAuthors(onPage: suspend (List<String>) -> Boolean) {
+        visits.pages(EVENT_DOCTYPE, "$EVENT_DOCTYPE:pubkey") { documents -> onPage(documents.mapNotNull { it.fields?.pubkey }) }
+    }
+
     // ---- counts and groupings -----------------------------------------------
 
     /**
@@ -2705,7 +2715,26 @@ class VespaEventIndex(
         } else if (vq.completeCoverage) {
             root.requireFull()
         }
-        return root
+        return if (authorClusters.sharded) distinctHits(root) else root
+    }
+
+    /**
+     * [root] with a document met twice served once: the cut-over of a bucket move ([BucketMove])
+     * leaves the old owner a copy until its cleanup, and a read naming both clusters meets it in
+     * each. Keyed by the event id, or the pubkey on a reputation hit; a hit carrying neither is
+     * kept. Never runs on one cluster, where no document can be stored twice.
+     */
+    private fun distinctHits(root: SearchRoot): SearchRoot {
+        if (root.children.size < 2) return root
+        val seen = HashSet<String>(root.children.size * 2)
+        val kept =
+            root.children.filter { h ->
+                h.fields
+                    ?.let { f -> f.id.ifEmpty { f.pubkey } }
+                    ?.takeIf { it.isNotEmpty() }
+                    ?.let(seen::add) ?: true
+            }
+        return if (kept.size == root.children.size) root else SearchRoot(kept, root.coverage, root.fields, root.errors)
     }
 
     /**

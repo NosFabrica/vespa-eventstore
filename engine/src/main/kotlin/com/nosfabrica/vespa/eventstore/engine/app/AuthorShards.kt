@@ -170,6 +170,20 @@ object AuthorShards {
             index: Int,
         ): List<Int> = bucketsOf(index).filter { b -> next.owner[b] != index && next.also[b] != index }
 
+        /** The document-selection test that [value]'s bucket is one of [buckets] (no catch-all): what a move visits. */
+        fun bucketTest(
+            value: String,
+            buckets: Collection<Int>,
+        ): String {
+            require(buckets.isNotEmpty()) { "no buckets" }
+            val alternatives =
+                buckets
+                    .sorted()
+                    .groupBy { it / 16 }
+                    .map { (hi, bs) -> "${HEX[hi]}[${bs.joinToString("") { HEX[it % 16].toString() }}]" }
+            return "$value =~ \"^[$HEX]{$CHAR}(${alternatives.joinToString("|")})\""
+        }
+
         /**
          * The document-selection test that [value] (`event.pubkey`, `id.specific`) belongs to
          * cluster [index]: hex through [BUCKET_BYTE] with that byte among the cluster's buckets,
@@ -200,6 +214,34 @@ object AuthorShards {
                 }
             }
             return out.joinToString(",")
+        }
+
+        /**
+         * The buckets that change owner between this map and [to], each with its (from, to) owner:
+         * what a move copies. Refused unless this map and [to] are both at rest (no bucket received
+         * by a second cluster).
+         */
+        fun movesTo(to: BucketMap): Map<Int, Pair<Int, Int>> {
+            require(!moving && !to.moving) { "a move goes from a map at rest to a map at rest" }
+            return (0 until 256).filter { owner[it] != to.owner[it] }.associateWith { owner[it] to to.owner[it] }
+        }
+
+        /**
+         * The map WHILE a move to [to] fills its destinations: every bucket still served by its owner
+         * here, and each moving bucket also written to its owner in [to]. Its destinations must be
+         * NEW clusters, which serve nothing yet and so are pending (read by no one) for as long as
+         * this map is deployed; a move onto a cluster that already serves would be read twice.
+         */
+        fun overlapTo(to: BucketMap): BucketMap {
+            val moves = movesTo(to)
+            require(moves.isNotEmpty()) { "the two maps agree: nothing moves" }
+            val newClusters = clusters until to.clusters
+            require(moves.values.all { (_, dst) -> dst in newClusters }) {
+                "a move must go onto new clusters ($clusters..${to.clusters - 1}); a cluster that already serves would be read twice while it fills"
+            }
+            require(newClusters.all { c -> moves.values.any { it.second == c } }) { "every new cluster must receive buckets" }
+            val also = IntArray(256) { b -> moves[b]?.second ?: -1 }
+            return BucketMap(owner.copyOf(), also)
         }
 
         override fun equals(other: Any?): Boolean = other is BucketMap && owner.contentEquals(other.owner) && also.contentEquals(other.also)

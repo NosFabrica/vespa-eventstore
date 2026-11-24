@@ -23,7 +23,13 @@ Global means global *within a content cluster*, not within the deployment. So:
   `content{K-1}`.
 - **Shard key: the pubkey's middle byte**, byte 16 of 32 (hex characters 32..33). The ends of a
   key are not uniform: vanity keys are ground for a prefix (an npub that spells a word) or a
-  suffix. 256 buckets; shard `i` owns buckets `b` with `b * K / 256 == i` (contiguous runs).
+  suffix. 256 buckets.
+- **A bucket map decides which cluster owns which bucket** (`AuthorShards.BucketMap`,
+  `EngineTuning.authorBuckets` / `VESPA_AUTHOR_BUCKETS`, written `00-99=0,9a-ff=1`). An even
+  split of K (`authorShards`) is the map `b * K / 256`. An explicit map allows uneven splits
+  (3 + 2 nodes take 60/40) and moves of single buckets, so a new cluster takes only the buckets
+  given to it. Every sharded package records its map in `services.xml` as a comment, which is
+  how the deploy guard reads what each active cluster keeps.
   The selection requires lowercase hex THROUGH that byte (`^[0-9a-f]{32}(…)`), never "anything,
   then hex": it is evaluated by Java's regex when the container routes and by the content node's
   when garbage collection re-reads it, and the two disagree on what `.` matches (`\r`,
@@ -194,6 +200,81 @@ next to the processes' baseline here.
 re-split. Keep K at the number of hosts (or host groups) that need the reputation split, grow
 a cluster by adding nodes, and plan a K change as the migration below.
 
+## Moving buckets (measured, then built)
+
+Vespa never moves a document between clusters, and `garbage-collection="true"` makes a cluster
+delete whatever its selection stops covering. A move onto a NEW cluster is therefore a copy, a
+check, a switch of who serves, and a delete. Each Vespa behavior it relies on was checked
+first (Vespa 8, 2 clusters, one host):
+
+| behavior | measured |
+|---|---|
+| two clusters whose selections overlap | a write lands in **both**, events and reputation updates alike |
+| `?route=<cluster>` on a put or a remove | reaches **that cluster only**, whatever its selection says; a route that does not exist fails slowly (504) |
+| `condition=false&create=true` on a put | writes only where the document is **absent**; a present one is left as it was |
+| reading during the overlap with `from event` | the moving document shows **twice**; `from sources <serving>` + `model.restrict` does not |
+| a deploy that narrows a cluster, `garbage-collection-interval="30"` | the moved event and reputation document dropped **13 s** after the deploy |
+
+The default collection interval is an hour, and shortening it adds scanning load in
+production. So the move removes the old copies itself (`route=<source>`), and never relies on
+collection.
+
+`BucketMove` (engine) runs the steps. Its KDoc has the detail; in order:
+
+1. **Switch every store to the overlap map** (`BucketMap.overlapTo`). Each moving bucket keeps
+   its owner and is also written to its new cluster, which serves nothing yet. A cluster that
+   only receives is **pending**: no query or visit reads it. Then deploy the overlap package. It
+   only widens what clusters keep, so the guard lets it through over data. Every new write now
+   lands in both clusters.
+2. **`copy()`**: the moving buckets' events and reputation documents, put into the new cluster
+   only where absent. A newer write that already landed there is never overwritten by the older
+   copy.
+3. **`diff(repair = true)` until clean.** A write racing the copy can leave the new cluster
+   short. The source is complete and receives every write, so it is the reference. Each
+   candidate difference is read again from both clusters before it counts, because two
+   snapshots taken seconds apart under live writes always disagree a little.
+4. **Switch every store to the final map.** The new cluster serves. Until step 6 the old owner
+   still holds copies, so a sharded client drops repeated hits by id. COUNTs over-report for
+   that window.
+5. **Deploy the final package.** It narrows the old owner. The store's guard refuses this;
+   the move passes `allowNarrowing` only after step 3 is clean.
+6. **`cleanup()`** removes the moved documents from the old owner; `remaining()` confirms none
+   are left.
+
+`AuthorShardsMoveIT` runs it end to end: 2 → 3 clusters on one host, 300 authors with hash keys,
+1,200 events, and a writer adding events, deleting some and changing reputation cells (in the
+moving buckets too) throughout, about 1,200 writes. Against an in-test oracle it checks:
+- every phase: reads serve every live event once, never twice, and nothing deleted;
+- after the move: each event and reputation document sits only in its new owner's cluster;
+- every moved author's cell equals the last value written during the move;
+- the trust gate reads the moved authors' trust in their new cluster;
+- the store's own guard refused the narrowing deploy.
+
+In the passing run, one repair pass fixed 9 reputation documents. In each, a live cell update
+had created a partial document in the new cluster before the copy reached it: the race step 3
+exists for.
+
+**Limits of this tool:**
+- It only moves onto new clusters. A move onto a cluster that already serves would be read
+  twice while it fills.
+- It holds a batch of buckets' destination ids in memory during `diff`.
+- It writes one document at a time through the feed client, pipelined per page.
+- It has run on one host with a small corpus, never on production scale. Plan a staging dry
+  run to learn how long a real bucket takes.
+
+## Knowing when: capacity telemetry and the bucket report
+
+- `StoreTelemetry.headroom` (`EngineResources.Usage`) now reports, per node and per document
+  type, the documents, memory, disk and transaction-log disk. `peakTrustMemoryShare` is the
+  largest share of a node's document memory that is `reputation`. Divide `peakTrustMemoryBytes`
+  by `TrustHealth.servicesNamed` for the cost per customer. The store hands back the facts;
+  the threshold is the operator's.
+- `./gradlew :benchmark:bucketReport` (read-only) walks every reputation document and every
+  event's author. It prints events and reputation documents per bucket, how evenly the middle
+  byte spreads them (min/mean/max), how many reputation documents score a subject with no
+  stored event, and a bucket map that splits the EVENTS evenly for each cluster count in
+  `BENCH_SPLITS`. On production the event walk takes hours: run it off-peak.
+
 ## What is NOT known yet
 
 - **Cost per query.** Every unscoped read fans out to K clusters, and the container waits for the
@@ -210,14 +291,23 @@ a cluster by adding nodes, and plan a K change as the migration below.
 - Ranking statistics are per cluster (bm25 corpus statistics, `perfect_share()`'s document
   counts), as they already are per node. The rank cases were not re-run on K > 1.
 
-## Not a migration
+## The deploy guard
 
-With `garbage-collection="true"`, a cluster's selection is also what its nodes **keep**.
-Deploying a different shard count over a corpus fed under another one would make each cluster
-delete the documents the new selections move away, and nothing re-feeds them. So
-`SchemaDeployer.checkShardChange`, run by every deploy path that replaces a serving package
-(`deployIfChanged`, and `open()` / `deploySchema` with `IF_CHANGED`), refuses a package whose
-content clusters differ from the active one's while the deployment holds documents. It also
-refuses when the active package cannot be read and the new one is sharded. An empty deployment
-changes its count freely. Changing K on real data means feeding a fresh deployment, for example
-from a NIP-77 sync off the old one.
+With `garbage-collection="true"`, a cluster's selection is also what its nodes **keep**. A
+package under which some cluster keeps fewer buckets would make the engine delete every
+document in the buckets it lost, and nothing re-feeds them.
+
+`SchemaDeployer.checkShardChange` runs on every deploy path that replaces a serving package
+(`deployIfChanged`, and `open()` / `deploySchema` with `IF_CHANGED`). It compares, cluster by
+cluster, the buckets the active package keeps with those the new one keeps.
+
+| change | over data |
+|---|---|
+| schema only, same map | goes through |
+| only widens what clusters keep (the start of a move) | goes through |
+| narrows any cluster (a new even K, a cut-over) | **refused** |
+| narrows, with `allowNarrowing = true` | goes through: the move tool, after its diff is clean |
+
+The guard also refuses when the active package cannot be read and the new one is sharded. An
+empty deployment changes freely. Moving to a new layout on real data is either the move above
+or a fresh deployment fed from the old one, for example by NIP-77 sync.

@@ -358,3 +358,12 @@ tasks.register<JavaExec>("shardScaleProbe") {
     mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.probe.ShardScaleProbe")
     maxHeapSize = System.getenv("BENCH_HEAP") ?: "3g"
 }
+
+// The corpus by author bucket, read-only, before an author split is chosen. See BucketReport.kt.
+tasks.register<JavaExec>("bucketReport") {
+    group = "verification"
+    description = "Events and reputation documents per author bucket, and even bucket maps for a few cluster counts"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.load.BucketReport")
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "3g"
+}

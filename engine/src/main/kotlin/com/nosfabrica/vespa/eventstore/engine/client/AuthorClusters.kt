@@ -87,7 +87,10 @@ internal class AuthorClusters(
                     "cannot read the deployment's content clusters (${resp.statusCode()}: ${resp.body().take(200)})"
                 }
             }
-            check(deployed.toSet() == all.toSet()) {
+            // Exactly the map's clusters, or — while a move starts — its serving ones before the
+            // pending cluster deploys: stores switch to the overlap map FIRST, and reading only the
+            // serving clusters is right whether the pending one exists yet or not.
+            check(deployed.toSet() == all.toSet() || (map.pending.isNotEmpty() && deployed.toSet() == serving.toSet())) {
                 "this client is configured for author-shard clusters $all, but the deployment has $deployed; " +
                     "visits and author-scoped queries would miss documents"
             }
