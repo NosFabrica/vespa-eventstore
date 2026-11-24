@@ -3726,27 +3726,43 @@ class VespaEventIndexTest {
         }
 
     /**
-     * A LARGE FETCH STAYS ID-FIRST: a page whose limit alone is past the threshold, and a dense
-     * shape whose cut taught it the wide slack (a limit-10 page then asks for 74). Each resolves
-     * its page off `idtime` and reads exactly the page's documents.
+     * DENSITY, NOT SIZE, DECIDES. A large SPARSE page (a 70-hit fetch of one selective feed) is
+     * served in one query; a page planned past the cap stays id-first; a shape whose cut taught
+     * it the wide slack goes id-first from then on; and a cold global feed, which can be busy,
+     * starts id-first. Each serves the reference page.
      *
-     * The dense half's FIRST read is direct (20 planned hits) and its boundary second — thirty
-     * notes, scrambled — is cut: its `[t,t]` read stays in the read's one mode (full summaries),
-     * the page is exact, and the cut moves the shape to the wide slack, so the second read is
-     * id-first.
+     * The dense half's FIRST read is direct (a selective shape, 20 planned hits) and its
+     * boundary second — thirty notes, scrambled — is cut: its `[t,t]` read stays in the read's
+     * one mode (full summaries), the page is exact, and the cut moves the shape to the wide
+     * slack, so the second read is id-first.
      */
     @Test
-    fun `a large page and a dense shape stay id-first`() =
+    fun `density not size decides the fetch mode`() =
         runBlocking {
             val now = System.currentTimeMillis() / 1000
             seedStrategyCorpus(now)
-            val large = EventQuery(kinds = listOf(1, 7), authors = listOf(BUSY), limit = 35, nowSecs = now)
             val modes = fetchModes()
+
+            val large = EventQuery(kinds = listOf(1, 7), authors = listOf(BUSY), limit = 35, nowSecs = now)
             var before = mock.searchRequests.size
             assertEquals(reference.search(large).map { it.id }, index.search(large).map { it.id })
             var sent = mock.searchRequests.drop(before)
-            assertTrue(sent.pageQueries().isNotEmpty() && sent.pageQueries().all { it.isIdTime() }, "a 70-hit fetch resolves off ids: $sent")
-            assertEquals("35", sent.single { it.isHydrate() }["hits"], "and reads the page's documents once")
+            assertEquals(70, lastFetch(before), "the page plus its page-width slack")
+            assertTrue(sent.none { it.isIdTime() || it.isHydrate() }, "a 70-hit sparse fetch is full summaries, no hydrate: $sent")
+
+            val oversized = EventQuery(kinds = listOf(1, 7), authors = listOf(BUSY), limit = ClientTuning.DEFAULT_ID_FIRST_MAX_DIRECT_HITS, nowSecs = now)
+            before = mock.searchRequests.size
+            assertEquals(reference.search(oversized).map { it.id }, index.search(oversized).map { it.id })
+            sent = mock.searchRequests.drop(before)
+            assertTrue(
+                sent
+                    .pageQueries()
+                    .first()
+                    .getValue("hits")
+                    .toInt() > ClientTuning.DEFAULT_ID_FIRST_MAX_DIRECT_HITS,
+                "a page at the cap plans past it with any slack: $sent",
+            )
+            assertTrue(sent.pageQueries().isNotEmpty() && sent.pageQueries().all { it.isIdTime() }, "so it resolves off ids: $sent")
 
             val author = "e2".repeat(32)
             val dense = now - 100
@@ -3764,22 +3780,28 @@ class VespaEventIndexTest {
                 assertEquals(reference.search(q).map { it.id }, index.search(q).map { it.id })
                 sent = mock.searchRequests.drop(before)
                 assertEquals(10 + VespaEventIndex.TIE_SLACK, lastFetch(before), "the cut taught the shape the wide slack")
-                assertTrue(sent.pageQueries().all { it.isIdTime() }, "so its 74-hit fetch is id-first: $sent")
+                assertTrue(sent.pageQueries().all { it.isIdTime() }, "a dense shape is id-first, whatever its size: $sent")
                 assertEquals("10", sent.single { it.isHydrate() }["hits"], "reading the page's ten documents")
             } finally {
                 mock.scrambleTieOrder = false
             }
-            assertEquals(mapOf("idfirst" to 2L, "direct" to 1L), fetchModes().minus(modes))
+
+            val global = EventQuery(kinds = listOf(1), limit = 10, nowSecs = now)
+            before = mock.searchRequests.size
+            assertEquals(reference.search(global).map { it.id }, index.search(global).map { it.id })
+            sent = mock.searchRequests.drop(before)
+            assertTrue(sent.pageQueries().isNotEmpty() && sent.pageQueries().all { it.isIdTime() }, "a cold global feed is presumed dense: $sent")
+
+            assertEquals(mapOf("direct" to 2L, "idfirst" to 3L), fetchModes().minus(modes))
         }
 
     /**
-     * THE DECISION IS THE FETCH'S. A limit-20 feed of one sparse author starts at its page-width
-     * slack (40 planned hits: id-first) and narrows as its pages show no boundary ties; once its
-     * learned slack plans 32 hits or fewer it goes direct. On every read, the mode is exactly
-     * what the hits its first query asked for say — the slack the read used, not a cold guess.
+     * A SPARSE SHAPE STAYS DIRECT AS IT NARROWS. A limit-20 feed of one sparse author starts at
+     * its page-width slack (40 planned hits) and narrows as its pages show no boundary ties; it
+     * is never dense, so every read is one query, whatever slack it plans.
      */
     @Test
-    fun `the mode follows the slack the shape has learned`() =
+    fun `a sparse shape is one query on every read`() =
         runBlocking {
             val now = System.currentTimeMillis() / 1000
             val author = "e4".repeat(32)
@@ -3790,12 +3812,12 @@ class VespaEventIndexTest {
                     val before = mock.searchRequests.size
                     assertEquals(reference.search(q).map { it.id }, index.search(q).map { it.id })
                     val sent = mock.searchRequests.drop(before)
-                    assertEquals(1, sent.pageQueries().size, "one page query per read: $sent")
-                    lastFetch(before) to sent.any { it.isHydrate() }
+                    assertEquals(1, sent.size, "one query per read: $sent")
+                    lastFetch(before) to sent.any { it.isHydrate() || it.isIdTime() }
                 }
-            assertEquals(40 to true, reads.first(), "cold: the page-width slack, id-first")
-            assertTrue(reads.last().first <= ClientTuning.DEFAULT_ID_FIRST_MAX_DIRECT_HITS && !reads.last().second, "narrowed: direct: $reads")
-            for ((fetch, idFirst) in reads) assertEquals(fetch > ClientTuning.DEFAULT_ID_FIRST_MAX_DIRECT_HITS, idFirst, "the mode is the fetch's: $reads")
+            assertEquals(40, reads.first().first, "cold: the page-width slack")
+            assertTrue(reads.last().first < reads.first().first, "the slack narrowed: $reads")
+            assertTrue(reads.none { it.second }, "never id-first: $reads")
         }
 
     /**

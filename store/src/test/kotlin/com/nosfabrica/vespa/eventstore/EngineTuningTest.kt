@@ -153,7 +153,7 @@ class EngineTuningTest {
         assertEquals(100, EngineTuning.DEFAULT_FEED_BATCH)
         assertEquals(4_096, EngineTuning.MAX_FEED_BATCH)
         assertEquals(500, EngineTuning.DEFAULT_DEDUP_CHUNK)
-        assertEquals(32, EngineTuning.DEFAULT_ID_FIRST_MAX_DIRECT_HITS)
+        assertEquals(200, EngineTuning.DEFAULT_ID_FIRST_MAX_DIRECT_HITS)
         assertEquals(EngineTuning.VARIABLES.size, EngineTuning.VARIABLES.toSet().size, "each variable once")
         assertEquals(25, EngineTuning.VARIABLES.size)
     }

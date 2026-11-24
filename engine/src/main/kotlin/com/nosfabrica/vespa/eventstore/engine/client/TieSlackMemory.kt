@@ -180,10 +180,15 @@ internal class TieSlackMemory(
         fun coldSlack(
             q: EventQuery,
             limit: Int,
-        ): Int {
-            val selective = q.authors.isNotEmpty() || q.owners.isNotEmpty() || q.tags.isNotEmpty() || q.tagsAll.isNotEmpty() || q.ids.isNotEmpty() || !q.search.isNullOrBlank() || q.phrases.isNotEmpty()
-            return if (selective) limit.coerceIn(VespaEventIndex.MIN_TIE_SLACK, VespaEventIndex.TIE_SLACK) else VespaEventIndex.TIE_SLACK
-        }
+        ): Int = if (isSelective(q)) limit.coerceIn(VespaEventIndex.MIN_TIE_SLACK, VespaEventIndex.TIE_SLACK) else VespaEventIndex.TIE_SLACK
+
+        /**
+         * Whether [q] narrows what it matches by authors, owners, tags, ids or search terms: the
+         * shapes whose boundary second rarely holds many ties. A bare kind, a global feed or a
+         * gated termless read is not, and can be BUSY ([coldSlack], and the one-query rule's
+         * cold presumption in [VespaEventIndex]).
+         */
+        fun isSelective(q: EventQuery): Boolean = q.authors.isNotEmpty() || q.owners.isNotEmpty() || q.tags.isNotEmpty() || q.tagsAll.isNotEmpty() || q.ids.isNotEmpty() || !q.search.isNullOrBlank() || q.phrases.isNotEmpty()
 
         /**
          * The slack a read measured to hold [events] in [windowSecs] seconds

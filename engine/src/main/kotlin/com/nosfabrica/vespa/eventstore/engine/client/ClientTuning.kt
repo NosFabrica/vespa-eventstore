@@ -69,8 +69,8 @@ class ClientTuning(
     val unboundedHits: Int? = null,
     /**
      * `VESPA_ID_FIRST_MAX_DIRECT_HITS`: the largest planned fetch (`limit` + the shape's tie
-     * slack) a recency read serves in ONE full-summary query instead of id-first; 0 keeps every
-     * eligible read id-first. At least 0. Added last, so no positional argument shifts.
+     * slack) a recency read whose shape is not dense serves in ONE full-summary query instead of
+     * id-first; 0 keeps every eligible read id-first. At least 0. Added last, so no positional argument shifts.
      */
     val idFirstMaxDirectHits: Int? = null,
 ) {
@@ -152,12 +152,14 @@ class ClientTuning(
         const val MAX_FEED_BATCH = 4_096
 
         /**
-         * `VESPA_ID_FIRST_MAX_DIRECT_HITS`'s default: a limit-10 page at a cold selective
-         * shape's slack (20 hits) or a learned narrow one (18) goes direct; a dense shape at the
-         * wide slack (74) and any page of limit 100 or more stays id-first. The measured reasons
-         * are at `VespaEventIndex.idFirstMaxDirectHits`.
+         * `VESPA_ID_FIRST_MAX_DIRECT_HITS`'s default: the largest first fetch a page that is NOT
+         * dense (its boundary second fits its slack) is served in one query. 200 covers what was
+         * measured faster in one query, hot and with the page cache dropped: a limit-10 page (20
+         * hits) and a limit-100 page (up to 164 hits). Larger pages stay id-first, whose hydrate
+         * reads its chunks concurrently; dense shapes stay id-first at any size. The measurements
+         * are at `VespaEventIndex.idFirstMaxDirectHits` and in benchmark/README.md.
          */
-        const val DEFAULT_ID_FIRST_MAX_DIRECT_HITS = 32
+        const val DEFAULT_ID_FIRST_MAX_DIRECT_HITS = 200
 
         /** HTTP/2 streams per feed connection when nothing says otherwise — the measured small-host value (VespaFeed). */
         const val DEFAULT_FEED_STREAMS = 128

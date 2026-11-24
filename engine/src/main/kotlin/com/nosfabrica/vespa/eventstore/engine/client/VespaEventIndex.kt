@@ -230,23 +230,20 @@ class VespaEventIndex(
      * id-first off whatever this says. Last, like the two knobs above, so no positional argument
      * shifts.
      *
-     * The two costs it weighs (benchmark/README.md, "Id-first fetch" and "The tie slack is
-     * learned per shape"): every query costs ~800 µs of query-container CPU whatever its size,
-     * and a hit ~4.4 µs on top. Through vespa-relay on a 4-core sandbox with the corpus in
-     * memory, a sparse limit-10 REQ served as one 20-hit full-summary query instead of a 20-hit
-     * `idtime` query plus a 10-id hydrate ran +60–75% REQ/s; at the flat 64 slack, 74 full
-     * documents in one query gained nothing over id-first. And on a corpus larger than memory
-     * a document read is cold (a 164-hit notification page: 3 ms from attributes, ~40–50 ms
-     * as documents, 2026-09-28), so every hit served directly past the page is a wasted cold
-     * read, which is what id-first exists to avoid.
+     * The rule is about TIES, not page size, because that is what the measurements showed
+     * (benchmark/README.md, "One query or id-first, per read", 2026-11-24: one build, the
+     * knob alone between arms, through vespa-relay on a 4-core sandbox). One query won every
+     * page whose boundary second fit its slack: a sparse limit-10 REQ +44-56% hot (1,866-1,902
+     * against 1,218-1,298 REQ/s at 200 clients) and +25% with the page cache dropped and Vespa
+     * restarted (172-174 against 138-139), and a limit-100 page +60% hot (875-886 against
+     * 517-551) and +13% cold (70-71 against 62-63). It LOST on a global feed whose every second
+     * held ~2,000 notes (72-74 against 141-152 REQ/s): its `[T,T]` read fetched the whole tie
+     * group as documents. So a read goes direct unless its shape is [ReadStart.dense] (a
+     * learned slack of [TIE_SLACK] or more, or nothing learned and a shape that is not
+     * selective), and only up to this many planned hits: 200 covers the measured pages (a
+     * limit-100 page plans at most 164); larger ones stay id-first, whose hydrate reads its
+     * chunks concurrently, until someone measures them.
      *
-     * Hence 32: a limit-10 page at a cold selective shape's slack (20 hits) or at any learned
-     * slack up to 22 goes direct, as does limit 20 at the narrowest slack (28); a dense shape at
-     * the wide slack (74 hits for limit 10) and every page of limit 100 or more stay id-first.
-     * It sits under half the 74 hits where going direct had stopped paying even in memory, and
-     * it bounds the documents a direct read can waste past its page to 22 for a limit-10 page.
-     * Nothing between 20 and 74 hits has been measured: a deployment whose corpus fits in
-     * memory may find a higher value pays, one whose documents are cold reads may want 0.
      * The `recency.fetch.direct` / `.idfirst` counters ([fetchMode]) show the split.
      */
     private val idFirstMaxDirectHits: Int = tuning.idFirstMaxDirectHitsOrEnv(),
@@ -721,7 +718,7 @@ class VespaEventIndex(
         if (!eligible) return recallPage(q, planned, idOnly = false)
         // A threshold of 0 never reads the start: today's id-first path, untouched.
         val start = if (idFirstMaxDirectHits > 0) readStart(q, planned) else null
-        if (start != null && start.hits <= idFirstMaxDirectHits) {
+        if (start != null && !start.dense && start.hits <= idFirstMaxDirectHits) {
             fetchMode("direct")
             return recallPage(q, planned, idOnly = false, start = start)
         }
@@ -750,6 +747,17 @@ class VespaEventIndex(
      */
     private class ReadStart(
         val hits: Int,
+        /**
+         * Whether the read's boundary second may hold MANY ties, so that one full-summary
+         * query would read its whole `[T,T]` group as documents. Measured (benchmark/README.md,
+         * "One query or id-first, per read"): a global feed whose every second held ~2,000
+         * notes ran at half the rate in one query (72-74 against 141-152 REQ/s), while every
+         * page whose ties fit its slack ran faster in one query, a limit-100 page cold
+         * included. A learned slack says so once a page has shown it (64 or more: a cut, or
+         * ties past 28); with nothing learned, a shape that is not selective
+         * ([TieSlackMemory.isSelective]) is presumed busy. A recalled-narrow shape is sparse.
+         */
+        val dense: Boolean = false,
         val shape: RecencyWindowMemory.Shape? = null,
         val lease: TieSlackMemory.Lease? = null,
         val recalled: RecencyWindowMemory.Recall? = null,
@@ -775,10 +783,10 @@ class VespaEventIndex(
                 RecencyStrategy.MATCH_PHASE, RecencyStrategy.COUNT_PROBE -> Unit
             }
         }
-        if (limit > EventYql.MATCH_PHASE_BAND && q.ranking == null) return ReadStart(hits = limit)
+        if (limit > EventYql.MATCH_PHASE_BAND && q.ranking == null) return ReadStart(hits = limit, dense = true)
         val shape = if (slackMemory == null) null else q.takeIf { it.isWindowable() }?.let(::shapeOfRead)
         val lease = shape?.let { slackMemory?.slackFor(it, TieSlackMemory.coldSlack(q, limit)) }
-        return ReadStart(fetchLimitOf(limit, lease?.value ?: TIE_SLACK), shape, lease)
+        return ReadStart(fetchLimitOf(limit, lease?.value ?: TIE_SLACK), dense = denseOf(q, lease, recalledNarrow = false), shape = shape, lease = lease)
     }
 
     /**
@@ -805,7 +813,14 @@ class VespaEventIndex(
         // The window and the first page's tie slack, under one lock.
         val (recalled, lease) = shape?.let { windowMemory?.recallWith(it, TieSlackMemory.coldSlack(q, limit)) } ?: (null to null)
         val first = if (recalled is RecencyWindowMemory.Recall.Narrow) narrowLease(lease) else lease
-        return ReadStart(fetchLimitOf(limit, first?.value ?: TIE_SLACK), shape, lease, recalled, anchor)
+        return ReadStart(
+            fetchLimitOf(limit, first?.value ?: TIE_SLACK),
+            dense = denseOf(q, first, recalledNarrow = recalled is RecencyWindowMemory.Recall.Narrow),
+            shape = shape,
+            lease = lease,
+            recalled = recalled,
+            anchor = anchor,
+        )
     }
 
     /**
@@ -813,6 +828,23 @@ class VespaEventIndex(
      * with no slack learned starts from the least, and a cut widens it at once.
      */
     private fun narrowLease(lease: TieSlackMemory.Lease?): TieSlackMemory.Lease? = lease?.let { if (it.epoch == 0L) TieSlackMemory.Lease(MIN_TIE_SLACK, 0) else it }
+
+    /**
+     * [ReadStart.dense] for a read of [q] about to fetch at [lease]: a learned slack of
+     * [TIE_SLACK] or more means the shape has shown wide boundary seconds; a cold one
+     * (no lease, or [TieSlackMemory.Lease.epoch] 0) falls back to whether [q] is selective,
+     * unless the window memory already knows the shape is narrow.
+     */
+    private fun denseOf(
+        q: EventQuery,
+        lease: TieSlackMemory.Lease?,
+        recalledNarrow: Boolean,
+    ): Boolean =
+        when {
+            recalledNarrow -> false
+            lease != null && lease.epoch != 0L -> lease.value >= TIE_SLACK
+            else -> !TieSlackMemory.isSelective(q)
+        }
 
     /**
      * The hits a page of [limit] asks the engine for at [slack]: the overfetch, stopped

@@ -124,7 +124,8 @@ class EngineTuning(
     /**
      * `VESPA_ID_FIRST_MAX_DIRECT_HITS` — the largest planned fetch (`limit` plus the read
      * shape's tie slack) a recency read eligible for id-first serves in ONE full-summary query
-     * instead, at least 0; 0 keeps every such read id-first. `VESPA_ID_FIRST=0` still turns
+     * instead, unless its shape is dense (wide boundary seconds learned, or a cold shape that is
+     * not selective), at least 0; 0 keeps every such read id-first. `VESPA_ID_FIRST=0` still turns
      * id-first off. Default [DEFAULT_ID_FIRST_MAX_DIRECT_HITS]
      * (`VespaEventIndex.idFirstMaxDirectHits`, which holds the measured reasons).
      */
@@ -238,8 +239,9 @@ class EngineTuning(
         const val DEFAULT_DEDUP_CHUNK = STORE_DEFAULT_DEDUP_CHUNK
 
         /**
-         * `VESPA_ID_FIRST_MAX_DIRECT_HITS`'s default: a limit-10 page at a small slack goes
-         * direct, a dense shape's 74-hit fetch and any page of limit 100+ stay id-first.
+         * `VESPA_ID_FIRST_MAX_DIRECT_HITS`'s default: a page whose shape is not dense goes
+         * direct up to 200 planned hits (every measured limit-10 and limit-100 page); a dense
+         * shape stays id-first at any size.
          */
         const val DEFAULT_ID_FIRST_MAX_DIRECT_HITS = ClientTuning.DEFAULT_ID_FIRST_MAX_DIRECT_HITS
 
