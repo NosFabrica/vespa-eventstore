@@ -331,6 +331,19 @@ An earlier design gave each run its own fresh Vespa (load, then measure) and rea
 still flushing and compacting after its load, not the client. A per-run fresh engine is too
 noisy for an A/B at this size.
 
+## Rehearsed on real data: `docs/growth-simulation.md`
+
+A slice of the production relay (2,141 provider lists, 150,000 real cards, 202,051 events) went
+through the real store. Users were added with 150,000 cards each, and the store was split from
+one cluster to two while users kept enrolling. Trust re-derived with 0 drift, events matched a
+reference exactly, and cleanup left nothing behind.
+
+The run also found:
+- under enrolment, the move's repair step does most of the TA copying;
+- the transaction log, not the documents, is what grows on disk;
+- the lensed feed gets ~3× slower on two clusters sharing one host;
+- vespa-relay's `distinct(kind)` statistic doubles on two clusters.
+
 ## What is NOT known yet
 
 - **Cost per query.** Every unscoped read fans out to K clusters, and the container waits for the

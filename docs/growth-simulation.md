@@ -109,4 +109,134 @@ service.
 - `statsBeforeSplit` / `verify.statsPipelines`: `agree` per field.
 - `afterSplitMemory[]`: the samples after the split.
 
-RESULTS_PENDING
+## Results: the first run (2026-11-24, one 4-core / 15 GB host)
+
+The slice, pulled read-only that day:
+- **2,141 kind 10040 lists naming 2,007 trust services.** The September notes counted 341
+  named services, so enrolment grew about 6× in two months: the growth this was built for.
+- **The largest template service's 150,000 cards** (capped), plus two smaller services
+  (15,737 and 36 cards).
+- **202,051 events** (190 k notes, 6.7 k profiles, 3.0 k reactions, 1.5 k reposts, 597 follow
+  lists). They cover only the newest ~1.7 hours: the relay aggregates a lot.
+
+Run: 4 users on one cluster, 1 during the split, 2 after, each 150,000 cards, 20 background
+notes/s. Raw report: `benchmark/growth_simulation_report.json`.
+
+### Every check passed
+
+| check | result |
+|---|---|
+| `verifyTrust` after everything: 162,374 reputation documents re-derived from their cards | **0 drift** |
+| 38 NIP-01 reads against the in-memory reference (every event kind, authors, follow sets, hashtag, newest 500) | **0 mismatches** |
+| the moved buckets' documents left in the source after cleanup | **0** |
+| the store's own guard, offered the narrowing deploy | **refused it** (the move's verified deploy then went through) |
+
+### What a new user costs
+
+| user | topology | enrolment | cards/s | reputation memory (`searchnode`, `searchnode2`) | transaction log |
+|---|---|---|---|---|---|
+| (load) | one cluster | 148 s | | 49.7 MB | 21.4 MB |
+| 1 | one cluster | 61 s | 2,442 | 53.3 MB | 34.1 MB |
+| 2 | one cluster | 54 s | 2,793 | 65.3 MB | 45.1 MB |
+| 3 | one cluster | 47 s | 3,164 | 64.3 MB | 67.4 MB |
+| 4 | one cluster | 51 s | 2,970 | 58.0 MB | 86.9 MB |
+| 5 | during the split | **225 s** | 667 | 59.7 + 23.8 MB | 128 + 6 MB |
+| 6 | two clusters | 58 s | 2,608 | 52.1 + 49.3 MB | 149 + 25 MB |
+| 7 | two clusters | 56 s | 2,697 | 56.2 + 56.0 MB | 163 + 31 MB |
+
+- **Enrolment takes ~50–60 s per 150,000-card user** through the real write path on this host,
+  and 4.5× that while a split is copying on the same machine.
+- **The reputation documents do not grow with users: their CELLS do.** Every user's service
+  scores the same ~160 k subjects, so each one adds a cell per subject, not a document. Allocated
+  memory moves non-monotonically (49.7 → 53.3 → 65.3 → 64.3 → 58.0 MB) because Vespa compacts in
+  the background. The steadier measure is the probe's ~21 B per cell per tensor pair (below),
+  about 3 MB per 150 k-card user per node.
+- **The transaction log grows ~13–20 MB per user and was never pruned** during the run (21 →
+  163 MB on the source), while document disk stayed flat (10.1 MB until the split). That matches
+  the trust-size probe and is the leading explanation for production's 38 GiB of TA disk against
+  4.4 GiB of memory. The store's telemetry now splits the two per document type, so production
+  can confirm it.
+
+### The split
+
+| step | time | documents |
+|---|---|---|
+| stores restart on the overlap map | 0.2 s | |
+| overlap package deploys | 20 s | |
+| copy | 291 s | 403,573 events, 6,254 reputation documents |
+| check and repair, 2 passes | 494 s | **74,977 reputation documents repaired**, then clean |
+| stores restart on the final map | 0.1 s | |
+| final package deploys | 3.6 s | |
+| cleanup | 262 s | 388,289 events, 81,231 reputation documents removed from the source |
+
+About 18 minutes for ~490 k documents on one shared host.
+
+**The repair, not the copy, moved the trust data.** User 5 enrolled while the copy ran. Its cell
+updates reached both clusters and CREATED partial reputation documents in the new one before the
+copy got there. The copy writes only where a document is absent, so it skipped them, and the
+repair replaced all 74,977 with the source's complete documents. That is correct, and it is what
+step 3 exists for. But under enrolment the cost of copying TAs sits in `diff`, which holds a
+batch's destination in memory and reads each candidate back. Size the move window for that, or
+pause enrolment during the copy.
+
+### Reads
+
+| REQ class (p50 / p95 ms) | one cluster (users 1–4) | during the split | two clusters (users 6–7) |
+|---|---|---|---|
+| global kind 1, limit 50 | 21–34 / 72–94 | 35 / 101 | 34–36 / 111–129 |
+| one author | 12–17 / 43–58 | 16 / 63 | 13 / 53–60 |
+| hashtag | 13–15 / 39–53 | 21 / 90 | 24–26 / 98–105 |
+| lensed feed (a real user's trust) | 20–25 / 52–81 | 37 / 242 | **62–73 / 176–187** |
+| lensed search | 172–264 / 306–396 | 297 / 521 | 176–189 / 293–311 |
+| COUNT, last hour | 12–18 / 37–47 | 20 / 47 | 12–13 / 51–52 |
+
+- On one host, two clusters made the lensed feed about **3× slower** and hashtag feeds about
+  2×. This is the over-sharding cost measured in `docs/author-shards.md`: each cluster finds its
+  own top 50 under the gate, on the same cores.
+- One-author reads, COUNT and lensed search held. On separate hosts the clusters stop sharing
+  cores, which this run cannot show.
+- During the split, 7 reads failed (6 lensed, 1 global; 1 had failed before it). The failure
+  type was not recorded. The likeliest cause is the simulation's own restarts, which close the
+  store under reads in flight, as a process stopping in a rolling restart would.
+
+### Memory after the split
+
+Reputation documents split evenly: 81,145 and 81,231. Allocated memory did not halve. Each
+cluster's reputation document type held ~50 MB, against ~58 MB for the single cluster before,
+and nothing changed over 10 minutes of sampling. Per attribute (each node's
+`/state/v1/custom/component/documentdb/reputation/subdb/ready/attribute`):
+
+| cluster | `influence_scores` | `follower_counts` | `pubkey` |
+|---|---|---|---|
+| `content` (source) | 5.6 MB | 7.6 MB | 11.7 MB |
+| `content1` (new) | 5.3 MB | 7.1 MB | 11.6 MB |
+
+**The trust tensors did split**: 25.7 MB across the two for ~1.2 M cells, near-equal halves. The
+rest of each ~50 MB is FIXED per document type per cluster (the `pubkey` attribute, document
+metadata, caches), and at this slice's size it hides the saving. At production's 4.4 GiB per
+node the tensors dominate and the split should show. That is an expectation, not a measurement,
+and the first production split should confirm it from this per-attribute view, not from the
+allocated total.
+
+### What it found for consumers
+
+**vespa-relay's `distinct(field)` statistic is wrong on two clusters for any field whose values
+span clusters.**
+- `all(group(kind) output(count()))` returned 8 on one cluster and **16** on two (8 kinds). Each
+  cluster counts its own distinct values, and the merge adds them.
+- For `pubkey` the count disagrees with the number of groups on BOTH topologies (56,152 against
+  54,042 on one cluster, 55,167 against 54,048 on two). Vespa estimates large distinct counts,
+  so that one is not the split.
+- A sharded store should refuse a group-level `count()` the way it refuses `max(n)`, or
+  vespa-relay should count `countsBy` groups instead. Not fixed yet.
+
+## What this does not show
+
+- Separate hosts. Every cluster shared four cores, so the read costs above are worst-case for
+  the topology and the timings are for this host.
+- Production scale. 202 k events and ~1.2 M trust cells, against production's ~945 M events and
+  4.4 GiB of TAs per node. The move tool's throughput here (~1,400 events/s copied) would need
+  days at production size.
+- Long-running behavior: transaction-log pruning, lid-space compaction on the source, and
+  memory over hours rather than 10 minutes.
+
