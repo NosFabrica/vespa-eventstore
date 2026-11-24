@@ -275,6 +275,58 @@ exists for.
   stored event, and a bucket map that splits the EVENTS evenly for each cluster count in
   `BENCH_SPLITS`. On production the event walk takes hours: run it off-peak.
 
+## The trust copy's size (measured 2026-11-24)
+
+`./gradlew :benchmark:trustFootprintProbe`, a fresh one-cluster Vespa per row, 100,000
+subjects each scored by ~60% of 60 services: 3.6 M cells, read off the reputation document
+type's own metrics.
+
+| cells carry | memory | per cell | disk | transaction log |
+|---|---|---|---|---|
+| influence only (`int8`) | 78 MB | 21 B | 33 MB | 39 MB |
+| + follower counts, `float` (today's schema) | 150 MB | 41 B | 67 MB | 75 MB |
+| + follower counts, `bfloat16` | 139 MB | 38 B | 65 MB | 57 MB |
+
+- **The follower counts are half of the TA memory**, and their number type is not what costs.
+  A mapped tensor pays per cell ADDRESS, and the schema stores every (subject, service) address
+  twice, once per tensor. Moving to `bfloat16` would save 7% for a schema migration: not
+  worth it.
+- **The lever, not yet measured**: one mixed tensor holding both values under one address,
+  `tensor<float>(user{}, v[2])`. It should come near halving the TA memory, which pushes the
+  author-shard threshold out about 2×. It needs every rank expression that reads the two
+  tensors rewritten, and the reputation documents rebuilt from the cards.
+- **Churn**: 5 rounds of ~600 k cell rewrites (a provider re-publishing) left document disk flat,
+  while the transaction log grew from 75 MB to 130 MB and memory 13%. Here disk plus log is
+  about 1× memory; production's 38 GiB of disk against 4.4 GiB of memory is about 9×.
+  Something accumulates on production that this run did not reproduce. Telemetry now splits
+  document disk from transaction-log disk per document type (`EngineResources.DocumentTypeUsage`),
+  which will say which one.
+
+## Measured: one cluster, before and after (2026-11-24)
+
+The question this work has to answer before anything turns it on is whether the one-cluster
+store (production today) got slower. `./gradlew :benchmark:oneClusterAbProbe` (identical file
+in both trees) ran against `main` as the branch left it (`23843fc`) and against this branch,
+with ONE corpus loaded once (400,000 events, 40,000 authors, 960 k trust cells). Then 12
+measurement runs alternated the two client versions against that same engine, ABBA-ordered,
+each 45 s at one client and 45 s at sixteen. Raw rows: `benchmark/one_cluster_ab_results.jsonl`.
+
+| | `main` | branch | difference | exact permutation p |
+|---|---|---|---|---|
+| q/s, 1 client (n = 6 + 6) | 38.2 (sd 2.1) | 37.9 (sd 1.4) | −0.7% | 0.83 |
+| q/s, 16 clients | 85.5 (sd 3.5) | 86.4 (sd 2.8) | +1.0% | 0.66 |
+
+At one client, every class's median latency is within ±1% between versions (global, gated
+global, follow, profile, hashtag, notifications, search), and COUNT within +2.4%. At this
+spread and sample, a throughput difference of about 5% or more would have shown. Reading the
+code agrees: on one cluster the new path adds a null check and one small object per query
+that names authors, and nothing else.
+
+An earlier design gave each run its own fresh Vespa (load, then measure) and read the branch
+8% slower at sixteen clients (p = 0.07, 5 pairs). The interleaved runs show that was the engine
+still flushing and compacting after its load, not the client. A per-run fresh engine is too
+noisy for an A/B at this size.
+
 ## What is NOT known yet
 
 - **Cost per query.** Every unscoped read fans out to K clusters, and the container waits for the

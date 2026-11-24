@@ -70,14 +70,22 @@ object OneClusterAbProbe {
             val events = System.getenv("BENCH_EVENTS")?.toInt() ?: 400_000
             val phaseSecs = System.getenv("BENCH_PHASE_SECS")?.toLong() ?: 60L
 
+            // BENCH_MODE: `all` (deploy, load, measure), `load` (deploy and load, then stop), or
+            // `measure` (against a Vespa another run loaded): the interleaved A/B loads once and
+            // alternates versions against the same engine, so the corpus and its background
+            // flushes are the same for both.
+            val mode = System.getenv("BENCH_MODE") ?: "all"
             val deployer = SchemaDeployer(configUrl)
-            check(!deployer.isServing(url)) { "BENCH_VESPA_URL already serves an application: run against a fresh Vespa" }
-            deployer.deployIfAbsent(url)
-            println("deployed the bundled package")
+            if (mode != "measure") {
+                check(!deployer.isServing(url)) { "BENCH_VESPA_URL already serves an application: run against a fresh Vespa" }
+                deployer.deployIfAbsent(url)
+                println("deployed the bundled package")
+            }
 
             VespaEventIndex(url).use { index ->
-                VespaReputationIndex(url).use { reputation -> load(index, reputation, events) }
+                if (mode != "measure") VespaReputationIndex(url).use { reputation -> load(index, reputation, events) }
                 awaitCount(index, events)
+                if (mode == "load") return@runBlocking
                 val idle = memory(container)
                 warm(index, 20)
                 val serial = mix(index, concurrency = 1, seconds = phaseSecs)
