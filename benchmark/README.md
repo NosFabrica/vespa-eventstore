@@ -1527,6 +1527,46 @@ the profitable limit-100 read up to 164. The cap of 200 covers what was measured
 larger pages stay id-first, whose hydrate reads its chunks concurrently, until
 measured.
 
+**The rule, measured (same day, the density build).** One build again, three arms
+(`idfirst` = 0, `density` = the default rule, `direct` = `Int.MAX_VALUE`), two
+runs each, pages identical across arms (65 REQs):
+
+| REQ/s, two runs | idfirst | density | direct |
+|---|---|---|---|
+| hot, nostr-bench `#t` limit 10, 200 clients | 1,019 / 1,080 | 1,566 / 1,716 | 1,789 / 1,682 |
+| hot, same, limit 100 | 489 / 542 | 810 / 840 | 892 / 834 |
+| hot, global `kinds:[1]` limit 10 | 188 / 189 | 184 / 185 | 193 / 177 |
+| cold, 100k 2 KB notes, `#t` limit 10, 8 clients | 108 / 120 | 131 / 145 | 128 / 140 |
+| warm after it | 254 / 242 | 313 / 370 | 335 / 315 |
+| cold, limit 100 | 65 / 67 | 64 / 73 | 66 / 69 |
+| warm after it | 119 / 124 | 127 / 125 | 128 / 130 |
+
+The density arm booked only `recency.fetch.direct` on the hot `#t` reads, the
+direct arm's choice; the gap between them is run-to-run spread. The default now
+keeps the one-query gain on the pages the size threshold had left id-first
+(limit 100: +55–65% hot).
+
+The dense global feed did NOT reproduce the earlier loss (direct 193/177, level
+with id-first). So a second check controlled the density: 20 seconds of exactly
+2,000, 300 and 30 notes per second (kinds 1, 7, 16; one author each), read
+global and per author, limit 10, 50 clients:
+
+| REQ/s, two runs | idfirst | density | direct |
+|---|---|---|---|
+| global, 2,000 per second | 76 / 120 | 109 / 126 | 113 / 96 |
+| global, 300 per second | 285 / 380 | 375 / 402 | 365 / 271 |
+| global, 30 per second | 910 / 1,053 | 1,182 / 1,313 | 1,247 / 1,321 |
+| one author, 2,000 per second | 138 / 146 | 126 / 126 | 116 / 81 |
+| one author, 300 per second | 384 / 431 | 378 / 409 | 381 / 295 |
+
+Two things this settles. A global feed whose seconds are sparse (30) starts
+id-first as a cold non-selective shape and moves to one query once its slack
+narrows: density tracks direct there (+25%). On dense boundaries the modes are
+close, and direct is the noisier (81–116 against 138–146 for the dense author);
+nothing measured makes id-first lose there, so dense shapes stay id-first. Where
+the first A/B saw direct at half throughput is not pinned down: its boundary
+second was whatever the seed's last second held.
+
 The cost a direct read keeps: a selective shape's FIRST read, before it has
 learned anything, reads a wide boundary second whole as documents. The cut that
 reveals it sends the shape to the wide slack, so its next read is dense and
