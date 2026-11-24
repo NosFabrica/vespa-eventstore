@@ -243,14 +243,14 @@ collection.
 
 `AuthorShardsMoveIT` runs it end to end: 2 → 3 clusters on one host, 300 authors with hash keys,
 1,200 events, and a writer adding events, deleting some and changing reputation cells (in the
-moving buckets too) throughout, about 1,200 writes. Against an in-test oracle it checks:
+moving buckets too) throughout: 1,961 writes in the recorded run. Against an in-test oracle it checks:
 - every phase: reads serve every live event once, never twice, and nothing deleted;
 - after the move: each event and reputation document sits only in its new owner's cluster;
 - every moved author's cell equals the last value written during the move;
 - the trust gate reads the moved authors' trust in their new cluster;
 - the store's own guard refused the narrowing deploy.
 
-In the passing run, one repair pass fixed 9 reputation documents. In each, a live cell update
+In that run, one repair pass fixed 10 reputation documents. In each, a live cell update
 had created a partial document in the new cluster before the copy reached it: the race step 3
 exists for.
 
