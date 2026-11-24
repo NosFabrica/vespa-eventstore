@@ -363,4 +363,43 @@ class VespaAppTest {
             )
         }
     }
+
+    @Test
+    fun `one author shard ships the package as built`() {
+        assertContentEquals(shipped, VespaApp.zipBytes(null, authorShards = 1))
+        assertEquals(1, VespaApp.authorShardsOf(null))
+        assertEquals(1, VespaApp.authorShardsOf("  "))
+        assertEquals(4, VespaApp.authorShardsOf("4"))
+        assertFailsWith<IllegalArgumentException> { VespaApp.authorShardsOf("0") }
+        assertFailsWith<IllegalArgumentException> { VespaApp.authorShardsOf("257") }
+        assertFailsWith<IllegalArgumentException> { VespaApp.authorShardsOf("two") }
+    }
+
+    /**
+     * Two shards: the bundled cluster stays `content` as shard 0, a copy becomes `content1`, and in
+     * each the event selection keeps the NIP-40 expiry test (garbage collection reads it) ANDed with
+     * the shard's pubkey test, while the reputation type stays global and is selected by its id.
+     */
+    @Test
+    fun `author shards split the content cluster by pubkey, keeping expiry and the global parent`() {
+        val xml = parse(entry("services.xml", VespaApp.zipBytes(null, authorShards = 2)))
+        val contents = xml.getElementsByTagName("content")
+        assertEquals(2, contents.length)
+        for (i in 0 until 2) {
+            val cluster = contents.item(i) as Element
+            assertEquals(AuthorShards.clusterName(i), cluster.getAttribute("id"))
+            val docs = cluster.getElementsByTagName("document")
+            val byType = (0 until docs.length).map { docs.item(it) as Element }.associateBy { it.getAttribute("type") }
+            val event = byType.getValue("event").getAttribute("selection")
+            assertTrue(event.startsWith("(event.expires_at > now()) and "), event)
+            assertTrue(event.endsWith(AuthorShards.selection("event.pubkey", i, 2)), event)
+            val reputation = byType.getValue("reputation")
+            assertEquals("true", reputation.getAttribute("global"))
+            assertEquals(AuthorShards.selection("id.specific", i, 2), reputation.getAttribute("selection"))
+        }
+        // Composes with the access-log rewrite rather than replacing it.
+        val both = parse(entry("services.xml", VespaApp.zipBytes("disabled", authorShards = 2)))
+        assertEquals(2, both.getElementsByTagName("content").length)
+        assertEquals(1, both.getElementsByTagName("accesslog").length)
+    }
 }

@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore
 
+import com.nosfabrica.vespa.eventstore.engine.app.AuthorShards
 import com.nosfabrica.vespa.eventstore.engine.app.VespaApp
 import com.nosfabrica.vespa.eventstore.engine.client.ClientTuning
 import com.nosfabrica.vespa.eventstore.engine.client.FeedCompression
@@ -61,7 +62,8 @@ import com.nosfabrica.vespa.eventstore.runtime.DEFAULT_DEDUP_CHUNK as STORE_DEFA
  *    `open()` asking for a different value fails rather than silently
  *    re-tuning the first store.
  *  - PER DEPLOY: [accessLog], which rewrites the application package `open()`
- *    deploys.
+ *    deploys; and [authorShards], which both rewrites it and tells the engine
+ *    client how many content clusters a visit walks.
  *
  * Each field is documented with its variable; the measured reason for each
  * default is at the code that reads it (named in the field's KDoc).
@@ -120,12 +122,21 @@ class EngineTuning(
     // ---- per process, added later: LAST so no positional argument shifts ----
     /** `VESPA_EXPIRY_SWEEP_PAGE` — ids the NIP-40 expiry sweep removes per writer-lock hold, at least 1. Default 1000 (`NostrSemanticsStore.deleteExpiredEvents`). */
     val expirySweepPage: Int? = null,
+    // ---- per deploy AND per store, added later: LAST for the same reason ---
+    /**
+     * `VESPA_AUTHOR_SHARDS` — PROTOTYPE: split the corpus by author across this many content
+     * clusters, 1..256 (`AuthorShards`, `docs/author-shards.md`). Default 1, the package as built.
+     * The deployed package and the client must agree on it, which is why it is one setting; and
+     * changing it on a fed corpus deletes documents (the selections are what each cluster keeps).
+     */
+    val authorShards: Int? = null,
 ) {
     init {
         feedBatch?.let { require(it in 0..MAX_FEED_BATCH) { "feedBatch $it is outside 0..$MAX_FEED_BATCH" } }
         accessLog?.let { require(it.trim().lowercase() in VespaApp.ACCESS_LOG_VALUES) { "accessLog '$it' is not one of ${VespaApp.ACCESS_LOG_VALUES.sorted()}" } }
         for ((name, v) in positives()) v?.let { require(it >= 1) { "$name $it is below 1" } }
         visitConcurrency?.let { require(it in 1..100) { "visitConcurrency $it is outside 1..100" } }
+        authorShards?.let { require(it in 1..AuthorShards.MAX) { "authorShards $it is outside 1..${AuthorShards.MAX}" } }
     }
 
     private fun positives() =
@@ -162,6 +173,7 @@ class EngineTuning(
             bodyEdgeFeed = bodyEdgeFeed,
             addressKeyed = addressKeyed,
             unboundedHits = unboundedHits,
+            authorShards = authorShards,
         )
 
     /**
@@ -184,6 +196,9 @@ class EngineTuning(
 
     /** The access-log choice for the deployed package: this tuning's, else `VESPA_ACCESS_LOG` as before. */
     internal fun accessLogOrEnv(): String? = accessLog ?: System.getenv(VespaApp.ACCESS_LOG_ENV)
+
+    /** The author shard count for the deployed package: this tuning's, else `VESPA_AUTHOR_SHARDS` read as the client reads it. */
+    internal fun authorShardsOrEnv(): Int = authorShards ?: VespaApp.authorShardsOf(System.getenv(AuthorShards.ENV))
 
     /** The settings this tuning names, for a boot line; empty when it names none. */
     override fun toString(): String =
@@ -212,6 +227,7 @@ class EngineTuning(
             "trustGateSlice" to trustGateSlice,
             "expirySweepPage" to expirySweepPage,
             "accessLog" to accessLog,
+            "authorShards" to authorShards,
         ).filter { it.second != null }
             .joinToString(", ", prefix = "EngineTuning(", postfix = ")") { (k, v) -> "$k=$v" }
 
@@ -255,6 +271,7 @@ class EngineTuning(
                 StoreKnobs.trustGateSlice.env,
                 StoreKnobs.expirySweepPage.env,
                 VespaApp.ACCESS_LOG_ENV,
+                AuthorShards.ENV,
             )
 
         private val PIN_LOCK = Any()
@@ -330,6 +347,7 @@ class EngineTuning(
                     accessLog =
                         choice(VespaApp.ACCESS_LOG_ENV, { v -> v.lowercase().takeIf { it in VespaApp.ACCESS_LOG_VALUES } }, VespaApp.ACCESS_LOG_VALUES.sorted().joinToString()),
                     expirySweepPage = int(StoreKnobs.expirySweepPage.env, atLeastOne),
+                    authorShards = int(AuthorShards.ENV, 1..AuthorShards.MAX),
                 )
             require(problems.isEmpty()) { "the store's environment has ${problems.size} bad setting(s): ${problems.joinToString("; ")}" }
             return tuning

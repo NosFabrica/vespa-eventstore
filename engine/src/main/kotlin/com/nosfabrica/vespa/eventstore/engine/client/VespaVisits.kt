@@ -61,7 +61,18 @@ internal class VespaVisits(
     private val bucketConcurrency: Int,
     /** Whether to try the streamed JSON-Lines transport at all (`VESPA_VISIT_STREAM=0` forces the paged fallback). */
     private val streaming: Boolean,
+    /**
+     * The content clusters a walk covers, in order: `[null]` (no `cluster` parameter) on the one
+     * cluster the bundled package declares; one per author shard otherwise
+     * ([com.nosfabrica.vespa.eventstore.engine.app.AuthorShards]). Vespa visits ONE cluster per
+     * request and refuses a visit that names none once there are several.
+     */
+    private val clusters: List<String?> = listOf(null),
 ) {
+    init {
+        require(clusters.isNotEmpty()) { "a visit covers at least one cluster" }
+    }
+
     /**
      * Page every match of [selection] out of the visit, calling [onDocuments]
      * with lists of lean [VisitedDoc]s; a false return stops the walk.
@@ -70,6 +81,21 @@ internal class VespaVisits(
      * and an early stop cancels every in-flight slice.
      */
     suspend fun pages(
+        selection: String,
+        fieldSet: String,
+        onDocuments: suspend (List<VisitedDoc>) -> Boolean,
+    ) {
+        // Cluster after cluster: a shard's walk is the whole walk of a one-cluster deployment, and
+        // the consumer's early stop ends the remaining clusters too.
+        for (cluster in clusters) {
+            var stopped = false
+            clusterPages(cluster, selection, fieldSet) { page -> onDocuments(page).also { if (!it) stopped = true } }
+            if (stopped) return
+        }
+    }
+
+    private suspend fun clusterPages(
+        cluster: String?,
         selection: String,
         fieldSet: String,
         onDocuments: suspend (List<VisitedDoc>) -> Boolean,
@@ -83,7 +109,7 @@ internal class VespaVisits(
                             streaming &&
                                 coroutineScope {
                                     (0 until slices)
-                                        .map { sliceId -> async { streamedSlice(selection, fieldSet, sliceId) { pages.send(it) } } }
+                                        .map { sliceId -> async { streamedSlice(cluster, selection, fieldSet, sliceId) { pages.send(it) } } }
                                         .awaitAll()
                                 }.also { oks ->
                                     // A server either speaks JSON Lines or doesn't — for
@@ -92,7 +118,7 @@ internal class VespaVisits(
                                     // as paged, which would duplicate; refuse loudly.
                                     check(oks.all { it } || oks.none { it }) { "vespa answered JSON Lines for only some visit slices" }
                                 }.all { it }
-                        if (!streamed) pagedWalk(selection, fieldSet) { pages.send(it) }
+                        if (!streamed) pagedWalk(cluster, selection, fieldSet) { pages.send(it) }
                     } finally {
                         // Close on completion AND failure: a stuck-open channel
                         // would leave the consumer below suspended forever.
@@ -118,8 +144,35 @@ internal class VespaVisits(
         resumeFrom: String?,
         maxDocs: Int,
     ): DocsPage {
+        if (clusters.size == 1) return clusterDocsPage(clusters[0], selection, resumeFrom, maxDocs)
+        // Several clusters: the token is `<cluster index>:<that cluster's token>`, and a cluster
+        // walked to its end hands over to the next one within the same call, so a page comes back
+        // empty only when the last cluster is done.
+        var index = resumeFrom?.substringBefore(':')?.toIntOrNull() ?: 0
+        var inner = resumeFrom?.substringAfter(':', "")?.takeIf { it.isNotEmpty() }
+        require(index in clusters.indices) { "visit continuation '$resumeFrom' names no cluster of ${clusters.size}" }
+        while (true) {
+            val page = clusterDocsPage(clusters[index], selection, inner, maxDocs)
+            val next =
+                when {
+                    page.continuation != null -> "$index:${page.continuation}"
+                    index + 1 < clusters.size -> "${index + 1}:"
+                    else -> null
+                }
+            if (page.docs.isNotEmpty() || next == null) return DocsPage(page.docs, next)
+            index = next.substringBefore(':').toInt()
+            inner = next.substringAfter(':').takeIf { it.isNotEmpty() }
+        }
+    }
+
+    private suspend fun clusterDocsPage(
+        cluster: String?,
+        selection: String,
+        resumeFrom: String?,
+        maxDocs: Int,
+    ): DocsPage {
         val base =
-            visitUrl(endpoint(), selection, "[document]") +
+            visitUrl(endpoint(), selection, "[document]", cluster) +
                 "&wantedDocumentCount=${maxDocs.coerceIn(1, VISIT_PAGE)}" +
                 "&concurrency=$bucketConcurrency"
         val resp = http.getVisit(resumeFrom?.let { "$base&continuation=$it" } ?: base)
@@ -134,12 +187,13 @@ internal class VespaVisits(
      * buckets in parallel to fill each page.
      */
     private suspend fun pagedWalk(
+        cluster: String?,
         selection: String,
         fieldSet: String,
         emit: suspend (List<VisitedDoc>) -> Unit,
     ) {
         val base =
-            visitUrl(endpoint(), selection, fieldSet) +
+            visitUrl(endpoint(), selection, fieldSet, cluster) +
                 "&wantedDocumentCount=$VISIT_PAGE" +
                 "&concurrency=$bucketConcurrency"
         var continuation: String? = null
@@ -173,13 +227,14 @@ internal class VespaVisits(
      * fails loudly instead of looping.
      */
     private suspend fun streamedSlice(
+        cluster: String?,
         selection: String,
         fieldSet: String,
         sliceId: Int,
         emit: suspend (List<VisitedDoc>) -> Unit,
     ): Boolean {
         val base =
-            visitUrl(endpoint(), selection, fieldSet) +
+            visitUrl(endpoint(), selection, fieldSet, cluster) +
                 "&stream=true&concurrency=1&slices=$slices&sliceId=$sliceId"
         var token: String? = null
         var delivered = false
@@ -370,11 +425,13 @@ internal class VespaVisits(
             endpoint: String,
             selection: String,
             fieldSet: String,
+            cluster: String? = null,
         ): String =
             "$endpoint/document/v1/$EVENT_NAMESPACE/$EVENT_DOCTYPE/docid" +
                 "?selection=${URLEncoder.encode(selection, "UTF-8")}" +
                 "&fieldSet=${URLEncoder.encode(fieldSet, "UTF-8")}" +
-                "&timeout=$SERVER_TIMEOUT_SECONDS"
+                "&timeout=$SERVER_TIMEOUT_SECONDS" +
+                (cluster?.let { "&cluster=${URLEncoder.encode(it, "UTF-8")}" } ?: "")
 
         /** Consecutive stream interruptions tolerated before the walk fails loudly. */
         const val STREAM_RETRIES = 3

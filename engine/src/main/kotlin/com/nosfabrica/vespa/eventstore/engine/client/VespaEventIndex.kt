@@ -255,7 +255,7 @@ class VespaEventIndex(
      */
     private val resources = EngineResources(http, ::queryEndpoint)
 
-    private val visits = VespaVisits(http, ::documentEndpoint, visitSlices, visitConcurrency, visitStreaming)
+    private val visits = VespaVisits(http, ::documentEndpoint, visitSlices, visitConcurrency, visitStreaming, tuning.visitClustersOrEnv())
 
     private val fallbacks = SchemaFallbacks()
 
@@ -2746,6 +2746,8 @@ class VespaEventIndex(
         )
         return envelope["root"]
             ?.jsonObject
+            // One grouping root per content cluster under author sharding: merged before anything reads it.
+            ?.let(GroupingResults::mergeRoots)
             ?.also { root ->
                 // Before the coverage check, as in [searchRoot]: a node that did not answer is outside what coverage counts.
                 root["errors"]?.let { refuseErrors(VESPA_JSON.decodeFromJsonElement(ListSerializer(SearchError.serializer()), it)) }

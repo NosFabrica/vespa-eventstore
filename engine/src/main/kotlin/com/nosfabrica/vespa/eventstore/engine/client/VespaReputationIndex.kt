@@ -58,6 +58,12 @@ class VespaReputationIndex(
 ) : ReputationIndex {
     private val documentApi = EndpointRotation(endpoints, baseUrl)
 
+    /** The clusters a visit walks, one per author shard ([ClientTuning.visitClustersOrEnv]). */
+    private val clusters: List<String?> = tuning.visitClustersOrEnv()
+
+    /** The `cluster` parameter for one visit: none on the one cluster the bundled package declares. */
+    private fun clusterParam(cluster: String?): String = cluster?.let { "&cluster=${URLEncoder.encode(it, "UTF-8")}" } ?: ""
+
     private val feed = VespaFeed(documentApi.urls, eager = eagerFeed, tuning = tuning)
 
     private val http = VespaHttp()
@@ -265,13 +271,22 @@ class VespaReputationIndex(
      * page returns partial + continuation instead of dying.
      */
     override suspend fun visitPubkeys(onPage: suspend (List<String>) -> Boolean) {
+        for (cluster in clusters) if (!visitPubkeys(cluster, onPage)) return
+    }
+
+    /** One cluster's walk; false when [onPage] stopped it. */
+    private suspend fun visitPubkeys(
+        cluster: String?,
+        onPage: suspend (List<String>) -> Boolean,
+    ): Boolean {
         val base =
             "${documentApi.next()}/document/v1/$NAMESPACE/$DOCTYPE/docid" +
                 "?selection=${URLEncoder.encode(DOCTYPE, "UTF-8")}" +
                 "&wantedDocumentCount=$VISIT_PAGE" +
                 "&fieldSet=${URLEncoder.encode("$DOCTYPE:pubkey", "UTF-8")}" +
                 "&timeout=$VISIT_SERVER_TIMEOUT_SECONDS" +
-                "&concurrency=$VISIT_CONCURRENCY"
+                "&concurrency=$VISIT_CONCURRENCY" +
+                clusterParam(cluster)
         var continuation: String? = null
         while (true) {
             val resp = http.getVisit(continuation?.let { "$base&continuation=$it" } ?: base)
@@ -285,26 +300,35 @@ class VespaReputationIndex(
                         ?.jsonPrimitive
                         ?.content
                 }
-            if (pubkeys.isNotEmpty() && !onPage(pubkeys)) return
-            continuation = env["continuation"]?.jsonPrimitive?.content ?: return
+            if (pubkeys.isNotEmpty() && !onPage(pubkeys)) return false
+            continuation = env["continuation"]?.jsonPrimitive?.content ?: return true
         }
     }
 
     override suspend fun visitDocs(onPage: suspend (List<ReputationDoc>) -> Boolean) {
+        for (cluster in clusters) if (!visitDocs(cluster, onPage)) return
+    }
+
+    /** One cluster's walk; false when [onPage] stopped it. */
+    private suspend fun visitDocs(
+        cluster: String?,
+        onPage: suspend (List<ReputationDoc>) -> Boolean,
+    ): Boolean {
         val base =
             "${documentApi.next()}/document/v1/$NAMESPACE/$DOCTYPE/docid" +
                 "?selection=${URLEncoder.encode(DOCTYPE, "UTF-8")}" +
                 "&wantedDocumentCount=$VISIT_PAGE" +
                 "&timeout=$VISIT_SERVER_TIMEOUT_SECONDS" +
-                "&concurrency=$VISIT_CONCURRENCY"
+                "&concurrency=$VISIT_CONCURRENCY" +
+                clusterParam(cluster)
         var continuation: String? = null
         while (true) {
             val resp = http.getVisit(continuation?.let { "$base&continuation=$it" } ?: base)
             require(resp.statusCode() < 400) { "vespa reputation visit ${resp.statusCode()}: ${resp.body().take(300)}" }
             val env = resp.decode(Json, JsonObject.serializer())
             val docs = env["documents"]?.jsonArray.orEmpty().mapNotNull { it.jsonObject["fields"]?.jsonObject?.let(ReputationDoc::fromSummary) }
-            if (docs.isNotEmpty() && !onPage(docs)) return
-            continuation = env["continuation"]?.jsonPrimitive?.content ?: return
+            if (docs.isNotEmpty() && !onPage(docs)) return false
+            continuation = env["continuation"]?.jsonPrimitive?.content ?: return true
         }
     }
 

@@ -126,6 +126,7 @@ internal fun runSchemaDeploy(
     mode: SchemaDeploy,
     accessLog: String?,
     awaitTimeout: Duration,
+    authorShards: Int = 1,
 ): SchemaDeployment {
     when (mode) {
         SchemaDeploy.NEVER -> {
@@ -148,7 +149,7 @@ internal fun runSchemaDeploy(
             val serving = deployer.isServing(url)
             if (serving && mode == SchemaDeploy.IF_ABSENT) return SchemaDeployment(mode, deployed = false, generation = null, converged = null, deployer = null)
             // Built only when a deploy is possible: building it validates the access-log choice.
-            val zip = VespaApp.zipBytes(accessLog)
+            val zip = VespaApp.zipBytes(accessLog, authorShards)
             if (serving && deployer.serves(zip)) return SchemaDeployment(mode, deployed = false, generation = null, converged = null, deployer = deployer)
             return try {
                 val generation = SchemaDeployer.generationOf(deployer.deploy(zip))

@@ -69,9 +69,10 @@ class VespaParityIT {
 
                 // open() deploys the bundled schema (config server on a mapped port,
                 // so it must be passed explicitly) and waits until queries serve.
-                val store = VespaEventStore.open(url = queryUrl, autoDeploy = true, configUrl = configUrl)
+                val store = VespaEventStore.open(url = queryUrl, autoDeploy = true, configUrl = configUrl, tuning = ItAuthorShards.tuning())
                 store.use {
-                    val corpus = ConformanceCorpus.generate(ConformanceCorpus.Config(size = CORPUS_SIZE, seed = 42))
+                    val corpus = ItAuthorShards.spreadAuthors(ConformanceCorpus.generate(ConformanceCorpus.Config(size = CORPUS_SIZE, seed = 42)))
+                    ItAuthorShards.requireSpread(corpus.map { it.pubKey })
                     val sqlite = Backends.sqliteMemory()
                     val report =
                         runBlocking {

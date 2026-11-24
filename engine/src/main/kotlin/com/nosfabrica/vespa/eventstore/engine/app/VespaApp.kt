@@ -44,6 +44,9 @@ import javax.xml.transform.stream.StreamResult
  * so ~500 req/s of dedup existence checks become ~3.2 GB/hour of JSON nobody
  * reads — while a store answering real client queries wants exactly that
  * record. Hence [ACCESS_LOG_ENV] rather than a fork of services.xml.
+ *
+ * And one PROTOTYPE topology choice: [AuthorShards.ENV] splits the content cluster into several,
+ * by author, each holding its authors' events and reputation documents ([shardContent]).
  */
 object VespaApp {
     /** Classpath location of the bundled package (see vespa/build.gradle.kts). */
@@ -68,12 +71,26 @@ object VespaApp {
     private const val SERVICES = "services.xml"
     private const val CONTAINER = "container"
     private const val ACCESSLOG = "accesslog"
+    private const val CONTENT = "content"
+    private const val DOCUMENT = "document"
 
     /**
      * The zipped application package bytes, ready to POST to a Vespa config
      * server. Honors [ACCESS_LOG_ENV]; unset ships the package as built.
      */
-    fun zipBytes(): ByteArray = zipBytes(System.getenv(ACCESS_LOG_ENV))
+    fun zipBytes(): ByteArray = zipBytes(System.getenv(ACCESS_LOG_ENV), authorShardsOf(System.getenv(AuthorShards.ENV)))
+
+    /**
+     * [AuthorShards.ENV] read leniently, as the access log is: unset or blank is one shard, the
+     * package as built. A value outside 1..[AuthorShards.MAX] is refused rather than clamped,
+     * since the shard count decides where documents LIVE and a silent clamp would put them in
+     * clusters the operator did not ask for.
+     */
+    fun authorShardsOf(raw: String?): Int {
+        val value = raw?.trim()?.takeIf { it.isNotEmpty() } ?: return 1
+        return value.toIntOrNull()?.takeIf { it in 1..AuthorShards.MAX }
+            ?: throw IllegalArgumentException("${AuthorShards.ENV}='$raw' is not a whole number in 1..${AuthorShards.MAX}")
+    }
 
     /**
      * [zipBytes] with the access-log choice passed in rather than read from the
@@ -82,18 +99,84 @@ object VespaApp {
      * to DEPLOY the rewritten package (an env var cannot be set from inside the
      * JVM that reads it). `null` or blank means "as built".
      */
-    fun zipBytes(accessLog: String?): ByteArray {
+    fun zipBytes(
+        accessLog: String?,
+        authorShards: Int = 1,
+    ): ByteArray {
         val raw =
             VespaApp::class.java.getResourceAsStream(RESOURCE)?.use { it.readBytes() }
                 ?: error("bundled Vespa application package not found on the classpath ($RESOURCE) - is :engine on the runtime classpath?")
+        require(authorShards in 1..AuthorShards.MAX) { "authorShards $authorShards is outside 1..${AuthorShards.MAX}" }
 
-        val value = accessLog?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: return raw
-        require(value in ACCESS_LOG_VALUES) {
-            "$ACCESS_LOG_ENV='$accessLog' is not one of ${ACCESS_LOG_VALUES.sorted().joinToString(", ")}"
+        val value = accessLog?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
+        value?.let {
+            require(it in ACCESS_LOG_VALUES) {
+                "$ACCESS_LOG_ENV='$accessLog' is not one of ${ACCESS_LOG_VALUES.sorted().joinToString(", ")}"
+            }
         }
-        if (value != "disabled") return raw
+        val disable = value == "disabled"
+        if (!disable && authorShards == 1) return raw
 
-        return rewrite(raw, SERVICES, ::disableAccessLog)
+        return rewrite(raw, SERVICES) { xml ->
+            val sharded = if (authorShards > 1) shardContent(xml, authorShards) else xml
+            if (disable) disableAccessLog(sharded) else sharded
+        }
+    }
+
+    /**
+     * PROTOTYPE: [servicesXml] with its one content cluster split into [shards] ([AuthorShards]).
+     * Shard 0 is the original element, keeping its id; shards 1.. are copies of it — same nodes,
+     * same tuning — with ids [AuthorShards.clusterName], each document type ANDed with the shard's
+     * selection: `event` on its `pubkey` field (its id is the event's), `reputation` on its id
+     * (the subject; a cell update carries no `pubkey` to route by).
+     *
+     * The copies share the original's `<nodes>`, which on the bundled single-host package is
+     * one host running one search node per cluster. A real multi-host deployment writes its own
+     * services.xml anyway (`docs/services-multinode-example.xml`) and takes the selections from
+     * [AuthorShards.selection].
+     *
+     * NOT A MIGRATION. With `garbage-collection="true"` a cluster's selection is also what its
+     * content nodes KEEP: deploying a new shard count over a corpus fed under another one makes
+     * the engine delete every document the new selections move away, and nothing re-feeds them.
+     */
+    internal fun shardContent(
+        servicesXml: String,
+        shards: Int,
+    ): String {
+        require(shards in 2..AuthorShards.MAX) { "shards $shards is outside 2..${AuthorShards.MAX}" }
+        val doc = parse(servicesXml)
+        val contents = doc.getElementsByTagName(CONTENT)
+        require(contents.length == 1) { "$SERVICES declares ${contents.length} <$CONTENT> elements; author sharding splits exactly one" }
+        val base = contents.item(0) as Element
+        require(base.getAttribute("id") == AuthorShards.BASE_CLUSTER) { "$SERVICES' content cluster is '${base.getAttribute("id")}', not '${AuthorShards.BASE_CLUSTER}'" }
+
+        val copies = (1 until shards).map { (base.cloneNode(true) as Element).apply { setAttribute("id", AuthorShards.clusterName(it)) } }
+        (listOf(base) + copies).forEachIndexed { index, cluster ->
+            val types = cluster.getElementsByTagName(DOCUMENT)
+            val seen = HashSet<String>()
+            for (i in 0 until types.length) {
+                val type = types.item(i) as Element
+                val name = type.getAttribute("type")
+                val shard =
+                    when (name) {
+                        "event" -> AuthorShards.selection("event.pubkey", index, shards)
+                        "reputation" -> AuthorShards.selection("id.specific", index, shards)
+                        else -> error("$SERVICES' content cluster holds document type '$name', which author sharding has no key for")
+                    }
+                seen += name
+                val existing = type.getAttribute("selection")
+                type.setAttribute("selection", if (existing.isBlank()) shard else "($existing) and $shard")
+            }
+            require(seen == setOf("event", "reputation")) { "$SERVICES' content cluster holds $seen; author sharding needs event and reputation together" }
+        }
+        var anchor: org.w3c.dom.Node = base
+        for (copy in copies) {
+            val gap = doc.createTextNode("\n\n  ")
+            base.parentNode.insertBefore(gap, anchor.nextSibling)
+            base.parentNode.insertBefore(copy, gap.nextSibling)
+            anchor = copy
+        }
+        return serialize(doc, servicesXml.length * shards)
     }
 
     /**
@@ -110,18 +193,7 @@ object VespaApp {
      * reads it, and the unset path ships the package untouched.
      */
     internal fun disableAccessLog(servicesXml: String): String {
-        val doc =
-            DocumentBuilderFactory
-                .newInstance()
-                .apply {
-                    // Our own file, but the parser is hardened anyway: nothing
-                    // in an application package needs a doctype or an entity.
-                    setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true)
-                    setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
-                    isXIncludeAware = false
-                    isExpandEntityReferences = false
-                }.newDocumentBuilder()
-                .parse(ByteArrayInputStream(servicesXml.encodeToByteArray()))
+        val doc = parse(servicesXml)
 
         // A silent no-op here would be the worst outcome: the operator sets the
         // variable, the deploy succeeds, and the log keeps filling the disk.
@@ -149,7 +221,27 @@ object VespaApp {
         container.insertBefore(doc.createTextNode("\n    "), first)
         container.insertBefore(doc.createElement(ACCESSLOG).apply { setAttribute("type", "disabled") }, first)
 
-        val out = ByteArrayOutputStream(servicesXml.length + 128)
+        return serialize(doc, servicesXml.length + 128)
+    }
+
+    private fun parse(servicesXml: String): org.w3c.dom.Document =
+        DocumentBuilderFactory
+            .newInstance()
+            .apply {
+                // Our own file, but the parser is hardened anyway: nothing
+                // in an application package needs a doctype or an entity.
+                setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true)
+                setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
+                isXIncludeAware = false
+                isExpandEntityReferences = false
+            }.newDocumentBuilder()
+            .parse(ByteArrayInputStream(servicesXml.encodeToByteArray()))
+
+    private fun serialize(
+        doc: org.w3c.dom.Document,
+        sizeHint: Int,
+    ): String {
+        val out = ByteArrayOutputStream(sizeHint)
         TransformerFactory
             .newInstance()
             .apply { setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true) }

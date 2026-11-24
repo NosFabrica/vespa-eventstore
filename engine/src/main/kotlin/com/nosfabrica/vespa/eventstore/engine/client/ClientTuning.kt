@@ -21,6 +21,8 @@
 package com.nosfabrica.vespa.eventstore.engine.client
 
 import ai.vespa.feed.client.FeedClientBuilder
+import com.nosfabrica.vespa.eventstore.engine.app.AuthorShards
+import com.nosfabrica.vespa.eventstore.engine.app.VespaApp
 
 /**
  * The Vespa client's PER-INSTANCE settings, as values rather than environment
@@ -67,6 +69,8 @@ class ClientTuning(
     val addressKeyed: Boolean? = null,
     /** `VESPA_UNBOUNDED_HITS`: the hit ceiling sent for a query with no limit. At least 1. */
     val unboundedHits: Int? = null,
+    /** `VESPA_AUTHOR_SHARDS`: PROTOTYPE, the content clusters the authors are split across ([AuthorShards]). 1..256. */
+    val authorShards: Int? = null,
 ) {
     // ---- resolution: the field, else the historical lenient read ------------
     //
@@ -110,6 +114,16 @@ class ClientTuning(
     internal fun addressKeyedOrEnv(): Boolean = addressKeyed ?: env(ADDRESS_KEYED).let { it == "1" || it?.toBooleanStrictOrNull() == true }
 
     internal fun unboundedHitsOrEnv(): Int = unboundedHits ?: env(UNBOUNDED_HITS)?.toIntOrNull() ?: Int.MAX_VALUE
+
+    /**
+     * The clusters a visit must walk, one per author shard: `[null]` — no `cluster` parameter, the
+     * request as it always was — for one shard. Read the way [VespaApp.zipBytes] reads it, so the
+     * client and the package the store deploys agree on the count.
+     */
+    internal fun visitClustersOrEnv(): List<String?> {
+        val shards = authorShards ?: VespaApp.authorShardsOf(env(AuthorShards.ENV))
+        return if (shards == 1) listOf(null) else AuthorShards.clusters(shards)
+    }
 
     companion object {
         const val FEED_BATCH = "VESPA_FEED_BATCH"
