@@ -227,8 +227,8 @@ class VespaEventIndex(
      * ONE QUERY OR ID-FIRST (`VESPA_ID_FIRST_MAX_DIRECT_HITS`, default
      * [ClientTuning.DEFAULT_ID_FIRST_MAX_DIRECT_HITS]): the most hits a recency read
      * eligible for id-first reads as whole documents in one query. A read whose first query
-     * plans more (`limit` plus the tie slack it overfetches) is id-first throughout; any other
-     * is served in ONE query ([recallSummaries]), and inside it every query past this many
+     * plans more (`limit` plus the tie slack it overfetches), or whose shape was cut before, is
+     * id-first throughout; any other is served in ONE query ([recallSummaries]), and inside it every query past this many
      * hits, and every `[T,T]` tie read, asks for ids only, whose kept members one `id in (…)`
      * query then reads. 0 keeps every eligible read id-first, as before this knob;
      * `VESPA_ID_FIRST=0` still turns id-first off whatever this says. Last, like the two knobs
@@ -238,7 +238,9 @@ class VespaEventIndex(
      * about 800 µs of container CPU whatever its size, so a sparse page in one query instead
      * of two ran +56% (limit 10) and +60% (limit 100) hot through vespa-relay, +21% with the
      * page cache dropped. What one query used to risk is a crowded boundary second read whole
-     * as documents; its tie read is ids, so that cost is gone and no shape needs guessing at.
+     * as documents; its tie read is ids, so that cost is gone. A shape cut before stays
+     * id-first ([ReadStart.cutBefore]): it pays the tie read either way, and one query would
+     * only read its overfetch as documents.
      *
      * The `recency.fetch.direct` / `.idfirst` counters show the split.
      */

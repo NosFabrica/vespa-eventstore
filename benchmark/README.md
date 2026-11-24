@@ -1490,18 +1490,26 @@ tie-heavy boundary serves the same page in both modes" and its neighbours;
 `RecencyStrategyIT` runs every strategy in every mode against the page computed
 from the corpus).
 
-**The rule: one query unless the shape is dense.** A read eligible for id-first
-is served in ONE full-summary query when its shape is not dense and its first
-query plans at most `VESPA_ID_FIRST_MAX_DIRECT_HITS` hits (default **200**; its
-limit plus the slack `TieSlackMemory` holds for the shape, leased once per read
-so the decision and the fetch agree). A shape is dense when its learned slack is
-`TIE_SLACK` (64) or more, the slack a cut of a wide boundary second teaches it;
-with nothing learned, when it is not selective (no authors, owners, tags, ids,
-search or phrases: a global `kinds:[1]` feed can hold thousands of notes in one
-second). A shape the window memory already knows is narrow is never dense. `0`
-keeps every eligible read id-first; `VESPA_ID_FIRST=0` still turns id-first off.
-With `VESPA_RECENCY_MEMORY=0` no slack is learned: every read plans `limit + 64`
-and is dense exactly when it is not selective.
+**The rule: one query, unless the page is large or the shape was cut before.** A
+read eligible for id-first is served DIRECT, its page queries asking for documents,
+when its first query plans at most `VESPA_ID_FIRST_MAX_DIRECT_HITS` hits (default
+**200**; its limit plus the slack `TieSlackMemory` holds for the shape, leased once per
+read so the decision and the fetch agree) and its shape has not been cut before (a
+LEARNED slack of `TIE_SLACK`, 64, or more: the slack a boundary second wider than the
+overfetch teaches). Inside a direct read every `[T,T]` tie read, and any later query
+planned past the cap, asks for ids only, and the members the page keeps of those are
+read by id (`VespaEventIndex.completeDocuments`): a crowded second costs its ids,
+never its documents. Nothing is presumed about a shape with nothing learned: it
+starts direct. `0` keeps every eligible read id-first; `VESPA_ID_FIRST=0` still turns
+id-first off.
+
+How it got here, in three builds. The first cut was size alone (32 hits). The second
+guessed density (a cold shape with no author/tag filter presumed busy, a learned
+wide slack dense) and kept those id-first, because a direct read's `[T,T]` read
+fetched the whole tie group as documents. The third reads that group as ids, which
+removes the reason to guess; the measurements below then showed the one case one
+query still loses (a shape cut on every read) and that is the learned `cutBefore`
+check, nothing presumed.
 
 The first cut was size alone (32 hits: every limit-100 page id-first). The A/B
 below is what moved it: one build, the knob alone between arms (`idfirst` = 0,
@@ -1527,7 +1535,7 @@ the profitable limit-100 read up to 164. The cap of 200 covers what was measured
 larger pages stay id-first, whose hydrate reads its chunks concurrently, until
 measured.
 
-**The rule, measured (same day, the density build).** One build again, three arms
+**The density build, measured (superseded).** One build again, three arms
 (`idfirst` = 0, `density` = the default rule, `direct` = `Int.MAX_VALUE`), two
 runs each, pages identical across arms (65 REQs):
 
@@ -1567,9 +1575,44 @@ nothing measured makes id-first lose there, so dense shapes stay id-first. Where
 the first A/B saw direct at half throughput is not pinned down: its boundary
 second was whatever the seed's last second held.
 
-The cost a direct read keeps: a selective shape's FIRST read, before it has
-learned anything, reads a wide boundary second whole as documents. The cut that
-reveals it sends the shape to the wide slack, so its next read is dense and
+**The final rule, measured.** Same harness, three arms of one build: `idfirst` (0),
+`default` (the rule above) and `no cap` (`Int.MAX_VALUE`, the rule without the hit
+cap), two runs each; every arm served identical pages (65 REQs).
+
+| REQ/s, two runs | idfirst | default | no cap |
+|---|---|---|---|
+| hot, nostr-bench `#t` limit 10, 200 clients | 1,239 / 1,075 | 1,621 / 1,710 | 1,543 / 1,762 |
+| hot, same, limit 100 | 493 / 472 | 755 / 740 | 751 / 759 |
+| hot, global `kinds:[1]` limit 10 | 140 / 135 | 136 / 137 | 133 / 135 |
+| cold, 100k 2 KB notes, `#t` limit 10, 8 clients | 108 / 108 | 127 / 126 | 112 / 128 |
+| warm after it | 254 / 240 | 311 / 308 | 293 / 293 |
+| cold, limit 100 | 59 / 55 | 68 / 65 | 69 / 67 |
+| warm after it | 109 / 110 | 135 / 121 | 137 / 140 |
+
+(The cold rows ran on the build before the `cutBefore` check, which changes nothing
+for a sparse `#t` shape.) The controlled corpus (20 seconds of exactly 2,000, 300
+and 30 notes per second), second run of each arm; the first run of every arm right
+after the load read low for whichever arm went first:
+
+| REQ/s | idfirst | default | no cap |
+|---|---|---|---|
+| global, 2,000 per second | 114 | 126 | 126 |
+| global, 300 per second | 380 | 372 | 375 |
+| global, 30 per second | 1,028 | 1,289 | 1,227 |
+| one author, 2,000 per second | 145 | 143 | 148 |
+| one author, 300 per second | 399 | 402 | 425 |
+
+Without the `cutBefore` check (the run before it) the author at 300 per second ran
+320–335 against 402–409 id-first, and the hot global feed 181/209 against 209/250:
+a shape cut on every read takes its `[T,T]` query in either mode, so one query saved
+nothing and its page query read ~64 documents it threw away. With it those are level
+with id-first, and every sparse page keeps its gain: +43% (limit 10) and +55%
+(limit 100) hot, +17% cold, +25% on a quiet global feed.
+
+What this has NOT measured: a store larger than memory. Every run here fits in the
+page cache once warm, and on the 44M-doc corpus every overfetched document was a cold
+read; a direct read overfetches its slack (at most 64 for a shape not cut before) as
+documents. Measure there before trusting the default on such a store; `0` restores
 id-first.
 
 Watching it live: each read eligible for id-first books one zero-time
