@@ -185,8 +185,7 @@ internal class TieSlackMemory(
         /**
          * Whether [q] narrows what it matches by authors, owners, tags, ids or search terms: the
          * shapes whose boundary second rarely holds many ties. A bare kind, a global feed or a
-         * gated termless read is not, and can be BUSY ([coldSlack], and the one-query rule's
-         * cold presumption in [VespaEventIndex]).
+         * gated termless read is not, and can be BUSY ([coldSlack]).
          */
         fun isSelective(q: EventQuery): Boolean = q.authors.isNotEmpty() || q.owners.isNotEmpty() || q.tags.isNotEmpty() || q.tagsAll.isNotEmpty() || q.ids.isNotEmpty() || !q.search.isNullOrBlank() || q.phrases.isNotEmpty()
 

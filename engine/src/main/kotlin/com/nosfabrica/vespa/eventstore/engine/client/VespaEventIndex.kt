@@ -71,6 +71,8 @@ import okio.BufferedSink
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.coroutines.AbstractCoroutineContextElement
+import kotlin.coroutines.CoroutineContext
 import kotlin.math.ceil
 
 /**
@@ -223,28 +225,22 @@ class VespaEventIndex(
     private val unboundedHits: Int = tuning.unboundedHitsOrEnv(),
     /**
      * ONE QUERY OR ID-FIRST (`VESPA_ID_FIRST_MAX_DIRECT_HITS`, default
-     * [ClientTuning.DEFAULT_ID_FIRST_MAX_DIRECT_HITS]): the largest planned fetch — `limit`
-     * plus the tie slack the read's first query will overfetch — that a read eligible for
-     * id-first serves instead in ONE full-summary query, with no hydrate ([recallSummaries]).
-     * 0 keeps every eligible read id-first, as before this knob; `VESPA_ID_FIRST=0` still turns
-     * id-first off whatever this says. Last, like the two knobs above, so no positional argument
-     * shifts.
+     * [ClientTuning.DEFAULT_ID_FIRST_MAX_DIRECT_HITS]): the most hits a recency read
+     * eligible for id-first reads as whole documents in one query. A read whose first query
+     * plans more (`limit` plus the tie slack it overfetches) is id-first throughout; any other
+     * is served in ONE query ([recallSummaries]), and inside it every query past this many
+     * hits, and every `[T,T]` tie read, asks for ids only, whose kept members one `id in (…)`
+     * query then reads. 0 keeps every eligible read id-first, as before this knob;
+     * `VESPA_ID_FIRST=0` still turns id-first off whatever this says. Last, like the two knobs
+     * above, so no positional argument shifts.
      *
-     * The rule is about TIES, not page size, because that is what the measurements showed
-     * (benchmark/README.md, "One query or id-first, per read", 2026-11-24: one build, the
-     * knob alone between arms, through vespa-relay on a 4-core sandbox). One query won every
-     * page whose boundary second fit its slack: a sparse limit-10 REQ +44-56% hot (1,866-1,902
-     * against 1,218-1,298 REQ/s at 200 clients) and +25% with the page cache dropped and Vespa
-     * restarted (172-174 against 138-139), and a limit-100 page +60% hot (875-886 against
-     * 517-551) and +13% cold (70-71 against 62-63). It LOST on a global feed whose every second
-     * held ~2,000 notes (72-74 against 141-152 REQ/s): its `[T,T]` read fetched the whole tie
-     * group as documents. So a read goes direct unless its shape is [ReadStart.dense] (a
-     * learned slack of [TIE_SLACK] or more, or nothing learned and a shape that is not
-     * selective), and only up to this many planned hits: 200 covers the measured pages (a
-     * limit-100 page plans at most 164); larger ones stay id-first, whose hydrate reads its
-     * chunks concurrently, until someone measures them.
+     * Measured (benchmark/README.md, "One query or id-first, per read"): every query costs
+     * about 800 µs of container CPU whatever its size, so a sparse page in one query instead
+     * of two ran +56% (limit 10) and +60% (limit 100) hot through vespa-relay, +21% with the
+     * page cache dropped. What one query used to risk is a crowded boundary second read whole
+     * as documents; its tie read is ids, so that cost is gone and no shape needs guessing at.
      *
-     * The `recency.fetch.direct` / `.idfirst` counters ([fetchMode]) show the split.
+     * The `recency.fetch.direct` / `.idfirst` counters show the split.
      */
     private val idFirstMaxDirectHits: Int = tuning.idFirstMaxDirectHitsOrEnv(),
 ) : EventIndex {
@@ -701,14 +697,13 @@ class VespaEventIndex(
      * ([hydrate]) whose first query will ask for at most [idFirstMaxDirectHits] hits —
      * its limit plus the slack that query overfetches, which [readStart] leases here
      * and hands down, so the decision and the fetch are the same number — is served
-     * in ONE full-summary query instead; anything larger stays id-first. Every query
-     * of the read (speculative attempts, carried pages, the `[T,T]` tie read, a
-     * match-phase rerun, the fallback) then runs in that one mode, and both modes are
-     * exact, so the page is the same either way: the rule moves cost, never answers.
-     * A direct read whose boundary second is wider than its slack reads that second
-     * as documents — a small read's slack is small only while its shape shows no wide
-     * boundary, and the cut that reveals one moves the shape to the wide slack, so
-     * its next read plans past the threshold and goes id-first.
+     * DIRECT: its page queries ask for documents, so a page that fits its slack costs
+     * one query. Inside it ([DirectRead]) a query planned past [idFirstMaxDirectHits]
+     * (a fallback at a measured slack) and every `[T,T]` tie read ask for ids only,
+     * and [completeDocuments] reads the kept members of those by id: a crowded second
+     * costs ids, never its documents. Anything planned larger is id-first throughout.
+     * Every mode is exact, so the page is the same either way: the rule moves cost,
+     * never answers.
      */
     private suspend fun recallSummaries(
         q: EventQuery,
@@ -718,11 +713,20 @@ class VespaEventIndex(
         if (!eligible) return recallPage(q, planned, idOnly = false)
         // A threshold of 0 never reads the start: today's id-first path, untouched.
         val start = if (idFirstMaxDirectHits > 0) readStart(q, planned) else null
-        if (start != null && !start.dense && start.hits <= idFirstMaxDirectHits) {
-            fetchMode("direct")
-            return recallPage(q, planned, idOnly = false, start = start)
+        if (start != null && start.hits <= idFirstMaxDirectHits) {
+            IngestStats.tick(FETCH_DIRECT_STAGE)
+            val page =
+                try {
+                    withContext(DirectRead(idFirstMaxDirectHits)) { recallPage(q, planned, idOnly = false, start = start) }
+                } catch (e: IllegalArgumentException) {
+                    if (!fallbacks.isMissingIdTimeSummary(e)) throw e
+                    fallbacks.markIdTimeSummaryMissing()
+                    // No `idtime` summary to read ties by: documents all the way, as id-first off.
+                    return recallPage(q, planned, idOnly = false)
+                }
+            return completeDocuments(page, q.acceptsPartial)
         }
-        fetchMode("idfirst")
+        IngestStats.tick(FETCH_IDFIRST_STAGE)
         val page =
             try {
                 recallPage(q, planned, idOnly = true, start = start)
@@ -737,6 +741,33 @@ class VespaEventIndex(
     }
 
     /**
+     * Marks a DIRECT read ([recallSummaries]) for every query under it: a page query
+     * planned past [maxHits] and every `[T,T]` tie read ask for ids only ([recallPage]),
+     * and [completeDocuments] reads what the page keeps of them.
+     */
+    private class DirectRead(
+        val maxHits: Int,
+    ) : AbstractCoroutineContextElement(DirectRead) {
+        companion object Key : CoroutineContext.Key<DirectRead>
+    }
+
+    /**
+     * A direct read's page, whole: the members a ids-only query brought in (an empty
+     * `sig`, which every stored event has) read by id, in place, by the same [hydrate]
+     * id-first uses. A page that needed none, the common case, costs nothing here.
+     */
+    private suspend fun completeDocuments(
+        page: List<VespaSummary>,
+        acceptsPartial: Boolean,
+    ): List<VespaSummary> {
+        val missing = page.filter { it.sig.isEmpty() }
+        if (missing.isEmpty()) return page
+        val full = HashMap<String, VespaSummary>(missing.size * 2)
+        for (hit in hydrate(missing, acceptsPartial)) full[hit.id] = hit
+        return page.mapNotNull { if (it.sig.isNotEmpty()) it else full[it.id] }
+    }
+
+    /**
      * What a recency read's FIRST query will ask for, taken once per read so the
      * one-query-or-id-first decision ([recallSummaries]) and the fetch agree:
      * [hits] (the limit plus the overfetch, clamped as [recallPage] clamps it) and
@@ -747,17 +778,6 @@ class VespaEventIndex(
      */
     private class ReadStart(
         val hits: Int,
-        /**
-         * Whether the read's boundary second may hold MANY ties, so that one full-summary
-         * query would read its whole `[T,T]` group as documents. Measured (benchmark/README.md,
-         * "One query or id-first, per read"): a global feed whose every second held ~2,000
-         * notes ran at half the rate in one query (72-74 against 141-152 REQ/s), while every
-         * page whose ties fit its slack ran faster in one query, a limit-100 page cold
-         * included. A learned slack says so once a page has shown it (64 or more: a cut, or
-         * ties past 28); with nothing learned, a shape that is not selective
-         * ([TieSlackMemory.isSelective]) is presumed busy. A recalled-narrow shape is sparse.
-         */
-        val dense: Boolean = false,
         val shape: RecencyWindowMemory.Shape? = null,
         val lease: TieSlackMemory.Lease? = null,
         val recalled: RecencyWindowMemory.Recall? = null,
@@ -767,8 +787,8 @@ class VespaEventIndex(
     /**
      * [ReadStart] for [q], mirroring [recallPage]'s branches exactly: the full-scan
      * twin, the speculative read's first attempt ([speculativeStart]), the band pager
-     * (whose pages key their own slack — past the band it is id-first at any sane
-     * threshold), and the plain page's shape and lease.
+     * (whose pages key their own slack; a band page asks for at least its limit), and
+     * the plain page's shape and lease.
      */
     private fun readStart(
         q: EventQuery,
@@ -783,10 +803,10 @@ class VespaEventIndex(
                 RecencyStrategy.MATCH_PHASE, RecencyStrategy.COUNT_PROBE -> Unit
             }
         }
-        if (limit > EventYql.MATCH_PHASE_BAND && q.ranking == null) return ReadStart(hits = limit, dense = true)
+        if (limit > EventYql.MATCH_PHASE_BAND && q.ranking == null) return ReadStart(hits = limit)
         val shape = if (slackMemory == null) null else q.takeIf { it.isWindowable() }?.let(::shapeOfRead)
         val lease = shape?.let { slackMemory?.slackFor(it, TieSlackMemory.coldSlack(q, limit)) }
-        return ReadStart(fetchLimitOf(limit, lease?.value ?: TIE_SLACK), dense = denseOf(q, lease, recalledNarrow = false), shape = shape, lease = lease)
+        return ReadStart(fetchLimitOf(limit, lease?.value ?: TIE_SLACK), shape = shape, lease = lease)
     }
 
     /**
@@ -813,14 +833,7 @@ class VespaEventIndex(
         // The window and the first page's tie slack, under one lock.
         val (recalled, lease) = shape?.let { windowMemory?.recallWith(it, TieSlackMemory.coldSlack(q, limit)) } ?: (null to null)
         val first = if (recalled is RecencyWindowMemory.Recall.Narrow) narrowLease(lease) else lease
-        return ReadStart(
-            fetchLimitOf(limit, first?.value ?: TIE_SLACK),
-            dense = denseOf(q, first, recalledNarrow = recalled is RecencyWindowMemory.Recall.Narrow),
-            shape = shape,
-            lease = lease,
-            recalled = recalled,
-            anchor = anchor,
-        )
+        return ReadStart(fetchLimitOf(limit, first?.value ?: TIE_SLACK), shape = shape, lease = lease, recalled = recalled, anchor = anchor)
     }
 
     /**
@@ -830,23 +843,6 @@ class VespaEventIndex(
     private fun narrowLease(lease: TieSlackMemory.Lease?): TieSlackMemory.Lease? = lease?.let { if (it.epoch == 0L) TieSlackMemory.Lease(MIN_TIE_SLACK, 0) else it }
 
     /**
-     * [ReadStart.dense] for a read of [q] about to fetch at [lease]: a learned slack of
-     * [TIE_SLACK] or more means the shape has shown wide boundary seconds; a cold one
-     * (no lease, or [TieSlackMemory.Lease.epoch] 0) falls back to whether [q] is selective,
-     * unless the window memory already knows the shape is narrow.
-     */
-    private fun denseOf(
-        q: EventQuery,
-        lease: TieSlackMemory.Lease?,
-        recalledNarrow: Boolean,
-    ): Boolean =
-        when {
-            recalledNarrow -> false
-            lease != null && lease.epoch != 0L -> lease.value >= TIE_SLACK
-            else -> !TieSlackMemory.isSelective(q)
-        }
-
-    /**
      * The hits a page of [limit] asks the engine for at [slack]: the overfetch, stopped
      * at the deployed cap (VESPA_UNBOUNDED_HITS) — see [recallPage].
      */
@@ -854,14 +850,6 @@ class VespaEventIndex(
         limit: Int,
         slack: Int,
     ): Int = minOf(plusSaturated(limit, slack), maxOf(limit, unboundedHits))
-
-    /**
-     * Which mode a read eligible for id-first took ([recallSummaries]), as a zero-time
-     * [IngestStats] counter under [FETCH_STAGE] (the [outcome] idiom): `direct` (one
-     * full-summary query) or `idfirst` (an `idtime` resolve and a hydrate). Reads that
-     * were never eligible — ranked, unlimited, id-first off — book neither.
-     */
-    private suspend fun fetchMode(name: String) = IngestStats.timed("$FETCH_STAGE.$name") { }
 
     /**
      * ID-FIRST, second half: the full documents for [page] — an id-only page
@@ -954,8 +942,10 @@ class VespaEventIndex(
     ): List<VespaSummary> {
         if (!q.isRecencyOrdered()) return rankedHits(q).mapNotNull { it.fields }
         val limit = q.limit
+        // Under a direct read ([DirectRead]) a tie read and an over-cap query ask for ids only.
+        val direct = if (idOnly) null else currentCoroutineContext()[DirectRead]
         if (limit == null) {
-            val all = recallRoot(q, idOnly)?.children?.mapNotNull { it.fields }?.filter { it.id.isNotEmpty() } ?: emptyList()
+            val all = recallRoot(q, idOnly || direct != null)?.children?.mapNotNull { it.fields }?.filter { it.id.isNotEmpty() } ?: emptyList()
             return all.sortedWith(SUMMARY_NEWEST_FIRST)
         }
         // A non-positive limit matches nothing (EventYql.build's contract) —
@@ -996,7 +986,7 @@ class VespaEventIndex(
         val fetchLimit = fetchLimitOf(limit, slack)
         val fetch = q.copy(limit = fetchLimit).keepingProfileOf(q)
         var hits =
-            recallRoot(fetch, idOnly)?.children?.mapNotNull { it.fields }?.filter { it.id.isNotEmpty() }
+            recallRoot(fetch, idOnly || (direct != null && fetchLimit > direct.maxHits))?.children?.mapNotNull { it.fields }?.filter { it.id.isNotEmpty() }
                 ?: return emptyList()
         // `>=`, not `>`: with the slack clamped away a FULL answer is exactly
         // `limit` long, and its boundary group may still have been cut.
@@ -1023,13 +1013,17 @@ class VespaEventIndex(
                 // — a [t,t] window is tiny) or the rerun would resurrect
                 // below-floor authors into the boundary group.
                 val tieRanking = if (q.usesGatedProfile()) EventYql.RANK_RECENCY_GATED_EXACT else EventYql.RANK_UNRANKED
+                // Under a direct read the group is read as ids: a crowded second costs
+                // its ids, and only the members the page keeps are read whole.
                 val ties =
-                    recallRoot(q.copy(since = t, until = t, limit = null, ranking = tieRanking), idOnly)
+                    recallRoot(q.copy(since = t, until = t, limit = null, ranking = tieRanking), idOnly || direct != null)
                         ?.children
                         ?.mapNotNull { it.fields }
                         ?.filter { it.id.isNotEmpty() }
                         ?: emptyList()
-                hits = hits.filter { it.createdAt > t } + ties
+                // Members already in hand whole stay whole: nothing to read for them again.
+                val whole = if (direct == null) null else hits.filter { it.createdAt == t && it.sig.isNotEmpty() }.associateBy { it.id }
+                hits = hits.filter { it.createdAt > t } + (if (whole.isNullOrEmpty()) ties else ties.map { whole[it.id] ?: it })
                 if (teaches && tracker?.seen != true) slackMemory?.learn(slackShape!!, lease!!, hits.size - limit, cut = true)
             }
         }
@@ -3130,8 +3124,14 @@ class VespaEventIndex(
         /** The [IngestStats] stage every [RecencyStrategy.SPECULATIVE] read books under; see [outcome]. */
         const val SPECULATIVE_STAGE = "recency.speculative"
 
-        /** The [IngestStats] stage under which each read eligible for id-first books the mode it took; see [fetchMode]. */
+        /** The [IngestStats] stage under which each read eligible for id-first books the mode it took ([recallSummaries]). */
         const val FETCH_STAGE = "recency.fetch"
+
+        /** [FETCH_STAGE] for a read served direct: its page queries ask for documents. */
+        private const val FETCH_DIRECT_STAGE = "$FETCH_STAGE.direct"
+
+        /** [FETCH_STAGE] for a read resolved off ids and hydrated. */
+        private const val FETCH_IDFIRST_STAGE = "$FETCH_STAGE.idfirst"
 
         /**
          * Ids per cursor page of a snapshot walk — see [visitIds].

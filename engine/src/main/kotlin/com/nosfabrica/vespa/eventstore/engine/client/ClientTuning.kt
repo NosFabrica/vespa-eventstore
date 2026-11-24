@@ -68,9 +68,10 @@ class ClientTuning(
     /** `VESPA_UNBOUNDED_HITS`: the hit ceiling sent for a query with no limit. At least 1. */
     val unboundedHits: Int? = null,
     /**
-     * `VESPA_ID_FIRST_MAX_DIRECT_HITS`: the largest planned fetch (`limit` + the shape's tie
-     * slack) a recency read whose shape is not dense serves in ONE full-summary query instead of
-     * id-first; 0 keeps every eligible read id-first. At least 0. Added last, so no positional argument shifts.
+     * `VESPA_ID_FIRST_MAX_DIRECT_HITS`: the most hits a recency read reads as documents in one
+     * query. A read whose first query plans more (`limit` + the shape's tie slack) is id-first;
+     * any other is served in one query, with its tie reads and over-cap queries as ids. 0 keeps
+     * every eligible read id-first. At least 0. Added last, so no positional argument shifts.
      */
     val idFirstMaxDirectHits: Int? = null,
 ) {
@@ -152,12 +153,10 @@ class ClientTuning(
         const val MAX_FEED_BATCH = 4_096
 
         /**
-         * `VESPA_ID_FIRST_MAX_DIRECT_HITS`'s default: the largest first fetch a page that is NOT
-         * dense (its boundary second fits its slack) is served in one query. 200 covers what was
-         * measured faster in one query, hot and with the page cache dropped: a limit-10 page (20
-         * hits) and a limit-100 page (up to 164 hits). Larger pages stay id-first, whose hydrate
-         * reads its chunks concurrently; dense shapes stay id-first at any size. The measurements
-         * are at `VespaEventIndex.idFirstMaxDirectHits` and in benchmark/README.md.
+         * `VESPA_ID_FIRST_MAX_DIRECT_HITS`'s default: 200 covers what was measured faster in one
+         * query, hot and with the page cache dropped, a limit-10 page (20 hits) and a limit-100 page
+         * (up to 164 hits). Larger pages stay id-first, whose hydrate reads its chunks concurrently.
+         * The measurements are at `VespaEventIndex.idFirstMaxDirectHits` and in benchmark/README.md.
          */
         const val DEFAULT_ID_FIRST_MAX_DIRECT_HITS = 200
 
