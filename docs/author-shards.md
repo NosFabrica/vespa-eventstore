@@ -136,6 +136,64 @@ limit and passes. Roots merge only when their ids match exactly: a second groupi
 ./gradlew :benchmark:test -Pintegration -DitAuthorShards=2 --tests '*VespaParityIT' --tests '*FilterMatrixIT'
 ```
 
+## Measured: more shards than hosts (2026-11-24)
+
+`./gradlew :benchmark:shardScaleProbe` (`ShardScaleProbe.kt`), one 4-core / 15 GB host running
+Vespa AND the benchmark client, a fresh Vespa per configuration. The corpus is synthetic and
+loaded at the engine level: 400,000 events by 40,000 authors with hash keys (Zipf-skewed
+activity), 70% notes with hashtags and mentions, plus 40,000 reputation documents carrying 960k
+cells from 40 services. The read mix is closed loop over 8 classes, 60 s at concurrency 1 and
+60 s at 16, through a client configured for K. Raw rows: `benchmark/shard_scale_results.jsonl`.
+
+| K (clusters on the one host) | q/s, 1 client | q/s, 16 clients | search processes' RSS, total |
+|---|---|---|---|
+| 1 | 38.8 | 84.4 | 866 MB |
+| 2 | 36.4 | 76.8 (−9%) | 1,223 MB |
+| 4 | 25.9 | 44.4 (−47%) | 1,927 MB |
+| 8 | 20.9 | 35.9 (−57%) | 3,151 MB |
+| 8, 1 match thread per process | 23.1 | 36.9 | 3,000 MB |
+| 4, 1 match thread per process | 24.3 | 37.7 | 1,792 MB |
+
+p50 latency at one client, ms (K = 1 / 2 / 4 / 8):
+
+| class | K=1 | K=2 | K=4 | K=8 |
+|---|---|---|---|---|
+| global feed, kind 1, limit 50 | 11.2 | 17.4 | 26.4 | 32.7 |
+| gated global feed | 27.3 | 38.1 | 98.5 | 106.7 |
+| follow feed, 300 authors (spans every shard) | 14.3 | 16.0 | 21.3 | 30.8 |
+| one author's profile (scoped to one cluster) | 8.4 | 9.1 | 11.1 | 13.6 |
+| hashtag feed | 7.8 | 9.5 | 12.1 | 18.0 |
+| notifications (`#p`) | 8.5 | 10.1 | 13.0 | 18.4 |
+| NIP-50 search, gated | 98.6 | 95.0 | 107.5 | 133.4 |
+| COUNT, all kind 1 | 23.7 | 16.5 | 14.9 | 16.3 |
+
+What it says, on this host and corpus:
+
+- **Over-sharding costs throughput.** The host was CPU-bound at every K (380–389% of 400%),
+  so the per-cluster work is paid out of query capacity: K=2 lost 9%, and K=4 and K=8 lost
+  about half.
+- **Limit'd reads pay the most.** Each cluster must find its OWN top N, so a page of 50 from
+  K clusters finds K×50 and the container throws most of them away. The gated feed is worst
+  (27 → 99 ms at K=4), since the gate makes each cluster scan deeper for its 50.
+- **Whole-match-set work gets faster.** COUNT (24 → 15 ms) and, at 16 clients with 2–4
+  clusters, search split across processes like extra match threads.
+- **An author-scoped read gets slower too, just less.** A one-author profile (8.4 → 13.6 ms
+  at K=8) reaches one cluster but still pays the host's contention. A 300-author follow feed
+  spans every shard, so scoping cannot narrow it.
+- **Each search process has a baseline of ~350–400 MB here.** That baseline, not the data,
+  is most of the memory growth at this corpus size.
+- **Retuning threads did not recover it.** One match thread per process helped the gated feed
+  at K=8 slightly and halved search throughput.
+
+Not measured: separate hosts, where the clusters stop sharing cores; production-sized slices,
+where each cluster's fixed cost is a smaller share of a query (the K×N top-N amplification is
+not a fixed cost and stays); the reputation memory saving itself, since 960k cells are small
+next to the processes' baseline here.
+
+**Operator guidance from this**: do not deploy many more clusters than hosts to avoid a later
+re-split. Keep K at the number of hosts (or host groups) that need the reputation split, grow
+a cluster by adding nodes, and plan a K change as the migration below.
+
 ## What is NOT known yet
 
 - **Cost per query.** Every unscoped read fans out to K clusters, and the container waits for the
