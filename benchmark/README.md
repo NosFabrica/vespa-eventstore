@@ -1479,42 +1479,61 @@ the trade is still the simulation above.
 ### One query or id-first, per read (2026-11-24)
 
 The two bullets above say the same thing from both ends: id-first pays where a
-read's fetch is LARGE (74 hits at the wide slack: off gained nothing in memory,
-and on the 44M-doc corpus every overfetched hit was a cold document read), and
-costs where it is SMALL (one 20-hit query against a 20-hit `idtime` query plus a
-10-id hydrate: +60–75% REQ/s off). So the choice is now made per read, from the
-fetch it plans: a read eligible for id-first whose first query will ask for at
-most `VESPA_ID_FIRST_MAX_DIRECT_HITS` hits — its limit plus the slack
-`TieSlackMemory` holds for its shape (or the shape's cold seed), leased once per
-read so the decision and the fetch are the same number — is served in ONE
-full-summary query; anything larger stays id-first. Every query of the read
-(speculative attempts, carried pages, the `[T,T]` tie read, a match-phase rerun,
-the fallback) runs in the one mode, and both are exact, so the page does not
-change (`VespaEventIndexTest`, "a tie-heavy boundary serves the same page in
-both modes" and its neighbours; `RecencyStrategyIT` runs every strategy in both
-modes against the page computed from the corpus).
+read's fetch pulls many documents it will throw away (74 hits at the wide slack:
+off gained nothing in memory, and on the 44M-doc corpus every overfetched hit was
+a cold document read), and costs where the fetch is small (one 20-hit query
+against a 20-hit `idtime` query plus a 10-id hydrate: +60–75% REQ/s off). So the
+choice is made per read. Every query of the read (speculative attempts, carried
+pages, the `[T,T]` tie read, a match-phase rerun, the fallback) runs in the one
+mode, and both are exact, so the page does not change (`VespaEventIndexTest`, "a
+tie-heavy boundary serves the same page in both modes" and its neighbours;
+`RecencyStrategyIT` runs every strategy in every mode against the page computed
+from the corpus).
 
-The default is **32**: a limit-10 page at a cold selective shape's page-width
-slack (20 hits) or any learned slack up to 22 goes direct, and so does limit 20
-at the least slack (28); a dense shape at the wide slack (74 for limit 10) and
-every page of limit 100 or more stay id-first. It is under half the 74 hits
-where direct had stopped paying even in memory, and it bounds what a direct
-read can waste past its page to 22 document reads at limit 10. Nothing between
-20 and 74 hits has been measured: a deployment whose corpus fits in memory may
-find a higher value pays, one whose documents are cold reads may want `0`
-(every eligible read id-first, as before). `VESPA_ID_FIRST=0` still turns
-id-first off whatever the threshold. With `VESPA_RECENCY_MEMORY=0` every
-windowable read plans `limit + 64`, so at the default nothing goes direct.
+**The rule: one query unless the shape is dense.** A read eligible for id-first
+is served in ONE full-summary query when its shape is not dense and its first
+query plans at most `VESPA_ID_FIRST_MAX_DIRECT_HITS` hits (default **200**; its
+limit plus the slack `TieSlackMemory` holds for the shape, leased once per read
+so the decision and the fetch agree). A shape is dense when its learned slack is
+`TIE_SLACK` (64) or more, the slack a cut of a wide boundary second teaches it;
+with nothing learned, when it is not selective (no authors, owners, tags, ids,
+search or phrases: a global `kinds:[1]` feed can hold thousands of notes in one
+second). A shape the window memory already knows is narrow is never dense. `0`
+keeps every eligible read id-first; `VESPA_ID_FIRST=0` still turns id-first off.
+With `VESPA_RECENCY_MEMORY=0` no slack is learned: every read plans `limit + 64`
+and is dense exactly when it is not selective.
 
-The cost a direct read keeps: a boundary second wider than its slack is read
-whole as documents by its `[T,T]` query. That is bounded by the shape's own
-learning — the cut that reveals the wide second sends the shape to the wide
-slack, so its next read plans past the threshold.
+The first cut was size alone (32 hits: every limit-100 page id-first). The A/B
+below is what moved it: one build, the knob alone between arms (`idfirst` = 0,
+`size-32` = 32, `direct` = `Int.MAX_VALUE`), through vespa-relay, nostr-bench REQ
+at 200 clients (cold: 50) on the 4-core sandbox, two runs per arm; every arm
+served identical pages (`pages.mjs`, 65 REQs).
+
+| REQ/s, two runs | idfirst | size-32 | direct |
+|---|---|---|---|
+| hot, one author, limit 10 (20 hits) | 1,218 / 1,298 | 1,902 / 1,866 | 1,881 / 1,974 |
+| hot, one author, limit 100 (≤164 hits) | 517 / 539 | 540 / 551 | 886 / 875 |
+| hot, global `kinds:[1]` limit 10, ~2,000 notes per second | 141 / 146 | 143 / 152 | 74 / 72 |
+| cold (page cache dropped, Vespa restarted), 100k 2 KB notes, limit 10 | 138 / 139 | 172 / 174 | 185 / 171 |
+| cold, limit 100 | 63 / 62 | — | 71 / 70 |
+| warm after the cold pass, limit 100 | 111 / 119 | — | 134 / 134 |
+
+One query won every page whose boundary second fit its slack, at both sizes, hot
+and cold (its p99 was higher cold at limit 10: 177/192 against 146/122 ms, the
+documents read up front). It lost only where the boundary was dense: the `[T,T]`
+read of a 2,000-note second fetched the whole tie group as documents, at half
+the throughput. Size was the wrong proxy for that: the dense read plans 74 hits,
+the profitable limit-100 read up to 164. The cap of 200 covers what was measured;
+larger pages stay id-first, whose hydrate reads its chunks concurrently, until
+measured.
+
+The cost a direct read keeps: a selective shape's FIRST read, before it has
+learned anything, reads a wide boundary second whole as documents. The cut that
+reveals it sends the shape to the wide slack, so its next read is dense and
+id-first.
 
 Watching it live: each read eligible for id-first books one zero-time
-`IngestStats` counter, `recency.fetch.direct` or `recency.fetch.idfirst`. The
-end-to-end A/B of this rule (nostr-bench through vespa-relay, default against
-`VESPA_ID_FIRST_MAX_DIRECT_HITS=0`) has not been run yet.
+`IngestStats` counter, `recency.fetch.direct` or `recency.fetch.idfirst`.
 
 ### Small batches take the bulk path (2026-11-23)
 
