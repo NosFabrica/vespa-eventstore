@@ -348,3 +348,13 @@ tasks.register<JavaExec>("reindexLockProbe") {
     maxHeapSize = System.getenv("BENCH_HEAP") ?: "2g"
     workingDir = rootDir
 }
+
+// More author shards than hosts: one Vespa host at K content clusters, a fixed corpus and read
+// mix, run once per K against a fresh Vespa. See ShardScaleProbe.kt and docs/author-shards.md.
+tasks.register<JavaExec>("shardScaleProbe") {
+    group = "verification"
+    description = "Query latency/throughput and search-process memory at K author-shard clusters on one host"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.probe.ShardScaleProbe")
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "3g"
+}
