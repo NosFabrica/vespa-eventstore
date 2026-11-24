@@ -1476,6 +1476,46 @@ the trade is still the simulation above.
   against 10 plus a round trip. Decide it on a production-sized store with
   `VESPA_ID_FIRST=0`; nothing here changes its default.
 
+### One query or id-first, per read (2026-11-24)
+
+The two bullets above say the same thing from both ends: id-first pays where a
+read's fetch is LARGE (74 hits at the wide slack: off gained nothing in memory,
+and on the 44M-doc corpus every overfetched hit was a cold document read), and
+costs where it is SMALL (one 20-hit query against a 20-hit `idtime` query plus a
+10-id hydrate: +60–75% REQ/s off). So the choice is now made per read, from the
+fetch it plans: a read eligible for id-first whose first query will ask for at
+most `VESPA_ID_FIRST_MAX_DIRECT_HITS` hits — its limit plus the slack
+`TieSlackMemory` holds for its shape (or the shape's cold seed), leased once per
+read so the decision and the fetch are the same number — is served in ONE
+full-summary query; anything larger stays id-first. Every query of the read
+(speculative attempts, carried pages, the `[T,T]` tie read, a match-phase rerun,
+the fallback) runs in the one mode, and both are exact, so the page does not
+change (`VespaEventIndexTest`, "a tie-heavy boundary serves the same page in
+both modes" and its neighbours; `RecencyStrategyIT` runs every strategy in both
+modes against the page computed from the corpus).
+
+The default is **32**: a limit-10 page at a cold selective shape's page-width
+slack (20 hits) or any learned slack up to 22 goes direct, and so does limit 20
+at the least slack (28); a dense shape at the wide slack (74 for limit 10) and
+every page of limit 100 or more stay id-first. It is under half the 74 hits
+where direct had stopped paying even in memory, and it bounds what a direct
+read can waste past its page to 22 document reads at limit 10. Nothing between
+20 and 74 hits has been measured: a deployment whose corpus fits in memory may
+find a higher value pays, one whose documents are cold reads may want `0`
+(every eligible read id-first, as before). `VESPA_ID_FIRST=0` still turns
+id-first off whatever the threshold. With `VESPA_RECENCY_MEMORY=0` every
+windowable read plans `limit + 64`, so at the default nothing goes direct.
+
+The cost a direct read keeps: a boundary second wider than its slack is read
+whole as documents by its `[T,T]` query. That is bounded by the shape's own
+learning — the cut that reveals the wide second sends the shape to the wide
+slack, so its next read plans past the threshold.
+
+Watching it live: each read eligible for id-first books one zero-time
+`IngestStats` counter, `recency.fetch.direct` or `recency.fetch.idfirst`. The
+end-to-end A/B of this rule (nostr-bench through vespa-relay, default against
+`VESPA_ID_FIRST_MAX_DIRECT_HITS=0`) has not been run yet.
+
 ### Small batches take the bulk path (2026-11-23)
 
 `NostrSemanticsStore.batchInsert` sent batches under `BULK_MIN` (16) through the
