@@ -2603,7 +2603,7 @@ class VespaEventIndex(
         // to the clusters those authors live in. `from sources …` names the clusters and
         // `model.restrict` keeps the schema, since a cluster also holds `reputation` (measured:
         // without it the query reads both types).
-        val scoped = authorClusters.clustersFor(vq.authorScope)
+        val scoped = authorClusters.clustersFor(vq.authorFilter)
         if (scoped != null) authorClusters.verify()
         val yql = scoped?.let { scopedYql(vq.yql, it) } ?: vq.yql
         val body =

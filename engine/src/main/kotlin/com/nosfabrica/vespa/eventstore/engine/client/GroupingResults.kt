@@ -63,6 +63,11 @@ internal object GroupingResults {
      */
     fun mergeRoots(root: JsonObject): JsonObject {
         val children = root["children"] as? JsonArray ?: return root
+        // Every grouping answer passes here, and on one cluster it has one root per grouping: count
+        // roots without allocating, and return untouched unless some id repeats.
+        var roots = 0
+        for (child in children) if ((child as? JsonObject)?.isGroupingRoot() == true) roots++
+        if (roots < 2) return root
         // By EXACT id: one request's roots are `group:root:0`, a second grouping in the same query
         // would be `group:root:1`, and those are different trees, never one to be summed.
         val byId = children.mapNotNull { it as? JsonObject }.filter { it.isGroupingRoot() }.groupBy { it.idOf() }

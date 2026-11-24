@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.eventstore.engine.client
 
 import com.nosfabrica.vespa.eventstore.engine.app.AuthorShards
+import com.nosfabrica.vespa.eventstore.engine.query.AuthorFilter
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.net.URLEncoder
@@ -83,10 +84,17 @@ internal class AuthorClusters(
     }
 
     /**
-     * The clusters a query whose every match is by one of [authors] needs — their shards' — or
-     * null to search every cluster: one cluster deployed, no scope, an empty scope (it matches
-     * nothing anywhere), or a scope that spans every shard anyway.
+     * The clusters a query with author clauses [filter] needs — its authors' shards' — or null to
+     * search every cluster: one cluster deployed (checked FIRST, so a one-cluster store never
+     * normalizes an author list), no author clause, an empty scope (it matches nothing anywhere), or
+     * a scope that spans every shard anyway.
      */
+    fun clustersFor(filter: AuthorFilter?): List<String>? {
+        if (!sharded || filter == null) return null
+        return clustersFor(filter.scope())
+    }
+
+    /** [clustersFor] over an already-normalized author set. */
     fun clustersFor(authors: Set<String>?): List<String>? {
         if (!sharded || authors.isNullOrEmpty()) return null
         val shards = authors.mapTo(sortedSetOf()) { AuthorShards.shardOf(it, names.size) }

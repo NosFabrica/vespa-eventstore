@@ -20,6 +20,8 @@
  */
 package com.nosfabrica.vespa.eventstore.engine.query
 
+import com.vitorpamplona.quartz.utils.Hex
+
 /**
  * A NIP-01 filter as plain values. The relay module maps a REQ's Filter into
  * this, which keeps this module Nostr-library-agnostic. Empty lists mean "no
@@ -397,12 +399,38 @@ data class VespaQuery(
      */
     val completeCoverage: Boolean = false,
     /**
-     * The authors every match must have ([EventYql.authorScopeOf]); null when the query can match
-     * anyone. Under author sharding the client sends the query only to the clusters these authors
-     * live in instead of all of them. LAST, as [completeCoverage] is.
+     * The query's author clauses ([EventYql.authorFilterOf]); null when it names no author and can
+     * match anyone. Under author sharding the client sends the query only to the clusters these
+     * authors live in. LAST, as [completeCoverage] is.
      */
-    val authorScope: Set<String>? = null,
+    val authorFilter: AuthorFilter? = null,
 )
+
+/**
+ * A query's author clauses as the caller gave them — [authors] and [weighted]'s keys, each an AND-ed
+ * clause — held by reference and normalized only when [scope] is asked for, which only a sharded
+ * client does. A one-cluster store pays for nothing but this object.
+ */
+class AuthorFilter(
+    private val authors: List<String>,
+    private val weighted: Collection<String>,
+) {
+    /**
+     * The authors EVERY match must have, spelled as the clause spells them (lowercase 64-hex, the
+     * rest dropped): [authors], intersected with [weighted] when both are set. `pubkey` matches
+     * `cased`, so a stored event matching one of these has exactly that pubkey and lives in that
+     * pubkey's author shard. Null only when neither clause is set.
+     */
+    fun scope(): Set<String>? {
+        fun hexes(keys: Collection<String>) = keys.mapNotNullTo(HashSet()) { k -> k.lowercase().takeIf(Hex::isHexKey) }
+        val a = authors.takeIf { it.isNotEmpty() }?.let(::hexes)
+        val w = weighted.takeIf { it.isNotEmpty() }?.let(::hexes)
+        return when {
+            a != null && w != null -> a intersect w
+            else -> a ?: w
+        }
+    }
+}
 
 /** The shape of a query carrying no clause worth naming. */
 const val SHAPE_PLAIN = "plain"

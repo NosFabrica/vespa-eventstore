@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.eventstore.engine.client
 
 import com.nosfabrica.vespa.eventstore.engine.app.AuthorShards
+import com.nosfabrica.vespa.eventstore.engine.query.AuthorFilter
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.sun.net.httpserver.HttpServer
@@ -60,7 +61,8 @@ class AuthorClustersTest {
         assertEquals(listOf("content"), two.clustersFor(setOf(key("10"), key("7f"))))
         assertEquals(listOf("content1"), two.clustersFor(setOf(key("80"))))
         assertNull(two.clustersFor(setOf(key("10"), key("f0"))), "spanning every shard is every cluster")
-        assertNull(two.clustersFor(null), "no scope can match anyone")
+        assertNull(two.clustersFor(null as Set<String>?), "no scope can match anyone")
+        assertNull(two.clustersFor(null as AuthorFilter?), "no author clause can match anyone")
         assertNull(two.clustersFor(emptySet()), "an empty scope matches nothing anywhere")
         assertEquals(listOf("content1", "content3"), clusters(4).clustersFor(setOf(key("40"), key("c0"), key("ff"))))
         assertNull(clusters(1).clustersFor(setOf(key("10"))), "one cluster is never scoped")
@@ -74,7 +76,8 @@ class AuthorClustersTest {
         assertEquals(setOf(b), EventYql.authorScopeOf(EventQuery(authorWeights = mapOf(b to 3))))
         assertEquals(setOf(a), EventYql.authorScopeOf(EventQuery(authors = listOf(a, b), authorWeights = mapOf(a to 1))), "two AND-ed author clauses intersect")
         assertNull(EventYql.authorScopeOf(EventQuery(kinds = listOf(1))))
-        assertEquals(setOf(a), EventYql.build(EventQuery(authors = listOf(a), kinds = listOf(1), limit = 5))?.authorScope)
+        assertEquals(setOf(a), EventYql.build(EventQuery(authors = listOf(a), kinds = listOf(1), limit = 5))?.authorFilter?.scope())
+        assertNull(EventYql.build(EventQuery(kinds = listOf(1), limit = 5))?.authorFilter, "no author clause carries nothing")
     }
 
     @Test
