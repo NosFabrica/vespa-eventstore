@@ -67,6 +67,12 @@ class ClientTuning(
     val addressKeyed: Boolean? = null,
     /** `VESPA_UNBOUNDED_HITS`: the hit ceiling sent for a query with no limit. At least 1. */
     val unboundedHits: Int? = null,
+    /**
+     * `VESPA_ID_FIRST_MAX_DIRECT_HITS`: the largest planned fetch (`limit` + the shape's tie
+     * slack) a recency read serves in ONE full-summary query instead of id-first; 0 keeps every
+     * eligible read id-first. At least 0. Added last, so no positional argument shifts.
+     */
+    val idFirstMaxDirectHits: Int? = null,
 ) {
     // ---- resolution: the field, else the historical lenient read ------------
     //
@@ -101,6 +107,9 @@ class ClientTuning(
 
     internal fun idFirstOrEnv(): Boolean = idFirst ?: envOn(ID_FIRST) ?: true
 
+    /** A negative or unparseable value is the default, as the other lenient integer reads treat garbage. */
+    internal fun idFirstMaxDirectHitsOrEnv(): Int = idFirstMaxDirectHits ?: env(ID_FIRST_MAX_DIRECT_HITS)?.trim()?.toIntOrNull()?.takeIf { it >= 0 } ?: DEFAULT_ID_FIRST_MAX_DIRECT_HITS
+
     internal fun recencyMemoryOrEnv(): Boolean = recencyMemory ?: envOn(RECENCY_MEMORY) ?: true
 
     /** Opt-IN, so only an explicit yes turns it on — the old parse, kept. */
@@ -123,6 +132,7 @@ class ClientTuning(
         const val QUERY_PLANNER = "VESPA_QUERY_PLANNER"
         const val RECENCY_STRATEGY = "VESPA_RECENCY_STRATEGY"
         const val ID_FIRST = "VESPA_ID_FIRST"
+        const val ID_FIRST_MAX_DIRECT_HITS = "VESPA_ID_FIRST_MAX_DIRECT_HITS"
         const val RECENCY_MEMORY = "VESPA_RECENCY_MEMORY"
         const val BODY_EDGE = "VESPA_BODY_EDGE"
         const val ADDRESS_KEYED = "VESPA_ADDRESS_KEYED"
@@ -140,6 +150,14 @@ class ClientTuning(
          * again — the ceiling of a useful `VESPA_FEED_BATCH`.
          */
         const val MAX_FEED_BATCH = 4_096
+
+        /**
+         * `VESPA_ID_FIRST_MAX_DIRECT_HITS`'s default: a limit-10 page at a cold selective
+         * shape's slack (20 hits) or a learned narrow one (18) goes direct; a dense shape at the
+         * wide slack (74) and any page of limit 100 or more stays id-first. The measured reasons
+         * are at `VespaEventIndex.idFirstMaxDirectHits`.
+         */
+        const val DEFAULT_ID_FIRST_MAX_DIRECT_HITS = 32
 
         /** HTTP/2 streams per feed connection when nothing says otherwise — the measured small-host value (VespaFeed). */
         const val DEFAULT_FEED_STREAMS = 128

@@ -3673,4 +3673,268 @@ class VespaEventIndexTest {
             val expected = reference.search(EventQuery(kinds = listOf(30382), tags = mapOf("d" to listOf("x")))).map { DocRef(it.id, it.createdAt) }
             assertEquals(expected, got)
         }
+
+    // ---- one query or id-first ------------------------------------------------
+
+    private fun Map<String, String>.isHydrate() = getValue("yql").contains(" where id in (")
+
+    private fun Map<String, String>.isIdTime() = this["presentation.summary"] == "idtime"
+
+    /** Reads booked under each `recency.fetch.*` mode counter, keyed by the mode ([VespaEventIndex.FETCH_STAGE]). */
+    private fun fetchModes(): Map<String, Long> =
+        IngestStats
+            .snapshot()
+            .filterKeys { it.startsWith(VespaEventIndex.FETCH_STAGE + ".") }
+            .mapKeys { it.key.removePrefix(VespaEventIndex.FETCH_STAGE + ".") }
+            .mapValues { it.value.calls }
+
+    /**
+     * ONE QUERY FOR A SMALL PAGE. A limit-10 feed of one author on a cold shape plans 20 hits
+     * (the page plus its page-width slack), under the default direct threshold: it is served by
+     * ONE full-summary query — no `idtime` projection, no hydrate — where id-first spends two
+     * round trips (~800 µs of container CPU each) on it. The same page as the id-first build.
+     *
+     * Verified to fail with the rule removed: two requests, the first `idtime`.
+     */
+    @Test
+    fun `a small recency page is served in one full-summary query`() =
+        runBlocking {
+            val now = System.currentTimeMillis() / 1000
+            seedStrategyCorpus(now)
+            val q = EventQuery(kinds = listOf(1), authors = listOf(BUSY), limit = 10, nowSecs = now)
+            VespaEventIndex(mock.url).use { direct ->
+                val modes = fetchModes()
+                val before = mock.searchRequests.size
+                val page = direct.search(q)
+                val sent = mock.searchRequests.drop(before)
+                assertEquals(1, sent.size, "one query: $sent")
+                assertFalse(sent.single().isIdTime() || sent.single().isHydrate(), "full summaries, no hydrate: $sent")
+                assertTrue(asksFor(sent.single().getValue("yql"), 20), "for the page plus its slack: $sent")
+                assertEquals(mapOf("direct" to 1L), fetchModes().minus(modes), "booked as a direct read")
+                assertEquals(reference.search(q).map { it.id }, page.map { it.id })
+                assertEquals((1..10).map { now - it }, page.map { it.createdAt })
+                VespaEventIndex(mock.url, idFirstMaxDirectHits = 0).use { idFirst ->
+                    val at = mock.searchRequests.size
+                    val same = idFirst.search(q)
+                    val idFirstSent = mock.searchRequests.drop(at)
+                    assertEquals(2, idFirstSent.size, "the id-first build: the idtime query, then the hydrate: $idFirstSent")
+                    assertTrue(idFirstSent[0].isIdTime() && idFirstSent[1].isHydrate(), "$idFirstSent")
+                    assertEquals(same.map { it.id }, page.map { it.id }, "the id-first build serves the same page")
+                    assertEquals(same.map { it.content }, page.map { it.content }, "and the same documents, whole")
+                }
+            }
+        }
+
+    /**
+     * A LARGE FETCH STAYS ID-FIRST: a page whose limit alone is past the threshold, and a dense
+     * shape whose cut taught it the wide slack (a limit-10 page then asks for 74). Each resolves
+     * its page off `idtime` and reads exactly the page's documents.
+     *
+     * The dense half's FIRST read is direct (20 planned hits) and its boundary second — thirty
+     * notes, scrambled — is cut: its `[t,t]` read stays in the read's one mode (full summaries),
+     * the page is exact, and the cut moves the shape to the wide slack, so the second read is
+     * id-first.
+     */
+    @Test
+    fun `a large page and a dense shape stay id-first`() =
+        runBlocking {
+            val now = System.currentTimeMillis() / 1000
+            seedStrategyCorpus(now)
+            val large = EventQuery(kinds = listOf(1, 7), authors = listOf(BUSY), limit = 35, nowSecs = now)
+            val modes = fetchModes()
+            var before = mock.searchRequests.size
+            assertEquals(reference.search(large).map { it.id }, index.search(large).map { it.id })
+            var sent = mock.searchRequests.drop(before)
+            assertTrue(sent.pageQueries().isNotEmpty() && sent.pageQueries().all { it.isIdTime() }, "a 70-hit fetch resolves off ids: $sent")
+            assertEquals("35", sent.single { it.isHydrate() }["hits"], "and reads the page's documents once")
+
+            val author = "e2".repeat(32)
+            val dense = now - 100
+            seed(*(1..30).map { doc(kind = 1, pubkey = author, at = dense) }.toTypedArray())
+            val q = EventQuery(kinds = listOf(1), authors = listOf(author), limit = 10, nowSecs = now)
+            mock.scrambleTieOrder = true
+            try {
+                before = mock.searchRequests.size
+                assertEquals(reference.search(q).map { it.id }, index.search(q).map { it.id }, "the cut boundary is exact in one query mode")
+                sent = mock.searchRequests.drop(before)
+                assertEquals(1, tieQueries(before, dense).size, "the 20-hit fetch cut the thirty-note second: $sent")
+                assertTrue(sent.none { it.isIdTime() || it.isHydrate() }, "a direct read's tie read is full summaries too: $sent")
+
+                before = mock.searchRequests.size
+                assertEquals(reference.search(q).map { it.id }, index.search(q).map { it.id })
+                sent = mock.searchRequests.drop(before)
+                assertEquals(10 + VespaEventIndex.TIE_SLACK, lastFetch(before), "the cut taught the shape the wide slack")
+                assertTrue(sent.pageQueries().all { it.isIdTime() }, "so its 74-hit fetch is id-first: $sent")
+                assertEquals("10", sent.single { it.isHydrate() }["hits"], "reading the page's ten documents")
+            } finally {
+                mock.scrambleTieOrder = false
+            }
+            assertEquals(mapOf("idfirst" to 2L, "direct" to 1L), fetchModes().minus(modes))
+        }
+
+    /**
+     * THE DECISION IS THE FETCH'S. A limit-20 feed of one sparse author starts at its page-width
+     * slack (40 planned hits: id-first) and narrows as its pages show no boundary ties; once its
+     * learned slack plans 32 hits or fewer it goes direct. On every read, the mode is exactly
+     * what the hits its first query asked for say — the slack the read used, not a cold guess.
+     */
+    @Test
+    fun `the mode follows the slack the shape has learned`() =
+        runBlocking {
+            val now = System.currentTimeMillis() / 1000
+            val author = "e4".repeat(32)
+            seed(*(1..40).map { doc(kind = 1, pubkey = author, at = now - it * 10L) }.toTypedArray())
+            val q = EventQuery(kinds = listOf(1), authors = listOf(author), limit = 20, nowSecs = now)
+            val reads =
+                (1..20).map {
+                    val before = mock.searchRequests.size
+                    assertEquals(reference.search(q).map { it.id }, index.search(q).map { it.id })
+                    val sent = mock.searchRequests.drop(before)
+                    assertEquals(1, sent.pageQueries().size, "one page query per read: $sent")
+                    lastFetch(before) to sent.any { it.isHydrate() }
+                }
+            assertEquals(40 to true, reads.first(), "cold: the page-width slack, id-first")
+            assertTrue(reads.last().first <= ClientTuning.DEFAULT_ID_FIRST_MAX_DIRECT_HITS && !reads.last().second, "narrowed: direct: $reads")
+            for ((fetch, idFirst) in reads) assertEquals(fetch > ClientTuning.DEFAULT_ID_FIRST_MAX_DIRECT_HITS, idFirst, "the mode is the fetch's: $reads")
+        }
+
+    /**
+     * THE TWO OFF SWITCHES. A threshold of 0 is id-first as it was before the rule (the small page
+     * of the test above: an `idtime` query and a hydrate); `VESPA_ID_FIRST=0` reads documents all
+     * the way whatever the threshold, and books no mode (it never chose one).
+     */
+    @Test
+    fun `threshold zero keeps id-first and id-first off reads documents`() =
+        runBlocking {
+            val now = System.currentTimeMillis() / 1000
+            seedStrategyCorpus(now)
+            val q = EventQuery(kinds = listOf(1), authors = listOf(BUSY), limit = 10, nowSecs = now)
+            val expected = reference.search(q).map { it.id }
+            VespaEventIndex(mock.url, tuning = ClientTuning(idFirstMaxDirectHits = 0)).use { zero ->
+                val modes = fetchModes()
+                val before = mock.searchRequests.size
+                assertEquals(expected, zero.search(q).map { it.id })
+                val sent = mock.searchRequests.drop(before)
+                assertEquals(2, sent.size, "$sent")
+                assertTrue(sent[0].isIdTime() && sent[1].isHydrate(), "threshold 0: id-first, as before: $sent")
+                assertEquals(mapOf("idfirst" to 1L), fetchModes().minus(modes))
+            }
+            VespaEventIndex(mock.url, idFirst = false, idFirstMaxDirectHits = Int.MAX_VALUE).use { off ->
+                val modes = fetchModes()
+                val before = mock.searchRequests.size
+                assertEquals(expected, off.search(q).map { it.id })
+                val sent = mock.searchRequests.drop(before)
+                assertEquals(1, sent.size, "$sent")
+                assertFalse(sent.single().isIdTime(), "id-first off: documents all the way: $sent")
+                assertEquals(emptyMap(), fetchModes().minus(modes), "no mode was chosen")
+                // A large page too: no threshold turns id-first back on.
+                val at = mock.searchRequests.size
+                off.search(q.copy(limit = 40))
+                assertTrue(mock.searchRequests.drop(at).none { it.isIdTime() || it.isHydrate() })
+            }
+        }
+
+    /** The builds a mode-parity check compares: the default rule, always id-first, always direct, id-first off. */
+    private fun modeBuilds(strategy: RecencyStrategy = RecencyStrategy.SPECULATIVE): Map<String, VespaEventIndex> =
+        mapOf(
+            "default" to VespaEventIndex(mock.url, recencyStrategy = strategy),
+            "id-first" to VespaEventIndex(mock.url, recencyStrategy = strategy, idFirstMaxDirectHits = 0),
+            "direct" to VespaEventIndex(mock.url, recencyStrategy = strategy, idFirstMaxDirectHits = Int.MAX_VALUE),
+            "documents" to VespaEventIndex(mock.url, recencyStrategy = strategy, idFirst = false),
+        )
+
+    /**
+     * A TIE-HEAVY BOUNDARY, BOTH MODES. Forty notes on one second under three newer ones, a
+     * limit of 7 that cuts inside them, on the mock's adversarial tie order: the default build
+     * goes direct (7 + 8 planned hits) and its slack cuts the group, so the `[t,t]` read
+     * resolves it — and every build serves the reference page, lowest ids first, under every
+     * strategy, read after read (the second read meets the slack the cut taught).
+     */
+    @Test
+    fun `a tie-heavy boundary serves the same page in both modes`() =
+        runBlocking {
+            val now = System.currentTimeMillis() / 1000
+            val author = "e3".repeat(32)
+            seed(*(1..40).map { doc(kind = 1, pubkey = author, at = now - 50) }.toTypedArray())
+            seed(*(1..3).map { doc(kind = 1, pubkey = author, at = now - it) }.toTypedArray())
+            val shapes =
+                listOf(
+                    EventQuery(kinds = listOf(1), authors = listOf(author), limit = 7),
+                    EventQuery(kinds = listOf(1), authors = listOf(author), limit = 3),
+                    EventQuery(kinds = listOf(1), authors = listOf(author), limit = 20),
+                    EventQuery(kinds = listOf(1), authors = listOf(author), until = now - 50, limit = 9),
+                ).map { it.copy(nowSecs = now) }
+            mock.scrambleTieOrder = true
+            try {
+                for (strategy in RecencyStrategy.entries) {
+                    val builds = modeBuilds(strategy)
+                    try {
+                        for (q in shapes) {
+                            val expected = reference.search(q).map { it.id }
+                            repeat(2) { read ->
+                                for ((name, build) in builds) {
+                                    val before = mock.searchRequests.size
+                                    assertEquals(expected, build.search(q).map { it.id }, "$strategy $name read $read: $q")
+                                    // The shape's first read is cold (15 planned hits): the default goes direct.
+                                    if (strategy == RecencyStrategy.SPECULATIVE && name == "default" && q === shapes.first() && read == 0) {
+                                        assertTrue(mock.searchRequests.drop(before).none { it.isIdTime() || it.isHydrate() }, "the default build served the small page directly")
+                                    }
+                                }
+                            }
+                        }
+                    } finally {
+                        builds.values.forEach { it.close() }
+                    }
+                }
+            } finally {
+                mock.scrambleTieOrder = false
+            }
+        }
+
+    /**
+     * A DEGRADED FIRST ANSWER AND THE GATED PROFILE, BOTH MODES. A settling cluster refuses the
+     * read's first query (`non-ideal-state`): a speculative attempt falls through to the
+     * unwindowed read, a partial-accepting one is served; a gated read whose match phase
+     * under-delivers is rerun on the exact gated profile. Whichever mode the read took, it took
+     * it for all of its queries, and every build serves the same page.
+     */
+    @Test
+    fun `a degraded first answer and the gated profile serve the same page in both modes`() =
+        runBlocking {
+            val now = System.currentTimeMillis() / 1000
+            seedStrategyCorpus(now)
+            val plain = EventQuery(kinds = listOf(1), authors = listOf(BUSY), limit = 10, nowSecs = now)
+            val builds = modeBuilds()
+            try {
+                for (q in listOf(plain, plain.copy(acceptsPartial = true), plain.copy(authors = listOf(WEEKLY), limit = 6))) {
+                    val expected = reference.search(q).map { it.id }
+                    for ((name, build) in builds) {
+                        mock.degradeNextSearches = 1
+                        val before = mock.searchRequests.size
+                        assertEquals(expected, build.search(q).map { it.id }, "$name, first answer degraded: $q")
+                        val sent = mock.searchRequests.drop(before)
+                        if (name == "direct" || name == "documents") assertTrue(sent.none { it.isIdTime() || it.isHydrate() }, "$name: one mode for every query: $sent")
+                        if (name == "id-first") assertTrue(sent.pageQueries().all { it.isIdTime() } && sent.count { it.isHydrate() } == 1, "$name: one mode for every query: $sent")
+                    }
+                }
+                val gated = plain.copy(ranking = EventYql.RANK_RECENCY_GATED, observer = BUSY, rankKey = BUSY, minRank = 2.0)
+                val expected = reference.search(plain).map { it.id }
+                mock.matchPhaseUnderdeliver = 2
+                try {
+                    for ((name, build) in builds) {
+                        val before = mock.searchRequests.size
+                        assertEquals(expected, build.search(gated).map { it.id }, "$name: gated, under-delivered")
+                        val sent = mock.searchRequests.drop(before)
+                        assertTrue(sent.any { it["ranking"] == EventYql.RANK_RECENCY_GATED_EXACT }, "$name: the short gated page was rerun on the exact gated profile: $sent")
+                        if (name == "default" || name == "direct") assertTrue(sent.none { it.isIdTime() || it.isHydrate() }, "$name: the gated small page went direct, rerun included: $sent")
+                        if (name == "id-first") assertTrue(sent.pageQueries().all { it.isIdTime() }, "$name: $sent")
+                    }
+                } finally {
+                    mock.matchPhaseUnderdeliver = 0
+                }
+            } finally {
+                mock.degradeNextSearches = 0
+                builds.values.forEach { it.close() }
+            }
+        }
 }

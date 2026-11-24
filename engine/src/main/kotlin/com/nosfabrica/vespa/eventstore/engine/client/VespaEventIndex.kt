@@ -221,6 +221,35 @@ class VespaEventIndex(
     private val addressKeyed: Boolean = tuning.addressKeyedOrEnv(),
     /** The hit ceiling for a query with no limit (`VESPA_UNBOUNDED_HITS`); see [hitsFor]. */
     private val unboundedHits: Int = tuning.unboundedHitsOrEnv(),
+    /**
+     * ONE QUERY OR ID-FIRST (`VESPA_ID_FIRST_MAX_DIRECT_HITS`, default
+     * [ClientTuning.DEFAULT_ID_FIRST_MAX_DIRECT_HITS]): the largest planned fetch — `limit`
+     * plus the tie slack the read's first query will overfetch — that a read eligible for
+     * id-first serves instead in ONE full-summary query, with no hydrate ([recallSummaries]).
+     * 0 keeps every eligible read id-first, as before this knob; `VESPA_ID_FIRST=0` still turns
+     * id-first off whatever this says. Last, like the two knobs above, so no positional argument
+     * shifts.
+     *
+     * The two costs it weighs (benchmark/README.md, "Id-first fetch" and "The tie slack is
+     * learned per shape"): every query costs ~800 µs of query-container CPU whatever its size,
+     * and a hit ~4.4 µs on top. Through vespa-relay on a 4-core sandbox with the corpus in
+     * memory, a sparse limit-10 REQ served as one 20-hit full-summary query instead of a 20-hit
+     * `idtime` query plus a 10-id hydrate ran +60–75% REQ/s; at the flat 64 slack, 74 full
+     * documents in one query gained nothing over id-first. And on a corpus larger than memory
+     * a document read is cold (a 164-hit notification page: 3 ms from attributes, ~40–50 ms
+     * as documents, 2026-09-28), so every hit served directly past the page is a wasted cold
+     * read, which is what id-first exists to avoid.
+     *
+     * Hence 32: a limit-10 page at a cold selective shape's slack (20 hits) or at any learned
+     * slack up to 22 goes direct, as does limit 20 at the narrowest slack (28); a dense shape at
+     * the wide slack (74 hits for limit 10) and every page of limit 100 or more stay id-first.
+     * It sits under half the 74 hits where going direct had stopped paying even in memory, and
+     * it bounds the documents a direct read can waste past its page to 22 for a limit-10 page.
+     * Nothing between 20 and 74 hits has been measured: a deployment whose corpus fits in
+     * memory may find a higher value pays, one whose documents are cold reads may want 0.
+     * The `recency.fetch.direct` / `.idfirst` counters ([fetchMode]) show the split.
+     */
+    private val idFirstMaxDirectHits: Int = tuning.idFirstMaxDirectHitsOrEnv(),
 ) : EventIndex {
     private val documentApi = EndpointRotation(feedEndpoints, baseUrl)
 
@@ -670,6 +699,19 @@ class VespaEventIndex(
      *
      * Ranked queries keep the engine's score order untouched. The gated profiles
      * are recency-ordered too (score IS created_at), so they take this path.
+     *
+     * ONE QUERY OR ID-FIRST, decided once per read. A read eligible for id-first
+     * ([hydrate]) whose first query will ask for at most [idFirstMaxDirectHits] hits —
+     * its limit plus the slack that query overfetches, which [readStart] leases here
+     * and hands down, so the decision and the fetch are the same number — is served
+     * in ONE full-summary query instead; anything larger stays id-first. Every query
+     * of the read (speculative attempts, carried pages, the `[T,T]` tie read, a
+     * match-phase rerun, the fallback) then runs in that one mode, and both modes are
+     * exact, so the page is the same either way: the rule moves cost, never answers.
+     * A direct read whose boundary second is wider than its slack reads that second
+     * as documents — a small read's slack is small only while its shape shows no wide
+     * boundary, and the cut that reveals one moves the shape to the wide slack, so
+     * its next read plans past the threshold and goes id-first.
      */
     private suspend fun recallSummaries(
         q: EventQuery,
@@ -677,16 +719,117 @@ class VespaEventIndex(
     ): List<VespaSummary> {
         val eligible = idFirst && q.limit != null && q.isRecencyOrdered() && fallbacks.idTimeSummaryAvailable
         if (!eligible) return recallPage(q, planned, idOnly = false)
+        // A threshold of 0 never reads the start: today's id-first path, untouched.
+        val start = if (idFirstMaxDirectHits > 0) readStart(q, planned) else null
+        if (start != null && start.hits <= idFirstMaxDirectHits) {
+            fetchMode("direct")
+            return recallPage(q, planned, idOnly = false, start = start)
+        }
+        fetchMode("idfirst")
         val page =
             try {
-                recallPage(q, planned, idOnly = true)
+                recallPage(q, planned, idOnly = true, start = start)
             } catch (e: IllegalArgumentException) {
                 if (!fallbacks.isMissingIdTimeSummary(e)) throw e
                 fallbacks.markIdTimeSummaryMissing()
-                return recallPage(q, planned, idOnly = false)
+                // Refused at the read's first query, before anything was learned: the
+                // same start serves the document read.
+                return recallPage(q, planned, idOnly = false, start = start)
             }
         return hydrate(page, q.acceptsPartial)
     }
+
+    /**
+     * What a recency read's FIRST query will ask for, taken once per read so the
+     * one-query-or-id-first decision ([recallSummaries]) and the fetch agree:
+     * [hits] (the limit plus the overfetch, clamped as [recallPage] clamps it) and
+     * whatever [recallPage] would otherwise have keyed and leased for that query —
+     * the read's [shape], its window [recalled] and slack [lease], and for a
+     * speculative read the [anchor] it keys them at. Null fields are what
+     * the read would have had too: no memory, or a read the slack memory does not key.
+     */
+    private class ReadStart(
+        val hits: Int,
+        val shape: RecencyWindowMemory.Shape? = null,
+        val lease: TieSlackMemory.Lease? = null,
+        val recalled: RecencyWindowMemory.Recall? = null,
+        val anchor: Long = 0,
+    )
+
+    /**
+     * [ReadStart] for [q], mirroring [recallPage]'s branches exactly: the full-scan
+     * twin, the speculative read's first attempt ([speculativeStart]), the band pager
+     * (whose pages key their own slack — past the band it is id-first at any sane
+     * threshold), and the plain page's shape and lease.
+     */
+    private fun readStart(
+        q: EventQuery,
+        planned: Boolean,
+    ): ReadStart {
+        val limit = q.limit ?: return ReadStart(hits = 0)
+        if (limit <= 0) return ReadStart(hits = 0)
+        if (!planned && q.isWindowable()) {
+            when (recencyStrategy) {
+                RecencyStrategy.FULL_SCAN -> return readStart(q.fullScan(), planned = true)
+                RecencyStrategy.SPECULATIVE -> return speculativeStart(q, limit)
+                RecencyStrategy.MATCH_PHASE, RecencyStrategy.COUNT_PROBE -> Unit
+            }
+        }
+        if (limit > EventYql.MATCH_PHASE_BAND && q.ranking == null) return ReadStart(hits = limit)
+        val shape = if (slackMemory == null) null else q.takeIf { it.isWindowable() }?.let(::shapeOfRead)
+        val lease = shape?.let { slackMemory?.slackFor(it, TieSlackMemory.coldSlack(q, limit)) }
+        return ReadStart(fetchLimitOf(limit, lease?.value ?: TIE_SLACK), shape, lease)
+    }
+
+    /**
+     * A speculative read's [ReadStart]: its shape, keyed once at its anchor, the window
+     * and first slack under one lock ([RecencyWindowMemory.recallWith]), and the hits
+     * its first query asks for — the first attempt's, or a recalled-narrow shape's
+     * unwindowed read at [narrowLease].
+     */
+    private fun speculativeStart(
+        q: EventQuery,
+        limit: Int,
+    ): ReadStart {
+        // Anchored at the NEWEST END OF THE DATA, not merely of the request: an
+        // `until` in the future (clients send far-future sentinels) would put
+        // every window over empty time and spend the attempts on nothing. Any
+        // anchor is exact — `since` bounds only the old side, so whatever lies
+        // between the anchor and `until` (future-dated notes included) is
+        // inside every window — so the anchor is free to be the request clock.
+        val now = q.nowSecs ?: (System.currentTimeMillis() / 1000)
+        val anchor = q.until?.let { minOf(it, now) } ?: now
+        // The shape is keyed ONCE per read: the recall here and the
+        // learn/forget after share it (the digest walks the author list).
+        val shape = if (windowMemory != null || slackMemory != null) RecencyWindowMemory.shapeOf(q, anchor, now) else null
+        // The window and the first page's tie slack, under one lock.
+        val (recalled, lease) = shape?.let { windowMemory?.recallWith(it, TieSlackMemory.coldSlack(q, limit)) } ?: (null to null)
+        val first = if (recalled is RecencyWindowMemory.Recall.Narrow) narrowLease(lease) else lease
+        return ReadStart(fetchLimitOf(limit, first?.value ?: TIE_SLACK), shape, lease, recalled, anchor)
+    }
+
+    /**
+     * Too thin to window is too thin for a wide tie slack: a recalled-narrow shape
+     * with no slack learned starts from the least, and a cut widens it at once.
+     */
+    private fun narrowLease(lease: TieSlackMemory.Lease?): TieSlackMemory.Lease? = lease?.let { if (it.epoch == 0L) TieSlackMemory.Lease(MIN_TIE_SLACK, 0) else it }
+
+    /**
+     * The hits a page of [limit] asks the engine for at [slack]: the overfetch, stopped
+     * at the deployed cap (VESPA_UNBOUNDED_HITS) — see [recallPage].
+     */
+    private fun fetchLimitOf(
+        limit: Int,
+        slack: Int,
+    ): Int = minOf(plusSaturated(limit, slack), maxOf(limit, unboundedHits))
+
+    /**
+     * Which mode a read eligible for id-first took ([recallSummaries]), as a zero-time
+     * [IngestStats] counter under [FETCH_STAGE] (the [outcome] idiom): `direct` (one
+     * full-summary query) or `idfirst` (an `idtime` resolve and a hydrate). Reads that
+     * were never eligible — ranked, unlimited, id-first off — book neither.
+     */
+    private suspend fun fetchMode(name: String) = IngestStats.timed("$FETCH_STAGE.$name") { }
 
     /**
      * ID-FIRST, second half: the full documents for [page] — an id-only page
@@ -772,6 +915,10 @@ class VespaEventIndex(
         // The slack already leased for this page, when its caller read it with
         // the window ([RecencyWindowMemory.recallWith], one lock for both).
         leased: TieSlackMemory.Lease? = null,
+        // The READ's first query, when [recallSummaries] took it to choose the
+        // mode ([readStart]): its shape and lease are this page's, so the fetch
+        // asks for exactly the hits the decision weighed.
+        start: ReadStart? = null,
     ): List<VespaSummary> {
         if (!q.isRecencyOrdered()) return rankedHits(q).mapNotNull { it.fields }
         val limit = q.limit
@@ -784,8 +931,8 @@ class VespaEventIndex(
         if (limit <= 0) return emptyList()
         if (!planned && q.isWindowable()) {
             when (recencyStrategy) {
-                RecencyStrategy.FULL_SCAN -> return recallPage(q.fullScan(), planned = true, idOnly = idOnly)
-                RecencyStrategy.SPECULATIVE -> return speculative(q, limit, idOnly)
+                RecencyStrategy.FULL_SCAN -> return recallPage(q.fullScan(), planned = true, idOnly = idOnly, start = start)
+                RecencyStrategy.SPECULATIVE -> return speculative(q, limit, idOnly, start)
                 RecencyStrategy.MATCH_PHASE, RecencyStrategy.COUNT_PROBE -> Unit
             }
         }
@@ -804,10 +951,17 @@ class VespaEventIndex(
         // a client's feed, its speculative attempts and fallbacks — is keyed;
         // internal probes (RANK_UNRANKED), id lookups and complete reads keep
         // the flat [TIE_SLACK] and never take a slot in the table.
-        val slackShape = if (slackMemory == null) null else shape ?: q.takeIf { it.isWindowable() }?.let(::shapeOfRead)
-        val lease = slackShape?.let { leased ?: slackMemory?.slackFor(it, coldSlack ?: TieSlackMemory.coldSlack(q, limit)) }
+        val slackShape =
+            if (start != null) {
+                start.shape
+            } else if (slackMemory == null) {
+                null
+            } else {
+                shape ?: q.takeIf { it.isWindowable() }?.let(::shapeOfRead)
+            }
+        val lease = if (start != null) start.lease else slackShape?.let { leased ?: slackMemory?.slackFor(it, coldSlack ?: TieSlackMemory.coldSlack(q, limit)) }
         val slack = lease?.value ?: TIE_SLACK
-        val fetchLimit = minOf(plusSaturated(limit, slack), maxOf(limit, unboundedHits))
+        val fetchLimit = fetchLimitOf(limit, slack)
         val fetch = q.copy(limit = fetchLimit).keepingProfileOf(q)
         var hits =
             recallRoot(fetch, idOnly)?.children?.mapNotNull { it.fields }?.filter { it.id.isNotEmpty() }
@@ -892,6 +1046,8 @@ class VespaEventIndex(
         q: EventQuery,
         limit: Int,
         idOnly: Boolean,
+        // The read's start, when [recallSummaries] already took it ([readStart]).
+        start: ReadStart? = null,
     ): List<VespaSummary> =
         // A read that may be SERVED partial watches for it ([ServedDegraded]): a page off part of
         // the corpus is thinner than the shape's real rate, and [learn] must not remember it. Its
@@ -899,9 +1055,9 @@ class VespaEventIndex(
         if (q.acceptsPartial && windowMemory != null) {
             val outer = currentCoroutineContext()[ServedDegraded]
             val own = ServedDegraded()
-            withContext(own) { speculativeAttempts(q, limit, idOnly) }.also { if (own.seen) outer?.mark() }
+            withContext(own) { speculativeAttempts(q, limit, idOnly, start) }.also { if (own.seen) outer?.mark() }
         } else {
-            speculativeAttempts(q, limit, idOnly)
+            speculativeAttempts(q, limit, idOnly, start)
         }
 
     /** [speculative]'s body. */
@@ -909,31 +1065,23 @@ class VespaEventIndex(
         q: EventQuery,
         limit: Int,
         idOnly: Boolean,
+        start: ReadStart?,
     ): List<VespaSummary> =
         IngestStats.timed(SPECULATIVE_STAGE) {
-            // Anchored at the NEWEST END OF THE DATA, not merely of the request: an
-            // `until` in the future (clients send far-future sentinels) would put
-            // every window over empty time and spend the attempts on nothing. Any
-            // anchor is exact — `since` bounds only the old side, so whatever lies
-            // between the anchor and `until` (future-dated notes included) is
-            // inside every window — so the anchor is free to be the request clock.
-            val now = q.nowSecs ?: (System.currentTimeMillis() / 1000)
-            val anchor = q.until?.let { minOf(it, now) } ?: now
+            // The anchor, the shape and its first slack: taken by the caller when it
+            // chose the read's mode, else here — the same computation either way.
+            val s = start ?: speculativeStart(q, limit)
+            val anchor = s.anchor
+            val shape = s.shape
             // What the last read of this shape learned (RecencyWindowMemory):
             // a NARROW shape skips straight to the unwindowed read — the shipped
             // cost, nothing speculated — and a remembered WINDOW, scaled to this
             // limit, replaces the cold first guess.
-            // The shape is keyed ONCE per read: the recall here and the
-            // learn/forget below share it (the digest walks the author list).
-            val shape = if (windowMemory != null || slackMemory != null) RecencyWindowMemory.shapeOf(q, anchor, now) else null
-            // The window and the first page's tie slack, under one lock.
-            val (recalled, firstLease) = shape?.let { windowMemory?.recallWith(it, TieSlackMemory.coldSlack(q, limit)) } ?: (null to null)
+            val recalled = s.recalled
+            val firstLease = s.lease
             if (recalled is RecencyWindowMemory.Recall.Narrow) {
                 outcome("recalled.narrow")
-                // Too thin to window is too thin for a wide tie slack: a shape
-                // with no slack learned starts from the least, and a cut widens it at once.
-                val narrowLease = firstLease?.let { if (it.epoch == 0L) TieSlackMemory.Lease(MIN_TIE_SLACK, 0) else it }
-                return@timed recallPage(planner.shipped(q), planned = true, idOnly = idOnly, shape = shape, coldSlack = MIN_TIE_SLACK, leased = narrowLease)
+                return@timed recallPage(planner.shipped(q), planned = true, idOnly = idOnly, shape = shape, coldSlack = MIN_TIE_SLACK, leased = narrowLease(firstLease))
             }
             var window =
                 (recalled as? RecencyWindowMemory.Recall.Window)
@@ -1014,7 +1162,10 @@ class VespaEventIndex(
             // A shape that came back short has MEASURED its rate: the fallback
             // starts its tie slack there, not at the wide default.
             val measured = if (attempts > 0) TieSlackMemory.measuredSlack(carried.size, measuredWindow) else null
-            carried + recallPage(planner.shipped(q.olderThan(boundary, limit - carried.size)), planned = true, idOnly = idOnly, shape = shape, coldSlack = measured)
+            // With no attempt run (the caller's `since`, a refused first attempt) the
+            // fallback IS the read's first page: it takes the slack the read started
+            // with, the one its mode was chosen by ([recallSummaries]).
+            carried + recallPage(planner.shipped(q.olderThan(boundary, limit - carried.size)), planned = true, idOnly = idOnly, shape = shape, coldSlack = measured, leased = firstLease.takeIf { attempts == 0 })
         }
 
     /**
@@ -2946,6 +3097,9 @@ class VespaEventIndex(
 
         /** The [IngestStats] stage every [RecencyStrategy.SPECULATIVE] read books under; see [outcome]. */
         const val SPECULATIVE_STAGE = "recency.speculative"
+
+        /** The [IngestStats] stage under which each read eligible for id-first books the mode it took; see [fetchMode]. */
+        const val FETCH_STAGE = "recency.fetch"
 
         /**
          * Ids per cursor page of a snapshot walk — see [visitIds].
