@@ -149,7 +149,19 @@ class EngineTuningTest {
         assertEquals(4_096, EngineTuning.MAX_FEED_BATCH)
         assertEquals(500, EngineTuning.DEFAULT_DEDUP_CHUNK)
         assertEquals(EngineTuning.VARIABLES.size, EngineTuning.VARIABLES.toSet().size, "each variable once")
-        assertEquals(24, EngineTuning.VARIABLES.size)
+        assertEquals(25, EngineTuning.VARIABLES.size)
+    }
+
+    /** The shard count decides where documents live, so it parses strictly and reaches the client. */
+    @Test
+    fun `author shards parse strictly in 1 to 256`() {
+        assertEquals(2, EngineTuning.fromEnv(mapOf("VESPA_AUTHOR_SHARDS" to "2")).authorShards)
+        assertEquals(null, EngineTuning.fromEnv(mapOf("VESPA_AUTHOR_SHARDS" to " ")).authorShards)
+        for (bad in listOf("0", "257", "two")) {
+            assertFailsWith<IllegalArgumentException>(bad) { EngineTuning.fromEnv(mapOf("VESPA_AUTHOR_SHARDS" to bad)) }
+        }
+        assertFailsWith<IllegalArgumentException> { EngineTuning(authorShards = 0) }
+        assertEquals(3, EngineTuning(authorShards = 3).authorShardsOrEnv())
     }
 
     /** A per-store setting reaches the store it opens: feedBatch 0 leaves the batch path unbuilt. */
