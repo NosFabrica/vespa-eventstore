@@ -257,6 +257,42 @@ internal class RecencyWindowMemory(
         }
 
         /**
+         * [q]'s FAMILY: its [shapeOf] with the VALUES taken out — the authors, the
+         * owners and every tag's values reduced to how many there are
+         * ([countBucket]), the tag names, kinds, exclusions, gate floor and age
+         * kept. Every `#p` notification read of one size is one family whatever
+         * key it names; it is what [NarrowPrior] learns per, so a value no read has
+         * asked for yet still starts from what its family's cold reads found.
+         *
+         * Null for a read with no values to take out (its shape IS its family, and
+         * the shape table already answers it) and for a search, whose terms are
+         * values of their own that no count stands for.
+         */
+        fun familyOf(
+            q: EventQuery,
+            anchor: Long,
+            now: Long,
+        ): Shape? {
+            if (q.authors.isEmpty() && q.owners.isEmpty() && q.tags.isEmpty() && q.tagsAll.isEmpty()) return null
+            if (!q.search.isNullOrBlank() || q.phrases.isNotEmpty()) return null
+            val gated = q.usesGatedProfile()
+            val k = ShapeKey()
+            k.field(1).ints(q.kinds)
+            k.field(2).long(countBucket(q.authors.size).toLong())
+            k.field(3).long(countBucket(q.owners.size).toLong())
+            k.field(4).tagCounts(q.tags)
+            k.field(5).tagCounts(q.tagsAll)
+            k.field(6).set(q.notSearch, lowerAscii = false)
+            k.field(9).long(if (gated) 1 else 0)
+            if (gated) k.field(11).text(q.minRank.toString())
+            k.field(12).long(ageBucket(now - anchor).toLong())
+            return k.key()
+        }
+
+        /** A list's size, coarsely: 0, 1, 2, then one bucket per doubling (3-4, 5-8, …). */
+        fun countBucket(size: Int): Int = if (size <= 2) size else 33 - Integer.numberOfLeadingZeros(size - 1)
+
+        /**
          * How far back an anchor sits, coarsely: 0 within a day of the clock,
          * then one bucket per doubling (2 days, 4, 8, … ). Deep pagination
          * walks through the buckets and re-learns at each, which is the point:
@@ -336,6 +372,18 @@ private class ShapeKey {
             }
             sh += fmix(hashOf(name, SEED_HI, false) * K1 + vh * K2 + values.size)
             sl += fmix(hashOf(name, SEED_LO, false) * K2 + vl * K1 + values.size)
+        }
+        combine(tags.size, sh, sl)
+    }
+
+    /** Each tag's NAME with only how many values it holds ([RecencyWindowMemory.countBucket]), order-independently. */
+    fun tagCounts(tags: Map<String, List<String>>) {
+        var sh = 0L
+        var sl = 0L
+        for ((name, values) in tags) {
+            val n = RecencyWindowMemory.countBucket(values.size).toLong()
+            sh += fmix(hashOf(name, SEED_HI, false) * K1 + n)
+            sl += fmix(hashOf(name, SEED_LO, false) * K2 + n)
         }
         combine(tags.size, sh, sl)
     }

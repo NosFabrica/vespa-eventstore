@@ -869,6 +869,85 @@ class VespaEventIndexTest {
         }
 
     /**
+     * THE PRIOR PAYS ON THE FIRST READ. Every value of a `#p` feed is a new exact
+     * shape, so the window memory never answers its first read: each cold one
+     * spends an attempt, then the fallback. Once [NarrowPrior.MIN_SAMPLES] of
+     * them have ended narrow, a value no read has named yet goes straight to the
+     * unwindowed read — one query — and serves the same page FULL_SCAN serves.
+     */
+    @Test
+    fun `cold reads of a narrow family take one query once the family has voted`() =
+        runBlocking {
+            val now = System.currentTimeMillis() / 1000
+            seedStrategyCorpus(now)
+            val quietMention = doc(kind = 1, pubkey = QUIET, at = 1_500L, tags = listOf(listOf("p", "c0".repeat(32))))
+            seed(quietMention)
+            VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.SPECULATIVE).use { speculative ->
+                VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.FULL_SCAN).use { reference ->
+                    fun mentions(key: String) = EventQuery(kinds = listOf(1), tags = mapOf("p" to listOf(key)), limit = 10, nowSecs = now)
+
+                    suspend fun sent(q: EventQuery): Int {
+                        val before = mock.searchRequests.size
+                        assertEquals(reference.search(q).map { it.id }, speculative.search(q).map { it.id }, "same page as FULL_SCAN: $q")
+                        return mock.searchRequests
+                            .drop(before)
+                            .pageQueries()
+                            .count()
+                    }
+                    // `sent` also counts the FULL_SCAN reference's one query.
+                    repeat(NarrowPrior.MIN_SAMPLES) { i ->
+                        assertEquals(1 + 2, sent(mentions(i.toString(16).padStart(64, 'd'))), "cold, before the family has voted: an attempt, then the fallback")
+                    }
+                    val booked = speculativeCalls()
+                    assertEquals(1 + 1, sent(mentions("e0".repeat(32))), "a value no read named: the unwindowed read alone")
+                    assertEquals(1 + 1, sent(mentions("c0".repeat(32))), "and one that matches, served whole")
+                    assertEquals(mapOf("" to 2L, ".prior.narrow" to 2L), speculativeCalls().minus(booked))
+                }
+            }
+        }
+
+    /**
+     * A WRONG VOTE COSTS ONE READ. A busy value in a family that voted narrow is
+     * sent unwindowed once (the shipped match-phase cost); its full page names the
+     * window that would have held it, so its exact shape remembers that window and
+     * its next read is the windowed one, proven first.
+     */
+    @Test
+    fun `a busy value the prior sent unwindowed teaches its shape a window`() =
+        runBlocking {
+            val now = System.currentTimeMillis() / 1000
+            val hot = "c1".repeat(32)
+            seed(*(1..30).map { doc(kind = 1, pubkey = BUSY, at = now - it, tags = listOf(listOf("p", hot))) }.toTypedArray())
+            VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.SPECULATIVE).use { speculative ->
+                fun mentions(key: String) = EventQuery(kinds = listOf(1), tags = mapOf("p" to listOf(key)), limit = 10, nowSecs = now)
+                repeat(NarrowPrior.MIN_SAMPLES) { i -> speculative.search(mentions(i.toString(16).padStart(64, 'd'))) }
+
+                var booked = speculativeCalls()
+                var before = mock.searchRequests.size
+                val first = speculative.search(mentions(hot))
+                assertEquals((1..10).map { now - it }, first.map { it.createdAt })
+                assertEquals(mapOf("" to 1L, ".prior.narrow" to 1L, ".prior.busy" to 1L), speculativeCalls().minus(booked))
+                assertEquals(
+                    1,
+                    mock.searchRequests
+                        .drop(before)
+                        .pageQueries()
+                        .size,
+                    "sent unwindowed once",
+                )
+
+                booked = speculativeCalls()
+                before = mock.searchRequests.size
+                val again = speculative.search(mentions(hot))
+                assertEquals(first.map { it.id }, again.map { it.id })
+                assertEquals(mapOf("" to 1L, ".recalled.window" to 1L, ".attempt" to 1L, ".first" to 1L), speculativeCalls().minus(booked))
+                val sent = mock.searchRequests.drop(before).pageQueries()
+                assertEquals(1, sent.size)
+                assertTrue(sent.single().getValue("yql").contains("created_at >= "), "the remembered window: ${sent.single()["yql"]}")
+            }
+        }
+
+    /**
      * THE MEMORY PAYS ON THE SECOND READ. A narrow shape's first read spends one
      * attempt before falling back; the second skips straight to the unwindowed
      * read — one query, the shipped cost. A shape that needed a second, wider
