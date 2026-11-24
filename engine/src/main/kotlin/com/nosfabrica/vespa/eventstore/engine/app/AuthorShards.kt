@@ -39,11 +39,19 @@ package com.nosfabrica.vespa.eventstore.engine.app
  * The shard key is ONE MIDDLE BYTE of the pubkey, byte [BUCKET_BYTE] of 32 (hex characters
  * 32..33), never the first or the last: vanity keys are ground for a chosen prefix (an npub that
  * spells a word) or suffix, so the ends of a key are not uniform. A byte is 256 buckets; shard i of
- * K owns the contiguous buckets `b * K / 256 == i`. A key whose two characters there are not
- * lowercase hex — a non-hex marker document the trust ledger keeps among the reputations, a
- * malformed pubkey — goes to shard 0, in both document types alike, so an event and its author's
- * reputation document never part. Vespa answers 200 for a document NO cluster's selection takes
- * and stores nothing, which is why the catch-all is not optional.
+ * K owns the contiguous buckets `b * K / 256 == i`. A key that is not lowercase hex through that
+ * byte — a non-hex marker document the trust ledger keeps among the reputations, a malformed
+ * pubkey — goes to shard 0, in both document types alike, so an event and its author's reputation
+ * document never part. Vespa answers 200 for a document NO cluster's selection takes and stores
+ * nothing, which is why the catch-all is not optional.
+ *
+ * "Hex THROUGH that byte", not "anything, then hex there": the selection is evaluated by two
+ * regex engines — Java's in the container that routes, and the content node's when garbage
+ * collection re-reads the selection — and `.` is not the same character set in both (Java's skips
+ * `\r`, `\u0085`, `\u2028`, `\u2029`; the other skips only `\n`; and they count UTF-16 units against
+ * code points differently). A key the router sent to shard 0 that the collector reads as another
+ * shard's is a document garbage collection deletes. ASCII character classes mean one thing
+ * everywhere, so the selections use nothing else.
  */
 object AuthorShards {
     /** `VESPA_AUTHOR_SHARDS`: how many content clusters the authors are split across. Unset is 1, the package as built. */
@@ -63,12 +71,11 @@ object AuthorShards {
 
     private const val HEX = "0123456789abcdef"
 
-    /** The bucket [pubkey] falls in, 0..255; null when the two characters at [BUCKET_BYTE] are not lowercase hex. */
+    /** The bucket [pubkey] falls in, 0..255; null unless its first `2 * BUCKET_BYTE + 2` characters are all lowercase hex. */
     fun bucketOf(pubkey: String): Int? {
         if (pubkey.length < CHAR + 2) return null
-        val hi = HEX.indexOf(pubkey[CHAR])
-        val lo = HEX.indexOf(pubkey[CHAR + 1])
-        return if (hi < 0 || lo < 0) null else hi * 16 + lo
+        for (i in 0 until CHAR + 2) if (HEX.indexOf(pubkey[i]) < 0) return null
+        return HEX.indexOf(pubkey[CHAR]) * 16 + HEX.indexOf(pubkey[CHAR + 1])
     }
 
     /** The shard of [shards] that holds [pubkey]'s events and reputation document. */
@@ -102,10 +109,9 @@ object AuthorShards {
 
     /**
      * The document-selection test that [value] (`event.pubkey`, `id.specific`) belongs to shard
-     * [index]: a regex on the two hex characters at [BUCKET_BYTE], plus, on shard 0, everything
-     * that is not hex there. Only plain classes and alternation, which every regex engine on the
-     * routing path reads alike (the container routes in Java; the content node's
-     * garbage collection re-evaluates the selection in C++).
+     * [index]: hex through [BUCKET_BYTE] with that byte in the shard's run, plus, on shard 0,
+     * everything that is not hex through it. Only ASCII classes, a counted repeat and
+     * alternation — see the class KDoc for why never `.`.
      */
     fun selection(
         value: String,
@@ -117,7 +123,7 @@ object AuthorShards {
             owned
                 .groupBy { it / 16 }
                 .map { (hi, buckets) -> "${HEX[hi]}[${buckets.joinToString("") { HEX[it % 16].toString() }}]" }
-        val mine = "$value =~ \"^.{$CHAR}(${alternatives.joinToString("|")})\""
-        return if (index == 0) "($mine or not ($value =~ \"^.{$CHAR}[$HEX][$HEX]\"))" else "($mine)"
+        val mine = "$value =~ \"^[$HEX]{$CHAR}(${alternatives.joinToString("|")})\""
+        return if (index == 0) "($mine or not ($value =~ \"^[$HEX]{${CHAR + 2}}\"))" else "($mine)"
     }
 }

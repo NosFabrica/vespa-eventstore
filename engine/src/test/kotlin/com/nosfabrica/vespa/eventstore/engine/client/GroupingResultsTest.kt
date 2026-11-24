@@ -179,4 +179,28 @@ class GroupingResultsTest {
         val root = Json.parseToJsonElement("""{"id":"toplevel","children":[{"id":"group:root:0","fields":{"count()":3}}]}""").jsonObject
         assertSame(root, GroupingResults.mergeRoots(root))
     }
+
+    /** Two groupings in one query are two trees (`group:root:0`, `group:root:1`): never summed, on one cluster or many. */
+    @Test
+    fun `roots with different ids stay apart`() {
+        val root =
+            Json
+                .parseToJsonElement(
+                    """{"id":"toplevel","children":[{"id":"group:root:0","fields":{"count()":3}},{"id":"group:root:1","fields":{"count()":5}},
+                       {"id":"group:root:0","fields":{"count()":4}},{"id":"group:root:1","fields":{"count()":6}}]}""",
+                ).jsonObject
+        val counts =
+            GroupingResults
+                .mergeRoots(root)["children"]!!
+                .jsonArray
+                .map {
+                    it.jsonObject["id"]!!.jsonPrimitive.content to
+                        it.jsonObject["fields"]!!
+                            .jsonObject["count()"]!!
+                            .jsonPrimitive.int
+                }
+        assertEquals(listOf("group:root:0" to 7, "group:root:1" to 11), counts)
+        val single = Json.parseToJsonElement("""{"id":"toplevel","children":[{"id":"group:root:0"},{"id":"group:root:1"}]}""").jsonObject
+        assertSame(single, GroupingResults.mergeRoots(single), "one cluster's two groupings are left as they came")
+    }
 }

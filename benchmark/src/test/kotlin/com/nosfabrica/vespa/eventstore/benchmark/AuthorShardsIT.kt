@@ -53,6 +53,7 @@ import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.time.Duration
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /**
@@ -87,11 +88,44 @@ class AuthorShardsIT {
             .use { vespa ->
                 vespa.start()
                 val queryUrl = "http://${vespa.host}:${vespa.getMappedPort(QUERY_PORT)}"
-                SchemaDeployer("http://${vespa.host}:${vespa.getMappedPort(CONFIG_PORT)}").deployIfAbsent(queryUrl, VespaApp.zipBytes(null, SHARDS))
+                val deployer = SchemaDeployer("http://${vespa.host}:${vespa.getMappedPort(CONFIG_PORT)}")
+                deployer.deployIfAbsent(queryUrl, VespaApp.zipBytes(null, SHARDS))
                 val tuning = ClientTuning(authorShards = SHARDS)
                 VespaEventIndex(queryUrl, tuning = tuning).use { index ->
                     VespaReputationIndex(queryUrl, tuning = tuning).use { reputation ->
                         runBlocking { exercise(queryUrl, index, reputation) }
+                    }
+                }
+
+                // ---- the deploy guard, against the real config server and corpus ----
+                assertEquals(AuthorShards.clusters(SHARDS), deployer.activeContentClusters())
+                assertTrue((deployer.storedDocuments(queryUrl) ?: 0) > 0, "the deployment holds the fixture")
+                val refused = assertFailsWith<IllegalStateException> { deployer.deployIfChanged(queryUrl, VespaApp.zipBytes(null, 1)) }
+                assertTrue("author-shard count" in refused.message.orEmpty(), refused.message)
+                assertEquals(AuthorShards.clusters(SHARDS), deployer.activeContentClusters(), "nothing was deployed")
+
+                // ---- a client configured for another count refuses to walk or scope ----
+                VespaEventIndex(queryUrl, tuning = ClientTuning(authorShards = SHARDS + 1)).use { wrong ->
+                    val e =
+                        assertFailsWith<IllegalStateException> {
+                            runBlocking { wrong.visitDocsPage(EventQuery(kinds = listOf(1)), null, maxDocs = 7) }
+                        }
+                    assertTrue("the deployment has" in e.message.orEmpty(), e.message)
+                    assertFailsWith<IllegalStateException>("the streamed visit checks first too") {
+                        runBlocking { wrong.visitTags(EventQuery(kinds = listOf(1))) { true } }
+                    }
+                    // visitIds pages through SEARCH (a cursor walk), which every cluster answers
+                    // whatever the client's count: it stays correct, and needs no check.
+                    val ids = ArrayList<String>()
+                    runBlocking {
+                        wrong.visitIds(EventQuery(kinds = listOf(1))) {
+                            ids += it.map { r -> r.id }
+                            true
+                        }
+                    }
+                    assertEquals(60, ids.toSet().size)
+                    assertFailsWith<IllegalStateException>("an author-scoped query checks first too") {
+                        runBlocking { wrong.search(EventQuery(kinds = listOf(1), authors = listOf(TRUSTED_1))) }
                     }
                 }
             }
@@ -158,6 +192,13 @@ class AuthorShardsIT {
             true
         }
         assertEquals(notes.map { it.id }.sorted(), walked.sorted(), "an id walk covers both clusters exactly once")
+        // visitTags is a document-API visit (visitIds pages through search): both clusters at once.
+        var tagged = 0
+        index.visitTags(EventQuery(kinds = listOf(1))) { page ->
+            tagged += page.size
+            true
+        }
+        assertEquals(notes.size, tagged, "a streamed visit covers both clusters exactly once")
         val paged = ArrayList<String>()
         var token: String? = null
         var pages = 0
@@ -168,6 +209,22 @@ class AuthorShardsIT {
             check(++pages < 1_000) { "the page walk never ended" }
         } while (token != null)
         assertEquals(notes.map { it.id }.sorted(), paged.sorted(), "the resumable page walk crosses into the second cluster")
+        assertFailsWith<IllegalArgumentException>("a token this walk never issued is refused, not read as the start") {
+            index.visitDocsPage(EventQuery(kinds = listOf(1)), "AAAAQAAA", maxDocs = 7)
+        }
+
+        // ---- author-scoped reads: sent to the authors' clusters only, same answers ----
+        for (scope in listOf(listOf(TRUSTED_1), listOf(TRUSTED_0, LOW_0), listOf(TRUSTED_0, TRUSTED_1), listOf(UNRANKED_1, "f".repeat(64)))) {
+            val mine = newestFirst.filter { it.pubkey in scope }
+            assertEquals(mine.map { it.id }, index.search(EventQuery(kinds = listOf(1), authors = scope)).map { it.id }, "recall by $scope")
+            assertEquals(mine.size, index.count(EventQuery(kinds = listOf(1), authors = scope)), "count by $scope")
+            assertEquals(mine.take(3).map { it.id }, index.search(EventQuery(kinds = listOf(1), authors = scope, limit = 3)).map { it.id }, "a page by $scope")
+        }
+        assertEquals(
+            newestFirst.filter { it.pubkey == TRUSTED_1 }.map { it.id },
+            index.search(gated().copy(authors = listOf(TRUSTED_1, LOW_1))).map { it.id },
+            "the gate inside one author-scoped cluster",
+        )
         val visitedReputations = ArrayList<String>()
         reputation.visitPubkeys { page ->
             visitedReputations += page

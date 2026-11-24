@@ -161,7 +161,7 @@ class EngineTuningTest {
             assertFailsWith<IllegalArgumentException>(bad) { EngineTuning.fromEnv(mapOf("VESPA_AUTHOR_SHARDS" to bad)) }
         }
         assertFailsWith<IllegalArgumentException> { EngineTuning(authorShards = 0) }
-        assertEquals(3, EngineTuning(authorShards = 3).authorShardsOrEnv())
+        assertEquals(3, EngineTuning(authorShards = 3).authorShardsOrDefault())
     }
 
     /** A per-store setting reaches the store it opens: feedBatch 0 leaves the batch path unbuilt. */

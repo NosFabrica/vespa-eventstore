@@ -45,7 +45,7 @@ import javax.xml.transform.stream.StreamResult
  * reads — while a store answering real client queries wants exactly that
  * record. Hence [ACCESS_LOG_ENV] rather than a fork of services.xml.
  *
- * And one PROTOTYPE topology choice: [AuthorShards.ENV] splits the content cluster into several,
+ * And one PROTOTYPE topology choice: the author-shard count ([zipBytes]'s `authorShards`) splits the content cluster into several,
  * by author, each holding its authors' events and reputation documents ([shardContent]).
  */
 object VespaApp {
@@ -78,13 +78,14 @@ object VespaApp {
      * The zipped application package bytes, ready to POST to a Vespa config
      * server. Honors [ACCESS_LOG_ENV]; unset ships the package as built.
      */
-    fun zipBytes(): ByteArray = zipBytes(System.getenv(ACCESS_LOG_ENV), authorShardsOf(System.getenv(AuthorShards.ENV)))
+    fun zipBytes(): ByteArray = zipBytes(System.getenv(ACCESS_LOG_ENV))
 
     /**
-     * [AuthorShards.ENV] read leniently, as the access log is: unset or blank is one shard, the
-     * package as built. A value outside 1..[AuthorShards.MAX] is refused rather than clamped,
-     * since the shard count decides where documents LIVE and a silent clamp would put them in
-     * clusters the operator did not ask for.
+     * An author-shard count parsed STRICTLY: unset or blank is one shard, the package as built,
+     * and anything but a whole number in 1..[AuthorShards.MAX] is refused rather than clamped,
+     * since the count decides where documents LIVE. Not read from the environment here: the
+     * setting reaches the package only as a value (`EngineTuning.authorShards`, whose `fromEnv`
+     * reads [AuthorShards.ENV]), so the deployed package and the client cannot read it apart.
      */
     fun authorShardsOf(raw: String?): Int {
         val value = raw?.trim()?.takeIf { it.isNotEmpty() } ?: return 1
@@ -222,6 +223,12 @@ object VespaApp {
         container.insertBefore(doc.createElement(ACCESSLOG).apply { setAttribute("type", "disabled") }, first)
 
         return serialize(doc, servicesXml.length + 128)
+    }
+
+    /** The content cluster ids [servicesXml] declares, in order. */
+    internal fun contentClusters(servicesXml: String): List<String> {
+        val contents = parse(servicesXml).getElementsByTagName(CONTENT)
+        return (0 until contents.length).map { (contents.item(it) as Element).getAttribute("id") }
     }
 
     private fun parse(servicesXml: String): org.w3c.dom.Document =

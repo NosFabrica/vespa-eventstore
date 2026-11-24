@@ -81,6 +81,7 @@ class SchemaDeployer(
         convergeTimeout: Duration = Duration.ofMinutes(2),
     ): Boolean {
         if (isServing(queryUrl) && serves(zip)) return false
+        checkShardChange(queryUrl, zip)
         val generation = generationOf(deploy(zip))
         awaitConverged(generation, convergeTimeout)
         awaitServing(queryUrl)
@@ -109,6 +110,54 @@ class SchemaDeployer(
             "" !in active && active.size == wanted.size && active.toSet() == wanted.keys &&
                 active.all { path -> get(content + path).contentEquals(wanted.getValue(path)) }
         }.getOrDefault(false)
+
+    /**
+     * Refuse to deploy [zip] over a serving application when that would MOVE documents: the two
+     * split the corpus across different author-shard clusters ([AuthorShards]) and the serving one
+     * holds documents. A cluster's selection is also what garbage collection keeps, so the new
+     * package would delete every document its selections send elsewhere, and nothing feeds them
+     * again. An empty deployment changes its shard count freely; so does one that never involved
+     * author sharding on either side (one cluster before and after, whatever its id).
+     *
+     * An active package that cannot be read while [zip] is sharded is refused too, unless the
+     * deployment holds nothing: the guard cannot prove the change safe. Throws
+     * [IllegalStateException]; deploys nothing either way.
+     */
+    fun checkShardChange(
+        queryUrl: String,
+        zip: ByteArray,
+    ) {
+        val wanted = files(zip)[SERVICES]?.decodeToString()?.let(VespaApp::contentClusters) ?: return
+        val active = activeContentClusters()
+        if (active == wanted) return
+        if (wanted.size <= 1 && (active == null || active.size <= 1)) return
+        val stored = storedDocuments(queryUrl)
+        if (stored == 0L) return
+        error(
+            "refusing to deploy content clusters $wanted over ${active ?: "an unreadable package"} holding " +
+                "${stored ?: "an unknown number of"} documents: changing the author-shard count makes Vespa's garbage " +
+                "collection delete every document the new selections move to another cluster. Feed a fresh deployment instead " +
+                "(docs/author-shards.md, \"Not a migration\")",
+        )
+    }
+
+    /** The content cluster ids of the application Vespa has ACTIVE, off its services.xml; null when it cannot be read. */
+    fun activeContentClusters(): List<String>? = runCatching { VespaApp.contentClusters(get("$root$INSTANCE/content/$SERVICES").decodeToString()) }.getOrNull()
+
+    /** Every document [queryUrl] serves, of every type in every cluster; null when the count cannot be read. */
+    fun storedDocuments(queryUrl: String): Long? =
+        runCatching {
+            val req =
+                HttpRequest
+                    .newBuilder(URI.create("$queryUrl/search/?yql=${java.net.URLEncoder.encode("select * from sources * where true", "UTF-8")}&hits=0&timeout=10s"))
+                    .timeout(Duration.ofSeconds(15))
+                    .GET()
+                    .build()
+            val res = http.send(req, HttpResponse.BodyHandlers.ofString())
+            require(res.statusCode() == 200) { "count answered ${res.statusCode()}" }
+            val root = (Json.parseToJsonElement(res.body()) as JsonObject)["root"] as JsonObject
+            ((root["fields"] as JsonObject)["totalCount"]!!.jsonPrimitive).longOrNull
+        }.getOrNull()
 
     /**
      * Wait until every service of the application reports config [generation] or later (the
@@ -204,6 +253,8 @@ class SchemaDeployer(
     }
 
     companion object {
+        private const val SERVICES = "services.xml"
+
         /** The one application instance a self-hosted Vespa runs, as the config server's REST paths name it. */
         private const val INSTANCE = "/application/v2/tenant/default/application/default/environment/prod/region/default/instance/default"
 

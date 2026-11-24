@@ -197,8 +197,8 @@ class EngineTuning(
     /** The access-log choice for the deployed package: this tuning's, else `VESPA_ACCESS_LOG` as before. */
     internal fun accessLogOrEnv(): String? = accessLog ?: System.getenv(VespaApp.ACCESS_LOG_ENV)
 
-    /** The author shard count for the deployed package: this tuning's, else `VESPA_AUTHOR_SHARDS` read as the client reads it. */
-    internal fun authorShardsOrEnv(): Int = authorShards ?: VespaApp.authorShardsOf(System.getenv(AuthorShards.ENV))
+    /** The author shard count for the deployed package and the client alike: this tuning's, else 1. Read from the environment only by [fromEnv]. */
+    internal fun authorShardsOrDefault(): Int = authorShards ?: 1
 
     /** The settings this tuning names, for a boot line; empty when it names none. */
     override fun toString(): String =

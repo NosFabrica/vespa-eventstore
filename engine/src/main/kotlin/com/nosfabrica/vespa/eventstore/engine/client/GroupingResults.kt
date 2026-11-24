@@ -63,16 +63,22 @@ internal object GroupingResults {
      */
     fun mergeRoots(root: JsonObject): JsonObject {
         val children = root["children"] as? JsonArray ?: return root
-        val roots = children.filter { (it as? JsonObject)?.isGroupingRoot() == true }
-        if (roots.size < 2) return root
-        val merged = roots.map { it.jsonObject }.reduce(::mergeGroup)
-        val first = children.indexOfFirst { (it as? JsonObject)?.isGroupingRoot() == true }
-        val rest = children.filterNot { (it as? JsonObject)?.isGroupingRoot() == true }
-        val out = rest.toMutableList<JsonElement>().apply { add(first.coerceAtMost(size), merged) }
+        // By EXACT id: one request's roots are `group:root:0`, a second grouping in the same query
+        // would be `group:root:1`, and those are different trees, never one to be summed.
+        val byId = children.mapNotNull { it as? JsonObject }.filter { it.isGroupingRoot() }.groupBy { it.idOf() }
+        if (byId.values.none { it.size > 1 }) return root
+        val emitted = HashSet<String?>()
+        val out =
+            children.mapNotNull { child ->
+                val node = child as? JsonObject
+                if (node == null || !node.isGroupingRoot()) return@mapNotNull child
+                val id = node.idOf()
+                if (!emitted.add(id)) null else byId.getValue(id).reduce(::mergeGroup)
+            }
         return JsonObject(root + ("children" to JsonArray(out)))
     }
 
-    private fun JsonObject.isGroupingRoot(): Boolean = (this["id"] as? JsonPrimitive)?.content?.startsWith("group:root") == true
+    private fun JsonObject.isGroupingRoot(): Boolean = idOf()?.startsWith("group:root") == true
 
     private fun JsonObject.idOf(): String? = (this["id"] as? JsonPrimitive)?.content
 

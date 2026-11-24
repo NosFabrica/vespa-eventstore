@@ -3673,4 +3673,24 @@ class VespaEventIndexTest {
             val expected = reference.search(EventQuery(kinds = listOf(30382), tags = mapOf("d" to listOf("x")))).map { DocRef(it.id, it.createdAt) }
             assertEquals(expected, got)
         }
+
+    /**
+     * Two author shards: each cluster applies a group LIMIT on its own, so a merged answer would
+     * hold up to twice the groups asked for. Refused before anything is sent; the `max(expr)`
+     * AGGREGATOR is not a limit and goes through.
+     */
+    @Test
+    fun `a sharded index refuses a grouping limit and passes the max aggregator`() =
+        runBlocking {
+            VespaEventIndex(mock.url, tuning = ClientTuning(authorShards = 2)).use { sharded ->
+                val e =
+                    kotlin.test.assertFailsWith<IllegalArgumentException> {
+                        sharded.group(EventQuery(kinds = listOf(1)), "all(group(pubkey) max(10) each(output(count())))")
+                    }
+                assertTrue("max(n)" in e.message.orEmpty(), e.message)
+                sharded.group(EventQuery(kinds = listOf(1)), "all(group(pubkey) each(output(count(), max(created_at))))")
+            }
+            index.group(EventQuery(kinds = listOf(1)), "all(group(pubkey) max(10) each(output(count())))")
+            Unit
+        }
 }

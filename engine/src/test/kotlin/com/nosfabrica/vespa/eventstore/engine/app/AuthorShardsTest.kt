@@ -24,6 +24,7 @@ import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 
 class AuthorShardsTest {
     private val hex = "0123456789abcdef"
@@ -55,6 +56,29 @@ class AuthorShardsTest {
         assertEquals(0, AuthorShards.shardOf("0".repeat(32) + "zz" + "0".repeat(30), 8))
     }
 
+    /**
+     * A key that is not hex BEFORE the middle byte is shard 0's too, whatever sits at the byte.
+     * The selection is evaluated by two regex engines that disagree on `.` (Java skips `\u2028`
+     * and `\r`, the content node's engine does not), so a selection written as "anything, then
+     * hex" sends such a key to shard 0 when routing and to another shard when garbage collection
+     * re-reads it — and the collector deletes it. Each selection must say the same in every engine.
+     */
+    @Test
+    fun `a key that is not hex up to the middle byte goes to shard 0, and no selection uses a dot`() {
+        val hexAtMiddle = "f0" + "0".repeat(30)
+        for (odd in listOf('\u2028', '\r', '\n', 'G', 'A')) {
+            val k = "0".repeat(10) + odd + "0".repeat(21) + hexAtMiddle
+            assertEquals(null, AuthorShards.bucketOf(k), "'${odd.code}' before the middle byte")
+            assertEquals(0, AuthorShards.shardOf(k, 2))
+        }
+        for (shards in listOf(2, 7, 256)) {
+            for (i in 0 until shards) {
+                val sel = AuthorShards.selection("v", i, shards)
+                assertFalse('.' in sel, "selection $i of $shards: $sel")
+            }
+        }
+    }
+
     @Test
     fun `every bucket belongs to exactly one shard, and every shard owns a contiguous run`() {
         for (shards in listOf(1, 2, 3, 5, 7, 16, 100, 255, 256)) {
@@ -79,7 +103,8 @@ class AuthorShardsTest {
         val keys =
             (0 until 2_000).map { key(random) } +
                 (0 until 256).map { b -> key(random, "%02x".format(b)) } +
-                listOf("dirt-ledger-marker", "", "0".repeat(32) + "G0" + "0".repeat(30), "0".repeat(33))
+                listOf("dirt-ledger-marker", "", "0".repeat(32) + "G0" + "0".repeat(30), "0".repeat(33)) +
+                listOf('\u2028', '\r', 'G').map { "0".repeat(5) + it + "0".repeat(26) + "f0" + "0".repeat(30) }
         for (shards in listOf(2, 3, 4, 16, 256)) {
             val patterns = (0 until shards).map { selectionMatcher(AuthorShards.selection("v", it, shards)) }
             for (k in keys) {

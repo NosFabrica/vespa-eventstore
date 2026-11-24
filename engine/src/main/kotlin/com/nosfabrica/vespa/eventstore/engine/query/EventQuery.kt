@@ -396,6 +396,12 @@ data class VespaQuery(
      * LAST, so no positional argument or componentN shifts.
      */
     val completeCoverage: Boolean = false,
+    /**
+     * The authors every match must have ([EventYql.authorScopeOf]); null when the query can match
+     * anyone. Under author sharding the client sends the query only to the clusters these authors
+     * live in instead of all of them. LAST, as [completeCoverage] is.
+     */
+    val authorScope: Set<String>? = null,
 )
 
 /** The shape of a query carrying no clause worth naming. */

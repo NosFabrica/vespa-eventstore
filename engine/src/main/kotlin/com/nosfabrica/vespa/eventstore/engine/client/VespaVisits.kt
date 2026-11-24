@@ -68,6 +68,8 @@ internal class VespaVisits(
      * request and refuses a visit that names none once there are several.
      */
     private val clusters: List<String?> = listOf(null),
+    /** Run before every walk: the check that [clusters] are the deployment's ([AuthorClusters.verify]). */
+    private val verify: suspend () -> Unit = {},
 ) {
     init {
         require(clusters.isNotEmpty()) { "a visit covers at least one cluster" }
@@ -85,40 +87,22 @@ internal class VespaVisits(
         fieldSet: String,
         onDocuments: suspend (List<VisitedDoc>) -> Boolean,
     ) {
-        // Cluster after cluster: a shard's walk is the whole walk of a one-cluster deployment, and
-        // the consumer's early stop ends the remaining clusters too.
-        for (cluster in clusters) {
-            var stopped = false
-            clusterPages(cluster, selection, fieldSet) { page -> onDocuments(page).also { if (!it) stopped = true } }
-            if (stopped) return
-        }
-    }
-
-    private suspend fun clusterPages(
-        cluster: String?,
-        selection: String,
-        fieldSet: String,
-        onDocuments: suspend (List<VisitedDoc>) -> Boolean,
-    ): Unit =
+        verify()
+        // Every cluster AT ONCE, into the one serial consumer: under author sharding the clusters
+        // are separate nodes, and walking them one after another made a full walk K times its
+        // slowest shard. The [slices] budget is SPLIT across them rather than multiplied, since
+        // every slice is a visitor session on the container this client talks to, and the
+        // session count is what wedged a small node's document API (see [SLICES_MAX]). One
+        // cluster keeps every slice, the walk it always was.
+        val perCluster = (slices / clusters.size).coerceAtLeast(1)
         coroutineScope {
             val pages = Channel<List<VisitedDoc>>(slices)
             val producers =
                 launch {
                     try {
-                        val streamed =
-                            streaming &&
-                                coroutineScope {
-                                    (0 until slices)
-                                        .map { sliceId -> async { streamedSlice(cluster, selection, fieldSet, sliceId) { pages.send(it) } } }
-                                        .awaitAll()
-                                }.also { oks ->
-                                    // A server either speaks JSON Lines or doesn't — for
-                                    // every slice alike. A mixed answer means some slice
-                                    // DELIVERED while another wants the whole walk redone
-                                    // as paged, which would duplicate; refuse loudly.
-                                    check(oks.all { it } || oks.none { it }) { "vespa answered JSON Lines for only some visit slices" }
-                                }.all { it }
-                        if (!streamed) pagedWalk(cluster, selection, fieldSet) { pages.send(it) }
+                        coroutineScope {
+                            for (cluster in clusters) launch { produce(cluster, perCluster, selection, fieldSet) { pages.send(it) } }
+                        }
                     } finally {
                         // Close on completion AND failure: a stuck-open channel
                         // would leave the consumer below suspended forever.
@@ -132,6 +116,31 @@ internal class VespaVisits(
                 }
             }
         }
+    }
+
+    /** One cluster's whole walk, in [sliceCount] streamed slices, or paged where the server does not stream. */
+    private suspend fun produce(
+        cluster: String?,
+        sliceCount: Int,
+        selection: String,
+        fieldSet: String,
+        emit: suspend (List<VisitedDoc>) -> Unit,
+    ) {
+        val streamed =
+            streaming &&
+                coroutineScope {
+                    (0 until sliceCount)
+                        .map { sliceId -> async { streamedSlice(cluster, selection, fieldSet, sliceId, sliceCount, emit) } }
+                        .awaitAll()
+                }.also { oks ->
+                    // A server either speaks JSON Lines or doesn't — for
+                    // every slice alike. A mixed answer means some slice
+                    // DELIVERED while another wants the whole walk redone
+                    // as paged, which would duplicate; refuse loudly.
+                    check(oks.all { it } || oks.none { it }) { "vespa answered JSON Lines for only some visit slices" }
+                }.all { it }
+        if (!streamed) pagedWalk(cluster, selection, fieldSet, emit)
+    }
 
     /**
      * One page of FULL docs — the reindex primitive. `[document]` selects every
@@ -145,12 +154,20 @@ internal class VespaVisits(
         maxDocs: Int,
     ): DocsPage {
         if (clusters.size == 1) return clusterDocsPage(clusters[0], selection, resumeFrom, maxDocs)
+        verify()
         // Several clusters: the token is `<cluster index>:<that cluster's token>`, and a cluster
         // walked to its end hands over to the next one within the same call, so a page comes back
         // empty only when the last cluster is done.
-        var index = resumeFrom?.substringBefore(':')?.toIntOrNull() ?: 0
-        var inner = resumeFrom?.substringAfter(':', "")?.takeIf { it.isNotEmpty() }
-        require(index in clusters.indices) { "visit continuation '$resumeFrom' names no cluster of ${clusters.size}" }
+        // A token without the prefix is one this walk never issued — saved before sharding, or under
+        // another shard count — and reading it as "cluster 0, from the start" would silently restart
+        // the walk. Refused instead.
+        var index = 0
+        var inner: String? = null
+        if (resumeFrom != null) {
+            index = resumeFrom.substringBefore(':', "").toIntOrNull()?.takeIf { it in clusters.indices }
+                ?: throw IllegalArgumentException("visit continuation '${resumeFrom.take(40)}' was not issued by a walk over these ${clusters.size} clusters")
+            inner = resumeFrom.substringAfter(':').takeIf { it.isNotEmpty() }
+        }
         while (true) {
             val page = clusterDocsPage(clusters[index], selection, inner, maxDocs)
             val next =
@@ -231,11 +248,12 @@ internal class VespaVisits(
         selection: String,
         fieldSet: String,
         sliceId: Int,
+        sliceCount: Int,
         emit: suspend (List<VisitedDoc>) -> Unit,
     ): Boolean {
         val base =
             visitUrl(endpoint(), selection, fieldSet, cluster) +
-                "&stream=true&concurrency=1&slices=$slices&sliceId=$sliceId"
+                "&stream=true&concurrency=1&slices=$sliceCount&sliceId=$sliceId"
         var token: String? = null
         var delivered = false
         var failures = 0

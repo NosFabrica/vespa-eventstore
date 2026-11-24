@@ -22,7 +22,6 @@ package com.nosfabrica.vespa.eventstore.engine.client
 
 import ai.vespa.feed.client.FeedClientBuilder
 import com.nosfabrica.vespa.eventstore.engine.app.AuthorShards
-import com.nosfabrica.vespa.eventstore.engine.app.VespaApp
 
 /**
  * The Vespa client's PER-INSTANCE settings, as values rather than environment
@@ -115,13 +114,15 @@ class ClientTuning(
 
     internal fun unboundedHitsOrEnv(): Int = unboundedHits ?: env(UNBOUNDED_HITS)?.toIntOrNull() ?: Int.MAX_VALUE
 
+    /** The author-shard count: the field, else 1. A new setting, so no environment read to stay lenient with. */
+    internal fun authorShardsOrDefault(): Int = authorShards ?: 1
+
     /**
      * The clusters a visit must walk, one per author shard: `[null]` — no `cluster` parameter, the
-     * request as it always was — for one shard. Read the way [VespaApp.zipBytes] reads it, so the
-     * client and the package the store deploys agree on the count.
+     * request as it always was — for one shard.
      */
-    internal fun visitClustersOrEnv(): List<String?> {
-        val shards = authorShards ?: VespaApp.authorShardsOf(env(AuthorShards.ENV))
+    internal fun visitClusters(): List<String?> {
+        val shards = authorShardsOrDefault()
         return if (shards == 1) listOf(null) else AuthorShards.clusters(shards)
     }
 

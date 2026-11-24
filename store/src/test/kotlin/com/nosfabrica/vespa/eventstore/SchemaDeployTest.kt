@@ -49,6 +49,9 @@ class SchemaDeployTest {
 
     @Volatile private var generation = 15L
 
+    /** What the faked container's `/search/` count answers: the documents the deployment holds. */
+    @Volatile private var stored = 0L
+
     private val deploys = AtomicInteger()
 
     private val server: HttpServer =
@@ -71,6 +74,10 @@ class SchemaDeployTest {
                             } else {
                                 deployStatus to "config server says no".toByteArray()
                             }
+                        }
+
+                        path == "/search/" -> {
+                            200 to """{"root":{"id":"toplevel","fields":{"totalCount":$stored}}}""".toByteArray()
                         }
 
                         path.endsWith("/serviceconverge") -> {
@@ -100,7 +107,10 @@ class SchemaDeployTest {
     @AfterTest
     fun stop() = server.stop(0)
 
-    private fun deploy(mode: SchemaDeploy) = VespaEventStore.deploySchema(base, configUrl = base, mode = mode, awaitTimeout = Duration.ofMillis(600))
+    private fun deploy(
+        mode: SchemaDeploy,
+        tuning: EngineTuning = EngineTuning(),
+    ) = VespaEventStore.deploySchema(base, configUrl = base, mode = mode, tuning = tuning, awaitTimeout = Duration.ofMillis(600))
 
     private fun changeActive() {
         active = active + ("schemas/other.sd" to "schema other { }".toByteArray())
@@ -171,5 +181,28 @@ class SchemaDeployTest {
                     }
                 }
             }
+    }
+
+    /**
+     * A new author-shard count over a deployment that holds documents is refused: each cluster's
+     * selection is also what garbage collection keeps, so the deploy would delete every document
+     * the new selections send elsewhere. On an empty deployment the change goes through.
+     */
+    @Test
+    fun `a different author-shard count is refused over stored documents, and deployed over none`() {
+        stored = 42
+        val refused = assertFailsWith<SchemaDeployException> { deploy(SchemaDeploy.IF_CHANGED, EngineTuning(authorShards = 2)) }
+        assertTrue("author-shard count" in refused.message.orEmpty(), refused.message)
+        assertTrue(refused.serving, "the old package keeps serving")
+        assertEquals(0, deploys.get(), "nothing was deployed")
+
+        stored = 0
+        assertTrue(deploy(SchemaDeploy.IF_CHANGED, EngineTuning(authorShards = 2)).deployed, "an empty deployment may change its shard count")
+        assertFalse(deploy(SchemaDeploy.IF_CHANGED, EngineTuning(authorShards = 2)).deployed, "the same count again is unchanged")
+
+        stored = 7
+        assertFailsWith<SchemaDeployException>("and back to one cluster is the same move") { deploy(SchemaDeploy.IF_CHANGED) }
+        changeActive()
+        assertTrue(deploy(SchemaDeploy.IF_CHANGED, EngineTuning(authorShards = 2)).deployed, "a schema change at the same count deploys over data")
     }
 }

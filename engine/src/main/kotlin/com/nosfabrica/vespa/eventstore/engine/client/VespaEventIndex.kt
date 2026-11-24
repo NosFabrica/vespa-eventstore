@@ -255,7 +255,13 @@ class VespaEventIndex(
      */
     private val resources = EngineResources(http, ::queryEndpoint)
 
-    private val visits = VespaVisits(http, ::documentEndpoint, visitSlices, visitConcurrency, visitStreaming, tuning.visitClustersOrEnv())
+    /** The content clusters, one per author shard; `[null]` on the bundled single cluster. */
+    private val clusters: List<String?> = tuning.visitClusters()
+
+    /** The deployed clusters, checked against [clusters] before a visit or an author-scoped query relies on them. */
+    private val authorClusters = AuthorClusters(clusters, http, ::documentEndpoint)
+
+    private val visits = VespaVisits(http, ::documentEndpoint, visitSlices, visitConcurrency, visitStreaming, clusters, authorClusters::verify)
 
     private val fallbacks = SchemaFallbacks()
 
@@ -2389,12 +2395,21 @@ class VespaEventIndex(
      * degraded answer rather than hand back a partial statistic that reads as a
      * whole one. A query that provably matches nothing answers an empty root
      * without a round trip.
+     *
+     * Under author sharding a pipeline with a group LIMIT (`max(10)`, as opposed to the
+     * `max(created_at)` aggregator) is refused: each content cluster applies the limit before
+     * answering, so the merged root ([GroupingResults.mergeRoots]) would hold up to K times the
+     * groups or hits asked for, and could miss one that is n+1st in every cluster. Refusing is
+     * honest where a trimmed answer would only look right.
      */
     suspend fun group(
         query: EventQuery,
         pipeline: String,
         source: String = EventYql.EVENT_SOURCE,
     ): JsonObject {
+        require(clusters.size == 1 || !GROUP_LIMIT.containsMatchIn(pipeline)) {
+            "a grouping limit (max(n)) cannot be answered exactly across ${clusters.size} author-shard clusters: each applies it alone"
+        }
         val vq = EventYql.buildGrouping(query, pipeline, source) ?: return EMPTY_GROUPING_ROOT
         return queryRoot(vq, hits = 0) ?: error("vespa answered a grouping with no root")
     }
@@ -2584,12 +2599,20 @@ class VespaEventIndex(
         // kilobytes, and as a buffer, its string and its bytes it was three copies of that.
         // Repeatable, as VespaHttp's retries need.
         val timing = ledger != null
+        // Author sharding: a query every match of which is by a known set of authors is sent only
+        // to the clusters those authors live in. `from sources …` names the clusters and
+        // `model.restrict` keeps the schema, since a cluster also holds `reputation` (measured:
+        // without it the query reads both types).
+        val scoped = authorClusters.clustersFor(vq.authorScope)
+        if (scoped != null) authorClusters.verify()
+        val yql = scoped?.let { scopedYql(vq.yql, it) } ?: vq.yql
         val body =
             object : RequestBody() {
                 override fun contentType() = JSON_MEDIA
 
                 override fun writeTo(sink: BufferedSink) {
-                    sink.writeUtf8("{\"yql\":").writeJsonString(vq.yql)
+                    sink.writeUtf8("{\"yql\":").writeJsonString(yql)
+                    if (yql !== vq.yql) sink.writeUtf8(",\"model.restrict\":").writeJsonString(EVENT_DOCTYPE)
                     sink.writeUtf8(",\"hits\":").writeJsonString(hits.toString())
                     sink.writeUtf8(",\"ranking\":").writeJsonString(vq.ranking)
                     // Vespa's own split of the time it spent. Asked for only when
@@ -2877,6 +2900,20 @@ class VespaEventIndex(
     }
 
     internal companion object {
+        /** [yql] reading `from sources` [clusters] instead of `from event`; null when it has no such clause to rewrite. */
+        internal fun scopedYql(
+            yql: String,
+            clusters: List<String>,
+        ): String? {
+            val from = " from $EVENT_DOCTYPE where "
+            val at = yql.indexOf(from)
+            if (at < 0) return null
+            return yql.substring(0, at) + " from sources ${clusters.joinToString(", ")} where " + yql.substring(at + from.length)
+        }
+
+        /** A group LIMIT in a grouping pipeline, `max(10)`, never the `max(expr)` aggregator. */
+        private val GROUP_LIMIT = Regex("""\bmax\(\s*\d+\s*\)""")
+
         /**
          * The FED column generations a schema can predate — the near tier, the
          * edge column, the stemmed columns — each refused on its own feed round.

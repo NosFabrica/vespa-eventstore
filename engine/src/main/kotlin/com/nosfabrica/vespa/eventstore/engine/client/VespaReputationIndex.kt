@@ -58,8 +58,11 @@ class VespaReputationIndex(
 ) : ReputationIndex {
     private val documentApi = EndpointRotation(endpoints, baseUrl)
 
-    /** The clusters a visit walks, one per author shard ([ClientTuning.visitClustersOrEnv]). */
-    private val clusters: List<String?> = tuning.visitClustersOrEnv()
+    /** The clusters a visit walks, one per author shard ([ClientTuning.visitClusters]). */
+    private val clusters: List<String?> = tuning.visitClusters()
+
+    /** The deployed clusters, checked against [clusters] before a walk relies on them. */
+    private val authorClusters by lazy { AuthorClusters(clusters, http, documentApi::next) }
 
     /** The `cluster` parameter for one visit: none on the one cluster the bundled package declares. */
     private fun clusterParam(cluster: String?): String = cluster?.let { "&cluster=${URLEncoder.encode(it, "UTF-8")}" } ?: ""
@@ -271,6 +274,7 @@ class VespaReputationIndex(
      * page returns partial + continuation instead of dying.
      */
     override suspend fun visitPubkeys(onPage: suspend (List<String>) -> Boolean) {
+        authorClusters.verify()
         for (cluster in clusters) if (!visitPubkeys(cluster, onPage)) return
     }
 
@@ -306,6 +310,7 @@ class VespaReputationIndex(
     }
 
     override suspend fun visitDocs(onPage: suspend (List<ReputationDoc>) -> Boolean) {
+        authorClusters.verify()
         for (cluster in clusters) if (!visitDocs(cluster, onPage)) return
     }
 

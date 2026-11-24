@@ -396,6 +396,7 @@ object EventYql {
             completeCoverage = q.complete,
             sampled = q.sampled,
             shape = clauseShape(q),
+            authorScope = authorScopeOf(q),
         )
     }
 
@@ -671,6 +672,7 @@ object EventYql {
             sampled = q.sampled,
             acceptsPartial = q.acceptsPartial,
             shape = clauseShape(q),
+            authorScope = authorScopeOf(q),
         )
     }
 
@@ -844,6 +846,7 @@ object EventYql {
             ranking = ranking,
             acceptsPartial = q.acceptsPartial,
             shape = clauseShape(q),
+            authorScope = authorScopeOf(q),
         )
     }
 
@@ -942,6 +945,7 @@ object EventYql {
             ranking = ranking,
             acceptsPartial = q.acceptsPartial,
             shape = clauseShape(q),
+            authorScope = if (source == EVENT_SOURCE) authorScopeOf(q) else null,
         )
     }
 
@@ -1148,6 +1152,27 @@ object EventYql {
         if (q.since != null) parts += "since"
         if (q.until != null) parts += "until"
         return if (parts.isEmpty()) SHAPE_PLAIN else parts.joinToString(",")
+    }
+
+    /**
+     * The authors EVERY match of [q] must have, spelled as the clause spells them (lowercase
+     * 64-hex, the rest dropped): [EventQuery.authors], intersected with [EventQuery.authorWeights]'
+     * keys when both are set — each is its own AND-ed clause in [filterClauses]. Null when the query
+     * names no author, so it can match anyone. `pubkey` matches `cased`, so a stored event matching
+     * one of these has exactly that pubkey, and lives in that pubkey's author shard: the set a
+     * sharded client may restrict the query's clusters to ([VespaQuery.authorScope]).
+     */
+    internal fun authorScopeOf(q: EventQuery): Set<String>? {
+        fun hexes(keys: Collection<String>) = keys.mapNotNullTo(HashSet()) { k -> k.lowercase().takeIf(Hex::isHexKey) }
+        val authors = q.authors.takeIf { it.isNotEmpty() }?.let(::hexes)
+        val weighted =
+            q.authorWeights.keys
+                .takeIf { it.isNotEmpty() }
+                ?.let(::hexes)
+        return when {
+            authors != null && weighted != null -> authors intersect weighted
+            else -> authors ?: weighted
+        }
     }
 
     /**
