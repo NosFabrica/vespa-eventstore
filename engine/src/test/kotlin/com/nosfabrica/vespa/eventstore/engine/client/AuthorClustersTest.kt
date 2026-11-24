@@ -26,6 +26,7 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.sun.net.httpserver.HttpServer
 import kotlinx.coroutines.runBlocking
 import java.net.InetSocketAddress
+import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -34,6 +35,10 @@ import kotlin.test.assertTrue
 
 class AuthorClustersTest {
     private val http = VespaHttp()
+
+    /** Closed, or its connection pool's thread outlives the test (OkHttpThreadLeakTest checks the JVM). */
+    @AfterTest
+    fun close() = http.close()
 
     private fun clusters(shards: Int) = AuthorClusters(if (shards == 1) listOf(null) else AuthorShards.clusters(shards), http) { "http://unused" }
 
