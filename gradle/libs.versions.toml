@@ -4,11 +4,30 @@ kotlin = "2.4.21"
 app = "1.0.1"
 # vanniktech's Maven Publish plugin — the same one Quartz ships to Central with.
 mavenPublish = "0.37.0"
-# Quartz from Nostr + Blossom through Magpie (com.vitorpamplona.quartz:quartz), pinned to a release.
-# FROM MAGPIE, so the published POM names com.vitorpamplona.quartz:quartz-jvm:<pin> and a consumer of
-# this store needs Magpie serving quartz's groups (settings.gradle.kts); it needs no JitPack.
+# Quartz pinned to a COMMIT that JitPack builds (com.github.vitorpamplona.quartz:quartz), not a release,
+# so the store runs on quartz's main before its next release. FROM JITPACK, so the published POM names
+# com.github.vitorpamplona.quartz:quartz-jvm:<pin>: a consumer of this store needs JitPack for that group
+# (vespa-relay has it) and still needs Magpie for quartz's crypto, schnorr256k1 and negentropy groups
+# (settings.gradle.kts). Back to a release, and to Magpie, once one carries what this pin needs.
 #
-# 2.22.1 = vitorpamplona/quartz's release 2.22.1 (the v2.22.1 tag 273155b3d over the quartz#141 merge
+# 4456c57f06 = vitorpamplona/quartz main @ 2026-11-24, the quartz#151 merge (4456c57f0), 41 commits over
+# 2.22.1 (below), which it descends from: 2.23.0 and 2.24.0 (v2.24.0 = 45d20fe31) and 24 after it. Nothing
+# this store calls changes contract:
+#  - RELAY SERVER (RelaySession). An unusable REQ, COUNT or CLOSE is answered CLOSED on its sub id; a failed
+#    REQ gives its slot back; nothing is sent on a parked REQ after it is closed; COUNT runs off the
+#    connection's reader, capped and ordered per id, its concurrency left to the backend, and CLOSE, a
+#    replacement or a refusal cancels it at once. Server side: this store constructs no RelaySession;
+#    vespa-relay does.
+#  - SEARCH. EventSearchMatcher walks a SearchableEvent's fields once for all of a query's terms, phrases
+#    and exclusions instead of once per term (a kind 0 parsed its JSON on every walk). Same answers; no
+#    kind becomes or stops being SearchableEvent, so no reindex.
+#  - ALLOCATION (nothing this store's contract reads): hint providers allocate nothing for references they
+#    don't find, Kite sizes large writes once, RelayLogger/RelayReqStats allocate nothing per EVENT, the
+#    EventInterner sweeps collected entries, CachingEventDecoder stops copying ids twice.
+#  - Also in the range: NIP-85 trust updates (one paged REQ before negentropy), Concord and Buzz event
+#    classes, and Kotlin/Native fixes.
+#
+# Prev 2.22.1 = vitorpamplona/quartz's release 2.22.1 (the v2.22.1 tag 273155b3d over the quartz#141 merge
 # d0effdd1a), 18 commits over 2.21.0 (below), which it descends from; 2.21.1 and 2.22.0 between them were
 # never pinned. Nothing this store calls moves:
 #  - UNPARSABLE AUTH / EVENT (quartz#139). RelaySession answers a frame it cannot parse but whose id it can
@@ -404,7 +423,7 @@ mavenPublish = "0.37.0"
 # catch-all; SearchableEvent grows the read-path forEachIndexableField, no reindex).
 # Prev cecc3287b2 (2026-09-01: 17 catch-all kinds split into title/body roles, four
 # affiliation URLs, six doubled `t`-tag scans dropped; a ranking backfill).
-quartz = "2.22.1"
+quartz = "4456c57f06"
 coroutines = "1.11.0"
 serialization = "1.12.0"
 # Matches what Quartz brings transitively; Gradle would resolve to it regardless.
@@ -433,7 +452,7 @@ ktlint = "1.8.0"
 testcontainers = "2.0.5"
 
 [libraries]
-quartz = { module = "com.vitorpamplona.quartz:quartz", version.ref = "quartz" }
+quartz = { module = "com.github.vitorpamplona.quartz:quartz", version.ref = "quartz" }
 kotlinx-coroutines = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
