@@ -38,6 +38,9 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.net.URLEncoder
 import java.time.Duration
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * PROTOTYPE: moving author buckets onto NEW content clusters while the store keeps serving
@@ -130,12 +133,12 @@ class BucketMove(
     /** Step 2: the moving buckets' documents into their destinations, where absent. */
     suspend fun copy(): Counts =
         counts { type, buckets, src, dst ->
-            var n = 0L
+            val n = AtomicLong()
             visit(type, src, buckets, "[document]") { docs ->
                 // A page's puts in flight together: the feed client pipelines them over HTTP/2.
-                n += coroutineScope { docs.map { d -> async { put(type, d, dst, ifAbsent = true) } }.awaitAll() }.count { it }
+                n.addAndGet(coroutineScope { docs.map { d -> async { put(type, d, dst, ifAbsent = true) } }.awaitAll() }.count { it }.toLong())
             }
-            n
+            n.get()
         }
 
     /**
@@ -155,9 +158,9 @@ class BucketMove(
             for (buckets in all.chunked(BATCH)) {
                 for (type in types) {
                     val fieldSet = if (type.compareFields) "[document]" else "[id]"
-                    val there = HashMap<String, String>()
+                    val there = ConcurrentHashMap<String, String>()
                     visit(type, dst, buckets, fieldSet) { docs -> docs.forEach { there[idOf(it)] = canonical(it["fields"]) } }
-                    val candidates = ArrayList<String>()
+                    val candidates = ConcurrentLinkedQueue<String>()
                     visit(type, src, buckets, fieldSet) { docs ->
                         for (d in docs) {
                             val id = idOf(d)
@@ -169,6 +172,7 @@ class BucketMove(
                     val confirmed =
                         coroutineScope {
                             candidates
+                                .toList()
                                 .map { id ->
                                     async {
                                         val a = read(type, id, src)
@@ -196,36 +200,44 @@ class BucketMove(
     /** Step 6: the moved documents removed from their sources, which serve them no longer. */
     suspend fun cleanup(): Counts =
         counts { type, buckets, src, _ ->
-            var n = 0L
-            visit(type, src, buckets, "[id]") { docs -> n += coroutineScope { docs.map { d -> async { remove(type, idOf(d), src) } }.awaitAll() }.count { it } }
-            n
+            val n = AtomicLong()
+            visit(type, src, buckets, "[id]") { docs -> n.addAndGet(coroutineScope { docs.map { d -> async { remove(type, idOf(d), src) } }.awaitAll() }.count { it }.toLong()) }
+            n.get()
         }
 
     /** The moving buckets' documents still in their sources: zero after [cleanup]. */
     suspend fun remaining(): Counts =
         counts { type, buckets, src, _ ->
-            var n = 0L
-            visit(type, src, buckets, "[id]") { docs -> n += docs.size }
-            n
+            val n = AtomicLong()
+            visit(type, src, buckets, "[id]") { docs -> n.addAndGet(docs.size.toLong()) }
+            n.get()
         }
 
     /** (source, destination) -> the buckets moving between them. */
     private val pairs: Map<Pair<Int, Int>, List<Int>> = moves.entries.groupBy({ it.value }, { it.key }).mapValues { (_, b) -> b.sorted() }
 
-    /** [per] over every pair's buckets, [BATCH] at a time: one visit per batch, not per bucket, since a visit's selection is evaluated over the whole cluster. */
+    /**
+     * [per] over every pair's buckets, ALL of them in one visit per type: a visit evaluates its
+     * selection over the whole source cluster, so a visit per batch re-read the cluster once per
+     * batch (measured: copying 44 k events took 87 s, ~500 documents/s, in batches of 16). The
+     * streaming steps hold nothing per document, so one visit costs no memory. [diff], which holds
+     * a batch's destination in memory, still goes [BATCH] buckets at a time.
+     */
     private suspend fun counts(per: suspend (Type, List<Int>, Int, Int) -> Long): Counts {
         var events = 0L
         var reputations = 0L
         for ((pair, all) in pairs) {
-            for (buckets in all.chunked(BATCH)) {
-                events += per(types[0], buckets, pair.first, pair.second)
-                reputations += per(types[1], buckets, pair.first, pair.second)
-            }
+            events += per(types[0], all, pair.first, pair.second)
+            reputations += per(types[1], all, pair.first, pair.second)
         }
         return Counts(events, reputations)
     }
 
-    /** [buckets]' documents of [type] in [cluster], page by page, projected to [fieldSet]. */
+    /**
+     * [buckets]' documents of [type] in [cluster], page by page, projected to [fieldSet], in
+     * [SLICES] slices walked at once (document-API `slices`/`sliceId`: disjoint, together the
+     * whole). [onPage] is called from several coroutines at once and must be safe for that.
+     */
     private suspend fun visit(
         type: Type,
         cluster: Int,
@@ -239,15 +251,23 @@ class BucketMove(
                 "?cluster=${URLEncoder.encode(AuthorShards.clusterName(cluster), "UTF-8")}" +
                 "&selection=${URLEncoder.encode(selection, "UTF-8")}" +
                 "&fieldSet=${URLEncoder.encode(fieldSet, "UTF-8")}" +
-                "&wantedDocumentCount=$PAGE&timeout=$SERVER_TIMEOUT_SECONDS"
-        var continuation: String? = null
-        while (true) {
-            val resp = http.getVisit(continuation?.let { "$base&continuation=$it" } ?: base)
-            require(resp.statusCode() < 400) { "move visit of ${type.doctype} in ${AuthorShards.clusterName(cluster)}: ${resp.statusCode()} ${resp.body().take(300)}" }
-            val env = Json.parseToJsonElement(resp.body()).jsonObject
-            val docs = env["documents"]?.jsonArray.orEmpty().map { it.jsonObject }
-            if (docs.isNotEmpty()) onPage(docs)
-            continuation = env["continuation"]?.jsonPrimitive?.content ?: return
+                "&wantedDocumentCount=$PAGE&timeout=$SERVER_TIMEOUT_SECONDS&slices=$SLICES"
+        coroutineScope {
+            (0 until SLICES)
+                .map { slice ->
+                    async {
+                        val sliced = "$base&sliceId=$slice"
+                        var continuation: String? = null
+                        while (true) {
+                            val resp = http.getVisit(continuation?.let { "$sliced&continuation=$it" } ?: sliced)
+                            require(resp.statusCode() < 400) { "move visit of ${type.doctype} in ${AuthorShards.clusterName(cluster)}: ${resp.statusCode()} ${resp.body().take(300)}" }
+                            val env = Json.parseToJsonElement(resp.body()).jsonObject
+                            val docs = env["documents"]?.jsonArray.orEmpty().map { it.jsonObject }
+                            if (docs.isNotEmpty()) onPage(docs)
+                            continuation = env["continuation"]?.jsonPrimitive?.content ?: break
+                        }
+                    }
+                }.awaitAll()
         }
     }
 
@@ -310,6 +330,9 @@ class BucketMove(
 
         /** Buckets per visit: each visit evaluates its selection over the whole source cluster. */
         const val BATCH = 16
+
+        /** Concurrent slices of one visit: within the ~64-session ceiling that wedged a small node's document API (VespaVisits). */
+        const val SLICES = 8
         const val SERVER_TIMEOUT_SECONDS = 90L
         val TIMEOUT: Duration = Duration.ofSeconds(30)
 

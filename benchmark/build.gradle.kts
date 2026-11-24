@@ -384,3 +384,24 @@ tasks.register<JavaExec>("oneClusterAbProbe") {
     mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.probe.OneClusterAbProbe")
     maxHeapSize = "3g"
 }
+
+// A real, read-only slice of the production relay for the growth simulation. See RelaySlice.kt.
+tasks.register<JavaExec>("relaySlice") {
+    group = "verification"
+    description = "Pull 10040 lists, template services' 30382 cards and recent events from the live relay (read-only) into build/relay-slice"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.load.RelaySlice")
+    workingDir = projectDir
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "4g"
+}
+
+// New users arriving on real data, and the author split they force. See GrowthSimulation.kt and
+// docs/growth-simulation.md. Needs a fresh Vespa and a relaySlice.
+tasks.register<JavaExec>("growthSimulation") {
+    group = "verification"
+    description = "Load a relay slice, add users one by one, split one cluster into two mid-growth, verify (needs a fresh Vespa)"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.probe.GrowthSimulation")
+    workingDir = projectDir
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "4g"
+}
