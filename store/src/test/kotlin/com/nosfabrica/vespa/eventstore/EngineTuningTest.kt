@@ -149,7 +149,7 @@ class EngineTuningTest {
         assertEquals(4_096, EngineTuning.MAX_FEED_BATCH)
         assertEquals(500, EngineTuning.DEFAULT_DEDUP_CHUNK)
         assertEquals(EngineTuning.VARIABLES.size, EngineTuning.VARIABLES.toSet().size, "each variable once")
-        assertEquals(25, EngineTuning.VARIABLES.size)
+        assertEquals(26, EngineTuning.VARIABLES.size)
     }
 
     /** The shard count decides where documents live, so it parses strictly and reaches the client. */
@@ -161,7 +161,10 @@ class EngineTuningTest {
             assertFailsWith<IllegalArgumentException>(bad) { EngineTuning.fromEnv(mapOf("VESPA_AUTHOR_SHARDS" to bad)) }
         }
         assertFailsWith<IllegalArgumentException> { EngineTuning(authorShards = 0) }
-        assertEquals(3, EngineTuning(authorShards = 3).authorShardsOrDefault())
+        assertEquals(3, EngineTuning(authorShards = 3).bucketMap().clusters)
+        assertEquals("00-99=0,9a-ff=1", EngineTuning.fromEnv(mapOf("VESPA_AUTHOR_BUCKETS" to "00-99=0,9a-ff=1")).bucketMap().spec())
+        assertFailsWith<IllegalArgumentException>("a gap") { EngineTuning.fromEnv(mapOf("VESPA_AUTHOR_BUCKETS" to "00-98=0,9a-ff=1")) }
+        assertFailsWith<IllegalArgumentException>("disagreeing counts") { EngineTuning(authorShards = 3, authorBuckets = "00-99=0,9a-ff=1") }
     }
 
     /** A per-store setting reaches the store it opens: feedBatch 0 leaves the batch path unbuilt. */

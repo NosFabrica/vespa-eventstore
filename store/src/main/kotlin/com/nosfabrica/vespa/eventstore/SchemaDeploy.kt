@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore
 
+import com.nosfabrica.vespa.eventstore.engine.app.AuthorShards
 import com.nosfabrica.vespa.eventstore.engine.app.SchemaDeployer
 import com.nosfabrica.vespa.eventstore.engine.app.VespaApp
 import java.time.Duration
@@ -126,7 +127,7 @@ internal fun runSchemaDeploy(
     mode: SchemaDeploy,
     accessLog: String?,
     awaitTimeout: Duration,
-    authorShards: Int = 1,
+    buckets: AuthorShards.BucketMap = AuthorShards.BucketMap.even(1),
 ): SchemaDeployment {
     when (mode) {
         SchemaDeploy.NEVER -> {
@@ -149,7 +150,7 @@ internal fun runSchemaDeploy(
             val serving = deployer.isServing(url)
             if (serving && mode == SchemaDeploy.IF_ABSENT) return SchemaDeployment(mode, deployed = false, generation = null, converged = null, deployer = null)
             // Built only when a deploy is possible: building it validates the access-log choice.
-            val zip = VespaApp.zipBytes(accessLog, authorShards)
+            val zip = VespaApp.zipBytes(accessLog, buckets)
             if (serving && deployer.serves(zip)) return SchemaDeployment(mode, deployed = false, generation = null, converged = null, deployer = deployer)
             return try {
                 if (serving) deployer.checkShardChange(url, zip)

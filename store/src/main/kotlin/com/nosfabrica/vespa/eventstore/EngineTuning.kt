@@ -130,6 +130,12 @@ class EngineTuning(
      * changing it on a fed corpus deletes documents (the selections are what each cluster keeps).
      */
     val authorShards: Int? = null,
+    /**
+     * `VESPA_AUTHOR_BUCKETS` — PROTOTYPE: an explicit author bucket map, e.g. `00-99=0,9a-ff=1`
+     * (`AuthorShards.BucketMap`), for a split that is not even or a bucket move in flight. Wins over
+     * an even [authorShards]; refused when the two disagree on the cluster count.
+     */
+    val authorBuckets: String? = null,
 ) {
     init {
         feedBatch?.let { require(it in 0..MAX_FEED_BATCH) { "feedBatch $it is outside 0..$MAX_FEED_BATCH" } }
@@ -137,6 +143,7 @@ class EngineTuning(
         for ((name, v) in positives()) v?.let { require(it >= 1) { "$name $it is below 1" } }
         visitConcurrency?.let { require(it in 1..100) { "visitConcurrency $it is outside 1..100" } }
         authorShards?.let { require(it in 1..AuthorShards.MAX) { "authorShards $it is outside 1..${AuthorShards.MAX}" } }
+        bucketMap()
     }
 
     private fun positives() =
@@ -174,6 +181,7 @@ class EngineTuning(
             addressKeyed = addressKeyed,
             unboundedHits = unboundedHits,
             authorShards = authorShards,
+            authorBuckets = authorBuckets,
         )
 
     /**
@@ -197,8 +205,20 @@ class EngineTuning(
     /** The access-log choice for the deployed package: this tuning's, else `VESPA_ACCESS_LOG` as before. */
     internal fun accessLogOrEnv(): String? = accessLog ?: System.getenv(VespaApp.ACCESS_LOG_ENV)
 
-    /** The author shard count for the deployed package and the client alike: this tuning's, else 1. Read from the environment only by [fromEnv]. */
-    internal fun authorShardsOrDefault(): Int = authorShards ?: 1
+    /**
+     * The author bucket map for the deployed package and the client alike: [authorBuckets], else an
+     * even split of [authorShards], else one cluster. Read from the environment only by [fromEnv].
+     */
+    internal fun bucketMap(): AuthorShards.BucketMap {
+        val explicit = authorBuckets?.let(AuthorShards.BucketMap::parse)
+        if (explicit != null) {
+            require(authorShards == null || authorShards == explicit.clusters) {
+                "authorShards $authorShards disagrees with authorBuckets, which names ${explicit.clusters} clusters"
+            }
+            return explicit
+        }
+        return AuthorShards.BucketMap.even(authorShards ?: 1)
+    }
 
     /** The settings this tuning names, for a boot line; empty when it names none. */
     override fun toString(): String =
@@ -228,6 +248,7 @@ class EngineTuning(
             "expirySweepPage" to expirySweepPage,
             "accessLog" to accessLog,
             "authorShards" to authorShards,
+            "authorBuckets" to authorBuckets,
         ).filter { it.second != null }
             .joinToString(", ", prefix = "EngineTuning(", postfix = ")") { (k, v) -> "$k=$v" }
 
@@ -272,6 +293,7 @@ class EngineTuning(
                 StoreKnobs.expirySweepPage.env,
                 VespaApp.ACCESS_LOG_ENV,
                 AuthorShards.ENV,
+                AuthorShards.BUCKETS_ENV,
             )
 
         private val PIN_LOCK = Any()
@@ -348,6 +370,10 @@ class EngineTuning(
                         choice(VespaApp.ACCESS_LOG_ENV, { v -> v.lowercase().takeIf { it in VespaApp.ACCESS_LOG_VALUES } }, VespaApp.ACCESS_LOG_VALUES.sorted().joinToString()),
                     expirySweepPage = int(StoreKnobs.expirySweepPage.env, atLeastOne),
                     authorShards = int(AuthorShards.ENV, 1..AuthorShards.MAX),
+                    authorBuckets =
+                        setting(AuthorShards.BUCKETS_ENV)?.let { raw ->
+                            runCatching { AuthorShards.BucketMap.parse(raw) }.fold({ raw }, { e -> null.also { problems += "${AuthorShards.BUCKETS_ENV}: ${e.message}" } })
+                        },
                 )
             require(problems.isEmpty()) { "the store's environment has ${problems.size} bad setting(s): ${problems.joinToString("; ")}" }
             return tuning

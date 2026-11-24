@@ -44,23 +44,35 @@ import java.net.URLEncoder
  * count under a running client is the deploy guard's to refuse (`SchemaDeployer.checkShardChange`).
  */
 internal class AuthorClusters(
-    /** The clusters this client was configured for: `[null]` on the bundled single cluster. */
-    val names: List<String?>,
+    /** The bucket map this client was configured with ([AuthorShards.BucketMap]). */
+    val map: AuthorShards.BucketMap,
     private val http: VespaHttp,
     private val endpoint: () -> String,
 ) {
-    val sharded: Boolean get() = names.size > 1
+    /** One constructor for the even split of [shards], as tests and the bundled single cluster use it. */
+    constructor(shards: Int, http: VespaHttp, endpoint: () -> String) : this(AuthorShards.BucketMap.even(shards), http, endpoint)
+
+    /** Every cluster the map names, pending ones included: what the deployment must have. */
+    val all: List<String> = AuthorShards.clusters(map.clusters)
+
+    /** The clusters that serve reads. A pending cluster is being filled by a move and is read by no one. */
+    val serving: List<String> = map.serving.map(AuthorShards::clusterName)
+
+    val sharded: Boolean get() = map.clusters > 1
+
+    /** The clusters a visit walks: `[null]` (no `cluster` parameter, the request as it always was) on one cluster; else [serving]. */
+    val visitClusters: List<String?> = if (sharded) serving else listOf(null)
 
     @Volatile private var verified = !sharded
 
     private val lock = Mutex()
 
-    /** Throw unless the deployment's content clusters are exactly [names]; a no-op after the first success, and always on one cluster. */
+    /** Throw unless the deployment's content clusters are exactly [all]; a no-op after the first success, and always on one cluster. */
     suspend fun verify() {
         if (verified) return
         lock.withLock {
             if (verified) return
-            val beyond = AuthorShards.clusterName(names.size)
+            val beyond = AuthorShards.clusterName(all.size)
             // The visit client (HTTP/1.1, with a read deadline): this IS a visit request.
             val resp =
                 http.getVisit(
@@ -70,13 +82,13 @@ internal class AuthorClusters(
             val deployed = if (resp.statusCode() >= 400) deployedOf(resp.body()) else null
             check(deployed != null) {
                 if (resp.statusCode() < 400) {
-                    "this client is configured for ${names.size} author-shard clusters, but the deployment also has '$beyond'"
+                    "this client is configured for ${all.size} author-shard clusters, but the deployment also has '$beyond'"
                 } else {
                     "cannot read the deployment's content clusters (${resp.statusCode()}: ${resp.body().take(200)})"
                 }
             }
-            check(deployed.toSet() == names.toSet()) {
-                "this client is configured for author-shard clusters $names, but the deployment has $deployed; " +
+            check(deployed.toSet() == all.toSet()) {
+                "this client is configured for author-shard clusters $all, but the deployment has $deployed; " +
                     "visits and author-scoped queries would miss documents"
             }
             verified = true
@@ -84,22 +96,24 @@ internal class AuthorClusters(
     }
 
     /**
-     * The clusters a query with author clauses [filter] needs — its authors' shards' — or null to
-     * search every cluster: one cluster deployed (checked FIRST, so a one-cluster store never
-     * normalizes an author list), no author clause, an empty scope (it matches nothing anywhere), or
-     * a scope that spans every shard anyway.
+     * The clusters a query with author clauses [filter] reads — its authors' serving clusters — or
+     * null to read every cluster (`from event`, the query as written). One cluster is checked FIRST,
+     * so a one-cluster store never normalizes an author list. With a move in flight, a query with
+     * no author scope still names the [serving] clusters, so the pending copy is never read.
      */
     fun clustersFor(filter: AuthorFilter?): List<String>? {
-        if (!sharded || filter == null) return null
-        return clustersFor(filter.scope())
+        if (!sharded) return null
+        return clustersFor(filter?.scope())
     }
 
     /** [clustersFor] over an already-normalized author set. */
     fun clustersFor(authors: Set<String>?): List<String>? {
-        if (!sharded || authors.isNullOrEmpty()) return null
-        val shards = authors.mapTo(sortedSetOf()) { AuthorShards.shardOf(it, names.size) }
-        if (shards.size == names.size) return null
-        return shards.map { names[it]!! }
+        if (!sharded) return null
+        val everyServing = if (map.pending.isEmpty()) null else serving
+        if (authors.isNullOrEmpty()) return everyServing
+        val shards = authors.mapTo(sortedSetOf()) { map.shardOf(it) }
+        if (shards.size == map.serving.size) return everyServing
+        return shards.map(AuthorShards::clusterName)
     }
 
     companion object {

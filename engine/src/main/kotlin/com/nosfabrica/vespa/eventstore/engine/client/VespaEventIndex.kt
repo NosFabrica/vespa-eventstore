@@ -255,11 +255,11 @@ class VespaEventIndex(
      */
     private val resources = EngineResources(http, ::queryEndpoint)
 
-    /** The content clusters, one per author shard; `[null]` on the bundled single cluster. */
-    private val clusters: List<String?> = tuning.visitClusters()
+    /** The author clusters, checked against the deployment before a visit or a cluster-scoped query relies on them. */
+    private val authorClusters = AuthorClusters(tuning.bucketMap(), http, ::documentEndpoint)
 
-    /** The deployed clusters, checked against [clusters] before a visit or an author-scoped query relies on them. */
-    private val authorClusters = AuthorClusters(clusters, http, ::documentEndpoint)
+    /** The clusters a visit walks; `[null]` on the bundled single cluster. */
+    private val clusters: List<String?> = authorClusters.visitClusters
 
     private val visits = VespaVisits(http, ::documentEndpoint, visitSlices, visitConcurrency, visitStreaming, clusters, authorClusters::verify)
 
@@ -2407,8 +2407,8 @@ class VespaEventIndex(
         pipeline: String,
         source: String = EventYql.EVENT_SOURCE,
     ): JsonObject {
-        require(clusters.size == 1 || !GROUP_LIMIT.containsMatchIn(pipeline)) {
-            "a grouping limit (max(n)) cannot be answered exactly across ${clusters.size} author-shard clusters: each applies it alone"
+        require(!authorClusters.sharded || !GROUP_LIMIT.containsMatchIn(pipeline)) {
+            "a grouping limit (max(n)) cannot be answered exactly across ${authorClusters.serving.size} author-shard clusters: each applies it alone"
         }
         val vq = EventYql.buildGrouping(query, pipeline, source) ?: return EMPTY_GROUPING_ROOT
         return queryRoot(vq, hits = 0) ?: error("vespa answered a grouping with no root")
@@ -2605,14 +2605,15 @@ class VespaEventIndex(
         // without it the query reads both types).
         val scoped = authorClusters.clustersFor(vq.authorFilter)
         if (scoped != null) authorClusters.verify()
-        val yql = scoped?.let { scopedYql(vq.yql, it) } ?: vq.yql
+        val rewritten = scoped?.let { scopedYql(vq.yql, it) }
+        val yql = rewritten?.first ?: vq.yql
         val body =
             object : RequestBody() {
                 override fun contentType() = JSON_MEDIA
 
                 override fun writeTo(sink: BufferedSink) {
                     sink.writeUtf8("{\"yql\":").writeJsonString(yql)
-                    if (yql !== vq.yql) sink.writeUtf8(",\"model.restrict\":").writeJsonString(EVENT_DOCTYPE)
+                    if (rewritten != null) sink.writeUtf8(",\"model.restrict\":").writeJsonString(rewritten.second)
                     sink.writeUtf8(",\"hits\":").writeJsonString(hits.toString())
                     sink.writeUtf8(",\"ranking\":").writeJsonString(vq.ranking)
                     // Vespa's own split of the time it spent. Asked for only when
@@ -2900,16 +2901,24 @@ class VespaEventIndex(
     }
 
     internal companion object {
-        /** [yql] reading `from sources` [clusters] instead of `from event`; null when it has no such clause to rewrite. */
+        /**
+         * [yql] reading `from sources` [clusters] instead of `from event` or `from reputation`,
+         * paired with the schema it read, which the request must then name in `model.restrict`
+         * (a cluster holds both types); null when it reads from neither.
+         */
         internal fun scopedYql(
             yql: String,
             clusters: List<String>,
-        ): String? {
-            val from = " from $EVENT_DOCTYPE where "
-            val at = yql.indexOf(from)
-            if (at < 0) return null
-            return yql.substring(0, at) + " from sources ${clusters.joinToString(", ")} where " + yql.substring(at + from.length)
+        ): Pair<String, String>? {
+            for (schema in SCOPABLE) {
+                val from = " from $schema where "
+                val at = yql.indexOf(from)
+                if (at >= 0) return (yql.substring(0, at) + " from sources ${clusters.joinToString(", ")} where " + yql.substring(at + from.length)) to schema
+            }
+            return null
         }
+
+        private val SCOPABLE = listOf(EVENT_DOCTYPE, "reputation")
 
         /** A group LIMIT in a grouping pipeline, `max(10)`, never the `max(expr)` aggregator. */
         private val GROUP_LIMIT = Regex("""\bmax\(\s*\d+\s*\)""")

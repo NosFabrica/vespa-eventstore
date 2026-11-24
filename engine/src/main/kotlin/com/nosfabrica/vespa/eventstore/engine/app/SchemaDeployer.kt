@@ -112,34 +112,61 @@ class SchemaDeployer(
         }.getOrDefault(false)
 
     /**
-     * Refuse to deploy [zip] over a serving application when that would MOVE documents: the two
-     * split the corpus across different author-shard clusters ([AuthorShards]) and the serving one
-     * holds documents. A cluster's selection is also what garbage collection keeps, so the new
-     * package would delete every document its selections send elsewhere, and nothing feeds them
-     * again. An empty deployment changes its shard count freely; so does one that never involved
-     * author sharding on either side (one cluster before and after, whatever its id).
+     * Refuse to deploy [zip] over a serving application when that would DELETE documents: a
+     * cluster's selection is also what garbage collection keeps, so a package under which some
+     * content cluster keeps FEWER author buckets than it does now makes the engine delete every
+     * document in the buckets it lost, and nothing feeds them again. Compared by meaning, through
+     * the bucket map each sharded package carries ([VespaApp.bucketMapOf]): a schema change, or a
+     * deploy that only WIDENS what clusters keep (a new cluster starting to receive buckets it is
+     * being filled with), goes through. An empty deployment changes freely.
      *
-     * An active package that cannot be read while [zip] is sharded is refused too, unless the
-     * deployment holds nothing: the guard cannot prove the change safe. Throws
-     * [IllegalStateException]; deploys nothing either way.
+     * [allowNarrowing] is the move tool's cut-over, made only after it verified that the buckets'
+     * new owner holds every document ([com.nosfabrica.vespa.eventstore.engine.app.AuthorShards.BucketMap]).
+     * A package whose clusters are not this store's (`content`, `content1`, …) is compared by
+     * cluster ids, as is an active one that cannot be read. Throws [IllegalStateException];
+     * deploys nothing either way.
      */
     fun checkShardChange(
         queryUrl: String,
         zip: ByteArray,
+        allowNarrowing: Boolean = false,
     ) {
-        val wanted = files(zip)[SERVICES]?.decodeToString()?.let(VespaApp::contentClusters) ?: return
-        val active = activeContentClusters()
-        if (active == wanted) return
-        if (wanted.size <= 1 && (active == null || active.size <= 1)) return
+        val wantedXml = files(zip)[SERVICES]?.decodeToString() ?: return
+        val activeXml = activeServices()
+        val wanted = keptBy(wantedXml)
+        val active = activeXml?.let(::keptBy)
+        val lost: Map<String, Set<Int>>? =
+            if (active != null && wanted != null) {
+                active.mapValues { (cluster, kept) -> kept - wanted[cluster].orEmpty() }.filterValues { it.isNotEmpty() }
+            } else {
+                val wantedIds = VespaApp.contentClusters(wantedXml)
+                val activeIds = activeXml?.let(VespaApp::contentClusters)
+                if (activeIds == wantedIds || (wantedIds.size <= 1 && (activeIds == null || activeIds.size <= 1))) emptyMap() else null
+            }
+        if (lost != null && (lost.isEmpty() || allowNarrowing)) return
         val stored = storedDocuments(queryUrl)
         if (stored == 0L) return
+        val what =
+            lost?.entries?.joinToString("; ") { (c, b) -> "'$c' would drop ${b.size} bucket(s)" }
+                ?: "content clusters ${VespaApp.contentClusters(wantedXml)} over ${activeXml?.let(VespaApp::contentClusters) ?: "an unreadable package"}"
         error(
-            "refusing to deploy content clusters $wanted over ${active ?: "an unreadable package"} holding " +
-                "${stored ?: "an unknown number of"} documents: changing the author-shard count makes Vespa's garbage " +
-                "collection delete every document the new selections move to another cluster. Feed a fresh deployment instead " +
-                "(docs/author-shards.md, \"Not a migration\")",
+            "refusing to deploy: $what while the deployment holds ${stored ?: "an unknown number of"} documents. Changing the author-shard " +
+                "count or bucket map makes Vespa's garbage collection delete every document a cluster stops keeping. Feed a fresh deployment, " +
+                "or move the buckets with the move tool (docs/author-shards.md)",
         )
     }
+
+    /** What each content cluster of [servicesXml] keeps, by author bucket; null when the package is not laid out by this store. */
+    private fun keptBy(servicesXml: String): Map<String, Set<Int>>? {
+        val ids = VespaApp.contentClusters(servicesXml)
+        val map = VespaApp.bucketMapOf(servicesXml)
+        if (map == null) return if (ids == listOf(AuthorShards.BASE_CLUSTER)) mapOf(AuthorShards.BASE_CLUSTER to (0 until 256).toSet()) else null
+        if (ids != AuthorShards.clusters(map.clusters)) return null
+        return ids.withIndex().associate { (i, id) -> id to map.bucketsOf(i).toSet() }
+    }
+
+    /** The ACTIVE application's services.xml; null when it cannot be read. */
+    private fun activeServices(): String? = runCatching { get("$root$INSTANCE/content/$SERVICES").decodeToString() }.getOrNull()
 
     /** The content cluster ids of the application Vespa has ACTIVE, off its services.xml; null when it cannot be read. */
     fun activeContentClusters(): List<String>? = runCatching { VespaApp.contentClusters(get("$root$INSTANCE/content/$SERVICES").decodeToString()) }.getOrNull()

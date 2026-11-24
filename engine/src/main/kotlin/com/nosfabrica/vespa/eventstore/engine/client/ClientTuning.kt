@@ -70,6 +70,8 @@ class ClientTuning(
     val unboundedHits: Int? = null,
     /** `VESPA_AUTHOR_SHARDS`: PROTOTYPE, the content clusters the authors are split across ([AuthorShards]). 1..256. */
     val authorShards: Int? = null,
+    /** `VESPA_AUTHOR_BUCKETS`: PROTOTYPE, an explicit bucket map ([AuthorShards.BucketMap.spec]); wins over an even [authorShards]. */
+    val authorBuckets: String? = null,
 ) {
     // ---- resolution: the field, else the historical lenient read ------------
     //
@@ -114,16 +116,16 @@ class ClientTuning(
 
     internal fun unboundedHitsOrEnv(): Int = unboundedHits ?: env(UNBOUNDED_HITS)?.toIntOrNull() ?: Int.MAX_VALUE
 
-    /** The author-shard count: the field, else 1. A new setting, so no environment read to stay lenient with. */
-    internal fun authorShardsOrDefault(): Int = authorShards ?: 1
-
-    /**
-     * The clusters a visit must walk, one per author shard: `[null]` — no `cluster` parameter, the
-     * request as it always was — for one shard.
-     */
-    internal fun visitClusters(): List<String?> {
-        val shards = authorShardsOrDefault()
-        return if (shards == 1) listOf(null) else AuthorShards.clusters(shards)
+    /** The author bucket map: [authorBuckets] read, else an even split of [authorShards], else one cluster. Refused when the two disagree. */
+    internal fun bucketMap(): AuthorShards.BucketMap {
+        val explicit = authorBuckets?.let(AuthorShards.BucketMap::parse)
+        if (explicit != null) {
+            require(authorShards == null || authorShards == explicit.clusters) {
+                "authorShards $authorShards disagrees with authorBuckets, which names ${explicit.clusters} clusters"
+            }
+            return explicit
+        }
+        return AuthorShards.BucketMap.even(authorShards ?: 1)
     }
 
     companion object {

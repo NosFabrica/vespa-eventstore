@@ -129,4 +129,43 @@ class AuthorShardsTest {
             else -> error("unexpected selection $selection")
         }
     }
+
+    /** The even map writes the very selections the shard count did, so a deployed even split is unchanged by the map. */
+    @Test
+    fun `an even map is the shard count's split, spec and all`() {
+        val two = AuthorShards.BucketMap.even(2)
+        assertEquals("00-7f=0,80-ff=1", two.spec())
+        assertEquals(two, AuthorShards.BucketMap.parse("00-7f=0,80-ff=1"))
+        assertEquals(
+            "(v =~ \"^[0123456789abcdef]{32}(8[0123456789abcdef]|9[0123456789abcdef]|a[0123456789abcdef]|b[0123456789abcdef]|c[0123456789abcdef]|d[0123456789abcdef]|e[0123456789abcdef]|f[0123456789abcdef])\")",
+            two.selection("v", 1),
+        )
+        for (k in listOf(1, 3, 5, 16)) assertEquals(AuthorShards.BucketMap.even(k), AuthorShards.BucketMap.parse(AuthorShards.BucketMap.even(k).spec()))
+    }
+
+    /** Three nodes and two: cluster 0 serves 60% of the buckets. Adding a third cluster moves only the buckets given to it. */
+    @Test
+    fun `an uneven map, and a third cluster that moves only its own buckets`() {
+        val split = AuthorShards.BucketMap.parse("00-99=0,9a-ff=1")
+        assertEquals(154, split.bucketsOf(0).size)
+        assertEquals(0, split.shardOf("0".repeat(32) + "99" + "0".repeat(30)))
+        assertEquals(1, split.shardOf("0".repeat(32) + "9a" + "0".repeat(30)))
+        val moving = AuthorShards.BucketMap.parse("00-99=0,9a-cf=1,d0-ff=1+2")
+        assertEquals(listOf(0, 1), moving.serving)
+        assertEquals(listOf(2), moving.pending)
+        assertEquals(emptyList(), split.narrowedBy(moving, 1), "receiving into a new cluster narrows nobody")
+        val after = AuthorShards.BucketMap.parse("00-99=0,9a-cf=1,d0-ff=2")
+        assertEquals((0xd0..0xff).toList(), moving.narrowedBy(after, 1), "the cut-over narrows the old owner by exactly the moved buckets")
+        assertEquals(emptyList(), split.narrowedBy(after, 0), "and nobody else")
+    }
+
+    @Test
+    fun `a bucket map names every bucket once, and cluster 0 serves`() {
+        assertFailsWith<IllegalArgumentException>("gap") { AuthorShards.BucketMap.parse("00-7e=0,80-ff=1") }
+        assertFailsWith<IllegalArgumentException>("overlap") { AuthorShards.BucketMap.parse("00-80=0,80-ff=1") }
+        assertFailsWith<IllegalArgumentException>("empty cluster") { AuthorShards.BucketMap.parse("00-7f=0,80-ff=2") }
+        assertFailsWith<IllegalArgumentException>("cluster 0 only receiving") { AuthorShards.BucketMap.parse("00-ff=1+0") }
+        assertFailsWith<IllegalArgumentException>("same cluster twice") { AuthorShards.BucketMap.parse("00-7f=0+0,80-ff=1") }
+        assertFailsWith<IllegalArgumentException>("not hex") { AuthorShards.BucketMap.parse("00-zz=0") }
+    }
 }

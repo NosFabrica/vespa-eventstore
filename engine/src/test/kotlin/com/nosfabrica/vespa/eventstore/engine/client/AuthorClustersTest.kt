@@ -41,7 +41,7 @@ class AuthorClustersTest {
     @AfterTest
     fun close() = http.close()
 
-    private fun clusters(shards: Int) = AuthorClusters(if (shards == 1) listOf(null) else AuthorShards.clusters(shards), http) { "http://unused" }
+    private fun clusters(shards: Int) = AuthorClusters(shards, http) { "http://unused" }
 
     private fun key(middle: String) = "0".repeat(32) + middle + "0".repeat(30)
 
@@ -83,10 +83,14 @@ class AuthorClustersTest {
     @Test
     fun `a scoped query reads from the named clusters, the rest of its yql untouched`() {
         assertEquals(
-            "select id, created_at from sources content, content1 where pubkey in (\"x\") and content contains \" from event where \"",
+            "select id, created_at from sources content, content1 where pubkey in (\"x\") and content contains \" from event where \"" to "event",
             VespaEventIndex.scopedYql("select id, created_at from event where pubkey in (\"x\") and content contains \" from event where \"", listOf("content", "content1")),
         )
-        assertNull(VespaEventIndex.scopedYql("select pubkey from reputation where true", listOf("content")))
+        assertEquals(
+            "select pubkey from sources content where pubkey in (\"x\")" to "reputation",
+            VespaEventIndex.scopedYql("select pubkey from reputation where pubkey in (\"x\")", listOf("content")),
+        )
+        assertNull(VespaEventIndex.scopedYql("select * from sources * where true", listOf("content")))
     }
 
     /**
@@ -117,14 +121,31 @@ class AuthorClustersTest {
         val (other, otherUrl) = answering(400, """{"message":"Your Vespa deployment has no content cluster 'content2', only 'content', 'shards'"}""")
         try {
             runBlocking {
-                val e = assertFailsWith<IllegalStateException> { AuthorClusters(AuthorShards.clusters(2), http) { moreUrl }.verify() }
+                val e = assertFailsWith<IllegalStateException> { AuthorClusters(2, http) { moreUrl }.verify() }
                 assertTrue("also has 'content2'" in e.message.orEmpty(), e.message)
-                AuthorClusters(AuthorShards.clusters(2), http) { exactUrl }.verify()
-                assertFailsWith<IllegalStateException> { AuthorClusters(AuthorShards.clusters(2), http) { otherUrl }.verify() }
-                AuthorClusters(listOf(null), http) { "http://127.0.0.1:1" }.verify() // one cluster: never asks
+                AuthorClusters(2, http) { exactUrl }.verify()
+                assertFailsWith<IllegalStateException> { AuthorClusters(2, http) { otherUrl }.verify() }
+                AuthorClusters(1, http) { "http://127.0.0.1:1" }.verify() // one cluster: never asks
             }
         } finally {
             listOf(more, exact, other).forEach { it.stop(0) }
         }
+    }
+
+    /**
+     * A move in flight: cluster 2 receives buckets e0–ff from cluster 1 and serves nothing yet. It
+     * is pending, so no read may see it — an unscoped query names the serving clusters instead of
+     * `from event`, a scoped one maps its authors to their serving owner, and visits skip it — while
+     * the deployment check still expects all three clusters.
+     */
+    @Test
+    fun `a pending cluster is written to and read by no one`() {
+        val moving = AuthorClusters(AuthorShards.BucketMap.parse("00-7f=0,80-df=1,e0-ff=1+2"), http) { "http://unused" }
+        assertEquals(listOf("content", "content1", "content2"), moving.all)
+        assertEquals(listOf("content", "content1"), moving.serving)
+        assertEquals(listOf<String?>("content", "content1"), moving.visitClusters)
+        assertEquals(listOf("content", "content1"), moving.clustersFor(null as Set<String>?), "unscoped: the serving clusters, never the pending copy")
+        assertEquals(listOf("content1"), moving.clustersFor(setOf(key("f0"))), "a moving bucket is still read from its owner")
+        assertEquals(listOf("content", "content1"), moving.clustersFor(setOf(key("10"), key("f0"))))
     }
 }

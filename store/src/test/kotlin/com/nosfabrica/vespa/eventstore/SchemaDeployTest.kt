@@ -205,4 +205,27 @@ class SchemaDeployTest {
         changeActive()
         assertTrue(deploy(SchemaDeploy.IF_CHANGED, EngineTuning(authorShards = 2)).deployed, "a schema change at the same count deploys over data")
     }
+
+    /**
+     * A bucket move, as the guard sees it: starting to write the moving buckets to a new cluster
+     * only WIDENS what clusters keep, so it deploys over data; the cut-over NARROWS the old owner,
+     * so the store refuses it — only the move tool, after verifying the copy, may pass
+     * `allowNarrowing`. A schema change at an unchanged map deploys as before.
+     */
+    @Test
+    fun `a move's overlap deploys over data, its cut-over only when allowed`() {
+        active = files(VespaApp.zipBytes(null, 2))
+        stored = 1_000
+        val overlap = EngineTuning(authorBuckets = "00-7f=0,80-bf=1,c0-ff=1+2")
+        assertTrue(deploy(SchemaDeploy.IF_CHANGED, overlap).deployed, "receiving into a new cluster deletes nothing")
+        val cut = EngineTuning(authorBuckets = "00-7f=0,80-bf=1,c0-ff=2")
+        val refused = assertFailsWith<SchemaDeployException> { deploy(SchemaDeploy.IF_CHANGED, cut) }
+        assertTrue("'content1' would drop 64 bucket(s)" in refused.message.orEmpty(), refused.message)
+        val deployer =
+            com.nosfabrica.vespa.eventstore.engine.app
+                .SchemaDeployer(base)
+        deployer.checkShardChange(base, VespaApp.zipBytes(null, cut.bucketMap()), allowNarrowing = true)
+        changeActive()
+        assertTrue(deploy(SchemaDeploy.IF_CHANGED, overlap).deployed, "a schema change at the same map deploys over data")
+    }
 }

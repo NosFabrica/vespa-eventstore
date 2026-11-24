@@ -104,10 +104,18 @@ object VespaApp {
         accessLog: String?,
         authorShards: Int = 1,
     ): ByteArray {
+        require(authorShards in 1..AuthorShards.MAX) { "authorShards $authorShards is outside 1..${AuthorShards.MAX}" }
+        return zipBytes(accessLog, AuthorShards.BucketMap.even(authorShards))
+    }
+
+    /** [zipBytes] with the authors split by an explicit [buckets] map ([AuthorShards.BucketMap]); a one-cluster map ships the package as built. */
+    fun zipBytes(
+        accessLog: String?,
+        buckets: AuthorShards.BucketMap,
+    ): ByteArray {
         val raw =
             VespaApp::class.java.getResourceAsStream(RESOURCE)?.use { it.readBytes() }
                 ?: error("bundled Vespa application package not found on the classpath ($RESOURCE) - is :engine on the runtime classpath?")
-        require(authorShards in 1..AuthorShards.MAX) { "authorShards $authorShards is outside 1..${AuthorShards.MAX}" }
 
         val value = accessLog?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
         value?.let {
@@ -116,10 +124,10 @@ object VespaApp {
             }
         }
         val disable = value == "disabled"
-        if (!disable && authorShards == 1) return raw
+        if (!disable && buckets.clusters == 1) return raw
 
         return rewrite(raw, SERVICES) { xml ->
-            val sharded = if (authorShards > 1) shardContent(xml, authorShards) else xml
+            val sharded = if (buckets.clusters > 1) shardContent(xml, buckets) else xml
             if (disable) disableAccessLog(sharded) else sharded
         }
     }
@@ -145,6 +153,20 @@ object VespaApp {
         shards: Int,
     ): String {
         require(shards in 2..AuthorShards.MAX) { "shards $shards is outside 2..${AuthorShards.MAX}" }
+        return shardContent(servicesXml, AuthorShards.BucketMap.even(shards))
+    }
+
+    /**
+     * [shardContent] by an explicit [buckets] map. The map's spec is also written into the file as
+     * a comment ([BUCKETS_MARK]), so the deploy guard reads back what each ACTIVE cluster keeps
+     * (`SchemaDeployer.checkShardChange`) without parsing the selections.
+     */
+    internal fun shardContent(
+        servicesXml: String,
+        buckets: AuthorShards.BucketMap,
+    ): String {
+        val shards = buckets.clusters
+        require(shards >= 2) { "a one-cluster map needs no split" }
         val doc = parse(servicesXml)
         val contents = doc.getElementsByTagName(CONTENT)
         require(contents.length == 1) { "$SERVICES declares ${contents.length} <$CONTENT> elements; author sharding splits exactly one" }
@@ -160,8 +182,8 @@ object VespaApp {
                 val name = type.getAttribute("type")
                 val shard =
                     when (name) {
-                        "event" -> AuthorShards.selection("event.pubkey", index, shards)
-                        "reputation" -> AuthorShards.selection("id.specific", index, shards)
+                        "event" -> buckets.selection("event.pubkey", index)
+                        "reputation" -> buckets.selection("id.specific", index)
                         else -> error("$SERVICES' content cluster holds document type '$name', which author sharding has no key for")
                     }
                 seen += name
@@ -170,6 +192,8 @@ object VespaApp {
             }
             require(seen == setOf("event", "reputation")) { "$SERVICES' content cluster holds $seen; author sharding needs event and reputation together" }
         }
+        doc.documentElement.insertBefore(doc.createComment(" $BUCKETS_MARK${buckets.spec()} "), doc.documentElement.firstChild)
+        doc.documentElement.insertBefore(doc.createTextNode("\n  "), doc.documentElement.firstChild)
         var anchor: org.w3c.dom.Node = base
         for (copy in copies) {
             val gap = doc.createTextNode("\n\n  ")
@@ -223,6 +247,22 @@ object VespaApp {
         container.insertBefore(doc.createElement(ACCESSLOG).apply { setAttribute("type", "disabled") }, first)
 
         return serialize(doc, servicesXml.length + 128)
+    }
+
+    /** The comment [shardContent] writes the bucket map under. */
+    internal const val BUCKETS_MARK = "eventstore author buckets: "
+
+    /** The bucket map [shardContent] wrote into [servicesXml]; null when it carries none (one cluster, or a package of someone else's). */
+    internal fun bucketMapOf(servicesXml: String): AuthorShards.BucketMap? {
+        val doc = parse(servicesXml)
+        val nodes = doc.documentElement.childNodes
+        for (i in 0 until nodes.length) {
+            val n = nodes.item(i)
+            if (n.nodeType == org.w3c.dom.Node.COMMENT_NODE && n.nodeValue.trim().startsWith(BUCKETS_MARK)) {
+                return AuthorShards.BucketMap.parse(n.nodeValue.trim().removePrefix(BUCKETS_MARK))
+            }
+        }
+        return null
     }
 
     /** The content cluster ids [servicesXml] declares, in order. */

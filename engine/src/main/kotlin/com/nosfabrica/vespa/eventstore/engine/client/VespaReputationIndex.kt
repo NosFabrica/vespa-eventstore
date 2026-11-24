@@ -58,11 +58,14 @@ class VespaReputationIndex(
 ) : ReputationIndex {
     private val documentApi = EndpointRotation(endpoints, baseUrl)
 
-    /** The clusters a visit walks, one per author shard ([ClientTuning.visitClusters]). */
-    private val clusters: List<String?> = tuning.visitClusters()
+    /** The author bucket map this index was configured with ([ClientTuning.bucketMap]). */
+    private val buckets = tuning.bucketMap()
 
     /** The deployed clusters, checked against [clusters] before a walk relies on them. */
-    private val authorClusters by lazy { AuthorClusters(clusters, http, documentApi::next) }
+    private val authorClusters by lazy { AuthorClusters(buckets, http, documentApi::next) }
+
+    /** The clusters a visit walks: the serving ones, or `[null]` on one cluster. */
+    private val clusters: List<String?> by lazy { authorClusters.visitClusters }
 
     /** The `cluster` parameter for one visit: none on the one cluster the bundled package declares. */
     private fun clusterParam(cluster: String?): String = cluster?.let { "&cluster=${URLEncoder.encode(it, "UTF-8")}" } ?: ""
