@@ -701,7 +701,8 @@ class VespaEventIndex(
      * one query. Inside it ([DirectRead]) a query planned past [idFirstMaxDirectHits]
      * (a fallback at a measured slack) and every `[T,T]` tie read ask for ids only,
      * and [completeDocuments] reads the kept members of those by id: a crowded second
-     * costs ids, never its documents. Anything planned larger is id-first throughout.
+     * costs ids, never its documents. Anything planned larger, and a shape whose pages
+     * were cut before ([ReadStart.cutBefore]), is id-first throughout.
      * Every mode is exact, so the page is the same either way: the rule moves cost,
      * never answers.
      */
@@ -713,7 +714,7 @@ class VespaEventIndex(
         if (!eligible) return recallPage(q, planned, idOnly = false)
         // A threshold of 0 never reads the start: today's id-first path, untouched.
         val start = if (idFirstMaxDirectHits > 0) readStart(q, planned) else null
-        if (start != null && start.hits <= idFirstMaxDirectHits) {
+        if (start != null && start.hits <= idFirstMaxDirectHits && !start.cutBefore) {
             IngestStats.tick(FETCH_DIRECT_STAGE)
             val page =
                 try {
@@ -778,6 +779,16 @@ class VespaEventIndex(
      */
     private class ReadStart(
         val hits: Int,
+        /**
+         * Whether the shape's pages have been CUT before: a learned slack of [TIE_SLACK] or more
+         * ([TieSlackMemory.Lease.epoch] not 0), the slack a boundary second wider than the page's
+         * overfetch teaches. Such a read takes its `[T,T]` query again whichever mode it runs in,
+         * so one query saves nothing and its page query reads documents it throws away: it is
+         * id-first. Learned, never presumed: a shape with nothing learned starts direct.
+         * Measured (benchmark/README.md): an author whose every second held 300 notes ran
+         * 320-335 REQ/s direct against 402-409 id-first.
+         */
+        val cutBefore: Boolean = false,
         val shape: RecencyWindowMemory.Shape? = null,
         val lease: TieSlackMemory.Lease? = null,
         val recalled: RecencyWindowMemory.Recall? = null,
@@ -806,7 +817,7 @@ class VespaEventIndex(
         if (limit > EventYql.MATCH_PHASE_BAND && q.ranking == null) return ReadStart(hits = limit)
         val shape = if (slackMemory == null) null else q.takeIf { it.isWindowable() }?.let(::shapeOfRead)
         val lease = shape?.let { slackMemory?.slackFor(it, TieSlackMemory.coldSlack(q, limit)) }
-        return ReadStart(fetchLimitOf(limit, lease?.value ?: TIE_SLACK), shape = shape, lease = lease)
+        return ReadStart(fetchLimitOf(limit, lease?.value ?: TIE_SLACK), cutBefore = cutBefore(lease), shape = shape, lease = lease)
     }
 
     /**
@@ -833,8 +844,12 @@ class VespaEventIndex(
         // The window and the first page's tie slack, under one lock.
         val (recalled, lease) = shape?.let { windowMemory?.recallWith(it, TieSlackMemory.coldSlack(q, limit)) } ?: (null to null)
         val first = if (recalled is RecencyWindowMemory.Recall.Narrow) narrowLease(lease) else lease
-        return ReadStart(fetchLimitOf(limit, first?.value ?: TIE_SLACK), shape = shape, lease = lease, recalled = recalled, anchor = anchor)
+        val narrow = recalled is RecencyWindowMemory.Recall.Narrow
+        return ReadStart(fetchLimitOf(limit, first?.value ?: TIE_SLACK), cutBefore = !narrow && cutBefore(first), shape = shape, lease = lease, recalled = recalled, anchor = anchor)
     }
+
+    /** [ReadStart.cutBefore] for a read about to fetch at [lease]: a slack the shape LEARNED at [TIE_SLACK] or more. */
+    private fun cutBefore(lease: TieSlackMemory.Lease?): Boolean = lease != null && lease.epoch != 0L && lease.value >= TIE_SLACK
 
     /**
      * Too thin to window is too thin for a wide tie slack: a recalled-narrow shape

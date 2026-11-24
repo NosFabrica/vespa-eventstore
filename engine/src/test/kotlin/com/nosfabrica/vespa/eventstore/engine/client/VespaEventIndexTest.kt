@@ -3746,8 +3746,8 @@ class VespaEventIndexTest {
      * one feed is served in one query; a page planned past the cap is id-first; a feed whose
      * boundary second holds thirty notes is direct too, its cut group read as ids and only the
      * documents its page keeps read after, and the next read, at the slack the cut taught, is
-     * one query again; a global feed is direct from its first read. Each serves the reference
-     * page.
+     * id-first (it would be cut again either way); a global feed is direct from its first read.
+     * Each serves the reference page.
      */
     @Test
     fun `a small page is one query and a crowded second costs ids`() =
@@ -3798,8 +3798,8 @@ class VespaEventIndexTest {
                 assertEquals(reference.search(q).map { it.id }, index.search(q).map { it.id })
                 sent = mock.searchRequests.drop(before)
                 assertEquals(10 + VespaEventIndex.TIE_SLACK, lastFetch(before), "the cut taught the shape the wide slack")
-                assertEquals(1, sent.size, "which holds the second: one query of documents: $sent")
-                assertFalse(sent.single().isIdTime(), "$sent")
+                assertTrue(sent.pageQueries().all { it.isIdTime() }, "a shape cut before is id-first: its page query reads ids: $sent")
+                assertEquals("10", sent.single { it.isHydrate() }["hits"], "and exactly the page's documents")
             } finally {
                 mock.scrambleTieOrder = false
             }
@@ -3810,7 +3810,7 @@ class VespaEventIndexTest {
             sent = mock.searchRequests.drop(before)
             assertFalse(sent.pageQueries().first().isIdTime(), "a global feed asks for documents too: $sent")
 
-            assertEquals(mapOf("direct" to 4L, "idfirst" to 1L), fetchModes().minus(modes))
+            assertEquals(mapOf("direct" to 3L, "idfirst" to 2L), fetchModes().minus(modes))
         }
 
     /**
